@@ -1,0 +1,90 @@
+cabal-version: 3.12
+name: basecontainer-haskell-deps
+version: 0.1.0.0
+synopsis: Cabal store warm-up target for basecontainer
+category: Development
+description:
+  This package intentionally exposes a tiny executable with the shared
+  dependency set in build-depends so the base image can prebuild the Cabal store.
+license: MIT
+author: basecontainer contributors
+maintainer: basecontainer contributors
+build-type: Simple
+tested-with: GHC ==9.14.1
+
+executable basecontainer-haskell-deps
+  main-is: Main.hs
+  hs-source-dirs: app
+  default-language: Haskell2010
+  build-depends:
+      QuickCheck
+    , aeson
+    , aeson-pretty
+    , ansi-terminal
+    , async
+    , base >=4.18 && <5
+    , base16-bytestring
+    , base64-bytestring
+    , brick
+    , case-insensitive
+    , cborg
+    , cborg-json
+    , co-log
+    , co-log-core
+    , containers
+    , cookie
+    , criterion
+    , cryptohash-sha1
+    , cryptohash-sha256
+    , cryptonite
+    , dhall
+    , directory
+    , filepath
+    , flat
+    , fsnotify
+    , hedgehog
+    , hedis
+    , hspec
+    , http-client
+    , http-client-tls
+    , http-types
+    , lens-family
+    , lens-family-core
+    , memory
+    , mtl
+    , network
+    , optparse-applicative
+    , path
+    , path-io
+    , postgresql-simple
+    , prettyprinter
+    , prettyprinter-ansi-terminal
+    , process
+    , proto-lens
+    , proto-lens-runtime
+    , proto-lens-setup
+    , purescript-bridge
+    , safe-exceptions
+    , scientific
+    , serialise
+    , stm
+    , tasty
+    , tasty-golden
+    , tasty-hedgehog
+    , tasty-hunit
+    , tasty-quickcheck
+    , temporary
+    , text
+    , time
+    , transformers
+    , typed-process
+    , unix
+    , uuid
+    , vector
+    , vty
+    , wai
+    , wai-websockets
+    , warp
+    , websockets
+    , wuss
+    , yaml
