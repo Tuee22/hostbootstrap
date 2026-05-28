@@ -46,7 +46,7 @@ image digests after the build.
 
 | Capability area | Requirements included in this base |
 |---|---|
-| Haskell | GHC 9.14.1, Cabal 3.16.1.0, warmed Cabal store, Fourmolu, HLint, Dhall libraries, protobuf-related Haskell libraries, PostgreSQL client headers |
+| Haskell | GHC 9.12.4, Cabal 3.16.1.0, warmed Cabal store, Fourmolu, HLint, Dhall libraries, protobuf-related Haskell libraries, PostgreSQL client headers |
 | Python | Ubuntu 24.04 default Python, `python` alias, pip/setuptools/wheel bootstrap, Poetry as the only global Python package, protobuf compiler support for generated Python packages |
 | Node and frontend | Latest upstream Node.js for the target architecture, npm, PureScript, Spago, esbuild, TypeScript, purs-tidy, Playwright with chromium/firefox/webkit |
 | Cluster and image tooling | Docker CLI, buildx, compose, latest kind, stable kubectl, latest Helm, latest nvkind, skopeo, MinIO `mc`, latest AWS CLI v2, latest Pulumi CLI, `dig`, OpenSSH client |
@@ -140,7 +140,7 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     LIBRARY_PATH=/opt/llvm/lib \
     BOLT_RT_INSTR_LIB=/opt/llvm/lib/libbolt_rt_instr.a
 
-ENV PATH=/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/root/.cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ```
 
 The examples below are instructions for project-owned config files, not files
@@ -159,6 +159,10 @@ code do not need Docker socket forwarding.
 
 ### Haskell Builds
 
+All Haskell builds — this base image and downstream projects — target **GHC
+9.12.4**. Downstream `cabal.project` files must pin `with-compiler: ghc-9.12.4`
+so local builds, CI, and the warmed Cabal store all use the same compiler.
+
 Haskell projects should pin Cabal's build directory outside the source mount.
 Put the build directory in the checked-in `cabal.project`, not in ad hoc command
 arguments:
@@ -166,7 +170,7 @@ arguments:
 ```cabal
 -- cabal.project
 packages: .
-with-compiler: ghc-9.14.1
+with-compiler: ghc-9.12.4
 builddir: /opt/build/haskell/dist-newstyle
 ```
 
@@ -576,6 +580,7 @@ playwright-report/
 test-results/
 target/
 build/
+vendor/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
@@ -609,7 +614,7 @@ After a container build or hot rebuild, this check should return no output:
 ```bash
 find /workspace \
   \( -name dist-newstyle -o -name node_modules -o -name .venv \
-  -o -name target -o -name build -o -name dist -o -name output \
+  -o -name target -o -name build -o -name vendor -o -name dist -o -name output \
   -o -name test-output -o -name .spago -o -name playwright-report \
   -o -name test-results -o -name .mypy_cache -o -name .ruff_cache \
   -o -name .pytest_cache -o -name __pycache__ -o -name .tox \
@@ -728,7 +733,7 @@ BOLT_RT_INSTR_LIB=/opt/llvm/lib/libbolt_rt_instr.a
 The final image installs one compiler and one Cabal:
 
 ```text
-GHC_VERSION=9.14.1
+GHC_VERSION=9.12.4
 CABAL_VERSION=3.16.1.0
 ```
 
@@ -737,66 +742,31 @@ Both must be installed through `ghcup`.
 Expected PATH:
 
 ```text
-/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/root/.cargo/bin:/opt/build/node/global/bin:/usr/local/bin
+/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin
 ```
 
-Fourmolu and HLint are final-image tools built in an isolated Docker builder
-stage with GHC 9.12.4 because their supported `ghc-lib-parser` family tracks
-the GHC 9.12 API. The final image exposes the required user compiler,
-GHC 9.14.1, plus the copied `/out/fourmolu` and `/out/hlint` executables. The
-style-tool compiler does not remain in the final image.
+Fourmolu and HLint are final-image tools. Because the unified compiler is now
+GHC 9.12.4 — the version their `ghc-lib-parser` family targets — they build
+directly in the final image's toolchain, with no separate style-tool compiler
+stage:
 
 ```dockerfile
-FROM ubuntu:24.04 AS haskell-tools-builder
-
-ARG HASKELL_TOOLS_GHC_VERSION=9.12.4
-ARG HASKELL_TOOLS_CABAL_VERSION=3.16.1.0
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl gcc g++ libffi-dev libgmp-dev \
-    libncurses-dev libtinfo-dev make pkg-config xz-utils zlib1g-dev \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) ghcup_arch=x86_64 ;; \
-      arm64) ghcup_arch=aarch64 ;; \
-    esac \
-  && curl -fsSL "https://downloads.haskell.org/~ghcup/${ghcup_arch}-linux-ghcup" \
-    -o /usr/local/bin/ghcup \
-  && chmod 0755 /usr/local/bin/ghcup
-
-ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:/usr/local/bin:/usr/bin:/bin
-
-RUN ghcup install ghc "${HASKELL_TOOLS_GHC_VERSION}" \
-  && ghcup set ghc "${HASKELL_TOOLS_GHC_VERSION}" \
-  && ghcup install cabal "${HASKELL_TOOLS_CABAL_VERSION}" \
-  && ghcup set cabal "${HASKELL_TOOLS_CABAL_VERSION}"
-
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
-
-RUN mkdir -p /out \
-  && cabal update \
+RUN cabal update \
   && cabal install \
     --jobs=1 \
     --ignore-project \
-    --installdir /out \
+    --installdir /usr/local/bin \
     --install-method=copy \
     --overwrite-policy=always \
     fourmolu \
     hlint
-
-FROM ubuntu:24.04
-COPY --from=haskell-tools-builder /out/fourmolu /usr/local/bin/fourmolu
-COPY --from=haskell-tools-builder /out/hlint /usr/local/bin/hlint
 ```
 
-The style-tool builder sets `LANG=C.UTF-8` and `LC_ALL=C.UTF-8` before Cabal
-builds packages because `ghc-lib-parser` feeds UTF-8 parser grammar sources to
-Happy. The Cabal install uses `--jobs=1` because multi-platform BuildKit runs
-inside a shared builder VM; serial dependency compilation keeps memory bounded
-while CPU and CUDA manifest builds run concurrently.
+The install uses `--jobs=1` because multi-platform BuildKit runs inside a shared
+builder VM; serial dependency compilation keeps memory bounded while the CPU and
+CUDA manifest builds run concurrently. The image already sets `LANG=C.UTF-8` and
+`LC_ALL=C.UTF-8`, which `ghc-lib-parser` needs when feeding UTF-8 parser grammar
+sources to Happy.
 
 Do not use `--allow-newer=all` for `fourmolu` or `hlint`. These tools track the
 GHC parser API through `ghc-lib-parser` bounds, and relaxing those bounds can
@@ -806,7 +776,7 @@ make Cabal select an unsupported parser library.
 
 The base warms the Cabal store with the union of downstream Haskell
 libraries. This reduces rebuild time and gives us a place to carry patched
-packages when Hackage bounds lag GHC 9.14.1.
+packages when Hackage bounds lag GHC 9.12.4.
 
 Planned support layout:
 
@@ -894,9 +864,10 @@ wuss
 yaml
 ```
 
-The support `cabal.project` mirrors the downstream `allow-newer` pressure
-needed by GHC 9.14.1. When bounds or releases are not usable from Hackage, prefer
-one of these in order:
+On GHC 9.12.4 the dependency set resolves from Hackage without blanket
+`allow-newer`, so the support `cabal.project` does not relax bounds globally.
+When a specific bound or release is not usable from Hackage, prefer one of these
+in order:
 
 1. A checked-in patch under `support/haskell-deps/patches/`.
 2. A checked-in local package under `support/haskell-deps/vendor/`.
@@ -1007,16 +978,16 @@ pulumi
 protoc
 ```
 
-`nvkind` does not currently publish versioned release binaries, so build it
-from source in a separate BuildKit stage based on `golang:latest`. Run that
-stage on `$BUILDPLATFORM`, set `GOOS=linux`, set `GOARCH` from
-`$TARGETARCH`, and keep `CGO_ENABLED=1` because the NVIDIA NVML bindings use
-CGO. When `$TARGETARCH` differs from `$BUILDARCH`, install the matching GCC
-cross compiler and libc cross headers in that builder stage, then copy only the
-resulting `nvkind` binary into the final image. Do not download a raw Go tarball
-into the final image just to build `nvkind`; target-architecture Go compilers
-can be unstable under emulation, and the final image does not need that
-temporary toolchain.
+`nvkind` does not currently publish versioned release binaries, so build it from
+source in a separate BuildKit stage based on `golang:latest`. Run that stage on
+`$BUILDPLATFORM` and cross-compile to the target architecture: set `GOOS=linux`,
+set `GOARCH` from `TARGETARCH`, and, when the target differs from the build
+platform, set a matching cross C compiler through `CC`. Keep `CGO_ENABLED=1`
+because the NVIDIA NVML bindings use CGO. Copy only the resulting `nvkind` binary
+into the final image; the Go toolchain runs natively on the build host and is not
+shipped in the final image. Do not run the Go toolchain under emulation: the Go
+runtime is unreliable under QEMU user-mode emulation, so the non-native image
+must receive a cross-compiled binary rather than compile `nvkind` itself.
 
 Use architecture-neutral installers where they exist. For tools that require
 binary downloads, keep the architecture mapping limited to that download block:
@@ -1337,6 +1308,7 @@ ld.lld --version
 kubectl version --client=true
 helm version --short
 kind version
+nvkind --help
 docker --version
 docker buildx version
 docker compose version

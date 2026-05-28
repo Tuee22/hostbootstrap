@@ -1,6 +1,4 @@
 packages: ./basecontainer-haskell-deps.cabal
 
-with-compiler: ghc-9.14.1
+with-compiler: ghc-9.12.4
 builddir: /opt/build/haskell/basecontainer-deps/dist-newstyle
-
-allow-newer: all

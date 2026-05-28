@@ -1,9 +1,6 @@
 # syntax=docker/dockerfile:1.7
 ARG GO_BUILDER_IMAGE=golang:latest
-ARG HASKELL_TOOLS_BASE_IMAGE=ubuntu:24.04
 ARG BASE_IMAGE=ubuntu:24.04
-ARG HASKELL_TOOLS_GHC_VERSION=9.12.4
-ARG HASKELL_TOOLS_CABAL_VERSION=3.16.1.0
 
 FROM --platform=$BUILDPLATFORM ${GO_BUILDER_IMAGE} AS nvkind-builder
 
@@ -37,67 +34,10 @@ RUN set -eux; \
       install -m 0755 "/go/bin/linux_${goarch}/nvkind" /out/nvkind; \
     fi
 
-FROM ${HASKELL_TOOLS_BASE_IMAGE} AS haskell-tools-builder
-
-ARG HASKELL_TOOLS_GHC_VERSION
-ARG HASKELL_TOOLS_CABAL_VERSION
-
-ENV DEBIAN_FRONTEND=noninteractive
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        gcc \
-        g++ \
-        libffi-dev \
-        libgmp-dev \
-        libncurses-dev \
-        libtinfo-dev \
-        make \
-        pkg-config \
-        xz-utils \
-        zlib1g-dev \
-    ; \
-    rm -rf /var/lib/apt/lists/*
-
-RUN set -eux; \
-    case "$(dpkg --print-architecture)" in \
-      amd64) ghcup_arch=x86_64 ;; \
-      arm64) ghcup_arch=aarch64 ;; \
-      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://downloads.haskell.org/~ghcup/${ghcup_arch}-linux-ghcup" -o /usr/local/bin/ghcup; \
-    chmod 0755 /usr/local/bin/ghcup
-
-ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
-
-RUN ghcup install ghc "${HASKELL_TOOLS_GHC_VERSION}" \
-    && ghcup set ghc "${HASKELL_TOOLS_GHC_VERSION}" \
-    && ghcup install cabal "${HASKELL_TOOLS_CABAL_VERSION}" \
-    && ghcup set cabal "${HASKELL_TOOLS_CABAL_VERSION}"
-
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
-
-RUN mkdir -p /out \
-    && cabal update \
-    && cabal install \
-        --jobs=1 \
-        --ignore-project \
-        --installdir /out \
-        --install-method=copy \
-        --overwrite-policy=always \
-        fourmolu \
-        hlint
-
 FROM ${BASE_IMAGE}
 
 ARG IMAGE_FLAVOR=cpu
-ARG GHC_VERSION=9.14.1
+ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.1.0
 ARG RUST_TOOLCHAIN=stable
 
@@ -200,7 +140,7 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-ENV PATH=/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/root/.cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 COPY --from=nvkind-builder /out/nvkind /usr/local/bin/nvkind
 
@@ -291,8 +231,15 @@ RUN ghcup install ghc "${GHC_VERSION}" \
     && ghcup install cabal "${CABAL_VERSION}" \
     && ghcup set cabal "${CABAL_VERSION}"
 
-COPY --from=haskell-tools-builder /out/fourmolu /usr/local/bin/fourmolu
-COPY --from=haskell-tools-builder /out/hlint /usr/local/bin/hlint
+RUN cabal update \
+    && cabal install \
+        --jobs=1 \
+        --ignore-project \
+        --installdir /usr/local/bin \
+        --install-method=copy \
+        --overwrite-policy=always \
+        fourmolu \
+        hlint
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain "${RUSTUP_TOOLCHAIN}" \
