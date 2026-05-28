@@ -5,6 +5,7 @@ IMAGE_NAME="${IMAGE_NAME:-basecontainer}"
 CPU_BASE_IMAGE="${CPU_BASE_IMAGE:-ubuntu:24.04}"
 BUILDER_NAME="${BUILDER_NAME:-basecontainer-builder}"
 BUILDX_PROGRESS="${BUILDX_PROGRESS:-plain}"
+BUILDKIT_MAX_PARALLELISM="${BUILDKIT_MAX_PARALLELISM:-1}"
 
 resolve_latest_cuda_base_image() {
   if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -68,9 +69,36 @@ fi
 
 IMAGE_REPO="docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
 
-docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1 \
-  || docker buildx create --name "${BUILDER_NAME}" --use
-docker buildx use "${BUILDER_NAME}"
+ensure_builder() {
+  buildkitd_flags="--allow-insecure-entitlement=network.host --oci-max-parallelism=${BUILDKIT_MAX_PARALLELISM}"
+
+  if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
+    current_flags="$(docker buildx inspect "${BUILDER_NAME}" | awk -F': ' '/BuildKit daemon flags:/ {print $2; exit}')"
+    if [[ " ${current_flags} " != *" --oci-max-parallelism=${BUILDKIT_MAX_PARALLELISM} "* ]]; then
+      echo "Recreating builder ${BUILDER_NAME} with BuildKit max parallelism ${BUILDKIT_MAX_PARALLELISM}."
+      docker buildx rm --keep-state --force "${BUILDER_NAME}" >/dev/null
+      docker buildx create \
+        --name "${BUILDER_NAME}" \
+        --driver docker-container \
+        --buildkitd-flags "${buildkitd_flags}" \
+        --use \
+        >/dev/null
+    else
+      docker buildx use "${BUILDER_NAME}"
+    fi
+  else
+    docker buildx create \
+      --name "${BUILDER_NAME}" \
+      --driver docker-container \
+      --buildkitd-flags "${buildkitd_flags}" \
+      --use \
+      >/dev/null
+  fi
+
+  docker buildx inspect --bootstrap "${BUILDER_NAME}" >/dev/null
+}
+
+ensure_builder
 
 build_cpu_image() {
   docker buildx build \
@@ -125,6 +153,7 @@ trap terminate_builds INT TERM
 echo "Starting CPU and CUDA builds in parallel for ${IMAGE_REPO}"
 echo "CPU base: ${CPU_BASE_IMAGE}"
 echo "CUDA base: ${CUDA_BASE_IMAGE}"
+echo "BuildKit max parallelism: ${BUILDKIT_MAX_PARALLELISM}"
 
 run_labeled cpu build_cpu_image &
 cpu_pid="$!"
@@ -132,10 +161,36 @@ run_labeled cuda build_cuda_image &
 cuda_pid="$!"
 
 set +e
-wait "${cpu_pid}"
-cpu_status="$?"
-wait "${cuda_pid}"
-cuda_status="$?"
+cpu_status=""
+cuda_status=""
+
+while [ -z "${cpu_status}" ] || [ -z "${cuda_status}" ]; do
+  if [ -z "${cpu_status}" ] && ! kill -0 "${cpu_pid}" 2>/dev/null; then
+    wait "${cpu_pid}"
+    cpu_status="$?"
+    if [ "${cpu_status}" -ne 0 ] && [ -z "${cuda_status}" ]; then
+      echo "CPU build failed; stopping CUDA build..." >&2
+      kill "${cuda_pid}" 2>/dev/null || true
+      wait "${cuda_pid}"
+      cuda_status="$?"
+      break
+    fi
+  fi
+
+  if [ -z "${cuda_status}" ] && ! kill -0 "${cuda_pid}" 2>/dev/null; then
+    wait "${cuda_pid}"
+    cuda_status="$?"
+    if [ "${cuda_status}" -ne 0 ] && [ -z "${cpu_status}" ]; then
+      echo "CUDA build failed; stopping CPU build..." >&2
+      kill "${cpu_pid}" 2>/dev/null || true
+      wait "${cpu_pid}"
+      cpu_status="$?"
+      break
+    fi
+  fi
+
+  sleep 2
+done
 set -e
 
 trap - INT TERM

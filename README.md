@@ -4,7 +4,7 @@ Shared Ubuntu 24.04 base images for multi-language development, CI, and
 release builds.
 
 The image is intentionally a dependency and toolchain layer. Downstream
-repositories should still own their application source, generated artifacts,
+repositories own their application source, generated artifacts,
 runtime configuration, charts, and project-specific package installation.
 
 ## Scope
@@ -34,7 +34,7 @@ The same Dockerfile builds these published image families:
 Do not publish architecture-specific CUDA image families unless the upstream
 CUDA base diverges by architecture and requires separate handling.
 
-Fresh builds should resolve current upstream tool versions by default. Keep only
+Fresh builds resolve current upstream tool versions by default. Keep only
 compatibility anchors fixed in repository files: Ubuntu 24.04, the required GHC
 and Cabal versions, and the published image tag names. Do not hard-code upstream
 release hashes or point releases for tools that can be resolved from apt,
@@ -54,7 +54,7 @@ image digests after the build.
 | Rust | Latest stable Rust through rustup, rustfmt, LLVM LLD/BOLT support for optimized Rust build paths |
 | Optional CUDA | Latest multi-platform CUDA devel + cuDNN Ubuntu 24.04 upstream image selected by the build script, nvcc, cuBLAS development/runtime libraries, cuDNN development/runtime libraries |
 
-Host-only resources still remain host-only: the image can include CLIs and
+Host-only resources remain host-only: the image can include CLIs and
 headers, but it cannot provide the host Docker daemon, host NVIDIA driver,
 kernel modules, or a real systemd-managed RKE2 host unless a downstream workflow
 explicitly runs it in a privileged environment.
@@ -111,7 +111,7 @@ Native tool config files should enforce the `/opt/build` and `/opt/cache` paths
 where the tool supports that. When a tool cannot configure artifact paths, run
 that tool from a project-owned working directory under `/opt/build` and copy
 source inputs from `/workspace`. Do not use symlinks for build worktrees: a tool
-that writes through a symlink can still leak artifacts into the bind-mounted
+that writes through a symlink can leak artifacts into the bind-mounted
 source tree. The default developer command should stay simple, for example
 `cabal build`, `poetry build`, `npm run build`,
 `spago build`, `npm test`, `cargo build`, `cmake --build --preset
@@ -145,9 +145,9 @@ ENV PATH=/opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.
 
 The examples below are instructions for project-owned config files, not files
 provided by basecontainer. A good validation check is to run a clean build and
-then verify that the source tree still has no generated directories.
+then verify that the source tree has no generated directories.
 
-Treat dependency lock files as generated build artifacts. They should be created
+Treat dependency lock files as generated build artifacts. They are created
 inside `/opt/build` when a tool insists on writing one, and they should not be
 committed to downstream repositories.
 
@@ -199,7 +199,7 @@ in-project = false
 
 With `virtualenvs.create = false`, `poetry install` installs into the active
 container Python environment. This is intentional for basecontainer workflows:
-the container is disposable, and project dependencies should be container-wide
+the container is disposable, and project dependencies are container-wide
 inside that container rather than written into a project `.venv/` or
 `/opt/build` virtualenv.
 
@@ -266,7 +266,7 @@ dependencies remain owned by the downstream `pyproject.toml`.
 npm writes `node_modules` under the package working directory. To keep
 `node_modules` out of `/workspace`, run npm from a build sandbox under
 `/opt/build/node/<package>` and copy source inputs from `/workspace`. The
-ordinary commands should be run from that sandbox:
+ordinary commands run from that sandbox:
 
 Use npm scripts for project commands. Do not use `npx` in downstream build,
 test, lint, or Playwright workflows.
@@ -355,10 +355,10 @@ spago build
 spago test
 ```
 
-If a project still uses legacy `spago.dhall` and `packages.dhall`, copy those
-files into the build worktree instead of `spago.yaml`. Do not produce
-source-tree `output/`, `test-output/`, `.spago/`, or `spago.lock`. Treat
-`spago.lock` as a generated build artifact.
+Dhall-based Spago projects copy `spago.dhall` and `packages.dhall` into the
+build worktree instead of `spago.yaml`. Do not produce source-tree `output/`,
+`test-output/`, `.spago/`, or `spago.lock`. Treat `spago.lock` as a generated
+build artifact.
 
 ### Playwright Builds
 
@@ -558,7 +558,7 @@ cmake --build --preset cuda-release
 
 ### Git Ignore Guardrails
 
-Downstream `.gitignore` files should still ignore common generated paths as a
+Downstream `.gitignore` files should ignore common generated paths as a
 last line of defense. These entries are not the primary control; the native
 tool config above should keep artifacts out of the source tree before
 `.gitignore` matters.
@@ -725,18 +725,14 @@ BOLT_RT_INSTR_LIB=/opt/llvm/lib/libbolt_rt_instr.a
 
 ## Haskell
 
-Install only one compiler and one Cabal:
+The final image installs one compiler and one Cabal:
 
 ```text
 GHC_VERSION=9.14.1
 CABAL_VERSION=3.16.1.0
 ```
 
-Both must be installed through `ghcup`. Do not add a separate formatter/checker
-GHC. Existing project Dockerfiles have used a second GHC for style tooling; this
-base intentionally does not. If `fourmolu` or `hlint` need patches to build
-with GHC 9.14.1, carry those patches in this base repository and build the
-patched packages with GHC 9.14.1.
+Both must be installed through `ghcup`.
 
 Expected PATH:
 
@@ -744,23 +740,71 @@ Expected PATH:
 /opt/llvm/bin:/opt/pulumi:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/root/.cargo/bin:/opt/build/node/global/bin:/usr/local/bin
 ```
 
-Install style and support tools into stable locations:
+Fourmolu and HLint are final-image tools built in an isolated Docker builder
+stage with GHC 9.12.4 because their supported `ghc-lib-parser` family tracks
+the GHC 9.12 API. The final image exposes the required user compiler,
+GHC 9.14.1, plus the copied `/out/fourmolu` and `/out/hlint` executables. The
+style-tool compiler does not remain in the final image.
 
-```bash
-cabal update
-cabal install \
-  --ignore-project \
-  --allow-newer=all \
-  --installdir /usr/local/bin \
-  --install-method=copy \
-  --overwrite-policy=always \
-  fourmolu \
-  hlint
+```dockerfile
+FROM ubuntu:24.04 AS haskell-tools-builder
+
+ARG HASKELL_TOOLS_GHC_VERSION=9.12.4
+ARG HASKELL_TOOLS_CABAL_VERSION=3.16.1.0
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl gcc g++ libffi-dev libgmp-dev \
+    libncurses-dev libtinfo-dev make pkg-config xz-utils zlib1g-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ghcup_arch=x86_64 ;; \
+      arm64) ghcup_arch=aarch64 ;; \
+    esac \
+  && curl -fsSL "https://downloads.haskell.org/~ghcup/${ghcup_arch}-linux-ghcup" \
+    -o /usr/local/bin/ghcup \
+  && chmod 0755 /usr/local/bin/ghcup
+
+ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN ghcup install ghc "${HASKELL_TOOLS_GHC_VERSION}" \
+  && ghcup set ghc "${HASKELL_TOOLS_GHC_VERSION}" \
+  && ghcup install cabal "${HASKELL_TOOLS_CABAL_VERSION}" \
+  && ghcup set cabal "${HASKELL_TOOLS_CABAL_VERSION}"
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN mkdir -p /out \
+  && cabal update \
+  && cabal install \
+    --jobs=1 \
+    --ignore-project \
+    --installdir /out \
+    --install-method=copy \
+    --overwrite-policy=always \
+    fourmolu \
+    hlint
+
+FROM ubuntu:24.04
+COPY --from=haskell-tools-builder /out/fourmolu /usr/local/bin/fourmolu
+COPY --from=haskell-tools-builder /out/hlint /usr/local/bin/hlint
 ```
+
+The style-tool builder sets `LANG=C.UTF-8` and `LC_ALL=C.UTF-8` before Cabal
+builds packages because `ghc-lib-parser` feeds UTF-8 parser grammar sources to
+Happy. The Cabal install uses `--jobs=1` because multi-platform BuildKit runs
+inside a shared builder VM; serial dependency compilation keeps memory bounded
+while CPU and CUDA manifest builds run concurrently.
+
+Do not use `--allow-newer=all` for `fourmolu` or `hlint`. These tools track the
+GHC parser API through `ghc-lib-parser` bounds, and relaxing those bounds can
+make Cabal select an unsupported parser library.
 
 ### Prebuilt Haskell Store
 
-The base should warm the Cabal store with the union of downstream Haskell
+The base warms the Cabal store with the union of downstream Haskell
 libraries. This reduces rebuild time and gives us a place to carry patched
 packages when Hackage bounds lag GHC 9.14.1.
 
@@ -850,7 +894,7 @@ wuss
 yaml
 ```
 
-The support `cabal.project` should mirror the downstream `allow-newer` pressure
+The support `cabal.project` mirrors the downstream `allow-newer` pressure
 needed by GHC 9.14.1. When bounds or releases are not usable from Hackage, prefer
 one of these in order:
 
@@ -859,13 +903,13 @@ one of these in order:
 3. A `source-repository-package` only when there is no reasonable patch or
    vendored-package alternative; document why external source is unavoidable.
 
-The Dockerfile warm-up step should be:
+The Dockerfile warm-up step is:
 
 ```bash
 cd /opt/basecontainer/haskell-deps
 cabal update
-cabal build all --only-dependencies
-cabal build all
+cabal build --jobs=1 all --only-dependencies
+cabal build --jobs=1 all
 ```
 
 Do not copy any downstream application source into this base image to warm the
@@ -883,21 +927,23 @@ apt-get install -y --no-install-recommends python-is-python3
 After apt Python dependencies are installed, run the required bootstrap command:
 
 ```bash
-python -m pip install --upgrade pip setuptools wheel poetry
+python -m pip install --ignore-installed --upgrade pip setuptools wheel poetry
 ```
 
 For Ubuntu 24.04 image builds, set `PIP_BREAK_SYSTEM_PACKAGES=1` before that
-command unless the implementation uses a dedicated bootstrap venv. The only
-globally installed Python package should be Poetry. Downstream projects own
-their Python dependencies through their own `pyproject.toml` and Poetry
-configuration.
+command unless the implementation uses a dedicated bootstrap venv. The
+`--ignore-installed` flag is required when `python3-pip` comes from apt, because
+Debian-packaged Python tools cannot always be uninstalled or upgraded in place
+by pip. The only globally installed Python package is Poetry. Downstream
+projects own their Python dependencies through their own `pyproject.toml` and
+Poetry configuration.
 
 ## Node, PureScript, And Playwright
 
 Install the latest upstream Node.js release for the target architecture during
 the Docker build. Use the bundled npm as the standard package manager for
 downstream frontend, PureScript, Playwright, and Pulumi workflows. Do not expose
-or recommend `npx`; project commands should be npm scripts.
+or recommend `npx`; project commands are npm scripts.
 
 Global npm tools expected in the base:
 
@@ -906,10 +952,29 @@ npm install -g \
   @playwright/test \
   esbuild \
   playwright \
-  purescript \
   purs-tidy \
   spago \
   typescript
+```
+
+Install the PureScript compiler itself from the latest upstream release asset for
+the target architecture. Do not install the `purescript` npm package in the base
+image; it uses a lifecycle installer instead of exposing the release binary as a
+plain package artifact.
+
+```bash
+case "$(dpkg --print-architecture)" in
+  amd64) purescript_asset=linux64.tar.gz ;;
+  arm64) purescript_asset=linux-arm64.tar.gz ;;
+esac
+
+purescript_version="$(curl -fsSL https://api.github.com/repos/purescript/purescript/releases/latest | jq -r '.tag_name')"
+tmpdir="$(mktemp -d)"
+curl -fsSL "https://github.com/purescript/purescript/releases/download/${purescript_version}/${purescript_asset}" \
+  -o "${tmpdir}/purescript.tar.gz"
+tar -xzf "${tmpdir}/purescript.tar.gz" -C "${tmpdir}"
+install -m 0755 "${tmpdir}/purescript/purs" /usr/local/bin/purs
+rm -rf "${tmpdir}"
 ```
 
 Install browser dependencies and all three Playwright browser families:
@@ -925,7 +990,7 @@ this base once the requirement is confirmed.
 
 ## Cluster And Registry Tooling
 
-The base should include:
+The base includes:
 
 ```text
 docker
@@ -941,6 +1006,17 @@ aws
 pulumi
 protoc
 ```
+
+`nvkind` does not currently publish versioned release binaries, so build it
+from source in a separate BuildKit stage based on `golang:latest`. Run that
+stage on `$BUILDPLATFORM`, set `GOOS=linux`, set `GOARCH` from
+`$TARGETARCH`, and keep `CGO_ENABLED=1` because the NVIDIA NVML bindings use
+CGO. When `$TARGETARCH` differs from `$BUILDARCH`, install the matching GCC
+cross compiler and libc cross headers in that builder stage, then copy only the
+resulting `nvkind` binary into the final image. Do not download a raw Go tarball
+into the final image just to build `nvkind`; target-architecture Go compilers
+can be unstable under emulation, and the final image does not need that
+temporary toolchain.
 
 Use architecture-neutral installers where they exist. For tools that require
 binary downloads, keep the architecture mapping limited to that download block:
@@ -968,7 +1044,7 @@ needed, the host Docker config.
 
 The native build stack must support:
 
-- C++17 for the legacy backend.
+- C++17 for compatibility-oriented backends.
 - C++23 for imperative and functional backends.
 - GCC/G++ from Ubuntu 24.04.
 - GNU binutils and gdb.
@@ -1016,10 +1092,10 @@ cuDNN dev/runtime libraries
 ```
 
 A CUDA devel + cuDNN upstream image is preferred so the Dockerfile does not need
-separate CUDA repository setup. The build script should resolve the newest
+separate CUDA repository setup. The build script resolves the newest
 Docker Hub tag matching `nvidia/cuda:*cudnn-devel-ubuntu24.04` that has both
 `linux/amd64` and `linux/arm64` manifests when `CUDA_BASE_IMAGE` is not set. If
-apt installation is still required, keep it behind a CUDA-flavor build argument,
+apt installation is required, keep it behind a CUDA-flavor build argument,
 not an architecture branch.
 
 Do not put CUDA stubs on `LD_LIBRARY_PATH`. Runtime driver libraries are injected
@@ -1036,7 +1112,7 @@ driver or GPU device access.
 
 ## Third-Party CLI Helpers
 
-The base should include shared CLI helpers that are broadly useful across
+The base includes shared CLI helpers that are broadly useful across
 project build and cluster workflows:
 
 - MinIO client `mc`.
@@ -1055,10 +1131,16 @@ The repository contains a single script:
 scripts/build-and-push.sh
 ```
 
-It should build and push CPU amd64/arm64 plus CUDA amd64/arm64 simultaneously,
-using the host Docker Hub login. The script should default the Docker Hub
-namespace to the logged-in Docker username and allow explicit override through
-`DOCKERHUB_USERNAME`.
+It launches CPU amd64/arm64 plus CUDA amd64/arm64 builds together and pushes
+both manifests, using the host Docker Hub login. The script defaults the
+Docker Hub namespace to the logged-in Docker username and allow explicit override
+through `DOCKERHUB_USERNAME`.
+
+The script defaults `BUILDKIT_MAX_PARALLELISM=1`. That lets the CPU and CUDA
+build requests run together, but it prevents two memory-heavy exec steps
+such as a GHC install and a Cabal compile from running at the same time on a
+small builder VM. Builders with more memory can explicitly raise
+`BUILDKIT_MAX_PARALLELISM`.
 
 The script resolves the latest CUDA devel + cuDNN Ubuntu 24.04 base image with
 `curl`, `jq`, and `docker buildx imagetools` unless `CUDA_BASE_IMAGE` is set
@@ -1072,6 +1154,7 @@ IMAGE_NAME="${IMAGE_NAME:-basecontainer}"
 CPU_BASE_IMAGE="${CPU_BASE_IMAGE:-ubuntu:24.04}"
 BUILDER_NAME="${BUILDER_NAME:-basecontainer-builder}"
 BUILDX_PROGRESS="${BUILDX_PROGRESS:-plain}"
+BUILDKIT_MAX_PARALLELISM="${BUILDKIT_MAX_PARALLELISM:-1}"
 
 resolve_latest_cuda_base_image() {
   candidates="$(
@@ -1119,9 +1202,35 @@ fi
 
 IMAGE_REPO="docker.io/${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
 
-docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1 \
-  || docker buildx create --name "${BUILDER_NAME}" --use
-docker buildx use "${BUILDER_NAME}"
+ensure_builder() {
+  buildkitd_flags="--allow-insecure-entitlement=network.host --oci-max-parallelism=${BUILDKIT_MAX_PARALLELISM}"
+
+  if docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
+    current_flags="$(docker buildx inspect "${BUILDER_NAME}" | awk -F': ' '/BuildKit daemon flags:/ {print $2; exit}')"
+    if [[ " ${current_flags} " != *" --oci-max-parallelism=${BUILDKIT_MAX_PARALLELISM} "* ]]; then
+      docker buildx rm --keep-state --force "${BUILDER_NAME}" >/dev/null
+      docker buildx create \
+        --name "${BUILDER_NAME}" \
+        --driver docker-container \
+        --buildkitd-flags "${buildkitd_flags}" \
+        --use \
+        >/dev/null
+    else
+      docker buildx use "${BUILDER_NAME}"
+    fi
+  else
+    docker buildx create \
+      --name "${BUILDER_NAME}" \
+      --driver docker-container \
+      --buildkitd-flags "${buildkitd_flags}" \
+      --use \
+      >/dev/null
+  fi
+
+  docker buildx inspect --bootstrap "${BUILDER_NAME}" >/dev/null
+}
+
+ensure_builder
 
 build_cpu_image() {
   docker buildx build \
@@ -1163,10 +1272,36 @@ run_labeled cuda build_cuda_image &
 cuda_pid="$!"
 
 set +e
-wait "${cpu_pid}"
-cpu_status="$?"
-wait "${cuda_pid}"
-cuda_status="$?"
+cpu_status=""
+cuda_status=""
+
+while [ -z "${cpu_status}" ] || [ -z "${cuda_status}" ]; do
+  if [ -z "${cpu_status}" ] && ! kill -0 "${cpu_pid}" 2>/dev/null; then
+    wait "${cpu_pid}"
+    cpu_status="$?"
+    if [ "${cpu_status}" -ne 0 ] && [ -z "${cuda_status}" ]; then
+      echo "CPU build failed; stopping CUDA build..." >&2
+      kill "${cuda_pid}" 2>/dev/null || true
+      wait "${cuda_pid}"
+      cuda_status="$?"
+      break
+    fi
+  fi
+
+  if [ -z "${cuda_status}" ] && ! kill -0 "${cuda_pid}" 2>/dev/null; then
+    wait "${cuda_pid}"
+    cuda_status="$?"
+    if [ "${cuda_status}" -ne 0 ] && [ -z "${cpu_status}" ]; then
+      echo "CUDA build failed; stopping CPU build..." >&2
+      kill "${cpu_pid}" 2>/dev/null || true
+      wait "${cpu_pid}"
+      cpu_status="$?"
+      break
+    fi
+  fi
+
+  sleep 2
+done
 set -e
 
 if [ "${cpu_status}" -ne 0 ] || [ "${cuda_status}" -ne 0 ]; then
@@ -1175,7 +1310,7 @@ if [ "${cpu_status}" -ne 0 ] || [ "${cuda_status}" -ne 0 ]; then
 fi
 ```
 
-The script should not manage Docker Hub credentials directly. It should rely on
+The script does not manage Docker Hub credentials directly. It relies on
 the host Docker credential store created by `docker login`.
 
 ## Verification Checklist
