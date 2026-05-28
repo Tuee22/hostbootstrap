@@ -1,6 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: build-and-push.sh [--amd64] [--arm64] [--all] [-h|--help]
+
+Builds and pushes the CPU and CUDA images.
+
+Platform selection (default: both amd64 and arm64):
+  --amd64     Build only linux/amd64
+  --arm64     Build only linux/arm64
+  --all       Build both linux/amd64 and linux/arm64 (default)
+  -h, --help  Show this help message
+
+--amd64 and --arm64 may be combined to build both.
+EOF
+}
+
+want_amd64=false
+want_arm64=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --amd64) want_amd64=true ;;
+    --arm64) want_arm64=true ;;
+    --all) want_amd64=true; want_arm64=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [ "${want_amd64}" = false ] && [ "${want_arm64}" = false ]; then
+  want_amd64=true
+  want_arm64=true
+fi
+
+platforms_list=()
+if [ "${want_amd64}" = true ]; then
+  platforms_list+=("linux/amd64")
+fi
+if [ "${want_arm64}" = true ]; then
+  platforms_list+=("linux/arm64")
+fi
+PLATFORMS="$(IFS=,; echo "${platforms_list[*]}")"
+
 IMAGE_NAME="${IMAGE_NAME:-basecontainer}"
 CPU_BASE_IMAGE="${CPU_BASE_IMAGE:-ubuntu:24.04}"
 BUILDER_NAME="${BUILDER_NAME:-basecontainer-builder}"
@@ -102,7 +146,7 @@ ensure_builder
 
 build_cpu_image() {
   docker buildx build \
-    --platform linux/amd64,linux/arm64 \
+    --platform "${PLATFORMS}" \
     --build-arg BASE_IMAGE="${CPU_BASE_IMAGE}" \
     --build-arg IMAGE_FLAVOR=cpu \
     --progress "${BUILDX_PROGRESS}" \
@@ -116,7 +160,7 @@ build_cpu_image() {
 
 build_cuda_image() {
   docker buildx build \
-    --platform linux/amd64,linux/arm64 \
+    --platform "${PLATFORMS}" \
     --build-arg BASE_IMAGE="${CUDA_BASE_IMAGE}" \
     --build-arg IMAGE_FLAVOR=cuda \
     --progress "${BUILDX_PROGRESS}" \
@@ -151,6 +195,7 @@ terminate_builds() {
 trap terminate_builds INT TERM
 
 echo "Starting CPU and CUDA builds in parallel for ${IMAGE_REPO}"
+echo "Platforms: ${PLATFORMS}"
 echo "CPU base: ${CPU_BASE_IMAGE}"
 echo "CUDA base: ${CUDA_BASE_IMAGE}"
 echo "BuildKit max parallelism: ${BUILDKIT_MAX_PARALLELISM}"
