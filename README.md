@@ -76,7 +76,6 @@ in  H.config
         [ H.entry H.Substrate.LinuxCpu
             (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
         ]
-      }
 ```
 
 One `H.entry` per substrate (`H.Substrate.AppleSilicon`, `.LinuxCpu`, or
