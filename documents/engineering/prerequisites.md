@@ -17,7 +17,7 @@ needs it for:
 
 * apt installs (Docker, GPU drivers, NVIDIA container toolkit) on Linux.
 * Docker group/runtime configuration on Linux.
-* brew installs (Tart, ghcup, `dhall-json`) on macOS.
+* brew installs (Tart, ghcup) on macOS.
 * Creating and destroying **system-level** service units (a system-scope
   systemd unit in `/etc/systemd/system` on Linux; a **LaunchDaemon** in
   `/Library/LaunchDaemons` on macOS) — but **only** for the
@@ -41,11 +41,30 @@ unrepresentable for the other two models.
 
 Reading `hostbootstrap.dhall` needs `dhall-to-json`, but this is **not** a new
 manual prerequisite. The tool auto-provisions a native binary on first use: it
-prefers one already on `PATH` (e.g. `brew install dhall-json`), and otherwise
-downloads a pinned, SHA256-verified static release into
-`~/.cache/hostbootstrap/`. The one documented gap is **Ubuntu arm64**, which has
-no prebuilt static asset — there the fallback is `brew install dhall-json` (via
-Linux Homebrew) or building `dhall-json` from source.
+**always** downloads a pinned, SHA256-verified static release into
+`~/.cache/hostbootstrap/` and uses that one exclusively. A `dhall-to-json` found
+on `PATH` is deliberately **ignored** — pinning the binary keeps config parsing
+reproducible and immune to whatever the host happens to have installed.
+
+> **WRONG**
+>
+> ```sh
+> brew install dhall-json   # then expect hostbootstrap to use it
+> ```
+>
+> hostbootstrap never consults `PATH` for `dhall-to-json`, so a host install has
+> no effect — and worse, would make parsing depend on an unpinned, unverified
+> version.
+>
+> **RIGHT**
+>
+> Let hostbootstrap provision its own pinned binary on first use; nothing to
+> install.
+
+The one documented gap is **Ubuntu arm64**, which has no prebuilt static asset.
+Because the host `PATH` is never used as a fallback, this is a hard fail-fast
+condition: provisioning errors out, and the remediation is to build `dhall-json`
+from source for that platform.
 
 ## apple-silicon
 

@@ -6,11 +6,15 @@ linked ``dhall-json`` release binary. We do **not** depend on the ``dhall`` PyPI
 wheel: it ships no CPython 3.12 wheel, so it would compile from a Rust sdist on
 the user's host.
 
+hostbootstrap **always** uses its own pinned binary and never a ``dhall-to-json``
+found on ``PATH`` — so the host toolchain cannot affect how a config is parsed.
+
 Resolution order (``ensure``):
 
-1. a ``dhall-to-json`` already on ``PATH`` (e.g. ``brew install dhall-json``);
-2. otherwise download the pinned release asset for the host platform into
-   ``~/.cache/hostbootstrap/`` and verify it against a pinned SHA-256.
+1. a previously downloaded binary cached under ``~/.cache/hostbootstrap/`` for
+   the pinned version;
+2. otherwise download the pinned release asset for the host platform into that
+   cache and verify it against a pinned SHA-256.
 
 Dhall's own type-checker enforces the schema's union/illegal-state guarantees
 while rendering to JSON, so by the time we ``json.loads`` the output the shape
@@ -26,7 +30,6 @@ import io
 import json
 import os
 import platform
-import shutil
 import subprocess
 import tarfile
 from contextlib import ExitStack
@@ -130,11 +133,12 @@ def _download_and_extract(asset: _Asset, dest: Path) -> None:
 
 
 def ensure() -> Path:
-    """Return a path to a runnable ``dhall-to-json``, provisioning it if needed."""
-    on_path = shutil.which(_EXE)
-    if on_path is not None:
-        return Path(on_path)
+    """Return a path to hostbootstrap's own pinned ``dhall-to-json``.
 
+    Always resolves to the cached/downloaded pinned binary; a ``dhall-to-json``
+    on ``PATH`` is deliberately ignored so the host toolchain cannot influence
+    config parsing.
+    """
     target = _cache_dir() / _EXE
     if target.is_file() and os.access(target, os.X_OK):
         return target
@@ -144,8 +148,8 @@ def ensure() -> Path:
     if asset is None:
         system, arch = key
         raise DhallToolError(
-            f"no prebuilt dhall-to-json for {system}/{arch}. "
-            "Install it manually (e.g. `brew install dhall-json`) so it is on PATH."
+            f"no prebuilt dhall-to-json for {system}/{arch}; hostbootstrap cannot "
+            "provision one for this platform (build `dhall-json` from source for it)."
         )
     _download_and_extract(asset, target)
     return target

@@ -27,13 +27,35 @@ def test_cache_dir_respects_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert dhall_tool._cache_dir() == tmp_path / "hostbootstrap" / "dhall-json" / "1.7.12"
 
 
-def test_ensure_prefers_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dhall_tool.shutil, "which", lambda _: "/usr/local/bin/dhall-to-json")
-    assert dhall_tool.ensure() == Path("/usr/local/bin/dhall-to-json")
+def test_ensure_uses_cached_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(dhall_tool, "_cache_dir", lambda: tmp_path)
+    target = tmp_path / dhall_tool._EXE
+    target.write_text("#!/bin/sh\n")
+    target.chmod(0o755)
+
+    def _no_download(*_a: object, **_k: object) -> None:
+        raise AssertionError("ensure() must not download when a cached binary exists")
+
+    monkeypatch.setattr(dhall_tool, "_download_and_extract", _no_download)
+    assert dhall_tool.ensure() == target
+
+
+def test_ensure_ignores_path_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Even if a dhall-to-json sits on PATH, ensure() provisions its own pinned
+    # binary into the cache and returns that — never the host one.
+    monkeypatch.setenv("PATH", "/usr/local/bin")
+    monkeypatch.setattr(dhall_tool, "_cache_dir", lambda: tmp_path)
+    target = tmp_path / dhall_tool._EXE
+
+    def _fake_download(asset: dhall_tool._Asset, dest: Path) -> None:
+        dest.write_text("#!/bin/sh\n")
+        dest.chmod(0o755)
+
+    monkeypatch.setattr(dhall_tool, "_download_and_extract", _fake_download)
+    assert dhall_tool.ensure() == target
 
 
 def test_ensure_no_asset_for_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(dhall_tool.shutil, "which", lambda _: None)
     monkeypatch.setattr(dhall_tool, "_cache_dir", lambda: tmp_path)
     monkeypatch.setattr(dhall_tool, "_platform_key", lambda: ("Linux", "arm64"))
     with pytest.raises(dhall_tool.DhallToolError, match="no prebuilt"):

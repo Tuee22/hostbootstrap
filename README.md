@@ -28,7 +28,7 @@ Detailed language/engineering notes live under [`documents/`](documents/README.m
   fourmolu/hlint and a warm Haskell store baked in).
 * **One CLI** (`hostbootstrap`) that detects your substrate, validates host
   prerequisites, drives `docker build` / `docker run`, manages cluster
-  lifecycle, and — for the one model that asks for it — installs a system-level
+  lifecycle, and installs a system-level
   service unit.
 
 Single-arch tags only — never manifest lists. The CLI always knows the
@@ -46,9 +46,10 @@ python -m pip install \
 Install into **host Python**, not into any project virtualenv. This works on a
 stock Python 3.12 on Apple Silicon and Ubuntu 24.04 with no Rust toolchain and
 no manual steps: hostbootstrap provisions its own native `dhall-to-json` binary
-on first use. It prefers one already on `PATH` (e.g. `brew install dhall-json`),
-otherwise it downloads a pinned, SHA256-verified static release into
-`~/.cache/hostbootstrap/`.
+on first use. It **always** downloads a pinned, SHA256-verified static release
+into `~/.cache/hostbootstrap/` and uses that one exclusively — it never uses a
+`dhall-to-json` found on `PATH`, so the host toolchain cannot affect how your
+config is parsed.
 
 To develop hostbootstrap itself, the repo uses Poetry with an in-project
 `.venv` (`poetry.toml` sets `virtualenvs.in-project = true`):
@@ -175,6 +176,159 @@ for the full type story.
 
 ---
 
+## Adoption patterns
+
+The three models compose into a handful of recurring project shapes. Each is
+described by its **substrate → model** mapping; pick the one your project
+matches. None of these requires Kubernetes — cluster, Helm, and image upload are
+opt-in downstream concerns, used only by the patterns that explicitly reach for
+them.
+
+### Single-substrate container service — the compose replacement
+
+A web app or service that runs only on Linux, as one long-running container with
+persistent state and (often) the Docker socket so it can drive its own image
+builds/pushes from inside. This is the canonical `docker compose` replacement:
+one substrate, one **Container** with `service = True`, a `.data` bind mount that
+survives every `cluster down`/`delete`, and no cluster at all.
+
+| Substrate | Model |
+|---|---|
+| `linux-cpu` | `Container` (`service = True`, `.data` + socket mounts) |
+
+```dhall
+H.entry H.Substrate.LinuxCpu
+  ( H.Model.Container
+      H.Container::{
+      , dockerfile = "docker/app.Dockerfile"
+      , service = True
+      , mounts =
+        [ H.Mount::{ host = "./.data", container = "/opt/app/.data" }
+        , H.Mount::{ host = "/var/run/docker.sock", container = "/var/run/docker.sock" }
+        ]
+      }
+  )
+```
+
+### Multi-substrate container — same image, CPU vs CUDA
+
+A compute project (heavy native cores — C++/pybind11, ML stacks, a service layer
+on top) that runs in a container on both Linux CPU and Linux GPU hosts. It is the
+**same model and the same Dockerfile twice**, differing only by `flavor`: `Cpu`
+selects the `basecontainer-cpu-*` base, `Cuda` selects `basecontainer-cuda-*`.
+Because the heavy toolchain is in the pulled base, each build compiles only the
+project's own code.
+
+| Substrate | Model |
+|---|---|
+| `linux-cpu` | `Container` (`flavor = H.Flavor.Cpu`) |
+| `linux-gpu` | `Container` (`flavor = H.Flavor.Cuda`) |
+
+```dhall
+[ H.entry H.Substrate.LinuxCpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cpu })
+, H.entry H.Substrate.LinuxGpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cuda })
+]
+```
+
+### Per-substrate model split — container on Linux, daemon on Apple silicon
+
+An inference / ML project that runs as an in-cluster **Container** on Linux but
+needs **host-native Metal GPU** access on Apple silicon, which cannot run in a
+container. There is **no "multi-substrate" model** — a project that must behave
+differently per substrate simply declares a *different model per substrate*:
+`Container` for the Linux substrates, `HostDaemon` for `AppleSilicon`. The daemon
+gets a system-level LaunchDaemon on `cluster up`; the Linux containers never do.
+
+| Substrate | Model |
+|---|---|
+| `linux-cpu` | `Container` (`flavor = H.Flavor.Cpu`) |
+| `linux-gpu` | `Container` (`flavor = H.Flavor.Cuda`) |
+| `apple-silicon` | `HostDaemon` (Tart + Metal) |
+
+```dhall
+[ H.entry H.Substrate.LinuxCpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cpu })
+, H.entry H.Substrate.LinuxGpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cuda })
+, H.entry H.Substrate.AppleSilicon
+    ( H.Model.HostDaemon
+        H.HostDaemon::{
+        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True, tart = True, metal = True } }
+        , daemon = ".build/infer inference --serve"
+        }
+    )
+]
+```
+
+You can declare the daemon entry to **fix the contract before the binary
+exists** — the Apple-silicon side may still be work-in-progress while the Linux
+container side ships and runs today.
+
+### Host-binary cluster manager
+
+A host-native control plane (e.g. a Haskell-built cluster manager) that creates
+and owns a local cluster and **installs its own service unit** (such as an RKE2
+systemd unit) — so hostbootstrap creates **no** unit for it. On Linux the binary
+is built *inside the base container* and extracted to `.build/`, keeping the
+toolchain off the host. `cluster up`/`down`/`delete` invoke the `handoff`
+commands; the binary reaches in-cluster services over loopback NodePorts only.
+
+| Substrate | Model |
+|---|---|
+| `linux-cpu` | `HostBinary` (`handoff` up/down/delete; owns its own services) |
+
+```dhall
+H.entry H.Substrate.LinuxCpu
+  ( H.Model.HostBinary
+      H.HostBinary::{
+      , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
+      , handoff = H.Handoff::{ up = ".build/mgr cluster up", down = ".build/mgr cluster down", delete = Some ".build/mgr cluster delete" }
+      }
+  )
+```
+
+### Projects with their own runtime virtualenv
+
+Some projects (e.g. Python inference adapters) maintain their **own** host-level
+`.venv`. hostbootstrap must **never** be installed into that venv — it goes into
+**host Python** only (see [Installing the CLI](#installing-the-cli)). By the time
+the project runs, the tool's job is done; it has no place in the project's runtime
+environment. This isolation is the project's responsibility, not something the
+tool enforces.
+
+---
+
+## Migrating an existing project
+
+Adopting hostbootstrap is mostly *deletion*. Across every pattern above the same
+things go away and the same things stay:
+
+**Delete**
+
+* `compose.yaml` — replaced by a `Container` model + `hostbootstrap cluster up`.
+* `bootstrap/*.sh` substrate-detection, prereq, and cluster-setup scripts —
+  absorbed into `hostbootstrap doctor` (and, for host binaries, into `handoff`).
+* The heavy multi-language toolchain layers in your Dockerfile (GHC, Node,
+  Python, Playwright, CUDA, …) — now baked into the pulled base image.
+* Ad-hoc build/lifecycle shell glue for host binaries and daemons.
+
+**Keep**
+
+* Your own source, and a now-thin Dockerfile that only `FROM`s the base tag and
+  runs the project's own build steps.
+* The new `hostbootstrap.dhall` (no import line — the CLI injects the schema).
+* Your `.data` directory (bind-mounted; the tool never deletes it).
+* For host binaries/daemons: the binary's own source, including any service-unit
+  logic it installs itself (e.g. an RKE2 systemd unit).
+* Any project-local runtime `.venv`, kept isolated from the host tool.
+
+Projects standardizing their Haskell builds should target **GHC 9.12** to match
+the single GHC the base image ships.
+
+---
+
 ## Command reference
 
 | Command | What it does |
@@ -259,6 +413,18 @@ poetry.toml                      # in-project .venv (dev only)
   Dockerfile against the prebuilt tools the base ships.
 * Reach in-cluster services from a host binary over loopback (`127.0.0.0/8`)
   NodePorts only — never off-host.
+* **Playwright end-to-end tests run from *outside* the cluster, against its
+  gateway** — never from inside a pod. They exercise the deployed stack the same
+  way a real client would (the gateway is reached over the loopback NodePort
+  above). Playwright and its browsers are **already in the base image**, so no
+  project installs them. How the suite is launched follows the substrate's model:
+  - **Container** substrates run Playwright **inside the project container** —
+    the very image that ships the app already carries the browsers, so the tests
+    run there directly.
+  - **HostBinary / HostDaemon** substrates have no long-running app container, so
+    they launch the suite as a one-shot **`docker run --rm` against the built
+    project image** (again reusing the base's bundled Playwright) — pointed at the
+    cluster gateway.
 
 See [`HOSTBOOTSTRAP_REFACTOR_PLAN.md`](HOSTBOOTSTRAP_REFACTOR_PLAN.md) for the
 full motivation and acceptance criteria, and
