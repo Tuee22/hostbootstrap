@@ -56,11 +56,15 @@ mismatch) — never the real network.
 **Dhall contract tests** (`tests/test_spec_dhall.py`, marked `dhall`) — the
 highest-value, project-specific layer. They drive [`spec.load`](../../hostbootstrap/spec.py)
 through the real `dhall-to-json` against fixtures in `tests/fixtures/dhall/`:
-five `valid/` archetypes load to the expected dataclasses, and four `invalid/`
+six `valid/` archetypes load to the expected dataclasses, and four `invalid/`
 ones (`daemon` on a `Container`, a `HostDaemon` missing its `daemon`, `mounts` on
 a `HostBinary`, a bad `flavor`) must raise `SpecError`. This is the executable
 form of the [schema](schema.md) promise — *illegal states are unrepresentable*.
-It also double-checks the shipped [`dhall/package.dhall`](../../dhall/package.dhall)
+The fixtures carry no import line — the schema is CLI-injected as `H` — so they
+also cover the zero-boilerplate convention (plus one fixture that binds an
+explicit `let H = env:HOSTBOOTSTRAP_PACKAGE`, proving it harmlessly shadows the
+injected binding). It double-checks the shipped
+[`hostbootstrap/dhall/package.dhall`](../../hostbootstrap/dhall/package.dhall)
 against the parser. Parsing logic itself is additionally tested against crafted
 JSON (`tests/test_spec.py`) with no Dhall at all.
 

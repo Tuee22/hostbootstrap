@@ -1,7 +1,5 @@
 -- A HostBinary has no `mounts` field, so this is a Dhall type error.
-let H = ../../../../dhall/package.dhall
-
-in  H.config
+H.config
       { project = "demo"
       , substrates =
         [ H.entry

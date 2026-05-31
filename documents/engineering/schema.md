@@ -6,9 +6,10 @@ type: reference
 
 # hostbootstrap.dhall schema
 
-Every project that adopts hostbootstrap ships a `hostbootstrap.dhall` that
-imports the [Dhall package](../../dhall/package.dhall) this repo publishes and
-builds one typed value. We use **Dhall** rather than YAML for one reason: its
+Every project that adopts hostbootstrap ships a `hostbootstrap.dhall` that builds
+one typed value against the [Dhall schema](../../hostbootstrap/dhall/package.dhall)
+the CLI bundles and injects as `H` (no import line, nothing vendored). We use
+**Dhall** rather than YAML for one reason: its
 union types let us make illegal configurations *unrepresentable at the type
 level*. A `Container` record simply has no `daemon` field, so writing one is a
 type error before the CLI ever runs — not a runtime check we have to remember to
@@ -16,13 +17,16 @@ write. See [`spec.py`](../../hostbootstrap/spec.py) for the consuming side.
 
 ## Top-level shape
 
+The CLI injects the schema as `H` before rendering, so the file carries **no
+import line** and opens directly at `H.config`:
+
 ```dhall
-let H = ./vendor/hostbootstrap/package.dhall   -- or a remote URL pinned by sha256
-in  H.config
-      { project = "<name>"          -- image / container / unit name
-      , substrates =                -- one entry per supported substrate
-        [ H.entry <substrate> <model> ]
-      }
+-- `H` (the schema) is injected by the CLI.
+H.config
+  { project = "<name>"          -- image / container / unit name
+  , substrates =                -- one entry per supported substrate
+    [ H.entry <substrate> <model> ]
+  }
 ```
 
 * `<substrate>` is `H.Substrate.AppleSilicon`, `H.Substrate.LinuxCpu`, or
@@ -83,9 +87,12 @@ model is chosen. `cluster up` creates it; `cluster down` removes it.
 
 ## How it is parsed and validated
 
-1. The CLI provisions a native `dhall-to-json` (see [prerequisites](prerequisites.md))
-   and renders `hostbootstrap.dhall` to JSON. **Dhall type-checks during this
-   step**, so an ill-typed config fails here.
+1. The CLI provisions a native `dhall-to-json` (see [prerequisites](prerequisites.md)),
+   wraps the project file in `let H = env:HOSTBOOTSTRAP_PACKAGE in ( … )` so the
+   bundled schema is in scope as `H`, and renders it to JSON. **Dhall type-checks
+   during this step**, so an ill-typed config fails here. (Because `H` is injected
+   rather than imported, the file only type-checks through the CLI — standalone
+   `dhall-to-json` sees `H` as unbound.)
 2. [`spec.py`](../../hostbootstrap/spec.py) reads the JSON: each entry's `model`
    carries a `tag` (`Container` / `HostBinary` / `HostDaemon`) and exactly one
    populated payload, which it maps into a frozen dataclass.
@@ -145,14 +152,13 @@ a `SpecError` instead.
 A pure-container CLI — no cluster, one-shot (a compose replacement):
 
 ```dhall
-let H = ./vendor/hostbootstrap/package.dhall
-in  H.config
-      { project = "tool"
-      , substrates =
-        [ H.entry H.Substrate.LinuxCpu
-            (H.Model.Container H.Container::{ dockerfile = "docker/tool.Dockerfile" })
-        ]
-      }
+H.config
+  { project = "tool"
+  , substrates =
+    [ H.entry H.Substrate.LinuxCpu
+        (H.Model.Container H.Container::{ dockerfile = "docker/tool.Dockerfile" })
+    ]
+  }
 ```
 
 A long-running, self-restarting service container that bootstraps its own

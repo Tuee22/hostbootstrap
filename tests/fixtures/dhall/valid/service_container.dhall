@@ -1,6 +1,4 @@
-let H = ../../../../dhall/package.dhall
-
-in  H.config
+H.config
       { project = "demo"
       , substrates =
         [ H.entry

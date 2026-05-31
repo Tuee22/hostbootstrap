@@ -21,6 +21,7 @@ checks Dhall cannot express.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import io
 import json
 import os
@@ -28,6 +29,7 @@ import platform
 import shutil
 import subprocess
 import tarfile
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -149,18 +151,47 @@ def ensure() -> Path:
     return target
 
 
+def _package_path(stack: ExitStack) -> Path:
+    """Return an on-disk path to the schema ``package.dhall`` shipped in the wheel.
+
+    ``as_file`` materializes the resource (extracting a zipped wheel to a temp
+    file, or returning the real file for a normal/editable install) for the
+    lifetime of *stack* — required because the ``env:`` import resolves to a
+    filesystem path, not in-memory bytes.
+    """
+    resource = importlib.resources.files("hostbootstrap").joinpath("dhall/package.dhall")
+    return stack.enter_context(importlib.resources.as_file(resource))
+
+
 def to_json(dhall_path: Path) -> object:
-    """Render *dhall_path* to a JSON value (type-checked by ``dhall-to-json``)."""
+    """Render *dhall_path* to a JSON value (type-checked by ``dhall-to-json``).
+
+    The schema is injected as ``H`` so a project's ``hostbootstrap.dhall`` needs
+    no import line — it opens straight at ``H.config { … }``. We wrap the file
+    body in ``let H = env:HOSTBOOTSTRAP_PACKAGE in ( … )`` and feed it on stdin
+    (cwd = the project dir, so any relative imports still resolve). The prelude is
+    kept on one line so body line numbers are preserved in dhall diagnostics, and
+    an explicit ``let H = …`` in the project file harmlessly shadows the binding.
+    """
     binary = ensure()
-    try:
-        result = subprocess.run(
-            [str(binary), "--file", str(dhall_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise DhallToolError(f"could not exec {binary}: {exc}") from exc
+    body = dhall_path.read_text(encoding="utf-8")
+    wrapped = f"let H = env:HOSTBOOTSTRAP_PACKAGE in ( {body} )"
+    with ExitStack() as stack:
+        package_path = _package_path(stack)
+        env = dict(os.environ)
+        env.setdefault("HOSTBOOTSTRAP_PACKAGE", str(package_path))
+        try:
+            result = subprocess.run(
+                [str(binary)],
+                input=wrapped,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+                cwd=str(dhall_path.parent),
+            )
+        except OSError as exc:
+            raise DhallToolError(f"could not exec {binary}: {exc}") from exc
     if result.returncode != 0:
         raise DhallToolError(result.stderr.strip() or "dhall-to-json failed")
     data: object = json.loads(result.stdout)

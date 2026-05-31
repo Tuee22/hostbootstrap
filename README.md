@@ -6,8 +6,9 @@ redundant multi-language Dockerfiles with one shared toolchain pulled from
 Docker Hub and one declarative, **typed** `hostbootstrap.dhall` per project.
 
 > **Adopting hostbootstrap**: install the CLI on the host, write a
-> `hostbootstrap.dhall` that imports the Dhall package this repo ships, inherit
-> your project Dockerfile `FROM` the base tag the CLI selects. Everything else —
+> `hostbootstrap.dhall` (the CLI bundles and injects its typed schema — no import
+> line, nothing to vendor), inherit your project Dockerfile `FROM` the base tag
+> the CLI selects. Everything else —
 > substrate detection, prereqs, build, cluster lifecycle, and (only where a
 > project asks for it) a system service unit — is the CLI's job.
 
@@ -61,21 +62,25 @@ poetry run check-code
 
 ## The config: `hostbootstrap.dhall`
 
-Each project ships a typed `hostbootstrap.dhall` that imports the Dhall package
-this repo publishes at [`dhall/package.dhall`](dhall/package.dhall) and builds
-one typed value. We use **Dhall** rather than YAML for one reason: its union
-types make illegal configurations *unrepresentable at the type level* — a
-`Container` has no `daemon` field, so writing one is a type error before the CLI
-ever runs.
+Each project ships a typed `hostbootstrap.dhall` that builds one typed value
+against the schema the CLI bundles
+([`hostbootstrap/dhall/package.dhall`](hostbootstrap/dhall/package.dhall)). We use
+**Dhall** rather than YAML for one reason: its union types make illegal
+configurations *unrepresentable at the type level* — a `Container` has no
+`daemon` field, so writing one is a type error before the CLI ever runs.
+
+The schema is **injected by the CLI as `H`**: your `hostbootstrap.dhall` needs no
+import line and nothing vendored — it opens directly at `H.config { … }`.
 
 ```dhall
-let H = ./vendor/hostbootstrap/package.dhall
-in  H.config
-      { project = "example"
-      , substrates =
-        [ H.entry H.Substrate.LinuxCpu
-            (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
-        ]
+-- `H` (the typed schema) is injected by the CLI.
+H.config
+  { project = "example"
+  , substrates =
+    [ H.entry H.Substrate.LinuxCpu
+        (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
+    ]
+  }
 ```
 
 One `H.entry` per substrate (`H.Substrate.AppleSilicon`, `.LinuxCpu`, or
@@ -208,9 +213,9 @@ host-native arch.
 ## Repository layout
 
 ```
-dhall/
-  package.dhall                  # the typed project-config schema (imported by projects)
 hostbootstrap/                   # the Python package (flat layout)
+  dhall/
+    package.dhall                # the typed project-config schema (bundled + CLI-injected)
   cli.py                         # Click entrypoint
   substrate.py                   # apple-silicon | linux-cpu | linux-gpu
   prereqs.py                     # host prereq checks/installers

@@ -1,8 +1,11 @@
-"""Contract tests: real dhall-to-json + the shipped dhall/package.dhall.
+"""Contract tests: real dhall-to-json + the shipped hostbootstrap/dhall/package.dhall.
 
 These exercise the headline guarantee — illegal states are unrepresentable — by
-loading fixtures through the actual Dhall type-checker. They are skipped when a
-dhall-to-json binary cannot be provisioned (e.g. offline CI).
+loading fixtures through the actual Dhall type-checker. The fixtures carry no
+import line: the schema is injected as ``H`` by ``dhall_tool.to_json`` (the same
+path the CLI uses), so these also cover the zero-boilerplate config convention.
+They are skipped when a dhall-to-json binary cannot be provisioned (e.g. offline
+CI).
 """
 
 from __future__ import annotations
@@ -54,6 +57,13 @@ def test_valid_mixed(require_dhall: Path) -> None:
     assert isinstance(ps.substrates[SubstrateName.APPLE_SILICON], HostDaemonModel)
     assert isinstance(ps.substrates[SubstrateName.LINUX_GPU], ContainerModel)
     assert ps.substrates[SubstrateName.LINUX_GPU].flavor is spec.Flavor.CUDA  # type: ignore[union-attr]
+
+
+def test_explicit_import_shadows_injected(require_dhall: Path) -> None:
+    # A project file may still bind its own `H` (e.g. `let H = env:HOSTBOOTSTRAP_PACKAGE`);
+    # it harmlessly shadows the CLI-injected binding and renders identically.
+    ps = spec.load(FIXTURES / "valid" / "explicit_import.dhall")
+    assert isinstance(ps.substrates[SubstrateName.LINUX_CPU], ContainerModel)
 
 
 @pytest.mark.parametrize(

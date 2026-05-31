@@ -25,7 +25,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DHALL_PACKAGE = REPO_ROOT / "dhall" / "package.dhall"
+DHALL_PACKAGE = REPO_ROOT / "hostbootstrap" / "dhall" / "package.dhall"
 
 
 @pytest.fixture
