@@ -12,9 +12,8 @@ Docker Hub and one declarative, **typed** `hostbootstrap.dhall` per project.
 > substrate detection, prereqs, build, cluster lifecycle, and (only where a
 > project asks for it) a system service unit — is the CLI's job.
 
-The authoritative design document is
-[`HOSTBOOTSTRAP_REFACTOR_PLAN.md`](HOSTBOOTSTRAP_REFACTOR_PLAN.md). The full
-config schema is [`documents/engineering/schema.md`](documents/engineering/schema.md).
+The full config schema is
+[`documents/engineering/schema.md`](documents/engineering/schema.md).
 Detailed language/engineering notes live under [`documents/`](documents/README.md).
 
 ---
@@ -426,6 +425,4 @@ poetry.toml                      # in-project .venv (dev only)
     project image** (again reusing the base's bundled Playwright) — pointed at the
     cluster gateway.
 
-See [`HOSTBOOTSTRAP_REFACTOR_PLAN.md`](HOSTBOOTSTRAP_REFACTOR_PLAN.md) for the
-full motivation and acceptance criteria, and
-[`documents/README.md`](documents/README.md) for the deep docs.
+See [`documents/README.md`](documents/README.md) for the deep docs.

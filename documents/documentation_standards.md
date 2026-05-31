@@ -72,6 +72,4 @@ forks and rebases.
 ## Brevity
 
 If a document grows past ~300 lines, ask whether it should split. Two
-focused documents are easier to skim than one combined one. The plan
-(`HOSTBOOTSTRAP_REFACTOR_PLAN.md`) is the exception — it is intentionally one
-long source-of-truth file.
+focused documents are easier to skim than one combined one.

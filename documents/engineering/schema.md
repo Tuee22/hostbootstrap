@@ -209,6 +209,3 @@ Linux GPU:
     )
 ]
 ```
-
-See [`HOSTBOOTSTRAP_REFACTOR_PLAN.md`](../../HOSTBOOTSTRAP_REFACTOR_PLAN.md) §8
-for how the schema fits the wider design.
