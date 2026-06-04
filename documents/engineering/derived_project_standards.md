@@ -49,6 +49,8 @@ The MCTS project at `/Users/matthewnowak/MCTS` is the reference derived
 project. Its `docker/Dockerfile` is the canonical shape:
 
 ```dockerfile
+# check=skip=InvalidDefaultArgInFrom
+
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
@@ -72,6 +74,13 @@ RUN mcts build cpp-legacy \
     && mcts build cpp-functional \
     && mcts build rust
 ```
+
+The `# check=skip=InvalidDefaultArgInFrom` parser directive on line 1
+silences a BuildKit lint warning. The linter evaluates `FROM ${BASE_IMAGE}`
+against the static `ARG` default; since the default is empty (the value is
+supplied by `hostbootstrap --build-arg`), the linter reports an "invalid
+base image name." The directive is required boilerplate for every derived
+project that follows the `FROM ${BASE_IMAGE}` pattern.
 
 Its `cabal.project`:
 
