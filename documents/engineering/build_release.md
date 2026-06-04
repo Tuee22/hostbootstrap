@@ -10,33 +10,47 @@ type: reference
 produce the host-native arch. Multi-platform manifest lists are forbidden by
 design (see [base_image.md](base_image.md)).
 
-## Building
+## Building & publishing
+
+One command builds and pushes one arch-explicit tag:
 
 ```sh
-hostbootstrap base build --flavor cpu --arch amd64
-hostbootstrap base build --flavor cuda --arch amd64
+hostbootstrap base build-and-push --flavor cpu --arch amd64
+hostbootstrap base build-and-push --flavor cuda --arch amd64
 ```
 
 The CLI:
 
-1. Detects the host substrate.
+1. Detects the host substrate (or uses the explicit `--arch`).
 2. Resolves every dynamic value (versions, URLs, the CUDA base image).
-3. Invokes `docker build --build-arg …` against
+3. Invokes `docker build --build-arg … --pull --no-cache` against
    `docker/basecontainer.Dockerfile`.
+4. `docker push`es
+   `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`.
 
-Re-invocations are idempotent — Docker's own layer cache makes incremental
-re-builds fast.
+The publish path is **always cold** (`--no-cache --pull`): the registry copy
+matches a clean rebuild from source, with no layer-cache carryover from a
+stale local image.
 
-## Publishing
+WRONG:
 
 ```sh
-hostbootstrap base push --flavor cpu --arch amd64
+hostbootstrap base build --flavor cpu --arch amd64   # ← no such command
+hostbootstrap base push  --flavor cpu --arch amd64   # ← no such command
 ```
 
-Pushes the arch-explicit tag to
-`docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`. The CLI never
-re-pushes the large base image when a downstream project pushes its custom
-image (see [harbor.md](harbor.md)).
+These standalone commands existed previously and let a stale cached layer
+silently end up in the registry; they have been removed in favour of the
+single combined command above.
+
+RIGHT:
+
+```sh
+hostbootstrap base build-and-push --flavor cpu --arch amd64
+```
+
+The CLI never re-pushes the large base image when a downstream project pushes
+its custom image (see [harbor.md](harbor.md)).
 
 ## `--build-base` for downstream projects
 

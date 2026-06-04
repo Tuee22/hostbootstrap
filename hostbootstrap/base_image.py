@@ -412,6 +412,7 @@ def build_spec_for(
     extra_tags: tuple[str, ...] = (),
     args: BaseImageBuildArgs | None = None,
     pull: bool = True,
+    no_cache: bool = False,
 ) -> tuple[docker_ops.BuildSpec, BaseImageBuildArgs]:
     """Build the ``BuildSpec`` for ``(flavor, arch)``.
 
@@ -425,6 +426,7 @@ def build_spec_for(
         tags=(primary_tag, *extra_tags),
         build_args=resolved.as_build_args(),
         pull=pull,
+        no_cache=no_cache,
     )
     return spec, resolved
 

@@ -2,7 +2,7 @@
 
 The single entrypoint installed on every downstream host (via
 ``pip install git+…``). Commands implement §6 of the plan: doctor, build,
-cluster up/down/delete, run, base build/push. Each substrate's execution model
+cluster up/down/delete, run, base build-and-push. Each substrate's execution model
 (``container`` / ``host-binary`` / ``host-daemon``) is declared in the project's
 ``hostbootstrap.dhall`` and dispatched here.
 """
@@ -14,11 +14,12 @@ import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import click
+import httpx
 
-from . import base_image, docker_ops, prereqs, process, spec, substrate, units
+from . import base_image, dhall_tool, docker_ops, prereqs, process, spec, substrate, units
 from .base_image import Flavor
 from .models import container as container_model
 from .models import host_binary, host_daemon
@@ -218,6 +219,120 @@ async def _cluster_delete(project_spec: ProjectSpec, sub: Substrate, project_roo
 
 
 # ---------------------------------------------------------------------------
+# Friendly error handler
+# ---------------------------------------------------------------------------
+
+
+_DOCKER_STDERR_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "tag does not exist",
+        "image not built locally — run `hostbootstrap base build-and-push` "
+        "to build and push it.",
+    ),
+    (
+        "denied: requested access",
+        "not authenticated with the registry — run `docker login` and retry.",
+    ),
+    (
+        "unauthorized",
+        "not authenticated with the registry — run `docker login` and retry.",
+    ),
+    (
+        "cannot connect to the docker daemon",
+        "docker daemon not reachable — start Docker Desktop / colima and retry.",
+    ),
+    (
+        "is the docker daemon running",
+        "docker daemon not reachable — start Docker Desktop / colima and retry.",
+    ),
+)
+
+
+def _format_command_error(exc: process.CommandError) -> str:
+    result = exc.result
+    stderr_lower = result.stderr.lower()
+    argv0 = result.args[0] if result.args else "command"
+    for needle, message in _DOCKER_STDERR_PATTERNS:
+        if needle in stderr_lower:
+            return message
+    summary = " ".join(result.args[:3])
+    if len(result.args) > 3:
+        summary += " …"
+    return (
+        f"`{summary}` failed (exit {result.returncode}); "
+        f"see {argv0} output above for details."
+    )
+
+
+_MISSING_BINARY_HINTS: Final[dict[str, str]] = {
+    "docker": "`docker` not found in PATH — install Docker and retry.",
+    "sudo": "`sudo` not found in PATH — required for host operations.",
+    "systemctl": "`systemctl` not found in PATH — host-daemon support requires systemd.",
+    "launchctl": "`launchctl` not found in PATH — host-daemon support requires macOS launchd.",
+    "nvidia-smi": "`nvidia-smi` not found in PATH — install the NVIDIA driver.",
+}
+
+
+def _format_file_not_found(exc: FileNotFoundError) -> str | None:
+    name = exc.filename
+    if isinstance(name, bytes):
+        name = name.decode("utf-8", errors="replace")
+    if not name:
+        return None
+    base = Path(name).name
+    hint = _MISSING_BINARY_HINTS.get(base)
+    if hint is not None:
+        return hint
+    return None
+
+
+def _format_http_error(exc: httpx.HTTPError) -> str:
+    request = getattr(exc, "request", None)
+    url = str(request.url) if request is not None else None
+    where = f" reaching {url}" if url else ""
+    return f"network error{where}: {exc}"
+
+
+def _format_runtime_error(exc: BaseException) -> str:
+    if isinstance(exc, KeyError):
+        return f"unsupported value: {exc.args[0]!r}"
+    return str(exc) or exc.__class__.__name__
+
+
+class _FriendlyGroup(click.Group):
+    """Click group that converts known exception types to ``ClickException``.
+
+    Why: a bare ``CommandError`` / ``httpx.HTTPError`` / ``UnitError`` /
+    ``DhallToolError`` / ``RuntimeError`` from deep in the stack would otherwise
+    surface to the user as a Python traceback. Click prints ``ClickException``
+    as ``Error: <msg>`` with no traceback and a non-zero exit.
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except click.ClickException:
+            raise
+        except click.exceptions.Exit:
+            raise
+        except process.CommandError as exc:
+            raise click.ClickException(_format_command_error(exc)) from exc
+        except FileNotFoundError as exc:
+            message = _format_file_not_found(exc)
+            if message is None:
+                raise
+            raise click.ClickException(message) from exc
+        except httpx.HTTPError as exc:
+            raise click.ClickException(_format_http_error(exc)) from exc
+        except units.UnitError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except dhall_tool.DhallToolError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except (RuntimeError, KeyError) as exc:
+            raise click.ClickException(_format_runtime_error(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Click app
 # ---------------------------------------------------------------------------
 
@@ -244,7 +359,7 @@ _BASE_CONTEXT_OPTION = click.option(
 )
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(cls=_FriendlyGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
 def main() -> None:
     """Host-installed CLI for the hostbootstrap base images."""
@@ -288,7 +403,7 @@ def build(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
     )
 
 
-@main.group()
+@main.group(cls=_FriendlyGroup)
 def cluster() -> None:
     """Cluster lifecycle: up, down, delete."""
 
@@ -363,11 +478,11 @@ def run(
 
 
 # ---------------------------------------------------------------------------
-# base build / push
+# base build-and-push
 # ---------------------------------------------------------------------------
 
 
-@main.group()
+@main.group(cls=_FriendlyGroup)
 def base() -> None:
     """Produce/publish the four ``basecontainer-<flavor>-<arch>`` tags."""
 
@@ -376,7 +491,12 @@ def _arch_default() -> str:
     return substrate.detect().arch
 
 
-@base.command("build")
+async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str) -> None:
+    await docker_ops.build(build_spec)
+    await docker_ops.push(tag)
+
+
+@base.command("build-and-push")
 @click.option(
     "--flavor",
     type=click.Choice([f.value for f in Flavor]),
@@ -396,34 +516,24 @@ def _arch_default() -> str:
     show_default=True,
     help="Build context root (the hostbootstrap repo).",
 )
-def base_build(flavor: str, arch: str | None, context: Path) -> None:
-    """Build a base image locally with ``docker build``."""
+def base_build_and_push(flavor: str, arch: str | None, context: Path) -> None:
+    """Cold-rebuild the base image (``--no-cache --pull``) and push it.
+
+    The publish path is always cold so the registry copy matches a clean
+    rebuild from source — no silent layer-cache carryover.
+    """
     flavor_enum = Flavor(flavor)
     target_arch = arch or _arch_default()
-    build_spec, _ = base_image.build_spec_for(flavor_enum, target_arch, context=context)
-    asyncio.run(docker_ops.build(build_spec))
-    click.echo(f"built {base_image.base_image_ref(flavor_enum, target_arch)}")
-
-
-@base.command("push")
-@click.option(
-    "--flavor",
-    type=click.Choice([f.value for f in Flavor]),
-    default=Flavor.CPU.value,
-    show_default=True,
-)
-@click.option(
-    "--arch",
-    type=click.Choice(["amd64", "arm64"]),
-    default=None,
-)
-def base_push(flavor: str, arch: str | None) -> None:
-    """Push the previously-built base tag to Docker Hub."""
-    flavor_enum = Flavor(flavor)
-    target_arch = arch or _arch_default()
+    build_spec, _ = base_image.build_spec_for(
+        flavor_enum,
+        target_arch,
+        context=context,
+        pull=True,
+        no_cache=True,
+    )
     tag = base_image.base_image_ref(flavor_enum, target_arch)
-    asyncio.run(docker_ops.push(tag))
-    click.echo(f"pushed {tag}")
+    asyncio.run(_build_then_push(build_spec, tag))
+    click.echo(f"built and pushed {tag}")
 
 
 _ = SubstrateName  # re-exported for downstream importers

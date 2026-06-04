@@ -29,7 +29,7 @@ filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 
 Dynamic resolution always pulls the latest `cudnn-devel-ubuntu24.04` tag. A
 project pinned to an older CUDA must override the resolved base explicitly
-when invoking `hostbootstrap base build` — see §14.5 of the plan.
+when invoking `hostbootstrap base build-and-push` — see §14.5 of the plan.
 
 ## arm64
 

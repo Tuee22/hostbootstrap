@@ -30,6 +30,7 @@ class BuildSpec:
     build_args: Mapping[str, str]
     target: str | None = None
     pull: bool = True
+    no_cache: bool = False
 
 
 def build_command(spec: BuildSpec) -> tuple[str, ...]:
@@ -42,6 +43,8 @@ def build_command(spec: BuildSpec) -> tuple[str, ...]:
         cmd.extend(["--target", spec.target])
     if spec.pull:
         cmd.append("--pull")
+    if spec.no_cache:
+        cmd.append("--no-cache")
     cmd.extend(["--file", str(spec.dockerfile)])
     cmd.append(str(spec.context))
     return tuple(cmd)

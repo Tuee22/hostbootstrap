@@ -46,8 +46,24 @@ def test_build_command_minimal_no_pull_no_target() -> None:
     )
     cmd = docker_ops.build_command(spec)
     assert "--pull" not in cmd
+    assert "--no-cache" not in cmd
     assert "--target" not in cmd
     assert cmd[-2:] == ("D", ".") or cmd[-1] == "."
+
+
+def test_build_command_no_cache() -> None:
+    spec = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+        pull=True,
+        no_cache=True,
+    )
+    cmd = docker_ops.build_command(spec)
+    assert "--no-cache" in cmd
+    assert "--pull" in cmd
+    assert cmd.index("--no-cache") > cmd.index("--pull")
 
 
 def test_run_command_one_shot_rm_with_mounts() -> None:

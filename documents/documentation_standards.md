@@ -54,7 +54,7 @@ When a rule is non-obvious, illustrate it with a tight pair of examples:
 > **RIGHT**
 >
 > ```sh
-> hostbootstrap base build --flavor cpu --arch amd64
+> hostbootstrap base build-and-push --flavor cpu --arch amd64
 > ```
 >
 > Single-arch, host-native, with versions/URLs computed on the host.

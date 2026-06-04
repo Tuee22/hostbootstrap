@@ -62,6 +62,7 @@ end-to-end.
 
 The four `basecontainer-<flavor>-<arch>` base tags are **not** project images and
 are **not** covered here. hostbootstrap publishes those itself via
-`hostbootstrap base push`; see [build_release.md](build_release.md) and
-[base_image.md](base_image.md). A project never re-pushes the large base image —
-it pulls the base from Docker Hub and pushes only its own thin layer(s).
+`hostbootstrap base build-and-push`; see [build_release.md](build_release.md)
+and [base_image.md](base_image.md). A project never re-pushes the large base
+image — it pulls the base from Docker Hub and pushes only its own thin
+layer(s).

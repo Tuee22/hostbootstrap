@@ -387,8 +387,7 @@ the single GHC the base image ships.
 | `hostbootstrap cluster down` | Tear the cluster down — **never deletes host `.data`** |
 | `hostbootstrap cluster delete` | Thorough teardown (cluster + derived state) — still preserves `.data` |
 | `hostbootstrap run <cmd…>` | Build if needed, then dispatch to the binary or container per the substrate's model |
-| `hostbootstrap base build` | Build a base tag locally (used inside this repo and by downstream `--build-base`) |
-| `hostbootstrap base push` | Push a base tag to Docker Hub |
+| `hostbootstrap base build-and-push` | Cold-rebuild the base tag (`--no-cache --pull`) and push it to Docker Hub in one step |
 
 All commands are **idempotent**: re-running on a healthy host is a no-op.
 
@@ -406,10 +405,17 @@ ARGs only — no `if`/`case`/version probing.
 Plain `docker build`. No buildx, no emulation; a build can only ever produce the
 host-native arch.
 
+Publishing is a single command:
+`hostbootstrap base build-and-push --flavor cpu|cuda [--arch amd64|arm64]`. It
+always builds with `--no-cache --pull` so the registry copy matches a clean
+rebuild from source — no silent layer-cache carryover from a stale local image.
+
 * **Default** for downstream projects: pull the base from Docker Hub.
 * **`--build-base --base-context /path/to/hostbootstrap`**: build the base
   locally from that checkout's Dockerfile, tagging it with the identical name,
-  then build the downstream project image without pulling the base tag.
+  then build the downstream project image without pulling the base tag. (This
+  local build path uses the Docker layer cache for fast iteration; only the
+  publish path enforces the cold-build invariant.)
 
 ---
 
