@@ -163,6 +163,21 @@ detached with `--restart unless-stopped`. `mounts` are bind mounts; `flavor` is
 `cpu` or `cuda`. The container itself does any cluster bootstrap / image upload.
 **No system unit is ever created** for this model.
 
+Container images used with `hostbootstrap run` must declare an `ENTRYPOINT`.
+The tokens after `hostbootstrap run` are arguments to that entrypoint, matching
+the `HostBinary` and `HostDaemon` models where the built host executable is
+prepended automatically. Prefer a tini-wrapped exec-form entrypoint:
+
+```dockerfile
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/<project>"]
+```
+
+With that shape, run project commands without repeating the executable:
+
+```sh
+hostbootstrap run test all
+```
+
 This is the compose-replacement case — pure container apps with no cluster are
 first-class. The win over compose is faster builds (the prebuilt base tag) plus
 a default-pull / `--build-base` "pull-or-build-local" switch compose lacks.
@@ -399,7 +414,7 @@ the single GHC the base image ships.
 | `hostbootstrap cluster up` | Bring the whole stack to running (build, then run the container / invoke the binary's `handoff up` / install the daemon unit) |
 | `hostbootstrap cluster down` | Tear the cluster down — **never deletes host `.data`** |
 | `hostbootstrap cluster delete` | Thorough teardown (cluster + derived state) — still preserves `.data` |
-| `hostbootstrap run <cmd…>` | Build if needed, then dispatch to the binary or container per the substrate's model |
+| `hostbootstrap run [args…]` | Build if needed, then pass args to the project's runtime entrypoint |
 | `hostbootstrap base build-and-push` | Cold-rebuild the CPU and CUDA base tags (`--no-cache --pull`) and push them to Docker Hub |
 
 All commands are **idempotent**: re-running on a healthy host is a no-op.

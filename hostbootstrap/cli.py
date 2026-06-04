@@ -125,7 +125,7 @@ async def _run(
     project_spec: ProjectSpec,
     sub: Substrate,
     project_root: Path,
-    command: Sequence[str],
+    args: Sequence[str],
     *,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -137,7 +137,7 @@ async def _run(
             project_spec,
             model,
             sub,
-            command,
+            args,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -148,7 +148,7 @@ async def _run(
             project_spec,
             model,
             sub,
-            command,
+            args,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -158,7 +158,7 @@ async def _run(
         project_spec,
         model,
         sub,
-        command,
+        args,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
@@ -519,15 +519,15 @@ def cluster_delete(spec_path: Path) -> None:
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
 @_NO_PULL_OPTION
-@click.argument("command", nargs=-1)
+@click.argument("args", nargs=-1)
 def run(
     spec_path: Path,
     build_base: bool,
     base_context: Path | None,
     no_pull: bool,
-    command: tuple[str, ...],
+    args: tuple[str, ...],
 ) -> None:
-    """Build if needed, then dispatch ``command`` to the binary or container."""
+    """Build if needed, then pass ``args`` to the project entrypoint."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
@@ -536,7 +536,7 @@ def run(
             project_spec,
             sub,
             project_root,
-            command,
+            args,
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
             pull=_resolve_pull(build_base, no_pull),

@@ -111,7 +111,8 @@ Why this works:
   the moment the base was built.
 * Per [`base_image.md`](base_image.md) and project `CLAUDE.md`
   conventions, derived projects build only inside the container via
-  `hostbootstrap run <project>`. The container's
+  `hostbootstrap run [args...]`. The container's tini-wrapped project
+  entrypoint receives those args, and its
   `/opt/basecontainer/haskell-deps/cabal.project.freeze` is always present
   at the point Cabal reads `cabal.project`, so the absolute path always
   resolves.

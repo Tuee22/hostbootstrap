@@ -15,7 +15,9 @@ compile only project code.
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -40,6 +42,59 @@ def _mounts(model: ContainerModel, project_root: Path) -> tuple[tuple[str, str, 
     return tuple(
         (resolve_host_path(m.host, project_root), m.container, m.read_only) for m in model.mounts
     )
+
+
+def _command_name(token: str) -> str:
+    return Path(token).name
+
+
+def _entrypoint_program(entrypoint: Sequence[str]) -> str:
+    first = _command_name(entrypoint[0])
+    if first != "tini":
+        return first
+
+    if "--" not in entrypoint:
+        return first
+
+    marker = entrypoint.index("--")
+    if marker + 1 >= len(entrypoint):
+        return first
+    return _command_name(entrypoint[marker + 1])
+
+
+def _render_hostbootstrap_run(args: Sequence[str]) -> str:
+    return shlex.join(("hostbootstrap", "run", *args))
+
+
+def _render_entrypoint(entrypoint: Sequence[str]) -> str:
+    return json.dumps(list(entrypoint))
+
+
+def validate_entrypoint_for_args(
+    *,
+    project: str,
+    tag: str,
+    entrypoint: Sequence[str],
+    args: Sequence[str],
+) -> None:
+    """Enforce the unified ``hostbootstrap run [args...]`` topology for containers."""
+    if not entrypoint:
+        raise RuntimeError(
+            f"container image {tag!r} has no ENTRYPOINT; `hostbootstrap run` treats "
+            "trailing tokens as arguments to the project entrypoint, matching "
+            "host-binary and host-daemon modes. Add "
+            f'`ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/{project}"]` '
+            "to the Dockerfile, or another tini-wrapped project executable."
+        )
+
+    program = _entrypoint_program(entrypoint)
+    if args and program == _command_name(args[0]):
+        raise RuntimeError(
+            f"container image {tag!r} already declares ENTRYPOINT "
+            f"{_render_entrypoint(entrypoint)}; pass only project arguments after "
+            f"`hostbootstrap run`, for example `{_render_hostbootstrap_run(args[1:])}` "
+            f"instead of `{_render_hostbootstrap_run(args)}`."
+        )
 
 
 async def build(
@@ -133,6 +188,13 @@ async def run_one_shot(
         build_base=build_base,
         base_context=base_context,
         pull=pull,
+    )
+    entrypoint = await docker_ops.image_entrypoint(tag)
+    validate_entrypoint_for_args(
+        project=spec.project,
+        tag=tag,
+        entrypoint=entrypoint,
+        args=command,
     )
     run_spec = docker_ops.RunSpec(
         image=tag,

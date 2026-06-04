@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hostbootstrap import docker_ops
+import pytest
+
+from hostbootstrap import docker_ops, process
 
 
 def test_build_command_full() -> None:
@@ -107,10 +109,35 @@ def test_push_tag_inspect_commands() -> None:
     assert docker_ops.push_command("r:t") == ("docker", "push", "r:t")
     assert docker_ops.tag_command("a", "b") == ("docker", "tag", "a", "b")
     assert docker_ops.image_exists_command("x") == ("docker", "image", "inspect", "x")
+    assert docker_ops.image_entrypoint_command("x") == (
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .Config.Entrypoint}}",
+        "x",
+    )
+
+
+def test_parse_image_entrypoint() -> None:
+    assert docker_ops.parse_image_entrypoint("", tag="img") == ()
+    assert docker_ops.parse_image_entrypoint("null\n", tag="img") == ()
+    assert docker_ops.parse_image_entrypoint('["/usr/bin/tini","--","proj"]', tag="img") == (
+        "/usr/bin/tini",
+        "--",
+        "proj",
+    )
+    with pytest.raises(RuntimeError, match="could not parse"):
+        docker_ops.parse_image_entrypoint("not-json", tag="img")
+    with pytest.raises(RuntimeError, match="unexpected"):
+        docker_ops.parse_image_entrypoint('"not-a-list"', tag="img")
+    with pytest.raises(RuntimeError, match="unexpected"):
+        docker_ops.parse_image_entrypoint("[1]", tag="img")
 
 
 async def test_async_wrappers_delegate_to_process(
     recorded_commands: list[tuple[str, ...]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = docker_ops.BuildSpec(
         dockerfile=Path("D"),
@@ -126,6 +153,19 @@ async def test_async_wrappers_delegate_to_process(
     assert recorded_commands[0][:2] == ("docker", "build")
     assert recorded_commands[1] == ("docker", "push", "t")
     assert recorded_commands[2] == ("docker", "image", "inspect", "t")
+
+    async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        assert kwargs == {"quiet": True}
+        return process.CommandResult(
+            args=argv,
+            returncode=0,
+            stdout='["/usr/bin/tini","--","proj"]\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
+    assert await docker_ops.image_entrypoint("t") == ("/usr/bin/tini", "--", "proj")
 
 
 async def test_image_exists_false(monkeypatch) -> None:

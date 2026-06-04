@@ -60,16 +60,24 @@ command instead of creating a LaunchDaemon/systemd unit; `cluster down` and
 ### `H.Model.Container` — build an image and run it
 hostbootstrap builds a thin image `FROM` the base tag and runs it. The container
 owns any cluster/upload work; **no system unit is ever created** for this model.
+For one-shot `hostbootstrap run`, the image must declare an `ENTRYPOINT`; trailing
+tokens are passed as arguments to that entrypoint, not interpreted as a raw
+container command.
 
 | field | type | required | default | meaning |
 |---|---|---|---|---|
-| `dockerfile` | `Text` | yes | — | project Dockerfile; must declare `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` |
+| `dockerfile` | `Text` | yes | — | project Dockerfile; must declare `ARG BASE_IMAGE`, `FROM ${BASE_IMAGE}`, and a runtime `ENTRYPOINT` |
 | `flavor` | `<Cpu \| Cuda>` | no | `Cpu` | base family inherited (use `Cuda` on `linux-gpu`) |
 | `service` | `Bool` | no | `False` | `True` ⇒ `cluster up` runs it detached, `--restart unless-stopped`; `False` ⇒ one-shot `--rm` |
 | `mounts` | `List Mount` | no | `[]` | bind mounts applied to runs |
 
 `Mount = { host : Text, container : Text, ro : Bool }` (`ro` default `False`;
 `host` may use `${VARS}` and relative paths, resolved against the project root).
+Prefer a tini-wrapped exec-form entrypoint:
+
+```dockerfile
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/<project>"]
+```
 
 ### `H.Model.HostBinary` — build a host binary, hand off its lifecycle
 hostbootstrap builds the binary (Apple: native via brew→ghcup; Linux: inside the
@@ -179,6 +187,17 @@ H.config
     ]
   }
 ```
+
+Its Dockerfile should install the project command and make it the tini-wrapped
+entrypoint:
+
+```dockerfile
+RUN install -m 0755 "$(cabal list-bin exe:tool)" /usr/local/bin/tool
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/tool"]
+```
+
+Then `hostbootstrap run test all` passes `test all` to `tool`; it does not run a
+raw `/usr/bin/test` inside the container.
 
 A long-running, self-restarting service container that bootstraps its own
 cluster and uploads its own image:

@@ -6,6 +6,7 @@ re-orderable); the runners just hand the result to :mod:`hostbootstrap.process`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,6 +102,31 @@ def image_exists_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "image", "inspect", tag)
 
 
+def image_entrypoint_command(tag: str) -> tuple[str, ...]:
+    return (_DOCKER, "image", "inspect", "--format", "{{json .Config.Entrypoint}}", tag)
+
+
+def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
+    text = rendered.strip()
+    if text in {"", "null"}:
+        return ()
+
+    try:
+        raw: object = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"could not parse Docker Entrypoint for {tag!r}: {text}") from exc
+
+    if not isinstance(raw, list):
+        raise RuntimeError(f"unexpected Docker Entrypoint for {tag!r}: {text}")
+
+    entrypoint: list[str] = []
+    for part in raw:
+        if not isinstance(part, str):
+            raise RuntimeError(f"unexpected Docker Entrypoint for {tag!r}: {text}")
+        entrypoint.append(part)
+    return tuple(entrypoint)
+
+
 async def build(spec: BuildSpec) -> process.CommandResult:
     return await process.run_checked(build_command(spec))
 
@@ -112,3 +138,8 @@ async def push(tag: str) -> process.CommandResult:
 async def image_exists(tag: str) -> bool:
     result = await process.run(image_exists_command(tag), quiet=True)
     return result.ok
+
+
+async def image_entrypoint(tag: str) -> tuple[str, ...]:
+    result = await process.run_checked(image_entrypoint_command(tag), quiet=True)
+    return parse_image_entrypoint(result.stdout, tag=tag)

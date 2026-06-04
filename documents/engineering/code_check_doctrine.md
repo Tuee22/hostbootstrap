@@ -70,8 +70,11 @@ patterns, type-correctness. Tests enforce **behavior**.
 Both must pass, but they live at different layers and have different cost
 profiles. Code-check is fast and deterministic; running it during image build
 shifts enforcement earlier and removes a class of "the container built but is
-broken" outcomes. Tests run inside the built image (`hostbootstrap run mcts
-test all` and equivalents) — they verify the runtime, not the source.
+broken" outcomes. Tests run inside the built image (`hostbootstrap run test all`
+and equivalents) — they verify the runtime, not the source. Container images
+should expose the project command through a tini-wrapped `ENTRYPOINT`, so
+`hostbootstrap run` receives project arguments rather than a raw container
+command.
 
 A derived project's container image is the canonical artifact. If that
 artifact exists, the source it was built from passes code-check by
@@ -92,7 +95,7 @@ construction. There is no separate "did the lint pass?" question to ask later.
 >
 > No code-check anywhere. A container can be produced from source that fails
 > `proj check-code`. Style violations only surface when someone manually runs
-> `hostbootstrap run proj test all` — possibly never, in CI shortcuts.
+> `hostbootstrap run test all` — possibly never, in CI shortcuts.
 >
 > **RIGHT**
 >
@@ -102,6 +105,7 @@ construction. There is no separate "did the lint pass?" question to ask later.
 > RUN cabal build --enable-tests all && install ... /usr/local/bin/proj
 > RUN proj check-code
 > RUN proj build native-backend
+> ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/proj"]
 > ```
 >
 > Code-check sits between the build install and the expensive backend

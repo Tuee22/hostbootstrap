@@ -26,8 +26,10 @@ and a link to the authoritative source.
    import, the resolver picks different transitive versions than the warm
    store and rebuilds. See
    [warm_store.md](warm_store.md#required-import-the-freeze-file).
-3. **Add `RUN <project> check-code` to the Dockerfile.** It runs after the
-   project's CLI is installed and before any expensive backend work. See
+3. **Add `RUN <project> check-code` and a tini-wrapped `ENTRYPOINT` to the
+   Dockerfile.** The check runs after the project's CLI is installed and before
+   any expensive backend work; the entrypoint makes `hostbootstrap run [args...]`
+   pass args to the project command consistently across execution models. See
    [code_check_doctrine.md](code_check_doctrine.md#derived-images).
 4. **Link executables statically; build libraries with `shared: True`.** Do
    not pass `--enable-executable-dynamic` or `--enable-executable-static`. See
@@ -73,6 +75,8 @@ RUN mcts build cpp-legacy \
     && mcts build cpp-imperative \
     && mcts build cpp-functional \
     && mcts build rust
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/mcts"]
 ```
 
 The `# check=skip=InvalidDefaultArgInFrom` parser directive on line 1
@@ -107,7 +111,9 @@ intentionally returns "No such file or directory."
 
 Three signals that this project complies:
 
-1. `mcts check-code` between install and backend builds (rule 3, code-check).
+1. `mcts check-code` between install and backend builds, with the final image
+   using a tini-wrapped `ENTRYPOINT` for `hostbootstrap run` (rule 3,
+   code-check; runtime-entrypoint rule).
 2. `cabal.project` matches the template, including the freeze `import:` line
    (rule 2, warm store).
 3. `mcts.cabal`'s library and exe stanzas carry `-O2` in `ghc-options` (rule 4,

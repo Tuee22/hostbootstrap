@@ -52,6 +52,48 @@ def test_image_tag() -> None:
     assert container.image_tag(_spec(None), LINUX) == "proj:linux-cpu-amd64"
 
 
+def test_container_entrypoint_validation() -> None:
+    container.validate_entrypoint_for_args(
+        project="proj",
+        tag="proj:linux-cpu-amd64",
+        entrypoint=("/usr/bin/tini", "--", "/usr/local/bin/proj"),
+        args=("status",),
+    )
+    container.validate_entrypoint_for_args(
+        project="proj",
+        tag="proj:linux-cpu-amd64",
+        entrypoint=("/usr/local/bin/proj",),
+        args=(),
+    )
+    container.validate_entrypoint_for_args(
+        project="proj",
+        tag="proj:linux-cpu-amd64",
+        entrypoint=("tini", "-g"),
+        args=("status",),
+    )
+    container.validate_entrypoint_for_args(
+        project="proj",
+        tag="proj:linux-cpu-amd64",
+        entrypoint=("tini", "--"),
+        args=("status",),
+    )
+
+    with pytest.raises(RuntimeError, match="has no ENTRYPOINT"):
+        container.validate_entrypoint_for_args(
+            project="proj",
+            tag="proj:linux-cpu-amd64",
+            entrypoint=(),
+            args=("status",),
+        )
+    with pytest.raises(RuntimeError, match="instead of `hostbootstrap run proj status`"):
+        container.validate_entrypoint_for_args(
+            project="proj",
+            tag="proj:linux-cpu-amd64",
+            entrypoint=("/usr/bin/tini", "--", "/usr/local/bin/proj"),
+            args=("proj", "status"),
+        )
+
+
 def test_resolve_command_absolutizes_build_token() -> None:
     assert host_binary.resolve_command(".build/x serve --port 8080", Path("/proj")) == (
         "/proj/.build/x",
@@ -226,14 +268,39 @@ async def test_container_stop_service(
 
 
 async def test_container_run_one_shot(
-    recorded_commands: list[tuple[str, ...]], project_root: Path
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    project_root: Path,
 ) -> None:
+    async def _entrypoint(_tag: str) -> tuple[str, ...]:
+        return ("/usr/bin/tini", "--", "/usr/local/bin/proj")
+
+    monkeypatch.setattr(container.docker_ops, "image_entrypoint", _entrypoint)
     model = ContainerModel(dockerfile=Path("d"), flavor=Flavor.CPU, service=False, mounts=())
     await container.run_one_shot(
         _spec(model), model, LINUX, ("echo", "hi"), project_root=project_root
     )
     run = next(" ".join(c) for c in recorded_commands if "docker run" in " ".join(c))
     assert "--rm" in run and run.endswith("echo hi")
+
+
+async def test_container_run_one_shot_rejects_missing_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    project_root: Path,
+) -> None:
+    async def _entrypoint(_tag: str) -> tuple[str, ...]:
+        return ()
+
+    monkeypatch.setattr(container.docker_ops, "image_entrypoint", _entrypoint)
+    model = ContainerModel(dockerfile=Path("d"), flavor=Flavor.CPU, service=False, mounts=())
+    with pytest.raises(RuntimeError, match="has no ENTRYPOINT"):
+        await container.run_one_shot(
+            _spec(model), model, LINUX, ("status",), project_root=project_root
+        )
+
+    assert any(command[:2] == ("docker", "build") for command in recorded_commands)
+    assert not any(command[:2] == ("docker", "run") for command in recorded_commands)
 
 
 async def test_host_binary_apple_builds_on_host(
