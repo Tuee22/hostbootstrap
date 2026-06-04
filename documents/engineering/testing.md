@@ -26,8 +26,9 @@ There is exactly one supported runner module,
 > ```
 >
 > Refused by `tests/conftest.py` — it aborts unless the `HOSTBOOTSTRAP_TEST_ALL`
-> sentinel is set. This keeps one supported command with one configuration, so
-> the marker/skip behaviour below can't be bypassed by accident.
+> sentinel is set. The sentinel is a guardrail for one supported command and one
+> suite setup path; it is not a security boundary and it does not imply filters
+> like `-k` are disabled.
 >
 > **RIGHT**
 >
@@ -37,8 +38,23 @@ There is exactly one supported runner module,
 > ```
 
 `hostbootstrap.test_all` sets the sentinel and invokes pytest over `tests/`.
+It calls `pytest.main` in-process instead of spawning a second Python process so
+coverage can trace the package while still using the supported runner.
 [`hostbootstrap.check_code`](../../hostbootstrap/check_code.py) (ruff → black →
 mypy) stays a separate development runner; run both in CI.
+
+Coverage is part of the development contract:
+
+```sh
+poetry run python -m coverage run -m hostbootstrap.test_all
+poetry run python -m coverage report -m
+```
+
+`pyproject.toml` configures coverage to measure `hostbootstrap` and fail below
+100% line coverage. The 100% gate is intentionally narrow: it applies to the
+Python package, while Dhall contract tests and Docker/systemd/launchd behaviours
+remain covered through fixtures, command builders, and recorded dispatch rather
+than real host mutation.
 
 ## The layers
 
@@ -85,8 +101,9 @@ Configured in `pyproject.toml` under `[tool.pytest.ini_options]`:
 * `docker` — needs a running Docker daemon; **skips** when absent.
 * `slow` — long-running.
 
-`hostbootstrap.test_all` runs the whole tree; anything whose requirement is
-missing skips cleanly, so a default developer run is hermetic and green.
+`hostbootstrap.test_all` runs the whole tree unless pytest args such as `-k` are
+forwarded for local iteration; anything whose requirement is missing skips
+cleanly, so a default developer run is hermetic and green.
 
 ## What is deliberately not auto-tested
 

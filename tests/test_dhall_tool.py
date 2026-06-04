@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import platform
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -25,6 +26,15 @@ def test_platform_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cache_dir_respects_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert dhall_tool._cache_dir() == tmp_path / "hostbootstrap" / "dhall-json" / "1.7.12"
+
+
+def test_cache_dir_defaults_to_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr(dhall_tool.Path, "home", lambda: tmp_path)
+
+    assert (
+        dhall_tool._cache_dir() == tmp_path / ".cache" / "hostbootstrap" / "dhall-json" / "1.7.12"
+    )
 
 
 def test_ensure_uses_cached_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -92,6 +102,117 @@ def test_download_checksum_mismatch(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     asset = dhall_tool._Asset("x.tar.bz2", "0" * 64)
     with pytest.raises(dhall_tool.DhallToolError, match="checksum mismatch"):
         dhall_tool._download_and_extract(asset, tmp_path / "out")
+
+
+def test_download_http_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def _raise(*_a: object, **_k: object) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=httpx.Request("GET", "https://example.invalid"))
+
+    monkeypatch.setattr(httpx, "get", _raise)
+
+    with pytest.raises(dhall_tool.DhallToolError, match="could not download"):
+        dhall_tool._download_and_extract(dhall_tool._Asset("x.tar.bz2", "0" * 64), tmp_path / "out")
+
+
+def test_download_requires_binary_member(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:bz2") as tar:
+        info = tarfile.TarInfo("README")
+        payload = b"no binary"
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    archive = buf.getvalue()
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _ok_response(archive))
+    asset = dhall_tool._Asset("x.tar.bz2", hashlib.sha256(archive).hexdigest())
+
+    with pytest.raises(dhall_tool.DhallToolError, match="does not contain"):
+        dhall_tool._download_and_extract(asset, tmp_path / "out")
+
+
+def test_download_rejects_unreadable_binary_member(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive = b"synthetic"
+
+    class _Member:
+        name = "pkg/bin/dhall-to-json"
+
+        def isfile(self) -> bool:
+            return True
+
+    class _Tar:
+        def __enter__(self) -> "_Tar":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def getmembers(self) -> list[_Member]:
+            return [_Member()]
+
+        def extractfile(self, _member: _Member) -> None:
+            return None
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _ok_response(archive))
+    monkeypatch.setattr(dhall_tool.tarfile, "open", lambda **_kwargs: _Tar())
+    asset = dhall_tool._Asset("x.tar.bz2", hashlib.sha256(archive).hexdigest())
+
+    with pytest.raises(dhall_tool.DhallToolError, match="could not read"):
+        dhall_tool._download_and_extract(asset, tmp_path / "out")
+
+
+def test_to_json_invokes_pinned_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    dhall = tmp_path / "hostbootstrap.dhall"
+    dhall.write_text('H.config { project = "demo" }\n', encoding="utf-8")
+    monkeypatch.setattr(dhall_tool, "ensure", lambda: Path("/cache/dhall-to-json"))
+    monkeypatch.setattr(dhall_tool, "_package_path", lambda _stack: Path("/pkg/package.dhall"))
+
+    def _fake_run(
+        cmd: list[str],
+        *,
+        input: str,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+        env: dict[str, str],
+        cwd: str,
+    ) -> subprocess.CompletedProcess[str]:
+        assert cmd == ["/cache/dhall-to-json"]
+        assert "HOSTBOOTSTRAP_PACKAGE" in env
+        assert "H.config" in input
+        assert capture_output is True and text is True and check is False
+        assert cwd == str(tmp_path)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(dhall_tool.subprocess, "run", _fake_run)
+
+    assert dhall_tool.to_json(dhall) == {"ok": True}
+
+
+def test_to_json_reports_exec_and_dhall_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dhall = tmp_path / "hostbootstrap.dhall"
+    dhall.write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(dhall_tool, "ensure", lambda: Path("/cache/dhall-to-json"))
+    monkeypatch.setattr(dhall_tool, "_package_path", lambda _stack: Path("/pkg/package.dhall"))
+
+    def _raise_os(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("noexec")
+
+    monkeypatch.setattr(dhall_tool.subprocess, "run", _raise_os)
+    with pytest.raises(dhall_tool.DhallToolError, match="could not exec"):
+        dhall_tool.to_json(dhall)
+
+    def _bad_dhall(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="type error\n")
+
+    monkeypatch.setattr(dhall_tool.subprocess, "run", _bad_dhall)
+    with pytest.raises(dhall_tool.DhallToolError, match="type error"):
+        dhall_tool.to_json(dhall)
 
 
 def test_pinned_assets_are_bz2_names() -> None:

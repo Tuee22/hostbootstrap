@@ -26,7 +26,7 @@ material lives here.
 * [engineering/prerequisites.md](engineering/prerequisites.md) — substrate
   prereqs absorbed by `hostbootstrap doctor`.
 * [engineering/testing.md](engineering/testing.md) — the layered test suite, the
-  development test runner, and how to run it.
+  development test runner, coverage gate, and why direct pytest is refused.
 * [engineering/harbor.md](engineering/harbor.md) — downstream guidance for a
   project pushing its own arch-explicit image (hostbootstrap does not push
   project images).

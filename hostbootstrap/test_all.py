@@ -9,22 +9,26 @@ with one configuration. Extra arguments are forwarded to pytest, e.g.
 
 from __future__ import annotations
 
+import importlib
 import os
-import subprocess
 import sys
+from typing import Protocol, cast
 
 _SENTINEL: str = "HOSTBOOTSTRAP_TEST_ALL"
 
 
+class _PytestModule(Protocol):
+    def main(self, args: list[str]) -> int: ...
+
+
+def _pytest_main(args: list[str]) -> int:
+    pytest = cast(_PytestModule, importlib.import_module("pytest"))
+    return int(pytest.main(args))
+
+
 def main() -> int:
-    env = dict(os.environ)
-    env[_SENTINEL] = "1"
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests", *sys.argv[1:]],
-        env=env,
-        check=False,
-    )
-    return completed.returncode
+    os.environ[_SENTINEL] = "1"
+    return _pytest_main(["tests", *sys.argv[1:]])
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import click
 import httpx
@@ -286,7 +286,10 @@ def _format_file_not_found(exc: FileNotFoundError) -> str | None:
 
 
 def _format_http_error(exc: httpx.HTTPError) -> str:
-    request = getattr(exc, "request", None)
+    try:
+        request = exc.request
+    except RuntimeError:
+        request = None
     url = str(request.url) if request is not None else None
     where = f" reaching {url}" if url else ""
     return f"network error{where}: {exc}"
@@ -307,7 +310,7 @@ class _FriendlyGroup(click.Group):
     as ``Error: <msg>`` with no traceback and a non-zero exit.
     """
 
-    def invoke(self, ctx: click.Context) -> Any:
+    def invoke(self, ctx: click.Context) -> object:
         try:
             return super().invoke(ctx)
         except click.ClickException:

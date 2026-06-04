@@ -37,14 +37,26 @@ def test_parse_all_three_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     data = {
         "project": "demo",
         "substrates": [
-            _entry("linux-cpu", _container(service=True, mounts=[{"host": "./.data", "container": "/d", "ro": False}])),
+            _entry(
+                "linux-cpu",
+                _container(
+                    service=True, mounts=[{"host": "./.data", "container": "/d", "ro": False}]
+                ),
+            ),
             _entry(
                 "linux-gpu",
                 {
                     "tag": "HostBinary",
                     "hostBinary": {
-                        "build": {"cabal": "cabal install exe:demo", "host": {"ghc": True, "tart": False, "metal": False}},
-                        "handoff": {"up": ".build/demo up", "down": ".build/demo down", "delete": None},
+                        "build": {
+                            "cabal": "cabal install exe:demo",
+                            "host": {"ghc": True, "tart": False, "metal": False},
+                        },
+                        "handoff": {
+                            "up": ".build/demo up",
+                            "down": ".build/demo down",
+                            "delete": None,
+                        },
                     },
                 },
             ),
@@ -75,7 +87,12 @@ def test_container_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     ps = _load(
         monkeypatch,
         tmp_path,
-        {"project": "p", "substrates": [_entry("linux-cpu", {"tag": "Container", "container": {"dockerfile": "d"}})]},
+        {
+            "project": "p",
+            "substrates": [
+                _entry("linux-cpu", {"tag": "Container", "container": {"dockerfile": "d"}})
+            ],
+        },
     )
     model = ps.substrates[SubstrateName.LINUX_CPU]
     assert isinstance(model, ContainerModel)
@@ -95,15 +112,49 @@ def test_development_mode_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert ps.development is True
 
 
+def test_container_artifact_parsed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ps = _load(
+        monkeypatch,
+        tmp_path,
+        {
+            "project": "p",
+            "substrates": [
+                _entry(
+                    "linux-cpu",
+                    {
+                        "tag": "HostBinary",
+                        "hostBinary": {
+                            "build": {"cabal": "cabal build"},
+                            "handoff": {"up": ".build/p up", "down": ".build/p down"},
+                            "container": {"dockerfile": "docker/app.Dockerfile", "flavor": "Cuda"},
+                        },
+                    },
+                )
+            ],
+        },
+    )
+
+    model = ps.substrates[SubstrateName.LINUX_CPU]
+    assert isinstance(model, HostBinaryModel)
+    assert model.container is not None
+    assert model.container.dockerfile == Path("docker/app.Dockerfile")
+    assert model.container.flavor is spec.Flavor.CUDA
+
+
 def test_duplicate_substrate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {"project": "p", "substrates": [_entry("linux-cpu", _container()), _entry("linux-cpu", _container())]}
+    data = {
+        "project": "p",
+        "substrates": [_entry("linux-cpu", _container()), _entry("linux-cpu", _container())],
+    }
     with pytest.raises(SpecError, match="more than once"):
         _load(monkeypatch, tmp_path, data)
 
 
 def test_unknown_substrate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="unknown substrate"):
-        _load(monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("freebsd", _container())]})
+        _load(
+            monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("freebsd", _container())]}
+        )
 
 
 def test_empty_substrates_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -113,12 +164,20 @@ def test_empty_substrates_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 def test_unknown_tag_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="unknown model"):
-        _load(monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("linux-cpu", {"tag": "Nope"})]})
+        _load(
+            monkeypatch,
+            tmp_path,
+            {"project": "p", "substrates": [_entry("linux-cpu", {"tag": "Nope"})]},
+        )
 
 
 def test_bad_flavor_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="unknown flavor"):
-        _load(monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("linux-cpu", _container(flavor="Gpu"))]})
+        _load(
+            monkeypatch,
+            tmp_path,
+            {"project": "p", "substrates": [_entry("linux-cpu", _container(flavor="Gpu"))]},
+        )
 
 
 def test_missing_file_rejected(tmp_path: Path) -> None:
@@ -126,8 +185,23 @@ def test_missing_file_rejected(tmp_path: Path) -> None:
         spec.load(tmp_path / "nope.dhall")
 
 
+def test_dhall_error_wrapped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = tmp_path / "hostbootstrap.dhall"
+    path.write_text("bad\n", encoding="utf-8")
+
+    def _raise(_path: Path) -> object:
+        raise spec.dhall_tool.DhallToolError("bad import")
+
+    monkeypatch.setattr(spec.dhall_tool, "to_json", _raise)
+
+    with pytest.raises(SpecError, match="could not evaluate"):
+        spec.load(path)
+
+
 def test_model_for_undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    ps = _load(monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("linux-cpu", _container())]})
+    ps = _load(
+        monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("linux-cpu", _container())]}
+    )
     with pytest.raises(SpecError, match="does not declare substrate"):
         ps.model_for(Substrate(SubstrateName.APPLE_SILICON, "arm64"))
 
@@ -135,6 +209,8 @@ def test_model_for_undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 def test_narrowers() -> None:
     with pytest.raises(SpecError):
         spec._as_map([1], where="x")
+    with pytest.raises(SpecError):
+        spec._as_list({"not": "a list"}, where="x")
     with pytest.raises(SpecError):
         spec._as_str(5, where="x")
     with pytest.raises(SpecError):

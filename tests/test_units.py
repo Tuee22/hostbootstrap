@@ -64,7 +64,23 @@ async def test_remove_linux(
     assert any("systemctl disable --now hostbootstrap-demo.service" in c for c in flat)
 
 
+async def test_remove_darwin(
+    monkeypatch: pytest.MonkeyPatch, recorded_commands: list[tuple[str, ...]]
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    await units.remove("demo")
+    flat = [" ".join(c) for c in recorded_commands]
+    assert any(
+        "launchctl bootout system /Library/LaunchDaemons/com.hostbootstrap.demo.plist" in c
+        for c in flat
+    )
+    assert any("rm -f /Library/LaunchDaemons/com.hostbootstrap.demo.plist" in c for c in flat)
+
+
 async def test_unsupported_platform_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     with pytest.raises(units.UnitError):
         await units.ensure("demo", ("x",), Path("/p"))
+
+    with pytest.raises(units.UnitError):
+        await units.remove("demo")

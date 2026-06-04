@@ -93,7 +93,9 @@ def test_run_command_detached_service() -> None:
     )
     cmd = docker_ops.run_command(spec)
     assert "-d" in cmd
-    assert ("--restart", "unless-stopped") == cmd[cmd.index("--restart") : cmd.index("--restart") + 2]
+    assert ("--restart", "unless-stopped") == cmd[
+        cmd.index("--restart") : cmd.index("--restart") + 2
+    ]
     assert ("--name", "proj") == cmd[cmd.index("--name") : cmd.index("--name") + 2]
     assert ("--network", "host") == cmd[cmd.index("--network") : cmd.index("--network") + 2]
     assert "K=V" in cmd
@@ -105,3 +107,32 @@ def test_push_tag_inspect_commands() -> None:
     assert docker_ops.push_command("r:t") == ("docker", "push", "r:t")
     assert docker_ops.tag_command("a", "b") == ("docker", "tag", "a", "b")
     assert docker_ops.image_exists_command("x") == ("docker", "image", "inspect", "x")
+
+
+async def test_async_wrappers_delegate_to_process(
+    recorded_commands: list[tuple[str, ...]],
+) -> None:
+    spec = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+    )
+
+    assert (await docker_ops.build(spec)).ok
+    assert (await docker_ops.push("t")).ok
+    assert await docker_ops.image_exists("t")
+
+    assert recorded_commands[0][:2] == ("docker", "build")
+    assert recorded_commands[1] == ("docker", "push", "t")
+    assert recorded_commands[2] == ("docker", "image", "inspect", "t")
+
+
+async def test_image_exists_false(monkeypatch) -> None:
+    async def _missing(cmd: object, **_: object) -> docker_ops.process.CommandResult:
+        argv = tuple(str(part) for part in cmd)
+        return docker_ops.process.CommandResult(args=argv, returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_ops.process, "run", _missing)
+
+    assert not await docker_ops.image_exists("missing")

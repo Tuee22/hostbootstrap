@@ -10,6 +10,8 @@ Every project that adopts hostbootstrap must keep these out of git:
 
 * `.venv/`, `__pycache__/`, `*.pyc` — Python build state.
 * `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/` — Python tool caches.
+* `.coverage`, `htmlcov/`, `coverage/` — generated coverage data and reports;
+  the 100% gate belongs in `pyproject.toml`, not in checked-in report output.
 * `dist-newstyle/`, `.cabal-sandbox/`, `cabal.project.freeze` — Haskell build
   state. (`cabal.project.freeze` is intentionally excluded; the warm store
   pins compatible versions.)

@@ -81,7 +81,14 @@ To develop hostbootstrap itself, the repo uses Poetry with an in-project
 poetry install
 poetry run python -m hostbootstrap.check_code
 poetry run python -m hostbootstrap.test_all
+poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m
 ```
+
+`check_code` and `test_all` are module entry points under `hostbootstrap/`, not
+shell commands on `PATH`. `test_all` is the supported pytest entry point: it sets
+the suite sentinel that `tests/conftest.py` requires, then runs pytest
+in-process so coverage can measure the package through the same runner. Coverage
+is configured with a 100% line-coverage gate.
 
 ---
 
@@ -437,6 +444,7 @@ hostbootstrap/                   # the Python package (flat layout)
   units.py                       # system unit (LaunchDaemon / systemd) management
   check_code.py                  # dev-only ruff → black → mypy strict runner
   test_all.py                    # dev-only pytest runner with suite sentinel
+                                 # and in-process coverage support
   models/
     container.py
     host_binary.py
