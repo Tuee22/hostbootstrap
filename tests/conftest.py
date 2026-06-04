@@ -1,8 +1,9 @@
 """Shared fixtures and the direct-pytest blocker.
 
-The suite must be run via ``poetry run test-all`` (see ``hostbootstrap/test_all.py``),
-which sets the ``HOSTBOOTSTRAP_TEST_ALL`` sentinel. Running ``pytest`` directly is
-refused here so there is exactly one supported entry point and configuration.
+The suite must be run via ``poetry run python -m hostbootstrap.test_all`` (see
+``hostbootstrap/test_all.py``), which sets the ``HOSTBOOTSTRAP_TEST_ALL``
+sentinel. Running ``pytest`` directly is refused here so there is exactly one
+supported entry point and configuration.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from hostbootstrap import dhall_tool, process
 def pytest_configure(config: pytest.Config) -> None:
     if os.environ.get("HOSTBOOTSTRAP_TEST_ALL") != "1":
         raise pytest.UsageError(
-            "Run the test suite with `poetry run test-all` "
-            "(not pytest directly). test-all forwards extra args to pytest."
+            "Run the test suite with `poetry run python -m hostbootstrap.test_all` "
+            "(not pytest directly). hostbootstrap.test_all forwards extra args to pytest."
         )
 
 

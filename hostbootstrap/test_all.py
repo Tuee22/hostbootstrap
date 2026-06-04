@@ -1,10 +1,10 @@
-"""``test-all`` entrypoint: run the full hostbootstrap test suite.
+"""Development test runner for the full hostbootstrap test suite.
 
 This is the supported way to run the tests. Invoking ``pytest`` directly is
 refused by ``tests/conftest.py`` (it checks the ``HOSTBOOTSTRAP_TEST_ALL``
-sentinel this entrypoint sets), so the suite always runs through one command
+sentinel this runner sets), so the suite always runs through one command
 with one configuration. Extra arguments are forwarded to pytest, e.g.
-``poetry run test-all -k docker_ops -q``.
+``poetry run python -m hostbootstrap.test_all -k docker_ops -q``.
 """
 
 from __future__ import annotations

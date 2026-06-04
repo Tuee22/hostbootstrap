@@ -28,8 +28,8 @@ container: that is the host-side concern.
 Downstream projects that maintain their own host-level `.venv` (e.g. ML
 inference Python adapters) must **never** add `hostbootstrap` to that venv.
 Install hostbootstrap with `pipx` so it lives in its own host-side app
-environment and exposes only its console scripts on `PATH`. By bootstrap time,
-hostbootstrap's job is done; it has no place inside a project's runtime
+environment and exposes only the `hostbootstrap` command on `PATH`. By bootstrap
+time, hostbootstrap's job is done; it has no place inside a project's runtime
 environment. See §10 of the plan.
 
 ## hostbootstrap itself

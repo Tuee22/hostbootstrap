@@ -64,9 +64,9 @@ pipx install --force /path/to/hostbootstrap
 
 Use `pipx` because hostbootstrap is a command-line application, not a library
 dependency of downstream projects. `pipx` gives the app its own virtual
-environment, exposes only the `hostbootstrap`, `check-code`, and `test-all`
-commands on `PATH`, avoids polluting project virtualenvs, and avoids
-externally-managed Python conflicts on Homebrew and modern Linux distributions.
+environment, exposes only the `hostbootstrap` command on `PATH`, avoids
+polluting project virtualenvs, and avoids externally-managed Python conflicts on
+Homebrew and modern Linux distributions.
 
 hostbootstrap provisions its own native `dhall-to-json` binary on first use. It
 **always** downloads a pinned, SHA256-verified static release into
@@ -79,7 +79,8 @@ To develop hostbootstrap itself, the repo uses Poetry with an in-project
 
 ```bash
 poetry install
-poetry run check-code
+poetry run python -m hostbootstrap.check_code
+poetry run python -m hostbootstrap.test_all
 ```
 
 ---
@@ -426,7 +427,8 @@ hostbootstrap/                   # the Python package (flat layout)
   docker_ops.py                  # build/run arg-builders + runners
   base_image.py                  # version/URL/CUDA resolvers + build helpers
   units.py                       # system unit (LaunchDaemon / systemd) management
-  check_code.py                  # ruff → black → mypy strict
+  check_code.py                  # dev-only ruff → black → mypy strict runner
+  test_all.py                    # dev-only pytest runner with suite sentinel
   models/
     container.py
     host_binary.py
@@ -437,7 +439,7 @@ support/
   haskell-deps/                  # warm Cabal store
 documents/                       # SSoT documentation tree
 stubs/                           # mypy .pyi shims
-pyproject.toml                   # Poetry; hostbootstrap + check-code scripts
+pyproject.toml                   # Poetry metadata; public hostbootstrap script
 poetry.toml                      # in-project .venv (dev only)
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: testing
-description: How hostbootstrap is tested — the layered suite, the test-all entrypoint, and how to run it.
+description: How hostbootstrap is tested — the layered suite, the development test runner, and how to run it.
 type: guide
 ---
 
@@ -16,7 +16,8 @@ no `sudo`. The full suite runs in well under a second.
 
 ## Running the suite
 
-There is exactly one entry point, [`test-all`](../../hostbootstrap/test_all.py):
+There is exactly one supported runner module,
+[`hostbootstrap.test_all`](../../hostbootstrap/test_all.py):
 
 > **WRONG**
 >
@@ -31,13 +32,13 @@ There is exactly one entry point, [`test-all`](../../hostbootstrap/test_all.py):
 > **RIGHT**
 >
 > ```sh
-> poetry run test-all            # full suite
-> poetry run test-all -k spec    # extra args forward to pytest
+> poetry run python -m hostbootstrap.test_all            # full suite
+> poetry run python -m hostbootstrap.test_all -k spec    # extra args forward to pytest
 > ```
 
-`test-all` sets the sentinel and invokes pytest over `tests/`.
-[`check-code`](../../hostbootstrap/check_code.py) (ruff → black → mypy) stays a
-separate command; run both in CI.
+`hostbootstrap.test_all` sets the sentinel and invokes pytest over `tests/`.
+[`hostbootstrap.check_code`](../../hostbootstrap/check_code.py) (ruff → black →
+mypy) stays a separate development runner; run both in CI.
 
 ## The layers
 
@@ -84,8 +85,8 @@ Configured in `pyproject.toml` under `[tool.pytest.ini_options]`:
 * `docker` — needs a running Docker daemon; **skips** when absent.
 * `slow` — long-running.
 
-`test-all` runs the whole tree; anything whose requirement is missing skips
-cleanly, so a default developer run is hermetic and green.
+`hostbootstrap.test_all` runs the whole tree; anything whose requirement is
+missing skips cleanly, so a default developer run is hermetic and green.
 
 ## What is deliberately not auto-tested
 

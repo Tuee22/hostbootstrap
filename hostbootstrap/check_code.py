@@ -1,4 +1,4 @@
-"""``check-code`` entrypoint: ruff → black → mypy(strict), fail-fast."""
+"""Development check runner: ruff → black → mypy(strict), fail-fast."""
 
 from __future__ import annotations
 
