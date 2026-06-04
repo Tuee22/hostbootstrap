@@ -259,8 +259,7 @@ def _format_command_error(exc: process.CommandError) -> str:
     if len(result.args) > 3:
         summary += " …"
     return (
-        f"`{summary}` failed (exit {result.returncode}); "
-        f"see {argv0} output above for details."
+        f"`{summary}` failed (exit {result.returncode}); " f"see {argv0} output above for details."
     )
 
 
@@ -500,8 +499,8 @@ async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str) -> None:
 @click.option(
     "--flavor",
     type=click.Choice([f.value for f in Flavor]),
-    default=Flavor.CPU.value,
-    show_default=True,
+    default=None,
+    help="Base image flavor to publish; omit to publish both cpu and cuda.",
 )
 @click.option(
     "--arch",
@@ -516,24 +515,25 @@ async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str) -> None:
     show_default=True,
     help="Build context root (the hostbootstrap repo).",
 )
-def base_build_and_push(flavor: str, arch: str | None, context: Path) -> None:
-    """Cold-rebuild the base image (``--no-cache --pull``) and push it.
+def base_build_and_push(flavor: str | None, arch: str | None, context: Path) -> None:
+    """Cold-rebuild base image(s) (``--no-cache --pull``) and push them.
 
     The publish path is always cold so the registry copy matches a clean
     rebuild from source — no silent layer-cache carryover.
     """
-    flavor_enum = Flavor(flavor)
     target_arch = arch or _arch_default()
-    build_spec, _ = base_image.build_spec_for(
-        flavor_enum,
-        target_arch,
-        context=context,
-        pull=True,
-        no_cache=True,
-    )
-    tag = base_image.base_image_ref(flavor_enum, target_arch)
-    asyncio.run(_build_then_push(build_spec, tag))
-    click.echo(f"built and pushed {tag}")
+    flavors = (Flavor.CPU, Flavor.CUDA) if flavor is None else (Flavor(flavor),)
+    for flavor_enum in flavors:
+        build_spec, _ = base_image.build_spec_for(
+            flavor_enum,
+            target_arch,
+            context=context,
+            pull=True,
+            no_cache=True,
+        )
+        tag = base_image.base_image_ref(flavor_enum, target_arch)
+        asyncio.run(_build_then_push(build_spec, tag))
+        click.echo(f"built and pushed {tag}")
 
 
 _ = SubstrateName  # re-exported for downstream importers

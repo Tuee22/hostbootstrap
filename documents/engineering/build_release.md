@@ -12,11 +12,10 @@ design (see [base_image.md](base_image.md)).
 
 ## Building & publishing
 
-One command builds and pushes one arch-explicit tag:
+By default, one command builds and pushes both CPU and CUDA tags for one arch:
 
 ```sh
-hostbootstrap base build-and-push --flavor cpu --arch amd64
-hostbootstrap base build-and-push --flavor cuda --arch amd64
+hostbootstrap base build-and-push --arch amd64
 ```
 
 The CLI:
@@ -27,6 +26,12 @@ The CLI:
    `docker/basecontainer.Dockerfile`.
 4. `docker push`es
    `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`.
+
+Pass `--flavor cpu` or `--flavor cuda` to publish only one flavor:
+
+```sh
+hostbootstrap base build-and-push --flavor cpu --arch amd64
+```
 
 The publish path is **always cold** (`--no-cache --pull`): the registry copy
 matches a clean rebuild from source, with no layer-cache carryover from a
@@ -46,7 +51,7 @@ single combined command above.
 RIGHT:
 
 ```sh
-hostbootstrap base build-and-push --flavor cpu --arch amd64
+hostbootstrap base build-and-push --arch amd64
 ```
 
 The CLI never re-pushes the large base image when a downstream project pushes

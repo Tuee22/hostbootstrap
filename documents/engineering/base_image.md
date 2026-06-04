@@ -87,12 +87,12 @@ project Dockerfiles:
 > **RIGHT**
 >
 > ```sh
-> hostbootstrap base build-and-push --flavor cpu --arch amd64
+> hostbootstrap base build-and-push --arch amd64
 > ```
 >
 > Plain `docker build` under the hood, single-arch, host-native, with every
-> version/URL computed on the host, and an immediate `docker push` so the
-> registry copy matches the just-built local layers (see
+> version/URL computed on the host, and immediate `docker push`es for the CPU
+> and CUDA tags so the registry copies match the just-built local layers (see
 > [build_release.md](build_release.md)).
 
 ### The one CUDA exception

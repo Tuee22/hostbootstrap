@@ -7,7 +7,6 @@ from pathlib import Path
 import httpx
 import pytest
 from click.testing import CliRunner
-
 from hostbootstrap import cli, docker_ops, process
 from hostbootstrap.spec import BuildSpec, HostDaemonModel, HostReqs, ProjectSpec
 from hostbootstrap.substrate import Substrate, SubstrateName
@@ -60,7 +59,7 @@ def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
 
 
 def test_default_spec_path_is_dhall() -> None:
-    assert cli._DEFAULT_SPEC_PATH == Path("hostbootstrap.dhall")
+    assert Path("hostbootstrap.dhall") == cli._DEFAULT_SPEC_PATH
 
 
 def _make_command_error(stderr: str, *, returncode: int = 1) -> process.CommandError:
@@ -115,7 +114,10 @@ def test_friendly_docker_errors_have_no_traceback(
 
 def test_friendly_http_error_has_no_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
     def _raises(*_a: object, **_kw: object) -> object:
-        raise httpx.ConnectError("nodename nor servname provided", request=httpx.Request("GET", "https://example.invalid/v1"))
+        raise httpx.ConnectError(
+            "nodename nor servname provided",
+            request=httpx.Request("GET", "https://example.invalid/v1"),
+        )
 
     monkeypatch.setattr(cli.base_image, "build_spec_for", _raises)
     result = CliRunner().invoke(cli.main, ["base", "build-and-push"])
@@ -138,17 +140,18 @@ def test_friendly_missing_binary_has_no_traceback(monkeypatch: pytest.MonkeyPatc
 
 
 def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    pushed: list[str] = []
 
     def _capture(*args: object, **kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
+        captured.append((args, kwargs))
         return _stub_build_spec()
 
     async def _noop_build(*_a: object, **_kw: object) -> object:
         return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
 
-    async def _noop_push(*_a: object, **_kw: object) -> object:
+    async def _noop_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
         return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
@@ -157,9 +160,48 @@ def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) ->
 
     result = CliRunner().invoke(cli.main, ["base", "build-and-push", "--arch", "arm64"])
     assert result.exit_code == 0, result.output
-    assert captured["kwargs"].get("no_cache") is True  # type: ignore[union-attr]
-    assert captured["kwargs"].get("pull") is True  # type: ignore[union-attr]
-    assert "built and pushed" in result.output
+    assert [(args[0], args[1]) for args, _kwargs in captured] == [
+        (cli.Flavor.CPU, "arm64"),
+        (cli.Flavor.CUDA, "arm64"),
+    ]
+    assert all(kwargs.get("no_cache") is True for _args, kwargs in captured)
+    assert all(kwargs.get("pull") is True for _args, kwargs in captured)
+    assert pushed == [
+        "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64",
+        "docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64",
+    ]
+    assert "basecontainer-cpu-arm64" in result.output
+    assert "basecontainer-cuda-arm64" in result.output
+
+
+def test_base_build_and_push_explicit_flavor_builds_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[object, object]] = []
+    pushed: list[str] = []
+
+    def _capture(*args: object, **_kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append((args[0], args[1]))
+        return _stub_build_spec()
+
+    async def _noop_build(*_a: object, **_kw: object) -> object:
+        return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+    async def _noop_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
+    monkeypatch.setattr(cli.docker_ops, "build", _noop_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _noop_push)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["base", "build-and-push", "--flavor", "cuda", "--arch", "amd64"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == [(cli.Flavor.CUDA, "amd64")]
+    assert pushed == ["docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"]
 
 
 async def test_development_hostdaemon_cluster_lifecycle_skips_units(
