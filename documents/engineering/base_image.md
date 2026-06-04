@@ -63,7 +63,8 @@ value (versions, URLs, arch strings, the CUDA base image) arrives as a
 
 The Dockerfile is deliberately constrained so a build is reproducible,
 host-native, and free of shell indirection. These rules also apply to downstream
-project Dockerfiles:
+project Dockerfiles; see [derived_project_standards.md](derived_project_standards.md)
+for the full set of conventions a derived project follows.
 
 * **No `/bin/bash`.** The default POSIX `/bin/sh` is used; there is **no `SHELL`
   directive**. Anything needing bash-only syntax does not belong in a layer.

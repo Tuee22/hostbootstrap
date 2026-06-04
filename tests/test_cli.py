@@ -35,13 +35,12 @@ def test_push_command_removed() -> None:
     assert "No such command" in result.output
 
 
-def test_base_exposes_only_build_and_push() -> None:
+def test_base_exposes_build_and_build_and_push_but_not_push() -> None:
     result = CliRunner().invoke(cli.main, ["base", "--help"])
     assert result.exit_code == 0
     assert "build-and-push" in result.output
-    # The separate "build" / "push" leaf commands no longer exist on `base`.
-    standalone_build = CliRunner().invoke(cli.main, ["base", "build"])
-    assert standalone_build.exit_code != 0
+    assert "build " in result.output or "  build\n" in result.output
+    # The separate "push" leaf command does not exist on `base`.
     standalone_push = CliRunner().invoke(cli.main, ["base", "push"])
     assert standalone_push.exit_code != 0
 
@@ -178,6 +177,11 @@ def _patch_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.base_image, "build_spec_for", _stub_build_spec)
 
 
+def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the ruff/black/mypy pre-flight in tests that don't exercise it."""
+    monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
+
+
 @pytest.mark.parametrize(
     ("stderr", "needle"),
     [
@@ -191,6 +195,7 @@ def test_friendly_docker_errors_have_no_traceback(
     monkeypatch: pytest.MonkeyPatch, stderr: str, needle: str
 ) -> None:
     _patch_build_spec(monkeypatch)
+    _stub_self_check_passing(monkeypatch)
 
     async def _raises(*_a: object, **_kw: object) -> object:
         raise _make_command_error(stderr)
@@ -204,6 +209,8 @@ def test_friendly_docker_errors_have_no_traceback(
 
 
 def test_friendly_http_error_has_no_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+
     def _raises(*_a: object, **_kw: object) -> object:
         raise httpx.ConnectError(
             "nodename nor servname provided",
@@ -219,6 +226,7 @@ def test_friendly_http_error_has_no_traceback(monkeypatch: pytest.MonkeyPatch) -
 
 def test_friendly_missing_binary_has_no_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_build_spec(monkeypatch)
+    _stub_self_check_passing(monkeypatch)
 
     async def _raises(*_a: object, **_kw: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", "docker")
@@ -232,6 +240,7 @@ def test_friendly_missing_binary_has_no_traceback(monkeypatch: pytest.MonkeyPatc
 
 def test_friendly_unknown_missing_binary_reraises(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_build_spec(monkeypatch)
+    _stub_self_check_passing(monkeypatch)
 
     async def _raises(*_a: object, **_kw: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", "unknown-tool")
@@ -255,6 +264,8 @@ def test_friendly_group_converts_known_errors(
     exc: BaseException,
     needle: str,
 ) -> None:
+    _stub_self_check_passing(monkeypatch)
+
     def _raises(*_a: object, **_kw: object) -> object:
         raise exc
 
@@ -414,6 +425,7 @@ def test_build_run_and_cluster_commands_call_async_helpers(
 
 
 def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
     captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
     pushed: list[str] = []
 
@@ -451,6 +463,7 @@ def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) ->
 def test_base_build_and_push_explicit_flavor_builds_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _stub_self_check_passing(monkeypatch)
     captured: list[tuple[object, object]] = []
     pushed: list[str] = []
 
@@ -476,6 +489,138 @@ def test_base_build_and_push_explicit_flavor_builds_one(
     assert result.exit_code == 0, result.output
     assert captured == [(cli.Flavor.CUDA, "amd64")]
     assert pushed == ["docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"]
+
+
+def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`hostbootstrap base build` builds locally and never invokes docker push."""
+    _stub_self_check_passing(monkeypatch)
+    captured: list[tuple[object, object]] = []
+    pushed: list[str] = []
+
+    def _capture(*args: object, **_kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append((args[0], args[1]))
+        return _stub_build_spec()
+
+    async def _noop_build(*_a: object, **_kw: object) -> object:
+        return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+    async def _record_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
+    monkeypatch.setattr(cli.docker_ops, "build", _noop_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _record_push)
+
+    result = CliRunner().invoke(
+        cli.main, ["base", "build", "--flavor", "cpu", "--arch", "arm64"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == [(cli.Flavor.CPU, "arm64")]
+    assert pushed == []
+    assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
+
+
+def _make_self_check_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the pre-flight self-check to fail as if ruff/black/mypy reported errors."""
+
+    def _fail(_context: Path) -> None:
+        raise cli.click.ClickException(
+            "self-check failed; fix with "
+            "`poetry run python -m hostbootstrap.check_code` and retry."
+        )
+
+    monkeypatch.setattr(cli, "_run_self_check_or_abort", _fail)
+
+
+def test_base_build_self_check_failure_aborts_before_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing self-check aborts `base build` before docker is touched."""
+    _make_self_check_fail(monkeypatch)
+
+    def _should_not_run(*_a: object, **_kw: object) -> tuple[docker_ops.BuildSpec, object]:
+        raise AssertionError("build_spec_for must not run when self-check fails")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _should_not_run)
+
+    result = CliRunner().invoke(cli.main, ["base", "build", "--arch", "arm64"])
+    assert result.exit_code != 0
+    assert "self-check failed" in result.output
+    assert "hostbootstrap.check_code" in result.output
+
+
+def test_base_build_and_push_self_check_failure_aborts_before_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing self-check aborts `base build-and-push` before docker is touched."""
+    _make_self_check_fail(monkeypatch)
+
+    def _should_not_run(*_a: object, **_kw: object) -> tuple[docker_ops.BuildSpec, object]:
+        raise AssertionError("build_spec_for must not run when self-check fails")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _should_not_run)
+
+    result = CliRunner().invoke(
+        cli.main, ["base", "build-and-push", "--arch", "arm64"]
+    )
+    assert result.exit_code != 0
+    assert "self-check failed" in result.output
+
+
+def test_self_check_runs_poetry_in_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-flight invokes `poetry run python -m hostbootstrap.check_code` in the context dir."""
+    captured: list[tuple[list[str], Path]] = []
+
+    class _CompletedOK:
+        returncode = 0
+
+    def _fake_run(
+        cmd: list[str], *, cwd: Path, check: bool = False
+    ) -> object:
+        _ = check
+        captured.append((cmd, cwd))
+        return _CompletedOK()
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    cli._run_self_check_or_abort(Path("/tmp/repo"))
+    assert captured == [
+        (
+            ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
+            Path("/tmp/repo"),
+        )
+    ]
+
+
+def test_self_check_nonzero_raises_click_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Completed:
+        returncode = 7
+
+    def _fake_run(*_a: object, **_kw: object) -> object:
+        return _Completed()
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    with pytest.raises(cli.click.ClickException, match="self-check failed"):
+        cli._run_self_check_or_abort(Path("/tmp/repo"))
+
+
+def test_self_check_missing_poetry_raises_click_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "poetry")
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    with pytest.raises(cli.click.ClickException, match="poetry"):
+        cli._run_self_check_or_abort(Path("/tmp/repo"))
+
+
+def test_resolve_pull_combinations() -> None:
+    assert cli._resolve_pull(build_base=False, no_pull=False) is True
+    assert cli._resolve_pull(build_base=True, no_pull=False) is False
+    assert cli._resolve_pull(build_base=False, no_pull=True) is False
+    with pytest.raises(cli.click.ClickException, match="mutually exclusive"):
+        cli._resolve_pull(build_base=True, no_pull=True)
 
 
 async def test_development_hostdaemon_cluster_lifecycle_skips_units(

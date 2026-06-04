@@ -2,3 +2,16 @@ packages: ./basecontainer-haskell-deps.cabal
 
 with-compiler: ghc-9.12.4
 builddir: /opt/build/haskell/basecontainer-deps/dist-newstyle
+
+-- The warm-store contract requires the store keys here to match downstream
+-- project builds. tests/benchmarks/shared expand the set of pre-built
+-- configurations so derived projects that use --enable-tests
+-- --enable-benchmarks --enable-shared get cache hits. -O2 standardises the
+-- optimisation level; downstream projects that compile at -O2 reuse the
+-- pre-built unfoldings exposed at this opt level. See
+-- documents/engineering/warm_store.md.
+tests: True
+benchmarks: True
+shared: True
+
+optimization: 2

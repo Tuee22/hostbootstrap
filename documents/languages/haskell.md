@@ -15,10 +15,13 @@ project builds.
 ## Warm store
 
 [`support/haskell-deps/`](../../support/haskell-deps/) declares the shared
-dependency set. The base image runs `cabal update && cabal build all
---only-dependencies && cabal build all` during build, so the warm store
-contains compiled artifacts for the closure downstream projects use most. Cold
-project builds skip recompiling that closure.
+dependency set. The base image builds it with
+`--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via
+[`cabal.project.freeze`](../../support/haskell-deps/cabal.project.freeze), so
+downstream projects following the warm-store cache-hit contract skip the
+entire third-party build closure. See
+[engineering/warm_store.md](../engineering/warm_store.md) for the contract and
+the dep-addition workflow.
 
 ## fourmolu / hlint
 
@@ -32,11 +35,16 @@ Both are prebuilt into the base image at
 pinned directory. They are **container-only**: never installed, built, or run
 on the host.
 
-The base ships the binaries; each project decides when to call them (a
-build-time `RUN`, a container entrypoint subcommand, an image-local lint
-command, …). hostbootstrap does not invoke fourmolu/hlint.
+The base image smoke-tests both binaries during its own build (see
+[engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md));
+derived projects invoke them via their own `<project> check-code` command as a
+`RUN` step in the project Dockerfile.
 
 ## Project standardisation
 
 All downstream projects standardise on GHC 9.12 as part of migrating to
-hostbootstrap (§13 risk: projects on 9.14.1 refactor to 9.12).
+hostbootstrap (§13 risk: projects on 9.14.1 refactor to 9.12). See
+[engineering/derived_project_standards.md](../engineering/derived_project_standards.md)
+for the full rule set every derived project follows, including the canonical
+`cabal.project` template and the linking/optimisation policy in
+[engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md).

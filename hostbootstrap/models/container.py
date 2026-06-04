@@ -50,6 +50,7 @@ async def build(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> str:
     """Build the project image ``FROM`` the base tag; return its local tag."""
     flavor = base_image.Flavor(model.flavor.value)
@@ -71,7 +72,7 @@ async def build(
         context=project_root,
         tags=(tag,),
         build_args={"BASE_IMAGE": base_image.base_image_ref(flavor, substrate.arch)},
-        pull=not build_base,
+        pull=pull and not build_base,
     )
     await docker_ops.build(build_spec)
     return tag
@@ -85,6 +86,7 @@ async def build_artifact(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> str:
     """Build the optional container counterpart declared by a binary/daemon model."""
     flavor = base_image.Flavor(artifact.flavor.value)
@@ -106,7 +108,7 @@ async def build_artifact(
         context=project_root,
         tags=(tag,),
         build_args={"BASE_IMAGE": base_image.base_image_ref(flavor, substrate.arch)},
-        pull=not build_base,
+        pull=pull and not build_base,
     )
     await docker_ops.build(build_spec)
     return tag
@@ -121,6 +123,7 @@ async def run_one_shot(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> process.CommandResult:
     tag = await build(
         spec,
@@ -129,6 +132,7 @@ async def run_one_shot(
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
+        pull=pull,
     )
     run_spec = docker_ops.RunSpec(
         image=tag,
@@ -147,6 +151,7 @@ async def start_service(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> process.CommandResult:
     """Start the long-running container detached with ``--restart unless-stopped``."""
     tag = await build(
@@ -156,6 +161,7 @@ async def start_service(
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
+        pull=pull,
     )
     # Recreate idempotently: remove any prior container of the same name first.
     await process.run(["docker", "rm", "-f", spec.project], quiet=True)

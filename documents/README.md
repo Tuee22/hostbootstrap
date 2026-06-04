@@ -30,6 +30,16 @@ material lives here.
 * [engineering/harbor.md](engineering/harbor.md) — downstream guidance for a
   project pushing its own arch-explicit image (hostbootstrap does not push
   project images).
+* [engineering/derived_project_standards.md](engineering/derived_project_standards.md) —
+  the five rules every derived project follows; the doctrine entry point for
+  authors of new project Dockerfiles.
+* [engineering/warm_store.md](engineering/warm_store.md) — the warm Cabal
+  store contents, cache-hit contract, and dep-addition workflow.
+* [engineering/code_check_doctrine.md](engineering/code_check_doctrine.md) —
+  the rule that every image build, base or derived, gates on the project's
+  canonical code-check.
+* [engineering/linking_and_optimization.md](engineering/linking_and_optimization.md) —
+  static linking, `shared: True`, `-O2`, and `INLINABLE` policy.
 * [engineering/gitignore_guardrails.md](engineering/gitignore_guardrails.md) —
   what must stay out of version control.
 

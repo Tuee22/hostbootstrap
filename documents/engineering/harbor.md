@@ -66,3 +66,10 @@ are **not** covered here. hostbootstrap publishes those itself via
 and [base_image.md](base_image.md). A project never re-pushes the large base
 image — it pulls the base from Docker Hub and pushes only its own thin
 layer(s).
+
+## See also
+
+* [derived_project_standards.md](derived_project_standards.md) — the five
+  rules every derived project follows, including the build-time code-check
+  and warm-store cache-hit contract that govern what gets compiled into the
+  thin layer this page is about.

@@ -64,6 +64,7 @@ executable basecontainer-haskell-deps
     , proto-lens-runtime
     , proto-lens-setup
     , purescript-bridge
+    , random
     , safe-exceptions
     , scientific
     , serialise
@@ -88,3 +89,4 @@ executable basecontainer-haskell-deps
     , websockets
     , wuss
     , yaml
+    , zlib

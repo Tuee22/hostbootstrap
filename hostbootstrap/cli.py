@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,7 +20,16 @@ from typing import Final
 import click
 import httpx
 
-from . import base_image, dhall_tool, docker_ops, prereqs, process, spec, substrate, units
+from . import (
+    base_image,
+    dhall_tool,
+    docker_ops,
+    prereqs,
+    process,
+    spec,
+    substrate,
+    units,
+)
 from .base_image import Flavor
 from .models import container as container_model
 from .models import host_binary, host_daemon
@@ -53,6 +63,22 @@ def _base_context_value(build_base: bool, base_context: Path | None) -> Path | N
     return base_context
 
 
+def _resolve_pull(build_base: bool, no_pull: bool) -> bool:
+    """Decide whether ``docker build`` passes ``--pull`` for the base image.
+
+    Default: ``--pull`` (refresh from Docker Hub). ``--build-base`` rebuilds
+    the base locally and skips the pull. ``--no-pull`` reuses an existing
+    locally-tagged base without rebuilding (useful after a separate
+    ``hostbootstrap base build``).
+    """
+    if build_base and no_pull:
+        raise click.ClickException(
+            "--build-base and --no-pull are mutually exclusive; "
+            "--build-base already skips the pull."
+        )
+    return not (build_base or no_pull)
+
+
 async def _build(
     project_spec: ProjectSpec,
     sub: Substrate,
@@ -60,6 +86,7 @@ async def _build(
     *,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> None:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
@@ -70,6 +97,7 @@ async def _build(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
     elif isinstance(model, HostBinaryModel):
         await host_binary.build(
@@ -79,6 +107,7 @@ async def _build(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
     else:
         await host_daemon.build(
@@ -88,6 +117,7 @@ async def _build(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
 
 
@@ -99,6 +129,7 @@ async def _run(
     *,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> process.CommandResult:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
@@ -110,6 +141,7 @@ async def _run(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
     if isinstance(model, HostBinaryModel):
         return await host_binary.run_one_shot(
@@ -120,6 +152,7 @@ async def _run(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
     return await host_daemon.run_one_shot(
         project_spec,
@@ -129,6 +162,7 @@ async def _run(
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
+        pull=pull,
     )
 
 
@@ -139,6 +173,7 @@ async def _cluster_up(
     *,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> None:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
@@ -150,6 +185,7 @@ async def _cluster_up(
                 project_root=project_root,
                 build_base=build_base,
                 base_context=base_context,
+                pull=pull,
             )
             click.echo(f"started service container {project_spec.project!r} (unless-stopped).")
         else:
@@ -160,6 +196,7 @@ async def _cluster_up(
                 project_root=project_root,
                 build_base=build_base,
                 base_context=base_context,
+                pull=pull,
             )
             click.echo("built project image; invoke one-shot work with `hostbootstrap run …`.")
     elif isinstance(model, HostBinaryModel):
@@ -170,6 +207,7 @@ async def _cluster_up(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
         cmd = host_binary.resolve_command(model.handoff.up, project_root)
         await process.run_checked(list(cmd), cwd=project_root)
@@ -181,6 +219,7 @@ async def _cluster_up(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
         cmd = host_daemon.daemon_command(model, project_root=project_root)
         if project_spec.development:
@@ -360,6 +399,15 @@ _BASE_CONTEXT_OPTION = click.option(
     help="Hostbootstrap repo root to use with --build-base.",
 )
 
+_NO_PULL_OPTION = click.option(
+    "--no-pull",
+    is_flag=True,
+    help=(
+        "Do not pull the base image from Docker Hub. Use the locally-tagged "
+        "image as-is (e.g. one previously built with `hostbootstrap base build`)."
+    ),
+)
+
 
 @click.group(cls=_FriendlyGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
@@ -389,7 +437,13 @@ def doctor(spec_path: Path) -> None:
 @_SPEC_OPTION
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
-def build(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
+@_NO_PULL_OPTION
+def build(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    no_pull: bool,
+) -> None:
     """Idempotently build the project artifact for the current substrate."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
@@ -401,6 +455,7 @@ def build(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
             project_root,
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
         )
     )
 
@@ -414,7 +469,13 @@ def cluster() -> None:
 @_SPEC_OPTION
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
-def cluster_up(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
+@_NO_PULL_OPTION
+def cluster_up(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    no_pull: bool,
+) -> None:
     """Bring the whole stack to running (idempotent)."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
@@ -426,6 +487,7 @@ def cluster_up(spec_path: Path, build_base: bool, base_context: Path | None) -> 
             project_root,
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
         )
     )
 
@@ -456,11 +518,13 @@ def cluster_delete(spec_path: Path) -> None:
 @_SPEC_OPTION
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
+@_NO_PULL_OPTION
 @click.argument("command", nargs=-1)
 def run(
     spec_path: Path,
     build_base: bool,
     base_context: Path | None,
+    no_pull: bool,
     command: tuple[str, ...],
 ) -> None:
     """Build if needed, then dispatch ``command`` to the binary or container."""
@@ -475,6 +539,7 @@ def run(
             command,
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
         )
     )
 
@@ -498,35 +563,103 @@ async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str) -> None:
     await docker_ops.push(tag)
 
 
-@base.command("build-and-push")
-@click.option(
+def _run_self_check_or_abort(context: Path) -> None:
+    """Run hostbootstrap's own ruff/black/mypy gate before building the base.
+
+    The base image build flow MUST NOT publish source with style or type
+    errors. We shell out to ``poetry run python -m hostbootstrap.check_code``
+    in the build context (the hostbootstrap repo checkout) so the check runs
+    against Poetry's development venv — ruff, black, and mypy are dev-only
+    dependencies and are not available in the pipx-installed CLI's own venv.
+    See documents/engineering/code_check_doctrine.md.
+    """
+    try:
+        completed = subprocess.run(
+            ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
+            cwd=context,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(
+            "self-check requires `poetry` on PATH; install Poetry and retry "
+            "(see hostbootstrap README)."
+        ) from exc
+    if completed.returncode != 0:
+        raise click.ClickException(
+            "self-check failed; fix with "
+            "`poetry run python -m hostbootstrap.check_code` and retry."
+        )
+
+
+def _base_targets(flavor: str | None) -> tuple[Flavor, ...]:
+    if flavor is None:
+        return (Flavor.CPU, Flavor.CUDA)
+    return (Flavor(flavor),)
+
+
+_BASE_FLAVOR_OPTION = click.option(
     "--flavor",
     type=click.Choice([f.value for f in Flavor]),
     default=None,
-    help="Base image flavor to publish; omit to publish both cpu and cuda.",
+    help="Base image flavor to build; omit to build both cpu and cuda.",
 )
-@click.option(
+
+_BASE_ARCH_OPTION = click.option(
     "--arch",
     type=click.Choice(["amd64", "arm64"]),
     default=None,
     help="Target arch; defaults to the host arch.",
 )
-@click.option(
+
+_BASE_CONTEXT_BUILD_OPTION = click.option(
     "--context",
     type=click.Path(path_type=Path),
     default=Path.cwd(),
     show_default=True,
     help="Build context root (the hostbootstrap repo).",
 )
+
+
+@base.command("build")
+@_BASE_FLAVOR_OPTION
+@_BASE_ARCH_OPTION
+@_BASE_CONTEXT_BUILD_OPTION
+def base_build(flavor: str | None, arch: str | None, context: Path) -> None:
+    """Cold-rebuild base image(s) locally (``--no-cache --pull``); no push.
+
+    For local validation: rebuilds the base image from scratch and leaves it
+    tagged in the local Docker daemon. Use this before ``hostbootstrap build
+    --build-base`` to validate downstream projects against an unpublished
+    base.
+    """
+    _run_self_check_or_abort(context)
+    target_arch = arch or _arch_default()
+    for flavor_enum in _base_targets(flavor):
+        build_spec, _ = base_image.build_spec_for(
+            flavor_enum,
+            target_arch,
+            context=context,
+            pull=True,
+            no_cache=True,
+        )
+        tag = base_image.base_image_ref(flavor_enum, target_arch)
+        asyncio.run(docker_ops.build(build_spec))
+        click.echo(f"built {tag}")
+
+
+@base.command("build-and-push")
+@_BASE_FLAVOR_OPTION
+@_BASE_ARCH_OPTION
+@_BASE_CONTEXT_BUILD_OPTION
 def base_build_and_push(flavor: str | None, arch: str | None, context: Path) -> None:
     """Cold-rebuild base image(s) (``--no-cache --pull``) and push them.
 
     The publish path is always cold so the registry copy matches a clean
     rebuild from source — no silent layer-cache carryover.
     """
+    _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()
-    flavors = (Flavor.CPU, Flavor.CUDA) if flavor is None else (Flavor(flavor),)
-    for flavor_enum in flavors:
+    for flavor_enum in _base_targets(flavor):
         build_spec, _ = base_image.build_spec_for(
             flavor_enum,
             target_arch,

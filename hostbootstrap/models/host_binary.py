@@ -96,8 +96,10 @@ async def build(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> Path:
     """Build the binary and, if declared, the optional container counterpart."""
+    _ = pull  # The host-binary itself is built on the host, not in a container.
     path = await build_binary(
         spec,
         model.build,
@@ -114,6 +116,7 @@ async def build(
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
+            pull=pull,
         )
     return path
 
@@ -127,6 +130,7 @@ async def run_one_shot(
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
+    pull: bool = True,
 ) -> process.CommandResult:
     path = await build(
         spec,
@@ -135,5 +139,6 @@ async def run_one_shot(
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
+        pull=pull,
     )
     return await process.run_checked([str(path), *command], cwd=project_root)

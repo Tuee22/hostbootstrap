@@ -33,6 +33,12 @@ Detailed language/engineering notes live under [`documents/`](documents/README.m
 Single-arch tags only — never manifest lists. The CLI always knows the
 substrate, so it references the one correct arch tag directly.
 
+Derived projects follow the five rules in
+[`documents/engineering/derived_project_standards.md`](documents/engineering/derived_project_standards.md):
+inherit the base image, match the warm-store `cabal.project` contract, gate
+image builds on `<project> check-code`, link executables statically at `-O2`,
+and never rebuild what the warm store already builds.
+
 ---
 
 ## Installing the CLI

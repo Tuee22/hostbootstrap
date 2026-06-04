@@ -130,12 +130,21 @@ def _str_field(mapping: dict[str, object], key: str) -> str:
 
 
 def resolve_node_version(arch: str) -> str:
-    """Latest Node release that ships a ``linux-<arch>`` tarball."""
+    """Latest Node **LTS** release that ships a ``linux-<arch>`` tarball.
+
+    Filters to LTS releases (``lts`` field is the codename string, e.g.
+    ``"Iron"``; non-LTS releases set ``lts: false``). Without this filter the
+    resolver picks the bleeding-edge current release, which breaks every
+    downstream Node tool that hasn't certified the new major yet
+    (``spago`` caps Node at ``<25`` while current is ``v26.x``).
+    """
     node_arch = _NODE_ARCH[arch]
     platform_key = f"linux-{node_arch}"
     index = _as_list(_http_get_json("https://nodejs.org/dist/index.json"))
     for raw in index:
         entry = _as_dict(raw)
+        if not entry.get("lts"):
+            continue
         files = entry.get("files")
         if isinstance(files, list) and platform_key in files:
             return _str_field(entry, "version")

@@ -233,10 +233,32 @@ RUN set -eux; \
 
 COPY support/haskell-deps/ /opt/basecontainer/haskell-deps/
 
+# Warm-store contract: see documents/engineering/warm_store.md. The flags
+# below MUST match the canonical project cabal.project so downstream Cabal
+# store keys line up; otherwise derived projects silently rebuild.
+#
+# `cabal freeze` at the end pins the resolved versions into
+# /opt/basecontainer/haskell-deps/cabal.project.freeze inside the image, so
+# derived projects can `import:` it from their own cabal.project and the
+# base image is the single source of truth for transitive dep versions.
 RUN cd /opt/basecontainer/haskell-deps \
     && cabal update \
     && cabal build all --only-dependencies \
-    && cabal build all
+         --enable-tests --enable-benchmarks --enable-shared \
+    && cabal build all \
+         --enable-tests --enable-benchmarks --enable-shared \
+    && cabal freeze \
+         --enable-tests --enable-benchmarks --enable-shared
+
+# Code-check guardrail: see documents/engineering/code_check_doctrine.md.
+# Smoke-tests the pinned fourmolu/hlint binaries against the warm-store
+# sample source; the base build fails here if the tools are broken or the
+# sample drifts out of format.
+RUN fourmolu --version \
+    && hlint --version \
+    && cd /opt/basecontainer/haskell-deps \
+    && fourmolu --mode check app \
+    && hlint app
 
 # The single, documented exception to the "no if/case" rule. One Dockerfile
 # serves both the `cpu` (ubuntu) and `cuda` (nvidia/cuda) base images via

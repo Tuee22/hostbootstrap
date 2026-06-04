@@ -83,8 +83,10 @@ def test_release_resolvers_parse_payloads(monkeypatch: pytest.MonkeyPatch) -> No
     def _fake_json(url: str) -> object:
         if "nodejs.org" in url:
             return [
-                {"version": "v21.0.0", "files": ["linux-x64"]},
-                {"version": "v22.0.0", "files": ["linux-arm64"]},
+                # Newest entry: current (non-LTS) release; resolver must skip.
+                {"version": "v26.0.0", "files": ["linux-arm64"], "lts": False},
+                {"version": "v21.0.0", "files": ["linux-x64"], "lts": "Hydrogen"},
+                {"version": "v22.0.0", "files": ["linux-arm64"], "lts": "Iron"},
             ]
         if "go.dev" in url:
             return [
