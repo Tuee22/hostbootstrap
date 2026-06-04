@@ -42,14 +42,52 @@ def _detect_substrate() -> Substrate:
         raise click.ClickException(str(exc)) from exc
 
 
-async def _build(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
+def _base_context_value(build_base: bool, base_context: Path | None) -> Path | None:
+    if not build_base:
+        return None
+    if base_context is None:
+        raise click.ClickException(
+            "--build-base requires --base-context pointing at the hostbootstrap repo"
+        )
+    return base_context
+
+
+async def _build(
+    project_spec: ProjectSpec,
+    sub: Substrate,
+    project_root: Path,
+    *,
+    build_base: bool = False,
+    base_context: Path | None = None,
+) -> None:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
-        await container_model.build(project_spec, model, sub, project_root=project_root)
+        await container_model.build(
+            project_spec,
+            model,
+            sub,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
     elif isinstance(model, HostBinaryModel):
-        await host_binary.build(project_spec, model, sub, project_root=project_root)
+        await host_binary.build(
+            project_spec,
+            model,
+            sub,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
     else:
-        await host_daemon.build(project_spec, model, sub, project_root=project_root)
+        await host_daemon.build(
+            project_spec,
+            model,
+            sub,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
 
 
 async def _run(
@@ -57,36 +95,92 @@ async def _run(
     sub: Substrate,
     project_root: Path,
     command: Sequence[str],
+    *,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> process.CommandResult:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
         return await container_model.run_one_shot(
-            project_spec, model, sub, command, project_root=project_root
+            project_spec,
+            model,
+            sub,
+            command,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
         )
     if isinstance(model, HostBinaryModel):
         return await host_binary.run_one_shot(
-            project_spec, model, sub, command, project_root=project_root
+            project_spec,
+            model,
+            sub,
+            command,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
         )
     return await host_daemon.run_one_shot(
-        project_spec, model, sub, command, project_root=project_root
+        project_spec,
+        model,
+        sub,
+        command,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
     )
 
 
-async def _cluster_up(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
+async def _cluster_up(
+    project_spec: ProjectSpec,
+    sub: Substrate,
+    project_root: Path,
+    *,
+    build_base: bool = False,
+    base_context: Path | None = None,
+) -> None:
     model = project_spec.model_for(sub)
     if isinstance(model, ContainerModel):
         if model.service:
-            await container_model.start_service(project_spec, model, sub, project_root=project_root)
+            await container_model.start_service(
+                project_spec,
+                model,
+                sub,
+                project_root=project_root,
+                build_base=build_base,
+                base_context=base_context,
+            )
             click.echo(f"started service container {project_spec.project!r} (unless-stopped).")
         else:
-            await container_model.build(project_spec, model, sub, project_root=project_root)
+            await container_model.build(
+                project_spec,
+                model,
+                sub,
+                project_root=project_root,
+                build_base=build_base,
+                base_context=base_context,
+            )
             click.echo("built project image; invoke one-shot work with `hostbootstrap run …`.")
     elif isinstance(model, HostBinaryModel):
-        await host_binary.build(project_spec, model, sub, project_root=project_root)
+        await host_binary.build(
+            project_spec,
+            model,
+            sub,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
         cmd = host_binary.resolve_command(model.handoff.up, project_root)
         await process.run_checked(list(cmd), cwd=project_root)
     else:
-        await host_daemon.build(project_spec, model, sub, project_root=project_root)
+        await host_daemon.build(
+            project_spec,
+            model,
+            sub,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
         cmd = host_daemon.daemon_command(model, project_root=project_root)
         if project_spec.development:
             click.echo("development mode: skipped host-daemon system unit creation.")
@@ -136,6 +230,19 @@ _SPEC_OPTION = click.option(
     help="Path to the project's hostbootstrap.dhall",
 )
 
+_BUILD_BASE_OPTION = click.option(
+    "--build-base",
+    is_flag=True,
+    help="Build the selected base image locally first and do not pull it from Docker Hub.",
+)
+
+_BASE_CONTEXT_OPTION = click.option(
+    "--base-context",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Hostbootstrap repo root to use with --build-base.",
+)
+
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
@@ -163,12 +270,22 @@ def doctor(spec_path: Path) -> None:
 
 @main.command()
 @_SPEC_OPTION
-def build(spec_path: Path) -> None:
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
+def build(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
     """Idempotently build the project artifact for the current substrate."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
-    asyncio.run(_build(project_spec, sub, project_root))
+    asyncio.run(
+        _build(
+            project_spec,
+            sub,
+            project_root,
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+        )
+    )
 
 
 @main.group()
@@ -178,12 +295,22 @@ def cluster() -> None:
 
 @cluster.command("up")
 @_SPEC_OPTION
-def cluster_up(spec_path: Path) -> None:
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
+def cluster_up(spec_path: Path, build_base: bool, base_context: Path | None) -> None:
     """Bring the whole stack to running (idempotent)."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
-    asyncio.run(_cluster_up(project_spec, sub, project_root))
+    asyncio.run(
+        _cluster_up(
+            project_spec,
+            sub,
+            project_root,
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+        )
+    )
 
 
 @cluster.command("down")
@@ -210,13 +337,29 @@ def cluster_delete(spec_path: Path) -> None:
 
 @main.command()
 @_SPEC_OPTION
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
 @click.argument("command", nargs=-1)
-def run(spec_path: Path, command: tuple[str, ...]) -> None:
+def run(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    command: tuple[str, ...],
+) -> None:
     """Build if needed, then dispatch ``command`` to the binary or container."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
-    asyncio.run(_run(project_spec, sub, project_root, command))
+    asyncio.run(
+        _run(
+            project_spec,
+            sub,
+            project_root,
+            command,
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

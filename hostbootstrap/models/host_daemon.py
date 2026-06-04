@@ -29,11 +29,27 @@ async def build(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> Path:
     """Build the host binary and, if declared, the container counterpart."""
-    path = await host_binary.build_binary(spec, model.build, substrate, project_root=project_root)
+    path = await host_binary.build_binary(
+        spec,
+        model.build,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     if model.container is not None:
-        await container.build_artifact(spec, model.container, substrate, project_root=project_root)
+        await container.build_artifact(
+            spec,
+            model.container,
+            substrate,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
     return path
 
 
@@ -49,6 +65,15 @@ async def run_one_shot(
     command: Sequence[str],
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> process.CommandResult:
-    path = await build(spec, model, substrate, project_root=project_root)
+    path = await build(
+        spec,
+        model,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     return await process.run_checked([str(path), *command], cwd=project_root)

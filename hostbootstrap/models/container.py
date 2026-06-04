@@ -48,16 +48,30 @@ async def build(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> str:
     """Build the project image ``FROM`` the base tag; return its local tag."""
     flavor = base_image.Flavor(model.flavor.value)
     tag = image_tag(spec, substrate)
+    if build_base:
+        if base_context is None:
+            raise RuntimeError(
+                "--build-base requires --base-context pointing at the hostbootstrap repo"
+            )
+        base_spec, _ = base_image.build_spec_for(
+            flavor,
+            substrate.arch,
+            context=base_context,
+            pull=False,
+        )
+        await docker_ops.build(base_spec)
     build_spec = docker_ops.BuildSpec(
         dockerfile=project_root / model.dockerfile,
         context=project_root,
         tags=(tag,),
         build_args={"BASE_IMAGE": base_image.base_image_ref(flavor, substrate.arch)},
-        pull=True,
+        pull=not build_base,
     )
     await docker_ops.build(build_spec)
     return tag
@@ -69,16 +83,30 @@ async def build_artifact(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> str:
     """Build the optional container counterpart declared by a binary/daemon model."""
     flavor = base_image.Flavor(artifact.flavor.value)
     tag = image_tag(spec, substrate)
+    if build_base:
+        if base_context is None:
+            raise RuntimeError(
+                "--build-base requires --base-context pointing at the hostbootstrap repo"
+            )
+        base_spec, _ = base_image.build_spec_for(
+            flavor,
+            substrate.arch,
+            context=base_context,
+            pull=False,
+        )
+        await docker_ops.build(base_spec)
     build_spec = docker_ops.BuildSpec(
         dockerfile=project_root / artifact.dockerfile,
         context=project_root,
         tags=(tag,),
         build_args={"BASE_IMAGE": base_image.base_image_ref(flavor, substrate.arch)},
-        pull=True,
+        pull=not build_base,
     )
     await docker_ops.build(build_spec)
     return tag
@@ -91,8 +119,17 @@ async def run_one_shot(
     command: Sequence[str],
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> process.CommandResult:
-    tag = await build(spec, model, substrate, project_root=project_root)
+    tag = await build(
+        spec,
+        model,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     run_spec = docker_ops.RunSpec(
         image=tag,
         command=tuple(command),
@@ -108,9 +145,18 @@ async def start_service(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> process.CommandResult:
     """Start the long-running container detached with ``--restart unless-stopped``."""
-    tag = await build(spec, model, substrate, project_root=project_root)
+    tag = await build(
+        spec,
+        model,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     # Recreate idempotently: remove any prior container of the same name first.
     await process.run(["docker", "rm", "-f", spec.project], quiet=True)
     run_spec = docker_ops.RunSpec(

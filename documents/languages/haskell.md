@@ -22,14 +22,19 @@ project builds skip recompiling that closure.
 
 ## fourmolu / hlint
 
-Both are prebuilt into the base image at `/usr/local/bin/fourmolu` and
-`/usr/local/bin/hlint`. They are **container-only**: never installed, built,
-or run on the host.
+Both are prebuilt into the base image at
+`/opt/hostbootstrap/haskell-style/bin/`:
 
-**Invoking them is the project's Dockerfile's responsibility** — the base
-ships the binaries; each project decides when to call them (a build-time
-`RUN`, a container entrypoint subcommand, …). hostbootstrap does not invoke
-fourmolu/hlint.
+* `fourmolu-0.19.0.1`
+* `hlint-3.10`
+
+`/usr/local/bin/fourmolu` and `/usr/local/bin/hlint` are symlinks to that
+pinned directory. They are **container-only**: never installed, built, or run
+on the host.
+
+The base ships the binaries; each project decides when to call them (a
+build-time `RUN`, a container entrypoint subcommand, an image-local lint
+command, …). hostbootstrap does not invoke fourmolu/hlint.
 
 ## Project standardisation
 

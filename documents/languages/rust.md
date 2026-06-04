@@ -6,10 +6,10 @@ type: guide
 
 # Rust
 
-The base image installs the latest stable Rust toolchain via `rustup`:
+The base image installs the pinned Rust toolchain via `rustup`:
 
 ```
-RUSTUP_TOOLCHAIN=stable
+RUSTUP_TOOLCHAIN=1.95.0
 ```
 
 with `llvm-tools-preview` and `rustfmt` components. Caches:

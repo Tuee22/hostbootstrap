@@ -20,6 +20,9 @@ ARG PULUMI_ARCH
 ARG LLVM_MAJOR
 ARG GHC_VERSION
 ARG CABAL_VERSION
+ARG FOURMOLU_VERSION
+ARG HLINT_VERSION
+ARG HASKELL_STYLE_TOOLS_DIR
 ARG GO_VERSION
 ARG GO_DOWNLOAD_URL
 ARG NODE_VERSION
@@ -37,7 +40,7 @@ ARG HELM_DOWNLOAD_URL
 ARG MC_DOWNLOAD_URL
 ARG AWS_DOWNLOAD_URL
 ARG GHCUP_DOWNLOAD_URL
-ARG RUST_TOOLCHAIN=stable
+ARG RUST_TOOLCHAIN=1.95.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Default RUN shell only (POSIX /bin/sh): no bash, no pipes, no shell branching.
@@ -50,6 +53,7 @@ RUN set -eux; \
         binutils \
         bolt-${LLVM_MAJOR} \
         ca-certificates \
+        clang-${LLVM_MAJOR} \
         cmake \
         curl \
         dnsutils \
@@ -65,6 +69,7 @@ RUN set -eux; \
         iptables \
         jq \
         less \
+        libclang-rt-${LLVM_MAJOR}-dev \
         libdnnl-dev \
         libffi-dev \
         libgmp-dev \
@@ -99,8 +104,10 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    mkdir -p /workspace /opt/build /opt/cache /opt/cache/go /opt/cache/go/bin /opt/cache/go/build /opt/cache/go/mod; \
-    ln -s "/usr/lib/llvm-${LLVM_MAJOR}" /opt/llvm
+    mkdir -p /workspace /opt/build /opt/cache /opt/cache/go /opt/cache/go/bin /opt/cache/go/build /opt/cache/go/mod /usr/local/lib; \
+    ln -s "/usr/lib/llvm-${LLVM_MAJOR}" /opt/llvm; \
+    test -f /opt/llvm/lib/libbolt_rt_instr.a; \
+    ln -sf /opt/llvm/lib/libbolt_rt_instr.a /usr/local/lib/libbolt_rt_instr.a
 
 ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     BASECONTAINER_BUILD_ROOT=/opt/build \
@@ -124,15 +131,16 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     LLVM_CONFIG=/opt/llvm/bin/llvm-config \
     LIBRARY_PATH=/opt/llvm/lib \
     BOLT_RT_INSTR_LIB=/opt/llvm/lib/libbolt_rt_instr.a \
-    CC=gcc \
-    CXX=g++ \
+    HASKELL_STYLE_TOOLS_DIR=${HASKELL_STYLE_TOOLS_DIR} \
+    CC=clang-${LLVM_MAJOR} \
+    CXX=clang++-${LLVM_MAJOR} \
     RUSTUP_TOOLCHAIN=${RUST_TOOLCHAIN} \
     CARGO_HTTP_TIMEOUT=120 \
     CARGO_NET_RETRY=5 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-ENV PATH=/opt/llvm/bin:/opt/pulumi:/opt/go/bin:/opt/cache/go/bin:/root/.ghcup/bin:/opt/cache/cabal/bin:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/llvm/bin:/opt/pulumi:/opt/go/bin:/opt/cache/go/bin:/root/.ghcup/bin:/opt/cache/cabal/bin:${HASKELL_STYLE_TOOLS_DIR}:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
@@ -204,14 +212,17 @@ RUN ghcup install ghc "${GHC_VERSION}" \
     && ghcup install cabal "${CABAL_VERSION}" \
     && ghcup set cabal "${CABAL_VERSION}"
 
-RUN cabal update \
+RUN mkdir -p "${HASKELL_STYLE_TOOLS_DIR}" \
+    && cabal update \
     && cabal install \
         --ignore-project \
-        --installdir /usr/local/bin \
+        --installdir "${HASKELL_STYLE_TOOLS_DIR}" \
         --install-method=copy \
         --overwrite-policy=always \
-        fourmolu \
-        hlint
+        "fourmolu-${FOURMOLU_VERSION}" \
+        "hlint-${HLINT_VERSION}" \
+    && ln -sf "${HASKELL_STYLE_TOOLS_DIR}/fourmolu" /usr/local/bin/fourmolu \
+    && ln -sf "${HASKELL_STYLE_TOOLS_DIR}/hlint" /usr/local/bin/hlint
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \

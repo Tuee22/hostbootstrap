@@ -22,9 +22,9 @@ Detailed language/engineering notes live under [`documents/`](documents/README.m
 
 * **Four prebuilt base images** on Docker Hub —
   `docker.io/tuee22/hostbootstrap:basecontainer-{cpu,cuda}-{amd64,arm64}` —
-  carrying the shared toolchain (GHC 9.12, Cabal, Go, Node + PureScript +
-  Playwright, Python + Poetry, kube tools, LLVM/C++, Rust, optional CUDA, with
-  fourmolu/hlint and a warm Haskell store baked in).
+  carrying the shared toolchain (GHC 9.12, Cabal, pinned fourmolu/hlint, Go,
+  Node + PureScript + Playwright, Python + Poetry, kube tools, LLVM/C++, Rust,
+  optional CUDA, with a warm Haskell store baked in).
 * **One CLI** (`hostbootstrap`) that detects your substrate, validates host
   prerequisites, drives `docker build` / `docker run`, manages cluster
   lifecycle, and installs a system-level
@@ -407,8 +407,9 @@ Plain `docker build`. No buildx, no emulation; a build can only ever produce the
 host-native arch.
 
 * **Default** for downstream projects: pull the base from Docker Hub.
-* **`--build-base`**: build the base locally from this repo's Dockerfile,
-  tagging it with the identical name.
+* **`--build-base --base-context /path/to/hostbootstrap`**: build the base
+  locally from that checkout's Dockerfile, tagging it with the identical name,
+  then build the downstream project image without pulling the base tag.
 
 ---
 
@@ -466,8 +467,8 @@ poetry.toml                      # in-project .venv (dev only)
 
 ### Downstream guidance (conventions, not enforced)
 
-* Run fourmolu/hlint **inside** the container — invoked by the project's
-  Dockerfile against the prebuilt tools the base ships.
+* Run fourmolu/hlint **inside** the container — invoked by project commands
+  against the pinned prebuilt tools the base ships.
 * Reach in-cluster services from a host binary over loopback (`127.0.0.0/8`)
   NodePorts only — never off-host.
 * **Playwright end-to-end tests run from *outside* the cluster, against its

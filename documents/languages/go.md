@@ -23,8 +23,9 @@ PATH=…/opt/go/bin:/opt/cache/go/bin:…
 ## nvkind
 
 The base image builds `nvkind` natively in the final image, in a **single
-stage** with `CGO_ENABLED=1`. Native gcc is present in the same stage, so
-the old `nvkind-builder` multi-stage + cross-compile path is gone (§4).
+stage** with `CGO_ENABLED=1`. The base default `CC=clang-N` is used for cgo;
+gcc is still installed for projects that opt into it explicitly. The old
+`nvkind-builder` multi-stage + cross-compile path is gone (§4).
 
 ```Dockerfile
 RUN CGO_ENABLED=1 /opt/go/bin/go install github.com/NVIDIA/nvkind/cmd/nvkind@latest \

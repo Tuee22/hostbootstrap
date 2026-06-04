@@ -33,6 +33,13 @@ def test_cluster_subcommands() -> None:
         assert verb in result.output
 
 
+def test_run_exposes_local_base_build_options() -> None:
+    result = CliRunner().invoke(cli.main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--build-base" in result.output
+    assert "--base-context" in result.output
+
+
 def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
     missing = tmp_path / "hostbootstrap.dhall"
     result = CliRunner().invoke(cli.main, ["build", "--spec", str(missing)])

@@ -48,6 +48,10 @@ def test_compute_build_args_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     assert d["BASE_IMAGE"] == "custom:base"
     assert d["IMAGE_FLAVOR"] == "cuda"
     assert d["TARGETARCH"] == "amd64"
+    assert d["RUST_TOOLCHAIN"] == "1.95.0"
+    assert d["FOURMOLU_VERSION"] == "0.19.0.1"
+    assert d["HLINT_VERSION"] == "3.10"
+    assert d["HASKELL_STYLE_TOOLS_DIR"] == "/opt/hostbootstrap/haskell-style/bin"
     assert d["GO_DOWNLOAD_URL"] == "https://go.dev/dl/go1.23.4.linux-amd64.tar.gz"
     assert "node-v22.0.0-linux-x64.tar.xz" in d["NODE_DOWNLOAD_URL"]
     assert "GO_ARCH" not in d  # go_arch is folded into the URL, not a separate arg

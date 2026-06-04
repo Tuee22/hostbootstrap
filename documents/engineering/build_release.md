@@ -40,11 +40,13 @@ image (see [harbor.md](harbor.md)).
 
 ## `--build-base` for downstream projects
 
-A downstream project's `hostbootstrap build` invocation can pass
-`--build-base` to fetch `docker/basecontainer.Dockerfile` from the
-hostbootstrap GitHub repo and build the base locally, tagging it with the
-identical name. The default behaviour is to **pull** the base from Docker
-Hub.
+A downstream project's `hostbootstrap build`, `hostbootstrap run`, or
+`hostbootstrap cluster up` invocation can pass
+`--build-base --base-context /path/to/hostbootstrap` to build the base locally
+from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
+identical name. The downstream project image is then built without pulling the
+base tag from Docker Hub. The default behaviour is to **pull** the base from
+Docker Hub.
 
 ## Loss of provenance
 

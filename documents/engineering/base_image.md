@@ -30,8 +30,10 @@ correct arch tag.
 
 ## What ships in the image
 
-* **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, prebuilt fourmolu/hlint, a warm
-  Cabal store from [`support/haskell-deps/`](../../support/haskell-deps/).
+* **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned
+  fourmolu `0.19.0.1` / hlint `3.10` at
+  `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and
+  a warm Cabal store from [`support/haskell-deps/`](../../support/haskell-deps/).
 * **Go** — first-class toolchain installed at `/opt/go`; `GOPATH`, `GOCACHE`,
   `GOMODCACHE`, `GOTOOLCHAIN`, and `PATH` set alongside other languages.
 * **nvkind** — built once in the final image (`CGO_ENABLED=1 go install
@@ -44,8 +46,10 @@ correct arch tag.
 * **Kube tooling** — Docker CLI/compose (no buildx), kind, kubectl, helm,
   skopeo, MinIO `mc`, AWS CLI v2, Pulumi.
 * **C/C++/LLVM** — build-essential, the latest available `llvm-N` family
-  (LLVM 19 on Ubuntu 24.04), BOLT, LLD; CMake, Ninja, Make.
-* **Rust** — `rustup` stable with `llvm-tools-preview` and `rustfmt`.
+  (LLVM 19 on Ubuntu 24.04), clang, clang PGO runtime, BOLT, LLD; CMake,
+  Ninja, Make; `CC=clang-N` and `CXX=clang++-N`.
+* **Rust** — `rustup` with Rust `1.95.0`, `llvm-tools-preview`, and
+  `rustfmt`.
 * **CUDA (cuda flavor only)** — built on top of the latest
   `nvidia/cuda:*-cudnn-devel-ubuntu24.04` with a manifest for the target arch.
 

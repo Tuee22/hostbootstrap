@@ -33,12 +33,15 @@ APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
 
 # --- pure helpers ---------------------------------------------------------
 
+
 def test_resolve_host_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", "/home/me")
     assert container.resolve_host_path("${HOME}/.docker/config.json", Path("/proj")) == (
         "/home/me/.docker/config.json"
     )
-    assert container.resolve_host_path("/var/run/docker.sock", Path("/proj")) == "/var/run/docker.sock"
+    assert (
+        container.resolve_host_path("/var/run/docker.sock", Path("/proj")) == "/var/run/docker.sock"
+    )
     assert container.resolve_host_path("./.data", Path("/proj")) == "/proj/.data"
 
 
@@ -59,20 +62,71 @@ def test_resolve_command_absolutizes_build_token() -> None:
 
 def test_daemon_command() -> None:
     model = HostDaemonModel(build=BuildSpec("c", HostReqs()), daemon=".build/proj serve")
-    assert host_daemon.daemon_command(model, project_root=Path("/proj")) == ("/proj/.build/proj", "serve")
+    assert host_daemon.daemon_command(model, project_root=Path("/proj")) == (
+        "/proj/.build/proj",
+        "serve",
+    )
 
 
 # --- recorded runners -----------------------------------------------------
 
+
 async def test_container_build_injects_base_image(
     recorded_commands: list[tuple[str, ...]], project_root: Path
 ) -> None:
-    model = ContainerModel(dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=())
+    model = ContainerModel(
+        dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=()
+    )
     tag = await container.build(_spec(model), model, LINUX, project_root=project_root)
     assert tag == "proj:linux-cpu-amd64"
     (build_cmd,) = recorded_commands
     assert "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64" in build_cmd
     assert "proj:linux-cpu-amd64" in build_cmd
+
+
+async def test_container_build_base_uses_local_base_without_pull(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    project_root: Path,
+) -> None:
+    def fake_build_spec_for(
+        flavor: object,
+        arch: str,
+        *,
+        context: Path,
+        pull: bool,
+        **_: object,
+    ) -> tuple[object, object]:
+        return (
+            container.docker_ops.BuildSpec(
+                dockerfile=context / "docker/basecontainer.Dockerfile",
+                context=context,
+                tags=(f"base-{arch}",),
+                build_args={"BASE_IMAGE": "ubuntu:24.04"},
+                pull=pull,
+            ),
+            object(),
+        )
+
+    monkeypatch.setattr(container.base_image, "build_spec_for", fake_build_spec_for)
+    model = ContainerModel(
+        dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=()
+    )
+    await container.build(
+        _spec(model),
+        model,
+        LINUX,
+        project_root=project_root,
+        build_base=True,
+        base_context=Path("/hostbootstrap"),
+    )
+
+    assert len(recorded_commands) == 2
+    base_build, project_build = recorded_commands
+    assert "--pull" not in base_build
+    assert "--pull" not in project_build
+    assert "/hostbootstrap/docker/basecontainer.Dockerfile" in base_build
+    assert "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64" in project_build
 
 
 async def test_container_start_service(
@@ -97,7 +151,9 @@ async def test_container_run_one_shot(
     recorded_commands: list[tuple[str, ...]], project_root: Path
 ) -> None:
     model = ContainerModel(dockerfile=Path("d"), flavor=Flavor.CPU, service=False, mounts=())
-    await container.run_one_shot(_spec(model), model, LINUX, ("echo", "hi"), project_root=project_root)
+    await container.run_one_shot(
+        _spec(model), model, LINUX, ("echo", "hi"), project_root=project_root
+    )
     run = next(" ".join(c) for c in recorded_commands if "docker run" in " ".join(c))
     assert "--rm" in run and run.endswith("echo hi")
 

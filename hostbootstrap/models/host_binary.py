@@ -53,6 +53,8 @@ async def build_binary(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> Path:
     """Build the host binary; return its ``.build/<project>`` path."""
     build_dir(project_root).mkdir(parents=True, exist_ok=True)
@@ -63,6 +65,18 @@ async def build_binary(
 
     flavor, _arch = base_image.substrate_to_flavor_arch(substrate)
     base_tag = base_image.base_image_ref(flavor, substrate.arch)
+    if build_base:
+        if base_context is None:
+            raise RuntimeError(
+                "--build-base requires --base-context pointing at the hostbootstrap repo"
+            )
+        base_spec, _ = base_image.build_spec_for(
+            flavor,
+            substrate.arch,
+            context=base_context,
+            pull=False,
+        )
+        await docker_ops.build(base_spec)
     run_spec = docker_ops.RunSpec(
         image=base_tag,
         command=("sh", "-c", build.cabal),
@@ -80,11 +94,27 @@ async def build(
     substrate: Substrate,
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> Path:
     """Build the binary and, if declared, the optional container counterpart."""
-    path = await build_binary(spec, model.build, substrate, project_root=project_root)
+    path = await build_binary(
+        spec,
+        model.build,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     if model.container is not None:
-        await container.build_artifact(spec, model.container, substrate, project_root=project_root)
+        await container.build_artifact(
+            spec,
+            model.container,
+            substrate,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+        )
     return path
 
 
@@ -95,6 +125,15 @@ async def run_one_shot(
     command: Sequence[str],
     *,
     project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
 ) -> process.CommandResult:
-    path = await build(spec, model, substrate, project_root=project_root)
+    path = await build(
+        spec,
+        model,
+        substrate,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+    )
     return await process.run_checked([str(path), *command], cwd=project_root)

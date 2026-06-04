@@ -42,7 +42,10 @@ CPU_BASE_IMAGE: Final[str] = "ubuntu:24.04"
 # Pinned toolchain versions (the single-GHC line from §4).
 GHC_VERSION: Final[str] = "9.12.4"
 CABAL_VERSION: Final[str] = "3.16.1.0"
-RUST_TOOLCHAIN: Final[str] = "stable"
+RUST_TOOLCHAIN: Final[str] = "1.95.0"
+FOURMOLU_VERSION: Final[str] = "0.19.0.1"
+HLINT_VERSION: Final[str] = "3.10"
+HASKELL_STYLE_TOOLS_DIR: Final[str] = "/opt/hostbootstrap/haskell-style/bin"
 
 # LLVM major is hardcoded against the Ubuntu 24.04 noble apt repo (latest llvm-N
 # available there). Probing apt-cache from outside the container would require
@@ -246,6 +249,9 @@ class BaseImageBuildArgs:
     ghc_version: str
     cabal_version: str
     rust_toolchain: str
+    fourmolu_version: str
+    hlint_version: str
+    haskell_style_tools_dir: str
     go_version: str
     go_download_url: str
     node_version: str
@@ -278,6 +284,9 @@ class BaseImageBuildArgs:
             "GHC_VERSION": self.ghc_version,
             "CABAL_VERSION": self.cabal_version,
             "RUST_TOOLCHAIN": self.rust_toolchain,
+            "FOURMOLU_VERSION": self.fourmolu_version,
+            "HLINT_VERSION": self.hlint_version,
+            "HASKELL_STYLE_TOOLS_DIR": self.haskell_style_tools_dir,
             "GO_VERSION": self.go_version,
             "GO_DOWNLOAD_URL": self.go_download_url,
             "NODE_VERSION": self.node_version,
@@ -364,6 +373,9 @@ def compute_build_args(
         ghc_version=GHC_VERSION,
         cabal_version=CABAL_VERSION,
         rust_toolchain=RUST_TOOLCHAIN,
+        fourmolu_version=FOURMOLU_VERSION,
+        hlint_version=HLINT_VERSION,
+        haskell_style_tools_dir=HASKELL_STYLE_TOOLS_DIR,
         go_version=go_version,
         go_download_url=go_download_url,
         node_version=node_version,
@@ -399,6 +411,7 @@ def build_spec_for(
     dockerfile: Path | None = None,
     extra_tags: tuple[str, ...] = (),
     args: BaseImageBuildArgs | None = None,
+    pull: bool = True,
 ) -> tuple[docker_ops.BuildSpec, BaseImageBuildArgs]:
     """Build the ``BuildSpec`` for ``(flavor, arch)``.
 
@@ -411,7 +424,7 @@ def build_spec_for(
         context=context,
         tags=(primary_tag, *extra_tags),
         build_args=resolved.as_build_args(),
-        pull=True,
+        pull=pull,
     )
     return spec, resolved
 
