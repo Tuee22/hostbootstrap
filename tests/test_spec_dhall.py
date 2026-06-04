@@ -52,6 +52,12 @@ def test_valid_host_daemon(require_dhall: Path) -> None:
     assert model.build.host.metal is True
 
 
+def test_valid_development_config(require_dhall: Path) -> None:
+    ps = spec.load(FIXTURES / "valid" / "development.dhall")
+    assert ps.development is True
+    assert isinstance(ps.substrates[SubstrateName.LINUX_CPU], ContainerModel)
+
+
 def test_valid_mixed(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "mixed.dhall")
     assert isinstance(ps.substrates[SubstrateName.APPLE_SILICON], HostDaemonModel)

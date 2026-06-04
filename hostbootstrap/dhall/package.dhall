@@ -45,7 +45,9 @@ let RModel =
 
 let REntry = { substrate : Text, model : RModel }
 
-let Config = { project : Text, substrates : List REntry }
+let ConfigInput = { project : Text, substrates : List REntry }
+
+let Config = { project : Text, development : Bool, substrates : List REntry }
 
 let renderModel
     : Model -> RModel
@@ -91,9 +93,22 @@ let entry
       \(m : Model) ->
         { substrate = renderSubstrate s, model = renderModel m }
 
+let renderConfig
+    : Bool -> ConfigInput -> Config
+    = \(development : Bool) ->
+      \(c : ConfigInput) ->
+        { project = c.project
+        , development = development
+        , substrates = c.substrates
+        }
+
 let config
-    : Config -> Config
-    = \(c : Config) -> c
+    : ConfigInput -> Config
+    = renderConfig False
+
+let configWithDevelopment
+    : Bool -> ConfigInput -> Config
+    = renderConfig
 
 in  { Flavor
     , Mount = { Type = Mount, default = { ro = False } }
@@ -115,4 +130,5 @@ in  { Flavor
     , Substrate
     , entry
     , config
+    , configWithDevelopment
     }

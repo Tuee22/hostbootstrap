@@ -37,16 +37,40 @@ substrate, so it references the one correct arch tag directly.
 
 ## Installing the CLI
 
+Install `pipx` first:
+
 ```bash
-python -m pip install \
-  "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"
+# Apple Silicon / macOS
+brew install pipx
+pipx ensurepath
+
+# Ubuntu 24.04
+sudo apt update
+sudo apt install -y pipx
+pipx ensurepath
 ```
 
-Install into **host Python**, not into any project virtualenv. This works on a
-stock Python 3.12 on Apple Silicon and Ubuntu 24.04 with no Rust toolchain and
-no manual steps: hostbootstrap provisions its own native `dhall-to-json` binary
-on first use. It **always** downloads a pinned, SHA256-verified static release
-into `~/.cache/hostbootstrap/` and uses that one exclusively — it never uses a
+Then install hostbootstrap as an isolated host CLI app:
+
+```bash
+pipx install "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"
+```
+
+For local development against a checkout:
+
+```bash
+pipx install --force /path/to/hostbootstrap
+```
+
+Use `pipx` because hostbootstrap is a command-line application, not a library
+dependency of downstream projects. `pipx` gives the app its own virtual
+environment, exposes only the `hostbootstrap`, `check-code`, and `test-all`
+commands on `PATH`, avoids polluting project virtualenvs, and avoids
+externally-managed Python conflicts on Homebrew and modern Linux distributions.
+
+hostbootstrap provisions its own native `dhall-to-json` binary on first use. It
+**always** downloads a pinned, SHA256-verified static release into
+`~/.cache/hostbootstrap/` and uses that one exclusively — it never uses a
 `dhall-to-json` found on `PATH`, so the host toolchain cannot affect how your
 config is parsed.
 
@@ -70,7 +94,8 @@ configurations *unrepresentable at the type level* — a `Container` has no
 `daemon` field, so writing one is a type error before the CLI ever runs.
 
 The schema is **injected by the CLI as `H`**: your `hostbootstrap.dhall` needs no
-import line and nothing vendored — it opens directly at `H.config { … }`.
+import line and nothing vendored. `H.config { … }` is production mode by
+default.
 
 ```dhall
 -- `H` (the typed schema) is injected by the CLI.
@@ -86,6 +111,25 @@ H.config
 One `H.entry` per substrate (`H.Substrate.AppleSilicon`, `.LinuxCpu`, or
 `.LinuxGpu`); each picks exactly one of the three models below. See the full
 field reference in [`documents/engineering/schema.md`](documents/engineering/schema.md).
+
+For local-only work that is not meant to survive a headless pre-login reboot,
+use the explicit development flag:
+
+```dhall
+H.configWithDevelopment
+  True
+  { project = "example"
+  , substrates =
+    [ H.entry H.Substrate.AppleSilicon
+        (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
+    ]
+  }
+```
+
+Development mode keeps Docker/build checks, but skips the Apple Silicon
+FileVault and system-Colima pre-login checks. For `HostDaemon`, `cluster up`
+builds and prints the daemon command instead of creating a LaunchDaemon/systemd
+unit; `cluster down` and `cluster delete` also skip unit mutation.
 
 ---
 
@@ -152,6 +196,10 @@ up` wraps the daemon command in a system-level unit: a **LaunchDaemon** in
 `/Library/LaunchDaemons` on macOS (**never** a per-user LaunchAgent) or a
 system-scope systemd unit on Linux — so it starts before any user logs in
 (headless remote SSH). `cluster down` removes it.
+
+In development mode, hostbootstrap still builds the daemon binary but does not
+create or remove the system unit; `cluster up` prints the command to run
+manually.
 
 ```dhall
 H.entry H.Substrate.AppleSilicon
@@ -291,11 +339,11 @@ H.entry H.Substrate.LinuxCpu
 ### Projects with their own runtime virtualenv
 
 Some projects (e.g. Python inference adapters) maintain their **own** host-level
-`.venv`. hostbootstrap must **never** be installed into that venv — it goes into
-**host Python** only (see [Installing the CLI](#installing-the-cli)). By the time
-the project runs, the tool's job is done; it has no place in the project's runtime
-environment. This isolation is the project's responsibility, not something the
-tool enforces.
+`.venv`. hostbootstrap must **never** be installed into that venv — it is
+installed as an isolated host CLI app with `pipx` (see
+[Installing the CLI](#installing-the-cli)). By the time the project runs, the
+tool's job is done; it has no place in the project's runtime environment. This
+isolation is the project's responsibility, not something the tool enforces.
 
 ---
 
@@ -399,10 +447,18 @@ poetry.toml                      # in-project .venv (dev only)
 
 * The host `.data` bind mount is preserved across `cluster down` and
   `cluster delete` — neither ever deletes it.
-* A system unit is created **if and only if** a substrate uses the HostDaemon
-  model. Such units are system-scope (systemd / LaunchDaemon), not user-scope
-  LaunchAgents — so they survive a reboot and start pre-login (supporting
-  headless remote SSH).
+* On Apple Silicon container hosts, production-mode `doctor` enforces the
+  headless reboot contract directly: FileVault must be off, Docker must be
+  reachable, and Colima must be started by a bootstrapped system LaunchDaemon
+  under `/Library/LaunchDaemons`. The plist may use any label as long as it runs
+  `colima start -f` / `colima start --foreground` directly or through a wrapper
+  script; per-user LaunchAgents are rejected. Development mode keeps Docker
+  reachability but skips the FileVault and system-Colima checks.
+* In production mode, a system unit is created **if and only if** a substrate
+  uses the HostDaemon model. Such units are system-scope (systemd /
+  LaunchDaemon), not user-scope LaunchAgents — so they survive a reboot and
+  start pre-login (supporting headless remote SSH). Development mode never
+  creates or removes HostDaemon units.
 * `.build/` exists only for HostBinary / HostDaemon projects and is never
   bind-mounted into a container.
 

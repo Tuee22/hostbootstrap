@@ -10,6 +10,7 @@ cluster up/down/delete, run, base build/push. Each substrate's execution model
 from __future__ import annotations
 
 import asyncio
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -87,8 +88,12 @@ async def _cluster_up(project_spec: ProjectSpec, sub: Substrate, project_root: P
     else:
         await host_daemon.build(project_spec, model, sub, project_root=project_root)
         cmd = host_daemon.daemon_command(model, project_root=project_root)
-        unit_path = await units.ensure(project_spec.project, cmd, project_root)
-        click.echo(f"ensured host-daemon unit {unit_path}.")
+        if project_spec.development:
+            click.echo("development mode: skipped host-daemon system unit creation.")
+            click.echo(f"daemon command: {shlex.join(cmd)}")
+        else:
+            unit_path = await units.ensure(project_spec.project, cmd, project_root)
+            click.echo(f"ensured host-daemon unit {unit_path}.")
 
 
 async def _cluster_down(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
@@ -98,6 +103,8 @@ async def _cluster_down(project_spec: ProjectSpec, sub: Substrate, project_root:
     elif isinstance(model, HostBinaryModel):
         cmd = host_binary.resolve_command(model.handoff.down, project_root)
         await process.run_checked(list(cmd), cwd=project_root)
+    elif project_spec.development:
+        click.echo("development mode: skipped host-daemon system unit removal.")
     else:
         await units.remove(project_spec.project)
 
@@ -110,6 +117,8 @@ async def _cluster_delete(project_spec: ProjectSpec, sub: Substrate, project_roo
         raw = model.handoff.delete if model.handoff.delete is not None else model.handoff.down
         cmd = host_binary.resolve_command(raw, project_root)
         await process.run_checked(list(cmd), cwd=project_root)
+    elif project_spec.development:
+        click.echo("development mode: skipped host-daemon system unit removal.")
     else:
         await units.remove(project_spec.project)
 

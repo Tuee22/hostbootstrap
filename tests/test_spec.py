@@ -62,6 +62,7 @@ def test_parse_all_three_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     }
     ps = _load(monkeypatch, tmp_path, data)
     assert ps.project == "demo"
+    assert ps.development is False
     cpu = ps.substrates[SubstrateName.LINUX_CPU]
     assert isinstance(cpu, ContainerModel) and cpu.service and cpu.mounts[0].container == "/d"
     assert isinstance(ps.substrates[SubstrateName.LINUX_GPU], HostBinaryModel)
@@ -79,6 +80,19 @@ def test_container_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     model = ps.substrates[SubstrateName.LINUX_CPU]
     assert isinstance(model, ContainerModel)
     assert model.flavor is spec.Flavor.CPU and model.service is False and model.mounts == ()
+
+
+def test_development_mode_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ps = _load(
+        monkeypatch,
+        tmp_path,
+        {
+            "project": "p",
+            "development": True,
+            "substrates": [_entry("linux-cpu", _container())],
+        },
+    )
+    assert ps.development is True
 
 
 def test_duplicate_substrate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

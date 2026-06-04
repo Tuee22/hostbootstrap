@@ -18,7 +18,7 @@ write. See [`spec.py`](../../hostbootstrap/spec.py) for the consuming side.
 ## Top-level shape
 
 The CLI injects the schema as `H` before rendering, so the file carries **no
-import line** and opens directly at `H.config`:
+import line** and usually opens directly at production-mode `H.config`:
 
 ```dhall
 -- `H` (the schema) is injected by the CLI.
@@ -37,7 +37,23 @@ H.config
 
 `H.entry` lowers the typed union into a JSON-friendly record (`dhall-to-json`
 strips union tags, so it injects an explicit `tag`). `H.config` is a typed
-identity that pins the top-level shape.
+constructor that pins the top-level shape and sets `development = False`.
+Projects that need local-only development behavior opt in explicitly:
+
+```dhall
+H.configWithDevelopment
+  True
+  { project = "<name>"
+  , substrates =
+    [ H.entry <substrate> <model> ]
+  }
+```
+
+Development mode is intentionally narrow: it keeps substrate, build, and Docker
+checks, but Apple Silicon `doctor` skips the FileVault and system-Colima
+pre-login checks. For `HostDaemon`, `cluster up` builds and prints the daemon
+command instead of creating a LaunchDaemon/systemd unit; `cluster down` and
+`cluster delete` skip unit removal. Production mode remains the default.
 
 ## The three models
 
@@ -74,7 +90,9 @@ its own services (e.g. an RKE2 systemd unit it installs).
 For a long-running **host-native** daemon (e.g. Apple-silicon Metal inference).
 This is the **only** model with a `daemon` field — and it is **required** — so a
 [LaunchDaemon / systemd unit](prerequisites.md) exists *if and only if* this
-model is chosen. `cluster up` creates it; `cluster down` removes it.
+model is chosen in production mode. `cluster up` creates it; `cluster down`
+removes it. Development mode is the explicit exception: the daemon is built, but
+the unit is not created or removed.
 
 | field | type | required | default | meaning |
 |---|---|---|---|---|
@@ -94,8 +112,9 @@ model is chosen. `cluster up` creates it; `cluster down` removes it.
    rather than imported, the file only type-checks through the CLI — standalone
    `dhall-to-json` sees `H` as unbound.)
 2. [`spec.py`](../../hostbootstrap/spec.py) reads the JSON: each entry's `model`
-   carries a `tag` (`Container` / `HostBinary` / `HostDaemon`) and exactly one
-   populated payload, which it maps into a frozen dataclass.
+   carries `development` plus model entries. Each entry's `model` carries a
+   `tag` (`Container` / `HostBinary` / `HostDaemon`) and exactly one populated
+   payload, which it maps into a frozen dataclass.
 3. It then runs the residual checks Dhall cannot express and fails fast with a
    `SpecError`: **no duplicate substrate**, and the **detected substrate must be
    declared**.
@@ -208,4 +227,18 @@ Linux GPU:
         H.Container::{ dockerfile = "docker/infer.Dockerfile", flavor = H.Flavor.Cuda, service = True }
     )
 ]
+```
+
+A local development project that uses normal container build/run behavior but
+does not promise headless pre-login Docker after a reboot:
+
+```dhall
+H.configWithDevelopment
+  True
+  { project = "tool"
+  , substrates =
+    [ H.entry H.Substrate.AppleSilicon
+        (H.Model.Container H.Container::{ dockerfile = "docker/tool.Dockerfile" })
+    ]
+  }
 ```

@@ -27,12 +27,15 @@ container: that is the host-side concern.
 
 Downstream projects that maintain their own host-level `.venv` (e.g. ML
 inference Python adapters) must **never** add `hostbootstrap` to that venv.
-By bootstrap time, hostbootstrap's job is done; it has no place inside a
-project's runtime environment. See §10 of the plan.
+Install hostbootstrap with `pipx` so it lives in its own host-side app
+environment and exposes only its console scripts on `PATH`. By bootstrap time,
+hostbootstrap's job is done; it has no place inside a project's runtime
+environment. See §10 of the plan.
 
 ## hostbootstrap itself
 
 The hostbootstrap repo uses Poetry with an **in-project** `.venv`
 (`poetry.toml` sets `virtualenvs.in-project = true`) — *for repo
-development only*. Downstream installs go into host Python via `pip install
-git+…`.
+development only*. Downstream installs use `pipx install
+"git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"`, or
+`pipx install --force /path/to/hostbootstrap` for a local checkout.

@@ -111,6 +111,7 @@ class ProjectSpec:
     project: str
     substrates: Mapping[SubstrateName, ModelSpec]
     source_path: Path
+    development: bool = False
 
     def model_for(self, substrate: Substrate) -> ModelSpec:
         if substrate.name not in self.substrates:
@@ -253,6 +254,7 @@ def load(path: Path) -> ProjectSpec:
 
     data = _as_map(rendered, where="<root>")
     project = _as_str(data.get("project"), where="project")
+    development = _as_bool(data.get("development", False), where="development")
 
     entries = _as_list(data.get("substrates"), where="substrates")
     if not entries:
@@ -271,4 +273,9 @@ def load(path: Path) -> ProjectSpec:
             raise SpecError(f"substrate {name.value!r} is declared more than once")
         substrates[name] = _model(entry.get("model"), where=f"{where}.model")
 
-    return ProjectSpec(project=project, substrates=substrates, source_path=path)
+    return ProjectSpec(
+        project=project,
+        substrates=substrates,
+        source_path=path,
+        development=development,
+    )

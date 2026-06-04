@@ -73,9 +73,22 @@ from source for that platform.
 * Homebrew.
 * Tart (when an entry's host requirements declare `tart = True`).
 * ghcup + pinned GHC/Cabal (when a host-binary build is needed).
+* FileVault disabled in production mode, so a remote reboot can reach SSH and
+  system services without a first interactive unlock.
 * **Colima-backed Docker VM configured to start at the system level
-  (before user login).** hostbootstrap does not install or modify Colima — it
-  validates that the system-level launchd plist exists.
+  (before user login) in production mode.** hostbootstrap does not install or
+  modify Colima — it validates that a bootstrapped system-domain LaunchDaemon
+  under `/Library/LaunchDaemons` starts Colima in foreground mode, either
+  directly with `colima start -f` / `colima start --foreground` or through a
+  wrapper script containing that foreground start. The LaunchDaemon label and
+  plist filename do not need to be `com.colima.default`.
+
+Development mode is an explicit opt-in in
+[`hostbootstrap.dhall`](schema.md#top-level-shape). On Apple Silicon it keeps
+the macOS, Xcode CLT, Homebrew, passwordless-sudo, Docker reachability, and
+declared host-build checks, but skips the FileVault and system-Colima
+pre-login checks. Use it only for local development hosts where post-reboot
+operation before GUI login is not part of the contract.
 
 ## linux-cpu
 
@@ -92,10 +105,19 @@ Everything from linux-cpu, plus:
 
 ## Headless remote SSH
 
-On macOS, hostbootstrap-configured services must work in setups where
+On macOS production-mode hostbootstrap-configured services must work in setups where
 FileVault is off and the user may reboot remotely and SSH in **before any GUI
 login**. The Colima VM and any host-daemon unit therefore start at the
 system level — a **LaunchDaemon**, never a per-user **LaunchAgent**. User-scope
 launchd agents and user-scope systemd units would not survive that workflow.
 (This applies only when the host-daemon model is in play; container and
 host-binary projects create no unit at all.)
+
+The doctor check enforces both sides of that workflow: FileVault must report
+`FileVault is Off.`, and Colima must be represented by a loaded
+`system/<label>` launchd service. A per-user LaunchAgent, an unloaded plist, or
+a LaunchDaemon that omits `RunAtLoad` is rejected.
+
+Development mode skips those two pre-login checks and never creates or removes
+HostDaemon LaunchDaemon/systemd units. It does not waive Docker reachability,
+substrate detection, or declared build prerequisites.
