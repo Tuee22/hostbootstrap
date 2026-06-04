@@ -59,6 +59,32 @@ def test_run_exposes_local_base_build_options() -> None:
     assert "--base-context" in result.output
 
 
+def test_run_forwards_help_after_runtime_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project(_container_model())
+    captured: list[tuple[str, ...]] = []
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
+    monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
+
+    async def _fake_run(
+        _spec: ProjectSpec,
+        _sub: Substrate,
+        _root: Path,
+        command: tuple[str, ...],
+        **_kwargs: object,
+    ) -> process.CommandResult:
+        captured.append(command)
+        return process.CommandResult(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli, "_run", _fake_run)
+
+    result = CliRunner().invoke(cli.main, ["run", "play", "--help"])
+
+    assert result.exit_code == 0
+    assert captured == [("play", "--help")]
+
+
 def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
     missing = tmp_path / "hostbootstrap.dhall"
     result = CliRunner().invoke(cli.main, ["build", "--spec", str(missing)])

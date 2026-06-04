@@ -178,6 +178,12 @@ With that shape, run project commands without repeating the executable:
 hostbootstrap run test all
 ```
 
+`hostbootstrap run --help` still shows the hostbootstrap wrapper options. Once
+the first project argument appears, later flags are forwarded to the project
+entrypoint, so `hostbootstrap run play --help` asks the project command for help.
+Put hostbootstrap's own `run` options before the project arguments, for example
+`hostbootstrap run --no-pull play --help`.
+
 This is the compose-replacement case — pure container apps with no cluster are
 first-class. The win over compose is faster builds (the prebuilt base tag) plus
 a default-pull / `--build-base` "pull-or-build-local" switch compose lacks.

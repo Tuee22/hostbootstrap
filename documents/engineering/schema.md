@@ -63,6 +63,10 @@ owns any cluster/upload work; **no system unit is ever created** for this model.
 For one-shot `hostbootstrap run`, the image must declare an `ENTRYPOINT`; trailing
 tokens are passed as arguments to that entrypoint, not interpreted as a raw
 container command.
+Hostbootstrap parses its own `run` options only before the first project
+argument. After that boundary, option-looking tokens are forwarded unchanged:
+`hostbootstrap run --help` documents the wrapper, while
+`hostbootstrap run test --help` forwards `test --help` to the project entrypoint.
 
 | field | type | required | default | meaning |
 |---|---|---|---|---|
@@ -198,6 +202,8 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/tool"]
 
 Then `hostbootstrap run test all` passes `test all` to `tool`; it does not run a
 raw `/usr/bin/test` inside the container.
+Likewise, `hostbootstrap run test --help` passes `test --help` to `tool`; place
+hostbootstrap options such as `--no-pull` before `test`.
 
 A long-running, self-restarting service container that bootstraps its own
 cluster and uploads its own image:

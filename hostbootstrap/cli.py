@@ -514,7 +514,7 @@ def cluster_delete(spec_path: Path) -> None:
     click.echo("cluster delete: derived state removed; host .data preserved.")
 
 
-@main.command()
+@main.command(context_settings={"allow_interspersed_args": False})
 @_SPEC_OPTION
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
