@@ -1,12 +1,10 @@
-"""``model: container`` (§9.5).
+"""``model: container``.
 
 hostbootstrap builds a thin image ``FROM`` the hostbootstrap base tag and runs
-it. The container owns any cluster/upload work itself; hostbootstrap never
-creates a system service unit for this model.
-
-* ``service = False`` → one-shot ``docker run --rm`` (the compose-replacement case).
-* ``service = True``  → ``cluster up`` runs it detached with
-  ``--restart unless-stopped`` so the Docker daemon restarts it across reboots.
+it. The image must expose the project command as a tini-wrapped entrypoint.
+Cluster lifecycle is a one-shot handoff to that entrypoint; hostbootstrap never
+creates a system service unit or a restart-after-reboot container for this
+model.
 
 Project source is built into the image (the Dockerfile inherits ``FROM
 ${BASE_IMAGE}``); the heavy toolchain is pulled with the base, so cold builds
@@ -88,6 +86,12 @@ def validate_entrypoint_for_args(
         )
 
     program = _entrypoint_program(entrypoint)
+    first = _command_name(entrypoint[0])
+    if first != "tini" or "--" not in entrypoint or program != project:
+        raise RuntimeError(
+            f"container image {tag!r} must declare a tini-wrapped project ENTRYPOINT, "
+            f'for example `ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/{project}"]`.'
+        )
     if args and program == _command_name(args[0]):
         raise RuntimeError(
             f"container image {tag!r} already declares ENTRYPOINT "
@@ -180,6 +184,7 @@ async def run_one_shot(
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    env: dict[str, str] | None = None,
 ) -> process.CommandResult:
     tag = await build(
         spec,
@@ -202,23 +207,26 @@ async def run_one_shot(
         image=tag,
         command=tuple(command),
         rm=True,
+        env=env or {},
         mounts=_mounts(model, project_root),
     )
     return await process.run_checked(docker_ops.run_command(run_spec))
 
 
-async def start_service(
+async def run_cluster_command(
     spec: ProjectSpec,
     model: ContainerModel,
     substrate: Substrate,
+    command: Sequence[str],
     *,
     flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    env: dict[str, str] | None = None,
 ) -> process.CommandResult:
-    """Start the long-running container detached with ``--restart unless-stopped``."""
+    """Run a cluster lifecycle handoff inside the project container."""
     tag = await build(
         spec,
         model,
@@ -229,17 +237,18 @@ async def start_service(
         base_context=base_context,
         pull=pull,
     )
-    # Recreate idempotently: remove any prior container of the same name first.
-    await process.run(["docker", "rm", "-f", spec.project], quiet=True)
+    entrypoint = await docker_ops.image_entrypoint(tag)
+    validate_entrypoint_for_args(
+        project=spec.project,
+        tag=tag,
+        entrypoint=entrypoint,
+        args=command,
+    )
     run_spec = docker_ops.RunSpec(
         image=tag,
-        detach=True,
-        restart="unless-stopped",
-        name=spec.project,
+        command=tuple(command),
+        rm=True,
+        env=env or {},
         mounts=_mounts(model, project_root),
     )
     return await process.run_checked(docker_ops.run_command(run_spec))
-
-
-async def stop_service(spec: ProjectSpec) -> process.CommandResult:
-    return await process.run(["docker", "rm", "-f", spec.project], quiet=True)

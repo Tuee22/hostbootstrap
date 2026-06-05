@@ -2,15 +2,14 @@
 
 The single entrypoint installed on every downstream host (via
 ``pip install git+…``). Commands implement §6 of the plan: doctor, build,
-cluster up/down/delete, run, base build-and-push. Each substrate's execution model
-(``container`` / ``host-binary`` / ``host-daemon``) is declared in the project's
-``hostbootstrap.dhall`` and dispatched here.
+cluster up/down/delete, daemon run, run, base build-and-push. Each substrate's
+execution model (``container`` / ``host-binary`` / ``host-daemon``) is declared
+in the project's ``hostbootstrap.dhall`` and dispatched here.
 """
 
 from __future__ import annotations
 
 import asyncio
-import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -28,12 +27,19 @@ from . import (
     process,
     spec,
     substrate,
-    units,
 )
 from .base_image import Flavor
 from .models import container as container_model
 from .models import host_binary, host_daemon
-from .spec import ContainerModel, HostBinaryModel, ProjectSpec, SpecError
+from .spec import (
+    ContainerModel,
+    HostBinaryModel,
+    HostDaemonModel,
+    Lifecycle,
+    ProjectSpec,
+    ResolvedTarget,
+    SpecError,
+)
 from .substrate import Substrate, SubstrateName
 
 _DEFAULT_SPEC_PATH: Final[Path] = Path("hostbootstrap.dhall")
@@ -79,23 +85,76 @@ def _resolve_pull(build_base: bool, no_pull: bool) -> bool:
     return not (build_base or no_pull)
 
 
+def _target_substrate(host_substrate: Substrate, resolved: ResolvedTarget) -> Substrate:
+    return Substrate(resolved.substrate, host_substrate.arch)
+
+
+def _selected_flavor(resolved: ResolvedTarget) -> Flavor:
+    return base_image.substrate_to_flavor(resolved.substrate)
+
+
+def _parse_force_target(force_target: str | None) -> SubstrateName | None:
+    if force_target is None:
+        return None
+    return SubstrateName(force_target)
+
+
+def _require_cluster(resolved: ResolvedTarget) -> None:
+    if resolved.lifecycle is Lifecycle.NO_CLUSTER:
+        raise RuntimeError(
+            f"target {resolved.substrate.value!r} has NoCluster lifecycle; "
+            "cluster commands are not applicable. Use `hostbootstrap run ...`."
+        )
+
+
+def _require_daemon(resolved: ResolvedTarget) -> HostDaemonModel:
+    if not isinstance(resolved.model, HostDaemonModel):
+        raise RuntimeError(
+            f"target {resolved.substrate.value!r} uses model {_model_name(resolved.model)!r}; "
+            "`hostbootstrap daemon run` requires a HostDaemon target."
+        )
+    return resolved.model
+
+
+def _cluster_command(verb: str) -> tuple[str, str]:
+    return ("cluster", verb)
+
+
+def _model_name(model: object) -> str:
+    if isinstance(model, ContainerModel):
+        return "container"
+    if isinstance(model, HostBinaryModel):
+        return "host-binary"
+    return "host-daemon"
+
+
+def _target_env(resolved: ResolvedTarget) -> dict[str, str]:
+    return {
+        "HOSTBOOTSTRAP_TARGET": resolved.substrate.value,
+        "HOSTBOOTSTRAP_MODEL": _model_name(resolved.model),
+        "HOSTBOOTSTRAP_LIFECYCLE": resolved.lifecycle.value,
+    }
+
+
 async def _build(
     project_spec: ProjectSpec,
     sub: Substrate,
     project_root: Path,
     *,
+    force_target: SubstrateName | None = None,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
 ) -> None:
-    resolved = project_spec.target_for(sub)
+    resolved = project_spec.target_for(sub, force_target=force_target)
     model = resolved.model
-    flavor = base_image.accel_to_flavor(resolved.accel)
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
     if isinstance(model, ContainerModel):
         await container_model.build(
             project_spec,
             model,
-            sub,
+            target_substrate,
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
@@ -112,6 +171,7 @@ async def _build(
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            tag_substrate=target_substrate,
         )
     else:
         await host_daemon.build(
@@ -123,6 +183,7 @@ async def _build(
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            tag_substrate=target_substrate,
         )
 
 
@@ -132,24 +193,28 @@ async def _run(
     project_root: Path,
     args: Sequence[str],
     *,
+    force_target: SubstrateName | None = None,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
 ) -> process.CommandResult:
-    resolved = project_spec.target_for(sub)
+    resolved = project_spec.target_for(sub, force_target=force_target)
     model = resolved.model
-    flavor = base_image.accel_to_flavor(resolved.accel)
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
+    env = _target_env(resolved)
     if isinstance(model, ContainerModel):
         return await container_model.run_one_shot(
             project_spec,
             model,
-            sub,
+            target_substrate,
             args,
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            env=env,
         )
     if isinstance(model, HostBinaryModel):
         return await host_binary.run_one_shot(
@@ -162,6 +227,8 @@ async def _run(
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
         )
     return await host_daemon.run_one_shot(
         project_spec,
@@ -173,6 +240,36 @@ async def _run(
         build_base=build_base,
         base_context=base_context,
         pull=pull,
+        tag_substrate=target_substrate,
+        env=env,
+    )
+
+
+async def _daemon_run(
+    project_spec: ProjectSpec,
+    sub: Substrate,
+    project_root: Path,
+    *,
+    force_target: SubstrateName | None = None,
+    build_base: bool = False,
+    base_context: Path | None = None,
+    pull: bool = True,
+) -> process.CommandResult:
+    resolved = project_spec.target_for(sub, force_target=force_target)
+    model = _require_daemon(resolved)
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
+    return await host_daemon.run_daemon(
+        project_spec,
+        model,
+        sub,
+        flavor=flavor,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+        pull=pull,
+        tag_substrate=target_substrate,
+        env=_target_env(resolved),
     )
 
 
@@ -181,96 +278,176 @@ async def _cluster_up(
     sub: Substrate,
     project_root: Path,
     *,
+    force_target: SubstrateName | None = None,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
 ) -> None:
-    resolved = project_spec.target_for(sub)
+    resolved = project_spec.target_for(sub, force_target=force_target)
+    _require_cluster(resolved)
     model = resolved.model
-    flavor = base_image.accel_to_flavor(resolved.accel)
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
+    env = _target_env(resolved)
     if isinstance(model, ContainerModel):
-        if model.service:
-            await container_model.start_service(
-                project_spec,
-                model,
-                sub,
-                flavor=flavor,
-                project_root=project_root,
-                build_base=build_base,
-                base_context=base_context,
-                pull=pull,
-            )
-            click.echo(f"started service container {project_spec.project!r} (unless-stopped).")
-        else:
-            await container_model.build(
-                project_spec,
-                model,
-                sub,
-                flavor=flavor,
-                project_root=project_root,
-                build_base=build_base,
-                base_context=base_context,
-                pull=pull,
-            )
-            click.echo("built project image; invoke one-shot work with `hostbootstrap run …`.")
-    elif isinstance(model, HostBinaryModel):
-        await host_binary.build(
+        await container_model.run_cluster_command(
             project_spec,
             model,
-            sub,
+            target_substrate,
+            _cluster_command("up"),
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            env=env,
         )
-        cmd = host_binary.resolve_command(model.handoff.up, project_root)
-        await process.run_checked(list(cmd), cwd=project_root)
-    else:
-        await host_daemon.build(
+    elif isinstance(model, HostBinaryModel):
+        await host_binary.run_one_shot(
             project_spec,
             model,
             sub,
+            _cluster_command("up"),
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
             pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
         )
-        cmd = host_daemon.daemon_command(model, project_root=project_root)
-        if project_spec.development:
-            click.echo("development mode: skipped host-daemon system unit creation.")
-            click.echo(f"daemon command: {shlex.join(cmd)}")
-        else:
-            unit_path = await units.ensure(project_spec.project, cmd, project_root)
-            click.echo(f"ensured host-daemon unit {unit_path}.")
-
-
-async def _cluster_down(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
-    model = project_spec.target_for(sub).model
-    if isinstance(model, ContainerModel):
-        await container_model.stop_service(project_spec)
-    elif isinstance(model, HostBinaryModel):
-        cmd = host_binary.resolve_command(model.handoff.down, project_root)
-        await process.run_checked(list(cmd), cwd=project_root)
-    elif project_spec.development:
-        click.echo("development mode: skipped host-daemon system unit removal.")
     else:
-        await units.remove(project_spec.project)
+        await host_daemon.run_one_shot(
+            project_spec,
+            model,
+            sub,
+            _cluster_command("up"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
+        )
 
 
-async def _cluster_delete(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
-    model = project_spec.target_for(sub).model
+async def _cluster_down(
+    project_spec: ProjectSpec,
+    sub: Substrate,
+    project_root: Path,
+    *,
+    force_target: SubstrateName | None = None,
+    build_base: bool = False,
+    base_context: Path | None = None,
+    pull: bool = True,
+) -> None:
+    resolved = project_spec.target_for(sub, force_target=force_target)
+    _require_cluster(resolved)
+    model = resolved.model
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
+    env = _target_env(resolved)
     if isinstance(model, ContainerModel):
-        await container_model.stop_service(project_spec)
+        await container_model.run_cluster_command(
+            project_spec,
+            model,
+            target_substrate,
+            _cluster_command("down"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            env=env,
+        )
     elif isinstance(model, HostBinaryModel):
-        raw = model.handoff.delete if model.handoff.delete is not None else model.handoff.down
-        cmd = host_binary.resolve_command(raw, project_root)
-        await process.run_checked(list(cmd), cwd=project_root)
-    elif project_spec.development:
-        click.echo("development mode: skipped host-daemon system unit removal.")
+        await host_binary.run_one_shot(
+            project_spec,
+            model,
+            sub,
+            _cluster_command("down"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
+        )
     else:
-        await units.remove(project_spec.project)
+        await host_daemon.run_one_shot(
+            project_spec,
+            model,
+            sub,
+            _cluster_command("down"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
+        )
+
+
+async def _cluster_delete(
+    project_spec: ProjectSpec,
+    sub: Substrate,
+    project_root: Path,
+    *,
+    force_target: SubstrateName | None = None,
+    build_base: bool = False,
+    base_context: Path | None = None,
+    pull: bool = True,
+) -> None:
+    resolved = project_spec.target_for(sub, force_target=force_target)
+    _require_cluster(resolved)
+    model = resolved.model
+    flavor = _selected_flavor(resolved)
+    target_substrate = _target_substrate(sub, resolved)
+    env = _target_env(resolved)
+    if isinstance(model, ContainerModel):
+        await container_model.run_cluster_command(
+            project_spec,
+            model,
+            target_substrate,
+            _cluster_command("delete"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            env=env,
+        )
+    elif isinstance(model, HostBinaryModel):
+        await host_binary.run_one_shot(
+            project_spec,
+            model,
+            sub,
+            _cluster_command("delete"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
+        )
+    else:
+        await host_daemon.run_one_shot(
+            project_spec,
+            model,
+            sub,
+            _cluster_command("delete"),
+            flavor=flavor,
+            project_root=project_root,
+            build_base=build_base,
+            base_context=base_context,
+            pull=pull,
+            tag_substrate=target_substrate,
+            env=env,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +498,6 @@ def _format_command_error(exc: process.CommandError) -> str:
 _MISSING_BINARY_HINTS: Final[dict[str, str]] = {
     "docker": "`docker` not found in PATH — install Docker and retry.",
     "sudo": "`sudo` not found in PATH — required for host operations.",
-    "systemctl": "`systemctl` not found in PATH — host-daemon support requires systemd.",
-    "launchctl": "`launchctl` not found in PATH — host-daemon support requires macOS launchd.",
     "nvidia-smi": "`nvidia-smi` not found in PATH — install the NVIDIA driver.",
 }
 
@@ -359,8 +534,8 @@ def _format_runtime_error(exc: BaseException) -> str:
 class _FriendlyGroup(click.Group):
     """Click group that converts known exception types to ``ClickException``.
 
-    Why: a bare ``CommandError`` / ``httpx.HTTPError`` / ``UnitError`` /
-    ``DhallToolError`` / ``RuntimeError`` from deep in the stack would otherwise
+    Why: a bare ``CommandError`` / ``httpx.HTTPError`` / ``DhallToolError`` /
+            ``RuntimeError`` from deep in the stack would otherwise
     surface to the user as a Python traceback. Click prints ``ClickException``
     as ``Error: <msg>`` with no traceback and a non-zero exit.
     """
@@ -381,8 +556,6 @@ class _FriendlyGroup(click.Group):
             raise click.ClickException(message) from exc
         except httpx.HTTPError as exc:
             raise click.ClickException(_format_http_error(exc)) from exc
-        except units.UnitError as exc:
-            raise click.ClickException(str(exc)) from exc
         except dhall_tool.DhallToolError as exc:
             raise click.ClickException(str(exc)) from exc
         except (RuntimeError, KeyError) as exc:
@@ -424,6 +597,13 @@ _NO_PULL_OPTION = click.option(
     ),
 )
 
+_FORCE_TARGET_OPTION = click.option(
+    "--force-target",
+    type=click.Choice([name.value for name in SubstrateName]),
+    default=None,
+    help="Select a declared substrate entry instead of the detected host target.",
+)
+
 
 @click.group(cls=_FriendlyGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
@@ -454,11 +634,13 @@ def doctor(spec_path: Path) -> None:
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
 @_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
 def build(
     spec_path: Path,
     build_base: bool,
     base_context: Path | None,
     no_pull: bool,
+    force_target: str | None,
 ) -> None:
     """Idempotently build the project artifact for the current substrate."""
     project_spec = _load_spec(spec_path)
@@ -469,6 +651,7 @@ def build(
             project_spec,
             sub,
             project_root,
+            force_target=_parse_force_target(force_target),
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
             pull=_resolve_pull(build_base, no_pull),
@@ -486,11 +669,13 @@ def cluster() -> None:
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
 @_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
 def cluster_up(
     spec_path: Path,
     build_base: bool,
     base_context: Path | None,
     no_pull: bool,
+    force_target: str | None,
 ) -> None:
     """Bring the whole stack to running (idempotent)."""
     project_spec = _load_spec(spec_path)
@@ -501,6 +686,7 @@ def cluster_up(
             project_spec,
             sub,
             project_root,
+            force_target=_parse_force_target(force_target),
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
             pull=_resolve_pull(build_base, no_pull),
@@ -510,24 +696,99 @@ def cluster_up(
 
 @cluster.command("down")
 @_SPEC_OPTION
-def cluster_down(spec_path: Path) -> None:
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
+@_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
+def cluster_down(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    no_pull: bool,
+    force_target: str | None,
+) -> None:
     """Tear the cluster down; never deletes host .data."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
-    asyncio.run(_cluster_down(project_spec, sub, project_root))
+    asyncio.run(
+        _cluster_down(
+            project_spec,
+            sub,
+            project_root,
+            force_target=_parse_force_target(force_target),
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
+        )
+    )
     click.echo("cluster down: host .data preserved.")
 
 
 @cluster.command("delete")
 @_SPEC_OPTION
-def cluster_delete(spec_path: Path) -> None:
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
+@_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
+def cluster_delete(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    no_pull: bool,
+    force_target: str | None,
+) -> None:
     """Thorough teardown (cluster + derived state); still never deletes .data."""
     project_spec = _load_spec(spec_path)
     sub = _detect_substrate()
     project_root = spec_path.resolve().parent
-    asyncio.run(_cluster_delete(project_spec, sub, project_root))
+    asyncio.run(
+        _cluster_delete(
+            project_spec,
+            sub,
+            project_root,
+            force_target=_parse_force_target(force_target),
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
+        )
+    )
     click.echo("cluster delete: derived state removed; host .data preserved.")
+
+
+@main.group(cls=_FriendlyGroup)
+def daemon() -> None:
+    """Foreground daemon lifecycle for HostDaemon targets."""
+
+
+@daemon.command("run")
+@_SPEC_OPTION
+@_BUILD_BASE_OPTION
+@_BASE_CONTEXT_OPTION
+@_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
+def daemon_run(
+    spec_path: Path,
+    build_base: bool,
+    base_context: Path | None,
+    no_pull: bool,
+    force_target: str | None,
+) -> None:
+    """Run the configured HostDaemon process in the foreground."""
+    project_spec = _load_spec(spec_path)
+    sub = _detect_substrate()
+    project_root = spec_path.resolve().parent
+    asyncio.run(
+        _daemon_run(
+            project_spec,
+            sub,
+            project_root,
+            force_target=_parse_force_target(force_target),
+            build_base=build_base,
+            base_context=_base_context_value(build_base, base_context),
+            pull=_resolve_pull(build_base, no_pull),
+        )
+    )
 
 
 @main.command(context_settings={"allow_interspersed_args": False})
@@ -535,12 +796,14 @@ def cluster_delete(spec_path: Path) -> None:
 @_BUILD_BASE_OPTION
 @_BASE_CONTEXT_OPTION
 @_NO_PULL_OPTION
+@_FORCE_TARGET_OPTION
 @click.argument("args", nargs=-1)
 def run(
     spec_path: Path,
     build_base: bool,
     base_context: Path | None,
     no_pull: bool,
+    force_target: str | None,
     args: tuple[str, ...],
 ) -> None:
     """Build if needed, then pass ``args`` to the project entrypoint."""
@@ -553,6 +816,7 @@ def run(
             sub,
             project_root,
             args,
+            force_target=_parse_force_target(force_target),
             build_base=build_base,
             base_context=_base_context_value(build_base, base_context),
             pull=_resolve_pull(build_base, no_pull),

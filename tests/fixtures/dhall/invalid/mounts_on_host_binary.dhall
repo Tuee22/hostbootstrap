@@ -1,15 +1,9 @@
--- A HostBinary has no `mounts` field, so this is a Dhall type error.
-H.config
+-- `mounts` is only valid on Container, never HostBinary.
+let bad =
+      H.Model.HostBinary
+        H.HostBinary::{ mounts = [] : List H.Mount.Type }
+
+in  H.config
       { project = "demo"
-      , targets =
-        [ H.target
-            H.Accel.Cpu
-            ( H.Model.HostBinary
-                H.HostBinary::{
-                , build = H.Build::{ cabal = "cabal install exe:demo" }
-                , handoff = H.Handoff::{ up = ".build/demo up", down = ".build/demo down" }
-                , mounts = [] : List H.Mount.Type
-                }
-            )
-        ]
+      , substrates = [ H.entry H.Substrate.LinuxGpu (H.cluster bad) ]
       }

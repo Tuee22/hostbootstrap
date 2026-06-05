@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from hostbootstrap import substrate
-from hostbootstrap.substrate import Accel, SubstrateName
+from hostbootstrap.substrate import SubstrateName
 
 
 @pytest.mark.parametrize(
@@ -68,24 +68,6 @@ def test_substrate_properties() -> None:
     assert not apple.is_linux
     assert gpu.is_linux
     assert gpu.has_gpu
-
-
-def test_host_capabilities() -> None:
-    apple = substrate.Substrate(SubstrateName.APPLE_SILICON, "arm64")
-    cpu = substrate.Substrate(SubstrateName.LINUX_CPU, "amd64")
-    gpu = substrate.Substrate(SubstrateName.LINUX_GPU, "amd64")
-
-    # Cpu is satisfiable everywhere; accelerators are host-bound.
-    assert apple.capabilities == frozenset({Accel.CPU, Accel.METAL})
-    assert cpu.capabilities == frozenset({Accel.CPU})
-    assert gpu.capabilities == frozenset({Accel.CPU, Accel.CUDA})
-    assert all(Accel.CPU in host.capabilities for host in (apple, cpu, gpu))
-
-
-def test_accel_specificity_prefers_accelerators() -> None:
-    assert substrate.accel_specificity(Accel.CPU) == 0
-    assert substrate.accel_specificity(Accel.CUDA) > substrate.accel_specificity(Accel.CPU)
-    assert substrate.accel_specificity(Accel.METAL) > substrate.accel_specificity(Accel.CPU)
 
 
 def test_has_nvidia_gpu_from_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

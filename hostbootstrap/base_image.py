@@ -24,7 +24,7 @@ from typing import Final
 import httpx
 
 from . import docker_ops
-from .substrate import Accel
+from .substrate import SubstrateName
 
 
 class Flavor(StrEnum):
@@ -70,7 +70,7 @@ _PURESCRIPT_ASSET: Final[Mapping[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Accel → base flavor mapping (§4)
+# Substrate → base flavor mapping (§4)
 # ---------------------------------------------------------------------------
 
 
@@ -82,13 +82,9 @@ def base_image_ref(flavor: Flavor, arch: str) -> str:
     return f"{HOSTBOOTSTRAP_IMAGE_REPO}:{base_tag(flavor, arch)}"
 
 
-def accel_to_flavor(accel: Accel) -> Flavor:
-    """The base-image family a resolved acceleration requirement builds against.
-
-    ``Cuda`` pulls the CUDA base; ``Cpu`` and ``Metal`` both use the CPU base
-    (Metal is host-native, so any container counterpart it declares is plain CPU).
-    """
-    if accel is Accel.CUDA:
+def substrate_to_flavor(substrate: SubstrateName) -> Flavor:
+    """The base-image family a declared hardware target builds against."""
+    if substrate is SubstrateName.LINUX_GPU:
         return Flavor.CUDA
     return Flavor.CPU
 

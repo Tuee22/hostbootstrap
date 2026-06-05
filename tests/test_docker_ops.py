@@ -87,7 +87,6 @@ def test_run_command_detached_service() -> None:
     spec = docker_ops.RunSpec(
         image="img",
         detach=True,
-        restart="unless-stopped",
         name="proj",
         env={"K": "V"},
         network="host",
@@ -95,9 +94,7 @@ def test_run_command_detached_service() -> None:
     )
     cmd = docker_ops.run_command(spec)
     assert "-d" in cmd
-    assert ("--restart", "unless-stopped") == cmd[
-        cmd.index("--restart") : cmd.index("--restart") + 2
-    ]
+    assert "--restart" not in cmd
     assert ("--name", "proj") == cmd[cmd.index("--name") : cmd.index("--name") + 2]
     assert ("--network", "host") == cmd[cmd.index("--network") : cmd.index("--network") + 2]
     assert "K=V" in cmd

@@ -1,20 +1,18 @@
-"""``model: host-binary`` (§9.5).
+"""``model: host-binary``.
 
 The primary artifact is a binary that runs **on the host**. hostbootstrap builds
-it, optionally builds a container counterpart, and then hands the lifecycle off
-to the binary's own commands (``handoff.up`` / ``down`` / ``delete``). It creates
-**no** system unit — the binary manages its own services (e.g. an RKE2 systemd
-unit it installs itself).
+it, optionally builds a container counterpart, and then hands cluster lifecycle
+off to the project's own ``cluster up`` / ``down`` / ``delete`` commands. It
+creates no system unit.
 
-* **Apple silicon** — run the project's ``build.cabal`` command on the host
-  (GHC/Cabal via brew→ghcup); hot rebuilds stay incremental.
-* **Linux** — run ``build.cabal`` **inside the base container** with the project
-  source mounted, so the toolchain never lands on the Linux host; the binary
-  appears in the host ``.build/`` directory.
+* **Apple silicon** — run the derived ``cabal install exe:<project>`` command on
+  the host; hot rebuilds stay incremental.
+* **Linux** — run the same derived Cabal install **inside the base container**
+  with the project source mounted, so the toolchain never lands on the Linux
+  host; the binary appears in the host ``.build/`` directory.
 
-The author's ``build.cabal`` is responsible for placing the binary at
-``.build/<project>`` (e.g. ``cabal install --installdir .build
---install-method=copy --overwrite-policy=always exe:<project>``).
+The project name is the executable name. hostbootstrap installs
+``exe:<project>`` into ``.build/<project>``.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from hostbootstrap import base_image, docker_ops, process
-from hostbootstrap.spec import BuildSpec, HostBinaryModel, ProjectSpec
+from hostbootstrap.spec import HostBinaryModel, ProjectSpec
 from hostbootstrap.substrate import Substrate, SubstrateName
 
 from . import container
@@ -49,7 +47,6 @@ def resolve_command(raw: str, project_root: Path) -> tuple[str, ...]:
 
 async def build_binary(
     spec: ProjectSpec,
-    build: BuildSpec,
     substrate: Substrate,
     *,
     flavor: base_image.Flavor,
@@ -59,9 +56,13 @@ async def build_binary(
 ) -> Path:
     """Build the host binary; return its ``.build/<project>`` path."""
     build_dir(project_root).mkdir(parents=True, exist_ok=True)
+    cabal_cmd = (
+        "cabal install --installdir .build --install-method=copy "
+        f"--overwrite-policy=always exe:{spec.project}"
+    )
 
     if substrate.name is SubstrateName.APPLE_SILICON:
-        await process.run_checked(shlex.split(build.cabal), cwd=project_root)
+        await process.run_checked(shlex.split(cabal_cmd), cwd=project_root)
         return binary_path(spec, project_root)
 
     base_tag = base_image.base_image_ref(flavor, substrate.arch)
@@ -79,7 +80,7 @@ async def build_binary(
         await docker_ops.build(base_spec)
     run_spec = docker_ops.RunSpec(
         image=base_tag,
-        command=("sh", "-c", build.cabal),
+        command=("sh", "-c", cabal_cmd),
         rm=True,
         mounts=((str(project_root), "/src", False),),
         extra=("-w", "/src"),
@@ -98,12 +99,12 @@ async def build(
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    tag_substrate: Substrate | None = None,
 ) -> Path:
     """Build the binary and, if declared, the optional container counterpart."""
     _ = pull  # The host-binary itself is built on the host, not in a container.
     path = await build_binary(
         spec,
-        model.build,
         substrate,
         flavor=flavor,
         project_root=project_root,
@@ -114,7 +115,7 @@ async def build(
         await container.build_artifact(
             spec,
             model.container,
-            substrate,
+            substrate if tag_substrate is None else tag_substrate,
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
@@ -135,6 +136,8 @@ async def run_one_shot(
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    tag_substrate: Substrate | None = None,
+    env: dict[str, str] | None = None,
 ) -> process.CommandResult:
     path = await build(
         spec,
@@ -145,5 +148,6 @@ async def run_one_shot(
         build_base=build_base,
         base_context=base_context,
         pull=pull,
+        tag_substrate=tag_substrate,
     )
-    return await process.run_checked([str(path), *command], cwd=project_root)
+    return await process.run_checked([str(path), *command], cwd=project_root, env=env)

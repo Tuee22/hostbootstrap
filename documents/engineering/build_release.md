@@ -37,16 +37,20 @@ The publish path is **always cold** (`--no-cache --pull`): the registry copy
 matches a clean rebuild from source, with no layer-cache carryover from a
 stale local image.
 
+For local validation without pushing:
+
+```sh
+hostbootstrap base build --flavor cpu --arch amd64
+```
+
 WRONG:
 
 ```sh
-hostbootstrap base build --flavor cpu --arch amd64   # ← no such command
-hostbootstrap base push  --flavor cpu --arch amd64   # ← no such command
+hostbootstrap base push --flavor cpu --arch amd64
 ```
 
-These standalone commands existed previously and let a stale cached layer
-silently end up in the registry; they have been removed in favour of the
-single combined command above.
+Standalone push is not supported. Publishing always goes through the cold
+`build-and-push` path so the registry copy matches the just-built local layers.
 
 RIGHT:
 
@@ -60,7 +64,7 @@ its custom image (see [harbor.md](harbor.md)).
 ## `--build-base` for downstream projects
 
 A downstream project's `hostbootstrap build`, `hostbootstrap run`, or
-`hostbootstrap cluster up` invocation can pass
+`hostbootstrap cluster ...` invocation can pass
 `--build-base --base-context /path/to/hostbootstrap` to build the base locally
 from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
 identical name. The downstream project image is then built without pulling the

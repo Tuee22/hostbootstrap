@@ -60,7 +60,6 @@ class RunSpec:
     name: str | None = None
     detach: bool = False
     rm: bool = False
-    restart: str | None = None  # e.g. "unless-stopped"
     env: Mapping[str, str] = ()  # type: ignore[assignment]
     mounts: Sequence[tuple[str, str, bool]] = ()  # (host, container, read_only)
     network: str | None = None
@@ -75,8 +74,6 @@ def run_command(spec: RunSpec) -> tuple[str, ...]:
         cmd.append("--rm")
     if spec.name is not None:
         cmd.extend(["--name", spec.name])
-    if spec.restart is not None:
-        cmd.extend(["--restart", spec.restart])
     if spec.network is not None:
         cmd.extend(["--network", spec.network])
     for key, value in dict(spec.env).items():

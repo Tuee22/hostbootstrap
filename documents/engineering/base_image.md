@@ -18,28 +18,28 @@ docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64
 There are no manifest lists. The CLI detects the host and pulls the one
 correct arch tag.
 
-## Accel → base flavor
+## Substrate to base flavor
 
-The base-image **flavor** is derived from the resolved target's `Accel`, not
-from the host: `Cpu` and `Metal` both use the `cpu` base, `Cuda` uses the
-`cuda` base (`base_image.accel_to_flavor`). The **arch** is still detected from
-the host. The tag scheme is `basecontainer-<cpu|cuda>-<amd64|arm64>`.
+The base-image **flavor** is derived from the selected substrate entry
+(`base_image.substrate_to_flavor`). The **arch** is detected from the actual
+host. The tag scheme is `basecontainer-<cpu|cuda>-<amd64|arm64>`.
 
-| resolved `Accel` | base flavor |
+| selected substrate | base flavor |
 |---|---|
-| `H.Accel.Cpu` | `cpu` |
-| `H.Accel.Metal` | `cpu` (Apple silicon is arm64) |
-| `H.Accel.Cuda` | `cuda` |
+| `H.Substrate.AppleSilicon` | `cpu` |
+| `H.Substrate.LinuxCpu` | `cpu` |
+| `H.Substrate.LinuxGpu` | `cuda` |
 
-The detected host determines the arch suffix and which accels it can satisfy
-(see [schema.md](schema.md#acceleration-requirements-and-host-resolution)):
+The detected host determines the arch suffix. `--force-target` can select a
+different substrate entry for model/base-flavor selection while still using the
+actual host arch (see [schema.md](schema.md#host-resolution)):
 
 | detected host | arch | resolved tag |
 |---|---|---|
 | `apple-silicon` | arm64 | `basecontainer-cpu-arm64` |
 | `linux-cpu` (amd64) | amd64 | `basecontainer-cpu-amd64` |
 | `linux-cpu` (arm64) | arm64 | `basecontainer-cpu-arm64` |
-| `linux-gpu` (amd64) | amd64 | `basecontainer-cuda-amd64` (a `Cuda` target) |
+| `linux-gpu` (amd64) | amd64 | `basecontainer-cuda-amd64` |
 | `linux-gpu` (arm64) | arm64 | `basecontainer-cuda-arm64` (built on demand) |
 
 ## What ships in the image

@@ -1,42 +1,27 @@
 --| hostbootstrap project-config schema (Dhall).
 --
 -- A project's `hostbootstrap.dhall` imports this package and builds a typed
--- value. A project declares a list of **targets**, each pairing an acceleration
--- requirement (`Accel`) with exactly one execution model — `Container`,
--- `HostBinary`, or `HostDaemon`. The host is detected at runtime and the CLI
--- selects the target whose `Accel` the host can satisfy (capability
--- subsumption: `Cpu` runs everywhere, `Cuda` needs an NVIDIA host, `Metal`
--- needs Apple silicon).
+-- value. A project declares one entry per hardware substrate: Apple Silicon,
+-- Linux CPU, and/or Linux GPU. Each substrate entry selects either a cluster
+-- lifecycle or a no-cluster lifecycle, and then selects exactly one execution
+-- model: `Container`, `HostBinary`, or `HostDaemon`.
 --
--- Illegal states are unrepresentable at the type level: a project never names a
--- host, so a CUDA-on-Apple / Metal-on-Linux pairing cannot be written. Each
--- model variant is a distinct record type, so only `HostDaemon` has a `daemon`
--- field (and it is required), only `Container` has `service`/`mounts`, only
--- `HostBinary` has `handoff`. The base-image family is *derived* from `Accel`,
--- so there is no `flavor` field to set inconsistently.
---
--- `dhall-to-json` strips union tags, so `target` lowers the model union into a
--- self-describing record carrying an explicit `tag` plus one populated payload.
--- The hostbootstrap CLI reads that JSON.
+-- Illegal states are unrepresentable at the type level: only `HostDaemon` has
+-- a daemon command, only `Container` has bind mounts, and no model exposes
+-- explicit build or handoff commands. hostbootstrap derives those commands
+-- from the project name.
 
-let Accel = < Cpu | Cuda | Metal >
+let Substrate = < AppleSilicon | LinuxCpu | LinuxGpu >
 
 let Mount = { host : Text, container : Text, ro : Bool }
 
-let HostReqs = { ghc : Bool }
-
-let Build = { cabal : Text, host : HostReqs }
-
-let Handoff = { up : Text, down : Text, delete : Optional Text }
-
 let CtrArtifact = { dockerfile : Text }
 
-let Container = { dockerfile : Text, service : Bool, mounts : List Mount }
+let Container = { dockerfile : Text, mounts : List Mount }
 
-let HostBinary =
-      { build : Build, container : Optional CtrArtifact, handoff : Handoff }
+let HostBinary = { container : Optional CtrArtifact }
 
-let HostDaemon = { build : Build, daemon : Text, container : Optional CtrArtifact }
+let HostDaemon = { daemon : Text, container : Optional CtrArtifact }
 
 let Model =
       < Container : Container | HostBinary : HostBinary | HostDaemon : HostDaemon >
@@ -48,11 +33,19 @@ let RModel =
       , hostDaemon : Optional HostDaemon
       }
 
-let RTarget = { accel : Text, model : RModel }
+let Lifecycle = < Cluster : Model | NoCluster : Model >
 
-let ConfigInput = { project : Text, targets : List RTarget }
+let RLifecycle =
+      { tag : Text
+      , cluster : Optional RModel
+      , noCluster : Optional RModel
+      }
 
-let Config = { project : Text, development : Bool, targets : List RTarget }
+let RTarget = { substrate : Text, lifecycle : RLifecycle }
+
+let ConfigInput = { project : Text, substrates : List RTarget }
+
+let Config = { project : Text, substrates : List RTarget }
 
 let renderModel
     : Model -> RModel
@@ -82,43 +75,63 @@ let renderModel
           }
           m
 
-let renderAccel
-    : Accel -> Text
-    = \(a : Accel) ->
-        merge { Cpu = "cpu", Cuda = "cuda", Metal = "metal" } a
+let renderLifecycle
+    : Lifecycle -> RLifecycle
+    = \(l : Lifecycle) ->
+        merge
+          { Cluster =
+              \(m : Model) ->
+                { tag = "Cluster"
+                , cluster = Some (renderModel m)
+                , noCluster = None RModel
+                }
+          , NoCluster =
+              \(m : Model) ->
+                { tag = "NoCluster"
+                , cluster = None RModel
+                , noCluster = Some (renderModel m)
+                }
+          }
+          l
 
-let target
-    : Accel -> Model -> RTarget
-    = \(a : Accel) ->
-      \(m : Model) ->
-        { accel = renderAccel a, model = renderModel m }
+let renderSubstrate
+    : Substrate -> Text
+    = \(s : Substrate) ->
+        merge
+          { AppleSilicon = "apple-silicon"
+          , LinuxCpu = "linux-cpu"
+          , LinuxGpu = "linux-gpu"
+          }
+          s
 
-let renderConfig
-    : Bool -> ConfigInput -> Config
-    = \(development : Bool) ->
-      \(c : ConfigInput) ->
-        { project = c.project, development = development, targets = c.targets }
+let entry
+    : Substrate -> Lifecycle -> RTarget
+    = \(s : Substrate) ->
+      \(l : Lifecycle) ->
+        { substrate = renderSubstrate s, lifecycle = renderLifecycle l }
+
+let cluster
+    : Model -> Lifecycle
+    = \(m : Model) -> Lifecycle.Cluster m
+
+let noCluster
+    : Model -> Lifecycle
+    = \(m : Model) -> Lifecycle.NoCluster m
 
 let config
     : ConfigInput -> Config
-    = renderConfig False
+    = \(c : ConfigInput) -> c
 
-let configWithDevelopment
-    : Bool -> ConfigInput -> Config
-    = renderConfig
-
-in  { Accel
+in  { Substrate
     , Mount = { Type = Mount, default = { ro = False } }
-    , HostReqs = { Type = HostReqs, default = { ghc = False } }
-    , Build = { Type = Build, default = { host = { ghc = False } } }
-    , Handoff = { Type = Handoff, default = { delete = None Text } }
     , CtrArtifact
-    , Container =
-      { Type = Container, default = { service = False, mounts = [] : List Mount } }
+    , Container = { Type = Container, default = { mounts = [] : List Mount } }
     , HostBinary = { Type = HostBinary, default = { container = None CtrArtifact } }
     , HostDaemon = { Type = HostDaemon, default = { container = None CtrArtifact } }
     , Model
-    , target
+    , Lifecycle
+    , entry
+    , cluster
+    , noCluster
     , config
-    , configWithDevelopment
     }

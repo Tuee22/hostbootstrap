@@ -6,15 +6,11 @@ type: guide
 
 # Testing
 
-hostbootstrap orchestrates `docker`, `cabal`, `systemctl`/`launchctl`, and HTTP
-version lookups by shelling out — so the test strategy is built around one fact:
-the code separates **pure functions that build command-argument lists and
-resolve values** from the thin effectful async runners. That separation is what
-makes the suite fast and hermetic — almost everything worth testing is a pure
-function that returns data, so the default run touches no network, no Docker, and
-no `sudo`. The full suite runs in well under a second.
+hostbootstrap orchestrates external tools by shelling out, so the suite is built
+around pure command builders plus thin recorded runners. The default run touches
+no network, no Docker daemon, no `sudo`, and no host service manager.
 
-## Running the suite
+## Running The Suite
 
 There is exactly one supported runner module,
 [`hostbootstrap.test_all`](../../hostbootstrap/test_all.py):
@@ -25,110 +21,70 @@ There is exactly one supported runner module,
 > poetry run pytest
 > ```
 >
-> Refused by `tests/conftest.py` — it aborts unless the `HOSTBOOTSTRAP_TEST_ALL`
-> sentinel is set. The sentinel is a guardrail for one supported command and one
-> suite setup path; it is not a security boundary and it does not imply filters
-> like `-k` are disabled.
+> `tests/conftest.py` refuses direct pytest because it requires the
+> `HOSTBOOTSTRAP_TEST_ALL` sentinel.
 >
 > **RIGHT**
 >
 > ```sh
-> poetry run python -m hostbootstrap.test_all            # full suite
-> poetry run python -m hostbootstrap.test_all -k spec    # extra args forward to pytest
+> poetry run python -m hostbootstrap.test_all
+> poetry run python -m hostbootstrap.test_all -k spec
 > ```
 
-`hostbootstrap.test_all` sets the sentinel and invokes pytest over `tests/`.
-It calls `pytest.main` in-process instead of spawning a second Python process so
-coverage can trace the package while still using the supported runner.
-[`hostbootstrap.check_code`](../../hostbootstrap/check_code.py) (ruff → black →
-mypy) stays a separate development runner; run both in CI.
-
-Coverage is part of the development contract:
+[`hostbootstrap.check_code`](../../hostbootstrap/check_code.py) is separate and
+runs ruff, black, and mypy:
 
 ```sh
-poetry run python -m coverage run -m hostbootstrap.test_all
-poetry run python -m coverage report -m
+poetry run python -m hostbootstrap.check_code
 ```
 
-`pyproject.toml` configures coverage to measure `hostbootstrap` and fail below
-100% line coverage. The 100% gate is intentionally narrow: it applies to the
-Python package, while Dhall contract tests and Docker/systemd/launchd behaviours
-remain covered through fixtures, command builders, and recorded dispatch rather
-than real host mutation.
+Run both before publishing a hostbootstrap change.
 
-## The layers
+## Layers
 
-The suite is a thin pyramid weighted to pure unit + Dhall contract tests.
+**Pure unit tests** cover value resolvers and command builders:
 
-**Pure unit tests** — the bulk. The builders/resolvers return data, so no mocking
-is needed: [`docker_ops`](../../hostbootstrap/docker_ops.py) command tuples,
-[`base_image`](../../hostbootstrap/base_image.py) tag/URL builders, the
-`accel_to_flavor` mapping, and the JSON narrowers,
-[`units`](../../hostbootstrap/units.py) systemd/launchd text,
-[`substrate`](../../hostbootstrap/substrate.py) detection, the
-[`spec`](../../hostbootstrap/spec.py) target resolver, and the
-[`models`](../../hostbootstrap/models) path/mount/command helpers.
+- [`docker_ops`](../../hostbootstrap/docker_ops.py) build/run command tuples
+- [`base_image`](../../hostbootstrap/base_image.py) tag and URL builders
+- [`substrate`](../../hostbootstrap/substrate.py) host detection
+- [`spec`](../../hostbootstrap/spec.py) substrate/lifecycle/model parsing
+- [`models`](../../hostbootstrap/models) path, mount, entrypoint, Cabal, and
+  foreground daemon command helpers
 
-The target resolver is its own cluster of pure cases, since it encodes the
-capability-subsumption rule that lets one declaration span every host:
+**Spec parser tests** use crafted JSON to cover residual checks Dhall cannot
+express: duplicate substrates, missing selected targets, unknown lifecycle/model
+tags, and `--force-target` selection.
 
-* **cpu-on-all-hosts** — a single `Cpu` target resolves on `apple-silicon`,
-  `linux-cpu`, and `linux-gpu` (amd64 and arm64).
-* **accel preferred over cpu** — when a project declares both `Cpu` and `Cuda`
-  and runs on `linux-gpu`, the resolver picks the more specific `Cuda` target;
-  the same holds for `Metal` over `Cpu` on `apple-silicon`.
-* **duplicate-accel rejection** — two targets with the same `Accel` raise
-  `SpecError`.
-* **no-runnable-target rejection** — a config whose targets the detected host
-  cannot satisfy raises `SpecError`.
+**Dhall contract tests** (`tests/test_spec_dhall.py`) run the real
+`dhall-to-json` against fixtures in `tests/fixtures/dhall/`. Valid fixtures cover
+`Container`, `HostBinary`, `HostDaemon`, mixed substrate matrices, explicit
+`env:HOSTBOOTSTRAP_PACKAGE`, and `NoCluster`. Invalid fixtures prove structural
+type errors: daemon on container, flavor on container, missing HostDaemon
+daemon, mounts on HostBinary, and unknown substrate.
 
-These are covered both as pure-function tests over crafted inputs and as
-real-`dhall` contract tests through the actual schema. HTTP-backed
-resolvers and the [`dhall_tool`](../../hostbootstrap/dhall_tool.py) downloader are
-tested with `monkeypatch` over `httpx` (an in-memory `tar.bz2`, a checksum
-mismatch) — never the real network.
+**CLI smoke tests** use Click's `CliRunner` and monkeypatching to assert command
+dispatch, `--force-target` propagation, clean errors, base build/push behavior,
+cluster forwarding, and `daemon run` applicability.
 
-**Dhall contract tests** (`tests/test_spec_dhall.py`, marked `dhall`) — the
-highest-value, project-specific layer. They drive [`spec.load`](../../hostbootstrap/spec.py)
-through the real `dhall-to-json` against fixtures in `tests/fixtures/dhall/`:
-the `valid/` archetypes load to the expected dataclasses, and the `invalid/`
-ones must raise `SpecError`. Some are structural Dhall type errors (`daemon` on a
-`Container`, a `HostDaemon` missing its `daemon`, `mounts` on a `HostBinary`, an
-unknown `H.Accel`); others are the residual `spec.py` checks Dhall cannot
-express — a **duplicate `Accel`** across targets, and a config with **no target
-runnable on the detected host**. This is the executable
-form of the [schema](schema.md) promise — *illegal states are unrepresentable*.
-The fixtures carry no import line — the schema is CLI-injected as `H` — so they
-also cover the zero-boilerplate convention (plus one fixture that binds an
-explicit `let H = env:HOSTBOOTSTRAP_PACKAGE`, proving it harmlessly shadows the
-injected binding). It double-checks the shipped
-[`hostbootstrap/dhall/package.dhall`](../../hostbootstrap/dhall/package.dhall)
-against the parser. Parsing logic itself is additionally tested against crafted
-JSON (`tests/test_spec.py`) with no Dhall at all.
+**Recorded runner tests** replace `process.run` / `run_checked` with an argv
+recorder. They assert the exact `docker` and `cabal` commands without touching
+Docker or Cabal.
 
-**Integration / smoke** — thin and gated. CLI smoke uses Click's `CliRunner`
-(command tree, `push` is gone, clean errors); model dispatch is tested by
-recording `process.run`/`run_checked` (a fixture in `conftest.py`) and asserting
-the exact `docker`/`cabal` argv — no daemon required. A real-docker end-to-end
-build/run is reserved for the `docker` marker (CI with a daemon).
+## Markers And Skipping
 
-## Markers and skipping
+Configured in `pyproject.toml`:
 
-Configured in `pyproject.toml` under `[tool.pytest.ini_options]`:
+- `dhall` needs a provisioned `dhall-to-json`; the `require_dhall` fixture skips
+  when it cannot be obtained.
+- `docker` needs a running Docker daemon and skips when absent.
+- `slow` marks long-running checks.
 
-* `dhall` — needs a provisioned `dhall-to-json`; the `require_dhall` fixture
-  **skips** (does not fail) when it can't be obtained (offline CI). Locally it is
-  fetched and cached once (see [prerequisites](prerequisites.md)).
-* `docker` — needs a running Docker daemon; **skips** when absent.
-* `slow` — long-running.
+The default suite remains hermetic and fast.
 
-`hostbootstrap.test_all` runs the whole tree unless pytest args such as `-k` are
-forwarded for local iteration; anything whose requirement is missing skips
-cleanly, so a default developer run is hermetic and green.
+## Out Of Scope
 
-## What is deliberately not auto-tested
-
-Creating real systemd/launchd units needs root, and `doctor`'s host mutation is
-environment-specific — both are out of scope for the automated suite. Their
-*logic* is covered by the `units` string tests and the recorded-dispatch tests;
-exercising the real units belongs in a manual or CI-on-a-VM run.
+hostbootstrap no longer writes launchd/systemd unit files and no longer configures
+restart-after-reboot behavior. There are therefore no unit-file rendering tests or
+real service-manager integration tests. Operators who want automatic restart run
+`hostbootstrap daemon run` from their own launchd/systemd wrapper outside
+hostbootstrap.

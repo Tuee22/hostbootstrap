@@ -1,47 +1,53 @@
 # hostbootstrap
 
-A small host-installed Python CLI and a tiny family of prebuilt base
-container images. Together they replace per-project bootstrap shells and
-redundant multi-language Dockerfiles with one shared toolchain pulled from
-Docker Hub and one declarative, **typed** `hostbootstrap.dhall` per project.
+A small host-installed Python CLI and a tiny family of prebuilt base container
+images. Together they replace per-project bootstrap shells and redundant
+multi-language Dockerfiles with one shared toolchain pulled from Docker Hub and
+one declarative, typed `hostbootstrap.dhall` per project.
 
-> **Adopting hostbootstrap**: install the CLI on the host, write a
-> `hostbootstrap.dhall` (the CLI bundles and injects its typed schema — no import
-> line, nothing to vendor), inherit your project Dockerfile `FROM` the base tag
-> the CLI selects. Everything else —
-> host detection, prereqs, build, cluster lifecycle, and (only where a
-> project asks for it) a system service unit — is the CLI's job.
+The current contract is intentionally narrow:
+
+- each project declares one target per hardware substrate (`apple-silicon`,
+  `linux-cpu`, `linux-gpu`)
+- each substrate chooses one execution model (`Container`, `HostBinary`, or
+  `HostDaemon`)
+- each target chooses either `Cluster` lifecycle or `NoCluster`
+- cluster lifecycle is always forwarded to the project command as
+  `cluster up`, `cluster down`, or `cluster delete`
+- `HostDaemon` daemon processes run only in the foreground via
+  `hostbootstrap daemon run`
+- hostbootstrap never writes launchd/systemd units and never configures Docker
+  containers to restart after reboot
 
 The full config schema is
-[`documents/engineering/schema.md`](documents/engineering/schema.md).
-Detailed language/engineering notes live under [`documents/`](documents/README.md).
+[`documents/engineering/schema.md`](documents/engineering/schema.md). Detailed
+language and engineering notes live under [`documents/`](documents/README.md).
 
----
+## What You Get
 
-## What you get
+- **Four prebuilt base images** on Docker Hub:
+  `docker.io/tuee22/hostbootstrap:basecontainer-{cpu,cuda}-{amd64,arm64}`.
+  They carry GHC 9.12, Cabal, pinned fourmolu/hlint, Go, Node, PureScript,
+  Playwright, Python, Poetry, kube tools, LLVM/C++, Rust, optional CUDA, and a
+  warm Haskell store.
+- **One CLI** (`hostbootstrap`) that detects the host, validates host
+  prerequisites, builds the selected target, runs project commands, and forwards
+  cluster lifecycle to the project command.
+- **No service-manager ownership**. After reboot, the operator calls
+  `hostbootstrap cluster up` again and starts any host daemon with
+  `hostbootstrap daemon run`. If a deployment needs automatic restart, the
+  operator owns that external launchd/systemd wrapper.
 
-* **Four prebuilt base images** on Docker Hub —
-  `docker.io/tuee22/hostbootstrap:basecontainer-{cpu,cuda}-{amd64,arm64}` —
-  carrying the shared toolchain (GHC 9.12, Cabal, pinned fourmolu/hlint, Go,
-  Node + PureScript + Playwright, Python + Poetry, kube tools, LLVM/C++, Rust,
-  optional CUDA, with a warm Haskell store baked in).
-* **One CLI** (`hostbootstrap`) that detects your host, validates host
-  prerequisites, drives `docker build` / `docker run`, manages cluster
-  lifecycle, and installs a system-level
-  service unit.
+Single-arch tags only, never manifest lists. The CLI always knows the host arch,
+so it references the one correct arch tag directly.
 
-Single-arch tags only — never manifest lists. The CLI always knows the host
-arch, so it references the one correct arch tag directly.
-
-Derived projects follow the five rules in
+Derived projects follow the rules in
 [`documents/engineering/derived_project_standards.md`](documents/engineering/derived_project_standards.md):
 inherit the base image, match the warm-store `cabal.project` contract, gate
 image builds on `<project> check-code`, link executables statically at `-O2`,
 and never rebuild what the warm store already builds.
 
----
-
-## Installing the CLI
+## Installing The CLI
 
 Install `pipx` first:
 
@@ -68,472 +74,170 @@ For local development against a checkout:
 pipx install --force /path/to/hostbootstrap
 ```
 
-Use `pipx` because hostbootstrap is a command-line application, not a library
-dependency of downstream projects. `pipx` gives the app its own virtual
-environment, exposes only the `hostbootstrap` command on `PATH`, avoids
-polluting project virtualenvs, and avoids externally-managed Python conflicts on
-Homebrew and modern Linux distributions.
-
 hostbootstrap provisions its own native `dhall-to-json` binary on first use. It
-**always** downloads a pinned, SHA256-verified static release into
-`~/.cache/hostbootstrap/` and uses that one exclusively — it never uses a
-`dhall-to-json` found on `PATH`, so the host toolchain cannot affect how your
-config is parsed.
+downloads a pinned, SHA256-verified static release into
+`~/.cache/hostbootstrap/` and uses that one exclusively.
 
-To develop hostbootstrap itself, the repo uses Poetry with an in-project
-`.venv` (`poetry.toml` sets `virtualenvs.in-project = true`):
+To develop hostbootstrap itself:
 
 ```bash
 poetry install
 poetry run python -m hostbootstrap.check_code
 poetry run python -m hostbootstrap.test_all
-poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m
 ```
 
 `check_code` and `test_all` are module entry points under `hostbootstrap/`, not
-shell commands on `PATH`. `test_all` is the supported pytest entry point: it sets
-the suite sentinel that `tests/conftest.py` requires, then runs pytest
-in-process so coverage can measure the package through the same runner. Coverage
-is configured with a 100% line-coverage gate.
+shell commands on `PATH`.
 
----
+## The Config
 
-## The config: `hostbootstrap.dhall`
-
-Each project ships a typed `hostbootstrap.dhall` that builds one typed value
-against the schema the CLI bundles
-([`hostbootstrap/dhall/package.dhall`](hostbootstrap/dhall/package.dhall)). We use
-**Dhall** rather than YAML for one reason: its union types make illegal
-configurations *unrepresentable at the type level* — a `Container` has no
-`daemon` field, so writing one is a type error before the CLI ever runs.
-
-The schema is **injected by the CLI as `H`**: your `hostbootstrap.dhall` needs no
-import line and nothing vendored. `H.config { … }` is production mode by
-default.
+The schema is injected by the CLI as `H`; project files need no import line.
 
 ```dhall
--- `H` (the typed schema) is injected by the CLI.
-H.config
-  { project = "example"
-  , targets =
-    [ H.target H.Accel.Cpu
-        (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
-    ]
-  }
+let container =
+      H.Model.Container
+        H.Container::{ dockerfile = "docker/app.Dockerfile" }
+
+in  H.config
+      { project = "app"
+      , substrates =
+        [ H.entry H.Substrate.AppleSilicon (H.noCluster container)
+        , H.entry H.Substrate.LinuxCpu (H.noCluster container)
+        , H.entry H.Substrate.LinuxGpu (H.noCluster container)
+        ]
+      }
 ```
 
-One `H.target` per **acceleration requirement** (`H.Accel.Cpu`, `.Cuda`, or
-`.Metal`) — you declare what the workload needs, never a host. The CLI detects
-the host and resolves the target it can satisfy: a single `Cpu` target runs on
-*every* host (Apple, linux-cpu, linux-gpu, amd64 and arm64). Each target picks
-exactly one of the three models below. See the full field reference in
-[`documents/engineering/schema.md`](documents/engineering/schema.md).
-
-For local-only work that is not meant to survive a headless pre-login reboot,
-use the explicit development flag:
-
-```dhall
-H.configWithDevelopment
-  True
-  { project = "example"
-  , targets =
-    [ H.target H.Accel.Cpu
-        (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
-    ]
-  }
-```
-
-Development mode keeps Docker/build checks, but skips the Apple Silicon
-FileVault and system-Colima pre-login checks. For `HostDaemon`, `cluster up`
-builds and prints the daemon command instead of creating a LaunchDaemon/systemd
-unit; `cluster down` and `cluster delete` also skip unit mutation.
-
----
-
-## The three model archetypes
-
-Every target picks **one model**. Choose by lifecycle:
-
-* **No cluster, just build + run** → **Container**.
-* **A host binary that owns its own lifecycle** → **HostBinary**.
-* **A long-running host-native daemon** → **HostDaemon**.
-
-### Container
-
-hostbootstrap builds a thin image `FROM` the base tag and runs it. `service :
-Bool` — `False` ⇒ a one-shot `docker run --rm`; `True` ⇒ `cluster up` runs it
-detached with `--restart unless-stopped`. `mounts` are bind mounts. The base
-family (`cpu` or `cuda`) is derived from the resolved target's `Accel`, not set
-on the container. The container itself does any cluster bootstrap / image
-upload. **No system unit is ever created** for this model.
-
-Container images used with `hostbootstrap run` must declare an `ENTRYPOINT`.
-The tokens after `hostbootstrap run` are arguments to that entrypoint, matching
-the `HostBinary` and `HostDaemon` models where the built host executable is
-prepended automatically. Prefer a tini-wrapped exec-form entrypoint:
+The `project` value is also the command name. Containers must expose it as a
+tini-wrapped entrypoint:
 
 ```dockerfile
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/<project>"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/app"]
 ```
 
-With that shape, run project commands without repeating the executable:
+Host-native models build `exe:<project>` into `.build/<project>` using the
+standard templated Cabal command:
 
-```sh
+```bash
+cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:<project>
+```
+
+## Lifecycles
+
+`NoCluster` targets support `hostbootstrap build` and `hostbootstrap run`.
+Cluster commands fail fast because there is no project cluster lifecycle to
+forward. This is the right choice for command-oriented projects such as MCTS:
+
+```bash
 hostbootstrap run test all
+hostbootstrap run bench criterion
 ```
 
-`hostbootstrap run --help` still shows the hostbootstrap wrapper options. Once
-the first project argument appears, later flags are forwarded to the project
-entrypoint, so `hostbootstrap run play --help` asks the project command for help.
-Put hostbootstrap's own `run` options before the project arguments, for example
-`hostbootstrap run --no-pull play --help`.
+`Cluster` targets support the cluster command group. hostbootstrap builds the
+selected model, then forwards lifecycle to the same project command used by
+`run`:
 
-This is the compose-replacement case — pure container apps with no cluster are
-first-class. The win over compose is faster builds (the prebuilt base tag) plus
-a default-pull / `--build-base` "pull-or-build-local" switch compose lacks.
-
-```dhall
-H.target H.Accel.Cpu
-  ( H.Model.Container
-      H.Container::{
-      , dockerfile = "docker/example.Dockerfile"
-      , service = True
-      , mounts =
-        [ H.Mount::{ host = "./.data", container = "/opt/example/.data" }
-        , H.Mount::{ host = "/var/run/docker.sock", container = "/var/run/docker.sock" }
-        , H.Mount::{ host = "\${HOME}/.docker/config.json", container = "/root/.docker/config.json", ro = True }
-        ]
-      }
-  )
+```bash
+hostbootstrap cluster up
+hostbootstrap daemon run
+hostbootstrap cluster down
+hostbootstrap cluster delete
 ```
 
-### HostBinary
+For `Container`, those commands run inside a one-shot `docker run --rm` with the
+declared mounts. For `HostBinary`, they run as `.build/<project> cluster ...`.
+For `HostDaemon`, cluster commands still only forward
+`.build/<project> cluster ...`. The configured daemon is run separately and in
+the foreground:
 
-hostbootstrap builds a binary that runs **on the host** (Apple: native via
-brew → ghcup; Linux: inside the base container, extracted to `.build/`), plus an
-optional container counterpart. The binary owns its own lifecycle: `handoff`
-declares `up` / `down` (and optional `delete`) commands that `cluster up` /
-`cluster down` / `cluster delete` invoke. **hostbootstrap creates no system
-unit** — the binary manages its own services (e.g. an RKE2 systemd unit it
-installs).
-
-```dhall
-H.target H.Accel.Cpu
-  ( H.Model.HostBinary
-      H.HostBinary::{
-      , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
-      , handoff = H.Handoff::{ up = ".build/mgr cluster up", down = ".build/mgr cluster down" }
-      }
-  )
+```bash
+hostbootstrap daemon run
 ```
 
-### HostDaemon
+That foreground process is owned by the invoking shell, test harness, launchd
+unit, or systemd unit. hostbootstrap does not write PID files, redirect logs, or
+restart a crashed daemon.
 
-A long-running **host-native** daemon (e.g. Apple-silicon Metal inference). This
-is the **only** model with a `daemon` field — and it is **required**. `cluster
-up` wraps the daemon command in a system-level unit: a **LaunchDaemon** in
-`/Library/LaunchDaemons` on macOS (**never** a per-user LaunchAgent) or a
-system-scope systemd unit on Linux — so it starts before any user logs in
-(headless remote SSH). `cluster down` removes it.
+No Docker run emitted by hostbootstrap includes `--restart`, and no host daemon is
+installed as a launchd/systemd unit.
 
-In development mode, hostbootstrap still builds the daemon binary but does not
-create or remove the system unit; `cluster up` prints the command to run
-manually.
+Every `hostbootstrap run ...` and cluster handoff receives the selected target
+context:
 
-```dhall
-H.target H.Accel.Metal
-  ( H.Model.HostDaemon
-      H.HostDaemon::{
-      , build =
-          H.Build::{
-          , cabal = "cabal install --installdir .build exe:infer"
-          , host = H.HostReqs::{ ghc = True }
-          }
-      , daemon = ".build/infer inference --serve"
-      }
-  )
-```
-
-The `Metal` accel resolves only on Apple silicon, and the Tart + Metal host
-tooling is required exactly there — there is no per-host `tart`/`metal` flag on
-`HostReqs` (it is just `{ ghc : Bool }`). Because the `daemon` field exists
-**only** on `HostDaemon`, a system unit is
-created **if and only if** a project declares that model — the rule is
-structural, not a runtime check (illegal states are unrepresentable in the Dhall
-types). See [`documents/engineering/schema.md`](documents/engineering/schema.md)
-for the full type story.
-
----
-
-## Adoption patterns
-
-The three models compose into a handful of recurring project shapes. Each is
-described by its **accel → model** mapping; pick the one your project
-matches. None of these requires Kubernetes — cluster, Helm, and image upload are
-opt-in downstream concerns, used only by the patterns that explicitly reach for
-them.
-
-### Single-target container service — the compose replacement
-
-A web app or service that runs as one long-running container with persistent
-state and (often) the Docker socket so it can drive its own image builds/pushes
-from inside. This is the canonical `docker compose` replacement: one `Cpu`
-target — which resolves on *every* host — one **Container** with `service =
-True`, a `.data` bind mount that survives every `cluster down`/`delete`, and no
-cluster at all.
-
-| Accel | Model |
+| variable | value |
 |---|---|
-| `Cpu` | `Container` (`service = True`, `.data` + socket mounts) |
+| `HOSTBOOTSTRAP_TARGET` | selected substrate entry (`apple-silicon`, `linux-cpu`, or `linux-gpu`) |
+| `HOSTBOOTSTRAP_MODEL` | selected model (`container`, `host-binary`, or `host-daemon`) |
+| `HOSTBOOTSTRAP_LIFECYCLE` | selected lifecycle (`cluster` or `no-cluster`) |
 
-```dhall
-H.target H.Accel.Cpu
-  ( H.Model.Container
-      H.Container::{
-      , dockerfile = "docker/app.Dockerfile"
-      , service = True
-      , mounts =
-        [ H.Mount::{ host = "./.data", container = "/opt/app/.data" }
-        , H.Mount::{ host = "/var/run/docker.sock", container = "/var/run/docker.sock" }
-        ]
-      }
-  )
+This context lets a project command resolve target-specific behavior while
+hostbootstrap still forwards the same project command shape for every target.
+
+## Force Target
+
+Normally hostbootstrap selects the substrate entry matching the detected host.
+For matrix validation on a single machine, build/run/cluster commands accept
+`--force-target`:
+
+```bash
+hostbootstrap cluster up --force-target apple-silicon
+hostbootstrap cluster down --force-target apple-silicon
+hostbootstrap run --force-target linux-gpu test all
 ```
 
-### Multi-target container — same image, CPU vs CUDA
+The forced target chooses the declared model and base-image flavor. The actual
+host still controls how the build is executed, so forcing an Apple target on a
+Linux host does not run macOS prerequisite checks.
 
-A compute project (heavy native cores — C++/pybind11, ML stacks, a service layer
-on top) that runs in a container on both CPU and CUDA hosts. It is the **same
-model and the same Dockerfile twice**, differing only by `Accel`: the `Cuda`
-target derives the `basecontainer-cuda-*` base and resolves on `linux-gpu`, the
-`Cpu` target derives `basecontainer-cpu-*` and resolves everywhere else. On a
-`linux-gpu` host both are satisfiable, so the resolver picks the more specific
-`Cuda`. Because the heavy toolchain is in the pulled base, each build compiles
-only the project's own code.
+`doctor` intentionally has no `--force-target`; it validates the actual host.
 
-| Accel | Model |
-|---|---|
-| `Cuda` | `Container` (cuda base; resolves on `linux-gpu`) |
-| `Cpu` | `Container` (cpu base; resolves on every other host) |
+## Model Summary
 
-```dhall
-[ H.target H.Accel.Cuda
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
-, H.target H.Accel.Cpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
-]
-```
+| Model | Build/run shape | Cluster lifecycle |
+|---|---|---|
+| `Container` | Build project image, run tini-wrapped project entrypoint | one-shot `docker run --rm <image> cluster ...` |
+| `HostBinary` | Build `.build/<project>` | `.build/<project> cluster ...` |
+| `HostDaemon` | Build `.build/<project>` | `.build/<project> cluster ...`; daemon runs separately via `hostbootstrap daemon run` |
 
-### Per-accel model split — container on Linux, daemon on Apple silicon
+`HostDaemon` has one required field, `daemon`, which contains the arguments
+appended to `.build/<project>` when `hostbootstrap daemon run` executes the
+long-running foreground process.
 
-An inference / ML project that runs as an in-cluster **Container** on Linux but
-needs **host-native Metal GPU** access on Apple silicon, which cannot run in a
-container. A project that must behave differently per host simply declares a
-*different model per accel*: `Container` for the `Cuda` and `Cpu` targets,
-`HostDaemon` for the `Metal` target. The Metal daemon gets a system-level
-LaunchDaemon on `cluster up`; the Linux containers never do.
-
-| Accel | Model |
-|---|---|
-| `Cuda` | `Container` (cuda base; resolves on `linux-gpu`) |
-| `Cpu` | `Container` (cpu base; resolves elsewhere) |
-| `Metal` | `HostDaemon` (Tart + Metal; resolves on `apple-silicon`) |
-
-```dhall
-[ H.target H.Accel.Cuda
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
-, H.target H.Accel.Cpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
-, H.target H.Accel.Metal
-    ( H.Model.HostDaemon
-        H.HostDaemon::{
-        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True } }
-        , daemon = ".build/infer inference --serve"
-        }
-    )
-]
-```
-
-You can declare the Metal target to **fix the contract before the binary
-exists** — the Apple-silicon side may still be work-in-progress while the Linux
-container side ships and runs today.
-
-### Host-binary cluster manager
-
-A host-native control plane (e.g. a Haskell-built cluster manager) that creates
-and owns a local cluster and **installs its own service unit** (such as an RKE2
-systemd unit) — so hostbootstrap creates **no** unit for it. On Linux the binary
-is built *inside the base container* and extracted to `.build/`, keeping the
-toolchain off the host. `cluster up`/`down`/`delete` invoke the `handoff`
-commands; the binary reaches in-cluster services over loopback NodePorts only.
-
-| Accel | Model |
-|---|---|
-| `Cpu` | `HostBinary` (`handoff` up/down/delete; owns its own services) |
-
-```dhall
-H.target H.Accel.Cpu
-  ( H.Model.HostBinary
-      H.HostBinary::{
-      , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
-      , handoff = H.Handoff::{ up = ".build/mgr cluster up", down = ".build/mgr cluster down", delete = Some ".build/mgr cluster delete" }
-      }
-  )
-```
-
-### Projects with their own runtime virtualenv
-
-Some projects (e.g. Python inference adapters) maintain their **own** host-level
-`.venv`. hostbootstrap must **never** be installed into that venv — it is
-installed as an isolated host CLI app with `pipx` (see
-[Installing the CLI](#installing-the-cli)). By the time the project runs, the
-tool's job is done; it has no place in the project's runtime environment. This
-isolation is the project's responsibility, not something the tool enforces.
-
----
-
-## Migrating an existing project
-
-Adopting hostbootstrap is mostly *deletion*. Across every pattern above the same
-things go away and the same things stay:
-
-**Delete**
-
-* `compose.yaml` — replaced by a `Container` model + `hostbootstrap cluster up`.
-* `bootstrap/*.sh` host-detection, prereq, and cluster-setup scripts —
-  absorbed into `hostbootstrap doctor` (and, for host binaries, into `handoff`).
-* The heavy multi-language toolchain layers in your Dockerfile (GHC, Node,
-  Python, Playwright, CUDA, …) — now baked into the pulled base image.
-* Ad-hoc build/lifecycle shell glue for host binaries and daemons.
-
-**Keep**
-
-* Your own source, and a now-thin Dockerfile that only `FROM`s the base tag and
-  runs the project's own build steps.
-* The new `hostbootstrap.dhall` (no import line — the CLI injects the schema).
-* Your `.data` directory (bind-mounted; the tool never deletes it).
-* For host binaries/daemons: the binary's own source, including any service-unit
-  logic it installs itself (e.g. an RKE2 systemd unit).
-* Any project-local runtime `.venv`, kept isolated from the host tool.
-
-Projects standardizing their Haskell builds should target **GHC 9.12** to match
-the single GHC the base image ships.
-
----
-
-## Command reference
+## CLI Surface
 
 | Command | What it does |
 |---|---|
-| `hostbootstrap doctor` | Detect host; validate + idempotently install host prereqs |
-| `hostbootstrap build` | Idempotently build the project artifact for the resolved target |
-| `hostbootstrap cluster up` | Bring the whole stack to running (build, then run the container / invoke the binary's `handoff up` / install the daemon unit) |
-| `hostbootstrap cluster down` | Tear the cluster down — **never deletes host `.data`** |
-| `hostbootstrap cluster delete` | Thorough teardown (cluster + derived state) — still preserves `.data` |
-| `hostbootstrap run [args…]` | Build if needed, then pass args to the project's runtime entrypoint |
-| `hostbootstrap base build-and-push` | Cold-rebuild the CPU and CUDA base tags (`--no-cache --pull`) and push them to Docker Hub |
+| `hostbootstrap doctor` | Detect host; validate prerequisites for the detected target |
+| `hostbootstrap build [--force-target <substrate>]` | Build the selected target |
+| `hostbootstrap run [--force-target <substrate>] [args...]` | Build if needed, then pass args to the project entrypoint |
+| `hostbootstrap cluster up [--force-target <substrate>]` | Forward project `cluster up` for `Cluster` targets |
+| `hostbootstrap cluster down [--force-target <substrate>]` | Forward project `cluster down` for `Cluster` targets |
+| `hostbootstrap cluster delete [--force-target <substrate>]` | Forward project `cluster delete` for `Cluster` targets |
+| `hostbootstrap daemon run [--force-target <substrate>]` | Run the selected `HostDaemon` process in the foreground |
+| `hostbootstrap base build` | Cold-rebuild base image(s) locally |
+| `hostbootstrap base build-and-push` | Cold-rebuild and push base image(s) |
 
-All commands are **idempotent**: re-running on a healthy host is a no-op.
+All project state under `.data/` is preserved by hostbootstrap commands. Any
+deeper cluster-state deletion is the project command's responsibility.
 
----
+## Repository Map
 
-## How the base images get built
-
-Versions, download URLs, the architecture string, and the CUDA base image are
-all resolved on the host by
-[`hostbootstrap/base_image.py`](hostbootstrap/base_image.py) and passed via
-`docker build --build-arg`. The Dockerfile
-([`docker/basecontainer.Dockerfile`](docker/basecontainer.Dockerfile)) consumes
-ARGs only — no `if`/`case`/version probing.
-
-Plain `docker build`. No buildx, no emulation; a build can only ever produce the
-host-native arch.
-
-Publishing is a single command: `hostbootstrap base build-and-push
-[--arch amd64|arm64]`. By default it builds both `cpu` and `cuda` flavors for
-the target arch; pass `--flavor cpu|cuda` to publish only one. It always builds
-with `--no-cache --pull` so the registry copy matches a clean rebuild from
-source — no silent layer-cache carryover from a stale local image.
-
-* **Default** for downstream projects: pull the base from Docker Hub.
-* **`--build-base --base-context /path/to/hostbootstrap`**: build the base
-  locally from that checkout's Dockerfile, tagging it with the identical name,
-  then build the downstream project image without pulling the base tag. (This
-  local build path uses the Docker layer cache for fast iteration; only the
-  publish path enforces the cold-build invariant.)
-
----
-
-## Repository layout
-
+```text
+hostbootstrap/
+├── docker/basecontainer.Dockerfile
+├── hostbootstrap/
+│   ├── base_image.py
+│   ├── cli.py
+│   ├── dhall/package.dhall
+│   ├── docker_ops.py
+│   ├── models/
+│   │   ├── container.py
+│   │   ├── host_binary.py
+│   │   └── host_daemon.py
+│   ├── prereqs.py
+│   ├── spec.py
+│   └── substrate.py
+├── support/haskell-deps/
+├── tests/
+└── documents/
 ```
-hostbootstrap/                   # the Python package (flat layout)
-  dhall/
-    package.dhall                # the typed project-config schema (bundled + CLI-injected)
-  cli.py                         # Click entrypoint
-  substrate.py                   # apple-silicon | linux-cpu | linux-gpu
-  prereqs.py                     # host prereq checks/installers
-  spec.py                        # hostbootstrap.dhall → JSON → frozen dataclasses
-  dhall_tool.py                  # provision/run native dhall-to-json
-  process.py                     # async subprocess wrapper
-  docker_ops.py                  # build/run arg-builders + runners
-  base_image.py                  # version/URL/CUDA resolvers + build helpers
-  units.py                       # system unit (LaunchDaemon / systemd) management
-  check_code.py                  # dev-only ruff → black → mypy strict runner
-  test_all.py                    # dev-only pytest runner with suite sentinel
-                                 # and in-process coverage support
-  models/
-    container.py
-    host_binary.py
-    host_daemon.py
-docker/
-  basecontainer.Dockerfile       # logic-free; all values via ARG
-support/
-  haskell-deps/                  # warm Cabal store
-documents/                       # SSoT documentation tree
-stubs/                           # mypy .pyi shims
-pyproject.toml                   # Poetry metadata; public hostbootstrap script
-poetry.toml                      # in-project .venv (dev only)
-```
-
----
-
-## Invariants the tool enforces
-
-* The host `.data` bind mount is preserved across `cluster down` and
-  `cluster delete` — neither ever deletes it.
-* On Apple Silicon container hosts, production-mode `doctor` enforces the
-  headless reboot contract directly: FileVault must be off, Docker must be
-  reachable, and Colima must be started by a bootstrapped system LaunchDaemon
-  under `/Library/LaunchDaemons`. The plist may use any label as long as it runs
-  `colima start -f` / `colima start --foreground` directly or through a wrapper
-  script; per-user LaunchAgents are rejected. Development mode keeps Docker
-  reachability but skips the FileVault and system-Colima checks.
-* In production mode, a system unit is created **if and only if** the resolved
-  target uses the HostDaemon model. Such units are system-scope (systemd /
-  LaunchDaemon), not user-scope LaunchAgents — so they survive a reboot and
-  start pre-login (supporting headless remote SSH). Development mode never
-  creates or removes HostDaemon units.
-* `.build/` exists only for HostBinary / HostDaemon projects and is never
-  bind-mounted into a container.
-
-### Downstream guidance (conventions, not enforced)
-
-* Run fourmolu/hlint **inside** the container — invoked by project commands
-  against the pinned prebuilt tools the base ships.
-* Reach in-cluster services from a host binary over loopback (`127.0.0.0/8`)
-  NodePorts only — never off-host.
-* **Playwright end-to-end tests run from *outside* the cluster, against its
-  gateway** — never from inside a pod. They exercise the deployed stack the same
-  way a real client would (the gateway is reached over the loopback NodePort
-  above). Playwright and its browsers are **already in the base image**, so no
-  project installs them. How the suite is launched follows the target's model:
-  - **Container** targets run Playwright **inside the project container** —
-    the very image that ships the app already carries the browsers, so the tests
-    run there directly.
-  - **HostBinary / HostDaemon** targets have no long-running app container, so
-    they launch the suite as a one-shot **`docker run --rm` against the built
-    project image** (again reusing the base's bundled Playwright) — pointed at the
-    cluster gateway.
-
-See [`documents/README.md`](documents/README.md) for the deep docs.

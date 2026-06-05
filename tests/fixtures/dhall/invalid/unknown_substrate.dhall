@@ -1,6 +1,4 @@
-let H =
-      env:HOSTBOOTSTRAP_PACKAGE
-
+-- `FreeBsd` is not a constructor of `Substrate`; this aborts during Dhall type-checking.
 let container =
       H.Model.Container
         H.Container::{ dockerfile = "docker/demo.Dockerfile" }
@@ -8,5 +6,5 @@ let container =
 in  H.config
       { project = "demo"
       , substrates =
-        [ H.entry H.Substrate.LinuxCpu (H.noCluster container) ]
+        [ H.entry H.Substrate.FreeBsd (H.cluster container) ]
       }

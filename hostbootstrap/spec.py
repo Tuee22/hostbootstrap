@@ -1,13 +1,12 @@
 """Parse and validate ``hostbootstrap.dhall`` into frozen dataclasses.
 
 The schema is the Dhall package under ``dhall/`` (see
-``documents/engineering/schema.md``). Dhall's type-checker already guarantees
-the per-target union is well-formed — a ``daemon`` can only appear under the
-``HostDaemon`` variant, ``mounts``/``service`` only under ``Container``, and so
-on — so by the time :func:`load` sees the rendered JSON the shape is valid. This
-module maps that JSON into frozen dataclasses and performs the few residual
-cross-field checks Dhall cannot express (no duplicate accel; at least one target
-must be runnable on the detected host). Every failure raises :class:`SpecError`.
+``documents/engineering/schema.md``). A project declares exactly one target per
+hardware substrate. Each target chooses a lifecycle (``Cluster`` or
+``NoCluster``) and an execution model (``Container`` / ``HostBinary`` /
+``HostDaemon``). Dhall's type checker guarantees the per-model record shape;
+this module maps rendered JSON into dataclasses and performs residual checks
+such as duplicate substrate rejection.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from . import dhall_tool
-from .substrate import Accel, Substrate, accel_specificity
+from .substrate import Substrate, SubstrateName
 
 
 class SpecError(RuntimeError):
@@ -31,29 +30,16 @@ class Model(StrEnum):
     HOST_DAEMON = "host-daemon"
 
 
+class Lifecycle(StrEnum):
+    CLUSTER = "cluster"
+    NO_CLUSTER = "no-cluster"
+
+
 @dataclass(frozen=True)
 class Mount:
     host: str
     container: str
     read_only: bool = False
-
-
-@dataclass(frozen=True)
-class HostReqs:
-    ghc: bool = False
-
-
-@dataclass(frozen=True)
-class BuildSpec:
-    cabal: str
-    host: HostReqs
-
-
-@dataclass(frozen=True)
-class Handoff:
-    up: str
-    down: str
-    delete: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,10 +49,9 @@ class ContainerArtifact:
 
 @dataclass(frozen=True)
 class ContainerModel:
-    """``model: container`` — build a thin image and run it (no host unit)."""
+    """``model: container`` — build a thin image and run the project entrypoint."""
 
     dockerfile: Path
-    service: bool
     mounts: tuple[Mount, ...]
 
     kind: Model = Model.CONTAINER
@@ -74,10 +59,8 @@ class ContainerModel:
 
 @dataclass(frozen=True)
 class HostBinaryModel:
-    """``model: host-binary`` — build a host binary, hand off its lifecycle."""
+    """``model: host-binary`` — build a host binary and run the project command."""
 
-    build: BuildSpec
-    handoff: Handoff
     container: ContainerArtifact | None = None
 
     kind: Model = Model.HOST_BINARY
@@ -85,9 +68,8 @@ class HostBinaryModel:
 
 @dataclass(frozen=True)
 class HostDaemonModel:
-    """``model: host-daemon`` — build + run a host daemon under a system unit."""
+    """``model: host-daemon`` — host-binary cluster handoff plus a daemon process."""
 
-    build: BuildSpec
     daemon: str
     container: ContainerArtifact | None = None
 
@@ -98,37 +80,46 @@ ModelSpec = ContainerModel | HostBinaryModel | HostDaemonModel
 
 
 @dataclass(frozen=True)
-class ResolvedTarget:
-    """The acceleration requirement and model selected for the detected host."""
+class TargetSpec:
+    lifecycle: Lifecycle
+    model: ModelSpec
 
-    accel: Accel
+
+@dataclass(frozen=True)
+class ResolvedTarget:
+    """The substrate entry selected for this invocation."""
+
+    substrate: SubstrateName
+    lifecycle: Lifecycle
     model: ModelSpec
 
 
 @dataclass(frozen=True)
 class ProjectSpec:
     project: str
-    targets: Mapping[Accel, ModelSpec]
+    targets: Mapping[SubstrateName, TargetSpec]
     source_path: Path
-    development: bool = False
 
-    def target_for(self, substrate: Substrate) -> ResolvedTarget:
-        """Select the most-specific target the detected host can satisfy.
-
-        A host satisfies every target whose ``accel`` is in its capability set.
-        Among those it provides at most one accelerator, so the resolver prefers
-        the accelerated target (``Cuda``/``Metal``) over the ``Cpu`` fallback.
-        """
-        eligible = [accel for accel in self.targets if accel in substrate.capabilities]
-        if not eligible:
-            supported = ", ".join(sorted(accel.value for accel in self.targets))
-            provided = ", ".join(sorted(accel.value for accel in substrate.capabilities))
+    def target_for(
+        self,
+        substrate: Substrate,
+        *,
+        force_target: SubstrateName | None = None,
+    ) -> ResolvedTarget:
+        """Select the detected substrate entry, or an explicit forced target."""
+        target_name = substrate.name if force_target is None else force_target
+        target = self.targets.get(target_name)
+        if target is None:
+            supported = ", ".join(sorted(name.value for name in self.targets))
             raise SpecError(
-                f"no target runnable on host {substrate.name.value!r}: project supports "
-                f"[{supported}], host provides [{provided}]"
+                f"no target declared for substrate {target_name.value!r}; "
+                f"project supports [{supported}]"
             )
-        accel = max(eligible, key=accel_specificity)
-        return ResolvedTarget(accel=accel, model=self.targets[accel])
+        return ResolvedTarget(
+            substrate=target_name,
+            lifecycle=target.lifecycle,
+            model=target.model,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +151,12 @@ def _as_bool(value: object, *, where: str) -> bool:
     return value
 
 
-def _accel(value: object, *, where: str) -> Accel:
+def _substrate(value: object, *, where: str) -> SubstrateName:
     raw = _as_str(value, where=where)
     try:
-        return Accel(raw)
+        return SubstrateName(raw)
     except ValueError as exc:
-        raise SpecError(f"{where}: unknown accel {raw!r}") from exc
+        raise SpecError(f"{where}: unknown substrate {raw!r}") from exc
 
 
 def _mount(value: object, *, where: str) -> Mount:
@@ -174,32 +165,6 @@ def _mount(value: object, *, where: str) -> Mount:
         host=_as_str(mapping.get("host"), where=f"{where}.host"),
         container=_as_str(mapping.get("container"), where=f"{where}.container"),
         read_only=_as_bool(mapping.get("ro", False), where=f"{where}.ro"),
-    )
-
-
-def _host_reqs(value: object, *, where: str) -> HostReqs:
-    mapping = _as_map(value, where=where)
-    return HostReqs(
-        ghc=_as_bool(mapping.get("ghc", False), where=f"{where}.ghc"),
-    )
-
-
-def _build(value: object, *, where: str) -> BuildSpec:
-    mapping = _as_map(value, where=where)
-    return BuildSpec(
-        cabal=_as_str(mapping.get("cabal"), where=f"{where}.cabal"),
-        host=_host_reqs(mapping.get("host", {}), where=f"{where}.host"),
-    )
-
-
-def _handoff(value: object, *, where: str) -> Handoff:
-    mapping = _as_map(value, where=where)
-    delete_raw = mapping.get("delete")
-    delete = None if delete_raw is None else _as_str(delete_raw, where=f"{where}.delete")
-    return Handoff(
-        up=_as_str(mapping.get("up"), where=f"{where}.up"),
-        down=_as_str(mapping.get("down"), where=f"{where}.down"),
-        delete=delete,
     )
 
 
@@ -223,7 +188,6 @@ def _model(value: object, *, where: str) -> ModelSpec:
             dockerfile=Path(
                 _as_str(payload.get("dockerfile"), where=f"{where}.container.dockerfile")
             ),
-            service=_as_bool(payload.get("service", False), where=f"{where}.container.service"),
             mounts=tuple(
                 _mount(entry, where=f"{where}.container.mounts[{i}]")
                 for i, entry in enumerate(mounts_raw)
@@ -232,8 +196,6 @@ def _model(value: object, *, where: str) -> ModelSpec:
     if tag == "HostBinary":
         payload = _as_map(mapping.get("hostBinary"), where=f"{where}.hostBinary")
         return HostBinaryModel(
-            build=_build(payload.get("build"), where=f"{where}.hostBinary.build"),
-            handoff=_handoff(payload.get("handoff"), where=f"{where}.hostBinary.handoff"),
             container=_container_artifact(
                 payload.get("container"), where=f"{where}.hostBinary.container"
             ),
@@ -241,13 +203,28 @@ def _model(value: object, *, where: str) -> ModelSpec:
     if tag == "HostDaemon":
         payload = _as_map(mapping.get("hostDaemon"), where=f"{where}.hostDaemon")
         return HostDaemonModel(
-            build=_build(payload.get("build"), where=f"{where}.hostDaemon.build"),
             daemon=_as_str(payload.get("daemon"), where=f"{where}.hostDaemon.daemon"),
             container=_container_artifact(
                 payload.get("container"), where=f"{where}.hostDaemon.container"
             ),
         )
     raise SpecError(f"{where}.tag: unknown model {tag!r}")
+
+
+def _lifecycle(value: object, *, where: str) -> TargetSpec:
+    mapping = _as_map(value, where=where)
+    tag = _as_str(mapping.get("tag"), where=f"{where}.tag")
+    if tag == "Cluster":
+        return TargetSpec(
+            lifecycle=Lifecycle.CLUSTER,
+            model=_model(mapping.get("cluster"), where=f"{where}.cluster"),
+        )
+    if tag == "NoCluster":
+        return TargetSpec(
+            lifecycle=Lifecycle.NO_CLUSTER,
+            model=_model(mapping.get("noCluster"), where=f"{where}.noCluster"),
+        )
+    raise SpecError(f"{where}.tag: unknown lifecycle {tag!r}")
 
 
 def load(path: Path) -> ProjectSpec:
@@ -261,24 +238,18 @@ def load(path: Path) -> ProjectSpec:
 
     data = _as_map(rendered, where="<root>")
     project = _as_str(data.get("project"), where="project")
-    development = _as_bool(data.get("development", False), where="development")
 
-    entries = _as_list(data.get("targets"), where="targets")
+    entries = _as_list(data.get("substrates"), where="substrates")
     if not entries:
-        raise SpecError("targets: at least one target must be declared")
+        raise SpecError("substrates: at least one substrate must be declared")
 
-    targets: dict[Accel, ModelSpec] = {}
+    targets: dict[SubstrateName, TargetSpec] = {}
     for index, raw_entry in enumerate(entries):
-        where = f"targets[{index}]"
+        where = f"substrates[{index}]"
         entry = _as_map(raw_entry, where=where)
-        accel = _accel(entry.get("accel"), where=f"{where}.accel")
-        if accel in targets:
-            raise SpecError(f"accel {accel.value!r} is declared more than once")
-        targets[accel] = _model(entry.get("model"), where=f"{where}.model")
+        substrate = _substrate(entry.get("substrate"), where=f"{where}.substrate")
+        if substrate in targets:
+            raise SpecError(f"substrate {substrate.value!r} is declared more than once")
+        targets[substrate] = _lifecycle(entry.get("lifecycle"), where=f"{where}.lifecycle")
 
-    return ProjectSpec(
-        project=project,
-        targets=targets,
-        source_path=path,
-        development=development,
-    )
+    return ProjectSpec(project=project, targets=targets, source_path=path)

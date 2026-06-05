@@ -1,18 +1,15 @@
-"""``model: host-daemon`` (§9.4, §9.5).
+"""``model: host-daemon``.
 
-A long-running **host-native** daemon must run on this substrate — typically
-Apple-silicon Metal/Tart inference that cannot run in a container. hostbootstrap
-builds the binary (and any declared container counterpart) and, on ``cluster
-up``, wraps the declared ``daemon`` command in a **system-level** service unit
-(a LaunchDaemon on macOS, a system-scope systemd unit on Linux) so it survives
-reboots and starts before any user logs in. ``cluster down`` removes the unit.
-
-This is the only model that creates a service unit, because ``daemon`` is the
-only field unique to it (and the Dhall schema makes it required here).
+A long-running **host-native** daemon must run alongside the project-managed
+cluster. hostbootstrap builds the binary and forwards cluster lifecycle to the
+project command, but it never backgrounds, supervises, or stops the daemon. A
+supervisor or test harness runs ``hostbootstrap daemon run`` and owns that
+foreground process.
 """
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -33,12 +30,11 @@ async def build(
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    tag_substrate: Substrate | None = None,
 ) -> Path:
     """Build the host binary and, if declared, the container counterpart."""
-    _ = pull  # The host-daemon binary is built on the host, not in a container.
     path = await host_binary.build_binary(
         spec,
-        model.build,
         substrate,
         flavor=flavor,
         project_root=project_root,
@@ -49,7 +45,7 @@ async def build(
         await container.build_artifact(
             spec,
             model.container,
-            substrate,
+            substrate if tag_substrate is None else tag_substrate,
             flavor=flavor,
             project_root=project_root,
             build_base=build_base,
@@ -60,8 +56,9 @@ async def build(
 
 
 def daemon_command(model: HostDaemonModel, *, project_root: Path) -> tuple[str, ...]:
-    """The host daemon command, with a leading ``.build/…`` token absolutized."""
-    return host_binary.resolve_command(model.daemon, project_root)
+    """The host daemon arguments appended to ``.build/<project>``."""
+    _ = project_root
+    return tuple(shlex.split(model.daemon))
 
 
 async def run_one_shot(
@@ -75,6 +72,8 @@ async def run_one_shot(
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
+    tag_substrate: Substrate | None = None,
+    env: dict[str, str] | None = None,
 ) -> process.CommandResult:
     path = await build(
         spec,
@@ -85,5 +84,38 @@ async def run_one_shot(
         build_base=build_base,
         base_context=base_context,
         pull=pull,
+        tag_substrate=tag_substrate,
     )
-    return await process.run_checked([str(path), *command], cwd=project_root)
+    return await process.run_checked([str(path), *command], cwd=project_root, env=env)
+
+
+async def run_daemon(
+    spec: ProjectSpec,
+    model: HostDaemonModel,
+    substrate: Substrate,
+    *,
+    flavor: base_image.Flavor,
+    project_root: Path,
+    build_base: bool = False,
+    base_context: Path | None = None,
+    pull: bool = True,
+    tag_substrate: Substrate | None = None,
+    env: dict[str, str] | None = None,
+) -> process.CommandResult:
+    """Run the configured daemon in the foreground."""
+    path = await build(
+        spec,
+        model,
+        substrate,
+        flavor=flavor,
+        project_root=project_root,
+        build_base=build_base,
+        base_context=base_context,
+        pull=pull,
+        tag_substrate=tag_substrate,
+    )
+    return await process.run_checked(
+        [str(path), *daemon_command(model, project_root=project_root)],
+        cwd=project_root,
+        env=env,
+    )
