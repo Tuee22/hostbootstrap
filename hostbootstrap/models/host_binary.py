@@ -52,6 +52,7 @@ async def build_binary(
     build: BuildSpec,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -63,7 +64,6 @@ async def build_binary(
         await process.run_checked(shlex.split(build.cabal), cwd=project_root)
         return binary_path(spec, project_root)
 
-    flavor, _arch = base_image.substrate_to_flavor_arch(substrate)
     base_tag = base_image.base_image_ref(flavor, substrate.arch)
     if build_base:
         if base_context is None:
@@ -93,6 +93,7 @@ async def build(
     model: HostBinaryModel,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -104,6 +105,7 @@ async def build(
         spec,
         model.build,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
@@ -113,6 +115,7 @@ async def build(
             spec,
             model.container,
             substrate,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -127,6 +130,7 @@ async def run_one_shot(
     substrate: Substrate,
     command: Sequence[str],
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -136,6 +140,7 @@ async def run_one_shot(
         spec,
         model,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,

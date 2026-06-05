@@ -13,17 +13,42 @@ from hostbootstrap.spec import (
     HostDaemonModel,
     SpecError,
 )
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.substrate import Accel, Substrate, SubstrateName
+
+_APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
+_LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, "amd64")
+_LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, "amd64")
 
 
 def _container(dockerfile: str = "d", **over: object) -> dict[str, object]:
-    payload: dict[str, object] = {"dockerfile": dockerfile, "flavor": "Cpu", "service": False}
+    payload: dict[str, object] = {"dockerfile": dockerfile, "service": False}
     payload.update(over)
     return {"tag": "Container", "container": payload}
 
 
-def _entry(sub: str, model: dict[str, object]) -> dict[str, object]:
-    return {"substrate": sub, "model": model}
+def _host_binary(**build: object) -> dict[str, object]:
+    return {
+        "tag": "HostBinary",
+        "hostBinary": {
+            "build": {"cabal": "cabal install exe:demo", "host": {"ghc": True}},
+            "handoff": {"up": ".build/demo up", "down": ".build/demo down", "delete": None},
+            **build,
+        },
+    }
+
+
+def _host_daemon() -> dict[str, object]:
+    return {
+        "tag": "HostDaemon",
+        "hostDaemon": {
+            "build": {"cabal": "c", "host": {"ghc": True}},
+            "daemon": ".build/demo serve",
+        },
+    }
+
+
+def _target(accel: str, model: dict[str, object]) -> dict[str, object]:
+    return {"accel": accel, "model": model}
 
 
 def _load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data: object) -> spec.ProjectSpec:
@@ -36,51 +61,26 @@ def _load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data: object) -> spec
 def test_parse_all_three_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     data = {
         "project": "demo",
-        "substrates": [
-            _entry(
-                "linux-cpu",
+        "targets": [
+            _target(
+                "cpu",
                 _container(
                     service=True, mounts=[{"host": "./.data", "container": "/d", "ro": False}]
                 ),
             ),
-            _entry(
-                "linux-gpu",
-                {
-                    "tag": "HostBinary",
-                    "hostBinary": {
-                        "build": {
-                            "cabal": "cabal install exe:demo",
-                            "host": {"ghc": True, "tart": False, "metal": False},
-                        },
-                        "handoff": {
-                            "up": ".build/demo up",
-                            "down": ".build/demo down",
-                            "delete": None,
-                        },
-                    },
-                },
-            ),
-            _entry(
-                "apple-silicon",
-                {
-                    "tag": "HostDaemon",
-                    "hostDaemon": {
-                        "build": {"cabal": "c", "host": {"ghc": True, "tart": True, "metal": True}},
-                        "daemon": ".build/demo serve",
-                    },
-                },
-            ),
+            _target("cuda", _host_binary()),
+            _target("metal", _host_daemon()),
         ],
     }
     ps = _load(monkeypatch, tmp_path, data)
     assert ps.project == "demo"
     assert ps.development is False
-    cpu = ps.substrates[SubstrateName.LINUX_CPU]
+    cpu = ps.targets[Accel.CPU]
     assert isinstance(cpu, ContainerModel) and cpu.service and cpu.mounts[0].container == "/d"
-    assert isinstance(ps.substrates[SubstrateName.LINUX_GPU], HostBinaryModel)
-    daemon = ps.substrates[SubstrateName.APPLE_SILICON]
+    assert isinstance(ps.targets[Accel.CUDA], HostBinaryModel)
+    daemon = ps.targets[Accel.METAL]
     assert isinstance(daemon, HostDaemonModel) and daemon.daemon == ".build/demo serve"
-    assert daemon.build.host.metal is True
+    assert daemon.build.host.ghc is True
 
 
 def test_container_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -89,14 +89,12 @@ def test_container_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
         tmp_path,
         {
             "project": "p",
-            "substrates": [
-                _entry("linux-cpu", {"tag": "Container", "container": {"dockerfile": "d"}})
-            ],
+            "targets": [_target("cpu", {"tag": "Container", "container": {"dockerfile": "d"}})],
         },
     )
-    model = ps.substrates[SubstrateName.LINUX_CPU]
+    model = ps.targets[Accel.CPU]
     assert isinstance(model, ContainerModel)
-    assert model.flavor is spec.Flavor.CPU and model.service is False and model.mounts == ()
+    assert model.service is False and model.mounts == ()
 
 
 def test_development_mode_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -106,7 +104,7 @@ def test_development_mode_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         {
             "project": "p",
             "development": True,
-            "substrates": [_entry("linux-cpu", _container())],
+            "targets": [_target("cpu", _container())],
         },
     )
     assert ps.development is True
@@ -118,48 +116,38 @@ def test_container_artifact_parsed(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         tmp_path,
         {
             "project": "p",
-            "substrates": [
-                _entry(
-                    "linux-cpu",
-                    {
-                        "tag": "HostBinary",
-                        "hostBinary": {
-                            "build": {"cabal": "cabal build"},
-                            "handoff": {"up": ".build/p up", "down": ".build/p down"},
-                            "container": {"dockerfile": "docker/app.Dockerfile", "flavor": "Cuda"},
-                        },
-                    },
+            "targets": [
+                _target(
+                    "cuda",
+                    _host_binary(container={"dockerfile": "docker/app.Dockerfile"}),
                 )
             ],
         },
     )
 
-    model = ps.substrates[SubstrateName.LINUX_CPU]
+    model = ps.targets[Accel.CUDA]
     assert isinstance(model, HostBinaryModel)
     assert model.container is not None
     assert model.container.dockerfile == Path("docker/app.Dockerfile")
-    assert model.container.flavor is spec.Flavor.CUDA
 
 
-def test_duplicate_substrate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_duplicate_accel_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     data = {
         "project": "p",
-        "substrates": [_entry("linux-cpu", _container()), _entry("linux-cpu", _container())],
+        "targets": [_target("cpu", _container()), _target("cpu", _container())],
     }
     with pytest.raises(SpecError, match="more than once"):
         _load(monkeypatch, tmp_path, data)
 
 
-def test_unknown_substrate_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    with pytest.raises(SpecError, match="unknown substrate"):
-        _load(
-            monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("freebsd", _container())]}
-        )
+def test_unknown_accel_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    with pytest.raises(SpecError, match="unknown accel"):
+        _load(monkeypatch, tmp_path, {"project": "p", "targets": [_target("tpu", _container())]})
 
 
-def test_empty_substrates_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_empty_targets_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="at least one"):
-        _load(monkeypatch, tmp_path, {"project": "p", "substrates": []})
+        _load(monkeypatch, tmp_path, {"project": "p", "targets": []})
 
 
 def test_unknown_tag_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -167,16 +155,7 @@ def test_unknown_tag_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         _load(
             monkeypatch,
             tmp_path,
-            {"project": "p", "substrates": [_entry("linux-cpu", {"tag": "Nope"})]},
-        )
-
-
-def test_bad_flavor_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    with pytest.raises(SpecError, match="unknown flavor"):
-        _load(
-            monkeypatch,
-            tmp_path,
-            {"project": "p", "substrates": [_entry("linux-cpu", _container(flavor="Gpu"))]},
+            {"project": "p", "targets": [_target("cpu", {"tag": "Nope"})]},
         )
 
 
@@ -198,12 +177,43 @@ def test_dhall_error_wrapped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         spec.load(path)
 
 
-def test_model_for_undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_target_for_cpu_runs_on_every_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ps = _load(monkeypatch, tmp_path, {"project": "p", "targets": [_target("cpu", _container())]})
+    for host in (_APPLE, _LINUX_CPU, _LINUX_GPU):
+        resolved = ps.target_for(host)
+        assert resolved.accel is Accel.CPU
+        assert isinstance(resolved.model, ContainerModel)
+
+
+def test_target_for_prefers_accelerated_over_cpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     ps = _load(
-        monkeypatch, tmp_path, {"project": "p", "substrates": [_entry("linux-cpu", _container())]}
+        monkeypatch,
+        tmp_path,
+        {
+            "project": "p",
+            "targets": [
+                _target("cpu", _container()),
+                _target("cuda", _host_binary()),
+                _target("metal", _host_daemon()),
+            ],
+        },
     )
-    with pytest.raises(SpecError, match="does not declare substrate"):
-        ps.model_for(Substrate(SubstrateName.APPLE_SILICON, "arm64"))
+    # linux-gpu can satisfy cpu+cuda; the resolver picks the accelerated one.
+    assert ps.target_for(_LINUX_GPU).accel is Accel.CUDA
+    # apple can satisfy cpu+metal; it picks metal.
+    assert ps.target_for(_APPLE).accel is Accel.METAL
+    # linux-cpu can only satisfy cpu.
+    assert ps.target_for(_LINUX_CPU).accel is Accel.CPU
+
+
+def test_target_for_no_eligible_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ps = _load(monkeypatch, tmp_path, {"project": "p", "targets": [_target("cuda", _host_binary())]})
+    with pytest.raises(SpecError, match="no target runnable on host 'apple-silicon'"):
+        ps.target_for(_APPLE)
 
 
 def test_narrowers() -> None:

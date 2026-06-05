@@ -4,9 +4,9 @@ let H = env:HOSTBOOTSTRAP_PACKAGE
 
 in  H.config
       { project = "demo"
-      , substrates =
-        [ H.entry
-            H.Substrate.LinuxCpu
+      , targets =
+        [ H.target
+            H.Accel.Cpu
             (H.Model.Container H.Container::{ dockerfile = "docker/demo.Dockerfile" })
         ]
       }

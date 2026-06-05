@@ -9,11 +9,12 @@ type: reference
 Every project that adopts hostbootstrap ships a `hostbootstrap.dhall` that builds
 one typed value against the [Dhall schema](../../hostbootstrap/dhall/package.dhall)
 the CLI bundles and injects as `H` (no import line, nothing vendored). We use
-**Dhall** rather than YAML for one reason: its
-union types let us make illegal configurations *unrepresentable at the type
-level*. A `Container` record simply has no `daemon` field, so writing one is a
-type error before the CLI ever runs — not a runtime check we have to remember to
-write. See [`spec.py`](../../hostbootstrap/spec.py) for the consuming side.
+**Dhall** rather than YAML for one reason: its union types let us make illegal
+configurations *unrepresentable at the type level*. A project declares **what its
+workload needs** (an acceleration requirement) and **never names a host**, so a
+CUDA-on-Apple pairing is not a runtime check we have to remember to write — it is
+simply unwritable. See [`spec.py`](../../hostbootstrap/spec.py) for the consuming
+side.
 
 ## Top-level shape
 
@@ -24,36 +25,39 @@ import line** and usually opens directly at production-mode `H.config`:
 -- `H` (the schema) is injected by the CLI.
 H.config
   { project = "<name>"          -- image / container / unit name
-  , substrates =                -- one entry per supported substrate
-    [ H.entry <substrate> <model> ]
+  , targets =                   -- one entry per acceleration requirement
+    [ H.target <accel> <model> ]
   }
 ```
 
-* `<substrate>` is `H.Substrate.AppleSilicon`, `H.Substrate.LinuxCpu`, or
-  `H.Substrate.LinuxGpu`.
-* `<model>` is one of the three execution models below, chosen **per substrate**.
-  A project that behaves differently across substrates simply lists a different
-  model per entry; there is no separate "multi-substrate" model.
+* `<accel>` is `H.Accel.Cpu`, `H.Accel.Cuda`, or `H.Accel.Metal` — the hardware
+  the workload *requires*, not the host it runs on.
+* `<model>` is one of the three execution models below, chosen **per target**.
 
-`H.entry` lowers the typed union into a JSON-friendly record (`dhall-to-json`
+`H.target` lowers the typed model union into a JSON-friendly record (`dhall-to-json`
 strips union tags, so it injects an explicit `tag`). `H.config` is a typed
-constructor that pins the top-level shape and sets `development = False`.
-Projects that need local-only development behavior opt in explicitly:
+constructor that pins the top-level shape and sets `development = False`. Projects
+that need local-only development behavior opt in explicitly with
+`H.configWithDevelopment True { … }`.
 
-```dhall
-H.configWithDevelopment
-  True
-  { project = "<name>"
-  , substrates =
-    [ H.entry <substrate> <model> ]
-  }
-```
+## Acceleration requirements and host resolution
 
-Development mode is intentionally narrow: it keeps substrate, build, and Docker
-checks, but Apple Silicon `doctor` skips the FileVault and system-Colima
-pre-login checks. For `HostDaemon`, `cluster up` builds and prints the daemon
-command instead of creating a LaunchDaemon/systemd unit; `cluster down` and
-`cluster delete` skip unit removal. Production mode remains the default.
+The host is detected at runtime ([`substrate.py`](../../hostbootstrap/substrate.py));
+the CLI then selects the declared target the host can satisfy. A host provides at
+most one accelerator, so a single `Cpu` target is portable everywhere while an
+accelerated target is bound to its hardware:
+
+| detected host | satisfies |
+|---|---|
+| `apple-silicon` (arm64) | `Cpu`, `Metal` |
+| `linux-cpu` (amd64 / arm64) | `Cpu` |
+| `linux-gpu` (amd64 / arm64) | `Cpu`, `Cuda` |
+
+When several declared targets are satisfiable (e.g. a project declares both `Cpu`
+and `Cuda` and runs on `linux-gpu`), the resolver picks the **most specific** —
+the accelerated path wins over the always-available `Cpu` fallback. The base-image
+family is *derived* from the resolved `Accel` (`Cpu`/`Metal` → cpu base, `Cuda` →
+cuda base); there is no `flavor` field to set inconsistently.
 
 ## The three models
 
@@ -62,16 +66,13 @@ hostbootstrap builds a thin image `FROM` the base tag and runs it. The container
 owns any cluster/upload work; **no system unit is ever created** for this model.
 For one-shot `hostbootstrap run`, the image must declare an `ENTRYPOINT`; trailing
 tokens are passed as arguments to that entrypoint, not interpreted as a raw
-container command.
-Hostbootstrap parses its own `run` options only before the first project
-argument. After that boundary, option-looking tokens are forwarded unchanged:
-`hostbootstrap run --help` documents the wrapper, while
-`hostbootstrap run test --help` forwards `test --help` to the project entrypoint.
+container command. Hostbootstrap parses its own `run` options only before the
+first project argument; after that boundary, option-looking tokens are forwarded
+unchanged (`hostbootstrap run test --help` forwards `test --help`).
 
 | field | type | required | default | meaning |
 |---|---|---|---|---|
 | `dockerfile` | `Text` | yes | — | project Dockerfile; must declare `ARG BASE_IMAGE`, `FROM ${BASE_IMAGE}`, and a runtime `ENTRYPOINT` |
-| `flavor` | `<Cpu \| Cuda>` | no | `Cpu` | base family inherited (use `Cuda` on `linux-gpu`) |
 | `service` | `Bool` | no | `False` | `True` ⇒ `cluster up` runs it detached, `--restart unless-stopped`; `False` ⇒ one-shot `--rm` |
 | `mounts` | `List Mount` | no | `[]` | bind mounts applied to runs |
 
@@ -112,26 +113,46 @@ the unit is not created or removed.
 | `daemon` | `Text` | yes | — | host command wrapped in the system unit |
 | `container` | `Optional CtrArtifact` | no | `None` | optional image counterpart |
 
-`CtrArtifact = { dockerfile : Text, flavor : <Cpu \| Cuda> }`.
-`HostReqs = { ghc, tart, metal : Bool }` (all default `False`).
+`CtrArtifact = { dockerfile : Text }`. `HostReqs = { ghc : Bool }` (default
+`False`). Metal/Tart tooling is not a free flag: it is required exactly when the
+resolved target is `H.Accel.Metal`, which only ever resolves on Apple silicon.
 
 ## How it is parsed and validated
 
 1. The CLI provisions a native `dhall-to-json` (see [prerequisites](prerequisites.md)),
    wraps the project file in `let H = env:HOSTBOOTSTRAP_PACKAGE in ( … )` so the
    bundled schema is in scope as `H`, and renders it to JSON. **Dhall type-checks
-   during this step**, so an ill-typed config fails here. (Because `H` is injected
-   rather than imported, the file only type-checks through the CLI — standalone
-   `dhall-to-json` sees `H` as unbound.)
-2. [`spec.py`](../../hostbootstrap/spec.py) reads the JSON: each entry's `model`
-   carries `development` plus model entries. Each entry's `model` carries a
-   `tag` (`Container` / `HostBinary` / `HostDaemon`) and exactly one populated
-   payload, which it maps into a frozen dataclass.
+   during this step**, so an ill-typed config fails here.
+2. [`spec.py`](../../hostbootstrap/spec.py) reads the JSON: each target carries an
+   `accel` plus a `model` with a `tag` (`Container` / `HostBinary` / `HostDaemon`)
+   and exactly one populated payload, mapped into a frozen dataclass.
 3. It then runs the residual checks Dhall cannot express and fails fast with a
-   `SpecError`: **no duplicate substrate**, and the **detected substrate must be
-   declared**.
+   `SpecError`: **no duplicate accel**, and **at least one target must be runnable
+   on the detected host**.
 
 ## What the type system rejects (WRONG vs. RIGHT)
+
+> **WRONG** — a CUDA workload pinned to Apple hardware
+>
+> There is no way to write this: a project declares an `Accel`, never a host. A
+> `Cuda` target resolves only on a CUDA-capable host, so CUDA-on-Apple cannot be
+> expressed in the first place.
+>
+> **RIGHT** — declare the requirement; the resolver binds it to capable hosts
+>
+> ```dhall
+> H.target H.Accel.Cuda (H.Model.Container H.Container::{ dockerfile = "docker/infer.Dockerfile" })
+> ```
+
+> **WRONG** — a base `flavor` on a container
+>
+> ```dhall
+> H.Model.Container H.Container::{ dockerfile = "d", flavor = H.Flavor.Cuda }
+> ```
+>
+> Aborts: `Container` has no `flavor` field and `H.Flavor` no longer exists. The
+> base family is derived from the target's `Accel`, so a CPU container can never
+> claim a CUDA base.
 
 > **WRONG** — a daemon on a container
 >
@@ -139,131 +160,80 @@ the unit is not created or removed.
 > H.Model.Container H.Container::{ dockerfile = "d", daemon = ".build/x serve" }
 > ```
 >
-> `dhall-to-json` aborts: `Error: Expression doesn't match annotation { + daemon : … }`.
 > `Container` has no `daemon` field, so a container can never spawn a host unit.
->
-> **RIGHT** — a daemon belongs to `HostDaemon`
->
-> ```dhall
-> H.Model.HostDaemon H.HostDaemon::{ build = H.Build::{ cabal = "…" }, daemon = ".build/x serve" }
-> ```
 
-> **WRONG** — a `HostDaemon` without its required `daemon`
+> **WRONG** — a `HostDaemon` without its required `daemon`, or `mounts` on a
+> `HostBinary`, or an unknown `H.Accel.Gpu`
 >
-> ```dhall
-> H.Model.HostDaemon H.HostDaemon::{ build = H.Build::{ cabal = "…" } }
-> ```
->
-> Aborts: `Error: Expression doesn't match annotation { - daemon : … }`. The unit
-> rule is structural: no daemon declared ⇒ no unit, and `HostDaemon` *requires* one.
+> Each aborts during `dhall-to-json`: the unit rule is structural (no `daemon`
+> declared ⇒ no unit, and `HostDaemon` requires one); only a `Container` is
+> bind-mounted; and `Accel` is the closed enum `<Cpu | Cuda | Metal>`.
 
-> **WRONG** — `mounts` on a host binary
->
-> ```dhall
-> H.Model.HostBinary H.HostBinary::{ build = …, handoff = …, mounts = [] : List H.Mount.Type }
-> ```
->
-> Aborts: `Error: Expression doesn't match annotation { + mounts : … }`. Only a
-> `Container` is bind-mounted; a host binary has no container to mount into.
-
-> **WRONG** — an unknown flavor
->
-> ```dhall
-> H.Container::{ dockerfile = "d", flavor = H.Flavor.Gpu }
-> ```
->
-> Aborts: `Error: Missing constructor: Gpu`. `flavor` is the enum `<Cpu | Cuda>`.
-
-Duplicate substrates and an undeclared detected substrate are not expressible as
-Dhall type errors, so [`spec.py`](../../hostbootstrap/spec.py) rejects them with
-a `SpecError` instead.
+Duplicate accels and a config with no host-runnable target are not expressible as
+Dhall type errors, so [`spec.py`](../../hostbootstrap/spec.py) rejects them with a
+`SpecError` instead.
 
 ## Worked examples (by archetype)
 
-A pure-container CLI — no cluster, one-shot (a compose replacement):
+A generic CPU service that runs on every host — Apple, linux-cpu, linux-gpu,
+amd64 and arm64 — from one declaration:
 
 ```dhall
 H.config
-  { project = "tool"
-  , substrates =
-    [ H.entry H.Substrate.LinuxCpu
-        (H.Model.Container H.Container::{ dockerfile = "docker/tool.Dockerfile" })
+  { project = "demo"
+  , targets =
+    [ H.target H.Accel.Cpu
+        ( H.Model.Container
+            H.Container::{
+            , dockerfile = "docker/demo.Dockerfile"
+            , service = True
+            , mounts =
+              [ H.Mount::{ host = "./.data", container = "/opt/demo/.data" }
+              , H.Mount::{ host = "/var/run/docker.sock", container = "/var/run/docker.sock" }
+              ]
+            }
+        )
     ]
   }
 ```
 
-Its Dockerfile should install the project command and make it the tini-wrapped
-entrypoint:
+Its Dockerfile installs the project command and makes it the tini-wrapped
+entrypoint, so `hostbootstrap run test all` passes `test all` to it:
 
 ```dockerfile
-RUN install -m 0755 "$(cabal list-bin exe:tool)" /usr/local/bin/tool
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/tool"]
+RUN install -m 0755 "$(cabal list-bin exe:demo)" /usr/local/bin/demo
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/demo"]
 ```
 
-Then `hostbootstrap run test all` passes `test all` to `tool`; it does not run a
-raw `/usr/bin/test` inside the container.
-Likewise, `hostbootstrap run test --help` passes `test --help` to `tool`; place
-hostbootstrap options such as `--no-pull` before `test`.
-
-A long-running, self-restarting service container that bootstraps its own
-cluster and uploads its own image:
+A mixed project: a Metal host daemon on Apple silicon, a CUDA service container on
+NVIDIA hosts, and a CPU container fallback everywhere else. The resolver picks the
+most specific target the detected host can satisfy:
 
 ```dhall
-H.entry H.Substrate.LinuxCpu
-  ( H.Model.Container
-      H.Container::{
-      , dockerfile = "docker/app.Dockerfile"
-      , service = True
-      , mounts =
-        [ H.Mount::{ host = "./.data", container = "/opt/app/.data" }
-        , H.Mount::{ host = "/var/run/docker.sock", container = "/var/run/docker.sock" }
-        , H.Mount::{ host = "\${HOME}/.docker/config.json", container = "/root/.docker/config.json", ro = True }
-        ]
-      }
-  )
-```
-
-A host-binary cluster manager on every substrate (the binary owns its own
-service units, e.g. RKE2):
-
-```dhall
-H.entry H.Substrate.LinuxCpu
-  ( H.Model.HostBinary
-      H.HostBinary::{
-      , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
-      , handoff = H.Handoff::{ up = ".build/mgr cluster up", down = ".build/mgr cluster down" }
-      }
-  )
-```
-
-A mixed project: a host daemon (Metal) on Apple silicon, a service container on
-Linux GPU:
-
-```dhall
-[ H.entry H.Substrate.AppleSilicon
+[ H.target H.Accel.Metal
     ( H.Model.HostDaemon
         H.HostDaemon::{
-        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True, tart = True, metal = True } }
+        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True } }
         , daemon = ".build/infer inference --serve"
         }
     )
-, H.entry H.Substrate.LinuxGpu
-    ( H.Model.Container
-        H.Container::{ dockerfile = "docker/infer.Dockerfile", flavor = H.Flavor.Cuda, service = True }
-    )
+, H.target H.Accel.Cuda
+    ( H.Model.Container H.Container::{ dockerfile = "docker/infer.Dockerfile", service = True } )
+, H.target H.Accel.Cpu
+    ( H.Model.Container H.Container::{ dockerfile = "docker/infer.Dockerfile", service = True } )
 ]
 ```
 
-A local development project that uses normal container build/run behavior but
-does not promise headless pre-login Docker after a reboot:
+A local development project that uses normal container build/run behavior but does
+not promise headless pre-login Docker after a reboot:
 
 ```dhall
 H.configWithDevelopment
   True
-  { project = "tool"
-  , substrates =
-    [ H.entry H.Substrate.AppleSilicon
-        (H.Model.Container H.Container::{ dockerfile = "docker/tool.Dockerfile" })
+  { project = "demo"
+  , targets =
+    [ H.target H.Accel.Cpu
+        (H.Model.Container H.Container::{ dockerfile = "docker/demo.Dockerfile" })
     ]
   }
 ```

@@ -1,23 +1,22 @@
 H.config
       { project = "demo"
-      , substrates =
-        [ H.entry
-            H.Substrate.AppleSilicon
+      , targets =
+        [ H.target
+            H.Accel.Metal
             ( H.Model.HostDaemon
                 H.HostDaemon::{
                 , build = H.Build::{
                   , cabal = "cabal install --installdir .build exe:demo"
-                  , host = H.HostReqs::{ ghc = True, tart = True, metal = True }
+                  , host = H.HostReqs::{ ghc = True }
                   }
                 , daemon = ".build/demo inference --serve"
                 }
             )
-        , H.entry
-            H.Substrate.LinuxGpu
+        , H.target
+            H.Accel.Cuda
             ( H.Model.Container
                 H.Container::{
                 , dockerfile = "docker/demo.Dockerfile"
-                , flavor = H.Flavor.Cuda
                 , service = True
                 }
             )

@@ -9,8 +9,18 @@ from pathlib import Path
 import pytest
 
 from hostbootstrap import prereqs
-from hostbootstrap.spec import BuildSpec, Handoff, HostBinaryModel, HostReqs, ProjectSpec
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.spec import (
+    BuildSpec,
+    ContainerModel,
+    Handoff,
+    HostBinaryModel,
+    HostReqs,
+    ProjectSpec,
+    ResolvedTarget,
+)
+from hostbootstrap.substrate import Accel, Substrate, SubstrateName
+
+_CPU_CONTAINER = ContainerModel(dockerfile=Path("d"), service=False, mounts=())
 
 
 def _write_plist(path: Path, payload: dict[str, object]) -> None:
@@ -461,13 +471,14 @@ async def test_apple_development_mode_skips_prelogin_checks(
 
     project_spec = ProjectSpec(
         project="p",
-        substrates={},
+        targets={Accel.CPU: _CPU_CONTAINER},
         source_path=tmp_path / "hostbootstrap.dhall",
         development=True,
     )
     result = await prereqs._run_apple(
         project_spec,
         Substrate(SubstrateName.APPLE_SILICON, "arm64"),
+        ResolvedTarget(Accel.CPU, _CPU_CONTAINER),
     )
 
     assert calls == ["macos", "xcode", "sudo", "brew", "docker"]
@@ -492,20 +503,20 @@ async def test_apple_production_checks_host_requirements(
         monkeypatch.setattr(prereqs, name, lambda name=name: calls.append(name))
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
 
+    model = HostBinaryModel(
+        build=BuildSpec("cabal build", HostReqs(ghc=True)),
+        handoff=Handoff(up=".build/p up", down=".build/p down"),
+    )
     project_spec = ProjectSpec(
         project="p",
-        substrates={
-            SubstrateName.APPLE_SILICON: HostBinaryModel(
-                build=BuildSpec("cabal build", HostReqs(ghc=True, tart=True)),
-                handoff=Handoff(up=".build/p up", down=".build/p down"),
-            )
-        },
+        targets={Accel.CPU: model},
         source_path=tmp_path / "hostbootstrap.dhall",
     )
 
     result = await prereqs._run_apple(
         project_spec,
         Substrate(SubstrateName.APPLE_SILICON, "arm64"),
+        ResolvedTarget(Accel.CPU, model),
     )
 
     assert calls == [
@@ -536,23 +547,26 @@ async def test_apple_host_requirement_errors(
     ]:
         monkeypatch.setattr(prereqs, name, lambda: None)
 
+    model = HostBinaryModel(
+        build=BuildSpec("cabal build", HostReqs(ghc=True)),
+        handoff=Handoff(up=".build/p up", down=".build/p down"),
+    )
     project_spec = ProjectSpec(
         project="p",
-        substrates={
-            SubstrateName.APPLE_SILICON: HostBinaryModel(
-                build=BuildSpec("cabal build", HostReqs(ghc=True, tart=True)),
-                handoff=Handoff(up=".build/p up", down=".build/p down"),
-            )
-        },
+        targets={Accel.CPU: model, Accel.METAL: model},
         source_path=tmp_path / "hostbootstrap.dhall",
     )
+    apple = Substrate(SubstrateName.APPLE_SILICON, "arm64")
+
+    # A Metal target requires Tart; an unmet Tart fails the doctor.
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd != "tart")
     with pytest.raises(prereqs.PrereqError, match="requires Tart"):
-        await prereqs._run_apple(project_spec, Substrate(SubstrateName.APPLE_SILICON, "arm64"))
+        await prereqs._run_apple(project_spec, apple, ResolvedTarget(Accel.METAL, model))
 
+    # A target whose build needs GHC fails when ghcup is absent.
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd != "ghcup")
     with pytest.raises(prereqs.PrereqError, match="requires GHC"):
-        await prereqs._run_apple(project_spec, Substrate(SubstrateName.APPLE_SILICON, "arm64"))
+        await prereqs._run_apple(project_spec, apple, ResolvedTarget(Accel.CPU, model))
 
 
 async def test_linux_doctor_cpu_and_gpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -561,8 +575,12 @@ async def test_linux_doctor_cpu_and_gpu(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
     monkeypatch.setattr(prereqs, "_check_docker_socket", lambda: calls.append("docker"))
     monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
+    # Declares both a Cpu and a Cuda target: linux-cpu resolves Cpu (no nvidia),
+    # linux-gpu prefers Cuda and triggers the nvidia runtime check.
     project_spec = ProjectSpec(
-        project="p", substrates={}, source_path=tmp_path / "hostbootstrap.dhall"
+        project="p",
+        targets={Accel.CPU: _CPU_CONTAINER, Accel.CUDA: _CPU_CONTAINER},
+        source_path=tmp_path / "hostbootstrap.dhall",
     )
 
     cpu = await prereqs.run_doctor(project_spec, Substrate(SubstrateName.LINUX_CPU, "amd64"))
@@ -589,7 +607,7 @@ def test_run_doctor_sync(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setattr(prereqs, "run_doctor", _fake_run_doctor)
 
     result = prereqs.run_doctor_sync(
-        ProjectSpec(project="p", substrates={}, source_path=tmp_path / "hostbootstrap.dhall"),
+        ProjectSpec(project="p", targets={}, source_path=tmp_path / "hostbootstrap.dhall"),
         Substrate(SubstrateName.LINUX_CPU, "amd64"),
     )
     assert result is expected
@@ -601,13 +619,18 @@ async def test_run_doctor_dispatches_apple(monkeypatch: pytest.MonkeyPatch, tmp_
     async def _fake_apple(
         _spec: ProjectSpec,
         _substrate: Substrate,
+        _resolved: ResolvedTarget,
     ) -> prereqs.DoctorResult:
         return expected
 
     monkeypatch.setattr(prereqs, "_run_apple", _fake_apple)
 
     result = await prereqs.run_doctor(
-        ProjectSpec(project="p", substrates={}, source_path=tmp_path / "hostbootstrap.dhall"),
+        ProjectSpec(
+            project="p",
+            targets={Accel.CPU: _CPU_CONTAINER},
+            source_path=tmp_path / "hostbootstrap.dhall",
+        ),
         Substrate(SubstrateName.APPLE_SILICON, "arm64"),
     )
     assert result is expected

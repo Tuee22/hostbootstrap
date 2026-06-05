@@ -62,10 +62,28 @@ The suite is a thin pyramid weighted to pure unit + Dhall contract tests.
 
 **Pure unit tests** — the bulk. The builders/resolvers return data, so no mocking
 is needed: [`docker_ops`](../../hostbootstrap/docker_ops.py) command tuples,
-[`base_image`](../../hostbootstrap/base_image.py) tag/URL builders and the JSON
-narrowers, [`units`](../../hostbootstrap/units.py) systemd/launchd text,
-[`substrate`](../../hostbootstrap/substrate.py) detection, and the
-[`models`](../../hostbootstrap/models) path/mount/command helpers. HTTP-backed
+[`base_image`](../../hostbootstrap/base_image.py) tag/URL builders, the
+`accel_to_flavor` mapping, and the JSON narrowers,
+[`units`](../../hostbootstrap/units.py) systemd/launchd text,
+[`substrate`](../../hostbootstrap/substrate.py) detection, the
+[`spec`](../../hostbootstrap/spec.py) target resolver, and the
+[`models`](../../hostbootstrap/models) path/mount/command helpers.
+
+The target resolver is its own cluster of pure cases, since it encodes the
+capability-subsumption rule that lets one declaration span every host:
+
+* **cpu-on-all-hosts** — a single `Cpu` target resolves on `apple-silicon`,
+  `linux-cpu`, and `linux-gpu` (amd64 and arm64).
+* **accel preferred over cpu** — when a project declares both `Cpu` and `Cuda`
+  and runs on `linux-gpu`, the resolver picks the more specific `Cuda` target;
+  the same holds for `Metal` over `Cpu` on `apple-silicon`.
+* **duplicate-accel rejection** — two targets with the same `Accel` raise
+  `SpecError`.
+* **no-runnable-target rejection** — a config whose targets the detected host
+  cannot satisfy raises `SpecError`.
+
+These are covered both as pure-function tests over crafted inputs and as
+real-`dhall` contract tests through the actual schema. HTTP-backed
 resolvers and the [`dhall_tool`](../../hostbootstrap/dhall_tool.py) downloader are
 tested with `monkeypatch` over `httpx` (an in-memory `tar.bz2`, a checksum
 mismatch) — never the real network.
@@ -73,9 +91,12 @@ mismatch) — never the real network.
 **Dhall contract tests** (`tests/test_spec_dhall.py`, marked `dhall`) — the
 highest-value, project-specific layer. They drive [`spec.load`](../../hostbootstrap/spec.py)
 through the real `dhall-to-json` against fixtures in `tests/fixtures/dhall/`:
-six `valid/` archetypes load to the expected dataclasses, and four `invalid/`
-ones (`daemon` on a `Container`, a `HostDaemon` missing its `daemon`, `mounts` on
-a `HostBinary`, a bad `flavor`) must raise `SpecError`. This is the executable
+the `valid/` archetypes load to the expected dataclasses, and the `invalid/`
+ones must raise `SpecError`. Some are structural Dhall type errors (`daemon` on a
+`Container`, a `HostDaemon` missing its `daemon`, `mounts` on a `HostBinary`, an
+unknown `H.Accel`); others are the residual `spec.py` checks Dhall cannot
+express — a **duplicate `Accel`** across targets, and a config with **no target
+runnable on the detected host**. This is the executable
 form of the [schema](schema.md) promise — *illegal states are unrepresentable*.
 The fixtures carry no import line — the schema is CLI-injected as `H` — so they
 also cover the zero-boilerplate convention (plus one fixture that binds an

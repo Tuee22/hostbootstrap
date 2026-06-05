@@ -18,8 +18,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .spec import HostBinaryModel, HostDaemonModel, HostReqs, ProjectSpec
-from .substrate import Substrate, SubstrateName
+from .spec import HostBinaryModel, HostDaemonModel, ProjectSpec, ResolvedTarget
+from .substrate import Accel, Substrate, SubstrateName
 
 
 class PrereqError(RuntimeError):
@@ -301,7 +301,9 @@ def _check_nvidia_runtime() -> None:
         )
 
 
-async def _run_apple(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:
+async def _run_apple(
+    spec: ProjectSpec, substrate: Substrate, resolved: ResolvedTarget
+) -> DoctorResult:
     messages: list[str] = []
     _check_macos_arm64()
     messages.append("macOS arm64: OK")
@@ -322,22 +324,22 @@ async def _run_apple(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:
     _check_docker_socket()
     messages.append("Docker daemon reachable: OK")
 
-    apple = spec.substrates.get(SubstrateName.APPLE_SILICON)
-    host: HostReqs | None = None
-    if isinstance(apple, (HostBinaryModel, HostDaemonModel)):
-        host = apple.build.host
-    if host is not None:
-        if host.tart and not _have("tart"):
-            raise PrereqError(
-                "config requires Tart; install via `brew install cirruslabs/cli/tart`"
-            )
-        if host.ghc and not _have("ghcup"):
-            raise PrereqError("config requires GHC on host; install via `brew install ghcup-hs`")
+    if resolved.accel is Accel.METAL and not _have("tart"):
+        raise PrereqError(
+            "config requires Tart (Metal target); install via `brew install cirruslabs/cli/tart`"
+        )
+    model = resolved.model
+    if (
+        isinstance(model, (HostBinaryModel, HostDaemonModel))
+        and model.build.host.ghc
+        and not _have("ghcup")
+    ):
+        raise PrereqError("config requires GHC on host; install via `brew install ghcup-hs`")
 
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 
-async def _run_linux(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:
+async def _run_linux(substrate: Substrate, resolved: ResolvedTarget) -> DoctorResult:
     messages: list[str] = []
     _check_ubuntu_2404()
     messages.append("Ubuntu 24.04: OK")
@@ -346,19 +348,18 @@ async def _run_linux(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:
     _check_docker_socket()
     messages.append("Docker daemon reachable: OK")
 
-    if substrate.name is SubstrateName.LINUX_GPU:
+    if resolved.accel is Accel.CUDA:
         _check_nvidia_runtime()
         messages.append("NVIDIA container runtime: OK")
-
-    _ = spec  # spec is currently only consulted for apple-silicon
 
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 
 async def run_doctor(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:
+    resolved = spec.target_for(substrate)
     if substrate.name is SubstrateName.APPLE_SILICON:
-        return await _run_apple(spec, substrate)
-    return await _run_linux(spec, substrate)
+        return await _run_apple(spec, substrate, resolved)
+    return await _run_linux(substrate, resolved)
 
 
 def run_doctor_sync(spec: ProjectSpec, substrate: Substrate) -> DoctorResult:

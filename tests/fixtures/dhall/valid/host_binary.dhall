@@ -1,8 +1,8 @@
 H.config
       { project = "demo"
-      , substrates =
-        [ H.entry
-            H.Substrate.LinuxCpu
+      , targets =
+        [ H.target
+            H.Accel.Cpu
             ( H.Model.HostBinary
                 H.HostBinary::{
                 , build = H.Build::{

@@ -1,9 +1,9 @@
 -- A Container has no `daemon` field, so this is a Dhall type error.
 H.config
       { project = "demo"
-      , substrates =
-        [ H.entry
-            H.Substrate.LinuxCpu
+      , targets =
+        [ H.target
+            H.Accel.Cpu
             ( H.Model.Container
                 H.Container::{ dockerfile = "d", daemon = ".build/demo serve" }
             )

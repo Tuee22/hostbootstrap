@@ -11,14 +11,13 @@ from hostbootstrap import cli, docker_ops, process
 from hostbootstrap.spec import (
     BuildSpec,
     ContainerModel,
-    Flavor,
     Handoff,
     HostBinaryModel,
     HostDaemonModel,
     HostReqs,
     ProjectSpec,
 )
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.substrate import Accel, Substrate, SubstrateName
 
 
 def test_help_lists_commands_and_omits_push() -> None:
@@ -102,7 +101,6 @@ LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
 def _container_model(*, service: bool = False) -> ContainerModel:
     return ContainerModel(
         dockerfile=Path("Dockerfile"),
-        flavor=Flavor.CPU,
         service=service,
         mounts=(),
     )
@@ -122,7 +120,7 @@ def _daemon_model() -> HostDaemonModel:
 def _project(model: object, *, development: bool = False) -> ProjectSpec:
     return ProjectSpec(
         project="proj",
-        substrates={SubstrateName.LINUX_CPU: model},  # type: ignore[dict-item]
+        targets={Accel.CPU: model},  # type: ignore[dict-item]
         source_path=Path("/proj/hostbootstrap.dhall"),
         development=development,
     )
@@ -662,8 +660,8 @@ async def test_development_hostdaemon_cluster_lifecycle_skips_units(
 
     project_spec = ProjectSpec(
         project="proj",
-        substrates={
-            SubstrateName.LINUX_CPU: HostDaemonModel(
+        targets={
+            Accel.CPU: HostDaemonModel(
                 build=BuildSpec("cabal install --installdir .build exe:proj", HostReqs()),
                 daemon=".build/proj serve",
             )

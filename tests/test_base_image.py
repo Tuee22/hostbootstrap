@@ -9,7 +9,7 @@ import pytest
 
 from hostbootstrap import base_image
 from hostbootstrap.base_image import Flavor
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.substrate import Accel
 
 
 def test_base_tag_and_ref() -> None:
@@ -21,17 +21,15 @@ def test_base_tag_and_ref() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "arch", "expected"),
+    ("accel", "expected"),
     [
-        (SubstrateName.APPLE_SILICON, "arm64", (Flavor.CPU, "arm64")),
-        (SubstrateName.LINUX_CPU, "amd64", (Flavor.CPU, "amd64")),
-        (SubstrateName.LINUX_GPU, "amd64", (Flavor.CUDA, "amd64")),
+        (Accel.CPU, Flavor.CPU),
+        (Accel.METAL, Flavor.CPU),
+        (Accel.CUDA, Flavor.CUDA),
     ],
 )
-def test_substrate_to_flavor_arch(
-    name: SubstrateName, arch: str, expected: tuple[Flavor, str]
-) -> None:
-    assert base_image.substrate_to_flavor_arch(Substrate(name, arch)) == expected
+def test_accel_to_flavor(accel: Accel, expected: Flavor) -> None:
+    assert base_image.accel_to_flavor(accel) == expected
 
 
 def test_compute_build_args_no_network(monkeypatch: pytest.MonkeyPatch) -> None:

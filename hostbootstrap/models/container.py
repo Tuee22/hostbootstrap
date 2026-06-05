@@ -102,13 +102,13 @@ async def build(
     model: ContainerModel,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
 ) -> str:
     """Build the project image ``FROM`` the base tag; return its local tag."""
-    flavor = base_image.Flavor(model.flavor.value)
     tag = image_tag(spec, substrate)
     if build_base:
         if base_context is None:
@@ -138,13 +138,13 @@ async def build_artifact(
     artifact: ContainerArtifact,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
     pull: bool = True,
 ) -> str:
     """Build the optional container counterpart declared by a binary/daemon model."""
-    flavor = base_image.Flavor(artifact.flavor.value)
     tag = image_tag(spec, substrate)
     if build_base:
         if base_context is None:
@@ -175,6 +175,7 @@ async def run_one_shot(
     substrate: Substrate,
     command: Sequence[str],
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -184,6 +185,7 @@ async def run_one_shot(
         spec,
         model,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
@@ -210,6 +212,7 @@ async def start_service(
     model: ContainerModel,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -220,6 +223,7 @@ async def start_service(
         spec,
         model,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,

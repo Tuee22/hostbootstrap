@@ -24,7 +24,7 @@ from typing import Final
 import httpx
 
 from . import docker_ops
-from .substrate import Substrate, SubstrateName
+from .substrate import Accel
 
 
 class Flavor(StrEnum):
@@ -70,7 +70,7 @@ _PURESCRIPT_ASSET: Final[Mapping[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Substrate → base tag mapping (§4)
+# Accel → base flavor mapping (§4)
 # ---------------------------------------------------------------------------
 
 
@@ -82,12 +82,15 @@ def base_image_ref(flavor: Flavor, arch: str) -> str:
     return f"{HOSTBOOTSTRAP_IMAGE_REPO}:{base_tag(flavor, arch)}"
 
 
-def substrate_to_flavor_arch(substrate: Substrate) -> tuple[Flavor, str]:
-    if substrate.name is SubstrateName.APPLE_SILICON:
-        return Flavor.CPU, "arm64"
-    if substrate.name is SubstrateName.LINUX_GPU:
-        return Flavor.CUDA, substrate.arch
-    return Flavor.CPU, substrate.arch
+def accel_to_flavor(accel: Accel) -> Flavor:
+    """The base-image family a resolved acceleration requirement builds against.
+
+    ``Cuda`` pulls the CUDA base; ``Cpu`` and ``Metal`` both use the CPU base
+    (Metal is host-native, so any container counterpart it declares is plain CPU).
+    """
+    if accel is Accel.CUDA:
+        return Flavor.CUDA
+    return Flavor.CPU
 
 
 # ---------------------------------------------------------------------------

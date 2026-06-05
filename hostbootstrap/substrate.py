@@ -23,6 +23,44 @@ class SubstrateName(StrEnum):
     LINUX_GPU = "linux-gpu"
 
 
+class Accel(StrEnum):
+    """A workload's hardware-acceleration requirement.
+
+    A project declares an ``Accel`` per target; the host is detected and the
+    requirement is matched against what the host can provide (see
+    :data:`_CAPABILITIES`). ``Cpu`` needs no acceleration and is satisfied by
+    every host; ``Cuda`` needs an NVIDIA host; ``Metal`` needs Apple silicon.
+    """
+
+    CPU = "cpu"
+    CUDA = "cuda"
+    METAL = "metal"
+
+
+# How specific each accel is. A host provides at most one accelerator, so among
+# the targets a host can satisfy there is at most one non-``Cpu`` — the resolver
+# prefers it (the accelerated path) over the always-available ``Cpu`` fallback.
+_ACCEL_SPECIFICITY: Final[dict[Accel, int]] = {
+    Accel.CPU: 0,
+    Accel.CUDA: 1,
+    Accel.METAL: 1,
+}
+
+
+def accel_specificity(accel: Accel) -> int:
+    return _ACCEL_SPECIFICITY[accel]
+
+
+# Capability subsumption: which acceleration requirements each detected host can
+# satisfy. This is the single source of truth that makes a ``Cpu`` target
+# portable across every host and an accelerated target bound to its hardware.
+_CAPABILITIES: Final[dict[SubstrateName, frozenset[Accel]]] = {
+    SubstrateName.APPLE_SILICON: frozenset({Accel.CPU, Accel.METAL}),
+    SubstrateName.LINUX_CPU: frozenset({Accel.CPU}),
+    SubstrateName.LINUX_GPU: frozenset({Accel.CPU, Accel.CUDA}),
+}
+
+
 @dataclass(frozen=True)
 class Substrate:
     """The detected host substrate.
@@ -45,6 +83,11 @@ class Substrate:
     @property
     def has_gpu(self) -> bool:
         return self.name is SubstrateName.LINUX_GPU
+
+    @property
+    def capabilities(self) -> frozenset[Accel]:
+        """The acceleration requirements this host can satisfy."""
+        return _CAPABILITIES[self.name]
 
 
 _DOCKER_ARCH: Final[dict[str, str]] = {

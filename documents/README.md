@@ -23,7 +23,7 @@ material lives here.
   `basecontainer-<flavor>-<arch>` tags and what they contain.
 * [engineering/build_release.md](engineering/build_release.md) — base-image
   build, publish, and `--build-base` semantics.
-* [engineering/prerequisites.md](engineering/prerequisites.md) — substrate
+* [engineering/prerequisites.md](engineering/prerequisites.md) — host
   prereqs absorbed by `hostbootstrap doctor`.
 * [engineering/testing.md](engineering/testing.md) — the layered test suite, the
   development test runner, coverage gate, and why direct pytest is refused.

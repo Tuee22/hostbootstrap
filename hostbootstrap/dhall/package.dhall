@@ -1,30 +1,37 @@
 --| hostbootstrap project-config schema (Dhall).
 --
 -- A project's `hostbootstrap.dhall` imports this package and builds a typed
--- value. Each substrate picks exactly one execution model — `Container`,
--- `HostBinary`, or `HostDaemon` — expressed as a Dhall union. Because each
--- variant is a distinct record type, illegal states are unrepresentable at the
--- type level: only `HostDaemon` has a `daemon` field (and it is required), only
--- `Container` has `service`/`mounts`, only `HostBinary` has `handoff`.
+-- value. A project declares a list of **targets**, each pairing an acceleration
+-- requirement (`Accel`) with exactly one execution model — `Container`,
+-- `HostBinary`, or `HostDaemon`. The host is detected at runtime and the CLI
+-- selects the target whose `Accel` the host can satisfy (capability
+-- subsumption: `Cpu` runs everywhere, `Cuda` needs an NVIDIA host, `Metal`
+-- needs Apple silicon).
 --
--- `dhall-to-json` strips union tags, so `entry` lowers the union into a
+-- Illegal states are unrepresentable at the type level: a project never names a
+-- host, so a CUDA-on-Apple / Metal-on-Linux pairing cannot be written. Each
+-- model variant is a distinct record type, so only `HostDaemon` has a `daemon`
+-- field (and it is required), only `Container` has `service`/`mounts`, only
+-- `HostBinary` has `handoff`. The base-image family is *derived* from `Accel`,
+-- so there is no `flavor` field to set inconsistently.
+--
+-- `dhall-to-json` strips union tags, so `target` lowers the model union into a
 -- self-describing record carrying an explicit `tag` plus one populated payload.
 -- The hostbootstrap CLI reads that JSON.
 
-let Flavor = < Cpu | Cuda >
+let Accel = < Cpu | Cuda | Metal >
 
 let Mount = { host : Text, container : Text, ro : Bool }
 
-let HostReqs = { ghc : Bool, tart : Bool, metal : Bool }
+let HostReqs = { ghc : Bool }
 
 let Build = { cabal : Text, host : HostReqs }
 
 let Handoff = { up : Text, down : Text, delete : Optional Text }
 
-let CtrArtifact = { dockerfile : Text, flavor : Flavor }
+let CtrArtifact = { dockerfile : Text }
 
-let Container =
-      { dockerfile : Text, flavor : Flavor, service : Bool, mounts : List Mount }
+let Container = { dockerfile : Text, service : Bool, mounts : List Mount }
 
 let HostBinary =
       { build : Build, container : Optional CtrArtifact, handoff : Handoff }
@@ -34,8 +41,6 @@ let HostDaemon = { build : Build, daemon : Text, container : Optional CtrArtifac
 let Model =
       < Container : Container | HostBinary : HostBinary | HostDaemon : HostDaemon >
 
-let Substrate = < AppleSilicon | LinuxCpu | LinuxGpu >
-
 let RModel =
       { tag : Text
       , container : Optional Container
@@ -43,11 +48,11 @@ let RModel =
       , hostDaemon : Optional HostDaemon
       }
 
-let REntry = { substrate : Text, model : RModel }
+let RTarget = { accel : Text, model : RModel }
 
-let ConfigInput = { project : Text, substrates : List REntry }
+let ConfigInput = { project : Text, targets : List RTarget }
 
-let Config = { project : Text, development : Bool, substrates : List REntry }
+let Config = { project : Text, development : Bool, targets : List RTarget }
 
 let renderModel
     : Model -> RModel
@@ -77,30 +82,22 @@ let renderModel
           }
           m
 
-let renderSubstrate
-    : Substrate -> Text
-    = \(s : Substrate) ->
-        merge
-          { AppleSilicon = "apple-silicon"
-          , LinuxCpu = "linux-cpu"
-          , LinuxGpu = "linux-gpu"
-          }
-          s
+let renderAccel
+    : Accel -> Text
+    = \(a : Accel) ->
+        merge { Cpu = "cpu", Cuda = "cuda", Metal = "metal" } a
 
-let entry
-    : Substrate -> Model -> REntry
-    = \(s : Substrate) ->
+let target
+    : Accel -> Model -> RTarget
+    = \(a : Accel) ->
       \(m : Model) ->
-        { substrate = renderSubstrate s, model = renderModel m }
+        { accel = renderAccel a, model = renderModel m }
 
 let renderConfig
     : Bool -> ConfigInput -> Config
     = \(development : Bool) ->
       \(c : ConfigInput) ->
-        { project = c.project
-        , development = development
-        , substrates = c.substrates
-        }
+        { project = c.project, development = development, targets = c.targets }
 
 let config
     : ConfigInput -> Config
@@ -110,25 +107,18 @@ let configWithDevelopment
     : Bool -> ConfigInput -> Config
     = renderConfig
 
-in  { Flavor
+in  { Accel
     , Mount = { Type = Mount, default = { ro = False } }
-    , HostReqs =
-      { Type = HostReqs, default = { ghc = False, tart = False, metal = False } }
-    , Build =
-      { Type = Build
-      , default = { host = { ghc = False, tart = False, metal = False } }
-      }
+    , HostReqs = { Type = HostReqs, default = { ghc = False } }
+    , Build = { Type = Build, default = { host = { ghc = False } } }
     , Handoff = { Type = Handoff, default = { delete = None Text } }
     , CtrArtifact
     , Container =
-      { Type = Container
-      , default = { flavor = Flavor.Cpu, service = False, mounts = [] : List Mount }
-      }
+      { Type = Container, default = { service = False, mounts = [] : List Mount } }
     , HostBinary = { Type = HostBinary, default = { container = None CtrArtifact } }
     , HostDaemon = { Type = HostDaemon, default = { container = None CtrArtifact } }
     , Model
-    , Substrate
-    , entry
+    , target
     , config
     , configWithDevelopment
     }

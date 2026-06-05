@@ -6,12 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from hostbootstrap.models import container, host_binary, host_daemon
+from hostbootstrap.base_image import Flavor
 from hostbootstrap.spec import (
     BuildSpec,
     ContainerArtifact,
     ContainerModel,
-    Flavor,
     Handoff,
     HostBinaryModel,
     HostDaemonModel,
@@ -19,13 +18,14 @@ from hostbootstrap.spec import (
     Mount,
     ProjectSpec,
 )
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.models import container, host_binary, host_daemon
+from hostbootstrap.substrate import Accel, Substrate, SubstrateName
 
 
 def _spec(model: object) -> ProjectSpec:
     return ProjectSpec(
         project="proj",
-        substrates={SubstrateName.LINUX_CPU: model},  # type: ignore[dict-item]
+        targets={Accel.CPU: model},  # type: ignore[dict-item]
         source_path=Path("/proj/hostbootstrap.dhall"),
     )
 
@@ -119,10 +119,10 @@ def test_daemon_command() -> None:
 async def test_container_build_injects_base_image(
     recorded_commands: list[tuple[str, ...]], project_root: Path
 ) -> None:
-    model = ContainerModel(
-        dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=()
+    model = ContainerModel(dockerfile=Path("docker/x.Dockerfile"), service=False, mounts=())
+    tag = await container.build(
+        _spec(model), model, LINUX, flavor=Flavor.CPU, project_root=project_root
     )
-    tag = await container.build(_spec(model), model, LINUX, project_root=project_root)
     assert tag == "proj:linux-cpu-amd64"
     (build_cmd,) = recorded_commands
     assert "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64" in build_cmd
@@ -154,13 +154,12 @@ async def test_container_build_base_uses_local_base_without_pull(
         )
 
     monkeypatch.setattr(container.base_image, "build_spec_for", fake_build_spec_for)
-    model = ContainerModel(
-        dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=()
-    )
+    model = ContainerModel(dockerfile=Path("docker/x.Dockerfile"), service=False, mounts=())
     await container.build(
         _spec(model),
         model,
         LINUX,
+        flavor=Flavor.CPU,
         project_root=project_root,
         build_base=True,
         base_context=Path("/hostbootstrap"),
@@ -175,13 +174,11 @@ async def test_container_build_base_uses_local_base_without_pull(
 
 
 async def test_container_build_base_requires_context(project_root: Path) -> None:
-    model = ContainerModel(
-        dockerfile=Path("docker/x.Dockerfile"), flavor=Flavor.CPU, service=False, mounts=()
-    )
+    model = ContainerModel(dockerfile=Path("docker/x.Dockerfile"), service=False, mounts=())
 
     with pytest.raises(RuntimeError, match="--base-context"):
         await container.build(
-            _spec(model), model, LINUX, project_root=project_root, build_base=True
+            _spec(model), model, LINUX, flavor=Flavor.CPU, project_root=project_root, build_base=True
         )
 
 
@@ -210,12 +207,13 @@ async def test_container_build_artifact_with_local_base(
         )
 
     monkeypatch.setattr(container.base_image, "build_spec_for", fake_build_spec_for)
-    artifact = ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile"), flavor=Flavor.CUDA)
+    artifact = ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile"))
 
     tag = await container.build_artifact(
         _spec(None),
         artifact,
         LINUX,
+        flavor=Flavor.CUDA,
         project_root=project_root,
         build_base=True,
         base_context=Path("/hostbootstrap"),
@@ -228,13 +226,14 @@ async def test_container_build_artifact_with_local_base(
 
 
 async def test_container_build_artifact_base_requires_context(project_root: Path) -> None:
-    artifact = ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile"), flavor=Flavor.CPU)
+    artifact = ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile"))
 
     with pytest.raises(RuntimeError, match="--base-context"):
         await container.build_artifact(
             _spec(None),
             artifact,
             LINUX,
+            flavor=Flavor.CPU,
             project_root=project_root,
             build_base=True,
         )
@@ -245,11 +244,12 @@ async def test_container_start_service(
 ) -> None:
     model = ContainerModel(
         dockerfile=Path("docker/x.Dockerfile"),
-        flavor=Flavor.CPU,
         service=True,
         mounts=(Mount("./.data", "/opt/proj/.data", False),),
     )
-    await container.start_service(_spec(model), model, LINUX, project_root=project_root)
+    await container.start_service(
+        _spec(model), model, LINUX, flavor=Flavor.CPU, project_root=project_root
+    )
     flat = [" ".join(c) for c in recorded_commands]
     assert any(c.startswith("docker build") for c in flat)
     assert any("docker rm -f proj" in c for c in flat)
@@ -276,9 +276,9 @@ async def test_container_run_one_shot(
         return ("/usr/bin/tini", "--", "/usr/local/bin/proj")
 
     monkeypatch.setattr(container.docker_ops, "image_entrypoint", _entrypoint)
-    model = ContainerModel(dockerfile=Path("d"), flavor=Flavor.CPU, service=False, mounts=())
+    model = ContainerModel(dockerfile=Path("d"), service=False, mounts=())
     await container.run_one_shot(
-        _spec(model), model, LINUX, ("echo", "hi"), project_root=project_root
+        _spec(model), model, LINUX, ("echo", "hi"), flavor=Flavor.CPU, project_root=project_root
     )
     run = next(" ".join(c) for c in recorded_commands if "docker run" in " ".join(c))
     assert "--rm" in run and run.endswith("echo hi")
@@ -293,10 +293,10 @@ async def test_container_run_one_shot_rejects_missing_entrypoint(
         return ()
 
     monkeypatch.setattr(container.docker_ops, "image_entrypoint", _entrypoint)
-    model = ContainerModel(dockerfile=Path("d"), flavor=Flavor.CPU, service=False, mounts=())
+    model = ContainerModel(dockerfile=Path("d"), service=False, mounts=())
     with pytest.raises(RuntimeError, match="has no ENTRYPOINT"):
         await container.run_one_shot(
-            _spec(model), model, LINUX, ("status",), project_root=project_root
+            _spec(model), model, LINUX, ("status",), flavor=Flavor.CPU, project_root=project_root
         )
 
     assert any(command[:2] == ("docker", "build") for command in recorded_commands)
@@ -307,7 +307,9 @@ async def test_host_binary_apple_builds_on_host(
     recorded_commands: list[tuple[str, ...]], project_root: Path
 ) -> None:
     build = BuildSpec("cabal install --installdir .build exe:proj", HostReqs(ghc=True))
-    path = await host_binary.build_binary(_spec(None), build, APPLE, project_root=project_root)
+    path = await host_binary.build_binary(
+        _spec(None), build, APPLE, flavor=Flavor.CPU, project_root=project_root
+    )
     assert path == project_root / ".build" / "proj"
     (cabal_cmd,) = recorded_commands
     assert cabal_cmd[:2] == ("cabal", "install")
@@ -317,7 +319,9 @@ async def test_host_binary_linux_builds_in_container(
     recorded_commands: list[tuple[str, ...]], project_root: Path
 ) -> None:
     build = BuildSpec("cabal install --installdir .build exe:proj", HostReqs())
-    await host_binary.build_binary(_spec(None), build, LINUX, project_root=project_root)
+    await host_binary.build_binary(
+        _spec(None), build, LINUX, flavor=Flavor.CPU, project_root=project_root
+    )
     (run,) = recorded_commands
     flat = " ".join(run)
     assert "docker run" in flat
@@ -334,6 +338,7 @@ async def test_host_binary_linux_build_base_requires_context(project_root: Path)
             _spec(None),
             build,
             LINUX,
+            flavor=Flavor.CPU,
             project_root=project_root,
             build_base=True,
         )
@@ -370,6 +375,7 @@ async def test_host_binary_linux_build_base_uses_local_base(
         _spec(None),
         build,
         LINUX,
+        flavor=Flavor.CPU,
         project_root=project_root,
         build_base=True,
         base_context=Path("/hostbootstrap"),
@@ -387,12 +393,12 @@ async def test_host_binary_build_optional_container(
     model = HostBinaryModel(
         build=BuildSpec("cabal install --installdir .build exe:proj", HostReqs()),
         handoff=Handoff(up=".build/proj up", down=".build/proj down"),
-        container=ContainerArtifact(
-            dockerfile=Path("docker/artifact.Dockerfile"), flavor=Flavor.CPU
-        ),
+        container=ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile")),
     )
 
-    path = await host_binary.build(_spec(model), model, LINUX, project_root=project_root)
+    path = await host_binary.build(
+        _spec(model), model, LINUX, flavor=Flavor.CPU, project_root=project_root
+    )
 
     assert path == project_root / ".build" / "proj"
     flat = [" ".join(command) for command in recorded_commands]
@@ -414,6 +420,7 @@ async def test_host_binary_run_one_shot(
         model,
         APPLE,
         ("status",),
+        flavor=Flavor.CPU,
         project_root=project_root,
     )
 
@@ -427,14 +434,14 @@ async def test_host_daemon_build_optional_container_and_run_one_shot(
     model = HostDaemonModel(
         build=BuildSpec("cabal install --installdir .build exe:proj", HostReqs()),
         daemon=".build/proj serve",
-        container=ContainerArtifact(
-            dockerfile=Path("docker/artifact.Dockerfile"), flavor=Flavor.CPU
-        ),
+        container=ContainerArtifact(dockerfile=Path("docker/artifact.Dockerfile")),
     )
 
-    path = await host_daemon.build(_spec(model), model, LINUX, project_root=project_root)
+    path = await host_daemon.build(
+        _spec(model), model, LINUX, flavor=Flavor.CPU, project_root=project_root
+    )
     await host_daemon.run_one_shot(
-        _spec(model), model, APPLE, ("status",), project_root=project_root
+        _spec(model), model, APPLE, ("status",), flavor=Flavor.CPU, project_root=project_root
     )
 
     assert path == project_root / ".build" / "proj"

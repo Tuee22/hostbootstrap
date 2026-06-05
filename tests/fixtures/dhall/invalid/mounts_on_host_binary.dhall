@@ -1,9 +1,9 @@
 -- A HostBinary has no `mounts` field, so this is a Dhall type error.
 H.config
       { project = "demo"
-      , substrates =
-        [ H.entry
-            H.Substrate.LinuxCpu
+      , targets =
+        [ H.target
+            H.Accel.Cpu
             ( H.Model.HostBinary
                 H.HostBinary::{
                 , build = H.Build::{ cabal = "cabal install exe:demo" }

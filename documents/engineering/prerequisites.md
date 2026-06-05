@@ -71,7 +71,9 @@ from source for that platform.
 * macOS arm64.
 * Xcode Command Line Tools.
 * Homebrew.
-* Tart (when an entry's host requirements declare `tart = True`).
+* Tart + Metal tooling (required exactly when the resolved target is
+  `H.Accel.Metal`, which only ever resolves on Apple silicon — there is no
+  per-host `tart`/`metal` flag to set).
 * ghcup + pinned GHC/Cabal (when a host-binary build is needed).
 * FileVault disabled in production mode, so a remote reboot can reach SSH and
   system services without a first interactive unlock.

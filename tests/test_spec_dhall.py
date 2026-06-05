@@ -16,7 +16,7 @@ import pytest
 
 from hostbootstrap import spec
 from hostbootstrap.spec import ContainerModel, HostBinaryModel, HostDaemonModel, SpecError
-from hostbootstrap.substrate import SubstrateName
+from hostbootstrap.substrate import Accel
 
 pytestmark = pytest.mark.dhall
 
@@ -25,12 +25,12 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "dhall"
 
 def test_valid_container(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "container.dhall")
-    assert isinstance(ps.substrates[SubstrateName.LINUX_CPU], ContainerModel)
+    assert isinstance(ps.targets[Accel.CPU], ContainerModel)
 
 
 def test_valid_service_container(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "service_container.dhall")
-    model = ps.substrates[SubstrateName.LINUX_CPU]
+    model = ps.targets[Accel.CPU]
     assert isinstance(model, ContainerModel)
     assert model.service is True
     assert {m.container for m in model.mounts} == {"/opt/demo/.data", "/var/run/docker.sock"}
@@ -38,7 +38,7 @@ def test_valid_service_container(require_dhall: Path) -> None:
 
 def test_valid_host_binary(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "host_binary.dhall")
-    model = ps.substrates[SubstrateName.LINUX_CPU]
+    model = ps.targets[Accel.CPU]
     assert isinstance(model, HostBinaryModel)
     assert model.handoff.up == ".build/demo cluster up"
     assert model.handoff.delete is None
@@ -46,35 +46,40 @@ def test_valid_host_binary(require_dhall: Path) -> None:
 
 def test_valid_host_daemon(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "host_daemon.dhall")
-    model = ps.substrates[SubstrateName.APPLE_SILICON]
+    model = ps.targets[Accel.METAL]
     assert isinstance(model, HostDaemonModel)
     assert model.daemon == ".build/demo inference --serve"
-    assert model.build.host.metal is True
+    assert model.build.host.ghc is True
 
 
 def test_valid_development_config(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "development.dhall")
     assert ps.development is True
-    assert isinstance(ps.substrates[SubstrateName.LINUX_CPU], ContainerModel)
+    assert isinstance(ps.targets[Accel.CPU], ContainerModel)
 
 
 def test_valid_mixed(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "mixed.dhall")
-    assert isinstance(ps.substrates[SubstrateName.APPLE_SILICON], HostDaemonModel)
-    assert isinstance(ps.substrates[SubstrateName.LINUX_GPU], ContainerModel)
-    assert ps.substrates[SubstrateName.LINUX_GPU].flavor is spec.Flavor.CUDA  # type: ignore[union-attr]
+    assert isinstance(ps.targets[Accel.METAL], HostDaemonModel)
+    assert isinstance(ps.targets[Accel.CUDA], ContainerModel)
 
 
 def test_explicit_import_shadows_injected(require_dhall: Path) -> None:
     # A project file may still bind its own `H` (e.g. `let H = env:HOSTBOOTSTRAP_PACKAGE`);
     # it harmlessly shadows the CLI-injected binding and renders identically.
     ps = spec.load(FIXTURES / "valid" / "explicit_import.dhall")
-    assert isinstance(ps.substrates[SubstrateName.LINUX_CPU], ContainerModel)
+    assert isinstance(ps.targets[Accel.CPU], ContainerModel)
 
 
 @pytest.mark.parametrize(
     "fixture",
-    ["daemon_on_container", "missing_daemon", "mounts_on_host_binary", "bad_flavor"],
+    [
+        "daemon_on_container",
+        "missing_daemon",
+        "mounts_on_host_binary",
+        "flavor_on_container",
+        "unknown_accel",
+    ],
 )
 def test_illegal_states_are_type_errors(require_dhall: Path, fixture: str) -> None:
     with pytest.raises(SpecError):

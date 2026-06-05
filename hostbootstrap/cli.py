@@ -88,12 +88,15 @@ async def _build(
     base_context: Path | None = None,
     pull: bool = True,
 ) -> None:
-    model = project_spec.model_for(sub)
+    resolved = project_spec.target_for(sub)
+    model = resolved.model
+    flavor = base_image.accel_to_flavor(resolved.accel)
     if isinstance(model, ContainerModel):
         await container_model.build(
             project_spec,
             model,
             sub,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -104,6 +107,7 @@ async def _build(
             project_spec,
             model,
             sub,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -114,6 +118,7 @@ async def _build(
             project_spec,
             model,
             sub,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -131,13 +136,16 @@ async def _run(
     base_context: Path | None = None,
     pull: bool = True,
 ) -> process.CommandResult:
-    model = project_spec.model_for(sub)
+    resolved = project_spec.target_for(sub)
+    model = resolved.model
+    flavor = base_image.accel_to_flavor(resolved.accel)
     if isinstance(model, ContainerModel):
         return await container_model.run_one_shot(
             project_spec,
             model,
             sub,
             args,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -149,6 +157,7 @@ async def _run(
             model,
             sub,
             args,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -159,6 +168,7 @@ async def _run(
         model,
         sub,
         args,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
@@ -175,13 +185,16 @@ async def _cluster_up(
     base_context: Path | None = None,
     pull: bool = True,
 ) -> None:
-    model = project_spec.model_for(sub)
+    resolved = project_spec.target_for(sub)
+    model = resolved.model
+    flavor = base_image.accel_to_flavor(resolved.accel)
     if isinstance(model, ContainerModel):
         if model.service:
             await container_model.start_service(
                 project_spec,
                 model,
                 sub,
+                flavor=flavor,
                 project_root=project_root,
                 build_base=build_base,
                 base_context=base_context,
@@ -193,6 +206,7 @@ async def _cluster_up(
                 project_spec,
                 model,
                 sub,
+                flavor=flavor,
                 project_root=project_root,
                 build_base=build_base,
                 base_context=base_context,
@@ -204,6 +218,7 @@ async def _cluster_up(
             project_spec,
             model,
             sub,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -216,6 +231,7 @@ async def _cluster_up(
             project_spec,
             model,
             sub,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -231,7 +247,7 @@ async def _cluster_up(
 
 
 async def _cluster_down(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
-    model = project_spec.model_for(sub)
+    model = project_spec.target_for(sub).model
     if isinstance(model, ContainerModel):
         await container_model.stop_service(project_spec)
     elif isinstance(model, HostBinaryModel):
@@ -244,7 +260,7 @@ async def _cluster_down(project_spec: ProjectSpec, sub: Substrate, project_root:
 
 
 async def _cluster_delete(project_spec: ProjectSpec, sub: Substrate, project_root: Path) -> None:
-    model = project_spec.model_for(sub)
+    model = project_spec.target_for(sub).model
     if isinstance(model, ContainerModel):
         await container_model.stop_service(project_spec)
     elif isinstance(model, HostBinaryModel):

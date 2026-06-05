@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from hostbootstrap import process
+from hostbootstrap import base_image, process
 from hostbootstrap.spec import HostDaemonModel, ProjectSpec
 from hostbootstrap.substrate import Substrate
 
@@ -28,6 +28,7 @@ async def build(
     model: HostDaemonModel,
     substrate: Substrate,
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -39,6 +40,7 @@ async def build(
         spec,
         model.build,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,
@@ -48,6 +50,7 @@ async def build(
             spec,
             model.container,
             substrate,
+            flavor=flavor,
             project_root=project_root,
             build_base=build_base,
             base_context=base_context,
@@ -67,6 +70,7 @@ async def run_one_shot(
     substrate: Substrate,
     command: Sequence[str],
     *,
+    flavor: base_image.Flavor,
     project_root: Path,
     build_base: bool = False,
     base_context: Path | None = None,
@@ -76,6 +80,7 @@ async def run_one_shot(
         spec,
         model,
         substrate,
+        flavor=flavor,
         project_root=project_root,
         build_base=build_base,
         base_context=base_context,

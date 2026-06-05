@@ -2,12 +2,12 @@
 
 The schema is the Dhall package under ``dhall/`` (see
 ``documents/engineering/schema.md``). Dhall's type-checker already guarantees
-the per-substrate union is well-formed — a ``daemon`` can only appear under the
+the per-target union is well-formed — a ``daemon`` can only appear under the
 ``HostDaemon`` variant, ``mounts``/``service`` only under ``Container``, and so
 on — so by the time :func:`load` sees the rendered JSON the shape is valid. This
 module maps that JSON into frozen dataclasses and performs the few residual
-cross-field checks Dhall cannot express (no duplicate substrate; the detected
-substrate must be declared). Every failure raises :class:`SpecError`.
+cross-field checks Dhall cannot express (no duplicate accel; at least one target
+must be runnable on the detected host). Every failure raises :class:`SpecError`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from . import dhall_tool
-from .substrate import Substrate, SubstrateName
+from .substrate import Accel, Substrate, accel_specificity
 
 
 class SpecError(RuntimeError):
@@ -31,11 +31,6 @@ class Model(StrEnum):
     HOST_DAEMON = "host-daemon"
 
 
-class Flavor(StrEnum):
-    CPU = "cpu"
-    CUDA = "cuda"
-
-
 @dataclass(frozen=True)
 class Mount:
     host: str
@@ -46,8 +41,6 @@ class Mount:
 @dataclass(frozen=True)
 class HostReqs:
     ghc: bool = False
-    tart: bool = False
-    metal: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,7 +59,6 @@ class Handoff:
 @dataclass(frozen=True)
 class ContainerArtifact:
     dockerfile: Path
-    flavor: Flavor
 
 
 @dataclass(frozen=True)
@@ -74,7 +66,6 @@ class ContainerModel:
     """``model: container`` — build a thin image and run it (no host unit)."""
 
     dockerfile: Path
-    flavor: Flavor
     service: bool
     mounts: tuple[Mount, ...]
 
@@ -107,18 +98,37 @@ ModelSpec = ContainerModel | HostBinaryModel | HostDaemonModel
 
 
 @dataclass(frozen=True)
+class ResolvedTarget:
+    """The acceleration requirement and model selected for the detected host."""
+
+    accel: Accel
+    model: ModelSpec
+
+
+@dataclass(frozen=True)
 class ProjectSpec:
     project: str
-    substrates: Mapping[SubstrateName, ModelSpec]
+    targets: Mapping[Accel, ModelSpec]
     source_path: Path
     development: bool = False
 
-    def model_for(self, substrate: Substrate) -> ModelSpec:
-        if substrate.name not in self.substrates:
+    def target_for(self, substrate: Substrate) -> ResolvedTarget:
+        """Select the most-specific target the detected host can satisfy.
+
+        A host satisfies every target whose ``accel`` is in its capability set.
+        Among those it provides at most one accelerator, so the resolver prefers
+        the accelerated target (``Cuda``/``Metal``) over the ``Cpu`` fallback.
+        """
+        eligible = [accel for accel in self.targets if accel in substrate.capabilities]
+        if not eligible:
+            supported = ", ".join(sorted(accel.value for accel in self.targets))
+            provided = ", ".join(sorted(accel.value for accel in substrate.capabilities))
             raise SpecError(
-                f"hostbootstrap.dhall does not declare substrate {substrate.name.value!r}"
+                f"no target runnable on host {substrate.name.value!r}: project supports "
+                f"[{supported}], host provides [{provided}]"
             )
-        return self.substrates[substrate.name]
+        accel = max(eligible, key=accel_specificity)
+        return ResolvedTarget(accel=accel, model=self.targets[accel])
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +160,12 @@ def _as_bool(value: object, *, where: str) -> bool:
     return value
 
 
-def _flavor(value: object, *, where: str) -> Flavor:
+def _accel(value: object, *, where: str) -> Accel:
+    raw = _as_str(value, where=where)
     try:
-        return Flavor(_as_str(value, where=where).lower())
+        return Accel(raw)
     except ValueError as exc:
-        raise SpecError(f"{where}: unknown flavor {value!r}") from exc
+        raise SpecError(f"{where}: unknown accel {raw!r}") from exc
 
 
 def _mount(value: object, *, where: str) -> Mount:
@@ -170,8 +181,6 @@ def _host_reqs(value: object, *, where: str) -> HostReqs:
     mapping = _as_map(value, where=where)
     return HostReqs(
         ghc=_as_bool(mapping.get("ghc", False), where=f"{where}.ghc"),
-        tart=_as_bool(mapping.get("tart", False), where=f"{where}.tart"),
-        metal=_as_bool(mapping.get("metal", False), where=f"{where}.metal"),
     )
 
 
@@ -200,7 +209,6 @@ def _container_artifact(value: object, *, where: str) -> ContainerArtifact | Non
     mapping = _as_map(value, where=where)
     return ContainerArtifact(
         dockerfile=Path(_as_str(mapping.get("dockerfile"), where=f"{where}.dockerfile")),
-        flavor=_flavor(mapping.get("flavor", "cpu"), where=f"{where}.flavor"),
     )
 
 
@@ -215,7 +223,6 @@ def _model(value: object, *, where: str) -> ModelSpec:
             dockerfile=Path(
                 _as_str(payload.get("dockerfile"), where=f"{where}.container.dockerfile")
             ),
-            flavor=_flavor(payload.get("flavor", "cpu"), where=f"{where}.container.flavor"),
             service=_as_bool(payload.get("service", False), where=f"{where}.container.service"),
             mounts=tuple(
                 _mount(entry, where=f"{where}.container.mounts[{i}]")
@@ -256,26 +263,22 @@ def load(path: Path) -> ProjectSpec:
     project = _as_str(data.get("project"), where="project")
     development = _as_bool(data.get("development", False), where="development")
 
-    entries = _as_list(data.get("substrates"), where="substrates")
+    entries = _as_list(data.get("targets"), where="targets")
     if not entries:
-        raise SpecError("substrates: at least one substrate must be declared")
+        raise SpecError("targets: at least one target must be declared")
 
-    substrates: dict[SubstrateName, ModelSpec] = {}
+    targets: dict[Accel, ModelSpec] = {}
     for index, raw_entry in enumerate(entries):
-        where = f"substrates[{index}]"
+        where = f"targets[{index}]"
         entry = _as_map(raw_entry, where=where)
-        name_str = _as_str(entry.get("substrate"), where=f"{where}.substrate")
-        try:
-            name = SubstrateName(name_str)
-        except ValueError as exc:
-            raise SpecError(f"{where}.substrate: unknown substrate {name_str!r}") from exc
-        if name in substrates:
-            raise SpecError(f"substrate {name.value!r} is declared more than once")
-        substrates[name] = _model(entry.get("model"), where=f"{where}.model")
+        accel = _accel(entry.get("accel"), where=f"{where}.accel")
+        if accel in targets:
+            raise SpecError(f"accel {accel.value!r} is declared more than once")
+        targets[accel] = _model(entry.get("model"), where=f"{where}.model")
 
     return ProjectSpec(
         project=project,
-        substrates=substrates,
+        targets=targets,
         source_path=path,
         development=development,
     )

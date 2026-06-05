@@ -9,7 +9,7 @@ Docker Hub and one declarative, **typed** `hostbootstrap.dhall` per project.
 > `hostbootstrap.dhall` (the CLI bundles and injects its typed schema — no import
 > line, nothing to vendor), inherit your project Dockerfile `FROM` the base tag
 > the CLI selects. Everything else —
-> substrate detection, prereqs, build, cluster lifecycle, and (only where a
+> host detection, prereqs, build, cluster lifecycle, and (only where a
 > project asks for it) a system service unit — is the CLI's job.
 
 The full config schema is
@@ -25,13 +25,13 @@ Detailed language/engineering notes live under [`documents/`](documents/README.m
   carrying the shared toolchain (GHC 9.12, Cabal, pinned fourmolu/hlint, Go,
   Node + PureScript + Playwright, Python + Poetry, kube tools, LLVM/C++, Rust,
   optional CUDA, with a warm Haskell store baked in).
-* **One CLI** (`hostbootstrap`) that detects your substrate, validates host
+* **One CLI** (`hostbootstrap`) that detects your host, validates host
   prerequisites, drives `docker build` / `docker run`, manages cluster
   lifecycle, and installs a system-level
   service unit.
 
-Single-arch tags only — never manifest lists. The CLI always knows the
-substrate, so it references the one correct arch tag directly.
+Single-arch tags only — never manifest lists. The CLI always knows the host
+arch, so it references the one correct arch tag directly.
 
 Derived projects follow the five rules in
 [`documents/engineering/derived_project_standards.md`](documents/engineering/derived_project_standards.md):
@@ -115,16 +115,19 @@ default.
 -- `H` (the typed schema) is injected by the CLI.
 H.config
   { project = "example"
-  , substrates =
-    [ H.entry H.Substrate.LinuxCpu
+  , targets =
+    [ H.target H.Accel.Cpu
         (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
     ]
   }
 ```
 
-One `H.entry` per substrate (`H.Substrate.AppleSilicon`, `.LinuxCpu`, or
-`.LinuxGpu`); each picks exactly one of the three models below. See the full
-field reference in [`documents/engineering/schema.md`](documents/engineering/schema.md).
+One `H.target` per **acceleration requirement** (`H.Accel.Cpu`, `.Cuda`, or
+`.Metal`) — you declare what the workload needs, never a host. The CLI detects
+the host and resolves the target it can satisfy: a single `Cpu` target runs on
+*every* host (Apple, linux-cpu, linux-gpu, amd64 and arm64). Each target picks
+exactly one of the three models below. See the full field reference in
+[`documents/engineering/schema.md`](documents/engineering/schema.md).
 
 For local-only work that is not meant to survive a headless pre-login reboot,
 use the explicit development flag:
@@ -133,8 +136,8 @@ use the explicit development flag:
 H.configWithDevelopment
   True
   { project = "example"
-  , substrates =
-    [ H.entry H.Substrate.AppleSilicon
+  , targets =
+    [ H.target H.Accel.Cpu
         (H.Model.Container H.Container::{ dockerfile = "docker/example.Dockerfile" })
     ]
   }
@@ -149,7 +152,7 @@ unit; `cluster down` and `cluster delete` also skip unit mutation.
 
 ## The three model archetypes
 
-Every substrate picks **one model**. Choose by lifecycle:
+Every target picks **one model**. Choose by lifecycle:
 
 * **No cluster, just build + run** → **Container**.
 * **A host binary that owns its own lifecycle** → **HostBinary**.
@@ -159,9 +162,10 @@ Every substrate picks **one model**. Choose by lifecycle:
 
 hostbootstrap builds a thin image `FROM` the base tag and runs it. `service :
 Bool` — `False` ⇒ a one-shot `docker run --rm`; `True` ⇒ `cluster up` runs it
-detached with `--restart unless-stopped`. `mounts` are bind mounts; `flavor` is
-`cpu` or `cuda`. The container itself does any cluster bootstrap / image upload.
-**No system unit is ever created** for this model.
+detached with `--restart unless-stopped`. `mounts` are bind mounts. The base
+family (`cpu` or `cuda`) is derived from the resolved target's `Accel`, not set
+on the container. The container itself does any cluster bootstrap / image
+upload. **No system unit is ever created** for this model.
 
 Container images used with `hostbootstrap run` must declare an `ENTRYPOINT`.
 The tokens after `hostbootstrap run` are arguments to that entrypoint, matching
@@ -189,7 +193,7 @@ first-class. The win over compose is faster builds (the prebuilt base tag) plus
 a default-pull / `--build-base` "pull-or-build-local" switch compose lacks.
 
 ```dhall
-H.entry H.Substrate.LinuxCpu
+H.target H.Accel.Cpu
   ( H.Model.Container
       H.Container::{
       , dockerfile = "docker/example.Dockerfile"
@@ -214,7 +218,7 @@ unit** — the binary manages its own services (e.g. an RKE2 systemd unit it
 installs).
 
 ```dhall
-H.entry H.Substrate.LinuxCpu
+H.target H.Accel.Cpu
   ( H.Model.HostBinary
       H.HostBinary::{
       , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
@@ -237,20 +241,23 @@ create or remove the system unit; `cluster up` prints the command to run
 manually.
 
 ```dhall
-H.entry H.Substrate.AppleSilicon
+H.target H.Accel.Metal
   ( H.Model.HostDaemon
       H.HostDaemon::{
       , build =
           H.Build::{
           , cabal = "cabal install --installdir .build exe:infer"
-          , host = H.HostReqs::{ ghc = True, tart = True, metal = True }
+          , host = H.HostReqs::{ ghc = True }
           }
       , daemon = ".build/infer inference --serve"
       }
   )
 ```
 
-Because the `daemon` field exists **only** on `HostDaemon`, a system unit is
+The `Metal` accel resolves only on Apple silicon, and the Tart + Metal host
+tooling is required exactly there — there is no per-host `tart`/`metal` flag on
+`HostReqs` (it is just `{ ghc : Bool }`). Because the `daemon` field exists
+**only** on `HostDaemon`, a system unit is
 created **if and only if** a project declares that model — the rule is
 structural, not a runtime check (illegal states are unrepresentable in the Dhall
 types). See [`documents/engineering/schema.md`](documents/engineering/schema.md)
@@ -261,25 +268,26 @@ for the full type story.
 ## Adoption patterns
 
 The three models compose into a handful of recurring project shapes. Each is
-described by its **substrate → model** mapping; pick the one your project
+described by its **accel → model** mapping; pick the one your project
 matches. None of these requires Kubernetes — cluster, Helm, and image upload are
 opt-in downstream concerns, used only by the patterns that explicitly reach for
 them.
 
-### Single-substrate container service — the compose replacement
+### Single-target container service — the compose replacement
 
-A web app or service that runs only on Linux, as one long-running container with
-persistent state and (often) the Docker socket so it can drive its own image
-builds/pushes from inside. This is the canonical `docker compose` replacement:
-one substrate, one **Container** with `service = True`, a `.data` bind mount that
-survives every `cluster down`/`delete`, and no cluster at all.
+A web app or service that runs as one long-running container with persistent
+state and (often) the Docker socket so it can drive its own image builds/pushes
+from inside. This is the canonical `docker compose` replacement: one `Cpu`
+target — which resolves on *every* host — one **Container** with `service =
+True`, a `.data` bind mount that survives every `cluster down`/`delete`, and no
+cluster at all.
 
-| Substrate | Model |
+| Accel | Model |
 |---|---|
-| `linux-cpu` | `Container` (`service = True`, `.data` + socket mounts) |
+| `Cpu` | `Container` (`service = True`, `.data` + socket mounts) |
 
 ```dhall
-H.entry H.Substrate.LinuxCpu
+H.target H.Accel.Cpu
   ( H.Model.Container
       H.Container::{
       , dockerfile = "docker/app.Dockerfile"
@@ -292,59 +300,61 @@ H.entry H.Substrate.LinuxCpu
   )
 ```
 
-### Multi-substrate container — same image, CPU vs CUDA
+### Multi-target container — same image, CPU vs CUDA
 
 A compute project (heavy native cores — C++/pybind11, ML stacks, a service layer
-on top) that runs in a container on both Linux CPU and Linux GPU hosts. It is the
-**same model and the same Dockerfile twice**, differing only by `flavor`: `Cpu`
-selects the `basecontainer-cpu-*` base, `Cuda` selects `basecontainer-cuda-*`.
-Because the heavy toolchain is in the pulled base, each build compiles only the
-project's own code.
+on top) that runs in a container on both CPU and CUDA hosts. It is the **same
+model and the same Dockerfile twice**, differing only by `Accel`: the `Cuda`
+target derives the `basecontainer-cuda-*` base and resolves on `linux-gpu`, the
+`Cpu` target derives `basecontainer-cpu-*` and resolves everywhere else. On a
+`linux-gpu` host both are satisfiable, so the resolver picks the more specific
+`Cuda`. Because the heavy toolchain is in the pulled base, each build compiles
+only the project's own code.
 
-| Substrate | Model |
+| Accel | Model |
 |---|---|
-| `linux-cpu` | `Container` (`flavor = H.Flavor.Cpu`) |
-| `linux-gpu` | `Container` (`flavor = H.Flavor.Cuda`) |
+| `Cuda` | `Container` (cuda base; resolves on `linux-gpu`) |
+| `Cpu` | `Container` (cpu base; resolves on every other host) |
 
 ```dhall
-[ H.entry H.Substrate.LinuxCpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cpu })
-, H.entry H.Substrate.LinuxGpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cuda })
+[ H.target H.Accel.Cuda
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
+, H.target H.Accel.Cpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
 ]
 ```
 
-### Per-substrate model split — container on Linux, daemon on Apple silicon
+### Per-accel model split — container on Linux, daemon on Apple silicon
 
 An inference / ML project that runs as an in-cluster **Container** on Linux but
 needs **host-native Metal GPU** access on Apple silicon, which cannot run in a
-container. There is **no "multi-substrate" model** — a project that must behave
-differently per substrate simply declares a *different model per substrate*:
-`Container` for the Linux substrates, `HostDaemon` for `AppleSilicon`. The daemon
-gets a system-level LaunchDaemon on `cluster up`; the Linux containers never do.
+container. A project that must behave differently per host simply declares a
+*different model per accel*: `Container` for the `Cuda` and `Cpu` targets,
+`HostDaemon` for the `Metal` target. The Metal daemon gets a system-level
+LaunchDaemon on `cluster up`; the Linux containers never do.
 
-| Substrate | Model |
+| Accel | Model |
 |---|---|
-| `linux-cpu` | `Container` (`flavor = H.Flavor.Cpu`) |
-| `linux-gpu` | `Container` (`flavor = H.Flavor.Cuda`) |
-| `apple-silicon` | `HostDaemon` (Tart + Metal) |
+| `Cuda` | `Container` (cuda base; resolves on `linux-gpu`) |
+| `Cpu` | `Container` (cpu base; resolves elsewhere) |
+| `Metal` | `HostDaemon` (Tart + Metal; resolves on `apple-silicon`) |
 
 ```dhall
-[ H.entry H.Substrate.LinuxCpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cpu })
-, H.entry H.Substrate.LinuxGpu
-    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile", flavor = H.Flavor.Cuda })
-, H.entry H.Substrate.AppleSilicon
+[ H.target H.Accel.Cuda
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
+, H.target H.Accel.Cpu
+    (H.Model.Container H.Container::{ dockerfile = "docker/app.Dockerfile" })
+, H.target H.Accel.Metal
     ( H.Model.HostDaemon
         H.HostDaemon::{
-        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True, tart = True, metal = True } }
+        , build = H.Build::{ cabal = "cabal install --installdir .build exe:infer", host = H.HostReqs::{ ghc = True } }
         , daemon = ".build/infer inference --serve"
         }
     )
 ]
 ```
 
-You can declare the daemon entry to **fix the contract before the binary
+You can declare the Metal target to **fix the contract before the binary
 exists** — the Apple-silicon side may still be work-in-progress while the Linux
 container side ships and runs today.
 
@@ -357,12 +367,12 @@ is built *inside the base container* and extracted to `.build/`, keeping the
 toolchain off the host. `cluster up`/`down`/`delete` invoke the `handoff`
 commands; the binary reaches in-cluster services over loopback NodePorts only.
 
-| Substrate | Model |
+| Accel | Model |
 |---|---|
-| `linux-cpu` | `HostBinary` (`handoff` up/down/delete; owns its own services) |
+| `Cpu` | `HostBinary` (`handoff` up/down/delete; owns its own services) |
 
 ```dhall
-H.entry H.Substrate.LinuxCpu
+H.target H.Accel.Cpu
   ( H.Model.HostBinary
       H.HostBinary::{
       , build = H.Build::{ cabal = "cabal install --installdir .build --install-method=copy --overwrite-policy=always exe:mgr" }
@@ -390,7 +400,7 @@ things go away and the same things stay:
 **Delete**
 
 * `compose.yaml` — replaced by a `Container` model + `hostbootstrap cluster up`.
-* `bootstrap/*.sh` substrate-detection, prereq, and cluster-setup scripts —
+* `bootstrap/*.sh` host-detection, prereq, and cluster-setup scripts —
   absorbed into `hostbootstrap doctor` (and, for host binaries, into `handoff`).
 * The heavy multi-language toolchain layers in your Dockerfile (GHC, Node,
   Python, Playwright, CUDA, …) — now baked into the pulled base image.
@@ -415,8 +425,8 @@ the single GHC the base image ships.
 
 | Command | What it does |
 |---|---|
-| `hostbootstrap doctor` | Detect substrate; validate + idempotently install host prereqs |
-| `hostbootstrap build` | Idempotently build the project artifact for the current substrate |
+| `hostbootstrap doctor` | Detect host; validate + idempotently install host prereqs |
+| `hostbootstrap build` | Idempotently build the project artifact for the resolved target |
 | `hostbootstrap cluster up` | Bring the whole stack to running (build, then run the container / invoke the binary's `handoff up` / install the daemon unit) |
 | `hostbootstrap cluster down` | Tear the cluster down — **never deletes host `.data`** |
 | `hostbootstrap cluster delete` | Thorough teardown (cluster + derived state) — still preserves `.data` |
@@ -499,8 +509,8 @@ poetry.toml                      # in-project .venv (dev only)
   `colima start -f` / `colima start --foreground` directly or through a wrapper
   script; per-user LaunchAgents are rejected. Development mode keeps Docker
   reachability but skips the FileVault and system-Colima checks.
-* In production mode, a system unit is created **if and only if** a substrate
-  uses the HostDaemon model. Such units are system-scope (systemd /
+* In production mode, a system unit is created **if and only if** the resolved
+  target uses the HostDaemon model. Such units are system-scope (systemd /
   LaunchDaemon), not user-scope LaunchAgents — so they survive a reboot and
   start pre-login (supporting headless remote SSH). Development mode never
   creates or removes HostDaemon units.
@@ -517,11 +527,11 @@ poetry.toml                      # in-project .venv (dev only)
   gateway** — never from inside a pod. They exercise the deployed stack the same
   way a real client would (the gateway is reached over the loopback NodePort
   above). Playwright and its browsers are **already in the base image**, so no
-  project installs them. How the suite is launched follows the substrate's model:
-  - **Container** substrates run Playwright **inside the project container** —
+  project installs them. How the suite is launched follows the target's model:
+  - **Container** targets run Playwright **inside the project container** —
     the very image that ships the app already carries the browsers, so the tests
     run there directly.
-  - **HostBinary / HostDaemon** substrates have no long-running app container, so
+  - **HostBinary / HostDaemon** targets have no long-running app container, so
     they launch the suite as a one-shot **`docker run --rm` against the built
     project image** (again reusing the base's bundled Playwright) — pointed at the
     cluster gateway.
