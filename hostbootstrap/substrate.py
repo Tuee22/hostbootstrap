@@ -1,7 +1,7 @@
 """Substrate detection.
 
-Three frozen models — *apple-silicon*, *linux-cpu*, *linux-gpu* — match the
-three hardware targets downstream projects declare in ``hostbootstrap.dhall``.
+Three frozen substrates — *apple-silicon*, *linux-cpu*, *linux-gpu* — match
+the hardware targets downstream projects declare in ``hostbootstrap.dhall``.
 Detection is pure: it reads the platform and a small set of files
 (``/proc/driver/nvidia/version`` etc.) and returns one frozen value. No side
 effects.

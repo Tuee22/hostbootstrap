@@ -26,7 +26,7 @@ def test_valid_container(require_dhall: Path) -> None:
 def test_valid_host_binary(require_dhall: Path) -> None:
     _ = require_dhall
     ps = spec.load(FIXTURES / "valid" / "host_binary.dhall")
-    target = ps.targets[SubstrateName.LINUX_GPU]
+    target = ps.targets[SubstrateName.LINUX_CPU]
     assert target.lifecycle is Lifecycle.CLUSTER
     assert isinstance(target.model, HostBinaryModel)
 
@@ -56,7 +56,7 @@ def test_valid_mixed(require_dhall: Path) -> None:
     ps = spec.load(FIXTURES / "valid" / "mixed.dhall")
     assert isinstance(ps.targets[SubstrateName.APPLE_SILICON].model, HostDaemonModel)
     assert isinstance(ps.targets[SubstrateName.LINUX_CPU].model, ContainerModel)
-    assert isinstance(ps.targets[SubstrateName.LINUX_GPU].model, HostBinaryModel)
+    assert isinstance(ps.targets[SubstrateName.LINUX_GPU].model, ContainerModel)
     assert ps.targets[SubstrateName.LINUX_GPU].lifecycle is Lifecycle.NO_CLUSTER
 
 

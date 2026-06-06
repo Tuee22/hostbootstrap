@@ -30,6 +30,7 @@ def _spec(model: object, lifecycle: Lifecycle = Lifecycle.CLUSTER) -> ProjectSpe
 
 
 LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
+LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, "amd64")
 APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
 
 
@@ -117,6 +118,19 @@ async def test_container_build_injects_base_image(
     (build_cmd,) = recorded_commands
     assert "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64" in build_cmd
     assert "proj:linux-cpu-amd64" in build_cmd
+
+
+async def test_linux_gpu_container_build_uses_cuda_base(
+    recorded_commands: list[tuple[str, ...]], project_root: Path
+) -> None:
+    model = ContainerModel(dockerfile=Path("docker/x.Dockerfile"), mounts=())
+    tag = await container.build(
+        _spec(model), model, LINUX_GPU, flavor=Flavor.CUDA, project_root=project_root
+    )
+    assert tag == "proj:linux-gpu-amd64"
+    (build_cmd,) = recorded_commands
+    assert "BASE_IMAGE=docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64" in build_cmd
+    assert "proj:linux-gpu-amd64" in build_cmd
 
 
 async def test_container_run_one_shot(

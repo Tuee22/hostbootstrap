@@ -9,7 +9,6 @@ import pytest
 from hostbootstrap import spec
 from hostbootstrap.spec import (
     ContainerModel,
-    HostBinaryModel,
     HostDaemonModel,
     Lifecycle,
     SpecError,
@@ -25,12 +24,6 @@ def _container(dockerfile: str = "d", **over: object) -> dict[str, object]:
     payload: dict[str, object] = {"dockerfile": dockerfile}
     payload.update(over)
     return {"tag": "Container", "container": payload}
-
-
-def _host_binary(**over: object) -> dict[str, object]:
-    payload: dict[str, object] = {"container": None}
-    payload.update(over)
-    return {"tag": "HostBinary", "hostBinary": payload}
 
 
 def _host_daemon() -> dict[str, object]:
@@ -79,7 +72,7 @@ def test_parse_models_and_lifecycles(monkeypatch: pytest.MonkeyPatch, tmp_path: 
                 "linux-gpu",
                 _lifecycle(
                     "NoCluster",
-                    _host_binary(container={"dockerfile": "docker/app.Dockerfile"}),
+                    _container(dockerfile="docker/gpu.Dockerfile"),
                 ),
             ),
         ],
@@ -99,9 +92,8 @@ def test_parse_models_and_lifecycles(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     gpu = ps.targets[SubstrateName.LINUX_GPU]
     assert gpu.lifecycle is Lifecycle.NO_CLUSTER
-    assert isinstance(gpu.model, HostBinaryModel)
-    assert gpu.model.container is not None
-    assert gpu.model.container.dockerfile == Path("docker/app.Dockerfile")
+    assert isinstance(gpu.model, ContainerModel)
+    assert gpu.model.dockerfile == Path("docker/gpu.Dockerfile")
 
 
 def test_container_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -195,7 +187,7 @@ def test_target_for_detected_and_forced(monkeypatch: pytest.MonkeyPatch, tmp_pat
             "substrates": [
                 _entry("apple-silicon", _lifecycle("Cluster", _host_daemon())),
                 _entry("linux-cpu", _lifecycle("Cluster", _container())),
-                _entry("linux-gpu", _lifecycle("NoCluster", _host_binary())),
+                _entry("linux-gpu", _lifecycle("Cluster", _container("docker/gpu.Dockerfile"))),
             ],
         },
     )
@@ -208,7 +200,8 @@ def test_target_for_detected_and_forced(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert isinstance(forced.model, HostDaemonModel)
 
     gpu = ps.target_for(_LINUX_GPU)
-    assert gpu.lifecycle is Lifecycle.NO_CLUSTER
+    assert gpu.lifecycle is Lifecycle.CLUSTER
+    assert isinstance(gpu.model, ContainerModel)
 
     assert isinstance(ps.target_for(_APPLE).model, HostDaemonModel)
 

@@ -63,6 +63,10 @@ The selected substrate also derives the base-image flavor:
 | `linux-cpu` | `cpu` |
 | `linux-gpu` | `cuda` |
 
+The base flavor is independent of the execution model. A `linux-gpu` entry can use
+`H.Model.Container`; that means a one-shot project container built from the CUDA-flavored base,
+not a host-binary handoff.
+
 ## Lifecycles
 
 ### `H.cluster`
@@ -239,8 +243,6 @@ let linuxContainer =
           ]
         }
 
-let hostBinary = H.Model.HostBinary H.HostBinary::{=}
-
 let hostDaemon =
       H.Model.HostDaemon
         H.HostDaemon::{ daemon = "service --role worker --config dhall/worker.dhall" }
@@ -250,7 +252,7 @@ in  H.config
       , substrates =
         [ H.entry H.Substrate.AppleSilicon (H.cluster hostDaemon)
         , H.entry H.Substrate.LinuxCpu (H.cluster linuxContainer)
-        , H.entry H.Substrate.LinuxGpu (H.cluster hostBinary)
+        , H.entry H.Substrate.LinuxGpu (H.cluster linuxContainer)
         ]
       }
 ```

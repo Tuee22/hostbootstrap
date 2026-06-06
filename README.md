@@ -189,6 +189,10 @@ The forced target chooses the declared model and base-image flavor. The actual
 host still controls how the build is executed, so forcing an Apple target on a
 Linux host does not run macOS prerequisite checks.
 
+A Linux GPU target may still declare `H.Model.Container`; in that case
+hostbootstrap builds and runs the project container with the CUDA-flavored base
+image. `linux-gpu` does not imply `HostBinary`.
+
 `doctor` intentionally has no `--force-target`; it validates the actual host.
 
 ## Model Summary

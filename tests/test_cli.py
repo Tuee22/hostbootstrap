@@ -48,7 +48,7 @@ def _project_all_targets() -> ProjectSpec:
         targets={
             SubstrateName.APPLE_SILICON: TargetSpec(Lifecycle.CLUSTER, _daemon_model()),
             SubstrateName.LINUX_CPU: TargetSpec(Lifecycle.CLUSTER, _container_model()),
-            SubstrateName.LINUX_GPU: TargetSpec(Lifecycle.NO_CLUSTER, _binary_model()),
+            SubstrateName.LINUX_GPU: TargetSpec(Lifecycle.CLUSTER, _container_model()),
         },
         source_path=Path("/proj/hostbootstrap.dhall"),
     )

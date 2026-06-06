@@ -2,8 +2,6 @@ let container =
       H.Model.Container
         H.Container::{ dockerfile = "docker/demo.Dockerfile" }
 
-let hostBinary = H.Model.HostBinary H.HostBinary::{=}
-
 let hostDaemon =
       H.Model.HostDaemon
         H.HostDaemon::{
@@ -15,6 +13,6 @@ in  H.config
       , substrates =
         [ H.entry H.Substrate.AppleSilicon (H.cluster hostDaemon)
         , H.entry H.Substrate.LinuxCpu (H.cluster container)
-        , H.entry H.Substrate.LinuxGpu (H.noCluster hostBinary)
+        , H.entry H.Substrate.LinuxGpu (H.noCluster container)
         ]
       }

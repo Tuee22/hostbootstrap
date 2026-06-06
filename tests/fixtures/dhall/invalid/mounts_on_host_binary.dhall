@@ -5,5 +5,5 @@ let bad =
 
 in  H.config
       { project = "demo"
-      , substrates = [ H.entry H.Substrate.LinuxGpu (H.cluster bad) ]
+      , substrates = [ H.entry H.Substrate.LinuxCpu (H.cluster bad) ]
       }
