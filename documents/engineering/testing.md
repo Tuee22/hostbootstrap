@@ -1,90 +1,68 @@
----
-name: testing
-description: How hostbootstrap is tested — the layered suite, the development test runner, and how to run it.
-type: guide
----
-
 # Testing
 
-hostbootstrap orchestrates external tools by shelling out, so the suite is built
-around pure command builders plus thin recorded runners. The default run touches
-no network, no Docker daemon, no `sudo`, and no host service manager.
+**Status**: Authoritative source
+**Supersedes**: the pure-Python pytest/`test_all` suite description (spec/model/CLI-smoke layers)
+**Referenced by**: [../README.md](../README.md), [code_check_doctrine.md](code_check_doctrine.md), [../languages/haskell.md](../languages/haskell.md)
 
-## Running The Suite
+> **Purpose**: Describe how hostbootstrap is tested across its Haskell `hostbootstrap-core` library
+> and its thin Python bootstrapper, and where the planned documentation validator fits.
 
-There is exactly one supported runner module,
-[`hostbootstrap.test_all`](../../hostbootstrap/test_all.py):
+## TL;DR
 
-> **WRONG**
->
-> ```sh
-> poetry run pytest
-> ```
->
-> `tests/conftest.py` refuses direct pytest because it requires the
-> `HOSTBOOTSTRAP_TEST_ALL` sentinel.
->
-> **RIGHT**
->
-> ```sh
-> poetry run python -m hostbootstrap.test_all
-> poetry run python -m hostbootstrap.test_all -k spec
-> ```
+- `hostbootstrap-core` (Haskell) carries the bulk of the test surface: host-tool resolution,
+  substrate detection, the `ensure` reconcilers' pure decision logic, the skeletal-Dhall decoder,
+  cluster-lifecycle semantics, and the optparse command tree.
+- The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
+  bootstrapping steps it owns.
+- A mechanical documentation validator is a planned `hostbootstrap-core` quality-gate deliverable
+  that runs through `check-code`.
+- The default test run touches no network, no Docker daemon, no `sudo`, and no host service manager.
 
-[`hostbootstrap.check_code`](../../hostbootstrap/check_code.py) is separate and
-runs ruff, black, and mypy:
+## hostbootstrap-core (Haskell)
 
-```sh
-poetry run python -m hostbootstrap.check_code
-```
+The Haskell library is tested as part of the project's canonical `check-code` and test targets,
+built against the warm Cabal store. Coverage centres on pure values and command builders so the
+suite stays hermetic:
 
-Run both before publishing a hostbootstrap change.
+- **Host-tool resolution** — the closed `HostTool` enumeration resolves to absolute paths; tests
+  assert resolution and the fail-fast behaviour when a tool is absent.
+- **Substrate detection** — `apple-silicon` / `linux-cpu` / `linux-gpu` classification from recorded
+  host facts.
+- **`ensure` reconcilers** — each reconciler's host-applicability predicate and the command tuples
+  its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
+  reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
+  [ensure_reconcilers.md](ensure_reconcilers.md).
+- **Skeletal-Dhall decoder** — decoding `hostbootstrap.dhall` into `project`, `dockerfile`, and the
+  `resources` budget, plus rejection of malformed values. See [schema.md](schema.md).
+- **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
+  [cluster_lifecycle.md](cluster_lifecycle.md).
+- **Command tree** — `runHostBootstrapCLI` dispatch and the composition of project subcommands onto
+  the core tree.
 
-## Layers
+The Docker- and Colima-touching paths are exercised through recorded-runner tests that replace the
+process runner with an argv recorder, so they assert the exact commands without executing them.
 
-**Pure unit tests** cover value resolvers and command builders:
+## Thin Python bootstrapper
 
-- [`docker_ops`](../../hostbootstrap/docker_ops.py) build/run command tuples
-- [`base_image`](../../hostbootstrap/base_image.py) tag and URL builders
-- [`substrate`](../../hostbootstrap/substrate.py) host detection
-- [`spec`](../../hostbootstrap/spec.py) substrate/lifecycle/model parsing
-- [`models`](../../hostbootstrap/models) path, mount, entrypoint, Cabal, and
-  foreground daemon command helpers
+The Python layer is small and so is its suite. It covers only the pre-binary bootstrapping steps the
+Python layer owns: asserting the fail-fast host minimums (see [prerequisites.md](prerequisites.md)),
+selecting the base-image flavor for the build, building the project container, copying the binary to
+`./.build/`, and exec'ing it. Tests are hermetic — host detection and process invocation are stubbed
+or recorded, and the canonical Python code-check (formatter, linter, strict type-check) runs as part
+of the base self-check (see [code_check_doctrine.md](code_check_doctrine.md)).
 
-**Spec parser tests** use crafted JSON to cover residual checks Dhall cannot
-express: duplicate substrates, missing selected targets, unknown lifecycle/model
-tags, and `--force-target` selection.
+## Documentation validator (planned)
 
-**Dhall contract tests** (`tests/test_spec_dhall.py`) run the real
-`dhall-to-json` against fixtures in `tests/fixtures/dhall/`. Valid fixtures cover
-`Container`, `HostBinary`, `HostDaemon`, mixed substrate matrices, explicit
-`env:HOSTBOOTSTRAP_PACKAGE`, and `NoCluster`. Invalid fixtures prove structural
-type errors: daemon on container, flavor on container, missing HostDaemon
-daemon, mounts on HostBinary, and unknown substrate.
+The mechanical documentation validator is a `hostbootstrap-core` quality-gate deliverable. Once it
+lands it runs through `check-code` and verifies required metadata lines, broad-doctrine structure,
+governed root-document metadata, relative-link resolution, and the phase-plan
+`## Documentation Requirements` retention. Until it lands, documentation conformance is verified by
+manual review against the documentation standard.
 
-**CLI smoke tests** use Click's `CliRunner` and monkeypatching to assert command
-dispatch, `--force-target` propagation, clean errors, base build/push behavior,
-cluster forwarding, and `daemon run` applicability.
+## What runs by default
 
-**Recorded runner tests** replace `process.run` / `run_checked` with an argv
-recorder. They assert the exact `docker` and `cabal` commands without touching
-Docker or Cabal.
-
-## Markers And Skipping
-
-Configured in `pyproject.toml`:
-
-- `dhall` needs a provisioned `dhall-to-json`; the `require_dhall` fixture skips
-  when it cannot be obtained.
-- `docker` needs a running Docker daemon and skips when absent.
-- `slow` marks long-running checks.
-
-The default suite remains hermetic and fast.
-
-## Out Of Scope
-
-hostbootstrap no longer writes launchd/systemd unit files and no longer configures
-restart-after-reboot behavior. There are therefore no unit-file rendering tests or
-real service-manager integration tests. Operators who want automatic restart run
-`hostbootstrap daemon run` from their own launchd/systemd wrapper outside
-hostbootstrap.
+The default test run is hermetic and fast: no network, no Docker daemon, no `sudo`, no host service
+manager. Tests that genuinely need a provisioned tool (a real `dhall` decode against fixtures, a
+running Docker daemon) are marked and skipped when the dependency is absent. hostbootstrap does not
+write launchd/systemd unit files and does not configure restart-after-reboot behavior, so there are
+no unit-file rendering tests or real service-manager integration tests.

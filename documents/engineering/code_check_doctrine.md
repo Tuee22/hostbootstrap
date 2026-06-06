@@ -1,10 +1,11 @@
----
-name: engineering-code-check-doctrine
-description: Code-quality checks run during image build, base and derived. Fail-fast guardrails.
-type: standard
----
-
 # Code-check doctrine
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md), [../languages/haskell.md](../languages/haskell.md)
+
+> **Purpose**: State the rule that every image build, base or derived, gates on the project's
+> canonical code-check, so an image with style or lint violations cannot be produced.
 
 Code quality is a **build-time guardrail**, not a test-time check. Every image
 this repo produces — the base image, and every derived project image — must
@@ -22,30 +23,27 @@ This applies in two places:
 
 | Image | Where the check runs | Command |
 |---|---|---|
-| Base | Host pre-flight + Dockerfile smoke | `hostbootstrap.check_code:main` + `fourmolu --mode check` + `hlint` |
-| Derived (Haskell) | Dockerfile RUN step | `<project> check-code` |
-| Derived (any language) | Dockerfile RUN step | the project's canonical lint/format/type command |
+| Base | Host pre-flight + Dockerfile smoke | `hostbootstrap check-code` (skeletal core gate) + `fourmolu --mode check` + `hlint` |
+| Derived | Dockerfile RUN step | `<project> check-code` |
 
 ## Base image
 
 The base image enforces its own self-check in two layers:
 
-* **Host pre-flight.** `hostbootstrap base build` and `hostbootstrap base
-  build-and-push` invoke
-  [`hostbootstrap.check_code.main`](../../hostbootstrap/check_code.py) (ruff
-  → black → mypy strict) **before** `docker build` runs. If anything fails the
-  CLI exits with a one-line message pointing at `poetry run python -m
-  hostbootstrap.check_code` for local reproduction. Docker is never invoked.
-* **In-Dockerfile smoke.** After the warm Cabal store is built, a single `RUN`
-  step verifies that `fourmolu` and `hlint` actually start (catching install
-  regressions) and runs them against the warm-store sample source at
+* **Host pre-flight.** Building a base tag runs the canonical code-check over
+  `hostbootstrap-core` (the Haskell library) and the thin Python bootstrapper
+  **before** `docker build` runs. If anything fails the build exits with a
+  one-line message for local reproduction and Docker is never invoked.
+* **In-Dockerfile smoke.** After the warm Cabal store and the skeletal
+  `hostbootstrap` binary are built, a single `RUN` step verifies that `fourmolu`
+  and `hlint` actually start (catching install regressions) and runs them against
+  the warm-store sample source at
   [`support/haskell-deps/app/`](../../support/haskell-deps/) (catching sample
   drift).
 
-The split is deliberate: hostbootstrap's own source (Python) is **not** copied
-into the base image, and we do not want to bake Poetry's dev tooling into a
-container that ships to every downstream. The host pre-flight keeps source
-clean without polluting the image.
+The split is deliberate: the full `hostbootstrap` source tree is **not** copied
+into the base image, so dev tooling does not ship to every downstream. The host
+pre-flight keeps source clean without polluting the image.
 
 ## Derived images
 
@@ -70,11 +68,10 @@ patterns, type-correctness. Tests enforce **behavior**.
 Both must pass, but they live at different layers and have different cost
 profiles. Code-check is fast and deterministic; running it during image build
 shifts enforcement earlier and removes a class of "the container built but is
-broken" outcomes. Tests run inside the built image (`hostbootstrap run test all`
-and equivalents) — they verify the runtime, not the source. Container images
-should expose the project command through a tini-wrapped `ENTRYPOINT`, so
-`hostbootstrap run` receives project arguments rather than a raw container
-command.
+broken" outcomes. Tests run through the project binary (`<project> test all` and
+equivalents) — they verify the runtime, not the source. Container images expose
+the project binary through a tini-wrapped `ENTRYPOINT`, so the binary receives
+project arguments rather than a raw container command.
 
 A derived project's container image is the canonical artifact. If that
 artifact exists, the source it was built from passes code-check by
@@ -114,20 +111,19 @@ construction. There is no separate "did the lint pass?" question to ask later.
 
 ## What counts as the "canonical code-check" command
 
-* **Haskell projects using the `mcts`-style pattern.** A single `check-code`
-  subcommand on the project's own CLI that wraps `fourmolu --mode check`,
-  `hlint`, custom file-level checks, and doc-drift checks. The MCTS reference
-  is at
-  [`MCTS/src/MCTS/CheckCode.hs`](https://example.invalid/MCTS/src/MCTS/CheckCode.hs).
-* **Python-only projects.** A `check_code.py` module pattern matching
-  [`hostbootstrap.check_code`](../../hostbootstrap/check_code.py): ruff →
-  black → mypy strict, fail-fast.
-* **Multi-language projects.** A top-level entrypoint that dispatches the
-  per-language checks in sequence and fails on any.
+* **A `check-code` subcommand on the project binary.** Every derived project's
+  binary exposes a single `check-code` subcommand (inherited from the
+  `hostbootstrap-core` command tree and extended with project-specific checks)
+  that wraps `fourmolu --mode check`, `hlint`, custom file-level checks, and
+  doc-drift checks, fail-fast.
+* **Multi-language projects.** The same `<project> check-code` subcommand
+  dispatches per-language checks (the foreign-backend formatters/linters) in
+  sequence and fails on any.
 
-A project should expose **one** canonical entrypoint per project, and the
-Dockerfile invokes that one. If you find yourself listing five `RUN` steps
-for individual tools, build a single `<project> check-code` command instead.
+A project should expose **one** canonical entrypoint — its binary's `check-code`
+subcommand — and the Dockerfile invokes that one. If you find yourself listing
+five `RUN` steps for individual tools, fold them into `<project> check-code`
+instead.
 
 ## See also
 

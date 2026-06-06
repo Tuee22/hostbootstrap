@@ -1,10 +1,11 @@
----
-name: engineering-linking-and-optimization
-description: Linking model and optimisation flags for derived Haskell projects.
-type: guide
----
-
 # Linking and optimisation
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [../languages/haskell.md](../languages/haskell.md)
+
+> **Purpose**: Give the authoritative recommendation for how derived Haskell projects link and
+> optimise so they match the warm store and get cache hits.
 
 This page is the authoritative recommendation for **how derived projects link
 and optimise their Haskell code**. The defaults are tuned for the

@@ -1,10 +1,11 @@
----
-name: engineering-build-release
-description: How base images are built and published.
-type: reference
----
-
 # Build & release
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [harbor.md](harbor.md), [warm_store.md](warm_store.md)
+
+> **Purpose**: Describe how the four base tags are built and published (host-native `docker build`,
+> no buildx, cold publish) and how a downstream project can build the base locally.
 
 `docker build` only — **no buildx, no emulation**. A build can only ever
 produce the host-native arch. Multi-platform manifest lists are forbidden by
@@ -63,16 +64,15 @@ its custom image (see [harbor.md](harbor.md)).
 
 ## `--build-base` for downstream projects
 
-A downstream project's `hostbootstrap build`, `hostbootstrap run`, or
-`hostbootstrap cluster ...` invocation can pass
+A downstream project's bootstrap invocation can pass
 `--build-base --base-context /path/to/hostbootstrap` to build the base locally
 from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
-identical name. The downstream project image is then built without pulling the
-base tag from Docker Hub. The default behaviour is to **pull** the base from
+identical name. The downstream project container is then built without pulling
+the base tag from Docker Hub. The default behaviour is to **pull** the base from
 Docker Hub.
 
 ## Loss of provenance
 
 Plain `docker build` does not emit the SBOM/attestation manifests buildx
-produced under the old `build-and-push.sh`. This is an accepted trade-off
-(see §14 of the plan).
+produces. This is an accepted trade-off: a build is single-arch and host-native,
+so the cross-arch manifest tooling that carries those attestations is not used.

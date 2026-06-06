@@ -1,10 +1,13 @@
----
-name: engineering-base-image
-description: The four basecontainer base tags and their contents.
-type: reference
----
-
 # Base image
+
+**Status**: Authoritative source
+**Supersedes**: the substrate-keyed base-flavor selection and `--force-target` arch/flavor model
+**Referenced by**: [../README.md](../README.md), [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md), [code_check_doctrine.md](code_check_doctrine.md)
+
+> **Purpose**: Describe the four prebuilt base tags, the skeletal `hostbootstrap` binary and warm
+> `hostbootstrap-core` dependency closure they bake in, and the Dockerfile rules every image follows.
+
+## Tags
 
 Four single-arch, prebuilt tags carry the shared toolchain:
 
@@ -15,24 +18,20 @@ docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64
 docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64
 ```
 
-There are no manifest lists. The CLI detects the host and pulls the one
-correct arch tag.
+There are no manifest lists. The base flavor (`cpu`/`cuda`) and the host arch (`amd64`/`arm64`)
+together name exactly one tag.
 
-## Substrate to base flavor
+## Flavor And Arch Selection
 
-The base-image **flavor** is derived from the selected substrate entry
-(`base_image.substrate_to_flavor`). The **arch** is detected from the actual
-host. The tag scheme is `basecontainer-<cpu|cuda>-<amd64|arm64>`.
+The base-image **flavor** follows the detected substrate, and the **arch** follows the host. This
+selection logic lives in `hostbootstrap-core` (substrate detection plus flavor mapping); the Python
+bootstrapper only picks the flavor it needs for the build it is about to run.
 
-| selected substrate | base flavor |
+| detected substrate | base flavor |
 |---|---|
-| `H.Substrate.AppleSilicon` | `cpu` |
-| `H.Substrate.LinuxCpu` | `cpu` |
-| `H.Substrate.LinuxGpu` | `cuda` |
-
-The detected host determines the arch suffix. `--force-target` can select a
-different substrate entry for model/base-flavor selection while still using the
-actual host arch (see [schema.md](schema.md#host-resolution)):
+| `apple-silicon` | `cpu` |
+| `linux-cpu` | `cpu` |
+| `linux-gpu` | `cuda` |
 
 | detected host | arch | resolved tag |
 |---|---|---|
@@ -42,51 +41,55 @@ actual host arch (see [schema.md](schema.md#host-resolution)):
 | `linux-gpu` (amd64) | amd64 | `basecontainer-cuda-amd64` |
 | `linux-gpu` (arm64) | arm64 | `basecontainer-cuda-arm64` (built on demand) |
 
+There is no force-target override: substrate is detected, never declared (see [schema.md](schema.md)).
+
 ## What ships in the image
 
-* **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned
-  fourmolu `0.19.0.1` / hlint `3.10` at
-  `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and
-  a warm Cabal store from [`support/haskell-deps/`](../../support/haskell-deps/).
-* **Go** — first-class toolchain installed at `/opt/go`; `GOPATH`, `GOCACHE`,
-  `GOMODCACHE`, `GOTOOLCHAIN`, and `PATH` set alongside other languages.
-* **nvkind** — built once in the final image (`CGO_ENABLED=1 go install
-  …/nvkind@latest`) and copied to `/usr/local/bin/nvkind`.
-* **Node** — latest upstream Node, with npm, esbuild, TypeScript, Playwright
-  (Chromium/Firefox/WebKit), Spago, purs-tidy.
+* **Skeletal `hostbootstrap` binary** — the `hostbootstrap-core` command tree with **no** project
+  commands, baked at `/usr/local/bin/hostbootstrap`. A project binary extends this same tree via
+  `runHostBootstrapCLI progName projectCommands`; see
+  [derived_project_standards.md](derived_project_standards.md).
+* **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency
+  closure is compiled into the frozen Cabal store at `/opt/cache/cabal/` alongside the shared
+  warm-store deps, so a project that extends the core hits the cache for the core's dependencies.
+  See [warm_store.md](warm_store.md).
+* **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned fourmolu `0.19.0.1` / hlint `3.10` at
+  `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and the warm Cabal store
+  from [`support/haskell-deps/`](../../support/haskell-deps/).
+* **Go** — first-class toolchain installed at `/opt/go`; `GOPATH`, `GOCACHE`, `GOMODCACHE`,
+  `GOTOOLCHAIN`, and `PATH` set alongside other languages.
+* **nvkind** — built once in the final image (`CGO_ENABLED=1 go install …/nvkind@latest`) and copied
+  to `/usr/local/bin/nvkind`.
+* **Node** — latest upstream Node, with npm, esbuild, TypeScript, Playwright (Chromium/Firefox/WebKit),
+  Spago, purs-tidy.
 * **PureScript** — latest `purs`.
-* **Python** — Ubuntu 24.04 default Python with Poetry as the only global
-  package, plus the build-essentials toolchain.
-* **Kube tooling** — Docker CLI/compose (no buildx), kind, kubectl, helm,
-  skopeo, MinIO `mc`, AWS CLI v2, Pulumi.
-* **C/C++/LLVM** — build-essential, the latest available `llvm-N` family
-  (LLVM 19 on Ubuntu 24.04), clang, clang PGO runtime, BOLT, LLD; CMake,
-  Ninja, Make; `CC=clang-N` and `CXX=clang++-N`.
-* **Rust** — `rustup` with Rust `1.95.0`, `llvm-tools-preview`, and
-  `rustfmt`.
+* **Python** — Ubuntu 24.04 default Python with Poetry as the only global package, plus the
+  build-essentials toolchain.
+* **Kube tooling** — Docker CLI/compose (no buildx), kind, kubectl, helm, skopeo, MinIO `mc`,
+  AWS CLI v2, Pulumi.
+* **C/C++/LLVM** — build-essential, the latest available `llvm-N` family (LLVM 19 on Ubuntu 24.04),
+  clang, clang PGO runtime, BOLT, LLD; CMake, Ninja, Make; `CC=clang-N` and `CXX=clang++-N`.
+* **Rust** — `rustup` with Rust `1.95.0`, `llvm-tools-preview`, and `rustfmt`.
 * **CUDA (cuda flavor only)** — built on top of the latest
   `nvidia/cuda:*-cudnn-devel-ubuntu24.04` with a manifest for the target arch.
 
-See [`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile)
-for the exact instructions. The Dockerfile is **logic-free**: every dynamic
-value (versions, URLs, arch strings, the CUDA base image) arrives as a
-`--build-arg`, resolved on the host by
-[`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py).
+See [`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile) for the exact
+instructions. The Dockerfile is **logic-free**: every dynamic value (versions, URLs, arch strings,
+the CUDA base image) arrives as a `--build-arg`, resolved on the host before the build.
 
 ## Dockerfile rules
 
-The Dockerfile is deliberately constrained so a build is reproducible,
-host-native, and free of shell indirection. These rules also apply to downstream
-project Dockerfiles; see [derived_project_standards.md](derived_project_standards.md)
-for the full set of conventions a derived project follows.
+The Dockerfile is deliberately constrained so a build is reproducible, host-native, and free of
+shell indirection. These rules also apply to downstream project Dockerfiles; see
+[derived_project_standards.md](derived_project_standards.md) for the full set of conventions a
+derived project follows.
 
-* **No `/bin/bash`.** The default POSIX `/bin/sh` is used; there is **no `SHELL`
-  directive**. Anything needing bash-only syntax does not belong in a layer.
-* **No pipes.** A `RUN` step never pipes one command into another — split it into
-  discrete steps (or a copied script) so each command's exit status is checked.
-* **No `docker-buildx`** and **no `--jobs=1`.** A build is single-arch and
-  host-native; buildx exists only to assemble cross-arch manifest lists, which
-  are forbidden (see [build_release.md](build_release.md)).
+* **No `/bin/bash`.** The default POSIX `/bin/sh` is used; there is **no `SHELL` directive**.
+  Anything needing bash-only syntax does not belong in a layer.
+* **No pipes.** A `RUN` step never pipes one command into another — split it into discrete steps
+  (or a copied script) so each command's exit status is checked.
+* **No `docker-buildx`** and **no `--jobs=1`.** A build is single-arch and host-native; buildx exists
+  only to assemble cross-arch manifest lists, which are forbidden (see [build_release.md](build_release.md)).
 
 > **WRONG**
 >
@@ -95,9 +98,8 @@ for the full set of conventions a derived project follows.
 >   --build-arg BASE_IMAGE=… -f docker/basecontainer.Dockerfile .
 > ```
 >
-> `buildx --platform` emits a manifest list and pulls in emulation to build an
-> arch the host cannot run natively — exactly the cross-arch artifact the design
-> rejects.
+> `buildx --platform` emits a manifest list and pulls in emulation to build an arch the host cannot
+> run natively — exactly the cross-arch artifact the design rejects.
 >
 > **RIGHT**
 >
@@ -105,18 +107,16 @@ for the full set of conventions a derived project follows.
 > hostbootstrap base build-and-push --arch amd64
 > ```
 >
-> Plain `docker build` under the hood, single-arch, host-native, with every
-> version/URL computed on the host, and immediate `docker push`es for the CPU
-> and CUDA tags so the registry copies match the just-built local layers (see
-> [build_release.md](build_release.md)).
+> Plain `docker build` under the hood, single-arch, host-native, with every version/URL computed on
+> the host, and immediate `docker push`es for the CPU and CUDA tags so the registry copies match the
+> just-built local layers (see [build_release.md](build_release.md)).
 
 ### The one CUDA exception
 
 There is exactly **one** permitted conditional in the Dockerfile: an
-`if [ -d /usr/local/cuda/lib64 ]` block that, when the directory exists, adds it
-to `/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. A single Dockerfile serves
-both the `cpu` and `cuda` bases via the `BASE_IMAGE` arg, and only the cuda base
-ships that directory. This is a **build-time filesystem check**, not
-version-resolution logic and not a runtime probe — it needs no GPU, driver, or
-CUDA runtime, so the cuda image still builds on a host with no CUDA hardware.
-See [`languages/cuda.md`](../languages/cuda.md).
+`if [ -d /usr/local/cuda/lib64 ]` block that, when the directory exists, adds it to
+`/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. A single Dockerfile serves both the `cpu` and
+`cuda` bases via the `BASE_IMAGE` arg, and only the cuda base ships that directory. This is a
+**build-time filesystem check**, not version-resolution logic and not a runtime probe — it needs no
+GPU, driver, or CUDA runtime, so the cuda image still builds on a host with no CUDA hardware. See
+[`languages/cuda.md`](../languages/cuda.md).

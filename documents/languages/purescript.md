@@ -1,10 +1,12 @@
----
-name: languages-purescript
-description: PureScript conventions inside the basecontainer base image.
-type: guide
----
-
 # PureScript
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [node.md](node.md)
+
+> **Purpose**: Document the PureScript toolchain the base image ships.
+
+This page documents what the base image ships for PureScript.
 
 The base image installs the **latest upstream `purs`** for the target arch,
 plus `purs-tidy` and `spago` via npm (see [node.md](node.md)). The resolver

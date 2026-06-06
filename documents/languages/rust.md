@@ -1,10 +1,12 @@
----
-name: languages-rust
-description: Rust conventions inside the basecontainer base image.
-type: guide
----
-
 # Rust
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [cpp.md](cpp.md)
+
+> **Purpose**: Document the Rust toolchain the base image ships.
+
+This page documents what the base image ships for Rust.
 
 The base image installs the pinned Rust toolchain via `rustup`:
 

@@ -1,18 +1,25 @@
----
-name: engineering-warm-store
-description: Warm Cabal store contents, the cache-hit contract, and the dep-addition workflow.
-type: standard
----
-
 # Warm store
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [linking_and_optimization.md](linking_and_optimization.md), [../languages/haskell.md](../languages/haskell.md)
+
+> **Purpose**: Define the warm Cabal store contents — including `hostbootstrap-core`'s dependency
+> closure — the cache-hit contract derived projects rely on, and the dep-addition workflow.
 
 The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
 package listed in
 [`support/haskell-deps/basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal)
 is compiled at base-image build time, in the configurations downstream projects
 actually use, then frozen via
-[`support/haskell-deps/cabal.project.freeze`](../../support/haskell-deps/cabal.project.freeze)
+`support/haskell-deps/cabal.project.freeze`
 so the registry copy of each base tag pins the exact versions baked in.
+
+The frozen closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
+`optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
+extends `hostbootstrap-core` via `runHostBootstrapCLI` hits the warm store for the core's
+dependencies, not only its own. The `hostbootstrap-core` dependency set is part of
+`cabal.project.freeze` and is treated like any other warm-store dependency for cache-hit purposes.
 
 This page is the contract between the warm store and derived projects: follow
 it and `cabal build` skips the dependency closure; deviate and Cabal silently
@@ -29,7 +36,7 @@ For every package in
 * Compiled at **`-O2`** (`optimization: 2` in
   [`support/haskell-deps/cabal.project`](../../support/haskell-deps/cabal.project)).
 * Pinned to the versions in
-  [`support/haskell-deps/cabal.project.freeze`](../../support/haskell-deps/cabal.project.freeze).
+  `support/haskell-deps/cabal.project.freeze`.
 
 `fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
 (see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
@@ -104,18 +111,20 @@ That one line is the whole sync mechanism. No copy step, no
 Why this works:
 
 * The base image bakes
-  [`support/haskell-deps/cabal.project.freeze`](../../support/haskell-deps/cabal.project.freeze)
+  `support/haskell-deps/cabal.project.freeze`
   into `/opt/basecontainer/haskell-deps/cabal.project.freeze` (via the
   `COPY support/haskell-deps/` step in the base Dockerfile). Every
   `basecontainer-<flavor>-<arch>` tag carries one specific freeze, frozen at
   the moment the base was built.
-* Per [`base_image.md`](base_image.md) and project `CLAUDE.md`
-  conventions, derived projects build only inside the container via
-  `hostbootstrap run [args...]`. The container's tini-wrapped project
-  entrypoint receives those args, and its
-  `/opt/basecontainer/haskell-deps/cabal.project.freeze` is always present
-  at the point Cabal reads `cabal.project`, so the absolute path always
-  resolves.
+* On Linux substrates the project container is built `FROM` the base image and
+  the binary is compiled inside it, so
+  `/opt/basecontainer/haskell-deps/cabal.project.freeze` is always present at the
+  point Cabal reads `cabal.project` and the absolute path resolves. On Apple
+  silicon the binary is built natively on the host, where the same freeze is read
+  through the project's `import:` line resolved against the base image's copy at
+  container build time and against the host toolchain for the native build; either
+  way the project commits no freeze of its own. See
+  [base_image.md](base_image.md) for the build-twice/copy-out model.
 * When `hostbootstrap base build-and-push` ships a new base tag with a
   refreshed warm store, the derived project's next container build
   automatically picks up the new freeze. Nothing in the derived project
@@ -172,7 +181,7 @@ Adding a new dep is a one-PR loop:
    [`support/haskell-deps/basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal).
 2. **Regenerate the freeze.** Inside a fresh base container (or after a local
    rebuild), run `cabal freeze` against the warm-store project and commit the
-   updated [`cabal.project.freeze`](../../support/haskell-deps/cabal.project.freeze).
+   updated `cabal.project.freeze`.
 3. **Rebuild and push every base tag.** Use the canonical publish workflow in
    [build_release.md](build_release.md):
 

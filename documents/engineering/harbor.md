@@ -1,26 +1,21 @@
----
-name: engineering-harbor
-description: Downstream guidance for a project pushing its own arch-explicit Harbor image; hostbootstrap does not push project images.
-type: guide
----
-
 # Harbor (downstream guidance)
 
-hostbootstrap **does not push your project image.** It builds the artifacts a
-substrate needs — a container `FROM` the base tag, or a host binary (with an
-optional container counterpart) — and then stops. Whether and how that artifact
-reaches a registry is the **downstream project's** job, not the tool's. This
-page is convention, not enforcement: hostbootstrap has no `push` command for
-project images and no Harbor configuration of its own.
+**Status**: Supporting reference
+**Supersedes**: the execution-model split (container vs host-binary/host-daemon ownership of the push)
+**Referenced by**: [../README.md](../README.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
 
-The split matters because the execution model decides who owns the push. See
-[schema.md](schema.md) for the three models:
+> **Purpose**: Document the convention for a downstream project pushing its own arch-explicit image,
+> and make clear that hostbootstrap never pushes project images.
 
-* **container** — the image is built locally and run. If the project wants it in
-  Harbor, the project's own build/CI step pushes it.
-* **host-binary** / **host-daemon** — the host binary (or its optional container
-  counterpart) is responsible for any push, as part of its own lifecycle. The
-  CLI only guarantees the build is current before handing off.
+hostbootstrap **does not push your project image.** It builds the project
+container `FROM` the base tag (the code-check gate) and materializes the project
+binary at `./.build/<project>`, then stops. Whether and how the project container
+reaches a registry is the **downstream project's** job, not the tool's. This page
+is convention, not enforcement: hostbootstrap has no `push` command for project
+images and no Harbor configuration of its own.
+
+If the project wants its container in Harbor, the project's own build/CI step (or
+a subcommand on the project binary) pushes it as part of its own lifecycle.
 
 ## Recommended convention: arch-explicit tags only
 

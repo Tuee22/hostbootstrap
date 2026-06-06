@@ -1,10 +1,12 @@
----
-name: languages-node
-description: Node.js conventions inside the basecontainer base image.
-type: guide
----
-
 # Node
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [purescript.md](purescript.md)
+
+> **Purpose**: Document the Node.js toolchain the base image ships.
+
+This page documents what the base image ships for Node.js.
 
 The base image installs the **latest upstream Node.js** for the target arch
 (resolved on the host by `hostbootstrap/base_image.py`). The tarball lands at

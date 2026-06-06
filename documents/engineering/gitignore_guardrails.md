@@ -1,10 +1,11 @@
----
-name: engineering-gitignore
-description: What stays out of version control.
-type: reference
----
-
 # .gitignore guardrails
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md)
+
+> **Purpose**: List what every project that adopts hostbootstrap must keep out of version control,
+> including the always-present `./.build/` host binary and the never-deleted `.data/` state.
 
 Every project that adopts hostbootstrap must keep these out of git:
 
@@ -21,11 +22,13 @@ Every project that adopts hostbootstrap must keep these out of git:
 * `*.lock`, `poetry.lock`, `package-lock.json`, `yarn.lock`,
   `pnpm-lock.yaml`, `spago.lock`, `npm-shrinkwrap.json` — package manager
   lockfiles.
-* `.build/` — host-binary output. Only host-binary projects have this; it
-  must never be bind-mounted into an outer container (§9.3 invariant).
-* `.data/` — host persistent state. The CLI bind-mounts this while the
-  cluster is running; it must **never** be deleted by `cluster down` or
-  `cluster delete`.
+* `.build/` — the host binary copied out of (or built natively for) every
+  project; always present after a successful bootstrap. It must never be
+  bind-mounted into an outer container.
+* `.data/` — host persistent state. It is bind-mounted while a cluster is
+  running and must **never** be deleted by cluster teardown; the
+  never-delete-`.data` invariant is owned by `hostbootstrap-core`'s
+  cluster-lifecycle semantics (see [cluster_lifecycle.md](cluster_lifecycle.md)).
 
 The repo's [`.gitignore`](../../.gitignore) covers all of the above for
 hostbootstrap itself; downstream projects mirror the same pattern.

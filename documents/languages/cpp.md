@@ -1,10 +1,12 @@
----
-name: languages-cpp
-description: C/C++/LLVM conventions inside the basecontainer base image.
-type: guide
----
-
 # C / C++ / LLVM
+
+**Status**: Supporting reference
+**Supersedes**: N/A
+**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [cuda.md](cuda.md), [rust.md](rust.md)
+
+> **Purpose**: Document the C/C++/LLVM toolchain the base image ships.
+
+This page documents what the base image ships for C/C++/LLVM.
 
 The base image ships the standard Ubuntu C/C++ toolchain (`build-essential`,
 `gcc`, `g++`, `binutils`, `gdb`, `cmake`, `ninja-build`, `pkg-config`) plus
