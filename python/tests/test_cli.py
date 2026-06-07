@@ -1,0 +1,462 @@
+"""CLI smoke tests (no docker, no host mutation)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import httpx
+import pytest
+from click.testing import CliRunner
+
+from hostbootstrap import cli, docker_ops, process
+from hostbootstrap.spec import Resources, SkeletalSpec
+from hostbootstrap.substrate import Substrate, SubstrateName
+
+LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
+
+
+def _spec() -> SkeletalSpec:
+    return SkeletalSpec(
+        project="proj",
+        dockerfile=Path("docker/proj.Dockerfile"),
+        resources=Resources(cpu=4, memory="8GiB", storage="20GiB"),
+        source_path=Path("/proj/hostbootstrap.dhall"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Thin command surface
+# ---------------------------------------------------------------------------
+
+
+def test_help_lists_thin_commands_and_omits_removed() -> None:
+    result = CliRunner().invoke(cli.main, ["--help"])
+    assert result.exit_code == 0
+    for command in ("doctor", "up", "base"):
+        assert command in result.output
+    for gone in ("cluster", "daemon", "build", "run", "push"):
+        assert gone not in result.output
+
+
+@pytest.mark.parametrize("removed", ["cluster", "daemon", "build", "run", "push"])
+def test_removed_commands_are_gone(removed: str) -> None:
+    result = CliRunner().invoke(cli.main, [removed])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_up_has_no_force_target_option() -> None:
+    result = CliRunner().invoke(cli.main, ["up", "--help"])
+    assert result.exit_code == 0
+    assert "--force-target" not in result.output
+    assert "--no-pull" in result.output
+
+
+def test_default_spec_path_is_dhall() -> None:
+    assert Path("hostbootstrap.dhall") == cli._DEFAULT_SPEC_PATH
+
+
+# ---------------------------------------------------------------------------
+# up command
+# ---------------------------------------------------------------------------
+
+
+def test_up_forwards_trailing_args_and_no_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _spec()
+    spec_path = tmp_path / "hostbootstrap.dhall"
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
+
+    async def _fake_bootstrap(
+        spec: SkeletalSpec,
+        *,
+        project_root: Path,
+        args: tuple[str, ...],
+        pull: bool,
+    ) -> None:
+        captured["spec"] = spec
+        captured["root"] = project_root
+        captured["args"] = args
+        captured["pull"] = pull
+
+    monkeypatch.setattr(cli.bootstrap, "bootstrap", _fake_bootstrap)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["up", "--spec", str(spec_path), "--no-pull", "play", "--seed", "7"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["spec"] is project
+    assert captured["root"] == spec_path.resolve().parent
+    assert captured["args"] == ("play", "--seed", "7")
+    assert captured["pull"] is False
+
+
+def test_up_missing_spec_fails_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "hostbootstrap.dhall"
+    result = CliRunner().invoke(cli.main, ["up", "--spec", str(missing)])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# doctor command
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_command_outputs_messages_and_reboot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
+    monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
+    monkeypatch.setattr(
+        cli.prereqs,
+        "run_doctor_sync",
+        lambda _sub: cli.prereqs.DoctorResult(LINUX, ("one", "two"), reboot_required=True),
+    )
+
+    result = CliRunner().invoke(cli.main, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "substrate: linux-cpu (amd64)" in result.output
+    assert "  - one" in result.output
+    assert "reboot required" in result.output
+
+
+def test_doctor_command_no_reboot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
+    monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
+    monkeypatch.setattr(
+        cli.prereqs,
+        "run_doctor_sync",
+        lambda _sub: cli.prereqs.DoctorResult(LINUX, ("ok",)),
+    )
+
+    result = CliRunner().invoke(cli.main, ["doctor"])
+    assert result.exit_code == 0
+    assert "  - ok" in result.output
+
+
+def test_doctor_command_wraps_prereq_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
+    monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
+
+    def _raise(*_args: object) -> cli.prereqs.DoctorResult:
+        raise cli.prereqs.PrereqError("missing prereq")
+
+    monkeypatch.setattr(cli.prereqs, "run_doctor_sync", _raise)
+
+    result = CliRunner().invoke(cli.main, ["doctor"])
+    assert result.exit_code != 0
+    assert "missing prereq" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Loaders and helpers
+# ---------------------------------------------------------------------------
+
+
+def test_load_detect_and_base_context_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = _spec()
+    monkeypatch.setattr(cli.spec, "load", lambda _path: project)
+    assert cli._load_spec(Path("x.dhall")) is project
+
+    def _bad_spec(_path: Path) -> SkeletalSpec:
+        raise cli.SpecError("bad spec")
+
+    monkeypatch.setattr(cli.spec, "load", _bad_spec)
+    with pytest.raises(cli.click.ClickException, match="bad spec"):
+        cli._load_spec(Path("x.dhall"))
+
+    monkeypatch.setattr(cli.substrate, "detect", lambda: LINUX)
+    assert cli._detect_substrate() == LINUX
+
+    def _bad_detect() -> Substrate:
+        raise RuntimeError("bad host")
+
+    monkeypatch.setattr(cli.substrate, "detect", _bad_detect)
+    with pytest.raises(cli.click.ClickException, match="bad host"):
+        cli._detect_substrate()
+
+    assert cli._base_context_value(False, Path("/repo")) is None
+    assert cli._base_context_value(True, Path("/repo")) == Path("/repo")
+    with pytest.raises(cli.click.ClickException, match="--base-context"):
+        cli._base_context_value(True, None)
+
+
+def test_resolve_pull_combinations() -> None:
+    assert cli._resolve_pull(build_base=False, no_pull=False) is True
+    assert cli._resolve_pull(build_base=True, no_pull=False) is False
+    assert cli._resolve_pull(build_base=False, no_pull=True) is False
+    with pytest.raises(cli.click.ClickException, match="mutually exclusive"):
+        cli._resolve_pull(build_base=True, no_pull=True)
+
+
+def test_arch_default_uses_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.substrate, "detect", lambda: LINUX)
+    assert cli._arch_default() == "amd64"
+
+
+# ---------------------------------------------------------------------------
+# Error formatters
+# ---------------------------------------------------------------------------
+
+
+def test_format_helpers_cover_fallbacks() -> None:
+    generic = process.CommandError(
+        process.CommandResult(
+            args=("cmd", "a", "b", "c"),
+            returncode=9,
+            stdout="",
+            stderr="plain failure",
+        )
+    )
+    assert "`cmd a b" in cli._format_command_error(generic)
+    assert "failed (exit 9)" in cli._format_command_error(generic)
+
+    empty = process.CommandError(
+        process.CommandResult(args=(), returncode=2, stdout="", stderr="boom")
+    )
+    assert "command" in cli._format_command_error(empty)
+
+    assert "`sudo` not found" in cli._format_file_not_found(
+        FileNotFoundError(2, "missing", b"/usr/bin/sudo")
+    )
+    assert cli._format_file_not_found(FileNotFoundError()) is None
+    assert cli._format_file_not_found(FileNotFoundError(2, "missing", "unknown-tool")) is None
+    assert cli._format_http_error(httpx.ConnectError("offline")) == "network error: offline"
+    assert cli._format_runtime_error(KeyError("x")) == "unsupported value: 'x'"
+    assert cli._format_runtime_error(RuntimeError()) == "RuntimeError"
+
+
+def test_format_http_error_includes_url() -> None:
+    request = httpx.Request("GET", "https://example.invalid/x")
+    exc = httpx.ConnectError("offline", request=request)
+    assert "reaching https://example.invalid/x" in cli._format_http_error(exc)
+
+
+def _make_command_error(stderr: str, *, returncode: int = 1) -> process.CommandError:
+    result = process.CommandResult(
+        args=("docker", "push", "tuee22/hostbootstrap:basecontainer-cpu-arm64"),
+        returncode=returncode,
+        stdout="",
+        stderr=stderr,
+    )
+    return process.CommandError(result)
+
+
+def _stub_build_spec(*_a: object, **_kw: object) -> tuple[docker_ops.BuildSpec, object]:
+    spec = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+        no_cache=True,
+    )
+    return spec, object()
+
+
+def _patch_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _stub_build_spec)
+
+
+def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "needle"),
+    [
+        ("The push refers to ...\ntag does not exist: foo", "image not built locally"),
+        ("denied: requested access to the resource is denied", "docker login"),
+        ("unauthorized: incorrect username or password", "docker login"),
+        ("Cannot connect to the Docker daemon at unix://...", "docker daemon not reachable"),
+    ],
+)
+def test_friendly_docker_errors_have_no_traceback(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, needle: str
+) -> None:
+    _patch_build_spec(monkeypatch)
+    _stub_self_check_passing(monkeypatch)
+
+    async def _raises(*_a: object, **_kw: object) -> object:
+        raise _make_command_error(stderr)
+
+    monkeypatch.setattr(cli.docker_ops, "build", _raises)
+    result = CliRunner().invoke(cli.main, ["base", "build-and-push"])
+    assert result.exit_code != 0
+    assert needle in result.output
+    assert "Traceback" not in result.output
+    assert "CommandError" not in result.output
+
+
+def test_friendly_group_converts_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+
+    def _raises(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, "missing", "/usr/bin/docker")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _raises)
+    result = CliRunner().invoke(cli.main, ["base", "build", "--arch", "amd64"])
+    assert result.exit_code != 0
+    assert "`docker` not found" in result.output
+
+
+def test_friendly_group_reraises_unknown_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+
+    def _raises(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, "missing", "/usr/bin/unknown-tool")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _raises)
+    result = CliRunner().invoke(cli.main, ["base", "build", "--arch", "amd64"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, FileNotFoundError)
+
+
+def test_friendly_group_converts_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+
+    def _raises(*_a: object, **_kw: object) -> object:
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _raises)
+    result = CliRunner().invoke(cli.main, ["base", "build", "--arch", "amd64"])
+    assert result.exit_code != 0
+    assert "network error" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("exc", "needle"),
+    [
+        (cli.dhall_tool.DhallToolError("dhall failed"), "dhall failed"),
+        (RuntimeError("runtime failed"), "runtime failed"),
+        (KeyError("bad-value"), "unsupported value: 'bad-value'"),
+    ],
+)
+def test_friendly_group_converts_known_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: BaseException,
+    needle: str,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+
+    def _raises(*_a: object, **_kw: object) -> object:
+        raise exc
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _raises)
+
+    result = CliRunner().invoke(cli.main, ["base", "build-and-push", "--arch", "amd64"])
+
+    assert result.exit_code != 0
+    assert needle in result.output
+    assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# base build / build-and-push + self-check
+# ---------------------------------------------------------------------------
+
+
+def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    pushed: list[str] = []
+
+    def _capture(*args: object, **kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append((args, kwargs))
+        return _stub_build_spec()
+
+    async def _noop_build(*_a: object, **_kw: object) -> object:
+        return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+    async def _noop_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
+    monkeypatch.setattr(cli.docker_ops, "build", _noop_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _noop_push)
+
+    result = CliRunner().invoke(cli.main, ["base", "build-and-push", "--arch", "arm64"])
+    assert result.exit_code == 0, result.output
+    assert [(args[0], args[1]) for args, _kwargs in captured] == [
+        (cli.Flavor.CPU, "arm64"),
+        (cli.Flavor.CUDA, "arm64"),
+    ]
+    assert all(kwargs.get("no_cache") is True for _args, kwargs in captured)
+    assert all(kwargs.get("pull") is True for _args, kwargs in captured)
+    assert pushed == [
+        "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64",
+        "docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64",
+    ]
+
+
+def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+    captured: list[tuple[object, object]] = []
+    pushed: list[str] = []
+
+    def _capture(*args: object, **_kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append((args[0], args[1]))
+        return _stub_build_spec()
+
+    async def _noop_build(*_a: object, **_kw: object) -> object:
+        return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+    async def _record_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
+    monkeypatch.setattr(cli.docker_ops, "build", _noop_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _record_push)
+
+    result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu", "--arch", "arm64"])
+    assert result.exit_code == 0, result.output
+    assert captured == [(cli.Flavor.CPU, "arm64")]
+    assert pushed == []
+    assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
+
+
+def test_self_check_runs_poetry_in_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[list[str], Path]] = []
+
+    class _CompletedOK:
+        returncode = 0
+
+    def _fake_run(cmd: list[str], *, cwd: Path, check: bool = False) -> object:
+        _ = check
+        captured.append((cmd, cwd))
+        return _CompletedOK()
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    cli._run_self_check_or_abort(Path("/tmp/repo"))
+    assert captured == [
+        (
+            ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
+            Path("/tmp/repo/python"),
+        )
+    ]
+
+
+def test_self_check_nonzero_raises_click_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Completed:
+        returncode = 7
+
+    def _fake_run(*_a: object, **_kw: object) -> object:
+        return _Completed()
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    with pytest.raises(cli.click.ClickException, match="self-check failed"):
+        cli._run_self_check_or_abort(Path("/tmp/repo"))
+
+
+def test_self_check_missing_poetry_raises_click_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "poetry")
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    with pytest.raises(cli.click.ClickException, match="poetry"):
+        cli._run_self_check_or_abort(Path("/tmp/repo"))

@@ -105,10 +105,12 @@ binary-emitted schema contract.
 
 ## Parsing
 
-The Python bootstrapper renders the skeletal file to a typed value and reads `project`,
-`dockerfile`, and `resources`. No `dhall-to-json` is shelled out on `PATH`; the supported
-configuration substrate is typed Dhall, decoded against the skeletal schema `hostbootstrap-core`
-owns. The rich and test tiers are decoded by the project binary against the schema it emits.
+The skeletal file is decoded in-process by `HostBootstrap.Config.Schema` (the `dhall` library), which
+reads `project`, `dockerfile`, and `resources` into a typed `Skeleton` value. No `dhall-to-json` is
+shelled out on `PATH`; the supported configuration substrate is typed Dhall, decoded against the
+skeletal schema `hostbootstrap-core` owns (`haskell/hostbootstrap-core/dhall/Type.dhall`). The decoder is
+surfaced on the command tree as `hostbootstrap config show <file>`. The rich and test tiers are
+decoded by the project binary against the schema it emits.
 
 ## See also
 

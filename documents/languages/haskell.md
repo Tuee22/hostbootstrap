@@ -17,7 +17,7 @@ project builds.
 
 ## Warm store
 
-[`support/haskell-deps/`](../../support/haskell-deps/) declares the shared
+[`haskell/haskell-deps/`](../../haskell/haskell-deps/) declares the shared
 dependency set. The base image builds it with
 `--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via
 `cabal.project.freeze`, so

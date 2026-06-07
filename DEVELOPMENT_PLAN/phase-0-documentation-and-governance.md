@@ -10,21 +10,13 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-This phase is in progress: the current documentation refactor converts the governed `documents/`
-suite to the unified standard and creates this `DEVELOPMENT_PLAN/` tree. No code-writing phase may be
-marked `Active` or `Done` until Phase 0 closes (see
+The governed `documents/` suite carries the unified metadata block, this `DEVELOPMENT_PLAN/` tree
+exists in the canonical layout, and the mechanical documentation validator
+(`HostBootstrap.DocValidator`) runs through the canonical code-check. Phase 0 is closed, so
+code-writing phases may now be marked `Active` or `Done` (see
 [development_plan_standards.md § A](development_plan_standards.md)).
-
-### Remaining Work
-
-- Finish converting every governed `documents/**.md` from YAML front-matter to the metadata block
-  (Sprint 0.1).
-- Land the new `documents/architecture/*` and `documents/engineering/*` target-architecture docs
-  named in later phases (Sprint 0.2).
-- Implement the mechanical documentation validator (Sprint 0.3); until it lands, conformance is
-  manual review.
 
 ## Phase Objective
 
@@ -38,9 +30,9 @@ the target Haskell-core + thin-Python architecture; honest current-vs-target sta
 
 ## Sprints
 
-### Sprint 0.1: Convert documents/ to the metadata-block standard [Active]
+### Sprint 0.1: Convert documents/ to the metadata-block standard [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `documents/documentation_standards.md`, `documents/**/*.md`
 **Docs to update**: `documents/documentation_standards.md`, `documents/README.md`
 
@@ -60,15 +52,16 @@ canonical categories.
 
 #### Validation
 
-Manual structural review against the standard until the validator (Sprint 0.3) lands.
+The `HostBootstrap.DocValidator` gate (Sprint 0.3) checks the metadata block on every governed
+`documents/**.md`; `cabal test` passes against the converted suite.
 
 #### Remaining Work
 
-- Confirm every existing doc under `documents/engineering/` and `documents/languages/` is converted.
+None.
 
-### Sprint 0.2: Create the DEVELOPMENT_PLAN tree [Active]
+### Sprint 0.2: Create the DEVELOPMENT_PLAN tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
 `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/phase-*.md`,
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
@@ -90,19 +83,20 @@ Phases 1–7 `Blocked`), and the `legacy-tracking-for-deletion.md` ledger.
 
 #### Validation
 
-Manual review that the layout matches the standard and the honesty check holds: no `documents/` or
-`README.md` claims a target capability is `Done`.
+The `HostBootstrap.DocValidator` gate checks that every phase file retains its
+`## Documentation Requirements` section and that all phase-plan links resolve; the layout matches the
+canonical folder model. The honesty check holds: no `documents/` or `README.md` claims a target
+capability is `Done`.
 
 #### Remaining Work
 
-- Keep this tree in sync as the target-architecture `documents/` pages land in Sprint 0.2's sibling
-  doc work.
+None.
 
-### Sprint 0.3: Documentation validator [Blocked]
+### Sprint 0.3: Documentation validator [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-1 (the validator ships as a `hostbootstrap-core` quality-gate deliverable that
-needs the cabal package to live in)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`haskell/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Docs to update**: `documents/documentation_standards.md`,
 `DEVELOPMENT_PLAN/phase-1-hostbootstrap-core-scaffolding.md`
 
@@ -116,16 +110,21 @@ root-document metadata, relative-link resolution, the root `README.md` reference
 
 #### Deliverables
 
-- A validator wired into the canonical code-check, with the checks listed in
-  `documents/documentation_standards.md § Validation`.
+- `HostBootstrap.DocValidator` (`validateRepo`, `findRepoRoot`, `Violation`) implements the checks
+  listed in `documents/documentation_standards.md § Validation`.
+- `DocValidatorSpec` wires it into the `hostbootstrap-core-test` suite so `cabal test` (the canonical
+  Haskell code-check) fails on drift. The spec carries a negative case proving each check is not
+  vacuous.
 
 #### Validation
 
-The validator passes against the converted `documents/` suite and this `DEVELOPMENT_PLAN/` tree.
+`cabal test` passes: the validator reports zero violations against the converted `documents/` suite,
+the governed root documents, and this `DEVELOPMENT_PLAN/` tree, and the negative case confirms it
+flags missing metadata, unresolved links, and missing sections.
 
 #### Remaining Work
 
-- All of it; blocked until `hostbootstrap-core` exists to host the gate.
+None.
 
 ## Documentation Requirements
 

@@ -9,14 +9,15 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-3 (the command tree composes the `ensure` subcommands) and phase-1 (the
-entrypoint shape).
-
-No code in this phase is written. Today's config is the three-execution-model schema in
-`hostbootstrap/dhall/package.dhall`, parsed by shelling out to `dhall-to-json`
-(`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`).
+`HostBootstrap.Config.Schema` decodes the skeletal `hostbootstrap.dhall`
+(`{ project, dockerfile, resources {cpu, memory, storage} }`) in-process via the Haskell `dhall`
+library — no external `dhall-to-json`. `HostBootstrap.Command` composes the `ensure` and `config`
+verbs, and `runHostBootstrapCLI` extends the tree with project commands (demonstrated by the
+`hostbootstrap-example` binary: core `ensure`/`config` plus a project `greet` verb). The pure-Python
+`package.dhall` / `dhall_tool.py` / `spec.py` remain live until the Python layer is rewritten in
+phase-6; see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Phase Objective
 
@@ -29,10 +30,11 @@ the skeletal decoder.
 
 ## Sprints
 
-### Sprint 4.1: Skeletal schema + in-process decoder [Blocked]
+### Sprint 4.1: Skeletal schema + in-process decoder [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-1, sprint 1.2
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`haskell/hostbootstrap-core/dhall/Type.dhall`, `haskell/hostbootstrap-core/dhall/example.dhall`
 **Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
 `system-components.md`
 
@@ -51,18 +53,21 @@ decoder that reads it without provisioning or shelling out to `dhall-to-json`.
 
 #### Validation
 
-- Decode round-trips a valid `hostbootstrap.dhall`; a malformed config fails with a typed error.
-- `cabal build all` succeeds.
+- `SchemaSpec` decode round-trips a valid `hostbootstrap.dhall` (text and the `example.dhall`
+  fixture); a malformed config and a wrong-typed field each fail with a typed Dhall error.
+- `cabal build all` succeeds; `hostbootstrap config show <file>` prints the decoded fields.
 
 #### Remaining Work
 
-- All of it; blocked on phase-1. The three-execution-model schema, `dhall_tool.py`, and `spec.py`
-  stay live until this lands; see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+The Haskell decoder is complete. The three-execution-model schema, `dhall_tool.py`, and `spec.py`
+remain live until the Python layer is rewritten in phase-6; see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-### Sprint 4.2: Composable command tree [Blocked]
+### Sprint 4.2: Composable command tree [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 4.1, phase-3, sprint 3.2
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`haskell/hostbootstrap-core/example/Main.hs`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `system-components.md`
 
 #### Objective
@@ -76,7 +81,8 @@ project-specific subcommands.
 - `hostbootstrap ensure <tool>` — the Phase 3 reconcilers.
 - `hostbootstrap config <...>` — decode/inspect the skeletal `hostbootstrap.dhall`.
 - A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to add its own verbs;
-  the skeletal `hostbootstrap` binary baked into the base image passes no project commands.
+  the skeletal `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
+  commands.
 
 #### Deliverables
 
@@ -85,12 +91,12 @@ project-specific subcommands.
 
 #### Validation
 
-- `hostbootstrap --help` shows the composed core tree; an extending binary shows core verbs plus its
-  own.
+- `hostbootstrap --help` shows the composed core tree (`ensure`, `config`); the
+  `hostbootstrap-example` binary shows the core verbs plus its own `greet` verb.
 
 #### Remaining Work
 
-- All of it; blocked on sprint 4.1 and phase-3.
+None.
 
 ## Documentation Requirements
 

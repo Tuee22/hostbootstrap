@@ -1,0 +1,98 @@
+cabal-version: 3.12
+name: hostbootstrap-core
+version: 0.1.0.0
+synopsis: Reusable host-management core for the hostbootstrap project family
+category: Development
+description:
+  hostbootstrap-core owns the host-management logic shared across the project
+  family: host-tool resolution, substrate detection, the @ensure@ reconcilers,
+  the skeletal @hostbootstrap.dhall@ decoder, cluster-lifecycle semantics, and
+  the composable optparse-applicative command tree project binaries extend
+  through @runHostBootstrapCLI@.
+license: MIT
+author: hostbootstrap contributors
+maintainer: hostbootstrap contributors
+build-type: Simple
+tested-with: GHC ==9.12.4
+
+common warnings
+  default-language: Haskell2010
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+
+library
+  import: warnings
+  hs-source-dirs: src
+  exposed-modules:
+      HostBootstrap.CLI
+      HostBootstrap.Command
+      HostBootstrap.HostTool
+      HostBootstrap.HostConfig
+      HostBootstrap.HostPrereqs
+      HostBootstrap.Substrate
+      HostBootstrap.Ensure
+      HostBootstrap.Ensure.Docker
+      HostBootstrap.Ensure.Colima
+      HostBootstrap.Ensure.Cuda
+      HostBootstrap.Ensure.Homebrew
+      HostBootstrap.Ensure.Ghc
+      HostBootstrap.Ensure.Tart
+      HostBootstrap.Config.Schema
+      HostBootstrap.Cluster.Lifecycle
+      HostBootstrap.Cluster.Cordon
+      HostBootstrap.DocValidator
+  build-depends:
+      base >=4.18 && <5
+    , containers
+    , directory
+    , dhall
+    , filepath
+    , optparse-applicative
+    , process
+    , safe-exceptions
+    , text
+    , unix
+
+executable hostbootstrap
+  import: warnings
+  hs-source-dirs: app
+  main-is: Main.hs
+  build-depends:
+      base >=4.18 && <5
+    , hostbootstrap-core
+
+-- A worked example of a project binary extending the core command tree. It
+-- demonstrates the runHostBootstrapCLI contract (core verbs + project verbs)
+-- without re-implementing any core verb. See
+-- documents/engineering/derived_project_standards.md.
+executable hostbootstrap-example
+  import: warnings
+  hs-source-dirs: example
+  main-is: Main.hs
+  build-depends:
+      base >=4.18 && <5
+    , hostbootstrap-core
+    , optparse-applicative
+
+test-suite hostbootstrap-core-test
+  import: warnings
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Spec.hs
+  other-modules:
+      SubstrateSpec
+      HostToolSpec
+      EnsureSpec
+      SchemaSpec
+      CordonSpec
+      LifecycleSpec
+      DocValidatorSpec
+  build-depends:
+      base >=4.18 && <5
+    , containers
+    , directory
+    , filepath
+    , hostbootstrap-core
+    , tasty
+    , tasty-hunit
+    , temporary
+    , text

@@ -167,15 +167,17 @@ documents are easier to skim than one combined one.
 
 ## Validation
 
-The mechanical documentation validator is a `hostbootstrap-core` quality-gate deliverable tracked
-in [`../DEVELOPMENT_PLAN/phase-0-documentation-and-governance.md`](../DEVELOPMENT_PLAN/phase-0-documentation-and-governance.md).
-Once it lands it runs through the project's canonical code-check and verifies:
+The mechanical documentation validator is the `HostBootstrap.DocValidator` module in
+`hostbootstrap-core`, exercised by the `hostbootstrap-core-test` suite (`DocValidatorSpec`) so it
+runs through the project's canonical code-check. It verifies:
 
 - required metadata lines for governed `documents/` content
-- required structure for the named broad doctrine docs
+- required structure for the broad doctrine docs (the `documents/architecture/` suite carries a
+  `## TL;DR` or `## Executive Summary`)
 - governed root-document metadata lines (`Status`, `Supersedes`, `Canonical homes`, purpose)
 - relative link resolution for governed docs, governed root docs, and phase-plan docs
 - root `README.md` references to both `documents/` and `DEVELOPMENT_PLAN/`
 - `DEVELOPMENT_PLAN/` phase documents retaining their `## Documentation Requirements` section
 
-Until that gate lands, conformance is verified by manual review against this standard.
+Running `cabal test` (the canonical Haskell code-check) fails when any governed document drifts from
+the rules above.

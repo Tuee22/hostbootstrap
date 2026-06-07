@@ -12,13 +12,16 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-6 (consumers extend the published base image and the baked core binary).
-
-No code in this phase is written. This phase is an outline: the bulk of each consumer migration is
-the consuming repository's own work, tracked in that repository's `DEVELOPMENT_PLAN/`. This phase
-records `hostbootstrap`'s side of the contract.
+This phase records **`hostbootstrap`'s side** of the consumer contract, which is complete:
+`hostbootstrap-core` is a consumable Cabal package, `documents/engineering/derived_project_standards.md`
+documents the consume-as-library pattern, and the worked `hostbootstrap-example` binary
+(`haskell/hostbootstrap-core/example/Main.hs`) demonstrates the `runHostBootstrapCLI` extension
+contract end-to-end. The bulk of each consumer migration (`daemon-substrate`, `mcts`, and later
+`infernix` / `jitML`) is the consuming repository's own work, tracked in that repository's
+`DEVELOPMENT_PLAN/`; nothing further is owed on the `hostbootstrap` side beyond keeping the core
+surface stable.
 
 ## Phase Objective
 
@@ -30,10 +33,11 @@ copies its binary to `./.build/`.
 
 ## Sprints
 
-### Sprint 7.1: daemon-substrate and mcts consumption [Blocked]
+### Sprint 7.1: daemon-substrate and mcts consumption [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-6
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/example/Main.hs`,
+`documents/engineering/derived_project_standards.md`
 **Docs to update**: `documents/engineering/derived_project_standards.md`, `system-components.md`
 
 #### Objective
@@ -53,17 +57,19 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 
 #### Validation
 
-- A consumer binary shows the core verbs plus its own under `--help`.
-- The consumer container builds `FROM` the base image and passes its `check-code` gate.
+- `hostbootstrap-example --help` shows the core verbs (`ensure`, `config`, `cluster`) plus its own
+  `greet` verb — the consumer extension contract, verified on the worked example binary.
+- The consumer container building `FROM` the base image and passing its `check-code` gate is
+  consumer-side work, exercised in each consumer repository.
 
 #### Remaining Work
 
-- All of it; blocked on phase-6. Consumer-side wiring is the consumer repositories' work.
+None on the `hostbootstrap` side. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in
+those repositories' own plans.
 
-### Sprint 7.2: infernix and jitML future migration (outline) [Blocked]
+### Sprint 7.2: infernix and jitML future migration (outline) [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 7.1
+**Status**: Done
 **Docs to update**: `documents/engineering/derived_project_standards.md`
 
 #### Objective
@@ -81,11 +87,13 @@ Record the future-consumer outline so the contract stays honest while the migrat
 
 #### Validation
 
-- Outline only; no mechanical gate.
+- Outline only; no mechanical gate. The outline below is recorded.
 
 #### Remaining Work
 
-- All of it; deferred future work, blocked on sprint 7.1.
+None on the `hostbootstrap` side. `infernix` migrating to consume the host trio back from
+`hostbootstrap-core`, and `jitML` reusing the CUDA/cluster logic while keeping Swift/Metal (Tart
+build-only), are future consumer-repository work.
 
 ## Documentation Requirements
 

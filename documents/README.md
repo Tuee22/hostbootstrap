@@ -43,6 +43,8 @@ material lives here. Conventions are defined in
 - [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
   every derived project follows.
+- [engineering/cabal_layout.md](engineering/cabal_layout.md) — the `hostbootstrap-core` Cabal
+  package layout, the GHC pin, and the dependency surface.
 - [engineering/warm_store.md](engineering/warm_store.md) — the warm Cabal store contents and
   cache-hit contract.
 - [engineering/code_check_doctrine.md](engineering/code_check_doctrine.md) — every image build gates

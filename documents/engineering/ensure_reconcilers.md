@@ -52,10 +52,12 @@ GPU host requirements tracked in [prerequisites](prerequisites.md).
 ## Diagnostics
 
 A wrong-host run emits a single diagnostic line naming the reconciler, the detected substrate, and
-the substrates it applies to, then exits non-zero. Reconcilers do not attempt partial work before
-failing the applicability check.
+the substrate it requires, then exits non-zero. Reconcilers do not attempt partial work before
+failing the applicability check. The applicability decision is the pure `decide` function in
+`HostBootstrap.Ensure`; `runReconciler` is the IO wrapper that performs the stderr write and the
+non-zero exit, so the decision is testable without exiting the process.
 
 - **WRONG**: `ensure tart` on `linux-cpu` prints nothing and exits `0`. This is wrong because it
   masks an operator error and lets a build proceed against an environment that cannot satisfy it.
-- **RIGHT**: `ensure tart` on `linux-cpu` prints `ensure tart: applies to apple-silicon, detected
-  linux-cpu` and exits non-zero.
+- **RIGHT**: `ensure tart` on `linux-cpu` prints `ensure tart: not applicable on linux-cpu (requires
+  apple-silicon)` and exits non-zero.

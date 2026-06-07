@@ -10,13 +10,15 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-4 (lifecycle reads the resource budget from the skeletal Dhall and exposes its
-verbs through the command tree) and phase-3 (`ensure docker` / `ensure colima`).
-
-No code in this phase is written. Cluster `up`/`down`/`delete` exist today only as Python Click
-verbs (`hostbootstrap/cli.py`) that dispatch into the three execution models.
+`HostBootstrap.Cluster.Cordon` verifies the host has the spare `resources` budget and derives the
+substrate-specific cordon (per-project Colima VM sizing on Apple, kind node limits on Linux).
+`HostBootstrap.Cluster.Lifecycle` provides `cluster up` / `down` / `delete` with the
+never-delete-`.data` invariant and the production-versus-test profile distinction, wired into the
+command tree. The pure cores (`parseQuantity`, `verifyBudget`, `resolvePlan`, `teardown`) are
+unit-tested; validated end-to-end on this `linux-gpu` host (`cluster up` reports the budget-sized kind
+cordon and degrades gracefully when `kind`/`Helm` are absent).
 
 ## Phase Objective
 
@@ -29,10 +31,10 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 
 ## Sprints
 
-### Sprint 5.1: Resource budget verification + cordoning [Blocked]
+### Sprint 5.1: Resource budget verification + cordoning [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-4, sprint 4.1
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
 **Docs to update**: `documents/engineering/resource_budgeting.md`, `system-components.md`
 
 #### Objective
@@ -49,17 +51,20 @@ to the project.
 
 #### Validation
 
-- A budget exceeding spare host capacity fails fast with a clear diagnostic.
-- The Colima VM / kind node limits reflect the declared budget.
+- `CordonSpec` asserts a budget exceeding spare capacity fails fast naming the over-committed
+  dimension, and that `colimaSizingArgs` / `kindNodeLimits` reflect the declared budget. `cabal test`
+  passes.
 
 #### Remaining Work
 
-- All of it; blocked on phase-4.
+None for the pure cordon logic. Live host-capacity probing on each substrate is exercised during
+Phase 6 bootstrapping.
 
-### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Blocked]
+### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 5.1, phase-3, sprint 3.2
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
 
 #### Objective
@@ -82,12 +87,13 @@ never-delete-`.data` invariant and the production-vs-test profile distinction.
 
 #### Validation
 
-- `cluster down` / `cluster delete` leave host `.data` intact.
-- The production and test profiles resolve distinct cluster names and host paths.
+- `LifecycleSpec` asserts `teardown Down` / `teardown Delete` never place `.data` in the removal set
+  (for both profiles), and that the production and test profiles resolve distinct cluster names and
+  host paths. `cabal test` passes; `hostbootstrap cluster --help` lists `up`/`down`/`delete`.
 
 #### Remaining Work
 
-- All of it; blocked on sprint 5.1.
+None.
 
 ## Documentation Requirements
 

@@ -10,13 +10,12 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-0 (the documentation and plan standards must close so the cabal-layout doc
-lands alongside the actual cabal file).
-
-No code in this phase is written. The repository is the pure-Python CLI; the Haskell package does
-not exist yet.
+The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
+`HostBootstrap.*` module surface, the skeletal `hostbootstrap` executable, and the generic
+`runHostBootstrapCLI` entrypoint over a buildable command tree. `cabal build all` and `cabal test`
+pass, and `hostbootstrap --help` exits 0. Later phases fill in the placeholder modules.
 
 ## Phase Objective
 
@@ -28,10 +27,10 @@ lands here; Phase 1 produces a structural shell that compiles and runs `--help`.
 
 ## Sprints
 
-### Sprint 1.1: Cabal package + GHC pin [Blocked]
+### Sprint 1.1: Cabal package + GHC pin [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-0
+**Status**: Done
+**Implementation**: `cabal.project`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal`
 **Docs to update**: `documents/engineering/cabal_layout.md`, `system-components.md`
 
 #### Objective
@@ -50,16 +49,19 @@ stanza, pinned to the base-image GHC toolchain.
 
 #### Validation
 
-`cabal build all` exits 0 on a fresh checkout after `cabal update`.
+`cabal build all` exits 0 against the warm Cabal store (GHC 9.12.4, `-O2`); `optparse-applicative`
+and `dhall` resolve from the store without recompilation.
 
 #### Remaining Work
 
-- All of it; blocked on phase-0.
+None.
 
-### Sprint 1.2: Module skeleton + runHostBootstrapCLI [Blocked]
+### Sprint 1.2: Module skeleton + runHostBootstrapCLI [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 1.1
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/app/Main.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `system-components.md`
 
 #### Objective
@@ -86,12 +88,13 @@ onward has named modules to fill in and the command-tree extension contract has 
 
 #### Validation
 
-- `cabal build all` still succeeds; `cabal repl hostbootstrap-core` loads every module.
-- `hostbootstrap --help` exits 0.
+- `cabal build all` succeeds; the library compiles all 17 `HostBootstrap.*` modules.
+- `hostbootstrap --help` exits 0 and prints the (initially empty) core command tree.
 
 #### Remaining Work
 
-- All of it; blocked on sprint 1.1.
+None. The placeholder modules (`HostTool`, `HostConfig`, `HostPrereqs`, `Substrate`, `Ensure.*`,
+`Config.Schema`, `Cluster.*`) are filled in by Phases 2–5.
 
 ## Documentation Requirements
 

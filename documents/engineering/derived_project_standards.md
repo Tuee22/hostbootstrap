@@ -28,10 +28,16 @@ main = runHostBootstrapCLI "app" appProjectCommands
 
 `runHostBootstrapCLI progName projectCommands` composes the project's own subcommands onto the core
 tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
-`config render`). The skeletal `hostbootstrap` binary baked into the base image is the same tree with
-no project commands. There is no execution-model, lifecycle, or mount declaration anywhere in the
+`config render`). The skeletal `hostbootstrap` binary is the same tree with no project commands, built
+the same way (host-native and in-container), not baked into the base image. There is no
+execution-model, lifecycle, or mount declaration anywhere in the
 project — those concepts are removed; the binary's own subcommands and its generated project/test
 Dhall carry whatever runtime shape the project needs.
+
+A worked example lives in the repository at `haskell/hostbootstrap-core/example/Main.hs`: it calls
+`runHostBootstrapCLI "hostbootstrap-example" projectCommands` with one project verb, so
+`hostbootstrap-example --help` shows the core verbs (`ensure`, `config`, `cluster`) plus the project's
+own — the extension contract a consumer follows, with no core verb re-implemented.
 
 ## The rules
 
@@ -57,7 +63,7 @@ Dhall carry whatever runtime shape the project needs.
    `cabal build --dry-run --enable-tests --enable-benchmarks all` inside the container. If a
    third-party package (including a `hostbootstrap-core` dependency) shows up in the plan, fix your
    project's flags first; if it's a genuine miss, add it to
-   [`support/haskell-deps/basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal).
+   [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
    See [warm_store.md](warm_store.md#how-to-verify-your-project-hits-the-cache).
 
 A project that follows all five rules has a Dockerfile that is small, a build that hits the cache,

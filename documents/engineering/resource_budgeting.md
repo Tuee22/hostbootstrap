@@ -54,3 +54,9 @@ The budget is enforced — cordoned — so a project's workload cannot exceed it
 On Apple the cordon is created during the Python bootstrap sequence (the per-project Colima VM must
 exist before the build); on Linux it is applied as part of cluster bring-up. The cluster-side
 enforcement is part of the lifecycle semantics in [cluster_lifecycle](cluster_lifecycle.md).
+
+`HostBootstrap.Cluster.Cordon` implements this: `parseQuantity` decodes Kubernetes-style memory and
+storage quantities to bytes, `verifyBudget` fails fast naming the first dimension that exceeds spare
+host capacity, and `colimaSizingArgs` / `kindNodeLimits` derive the substrate-specific cordon from the
+budget. These pure functions are unit-tested; the `cluster` command resolves live host capacity and
+runs the sized tools.

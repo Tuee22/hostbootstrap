@@ -9,9 +9,10 @@
 > applicability, the skeletal `hostbootstrap.dhall` schema, the thin Python bootstrapper surface,
 > the base image and warm Cabal store, and the optparse command tree projects extend.
 
-> Note: items below describe the **target** component inventory. The repository currently ships the
-> pure-Python CLI; rows marked Implemented `no` are planned surfaces the inversion delivers. The
-> pure-Python surfaces being removed are tracked in
+> Note: the inversion is complete — every `HostBootstrap.*` module below is implemented, and the
+> Python layer is the thin five-step bootstrapper. `hostbootstrap-core` is consumable as a
+> sibling-path / `source-repository-package` dependency that project binaries extend via
+> `runHostBootstrapCLI`. The Python surfaces removed along the way are recorded in
 > [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This repository does not use
 > `.github/` workflows or GitHub Actions as a validation surface; see [README.md](README.md) for
 > per-phase status.
@@ -23,22 +24,23 @@ surface; the column records whether the module exists yet.
 
 | Module | Phase | Implemented | Purpose |
 |--------|-------|-------------|---------|
-| `HostBootstrap.CLI` | 1 | no | `runHostBootstrapCLI progName projectCommands`; composable optparse entrypoint |
-| `HostBootstrap.HostTool` | 2 | no | closed `HostTool` enumeration; absolute-path resolution |
-| `HostBootstrap.HostConfig` | 2 | no | typed host configuration (lifted from infernix) |
-| `HostBootstrap.HostPrereqs` | 2 | no | fail-fast host minimum checks |
-| `HostBootstrap.Substrate` | 2 | no | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) |
-| `HostBootstrap.Ensure` | 3 | no | the `Reconciler` value type and the `ensure` subcommand wiring |
-| `HostBootstrap.Ensure.Docker` | 3 | no | `ensure docker` reconciler |
-| `HostBootstrap.Ensure.Colima` | 3 | no | `ensure colima` reconciler |
-| `HostBootstrap.Ensure.Cuda` | 3 | no | `ensure cuda` reconciler |
-| `HostBootstrap.Ensure.Homebrew` | 3 | no | `ensure homebrew` reconciler |
-| `HostBootstrap.Ensure.Ghc` | 3 | no | `ensure ghc` reconciler |
-| `HostBootstrap.Ensure.Tart` | 3 | no | `ensure tart` reconciler |
-| `HostBootstrap.Config.Schema` | 4 | no | skeletal `hostbootstrap.dhall` schema + in-process decoder |
-| `HostBootstrap.Command` | 4 | no | the core command tree projects extend |
-| `HostBootstrap.Cluster.Lifecycle` | 5 | no | kind/Helm cluster up/down/delete semantics |
-| `HostBootstrap.Cluster.Cordon` | 5 | no | resource-budget verification and cordoning |
+| `HostBootstrap.CLI` | 1 | yes | `runHostBootstrapCLI progName projectCommands`; composable optparse entrypoint |
+| `HostBootstrap.HostTool` | 2 | yes | closed `HostTool` enumeration; absolute-path resolution |
+| `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
+| `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
+| `HostBootstrap.Substrate` | 2 | yes | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) |
+| `HostBootstrap.Ensure` | 3 | yes | the `Reconciler` value type and the `ensure` subcommand wiring |
+| `HostBootstrap.Ensure.Docker` | 3 | yes | `ensure docker` reconciler |
+| `HostBootstrap.Ensure.Colima` | 3 | yes | `ensure colima` reconciler |
+| `HostBootstrap.Ensure.Cuda` | 3 | yes | `ensure cuda` reconciler |
+| `HostBootstrap.Ensure.Homebrew` | 3 | yes | `ensure homebrew` reconciler |
+| `HostBootstrap.Ensure.Ghc` | 3 | yes | `ensure ghc` reconciler |
+| `HostBootstrap.Ensure.Tart` | 3 | yes | `ensure tart` reconciler |
+| `HostBootstrap.Config.Schema` | 4 | yes | skeletal `hostbootstrap.dhall` schema + in-process decoder |
+| `HostBootstrap.Command` | 4 | yes | the core command tree projects extend |
+| `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
+| `HostBootstrap.Cluster.Cordon` | 5 | yes | resource-budget verification and cordoning |
+| `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -126,13 +128,14 @@ See `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 
 
 ## Base image and warm Cabal store
 
-The base image bakes the skeletal `hostbootstrap` binary (the core command tree with no project
-commands) and warms the `hostbootstrap-core` dependencies into the frozen Cabal store.
+The base image warms the `hostbootstrap-core` dependencies into the frozen Cabal store. It bakes
+**no** `hostbootstrap` binary: a Linux ELF cannot run on Apple silicon, so it could not be copied out
+to every host. Every project builds its own binary host-native and in-container (the build-twice /
+copy-out model), accelerated by the warm store.
 
 | Component | Provides |
 |-----------|----------|
-| skeletal `hostbootstrap` binary | the core command tree, exec-ready before any project build |
-| warm Cabal store + `cabal.project.freeze` | `hostbootstrap-core` deps prebuilt for derived project builds |
+| warm Cabal store + `cabal.project.freeze` | `hostbootstrap-core` deps prebuilt for every project's host-native and in-container binary build |
 | GHC toolchain pinned to the core | matches `hostbootstrap-core`'s GHC pin |
 | `ormolu`/`fourmolu` + `hlint` | the static quality-gate formatters/linters (pinned) |
 | kube tools (`kubectl`, `helm`, `kind`) | cluster-lifecycle dependencies |
@@ -145,8 +148,9 @@ The base image continues to publish `basecontainer-<flavor>-<arch>` tags (CPU an
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus the generic
 entrypoint `runHostBootstrapCLI progName projectCommands` (`HostBootstrap.CLI`, Phase 1; command
 tree in `HostBootstrap.Command`, Phase 4). A project binary extends the core tree with its own
-subcommands rather than re-implementing core verbs. The skeletal `hostbootstrap` binary baked into
-the base image is the core tree with no project commands. See
+subcommands rather than re-implementing core verbs. The skeletal `hostbootstrap` binary
+(`hostbootstrap-core`'s own executable) is the core tree with no project commands, built like any
+project binary rather than baked into the base image. See
 [development_plan_standards.md § P](development_plan_standards.md).
 
 | Core verb group | Phase | Source |

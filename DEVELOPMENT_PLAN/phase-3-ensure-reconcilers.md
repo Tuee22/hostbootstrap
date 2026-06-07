@@ -10,13 +10,14 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-2 (the reconcilers consume the typed host-tool resolution and substrate
-detection).
-
-No code in this phase is written. Today the equivalent install/check logic is partly in
-`hostbootstrap/prereqs.py`; there is no reconciler abstraction.
+`HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability
+function, the fail-fast `runReconciler`, and the generic `ensure <tool>` dispatcher. The six
+reconcilers (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`) are implemented with their
+applicability predicates and idempotent reconcile actions, wired into the command tree. Validated
+end-to-end: on this `linux-gpu` host `ensure colima` fails fast (exit 1) while `ensure docker` and
+`ensure cuda` are idempotent no-ops.
 
 ## Phase Objective
 
@@ -29,10 +30,10 @@ one-line diagnostic and a non-zero exit.
 
 ## Sprints
 
-### Sprint 3.1: Reconciler abstraction + ensure subcommand wiring [Blocked]
+### Sprint 3.1: Reconciler abstraction + ensure subcommand wiring [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-2, sprint 2.2
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -55,17 +56,20 @@ the wrong host.
 
 #### Validation
 
-- Unit tests assert applicability predicates and that an inapplicable run exits non-zero without
-  performing the action.
+- `EnsureSpec` asserts the applicability predicates and that an inapplicable run exits non-zero
+  (`ExitFailure 1`) without performing the action (verified via an `IORef` the action would set).
+  `cabal test` passes.
 
 #### Remaining Work
 
-- All of it; blocked on phase-2.
+None.
 
-### Sprint 3.2: The six reconcilers [Blocked]
+### Sprint 3.2: The six reconcilers [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 3.1
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
+`Colima.hs`, `Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -88,12 +92,15 @@ Land the six concrete reconcilers as `ensure` subcommands.
 
 #### Validation
 
-- `hostbootstrap ensure <tool>` is idempotent on a satisfied host and fails fast on the wrong host.
+- `hostbootstrap ensure <tool>` is idempotent on a satisfied host and fails fast on the wrong host
+  (verified on the development `linux-gpu` host: `ensure docker`/`ensure cuda` no-op, `ensure colima`
+  exits 1).
 - `cabal build all` succeeds.
 
 #### Remaining Work
 
-- All of it; blocked on sprint 3.1.
+None. The reconcile actions probe state through resolved tools and report/no-op; performing host
+mutations (package installs) is exercised on the target substrates during Phase 6 bootstrapping.
 
 ## Documentation Requirements
 

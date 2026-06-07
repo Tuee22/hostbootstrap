@@ -9,10 +9,10 @@
 
 The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
 package listed in
-[`support/haskell-deps/basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal)
+[`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal)
 is compiled at base-image build time, in the configurations downstream projects
 actually use, then frozen via
-`support/haskell-deps/cabal.project.freeze`
+`haskell/haskell-deps/cabal.project.freeze`
 so the registry copy of each base tag pins the exact versions baked in.
 
 The frozen closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
@@ -28,15 +28,15 @@ rebuilds packages that look pre-built but have a different store key.
 ## What the warm store ships
 
 For every package in
-[`basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal):
+[`basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal):
 
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
 * Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
   vanilla, profiling, **and** dynamic (`dyn`) ways are all in the store.
 * Compiled at **`-O2`** (`optimization: 2` in
-  [`support/haskell-deps/cabal.project`](../../support/haskell-deps/cabal.project)).
+  [`haskell/haskell-deps/cabal.project`](../../haskell/haskell-deps/cabal.project)).
 * Pinned to the versions in
-  `support/haskell-deps/cabal.project.freeze`.
+  `haskell/haskell-deps/cabal.project.freeze`.
 
 `fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
 (see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
@@ -111,9 +111,9 @@ That one line is the whole sync mechanism. No copy step, no
 Why this works:
 
 * The base image bakes
-  `support/haskell-deps/cabal.project.freeze`
+  `haskell/haskell-deps/cabal.project.freeze`
   into `/opt/basecontainer/haskell-deps/cabal.project.freeze` (via the
-  `COPY support/haskell-deps/` step in the base Dockerfile). Every
+  `COPY haskell/haskell-deps/` step in the base Dockerfile). Every
   `basecontainer-<flavor>-<arch>` tag carries one specific freeze, frozen at
   the moment the base was built.
 * On Linux substrates the project container is built `FROM` the base image and
@@ -178,7 +178,7 @@ Why this works:
 Adding a new dep is a one-PR loop:
 
 1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
-   [`support/haskell-deps/basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal).
+   [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
 2. **Regenerate the freeze.** Inside a fresh base container (or after a local
    rebuild), run `cabal freeze` against the warm-store project and commit the
    updated `cabal.project.freeze`.
@@ -211,7 +211,7 @@ Most common causes, in order of likelihood:
    missing, `optimization` not set to `2`).
 2. The project's `*.cabal` has an upper bound that conflicts with the freeze.
 3. The package is genuinely not in the warm store — open a PR adding it to
-   [`basecontainer-haskell-deps.cabal`](../../support/haskell-deps/basecontainer-haskell-deps.cabal).
+   [`basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
 
 ## WRONG vs RIGHT
 

@@ -218,7 +218,8 @@ budget is the one field both the Python layer and the project binary consume.
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus a generic
 entrypoint (`runHostBootstrapCLI progName projectCommands`). A project binary extends the core tree
 with its own subcommands rather than re-implementing core verbs. The skeletal `hostbootstrap`
-binary baked into the base image is the core tree with no project commands.
+binary (`hostbootstrap-core`'s own executable) is the core tree with no project commands; it is built
+like any project binary, not baked into the base image.
 
 ### Q. Configuration via Dhall
 

@@ -33,18 +33,27 @@ Python bootstrapper. See [README.md](README.md) for the architecture and
 [documents/architecture/python_haskell_boundary.md](documents/architecture/python_haskell_boundary.md)
 for the ownership boundary between the two.
 
+## Repository layout
+
+The repository is split by language: `haskell/` holds the `hostbootstrap-core` Cabal package (and
+`haskell/haskell-deps/`, the warm-store package), while `python/` holds the Poetry project (the
+`hostbootstrap` CLI distribution, its `tests/`, and `stubs/`). The root carries `cabal.project`,
+`docker/`, `documents/`, and `DEVELOPMENT_PLAN/`.
+
 ## Development commands
 
 ### Haskell core
 
-- `hostbootstrap-core` is built and tested with Cabal against the pinned GHC.
-- Build the library with `cabal build`.
-- Run the Haskell tests with `cabal test`.
+- `hostbootstrap-core` (under `haskell/hostbootstrap-core/`) is built and tested with Cabal against
+  the pinned GHC, driven by the repo-root `cabal.project`.
+- Build the library with `cabal build` (from the repository root).
+- Run the Haskell tests with `cabal test` (from the repository root).
 - The Haskell quality gate (formatter check, linter, type-correct build) runs through the project's
   canonical code-check.
 
 ### Python bootstrapper
 
+- Run all Python commands from the `python/` directory (the Poetry project root).
 - `check_code` and `test_all` are Python modules, not shell commands on `PATH`.
 - Run code checks with `poetry run python -m hostbootstrap.check_code`.
   - Runs `ruff check hostbootstrap stubs`, `black --check hostbootstrap stubs`, then
@@ -55,7 +64,7 @@ for the ownership boundary between the two.
     `poetry run python -m hostbootstrap.test_all -k docker_ops -q`.
 - Run coverage with
   `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`.
-  - Coverage is configured in `pyproject.toml` with `fail_under = 100`.
-- Do not invoke `pytest` directly; `tests/conftest.py` requires the `hostbootstrap.test_all` runner.
+  - Coverage is configured in `python/pyproject.toml` with `fail_under = 100`.
+- Do not invoke `pytest` directly; `python/tests/conftest.py` requires the `hostbootstrap.test_all` runner.
   The sentinel is a guardrail for one supported suite entry point, not a claim that `-k` or other
   forwarded pytest filters are disabled.

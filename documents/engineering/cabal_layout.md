@@ -1,0 +1,54 @@
+# Cabal Layout
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [warm_store](warm_store.md)
+
+> **Purpose**: Record the `hostbootstrap-core` Cabal package layout — the GHC pin, the dependency
+> surface, and the library/executable/test stanzas — so derived builds and the base image stay
+> aligned with the warm Cabal store.
+
+## TL;DR
+
+- `hostbootstrap-core` is a single Cabal package built with the base-image GHC toolchain.
+- The repository-root `cabal.project` pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match
+  the warm store baked into the base image (see [warm_store](warm_store.md)).
+- The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
+  (the skeletal binary, built like any project binary — not baked into the base image), and one
+  `test-suite`.
+
+## GHC Pin
+
+The GHC version is pinned in `cabal.project` to the base-image toolchain:
+
+```cabal
+with-compiler: ghc-9.12.4
+optimization: 2
+```
+
+The pin and optimisation level match `haskell/haskell-deps/cabal.project`, which warms the shared
+dependency set into the frozen Cabal store. Pinning both means a derived project that builds
+`hostbootstrap-core` reuses the pre-built dependency unfoldings instead of recompiling them.
+
+## Package Stanzas
+
+`haskell/hostbootstrap-core/hostbootstrap-core.cabal` declares:
+
+| Stanza | Contents |
+|--------|----------|
+| `library` | the `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md) |
+| `executable hostbootstrap` | `app/Main.hs`, the skeletal binary: `runHostBootstrapCLI "hostbootstrap" []` |
+| `test-suite hostbootstrap-core-test` | the `tasty` suite, including the documentation validator gate |
+
+## Dependency Surface
+
+The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
+skeletal-schema decoder) as its defining dependencies, plus the small set used by host-tool
+resolution and the reconcilers (`base`, `containers`, `directory`, `filepath`, `process`,
+`safe-exceptions`, `text`). Every one of these is already warmed into the base-image Cabal store.
+
+## Build And Test
+
+- `cabal build all` builds the library and the skeletal executable.
+- `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
+- `hostbootstrap --help` prints the composed core command tree (empty until later phases add verbs).

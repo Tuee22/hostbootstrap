@@ -23,7 +23,7 @@ and a handful of system tools. Its job is to assert the host is bootstrappable, 
 the project container, copy the binary to `./.build/`, ensure host runtimes, and exec the binary.
 The fail-fast minimums below are the preconditions for that pre-binary work. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
-project binary or the skeletal `hostbootstrap` binary baked into the base image.
+project binary (or `hostbootstrap-core`'s own skeletal binary).
 
 ## Linux Minimums
 
@@ -65,6 +65,17 @@ wrong host:
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
 predicate and reconcile action.
+
+## Typed Checks In hostbootstrap-core
+
+The fail-fast minimums above are expressed as typed checks in `HostBootstrap.HostPrereqs`, dispatched
+by the detected substrate (`HostBootstrap.Substrate`). Each check resolves its external tools through
+the closed `HostTool` enumeration to absolute paths (`HostBootstrap.HostTool` /
+`HostBootstrap.HostConfig`) — no `$PATH`-resolved bare command names — and returns a one-line
+diagnostic on the first unmet minimum. Substrate detection and host-tool resolution are owned by
+`hostbootstrap-core`; the pure-Python `prereqs.py` / `substrate.py` remain the live implementation
+until Phase 6 reclaims the residual pre-binary subset into the thin bootstrapper. See
+[hostbootstrap_core_library.md](../architecture/hostbootstrap_core_library.md).
 
 > **WRONG** — treating an ensured tool as a manual host prerequisite
 >

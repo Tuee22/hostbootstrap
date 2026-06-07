@@ -19,22 +19,24 @@ cluster-lifecycle and resource cordoning, and the optparse command tree projects
 layer shrinks to the pre-binary bootstrap. See [00-overview.md](00-overview.md) for the cross-phase
 narrative and [system-components.md](system-components.md) for the component inventory.
 
-The repository today is a pure-Python Click CLI. The phases below describe the ordered buildout to
-the target. Only Phase 0 is in progress; every code-writing phase is `Planned` or `Blocked` because
-the Haskell inversion has not been written.
+The repository runs the Haskell `hostbootstrap-core` library (under `haskell/`) plus the thin Python
+bootstrapper (under `python/`). The phases below describe the ordered buildout to the target; all
+phases are `Done` — the Haskell core owns the host-management logic and the Python layer is the thin
+five-step bootstrapper. Consumer-side migration of individual projects is tracked in those projects'
+own repositories (see Phase 7).
 
 ## Phases
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Active |
-| 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Blocked |
-| 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Blocked |
-| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Blocked |
-| 4 | [Skeletal Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Blocked |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Blocked |
-| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Blocked |
-| 7 | [Consumer migration](phase-7-consumer-migration.md) | Blocked |
+| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
+| 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
+| 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
+| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
+| 4 | [Skeletal Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
+| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
+| 7 | [Consumer migration](phase-7-consumer-migration.md) | Done |
 
 ## Governance
 

@@ -10,13 +10,14 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-1 (these modules need the `hostbootstrap-core` cabal stanza and the command-tree
-entrypoint to live in).
-
-No code in this phase is written. Substrate detection and prerequisite checks exist today only in
-Python (`hostbootstrap/substrate.py`, `hostbootstrap/prereqs.py`).
+`HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and
+`HostBootstrap.Substrate` are implemented and unit-tested. Host-tool resolution goes through the
+closed `HostTool` enumeration to absolute paths (the `AbsExe` newtype makes a bare command name
+unrepresentable), and substrate detection has a pure classification core. The pure-Python
+`substrate.py` / `prereqs.py` remain the live implementation until Phase 6 reclaims the residual
+pre-binary subset; see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Phase Objective
 
@@ -28,10 +29,11 @@ command names (see [development_plan_standards.md § K](development_plan_standar
 
 ## Sprints
 
-### Sprint 2.1: HostTool resolution + HostConfig [Blocked]
+### Sprint 2.1: HostTool resolution + HostConfig [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-1, sprint 1.2
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
 `documents/engineering/prerequisites.md`, `system-components.md`
 
@@ -54,23 +56,25 @@ Land `HostBootstrap.HostTool` (the closed `HostTool` enumeration and absolute-pa
 #### Validation
 
 - `cabal build all` succeeds.
-- A unit check asserts resolution returns absolute paths and never a bare command name.
+- `HostToolSpec` asserts resolution returns absolute paths, that `mkAbsExe` rejects bare/relative
+  names, and that `resolve` throws `HostToolError` for an unconfigured tool. `cabal test` passes.
 
 #### Remaining Work
 
-- All of it; blocked on phase-1.
+None.
 
-### Sprint 2.2: HostPrereqs + substrate detection [Blocked]
+### Sprint 2.2: HostPrereqs + substrate detection [Done]
 
-**Status**: Blocked
-**Blocked by**: sprint 2.1
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs`
 **Docs to update**: `documents/engineering/prerequisites.md`, `system-components.md`
 
 #### Objective
 
 Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootstrap.Substrate`
-(substrate detection), porting the logic currently in `hostbootstrap/prereqs.py` and
-`hostbootstrap/substrate.py` into Haskell.
+(substrate detection), porting the logic currently in `python/hostbootstrap/prereqs.py` and
+`python/hostbootstrap/substrate.py` into Haskell.
 
 #### Deliverables
 
@@ -82,13 +86,14 @@ Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootst
 #### Validation
 
 - `cabal build all` succeeds.
-- Detection unit tests cover each substrate branch.
+- `SubstrateSpec` covers each substrate branch through the pure `classify` core; `HostToolSpec`
+  covers the `parseOsRelease` / `isUbuntu2404` prerequisite parsing. `cabal test` passes.
 
 #### Remaining Work
 
-- All of it; blocked on sprint 2.1. The pure-Python `prereqs.py` / `substrate.py` remain the live
-  implementation until phase-6 reclaims the residual fail-fast subset into the thin bootstrapper; see
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+None for the Haskell surface. The pure-Python `prereqs.py` / `substrate.py` remain the live
+implementation until phase-6 reclaims the residual fail-fast subset into the thin bootstrapper; see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Documentation Requirements
 

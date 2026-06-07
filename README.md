@@ -34,8 +34,9 @@ the orientation layer and points at those canonical homes rather than duplicatin
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
-subcommands. The skeletal `hostbootstrap` binary baked into the base image is the same entrypoint with
-no project commands, so the core verbs behave identically everywhere.
+subcommands. The skeletal `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
+entrypoint with no project commands — so the core verbs behave identically everywhere. Like every
+project binary it is built host-native and in-container; it is not baked into the base image.
 
 ## Bootstrap Flow
 
@@ -64,9 +65,10 @@ How the host binary is produced depends on the substrate, because a Linux ELF ca
   Homebrew so the host toolchain exists. **Tart is build-only** (Swift/Metal build environments) and is
   never a runtime.
 
-Either way, `./.build/` ends up holding a host-runnable binary. The base image bakes a skeletal
-`hostbootstrap` binary and warms `hostbootstrap-core`'s dependencies into the frozen Cabal store so
-derived builds hit the warm store. See
+Either way, `./.build/` ends up holding a host-runnable binary. The base image bakes **no**
+`hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it could not be copied out to
+every host. Instead the base image warms `hostbootstrap-core`'s dependencies into the frozen Cabal
+store so every project's host-native and in-container binary build hits the warm store. See
 [`documents/architecture/build_and_run_model.md`](documents/architecture/build_and_run_model.md).
 
 ## Configuration: Three-Tier Dhall
@@ -150,23 +152,33 @@ This map reflects the **target shape**: the Haskell `hostbootstrap-core` library
 all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
 
 ```text
-hostbootstrap/
-├── hostbootstrap-core.cabal      # Haskell core package
-├── src/HostBootstrap/            # host-tool resolution, ensure reconcilers,
-│   │                             #   substrate detection, skeletal-Dhall decoder,
-│   │                             #   cluster lifecycle, command tree
-│   ├── HostTool.hs
-│   ├── HostConfig.hs
-│   ├── Substrate.hs
-│   ├── Ensure/                   # Docker, Colima, Cuda, Homebrew, Ghc, Tart
-│   ├── Skeleton.hs
-│   ├── Cluster.hs
-│   └── CLI.hs                    # runHostBootstrapCLI
-├── app/                          # skeletal hostbootstrap binary (core tree, no project commands)
-├── hostbootstrap/                # thin Python bootstrapper (asserts minimums → docker → build → copy → exec)
+.
+├── haskell/
+│   ├── hostbootstrap-core/           # Haskell core package
+│   │   ├── hostbootstrap-core.cabal
+│   │   ├── src/HostBootstrap/        # host-tool resolution, ensure reconcilers,
+│   │   │   │                         #   substrate detection, skeletal-Dhall decoder,
+│   │   │   │                         #   cluster lifecycle, command tree
+│   │   │   ├── HostTool.hs  HostConfig.hs  HostPrereqs.hs  Substrate.hs
+│   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Cuda, Homebrew, Ghc, Tart
+│   │   │   ├── Config/Schema.hs      # skeletal-Dhall decoder
+│   │   │   ├── Cluster/              # Lifecycle.hs, Cordon.hs
+│   │   │   ├── Command.hs  CLI.hs    # core command tree + runHostBootstrapCLI
+│   │   │   └── DocValidator.hs
+│   │   ├── app/Main.hs               # skeletal hostbootstrap binary (core tree, no project commands)
+│   │   ├── example/Main.hs           # worked project-extension binary
+│   │   ├── dhall/                    # skeletal schema (Type.dhall) + example.dhall
+│   │   └── test/                     # tasty suite (incl. the documentation validator)
+│   └── haskell-deps/                 # warm Cabal store package
+├── python/
+│   ├── pyproject.toml
+│   ├── hostbootstrap/                # thin Python bootstrapper (minimums → docker → build → copy → exec)
+│   ├── stubs/   tests/
+│   └── README.md
+├── cabal.project                     # pins GHC; points at haskell/hostbootstrap-core
 ├── docker/basecontainer.Dockerfile
-├── documents/                    # canonical documentation tree
-└── DEVELOPMENT_PLAN/             # phased implementation status
+├── documents/                        # canonical documentation tree
+└── DEVELOPMENT_PLAN/                 # phased implementation status
 ```
 
 ## License

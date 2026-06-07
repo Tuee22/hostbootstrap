@@ -24,7 +24,7 @@ cluster + Harbor registry:
 | `pulumi` | latest GitHub release |
 | `nvkind` | `github.com/NVIDIA/nvkind` (built in-place; see [go.md](go.md)) |
 
-All versions are resolved on the host by `hostbootstrap/base_image.py` and
+All versions are resolved on the host by `python/hostbootstrap/base_image.py` and
 passed as `--build-arg` to the Dockerfile.
 
 ## Loopback NodePorts
