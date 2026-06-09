@@ -42,7 +42,7 @@ are left to the project binary, once it is running.
 
 **Status**: Done
 **Implementation**: `docker/basecontainer.Dockerfile`,
-`haskell/haskell-deps/basecontainer-core-deps.cabal`
+`haskell/haskell-deps/core/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/base_image.md`, `documents/engineering/warm_store.md`,
 `system-components.md`
 
@@ -59,7 +59,7 @@ base image bakes **no** `hostbootstrap` binary.
 - The warm Cabal store + the layered freezes carry `hostbootstrap-core`'s prebuilt dependencies
   for every project's in-container project-container build (the host-native binary build uses the host
   toolchain the bootstrapper ensures). The warm-store core manifest
-  (`haskell/haskell-deps/basecontainer-core-deps.cabal`) lists the full
+  (`haskell/haskell-deps/core/basecontainer-core-deps.cabal`) lists the full
   `hostbootstrap-core` dependency closure (the freeze layering itself is Phase 12).
 - `ormolu`/`fourmolu` and `hlint` remain pinned in the base for the quality gate.
 

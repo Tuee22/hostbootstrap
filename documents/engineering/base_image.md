@@ -22,6 +22,19 @@ docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64
 There are no manifest lists. The base flavor (`cpu`/`cuda`) and the host arch (`amd64`/`arm64`)
 together name exactly one tag.
 
+## Republishing the base
+
+The four published tags above are the **source of truth** every derived project (and the in-repo
+`demo/`) builds `FROM`. Whenever the repo's base inputs change — `docker/basecontainer.Dockerfile`
+or the warm-store inputs under [`haskell/haskell-deps/`](../../haskell/haskell-deps/) (the layer
+manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection) — the published
+tag no longer matches the repo and **must be rebuilt and republished**
+(`hostbootstrap base build-and-push`; see [build_release.md](build_release.md)). Consumers then
+**pull** the republished tag; they never rebuild the base as a one-off and never build against an
+un-republished local base, which would hide the drift between the repo and the registry. A freeze a
+consumer imports (`core.freeze`, `daemon.freeze`) must exist in the **currently published** tag, not
+only in the repo — otherwise the consumer's container build cannot resolve the import.
+
 ## Flavor And Arch Selection
 
 The base-image **flavor** follows the detected substrate, and the **arch** follows the host.

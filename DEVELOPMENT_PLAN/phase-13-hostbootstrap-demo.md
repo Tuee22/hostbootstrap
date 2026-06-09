@@ -196,7 +196,7 @@ is live-validated** (pushed an image to a registry at the Harbor NodePort and pu
 the full 8-pod Harbor Helm chart and pushing the multi-GB project image at scale is the operator's
 real-run step (see the Phase Status operator-scale note).
 
-### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Active]
+### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs` (the `warp`/`wai`/`aeson` service + `purescript-bridge` codegen), `demo/web/` (Halogen SPA + `spago.yaml`), `demo/docker/Dockerfile`

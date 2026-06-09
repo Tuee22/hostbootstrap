@@ -19,8 +19,8 @@ project builds.
 
 [`haskell/haskell-deps/`](../../haskell/haskell-deps/) declares the shared
 dependency set. The base image builds it with
-`--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via
-`cabal.project.freeze`, so
+`--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via the layered
+`core.freeze` / `daemon.freeze`, so
 downstream projects following the warm-store cache-hit contract skip the
 entire third-party build closure. See
 [engineering/warm_store.md](../engineering/warm_store.md) for the contract and

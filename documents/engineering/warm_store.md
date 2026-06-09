@@ -59,9 +59,9 @@ rebuilds packages that look pre-built but have a different store key.
 ## What the warm store ships
 
 For every package in the two layer manifests
-([`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/basecontainer-core-deps.cabal)
+([`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/core/basecontainer-core-deps.cabal)
 and
-[`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/basecontainer-daemon-deps.cabal)):
+[`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal)):
 
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
 * Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
@@ -224,9 +224,9 @@ Adding a new dep is a one-PR loop:
 
 1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
    the layer manifest for its level: a daemon-family dep goes in
-   [`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/basecontainer-daemon-deps.cabal)
+   [`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal)
    (the `daemon.freeze` layer); a base / core / shared web-build dep goes in
-   [`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/basecontainer-core-deps.cabal)
+   [`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/core/basecontainer-core-deps.cabal)
    (the `core.freeze` layer).
 2. **Rebuild and push every base tag.** The freezes are **never committed** —
    `cabal.project.freeze`, `core.freeze`, and `daemon.freeze` are all in

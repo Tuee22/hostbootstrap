@@ -7,4 +7,4 @@
 import: warm-store.config
 
 packages:
-  ./basecontainer-daemon-deps.cabal
+  daemon/

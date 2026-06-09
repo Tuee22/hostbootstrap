@@ -5,5 +5,5 @@
 import: warm-store.config
 
 packages:
-  ./basecontainer-core-deps.cabal
-  ./basecontainer-daemon-deps.cabal
+  core/
+  daemon/

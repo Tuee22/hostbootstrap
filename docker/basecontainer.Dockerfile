@@ -267,8 +267,8 @@ RUN cd /opt/basecontainer/haskell-deps \
 RUN fourmolu --version \
     && hlint --version \
     && cd /opt/basecontainer/haskell-deps \
-    && fourmolu --mode check app \
-    && hlint app
+    && fourmolu --mode check core/app daemon/app \
+    && hlint core/app daemon/app
 
 # The single, documented exception to the "no if/case" rule. One Dockerfile
 # serves both the `cpu` (ubuntu) and `cuda` (nvidia/cuda) base images via

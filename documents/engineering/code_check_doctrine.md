@@ -34,12 +34,12 @@ The base image enforces its own self-check in two layers:
   `hostbootstrap-core` (the Haskell library) and the thin Python bootstrapper
   **before** `docker build` runs. If anything fails the build exits with a
   one-line message for local reproduction and Docker is never invoked.
-* **In-Dockerfile smoke.** After the warm Cabal store and the static-base
-  `hostbootstrap` binary are built, a single `RUN` step verifies that `fourmolu`
-  and `hlint` actually start (catching install regressions) and runs them against
-  the warm-store sample source at
-  [`haskell/haskell-deps/app/`](../../haskell/haskell-deps/) (catching sample
-  drift).
+* **In-Dockerfile smoke.** After the warm Cabal store is built (the base bakes
+  **no** `hostbootstrap` binary — see [base_image.md](base_image.md)), a single
+  `RUN` step verifies that `fourmolu` and `hlint` actually start (catching install
+  regressions) and runs them against the warm-store sample source at
+  [`haskell/haskell-deps/core/app/`](../../haskell/haskell-deps/core/app/)
+  (catching sample drift).
 
 The split is deliberate: the full `hostbootstrap` source tree is **not** copied
 into the base image, so dev tooling does not ship to every downstream. The host

@@ -125,12 +125,6 @@ demoGuardPrefix = "hostbootstrap-demo"
 demoCommands :: [Mod CommandFields (IO ())]
 demoCommands = [incusCmd, vmCmd, harborCmd, webCmd]
 
--- | A leaf verb that narrates the step it drives (used for the steps whose live
--- execution is wired in later phases).
-narrate :: String -> String -> Mod CommandFields (IO ())
-narrate name what =
-  command name (info (pure (putStrLn (name ++ ": " ++ what))) (progDesc what))
-
 -- ---------------------------------------------------------------------------
 -- Metal-host orchestration helpers (the demo resolves and runs incus directly)
 -- ---------------------------------------------------------------------------

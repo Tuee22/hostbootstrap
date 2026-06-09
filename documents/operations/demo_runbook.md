@@ -103,11 +103,11 @@ f. `demo harbor install` — core `cluster up` inside the VM (**cordon #2**: the
 g. `demo harbor push` — push the arch-explicit image tag to the in-VM Harbor;
    the tag is then pullable from inside the VM.
 
-h. `demo web serve` — serve the servant webservice on the incus host (this host
+h. `demo web serve` — serve the `warp`/`wai` webservice on the incus host (this host
    is the Playwright `baseURL`).
 
 i. `demo web bridge` / `demo web schema` — `web bridge` generates the PureScript
-   types from the servant `DemoApi` via `purescript-bridge`; `web schema` prints
+   types from the webservice's `BudgetView` via `purescript-bridge`; `web schema` prints
    the L0 + demo schema union (`coreArtifacts ++ demoArtifacts`).
 
 j. Playwright e2e — runs from the container against the incus-host `baseURL` (the
@@ -129,7 +129,7 @@ case demonstrates a distinct slice of the surface.
 | Harness case | Feature demonstrated |
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (steps a–g): `ensure incus`, the VM sizing cordon, the in-VM `apt`/`pipx`/`hostbootstrap up` chain, the host-native binary build, Docker ensure with reboot, the project-container build, and the kind + Harbor cordon and push. |
-| `web-build` | The web build path (steps e, i): the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the servant API (round-trip); the `spago`/`esbuild` bundle exists. |
+| `web-build` | The web build path (steps e, i): the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp`/`wai` webservice's API types (round-trip); the `spago`/`esbuild` bundle exists. |
 | `e2e-tabs` | The served surface (steps h, j): the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the Playwright run against the incus-host `baseURL`. |
 
 ## Three builds vs the standard host-native build

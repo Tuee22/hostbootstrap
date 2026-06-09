@@ -46,7 +46,7 @@ surface; the column records whether the module exists yet.
 | `HostBootstrap.Config.Schema` | 4 | yes | static-base `hostbootstrap.dhall` schema + in-process decoder |
 | `HostBootstrap.Command` | 4 | yes | the core command tree projects extend |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
-| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `fitsBudget`/`preflightBudget`, and the applied `docker update` kind-node cordon |
+| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, and the applied `docker update` kind-node cordon |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render) |

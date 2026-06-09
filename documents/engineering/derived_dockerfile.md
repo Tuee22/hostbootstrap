@@ -84,8 +84,8 @@ build so a failing check stops the build early.
 
 The web build follows the gate, in three ordered steps:
 
-1. `<project> web bridge` — generate the PureScript types from the servant API via
-   `purescript-bridge`. The demo's `DemoApi` Haskell types feed both JSON and the
+1. `<project> web bridge` — generate the PureScript types from the `warp`/`wai` webservice's API types
+   via `purescript-bridge`. The demo's `BudgetView` Haskell type feeds both JSON and the
    generated PureScript, so the front-end types cannot drift from the API. See
    [purescript](../languages/purescript.md).
 2. `spago build` — compile the Halogen SPA (Overview / Budget / Status tabs)

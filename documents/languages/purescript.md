@@ -19,6 +19,6 @@ PureScript projects use `spago` for builds and `purs-tidy` for formatting —
 both shipped globally, both runnable from the container.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) uses this toolchain for its
-web build: `demo web bridge` generates PureScript types from the servant API via
+web build: `demo web bridge` generates PureScript types from the `warp`/`wai` webservice's API types via
 `purescript-bridge`, then `spago build` + `esbuild` bundle the Halogen SPA (the
 live web build is exercised during the demo run).

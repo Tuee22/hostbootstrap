@@ -11,7 +11,7 @@ packages:
 
 with-compiler: ghc-9.12.4
 
-import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+import: /opt/basecontainer/haskell-deps/core.freeze
 
 tests: True
 benchmarks: True

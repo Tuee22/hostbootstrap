@@ -65,3 +65,25 @@ The repository is split by language: `haskell/` holds the `hostbootstrap-core` C
 - Do not invoke `pytest` directly; `python/tests/conftest.py` requires the `hostbootstrap.test_all` runner.
   The sentinel is a guardrail for one supported suite entry point, not a claim that `-k` or other
   forwarded pytest filters are disabled.
+
+## Base image: rebuild → republish → pull
+
+The published `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the **source of
+truth** every derived project (including `demo/`) builds `FROM`. When you change
+`docker/basecontainer.Dockerfile` or the warm-store inputs under `haskell/haskell-deps/` (the layer
+manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection), the published base
+no longer matches the repo. You MUST then **rebuild and republish** the affected base tag and have
+consumers **pull** the republished tag.
+
+- Do **not** work around a stale published base by pointing a consumer at a freeze name the published
+  base does not yet ship (for example, editing a derived project's `container.cabal.project` import).
+- Do **not** build the base locally and build derived projects against the un-republished local image —
+  that hides the drift between the repo and Docker Hub.
+- The canonical command is `hostbootstrap base build-and-push --flavor <f> --arch <a>` (plain
+  single-arch `docker build` + `docker push`, host-native, no buildx). See
+  [documents/engineering/base_image.md](documents/engineering/base_image.md) and
+  [documents/engineering/build_release.md](documents/engineering/build_release.md).
+
+Republishing pushes to the user's Docker Hub namespace — an outward-facing publish an agent performs
+**only when the user directs it**. It is a container-registry push, **not** a git operation, so it is
+outside the git-history boundary above.

@@ -29,8 +29,8 @@ two-freeze split validated on the host `ghc-9.12.4` toolchain and in a `ghc-9.12
 worked demo (Phase 13) has been **exercised in a real run** on a bare-metal host — incus VMs, the pristine
 3-build bootstrap, the harness cluster lifecycle with cleanup, the `warp`/`wai` + `purescript-bridge`/
 Halogen web stack, and Playwright e2e (3/3). **All phases are now `Done`.** The operator-scale real runs
-(the multi-arch published base tags, the full 8-pod Harbor deployment, the multi-GB image push) are
-exercised by an operator's release/demo run, the same standard the validation policy defines. The Phase-0
+(the multi-arch published base tags, the full 8-pod Harbor deployment, the multi-GB image push) **remain
+operator steps**, run per the same § Validation Policy standard. The Phase-0
 governance, including the doctrine-clarity sweep, has **closed** (per § A it may reopen only when a future
 architecture contract adds a new doc-coverage obligation). See [00-overview.md](00-overview.md) for the
 cross-phase narrative. Consumer-side migration of individual projects is tracked in those projects' own

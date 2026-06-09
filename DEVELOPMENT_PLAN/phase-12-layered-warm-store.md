@@ -47,7 +47,7 @@ store.
 ### Sprint 12.1: Freeze fragmentation [Done]
 
 **Status**: Done
-**Implementation**: `haskell/haskell-deps/basecontainer-core-deps.cabal`, `haskell/haskell-deps/basecontainer-daemon-deps.cabal`, `haskell/haskell-deps/{cabal,core,daemon}.project`, `haskell/haskell-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
+**Implementation**: `haskell/haskell-deps/core/basecontainer-core-deps.cabal`, `haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal`, `haskell/haskell-deps/{cabal,core,daemon}.project`, `haskell/haskell-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/base_image.md`
 
 #### Objective
@@ -108,7 +108,7 @@ None.
 ### Sprint 12.3: `purescript-bridge` in the warm store [Done]
 
 **Status**: Done
-**Implementation**: `haskell/haskell-deps/basecontainer-core-deps.cabal`
+**Implementation**: `haskell/haskell-deps/core/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/languages/purescript.md`
 
 #### Objective
@@ -125,7 +125,7 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 #### Validation
 
 - `purescript-bridge` is present in the `core.freeze` manifest
-  (`haskell/haskell-deps/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
+  (`haskell/haskell-deps/core/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
   (verified in the host and in-container freeze runs), so a project depending on it builds with a
   warm-store cache hit (the full cache hit is validated by a base-image build).
 
