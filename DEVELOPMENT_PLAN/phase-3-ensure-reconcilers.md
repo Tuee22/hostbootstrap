@@ -10,14 +10,24 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-`HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability
-function, the fail-fast `runReconciler`, and the generic `ensure <tool>` dispatcher. The six
-reconcilers (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`) are implemented with their
-applicability predicates and idempotent reconcile actions, wired into the command tree. Validated
-end-to-end: on this `linux-gpu` host `ensure colima` fails fast (exit 1) while `ensure docker` and
-`ensure cuda` are idempotent no-ops.
+`HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
+the fail-fast `runReconciler`, and the generic `ensure <tool>` dispatcher. The six reconcilers (`docker`,
+`colima`, `cuda`, `homebrew`, `ghc`, `tart`) carry their applicability predicates and idempotent
+reconcile actions, wired into the command tree (on this `linux-gpu` host `ensure colima` fails fast while
+`ensure docker`/`ensure cuda` are no-ops). This phase reopens against the install-and-verify contract:
+the reconcile actions currently **probe/verify** but do not yet **install** a missing dependency, and the
+set grows to the host-provider (see [development_plan_standards.md § L](development_plan_standards.md)).
+
+**Remaining Work** (reopened):
+- Give each reconcile action a real, substrate-branched **install** (Homebrew on apple-silicon;
+  apt/ghcup on linux), probe-first/idempotent; keep the pure `decide` unit-tested without invoking the
+  package manager.
+- Add `ensure incus` — the first reconciler applicable on apple-silicon AND linux (designed in
+  [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)).
+- The cluster-tool reconcilers (`kubectl`/`helm`/`kind`/`nvkind`) are contributed by `daemon-substrate`
+  (L1) via the four-stream merge, not the core set.
 
 ## Phase Objective
 

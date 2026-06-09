@@ -10,14 +10,22 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-The base image deliberately bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple
-silicon, so it could not be copied out to every host. Every project builds its own binary host-native
-and in-container (the build-twice / copy-out model), accelerated by the warm Cabal store (Sprint 6.1).
-The Python CLI is the thin five-step bootstrapper (`doctor` / `up` / `base`); the
-three-execution-model machinery (`models/*`, `--force-target`, model-keyed dispatch, the three-model
-Dhall schema) is removed and the Python suite passes at 100% coverage (Sprint 6.2).
+The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
+project builds its own binary host-native and in-container (the build-twice / copy-out model), accelerated
+by the warm Cabal store (Sprint 6.1). The Python CLI is the thin five-step bootstrapper; the
+three-execution-model machinery is removed and the Python suite passes at 100% coverage (Sprint 6.2). This
+phase reopens against the layered-warm-store and in-image-freeze contract.
+
+**Remaining Work** (reopened; the freeze split is tracked in the net-new
+[phase-12-layered-warm-store.md](phase-12-layered-warm-store.md)):
+- Split the warm store into `core.freeze` / `daemon.freeze` so a non-daemon consumer is not coupled to
+  the daemon dependency closure (Phase 12).
+- Generate both freezes in-image by `cabal freeze`, never committed (`.dockerignore`/`.gitignore`
+  exclude them); FIX the dep-add "commit the freeze" doc claim.
+- Add `purescript-bridge` to the warm store (the demo's web build).
+- The baked-binary source comments are corrected.
 
 ## Phase Objective
 

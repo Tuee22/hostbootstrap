@@ -12,16 +12,25 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-This phase records **`hostbootstrap`'s side** of the consumer contract, which is complete:
-`hostbootstrap-core` is a consumable Cabal package, `documents/engineering/derived_project_standards.md`
-documents the consume-as-library pattern, and the worked `hostbootstrap-example` binary
-(`haskell/hostbootstrap-core/example/Main.hs`) demonstrates the `runHostBootstrapCLI` extension
-contract end-to-end. The bulk of each consumer migration (`daemon-substrate`, `mcts`, and later
-`infernix` / `jitML`) is the consuming repository's own work, tracked in that repository's
-`DEVELOPMENT_PLAN/`; nothing further is owed on the `hostbootstrap` side beyond keeping the core
-surface stable.
+`hostbootstrap-core` is a consumable Cabal package and
+`documents/engineering/derived_project_standards.md` documents the consume-as-library pattern. This phase
+reopens against the **three-level library hierarchy** contract: `hostbootstrap-core` (L0) ◄
+`daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2), with `mcts` consuming L0 directly; each level extends
+the four parallel streams (CLI tree, Dhall vocabulary, schema-gen registry, harness seams). The worked
+consumer is now **`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)),
+which supersedes the thin `hostbootstrap-example` binary. The bulk of each consumer migration remains the
+consuming repository's own work.
+
+**Remaining Work** (reopened):
+- Document the three-level hierarchy and the **two integration modes** — (1) freeze-import + the
+  base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`), and (2)
+  `source-repository-package` + `runHostBootstrapCLI` extension (`daemon-substrate` and its apps) — in
+  `documents/engineering/derived_project_standards.md` (see
+  [development_plan_standards.md § P, § T](development_plan_standards.md)).
+- Re-point the "worked example" references from `example/Main.hs` to `demo/` (the retirement lands in
+  [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)).
 
 ## Phase Objective
 

@@ -53,7 +53,7 @@ resolvePlan project root profile = case profile of
   TestCase caseId ->
     ClusterPlan
       { clusterName = project ++ "-test-" ++ caseId,
-        dataPath = root </> ".data-test" </> caseId,
+        dataPath = root </> ".test_data" </> caseId,
         derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
       }
 

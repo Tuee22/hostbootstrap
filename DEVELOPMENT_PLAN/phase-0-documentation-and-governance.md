@@ -10,13 +10,27 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-The governed `documents/` suite carries the unified metadata block, this `DEVELOPMENT_PLAN/` tree
-exists in the canonical layout, and the mechanical documentation validator
-(`HostBootstrap.DocValidator`) runs through the canonical code-check. Phase 0 is closed, so
-code-writing phases may now be marked `Active` or `Done` (see
-[development_plan_standards.md § A](development_plan_standards.md)).
+Phase 0's **foundational** governance is closed and holds: the governed `documents/` suite carries the
+unified metadata block, this `DEVELOPMENT_PLAN/` tree exists in the canonical layout, and the mechanical
+documentation validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical
+code-check. That foundation gates the code phases, so phases 1–7 stay `Active`/`Done` (see
+[development_plan_standards.md § A](development_plan_standards.md)). Phase 0 reopens only for the
+**expanded doc-coverage** obligation the global-architecture contract adds: the governed suite and
+`README.md` must be rewritten to the new architecture, the taxonomy resolved, and the validator extended
+into the reusable family doc-floor.
+
+**Remaining Work** (reopened against the global-architecture contract):
+- Author/rewrite the governed `documents/` suite and `README.md` to the architecture (the new
+  architecture/engineering/operations docs and the rewrites named in their owning phases'
+  `## Documentation Requirements`).
+- Resolve the taxonomy: add `documents/operations/`, trim `development/` and `reference/` from
+  `documents/documentation_standards.md` § Taxonomy and `documents/README.md` (same change).
+- Extend `HostBootstrap.DocValidator`: add `snake_case` file-naming and an optional taxonomy check;
+  export the per-check functions as a reusable family doc-floor.
+- Land the remaining stale-claim corrections (the `dhall-to-json`, baked-binary, and freeze-commit doc
+  claims; carried by phases 4/6/12).
 
 ## Phase Objective
 

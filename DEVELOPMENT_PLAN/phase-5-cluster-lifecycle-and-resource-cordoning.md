@@ -10,15 +10,27 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-`HostBootstrap.Cluster.Cordon` verifies the host has the spare `resources` budget and derives the
-substrate-specific cordon (per-project Colima VM sizing on Apple, kind node limits on Linux).
-`HostBootstrap.Cluster.Lifecycle` provides `cluster up` / `down` / `delete` with the
-never-delete-`.data` invariant and the production-versus-test profile distinction, wired into the
-command tree. The pure cores (`parseQuantity`, `verifyBudget`, `resolvePlan`, `teardown`) are
-unit-tested; validated end-to-end on this `linux-gpu` host (`cluster up` reports the budget-sized kind
-cordon and degrades gracefully when `kind`/`Helm` are absent).
+`HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,
+`kindNodeLimits`) and `verifyBudget` checks spare capacity; `HostBootstrap.Cluster.Lifecycle` provides
+`cluster up` / `down` / `delete` with the never-delete-`.data` invariant (per-case test data is now
+under `./.test_data/<case>/`) and the production-versus-test profile distinction. The pure cores
+(`parseQuantity`, `verifyBudget`, `resolvePlan`, `teardown`) are unit-tested, and `cluster up` reports
+the cordon and degrades gracefully when `kind`/`Helm` are absent. **The cordon is computed and
+reported but not yet APPLIED**, and `verifyBudget` is not yet wired into the bring-up path — so the
+declared budget ceiling is not actually enforced on Linux. This phase reopens against the
+budget-as-ceiling contract (see [development_plan_standards.md § O](development_plan_standards.md)).
+
+**Remaining Work** (reopened; the applied cordon is tracked in the net-new Phase 9):
+- Wire the applied Linux cordon: `docker update --cpus/--memory <cluster>-control-plane` after
+  `kind create`, before Helm, fail-closed (today `kindNodeLimits` is computed and only printed by
+  `reportCordon`).
+- Run `verifyBudget` (and the net-new pure `fitsBudget`) as a real pre-bring-up fail-fast gate.
+- Collapse the dual budget interpreters (Haskell `colimaSizingArgs` vs Python `_gib` /
+  `colima_start_command`) to one canonical quantity parser/arg-builder, with a golden test (covers
+  the Python `_gib("8Gi")` mishandling).
+- Add `cluster status` (read-only) and a per-substrate storage cordon.
 
 ## Phase Objective
 

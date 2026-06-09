@@ -27,7 +27,7 @@ planCases =
       derivedPaths prod @?= ["/srv/demo/.cluster/demo"],
     testCase "test: per-case isolated name and path" $ do
       clusterName test1 @?= "demo-test-case1"
-      dataPath test1 @?= "/srv/demo/.data-test/case1"
+      dataPath test1 @?= "/srv/demo/.test_data/case1"
       derivedPaths test1 @?= ["/srv/demo/.cluster/demo-test-case1"]
   ]
 

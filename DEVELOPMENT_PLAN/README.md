@@ -20,23 +20,32 @@ layer shrinks to the pre-binary bootstrap. See [00-overview.md](00-overview.md) 
 narrative and [system-components.md](system-components.md) for the component inventory.
 
 The repository runs the Haskell `hostbootstrap-core` library (under `haskell/`) plus the thin Python
-bootstrapper (under `python/`). The phases below describe the ordered buildout to the target; all
-phases are `Done` — the Haskell core owns the host-management logic and the Python layer is the thin
-five-step bootstrapper. Consumer-side migration of individual projects is tracked in those projects'
-own repositories (see Phase 7).
+bootstrapper (under `python/`). The phases below describe the ordered buildout. The host-management
+surface is implemented and the Python layer is the thin five-step bootstrapper; phases reopen to
+`Active` where the global-architecture contract adds work or a review found an over-claim — notably
+the resource cordon is computed but **not yet applied** (Phase 5) and the binary-generated `config
+schema`/`config render` are not yet built (Phase 4). See [00-overview.md](00-overview.md) for the
+cross-phase narrative and the net-new phases. Consumer-side migration of individual projects is
+tracked in those projects' own repositories (see Phase 7).
 
 ## Phases
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
+| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Active |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
-| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
-| 4 | [Skeletal Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
-| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
-| 7 | [Consumer migration](phase-7-consumer-migration.md) | Done |
+| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
+| 4 | [Skeletal Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
+| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Active |
+| 7 | [Consumer migration](phase-7-consumer-migration.md) | Active |
+| 8 | [Dhall generation and the four-stream extension](phase-8-dhall-generation-and-extension.md) | Blocked |
+| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Blocked |
+| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Blocked |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Blocked |
+| 12 | [Layered warm store](phase-12-layered-warm-store.md) | Blocked |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Blocked |
 
 ## Governance
 
@@ -53,8 +62,8 @@ own repositories (see Phase 7).
 This repository does not use `.github/` workflows or GitHub Actions as a validation surface. The
 supported gate is the project's canonical code-check, run on every base and derived image build (see
 [development_plan_standards.md § R](development_plan_standards.md)). The mechanical documentation
-validator is a Phase-0 deliverable; until it lands, conformance is verified by manual review against
-the standards.
+validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical code-check
+(`cabal test`); manual review covers only the editorial tier.
 
 ## Authority
 

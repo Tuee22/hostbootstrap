@@ -9,15 +9,28 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-`HostBootstrap.Config.Schema` decodes the skeletal `hostbootstrap.dhall`
-(`{ project, dockerfile, resources {cpu, memory, storage} }`) in-process via the Haskell `dhall`
-library — no external `dhall-to-json`. `HostBootstrap.Command` composes the `ensure` and `config`
-verbs, and `runHostBootstrapCLI` extends the tree with project commands (demonstrated by the
-`hostbootstrap-example` binary: core `ensure`/`config` plus a project `greet` verb). The pure-Python
-`package.dhall` / `dhall_tool.py` / `spec.py` remain live until the Python layer is rewritten in
-phase-6; see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+`HostBootstrap.Config.Schema` provides the in-process Haskell decoder for the static-base
+`hostbootstrap.dhall` (`{ project, dockerfile, resources {cpu, memory, storage} }`), backing
+`hostbootstrap config show`. `HostBootstrap.Command` composes the `ensure` and `config` verbs, and
+`runHostBootstrapCLI` extends the tree with project commands (demonstrated today by the
+`hostbootstrap-example` binary; to be superseded by the worked `demo/` consumer). **Correction:** the
+**pre-binary** read of the static base is done by the Python bootstrapper via the pinned `dhall-to-json`
+(`python/hostbootstrap/dhall_tool.py`), which is **retained** — it must run before any binary exists —
+not removed; the in-process Haskell decoder serves `config show` *after* the binary exists. This phase
+reopens against the binary-generated-schema contract (see
+[development_plan_standards.md § P, Q](development_plan_standards.md)).
+
+**Remaining Work** (reopened; the generation substrate is tracked in the net-new Phase 8):
+- Build `config schema` (the binary emits its own Dhall schema, reflected from its decoder types) and
+  `config render` (materialize deploy/per-case configs) over a `HostBootstrap.Dhall.Gen` +
+  `ConfigArtifact` registry and the reusable `Core.dhall` vocabulary (`Budget/fitsWithin`,
+  `Budget/split`).
+- Formalize the four-stream extension contract (CLI append, Dhall embed, schema concat, harness seams)
+  and the three-level library hierarchy.
+- Rename "skeletal" → "static base" consistently; add a CI check that `Type.dhall` and the Python-side
+  `package.dhall` keep the same shape (the anti-drift guarantee).
 
 ## Phase Objective
 

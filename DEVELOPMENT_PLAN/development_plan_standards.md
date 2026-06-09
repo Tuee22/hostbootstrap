@@ -24,8 +24,12 @@ Haskell-core library plus thin Python bootstrapper consumed by every project bin
 - Each phase is written after the previous phase in dependency order.
 - When later implementation lands before an earlier phase's closure obligation, the later phase
   names the open dependency explicitly instead of pretending the prerequisite is closed.
-- Phase 0 is always documentation and governance. No code-writing phase may be marked `Active` or
-  `Done` before Phase 0 closes.
+- Phase 0 is always documentation and governance. Its **foundational** deliverables — the metadata
+  standard, this plan tree, and the landed documentation validator — must close before any code-writing
+  phase is marked `Active` or `Done`. Once that foundation has closed, Phase 0 may **reopen** to `Active`
+  for an expanded doc-coverage obligation (e.g. a new architecture contract) without forcing the
+  already-implemented code phases back to `Blocked`; the foundational closure, not Phase 0's momentary
+  status, is what gates them.
 - Newly discovered gaps are handled by adding explicit follow-on work, not by leaving stale
   completion claims in older documents.
 
@@ -84,6 +88,12 @@ DEVELOPMENT_PLAN/
 ├── phase-5-cluster-lifecycle-and-resource-cordoning.md
 ├── phase-6-base-image-and-thin-python-bootstrapper.md
 ├── phase-7-consumer-migration.md
+├── phase-8-dhall-generation-and-extension.md
+├── phase-9-applied-cordon-and-one-parser.md
+├── phase-10-standardized-test-harness.md
+├── phase-11-incus-host-provider.md
+├── phase-12-layered-warm-store.md
+├── phase-13-hostbootstrap-demo.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -173,15 +183,23 @@ even when not fully implemented, but it must not claim a capability is `Done`.
 
 External tools are resolved through a closed `HostTool` enumeration to absolute paths in
 `hostbootstrap-core`. No library or project code calls `proc "<bare-command-name>"` that resolves
-through `$PATH`; every invocation reads an absolute path from typed host configuration.
+through `$PATH`; every invocation reads an absolute path from typed host configuration. The enum includes
+the host-provider tool `incus` (§ U); the in-VM tools it dispatches to are the VM's own `$PATH` binaries
+reached through the single resolved host `incus exec` (the VM is a separate machine — the doctrine governs
+host invocation).
 
 ### L. Substrate and Ensure-Reconciler Contract
 
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) is owned by `hostbootstrap-core`.
 Each host dependency is an `ensure` reconciler — an idempotent value with a host-applicability
 predicate and a reconcile action — exposed as an optparse subcommand (`ensure docker`,
-`ensure colima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`). A reconciler run
-on the wrong host fails fast with a one-line diagnostic and a non-zero exit.
+`ensure colima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`, `ensure incus`). A
+reconcile action **installs** the dependency if absent and is a verified no-op if present
+(install-and-verify, not check-only). A reconciler run on the wrong host fails fast with a one-line
+diagnostic and a non-zero exit. `ensure incus` is the first reconciler applicable on **both**
+apple-silicon and linux — it installs the host-provider that encapsulates a fresh linux host (§ U). The
+cluster-tool reconcilers (`kubectl`/`helm`/`kind`/`nvkind`) are contributed by the mid-layer library
+(`daemon-substrate`) via the four-stream merge (§ T), not the core set.
 
 ### M. Python-Thin / Haskell-Core Boundary
 
@@ -203,43 +221,59 @@ Every project's binary is produced through Docker so the only universal host dep
 - A `./.build/<binary>` is always present on the host, even for container workflows.
 - Tart is build-only (Swift/Metal artifacts copied to `./.build/` and run on the host); no built
   binary ever runs inside the Tart VM.
+- The same build-twice/copy-out model applies **inside an incus VM** (the VM is a fresh linux host;
+  § U). The worked demo's pristine-host bootstrap is a deliberate **3-build** exception — a metal
+  orchestrator build plus the standard build-twice run inside the pristine VM via the pipx-installed
+  wrapper — and is demo-only, not the standard workflow.
 - The container image is built on every substrate, both for containerized workflows and as the
   mandatory code-check quality gate.
 
 ### O. Resource Budget and Cordoning
 
-The skeletal `hostbootstrap.dhall` declares a per-project resource budget (`cpu`, `memory`,
-`storage`). `hostbootstrap` verifies the host has the spare budget and cordons it: on Apple by
-sizing a dedicated per-project Colima VM, on Linux by applying kind node resource limits. The
-budget is the one field both the Python layer and the project binary consume.
+The static-base `hostbootstrap.dhall` declares a per-project resource budget (`cpu`, `memory`,
+`storage`) — the one ceiling the project may not exceed. It is enforced with defense in depth: a
+Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before
+bring-up, and the applied wall at runtime — a sized Colima VM (Apple), a sized incus VM (§ U), the
+applied `docker update` kind-node cap (Linux), or `docker run` caps (one-shot). All VM/node sizing is
+emitted by **one** canonical quantity parser/argument builder in `hostbootstrap-core`; the Python layer
+builds host argv only from that output (no second interpreter). Storage is cordoned where the substrate
+allows (Colima `--disk` / incus `root,size` / a quota'd hostPath on Linux), since `docker update` has no
+storage flag. The budget flows from the static tier into both the spinup cordon and the
+binary-generated configs.
 
 ### P. optparse Command-Tree Extension Contract
 
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus a generic
 entrypoint (`runHostBootstrapCLI progName projectCommands`). A project binary extends the core tree
-with its own subcommands rather than re-implementing core verbs. The skeletal `hostbootstrap`
+with its own subcommands rather than re-implementing core verbs. This CLI tree is the first of the four
+parallel extension streams the library hierarchy composes additively (§ T). The skeletal `hostbootstrap`
 binary (`hostbootstrap-core`'s own executable) is the core tree with no project commands; it is built
 like any project binary, not baked into the base image.
 
 ### Q. Configuration via Dhall
 
-Configuration is typed Dhall in three tiers:
+Configuration is typed Dhall in two kinds across three tiers:
 
-- the skeletal `hostbootstrap.dhall` (project, dockerfile, resource budget), read by the Python
-  bootstrapper, identical in shape across projects;
-- rich project-level Dhall (runtime roles plus cluster-bootstrap instructions), read by the
-  project binary;
-- per-case test-harness Dhall, generated by the project binary.
+- the **static-base** `hostbootstrap.dhall` (project, dockerfile, resource budget), identical in shape
+  across projects, **read pre-binary by the Python bootstrapper via a pinned `dhall-to-json`** (Python
+  has no project binary to call in-process yet; `dhall_tool.py` is retained for exactly this);
+- the **rich project/deploy** Dhall and the **per-case test** Dhall, both **generated by the project
+  binary** (`config render`) from a reusable Dhall vocabulary, each carrying the budget assertion.
 
-The rich project and test schemas are artifacts emitted by the project binary; `hostbootstrap-core`
-owns only the skeletal-schema decoder.
+The project binary also **emits its own schema** (`config schema`), reflected from its decoder types so
+the schema cannot drift. `hostbootstrap-core` owns the static-base decoder (which also backs the
+in-process `config show` after the binary exists) and the generation substrate; the rich schemas are the
+binary's own. An anti-drift check keeps `Type.dhall` and the Python-side `package.dhall` the same shape.
 
 ### R. Quality Gate Contract
 
 Static quality is a first-class requirement. The Haskell formatter is `ormolu`/`fourmolu` and
 `hlint` runs against supported source roots, both pinned in the base image. Every image build, base
-or derived, gates on the project's canonical code-check. The documentation validator is a Phase-0
-deliverable. The plan distinguishes mechanically enforced gates from editor-only guidance.
+or derived, gates on the project's canonical `check-code` — for a derived image, a single in-Dockerfile
+`RUN <project> check-code` stage whose body is project-defined. The standardized test harness's
+`<project> test` report card is the project-level validation gate. The mechanical documentation
+validator (`HostBootstrap.DocValidator`) is **landed** and runs through the code-check. The plan
+distinguishes mechanically enforced gates from editor-only guidance.
 
 ### S. Imported Practices and Explicit Non-Adoption
 
@@ -247,4 +281,36 @@ deliverable. The plan distinguishes mechanically enforced gates from editor-only
 tracking, declarative current-state language) from the consumer projects. It does not adopt any
 consumer's product features, runtime surfaces, daemon-role model, or hardware-correctness
 validation cadence; those remain consumer concerns. Non-adopted external doctrine must not be
-treated as a current blocker or completion criterion.
+treated as a current blocker or completion criterion. The four run-models and the standardized test
+harness, however, are `hostbootstrap`-**owned** contracts that downstream refactors follow (§ T).
+
+### T. Library Hierarchy, Four-Stream Extension, and Run-Models
+
+The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
+`daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes L0 directly. Each level adds only its
+delta to **four parallel streams**, one additive merge idiom each: the optparse **CLI tree**
+(`runHostBootstrapCLI progName (lower ++ delta)`, appended, never shadowed); the **Dhall vocabulary**
+(`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen** `ConfigArtifact` registry
+(concatenated across levels); and the **test-harness** `Seams`. A project integrates in one of two modes:
+freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
+`source-repository-package` + the `runHostBootstrapCLI` extension. The system runs one of four
+**run-models** — `OneShot` (one-shot `docker run`), `HostNative` (build-twice/copy-out + host exec),
+`HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected by
+`(verb × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
+
+### U. Host-Provider Axis (incus)
+
+`incus` is a first-class host-provider axis orthogonal to substrate: a target linux host is either the
+local host or an incus VM (`HostTarget = Local | InVM`). Anything `hostbootstrap` deploys on an
+unvirtualized linux host it can deploy inside an incus VM (build, ensure docker, kind, Harbor, run, the
+harness) via a single `incus exec` dispatch; the VM is budget-cordoned by the one canonical parser (§ O).
+`incus` is installed by `ensure incus` (§ L) and is **not** standardized for all workflows — it is used
+in the worked demo to encapsulate a fresh linux host — but it is fully supported.
+
+### V. Layered Warm Store
+
+The base-image warm Cabal store freeze is split by library layer: `core.freeze` (base +
+`hostbootstrap-core` closure; imported by `mcts` and `daemon-substrate`) and `daemon.freeze`
+(daemon-family deps; imported only by the daemon apps). Both are generated in-image by `cabal freeze` and
+**never committed** (`.dockerignore`/`.gitignore` exclude them); each project imports only its layer's
+fragment(s), so cache-hit and version-pinning track the hierarchy.
