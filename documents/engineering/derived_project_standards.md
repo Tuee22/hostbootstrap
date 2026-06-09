@@ -175,7 +175,7 @@ optimization: 2
 source-repository-package
   type: git
   location: https://github.com/tuee22/hostbootstrap.git
-  subdir: hostbootstrap-core
+  subdir: haskell/hostbootstrap-core
 ```
 
 This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon app would add a second

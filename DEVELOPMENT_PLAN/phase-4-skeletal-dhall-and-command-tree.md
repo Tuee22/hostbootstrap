@@ -80,7 +80,8 @@ remain live until the Python layer is rewritten in phase-6; see
 
 **Status**: Done
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`haskell/hostbootstrap-core/example/Main.hs`
+`haskell/hostbootstrap-core/app/Main.hs` (the bare `hostbootstrap` binary; the worked extension is now
+`demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`)
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `system-components.md`
 
 #### Objective
@@ -94,7 +95,7 @@ project-specific subcommands.
 - `hostbootstrap ensure <tool>` — the Phase 3 reconcilers.
 - `hostbootstrap config show` — decode/inspect the static-base `hostbootstrap.dhall`.
 - A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to add its own verbs;
-  the skeletal `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
+  the bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
   commands.
 
 #### Deliverables
@@ -104,8 +105,9 @@ project-specific subcommands.
 
 #### Validation
 
-- `hostbootstrap --help` shows the composed core tree (`ensure`, `config`); the
-  `hostbootstrap-example` binary shows the core verbs plus its own `greet` verb.
+- `hostbootstrap --help` shows the composed core tree (`ensure`, `config`); the worked
+  `hostbootstrap-demo` binary (`demo/`, superseding the retired `hostbootstrap-example`) shows the core
+  verbs plus its own appended demo verbs (`incus`/`vm`/`harbor`/`web`).
 
 #### Remaining Work
 

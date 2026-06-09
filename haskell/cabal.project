@@ -1,14 +1,13 @@
--- hostbootstrap-core build configuration.
+-- hostbootstrap-core build configuration (the self-contained Haskell workspace).
 --
 -- The GHC pin matches the base-image toolchain (see
--- documents/engineering/cabal_layout.md and haskell/haskell-deps/cabal.project).
+-- ../documents/engineering/cabal_layout.md and haskell-deps/cabal.project).
 -- The optimisation level matches the warm Cabal store baked into the base image
 -- so derived project builds reuse the pre-built dependency unfoldings
--- (documents/engineering/warm_store.md).
+-- (../documents/engineering/warm_store.md).
 
 packages:
-  haskell/hostbootstrap-core/hostbootstrap-core.cabal
-  demo/hostbootstrap-demo.cabal
+  hostbootstrap-core/hostbootstrap-core.cabal
 
 with-compiler: ghc-9.12.4
 

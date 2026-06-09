@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md), [phase-10-standardized-test-harness.md](phase-10-standardized-test-harness.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md), [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)
 
 > **Purpose**: Add `incus` as a first-class host-provider axis (a target linux host is either the local
 > host or an incus VM) so anything `hostbootstrap` deploys on an unvirtualized linux host it can deploy

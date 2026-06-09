@@ -79,8 +79,9 @@ teardown partition.
 
 #### Validation
 
-- `LifecycleSpec`/`HarnessSpec` assert a non-prefixed name is rejected and `.data` is never in the removal
-  set. `cabal test` passes.
+- `HarnessSpec` asserts a non-prefixed name is rejected (`guardTestDelete`); `LifecycleSpec` and
+  `HarnessSpec` together assert `.data` is never in the removal set (the pure `teardown` partition for
+  both `down` and `delete`). `cabal test` passes.
 
 #### Remaining Work
 

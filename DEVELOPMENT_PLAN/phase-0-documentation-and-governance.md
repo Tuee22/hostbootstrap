@@ -10,24 +10,21 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-Phase 0's **foundational** governance is closed and holds: the governed `documents/` suite carries the
-unified metadata block, this `DEVELOPMENT_PLAN/` tree exists in the canonical layout, and the mechanical
-documentation validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical
-code-check. That foundation gates the code phases (see
-[development_plan_standards.md § A](development_plan_standards.md)). The earlier expanded doc-coverage
-obligation closed (Sprint 0.4 + the owning phases' docs). Phase 0 is **reopened** (per § A — without
-reverting any code phase) for a **doctrine-clarity sweep**: the governed suite must read unmistakably on
-two load-bearing doctrines — the Python wrapper does only the minimum to **build** the binary, and the
-project binary is **never blocked by an un-installed dependency** (the purpose of the `ensure` suite),
-with the Python host minimums as the **only** hard fail-fast surface — and the `system-components.md`
-inventory must be reconciled to the now-`Done` Phases 6 and 9 (Sprint 0.5).
-
-**Remaining Work**:
-- The doctrine-clarity sweep across the standards (§§ L/M/C), the canonical engineering/architecture
-  homes, `README.md`, the Validation Policy, the demo runbook, and the inventory (Sprint 0.5). This is a
-  doc-coverage obligation; it does not reopen any code phase.
+Phase 0's governance is closed and holds. The **foundational** deliverables — the unified
+metadata-block standard across the governed `documents/` suite, this `DEVELOPMENT_PLAN/` tree in the
+canonical layout, and the mechanical documentation validator (`HostBootstrap.DocValidator`) running
+through the canonical code-check — landed first and gate the code phases (see
+[development_plan_standards.md § A](development_plan_standards.md)). The expanded doc-coverage
+obligations that reopened Phase 0 are also closed: the family doc-floor and taxonomy gate (Sprint 0.4)
+and the **doctrine-clarity sweep** (Sprint 0.5) — making two load-bearing doctrines read unmistakably
+across the governed suite (the Python wrapper does only the minimum to **build** the binary, and the
+project binary is **never blocked by an un-installed dependency**, the purpose of the `ensure` suite,
+with the Python host minimums as the **only** hard fail-fast surface) and reconciling the
+`system-components.md` inventory to the now-`Done` Phases 6 and 9. All five sprints are `Done` with no
+remaining work, so this phase is closed. Per § A it may **reopen** to `Active` if a future architecture
+contract adds a new doc-coverage obligation, without reverting any already-implemented code phase.
 
 ## Phase Objective
 

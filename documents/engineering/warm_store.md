@@ -13,8 +13,8 @@ package listed in
 is compiled at base-image build time, in the configurations downstream projects actually use.
 
 The warm Cabal store (the prebuilt packages) is **shared**, but the version-pin
-**freezes** it produces are **layered by library level**. The base build runs
-`cabal freeze` in-image to emit two fragments under `/opt/basecontainer/haskell-deps/`:
+**freezes** it produces are **layered by library level** — the base build's in-image
+`cabal freeze` is projected into two fragments under `/opt/basecontainer/haskell-deps/`:
 
 * **`core.freeze`** pins base + the `hostbootstrap-core` closure + the shared
   web-build extras (including `purescript-bridge`, the demo's web bridge). It is
@@ -28,6 +28,15 @@ Each project's `cabal.project` imports only the fragment(s) for its layer: an
 L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze`
 **and** `daemon.freeze`. A non-daemon consumer (e.g. `mcts`) is therefore **not** coupled
 to the daemon dependency closure.
+
+> **Current state.** Projecting the single in-image `cabal freeze` into the two
+> layered `core.freeze` / `daemon.freeze` fragments is the warm-store layering
+> deliverable (tracked in the development plan), validated by a real base-image
+> build — including settling the membership of the shared web-server packages
+> (`warp` / `wai*` / `network`) that an L0-direct web consumer such as the demo
+> also needs. The base build today emits the single full `cabal.project.freeze`;
+> a derived project hits the warm store by importing whichever freeze the current
+> base tag ships.
 
 The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
 `optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that

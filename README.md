@@ -185,6 +185,7 @@ all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_
 ```text
 .
 ├── haskell/
+│   ├── cabal.project                 # self-contained Cabal workspace (pins GHC; lists hostbootstrap-core)
 │   ├── hostbootstrap-core/           # Haskell core package
 │   │   ├── hostbootstrap-core.cabal
 │   │   ├── src/HostBootstrap/        # host-tool resolution, ensure reconcilers,
@@ -201,12 +202,12 @@ all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_
 │   │   └── test/                     # tasty suite (incl. the documentation validator)
 │   └── haskell-deps/                 # warm Cabal store package
 ├── demo/                             # hostbootstrap-demo: the worked L0-direct consumer
+│   └── cabal.project                 # the consumer's own workspace (builds against haskell/hostbootstrap-core)
 ├── python/
 │   ├── pyproject.toml
 │   ├── hostbootstrap/                # thin Python bootstrapper (pre-binary: minimums → toolchain → build → exec)
 │   ├── stubs/   tests/
 │   └── README.md
-├── cabal.project                     # pins GHC; points at haskell/hostbootstrap-core
 ├── docker/basecontainer.Dockerfile
 ├── documents/                        # canonical documentation tree
 └── DEVELOPMENT_PLAN/                 # phased implementation status

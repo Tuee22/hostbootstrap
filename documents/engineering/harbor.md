@@ -62,6 +62,11 @@ and [base_image.md](base_image.md). A project never re-pushes the large base
 image — it pulls the base from Docker Hub and pushes only its own thin
 layer(s).
 
+The `hostbootstrap-demo` worked consumer (`demo/`) drives this convention
+end-to-end: its `demo harbor install` / `demo harbor push` verbs bring up an
+in-VM Harbor and push the arch-explicit image tag during the demo run (the live
+in-VM execution is exercised in the worked demo).
+
 ## See also
 
 * [derived_project_standards.md](derived_project_standards.md) — the five

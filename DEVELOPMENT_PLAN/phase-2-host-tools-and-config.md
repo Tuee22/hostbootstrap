@@ -50,8 +50,12 @@ Land `HostBootstrap.HostTool` (the closed `HostTool` enumeration and absolute-pa
 
 #### Module Surface
 
-- `HostBootstrap.HostTool` — `data HostTool = Docker | Colima | Brew | Ghc | Kubectl | Helm | Kind |
-  NvidiaSmi | Tart | …`; `resolve :: HostConfig -> HostTool -> IO (Path Abs File)`.
+- `HostBootstrap.HostTool` — `data HostTool = Docker | Colima | Brew | Ghc | Ghcup | Kubectl | Helm |
+  Kind | NvidiaSmi | Tart | Sudo | XcodeSelect | …`; the `AbsExe` newtype (absolute-path-only via the
+  `mkAbsExe` smart constructor, so a bare command name is unrepresentable) plus `discover`.
+- `HostBootstrap.HostConfig` — the typed `HostConfig` (substrate + the resolved `AbsExe` tool paths)
+  and `resolve :: HostConfig -> HostTool -> IO AbsExe`, which reads the absolute path from the typed
+  configuration (throwing `HostToolError` for an unresolved tool).
 
 #### Validation
 

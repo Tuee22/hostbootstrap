@@ -6,7 +6,7 @@ category: Development
 description:
   hostbootstrap-core owns the host-management logic shared across the project
   family: host-tool resolution, substrate detection, the @ensure@ reconcilers,
-  the skeletal @hostbootstrap.dhall@ decoder, cluster-lifecycle semantics, and
+  the static-base @hostbootstrap.dhall@ decoder, cluster-lifecycle semantics, and
   the composable optparse-applicative command tree project binaries extend
   through @runHostBootstrapCLI@.
 license: MIT

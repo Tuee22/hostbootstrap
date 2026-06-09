@@ -15,7 +15,8 @@
 The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
 `HostBootstrap.*` module surface, the bare `hostbootstrap` executable, and the generic
 `runHostBootstrapCLI` entrypoint over a buildable command tree. `cabal build all` and `cabal test`
-pass, and `hostbootstrap --help` exits 0. Later phases fill in the placeholder modules.
+pass, and `hostbootstrap --help` exits 0. The module surface this phase scaffolded was filled in by the
+later phases (2–5, now `Done`) that own each module's host-management logic.
 
 ## Phase Objective
 
@@ -30,7 +31,7 @@ lands here; Phase 1 produces a structural shell that compiles and runs `--help`.
 ### Sprint 1.1: Cabal package + GHC pin [Done]
 
 **Status**: Done
-**Implementation**: `cabal.project`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal`
+**Implementation**: `haskell/cabal.project`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal`
 **Docs to update**: `documents/engineering/cabal_layout.md`, `system-components.md`
 
 #### Objective
@@ -42,7 +43,7 @@ stanza, pinned to the base-image GHC toolchain.
 
 - `hostbootstrap-core.cabal` with one `library` stanza (`HostBootstrap.*` exposed modules) and one
   `executable hostbootstrap` stanza.
-- `cabal.project` pinning the GHC version that matches the base image, plus any required
+- `haskell/cabal.project` pinning the GHC version that matches the base image, plus any required
   `allow-newer` carve-out.
 - `optparse-applicative` and `dhall` declared as library dependencies.
 - `cabal build all` succeeds with placeholder modules.

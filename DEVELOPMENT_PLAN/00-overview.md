@@ -42,10 +42,12 @@ Convert the existing YAML-front-matter `documents/` suite to the unified metadat
 create this `DEVELOPMENT_PLAN/` tree, and land the documentation validator. No code-writing phase may
 be marked `Active` or `Done` before Phase 0 closes. This phase's foundational deliverables have
 **landed** — the metadata-block conversion, the plan tree, and the `HostBootstrap.DocValidator`
-code-check gate are all in place — so its status is `Active`: the foundation and the earlier expanded
-doc-coverage have landed, and it is reopened (§ A, without reverting any code phase) for the
-**doctrine-clarity sweep** — the Python wrapper's minimum-to-build role and the never-blocked
-`ensure`-suite purpose, plus reconciling the inventory to the now-`Done` Phases 6/9 (Sprint 0.5).
+code-check gate are all in place — and the expanded doc-coverage obligations that reopened it have also
+closed: the family doc-floor and taxonomy gate (Sprint 0.4) and the **doctrine-clarity sweep**
+(Sprint 0.5, the Python wrapper's minimum-to-build role and the never-blocked `ensure`-suite purpose,
+plus reconciling the inventory to the now-`Done` Phases 6/9). All five sprints are `Done`, so Phase 0 is
+`Done`; per § A it may reopen to `Active` only when a future architecture contract adds a new
+doc-coverage obligation, without reverting any code phase.
 
 ### Phase 1 — hostbootstrap-core scaffolding
 
@@ -137,8 +139,8 @@ harness `Seams` landed in Phase 10) and the demo (Phase 13) exercises them end-t
 The declared budget becomes an enforced ceiling: one canonical `parseQuantity` feeding every argument
 builder, the applied Linux `docker update` kind-node cordon wired into `cluster up` (after `kind
 create`, before Helm, fail-closed), and the `verifyBudget`/`fitsBudget` gates run before bring-up. This
-phase is `Active`: all of the above are implemented and tested; only the incus VM storage cordon
-(`incusSizingArgs`) is outstanding and lands in Phase 11.
+phase is `Done`: all of the above are implemented and tested; the incus VM storage cordon
+(`incusSizingArgs`) landed with Phase 11 (Sprint 11.4).
 
 ### Phase 10 — Standardized test harness and run-models
 

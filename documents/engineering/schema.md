@@ -111,7 +111,7 @@ binary-emitted schema contract.
 ## Parsing
 
 The static-base file is decoded in-process by `HostBootstrap.Config.Schema` (the `dhall` library), which
-reads `project`, `dockerfile`, and `resources` into a typed `Skeleton` value. No `dhall-to-json` is
+reads `project`, `dockerfile`, and `resources` into a typed `StaticBase` value. No `dhall-to-json` is
 shelled out on `PATH`; the supported configuration substrate is typed Dhall, decoded against the
 static-base schema `hostbootstrap-core` owns (`haskell/hostbootstrap-core/dhall/Type.dhall`). The decoder is
 surfaced on the command tree as `hostbootstrap config show <file>`. The rich and test tiers are

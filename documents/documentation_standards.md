@@ -95,7 +95,7 @@ documents/
 ├── documentation_standards.md
 ├── architecture/
 ├── engineering/
-├── operations/   (planned; see DEVELOPMENT_PLAN phase-0)
+├── operations/
 └── languages/
 ```
 

@@ -44,7 +44,7 @@ builds `FROM` the `hostbootstrap` base image gates on the project `check-code`.
 ### Sprint 7.1: daemon-substrate and mcts consumption [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/example/Main.hs`,
+**Implementation**: `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
 `documents/engineering/derived_project_standards.md`
 **Docs to update**: `documents/engineering/derived_project_standards.md`, `system-components.md`
 
@@ -65,16 +65,17 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 
 #### Validation
 
-- `hostbootstrap-example --help` shows the core verbs (`ensure`, `config`, `cluster`) plus its own
-  `greet` verb — the consumer extension contract, verified on the worked example binary.
+- `hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`,
+  `check-code`) plus its own appended verbs (`incus`/`vm`/`harbor`/`web`) — the consumer extension
+  contract, verified on the worked `demo/` binary (superseding the retired `hostbootstrap-example`).
 - The consumer container building `FROM` the base image and passing its `check-code` gate is
   consumer-side work, exercised in each consumer repository.
 
 #### Remaining Work
 
 None on the `hostbootstrap` side. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in
-those repositories' own plans. (This sprint's `hostbootstrap-example` evidence is current-state; the
-worked-example reference is re-pointed to `demo/` and the example binary retired in Phase 13, Sprint 13.7.)
+those repositories' own plans. The worked-consumer evidence is the `demo/` binary; the thin
+`hostbootstrap-example` binary it superseded was retired in Phase 13 (Sprint 13.7).
 
 ### Sprint 7.2: infernix and jitML future migration (outline) [Done]
 

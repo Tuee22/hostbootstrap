@@ -56,7 +56,7 @@ never blocked by an absent dependency.
 ### Sprint 13.1: `demo/` skeleton and the metal orchestrator binary [Done]
 
 **Status**: Done
-**Implementation**: `demo/hostbootstrap.dhall`, `demo/hostbootstrap-demo.cabal`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `cabal.project`
+**Implementation**: `demo/hostbootstrap.dhall`, `demo/hostbootstrap-demo.cabal`, `demo/cabal.project`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `system-components.md`
 
 #### Objective

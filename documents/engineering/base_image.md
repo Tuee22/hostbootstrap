@@ -66,13 +66,15 @@ scheme, not a host the bootstrapper reaches today).
   closure is compiled into the warm Cabal store at `/opt/cache/cabal/` alongside the shared
   warm-store deps, so a project that extends the core hits the cache for the core's dependencies on
   both the host-native binary build and the in-container project-container build. The warm store
-  itself is **shared**, but the version-pin freezes it produces are **layered**: the base build
-  runs `cabal freeze` in-image to emit `core.freeze` (base + the `hostbootstrap-core` closure + the
-  shared web-build extras, including `purescript-bridge`) and `daemon.freeze` (the daemon-family
-  deps — Pulsar/MinIO/proto/HTTP). An L0-direct consumer imports `core.freeze`; a daemon app imports
-  `core.freeze` **and** `daemon.freeze`. Both freezes are generated in-image and **never committed**
-  (`.gitignore` and `.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, and
-  `daemon.freeze`). See [warm_store.md](warm_store.md).
+  itself is **shared**, but the version-pin freezes it produces are **layered** by library level:
+  `core.freeze` (base + the `hostbootstrap-core` closure + the shared web-build extras, including
+  `purescript-bridge`) and `daemon.freeze` (the daemon-family deps — Pulsar/MinIO/proto/HTTP). An
+  L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze` **and** `daemon.freeze`.
+  The freezes are generated in-image by `cabal freeze` and **never committed** (`.gitignore` and
+  `.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, and `daemon.freeze`). Splitting the
+  in-image `cabal freeze` into the two layered projections is the warm-store layering deliverable
+  tracked in the development plan and validated by a real base-image build; the base build today emits
+  the single full `cabal.project.freeze`. See [warm_store.md](warm_store.md).
 * **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned fourmolu `0.19.0.1` / hlint `3.10` at
   `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and the warm Cabal store
   from [`haskell/haskell-deps/`](../../haskell/haskell-deps/).

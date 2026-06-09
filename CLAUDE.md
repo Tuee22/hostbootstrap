@@ -35,19 +35,20 @@ for the ownership boundary between the two.
 
 ## Repository layout
 
-The repository is split by language: `haskell/` holds the `hostbootstrap-core` Cabal package (and
-`haskell/haskell-deps/`, the warm-store package), while `python/` holds the Poetry project (the
-`hostbootstrap` CLI distribution, its `tests/`, and `stubs/`). The root carries `cabal.project`,
-`docker/`, `documents/`, and `DEVELOPMENT_PLAN/`.
+The repository is split by language: `haskell/` holds the `hostbootstrap-core` Cabal package, the
+`haskell/cabal.project` workspace file, and `haskell/haskell-deps/` (the warm-store package), while
+`python/` holds the Poetry project (the `hostbootstrap` CLI distribution, its `tests/`, and
+`stubs/`). The `demo/` consumer carries its own `demo/cabal.project`. The root carries `docker/`,
+`documents/`, and `DEVELOPMENT_PLAN/` and no Cabal project file.
 
 ## Development commands
 
 ### Haskell core
 
 - `hostbootstrap-core` (under `haskell/hostbootstrap-core/`) is built and tested with Cabal against
-  the pinned GHC, driven by the repo-root `cabal.project`.
-- Build the library with `cabal build` (from the repository root).
-- Run the Haskell tests with `cabal test` (from the repository root).
+  the pinned GHC, driven by `haskell/cabal.project`.
+- Build the library with `cabal build` (from `haskell/`).
+- Run the Haskell tests with `cabal test` (from `haskell/`).
 - The Haskell quality gate (formatter check, linter, type-correct build) runs through the project's
   canonical code-check.
 

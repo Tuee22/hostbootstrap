@@ -21,9 +21,12 @@ gitignored and dockerignored (`git ls-files` shows none), and `documents/enginee
 `base_image.md` / `gitignore_guardrails.md` / `derived_project_standards.md` describe the layered import,
 the in-image generation, and the never-committed rule (the dep-add workflow rebuilds the base tags). The
 phase stays `Active` for the two-freeze **in-image generation** itself — splitting the base build's
-single `cabal freeze` into a `core.freeze` and a `daemon.freeze` — which is implemented and validated by
-a real base-image build (not runnable in this code-only environment; see
-[development_plan_standards.md § V](development_plan_standards.md)).
+single `cabal freeze` into a `core.freeze` and a `daemon.freeze` — which is **not yet implemented** in
+`docker/basecontainer.Dockerfile` (the base build emits the single full `cabal.project.freeze` today)
+and is validated by a real base-image build (not runnable in this code-only environment; see
+[development_plan_standards.md § V](development_plan_standards.md)). Landing the projection also settles
+the membership of the shared web-server packages (`warp`/`wai*`/`network`) that an L0-direct web consumer
+such as the demo also needs, which the real base + demo build confirms.
 
 **Remaining Work**:
 - Split the base build's single `cabal freeze` step into two layered-projection freezes

@@ -24,18 +24,18 @@ bootstrapper (under `python/`). The phases below describe the ordered buildout. 
 surface is implemented and the Python layer is the thin pre-binary bootstrapper; the global-architecture
 deltas have largely landed — the binary-generated `config schema`/`config render` (Phase 8), the applied
 budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus host-provider
-(Phase 11) are all implemented and unit-tested. The phases that remain `Active` are so for one of two
-reasons: their live end-to-end half is real-run/real-build-gated (the layered warm store, Phase 12; the
-worked demo, Phase 13 — see § Validation Policy), or doc-coverage governance is reopened (Phase 0, for
-the doctrine-clarity sweep, per § A — without reverting any code phase). See
-[00-overview.md](00-overview.md) for the cross-phase narrative and the net-new phases. Consumer-side
+(Phase 11) are all implemented and unit-tested. The two phases that remain `Active` are so because their
+live end-to-end half is real-run/real-build-gated (the layered warm store, Phase 12; the worked demo,
+Phase 13 — see § Validation Policy); the Phase-0 governance, including the doctrine-clarity sweep, has
+**closed** (per § A it may reopen only when a future architecture contract adds a new doc-coverage
+obligation). See [00-overview.md](00-overview.md) for the cross-phase narrative and the net-new phases. Consumer-side
 migration of individual projects is tracked in those projects' own repositories (see Phase 7).
 
 ## Phases
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Active |
+| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |

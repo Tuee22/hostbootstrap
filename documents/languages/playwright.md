@@ -17,3 +17,8 @@ Browsers live at `/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`). Tests that
 expect that path automatically pick them up.
 
 `/root/.npm` is removed after install to keep the image lean.
+
+The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
+this Playwright runtime: `demo web serve` serves the webservice on the incus host
+and the container-side Playwright run targets that host `baseURL` (the live e2e
+run is exercised during the demo run).
