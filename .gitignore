@@ -12,6 +12,8 @@ playwright-report/
 test-results/
 target/
 build/
+.build/
+.data/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

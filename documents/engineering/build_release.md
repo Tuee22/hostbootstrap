@@ -64,12 +64,18 @@ its custom image (see [harbor.md](harbor.md)).
 
 ## `--build-base` for downstream projects
 
-A downstream project's bootstrap invocation can pass
+**Planned (not yet wired).** A future `--build-base`/`--base-context` flow will
+let a downstream project's bootstrap invocation pass
 `--build-base --base-context /path/to/hostbootstrap` to build the base locally
 from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
-identical name. The downstream project container is then built without pulling
-the base tag from Docker Hub. The default behaviour is to **pull** the base from
-Docker Hub.
+identical name. The downstream project container would then be built without
+pulling the base tag from Docker Hub.
+
+The `up` command does **not** expose these flags today: it accepts only `--spec`
+and `--no-pull`. The supporting helpers exist (`_resolve_pull` and
+`_base_context_value` in `python/hostbootstrap/cli.py`), but no command wires
+them yet. The current default behaviour is to **pull** the base from Docker Hub,
+and `--no-pull` reuses an existing locally-tagged image as-is.
 
 ## Loss of provenance
 

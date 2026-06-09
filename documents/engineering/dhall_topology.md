@@ -32,7 +32,7 @@ across every project: `project`, `dockerfile`, and the `resources` budget. Its f
 are documented in [schema](schema.md); the budget field is detailed in
 [resource_budgeting](resource_budgeting.md).
 
-`hostbootstrap-core` owns the decoder for this tier and *only* this tier (`HostBootstrap.Skeleton`).
+`hostbootstrap-core` owns the decoder for this tier and *only* this tier (`HostBootstrap.Config.Schema`).
 Keeping the Python-read schema small and uniform is what lets the bootstrapper stay thin — see
 [python_haskell_boundary](../architecture/python_haskell_boundary.md).
 

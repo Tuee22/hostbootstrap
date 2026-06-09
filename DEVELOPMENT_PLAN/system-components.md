@@ -10,8 +10,11 @@
 > the base image and warm Cabal store, and the optparse command tree projects extend.
 
 > Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist
-> and the Python layer is the thin pre-binary bootstrapper — and `hostbootstrap-core` is consumable via
-> `runHostBootstrapCLI`. The **global-architecture deltas** (Dhall generation, the applied cordon, the
+> and the Python CLI is reduced to the `doctor` / `up` / `base` surface — and `hostbootstrap-core` is
+> consumable via `runHostBootstrapCLI`. The Python bootstrapper has **not yet fully converged** on the
+> thin pre-binary boundary (see *Thin Python bootstrapper surface* below and
+> [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md)). The **global-architecture deltas**
+> (Dhall generation, the applied cordon, the
 > standardized harness, incus, the layered warm store, the demo) are scoped in Phases 8–13 and are **not
 > yet implemented**; the rows below carry their owning phase and an Implemented column. The Python
 > surfaces removed along the way are recorded in
@@ -101,7 +104,7 @@ same shape.
 
 ## Thin Python bootstrapper surface
 
-The Python bootstrapper does only what must run before any project binary exists (see
+The Python bootstrapper's **target** surface is only what must run before any project binary exists (see
 [development_plan_standards.md § M](development_plan_standards.md)):
 
 | Step | Responsibility |
@@ -111,22 +114,31 @@ The Python bootstrapper does only what must run before any project binary exists
 | 3 | build the project binary **host-native** |
 | 4 | exec the binary |
 
-The bootstrapper does **not** ensure Docker, build the project container, or copy a binary out of a
-container — those are the project binary's job once it is running (§ M, § N). All other host-management
-logic lives in `hostbootstrap-core`; new host logic defaults to the project binary (Haskell), and a
-Python addition must be justified by the pre-binary bootstrapping constraint.
+In the target boundary the bootstrapper does **not** ensure Docker, build the project container, size a
+VM, or copy a binary out of a container — those are the project binary's job once it is running (§ M,
+§ N). All other host-management logic lives in `hostbootstrap-core`; new host logic defaults to the
+project binary (Haskell), and a Python addition must be justified by the pre-binary bootstrapping
+constraint.
+
+> **Current state (not yet at the target).** `python/hostbootstrap/bootstrap.py` still runs a five-step
+> path — assert minimums → ensure Docker (start a per-project Colima VM sized to the budget) → build the
+> project container → place the binary in `./.build/` (Apple: host-native build; Linux: build in-container
+> and copy it out) → exec. Converging it to the four-step boundary above is tracked in
+> [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md).
 
 ## Host-native binary build
 
-Every project's binary is built **host-native** on every substrate — not built in a container and copied
-out (a Linux-container binary cannot exec on a general host such as Apple silicon). The universal
-pre-binary dependency is the **build toolchain**, not Docker (see
-[development_plan_standards.md § N](development_plan_standards.md)).
+The **target** (§ N) is that every project's binary is built **host-native** on every substrate — not
+built in a container and copied out (a Linux-container binary cannot exec on a general host such as
+Apple silicon). The universal pre-binary dependency is then the **build toolchain**, not Docker (see
+[development_plan_standards.md § N](development_plan_standards.md)). *(Current state: only Apple silicon
+builds host-native; on Linux `bootstrap.py` builds the binary in the project container and copies it out —
+tracked in [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md).)*
 
-| Substrate | Binary build | Run location | Notes |
-|-----------|--------------|--------------|-------|
+| Substrate | Binary build (target) | Run location | Notes |
+|-----------|-----------------------|--------------|-------|
 | `apple-silicon` | host-native (Python ensures Homebrew → `ghcup` → GHC/Cabal) | host | a Linux ELF cannot exec on macOS |
-| `linux-cpu`, `linux-gpu` | host-native (Python ensures the host GHC/Cabal toolchain) | host | no container copy-out |
+| `linux-cpu`, `linux-gpu` | host-native (Python ensures the host GHC/Cabal toolchain) | host | target: no container copy-out (currently copies out — Phase 6) |
 | Tart (Apple, build-only) | Tart VM (Swift/Metal artifacts → `./.build/`) | host | no built binary runs inside the Tart VM |
 
 A `./.build/<binary>` is always present on the host. The project **container** (the workload image and the
@@ -135,10 +147,13 @@ not by the Python layer.
 
 ## Resource budget and cordoning
 
-The **project binary** verifies the host has the spare budget declared in `resources` and applies the
-cordon: on Apple by sizing a dedicated per-project Colima/incus VM (via `ensure docker`), on Linux by
-applying kind node resource limits (via `cluster up`). The Python bootstrapper does not cordon.
-The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
+In the **target** boundary the **project binary** verifies the host has the spare budget declared in
+`resources` and applies the cordon: on Apple by sizing a dedicated per-project Colima/incus VM (via
+`ensure docker`), on Linux by applying kind node resource limits (via `cluster up`); the Python
+bootstrapper does not cordon. *(Current state: `bootstrap.py` still sizes the per-project Colima VM to
+the budget — tracked for removal in [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md) — and
+the project binary so far only **computes and reports** the cordon, not applies it; the applied cordon
+and the `verifyBudget` gate are Phase 5/9 work.)* The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
 selects fixed names / `.data` paths for production and per-case isolated paths for the test profile.
 See `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).
 

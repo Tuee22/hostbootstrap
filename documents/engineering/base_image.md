@@ -24,9 +24,12 @@ together name exactly one tag.
 
 ## Flavor And Arch Selection
 
-The base-image **flavor** follows the detected substrate, and the **arch** follows the host. This
-selection logic lives in `hostbootstrap-core` (substrate detection plus flavor mapping); the Python
-bootstrapper only picks the flavor it needs for the build it is about to run.
+The base-image **flavor** follows the detected substrate, and the **arch** follows the host.
+Substrate detection is the shared concept and lives in `hostbootstrap-core`. The flavor mapping
+itself — the `Flavor` enum and the substrate-to-flavor rule — currently lives only in the Python
+bootstrapper (`base_image.substrate_to_flavor`); core has no `Flavor` type today. Moving flavor
+mapping into `hostbootstrap-core` is the target, not present fact: until then, the Python
+bootstrapper picks the flavor it needs for the build it is about to run.
 
 | detected substrate | base flavor |
 |---|---|
@@ -43,6 +46,13 @@ bootstrapper only picks the flavor it needs for the build it is about to run.
 | `linux-gpu` (arm64) | arm64 | `basecontainer-cuda-arm64` (built on demand) |
 
 There is no force-target override: substrate is detected, never declared (see [schema.md](schema.md)).
+
+The four-tag scheme above covers Linux/arm64, but the pre-binary Python layer cannot yet run there:
+`dhall_tool.py` pins a `dhall-to-json` release asset only for Darwin/arm64, Darwin/amd64, and
+Linux/amd64 — there is no Linux/arm64 asset. Until that asset is added, `hostbootstrap doctor` and
+`hostbootstrap up` cannot run on a Linux/arm64 **host**, so Linux is effectively amd64-only for the
+pre-binary bootstrapper (the `linux-cpu` arm64 and `linux-gpu` arm64 rows describe the target tag
+scheme, not a host the bootstrapper reaches today).
 
 ## What ships in the image
 

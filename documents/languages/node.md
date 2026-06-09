@@ -8,8 +8,11 @@
 
 This page documents what the base image ships for Node.js.
 
-The base image installs the **latest upstream Node.js** for the target arch
-(resolved on the host by `python/hostbootstrap/base_image.py`). The tarball lands at
+The base image installs the **latest Node.js LTS** for the target arch
+(resolved on the host by `python/hostbootstrap/base_image.py`). The resolver
+pins to LTS rather than the bleeding-edge current release because downstream
+tools lag the current major: `spago`, for example, caps Node below the latest
+major, so the current release would break the toolchain. The tarball lands at
 `/usr/local`; the upstream `npm` wrapper is replaced with a small shim
 pointing at `npm-cli.js` so the executable name survives upstream layout
 changes.

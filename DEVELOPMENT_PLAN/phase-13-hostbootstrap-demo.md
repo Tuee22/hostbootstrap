@@ -42,6 +42,11 @@ project-container build.
 **Implementation**: `demo/hostbootstrap.dhall`, `demo/hostbootstrap-demo.cabal`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`, `system-components.md`
 
+#### Objective
+
+Stand up the `demo/` tree and the metal orchestrator binary — the static-base config, the cabal package
+extending `hostbootstrap-core`, and build #1.
+
 #### Deliverables
 
 - The `demo/` tree: static-base `hostbootstrap.dhall` (`project="hostbootstrap-demo"`,
@@ -63,6 +68,11 @@ None.
 **Blocked by**: phase-11, phase-13 (sprint 13.1)
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Drive core's `ensure incus` and spin up a budget-sized pristine `ubuntu/24.04` VM (cordon #1) via the
+demo's noun-first project verbs.
 
 #### Deliverables
 
@@ -113,6 +123,11 @@ None.
 **Implementation**: `demo/src/HostBootstrapDemo/Harbor.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/harbor.md`
 
+#### Objective
+
+Bring up kind (cordon #2) and Harbor inside the VM, then push the arch-explicit image tag to the in-VM
+registry.
+
 #### Deliverables
 
 - Inside the VM: core `cluster up` (**cordon #2**: applied `docker update` kind-node cap) + `demo harbor
@@ -132,6 +147,11 @@ None.
 **Blocked by**: phase-12, phase-13 (sprint 13.1)
 **Implementation**: `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs`, `demo/web/`, `demo/docker/Dockerfile` (planned)
 **Docs to update**: `documents/engineering/derived_dockerfile.md`, `documents/languages/purescript.md`
+
+#### Objective
+
+Build the servant webservice, the `purescript-bridge`-fed Halogen SPA, and the idiomatic `docker/Dockerfile`
+that is the reference shape derived projects copy.
 
 #### Deliverables
 
@@ -156,6 +176,11 @@ None.
 **Implementation**: `demo/playwright/`, `demo/src/HostBootstrapDemo/Harness.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/languages/playwright.md`
 
+#### Objective
+
+Serve the webservice on the incus host and run the Playwright e2e suite from the container against the host
+`baseURL`.
+
 #### Deliverables
 
 - `demo web serve` runs the webservice on the incus host; the Playwright runner runs from the container
@@ -175,6 +200,11 @@ None.
 **Blocked by**: phase-13 (sprint 13.1)
 **Implementation**: `haskell/hostbootstrap-core/example/Main.hs`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal` (planned)
 **Docs to update**: `documents/engineering/derived_project_standards.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Retire the `hostbootstrap-example` executable and `example/`, re-point the "worked example" references at
+`demo/`, and record the removal in the legacy ledger.
 
 #### Deliverables
 

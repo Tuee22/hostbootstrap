@@ -5,17 +5,17 @@
 **Referenced by**: [../README.md](../README.md), [code_check_doctrine.md](code_check_doctrine.md), [../languages/haskell.md](../languages/haskell.md)
 
 > **Purpose**: Describe how hostbootstrap is tested across its Haskell `hostbootstrap-core` library
-> and its thin Python bootstrapper, and where the planned documentation validator fits.
+> and its thin Python bootstrapper, and where the documentation validator fits.
 
 ## TL;DR
 
 - `hostbootstrap-core` (Haskell) carries the bulk of the test surface: host-tool resolution,
   substrate detection, the `ensure` reconcilers' pure decision logic, the skeletal-Dhall decoder,
-  cluster-lifecycle semantics, and the optparse command tree.
+  cluster-lifecycle semantics, and the documentation validator.
 - The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
   bootstrapping steps it owns.
-- A mechanical documentation validator is a planned `hostbootstrap-core` quality-gate deliverable
-  that runs through `check-code`.
+- A mechanical documentation validator (`HostBootstrap.DocValidator`) is an implemented
+  `hostbootstrap-core` quality-gate deliverable that runs through `cabal test`.
 - The default test run touches no network, no Docker daemon, no `sudo`, and no host service manager.
 
 ## hostbootstrap-core (Haskell)
@@ -36,28 +36,36 @@ suite stays hermetic:
   `resources` budget, plus rejection of malformed values. See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
-- **Command tree** — `runHostBootstrapCLI` dispatch and the composition of project subcommands onto
-  the core tree.
+- **Documentation validator** — `HostBootstrap.DocValidator` exercised by `DocValidatorSpec`,
+  asserting required metadata lines, broad-doctrine structure, relative-link resolution, and the
+  phase-plan `## Documentation Requirements` retention.
 
-The Docker- and Colima-touching paths are exercised through recorded-runner tests that replace the
-process runner with an argv recorder, so they assert the exact commands without executing them.
+These tests assert pure values and command builders directly — for example the pure arg-builders
+that emit Docker and Colima command tuples and the reconcilers' applicability predicates — so they
+verify the exact commands without executing them or driving the optparse command tree.
 
 ## Thin Python bootstrapper
 
 The Python layer is small and so is its suite. It covers only the pre-binary bootstrapping steps the
 Python layer owns: asserting the fail-fast host minimums (see [prerequisites.md](prerequisites.md)),
 ensuring the host build toolchain, building the project binary host-native into `./.build/`, and
-exec'ing it. Tests are hermetic — host detection and process invocation are stubbed
-or recorded, and the canonical Python code-check (formatter, linter, strict type-check) runs as part
+exec'ing it. Tests are hermetic — host detection and process invocation are stubbed or recorded. The
+process-touching paths are exercised through a recorded-runner fixture (`python/tests/conftest.py`)
+that replaces the process runner with an argv recorder, so they assert the exact commands without
+executing them. The canonical Python code-check (formatter, linter, strict type-check) runs as part
 of the base self-check (see [code_check_doctrine.md](code_check_doctrine.md)).
 
-## Documentation validator (planned)
+The enforced 100% coverage gate (`fail_under = 100`) covers the Python layer only and is statement
+(line) coverage, not branch coverage. The Haskell `hostbootstrap-core` core has no coverage gate.
 
-The mechanical documentation validator is a `hostbootstrap-core` quality-gate deliverable. Once it
-lands it runs through `check-code` and verifies required metadata lines, broad-doctrine structure,
+## Documentation validator
+
+The mechanical documentation validator is an implemented `hostbootstrap-core` quality-gate
+deliverable. `HostBootstrap.DocValidator` is wired into the tasty suite as `DocValidatorSpec` and
+runs through `cabal test` by default; it verifies required metadata lines, broad-doctrine structure,
 governed root-document metadata, relative-link resolution, and the phase-plan
-`## Documentation Requirements` retention. Until it lands, documentation conformance is verified by
-manual review against the documentation standard.
+`## Documentation Requirements` retention. Documentation conformance is therefore enforced
+mechanically rather than by manual review against the documentation standard.
 
 ## What runs by default
 

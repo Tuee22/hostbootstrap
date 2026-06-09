@@ -17,6 +17,13 @@
   host-native. Ensuring Docker and building the project container are **not** pre-binary work — the
   execed binary owns them.
 
+> **Current state.** The ownership boundary below is the *target*. Today the Python bootstrapper
+> (`python/hostbootstrap/bootstrap.py`) still ensures Docker (a per-project Colima VM sized to the
+> budget), builds the project container, and on Linux builds the binary in-container and copies it out;
+> only Apple silicon builds host-native. Moving Docker-ensure, the container build, and the cordon to the
+> project binary — and building host-native on Linux too — is tracked in
+> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md).
+
 ## Ownership Matrix
 
 | Concern | Owner | Why |

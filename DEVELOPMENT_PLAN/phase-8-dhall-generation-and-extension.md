@@ -93,6 +93,11 @@ None.
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
 **Docs to update**: `documents/engineering/config_generation.md`
 
+#### Objective
+
+Wire the `config schema` subcommand into the `config` group so the binary prints the transitive union
+of its in-scope `ConfigArtifact` schemas, guarded by a committed CI snapshot.
+
 #### Command Surface
 
 - `<project> config schema` — print the Dhall type the binary's decoders accept (the L0->L1->L2
@@ -118,6 +123,12 @@ None.
 **Blocked by**: phase-8 (sprint 8.2)
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
 **Docs to update**: `documents/engineering/config_generation.md`, `documents/architecture/dhall_generation.md`
+
+#### Objective
+
+Materialize concrete Dhall configs from the reusable vocabulary via `config render`, deterministic and
+idempotent, with every render carrying the `Budget/fitsWithin` assertion so an over-budget config fails
+to type-check.
 
 #### Command Surface
 

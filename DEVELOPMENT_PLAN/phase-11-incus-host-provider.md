@@ -37,6 +37,11 @@ operation runs against `Local` or `InVM` with no per-call branching.
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs` (planned)
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
+#### Objective
+
+Add the `HostTool Incus` constructor and the `ensure incus` install-and-verify reconciler, wired into
+the reconciler list so the host `incus` resolves to an `AbsExe` across apple-silicon and linux.
+
 #### Reconciler Contract
 
 - `ensure incus` `appliesTo = isAppleSilicon || isLinux` (the first cross-substrate reconciler).

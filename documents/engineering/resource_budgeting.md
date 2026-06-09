@@ -11,9 +11,11 @@
 
 - The skeletal `hostbootstrap.dhall` declares a per-project resource budget: `cpu`, `memory`,
   `storage`.
-- `hostbootstrap` verifies the host has the spare budget available before proceeding.
-- It cordons the budget per substrate: a dedicated per-project Colima VM on Apple, kind node resource
+- Target: `hostbootstrap` verifies the host has the spare budget available before proceeding, and
+  cordons the budget per substrate — a dedicated per-project Colima VM on Apple, kind node resource
   limits on Linux.
+- Current state: the budget and cordon are computed and reported but not yet applied; `verifyBudget`
+  is not yet wired into any IO path. The wiring is tracked in Phase 5 / Phase 9 (see below).
 - The budget is the one field both the Python bootstrapper and the project binary consume.
 
 ## The Budget Field
@@ -21,9 +23,9 @@
 The resource budget is a `resources` record in the skeletal schema described in [schema](schema.md):
 
 ```dhall
-{ project    = "daemon-substrate"
-, dockerfile = "./Dockerfile"
-, resources  = { cpu = 4, memory = "8Gi", storage = "40Gi" }
+{ project    = "app"
+, dockerfile = "docker/app.Dockerfile"
+, resources  = { cpu = 4, memory = "8GiB", storage = "20GiB" }
 }
 ```
 
@@ -38,9 +40,15 @@ in `hostbootstrap-core`) when it stands up clusters. See
 
 ## Verify-Spare-Resources
 
-Before cordoning, `hostbootstrap` checks that the host actually has the requested budget spare. If
-the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast with a one-line diagnostic naming
-the shortfall and exits non-zero rather than over-committing the host.
+The target model: before cordoning, `hostbootstrap` checks that the host actually has the requested
+budget spare. If the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast with a one-line
+diagnostic naming the shortfall and exits non-zero rather than over-committing the host.
+
+The current state differs: `verifyBudget` is implemented and unit-tested but not yet wired into any
+IO path, so no command resolves live host capacity or fails fast on a shortfall today. Wiring this
+verification into cluster bring-up is a later-phase deliverable owned by
+[phase-5-cluster-lifecycle-and-resource-cordoning](../../DEVELOPMENT_PLAN/phase-5-cluster-lifecycle-and-resource-cordoning.md)
+and [phase-9-applied-cordon-and-one-parser](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 
 ## Cordoning per Substrate
 
@@ -51,12 +59,21 @@ The budget is enforced — cordoned — so a project's workload cannot exceed it
 | `apple-silicon` | A dedicated per-project Colima VM sized to `cpu` / `memory` / `storage`. The VM boundary is the cordon: the project's Docker workload runs inside its own sized VM, isolated from the host and from other projects' VMs. |
 | `linux-cpu` / `linux-gpu` | kind node resource limits applied to the project's cluster nodes, capping the cluster's consumption to the declared budget. |
 
-On Apple the cordon is created during the Python bootstrap sequence (the per-project Colima VM must
-exist before the build); on Linux it is applied as part of cluster bring-up. The cluster-side
-enforcement is part of the lifecycle semantics in [cluster_lifecycle](cluster_lifecycle.md).
+In the target model, on Apple the cordon is created during the Python bootstrap sequence (the
+per-project Colima VM must exist before the build); on Linux it is applied as part of cluster
+bring-up. The cluster-side enforcement is part of the lifecycle semantics in
+[cluster_lifecycle](cluster_lifecycle.md). Currently the cordon is computed and reported but not yet
+applied: `cluster up` derives and prints the cordon without running colima sizing or applying kind
+node limits. Applying the cordon is a later-phase deliverable tracked in
+[phase-5-cluster-lifecycle-and-resource-cordoning](../../DEVELOPMENT_PLAN/phase-5-cluster-lifecycle-and-resource-cordoning.md)
+and [phase-9-applied-cordon-and-one-parser](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 
 `HostBootstrap.Cluster.Cordon` implements this: `parseQuantity` decodes Kubernetes-style memory and
 storage quantities to bytes, `verifyBudget` fails fast naming the first dimension that exceeds spare
 host capacity, and `colimaSizingArgs` / `kindNodeLimits` derive the substrate-specific cordon from the
-budget. These pure functions are unit-tested; the `cluster` command resolves live host capacity and
-runs the sized tools.
+budget. These pure functions are unit-tested. In the target model the `cluster` command resolves live
+host capacity and runs the sized tools; today it only computes and reports the cordon — `verifyBudget`
+is not yet wired into any IO path, and `cluster up` does not yet apply kind node limits or run colima
+sizing. That wiring is tracked in
+[phase-5-cluster-lifecycle-and-resource-cordoning](../../DEVELOPMENT_PLAN/phase-5-cluster-lifecycle-and-resource-cordoning.md)
+and [phase-9-applied-cordon-and-one-parser](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).

@@ -22,14 +22,15 @@
 ## Top-Level Shape
 
 ```dhall
-let H = ./hostbootstrap-schema.dhall
-
-in  H.Config::{
-    , project = "app"
-    , dockerfile = "docker/app.Dockerfile"
-    , resources = H.Resources::{ cpu = 4, memory = "8Gi", storage = "20Gi" }
-    }
+{ project = "app"
+, dockerfile = "docker/app.Dockerfile"
+, resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
+}
 ```
+
+The bootstrapper injects the `package.dhall` schema as `H`, so a project may instead write the typed
+form `H.config { project = "app", dockerfile = "docker/app.Dockerfile", resources = { cpu = 4, memory
+= "8GiB", storage = "20GiB" } }` (lowercase `config`, applied as a function — not `H.Config::{…}`).
 
 | field | type | required | meaning |
 |---|---|---|---|
@@ -40,14 +41,14 @@ in  H.Config::{
 ### Resources
 
 ```dhall
-H.Resources::{ cpu = 4, memory = "8Gi", storage = "20Gi" }
+{ cpu = 4, memory = "8GiB", storage = "20GiB" }
 ```
 
 | field | type | meaning |
 |---|---|---|
 | `cpu` | `Natural` | whole CPU cores the project may consume |
-| `memory` | `Text` | memory budget (Kubernetes-style quantity, e.g. `8Gi`) |
-| `storage` | `Text` | storage budget (e.g. `20Gi`) |
+| `memory` | `Text` | memory budget (binary quantity, e.g. `8GiB` (Gi/GiB both accepted)) |
+| `storage` | `Text` | storage budget (e.g. `20GiB`) |
 
 `resources` is the **only field both the Python bootstrapper and the project binary consume**. The
 Python layer verifies the host has the spare budget and cordons it — on Apple by sizing a dedicated
@@ -81,12 +82,16 @@ gate and always materializes a host binary at `./.build/<project>` (see
 > **RIGHT** — one skeletal value
 >
 > ```dhall
-> H.Config::{
-> , project = "app"
+> { project = "app"
 > , dockerfile = "docker/app.Dockerfile"
-> , resources = H.Resources::{ cpu = 4, memory = "8Gi", storage = "20Gi" }
+> , resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
 > }
 > ```
+>
+> The bootstrapper injects the `package.dhall` schema as `H`, so a project may instead write the
+> typed form `H.config { project = "app", dockerfile = "docker/app.Dockerfile", resources = { cpu =
+> 4, memory = "8GiB", storage = "20GiB" } }` (lowercase `config`, applied as a function — not
+> `H.Config::{…}`).
 
 ## Rich And Test Dhall Are Generated, Not Declared Here
 

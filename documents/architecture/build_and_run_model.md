@@ -19,6 +19,13 @@
   ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
 
+> **Current state.** This is the *target* model. Today the Python bootstrapper
+> (`python/hostbootstrap/bootstrap.py`) still ensures Docker (a per-project Colima VM), builds the
+> project container, and on Linux builds the binary in-container and copies it out — only Apple silicon
+> builds host-native. Converging the bootstrapper to the host-native, no-copy-out model described here is
+> tracked in
+> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md).
+
 ## Why the binary is built host-native
 
 A `hostbootstrap` binary is a native executable for one OS/arch. A binary built inside a Linux

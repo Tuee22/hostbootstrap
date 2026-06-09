@@ -140,6 +140,12 @@ None.
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
 **Docs to update**: `documents/engineering/testing.md`, `documents/engineering/code_check_doctrine.md`
 
+#### Objective
+
+Put the `test` and `check-code` verbs on the core tree so every binary inherits them: `test` drives
+`runMatrix` and prints the report card, and `check-code` is the fail-fast image-build gate wrapping the
+project's own checks.
+
 #### Command Surface
 
 - `<project> test <suite>` — drive `runMatrix` and print the report card.

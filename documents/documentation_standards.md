@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: prior YAML-front-matter documentation convention for this repository
-**Referenced by**: [README.md](README.md), [../README.md](../README.md), [../DEVELOPMENT_PLAN/development_plan_standards.md](../DEVELOPMENT_PLAN/development_plan_standards.md)
+**Referenced by**: [README.md](README.md), [../CLAUDE.md](../CLAUDE.md), [../AGENTS.md](../AGENTS.md)
 
 > **Purpose**: Define how the governed `documents/` suite is structured, updated, and kept aligned
 > with `DEVELOPMENT_PLAN/`, `README.md`, and the `hostbootstrap` implementation.
@@ -50,7 +50,9 @@ page.
 
 Rules:
 
-- include `## TL;DR` or `## Executive Summary` when the topic is broad
+- include `## TL;DR` or `## Executive Summary` when the topic is broad; this is a recommended
+  convention everywhere, but the mechanical validator only gates it for `documents/architecture/`
+  docs (see `## Validation`) — elsewhere it is convention, not an enforced requirement
 - include `## Current Status` when implemented behavior and target direction appear in the same
   document
 - include `## Validation` when a gate (the code-check, the test runner, or a doc validator) proves
@@ -92,10 +94,8 @@ documents/
 ├── README.md
 ├── documentation_standards.md
 ├── architecture/
-├── development/
 ├── engineering/
-├── operations/
-├── reference/
+├── operations/   (planned; see DEVELOPMENT_PLAN phase-0)
 └── languages/
 ```
 

@@ -115,23 +115,26 @@ When the host-management architecture changes, update the component inventory in
 
 ### G. Phase Document Requirements
 
-Each phase document contains sprint-level sections in this format:
+Each phase document groups its sprint-level sections under one `## Sprints` parent, with each
+sprint nested one level deeper, in this format:
 
 ```markdown
-## Sprint X.Y: Name [STATUS]
+## Sprints
+
+### Sprint X.Y: Name [STATUS]
 
 **Status**: Done | Active | Planned | Blocked
 **Implementation**: `path/to/file` (required for Done, recommended for Active)
 **Blocked by**: sprint id(s) (required for Blocked)
 **Docs to update**: `documents/...`, `README.md`
 
-### Objective
+#### Objective
 
-### Deliverables
+#### Deliverables
 
-### Validation
+#### Validation
 
-### Remaining Work
+#### Remaining Work
 ```
 
 Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`) are encouraged

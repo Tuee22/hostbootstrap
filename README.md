@@ -34,6 +34,12 @@ the orientation layer and points at those canonical homes rather than duplicatin
   everything else it reasonably can, once running. The ownership boundary is described in
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
+> **Current state.** The thin, host-native bootstrapper described in this README is the **target**.
+> Today `python/hostbootstrap/bootstrap.py` still ensures Docker (a per-project Colima VM sized to the
+> budget), builds the project container, and on Linux builds the binary in-container and copies it out —
+> only Apple silicon builds host-native. The remaining convergence is tracked in
+> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md) (Phase 6).
+
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The skeletal `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
 entrypoint with no project commands — so the core verbs behave identically everywhere. Like every
@@ -94,34 +100,47 @@ The skeletal `hostbootstrap.dhall` at a project root looks like this:
 { project = "app"
 , dockerfile = "docker/app.Dockerfile"
 , resources =
-  { cpu = 8
-  , memory = "16GiB"
-  , storage = "64GiB"
+  { cpu = 4
+  , memory = "8GiB"
+  , storage = "20GiB"
   }
 }
 ```
 
 The `project` value is also the command name. The `resources` budget is the ceiling the **project
 binary** enforces once running — sizing the per-project Colima VM on Apple, capping the kind nodes on
-Linux. The Python bootstrapper reads the budget only to fail fast when the host cannot satisfy the
-minimum; it does not size any VM. See
+Linux. The Python bootstrapper reads the budget to fail fast when the host cannot satisfy the minimum;
+in the target it does not size any VM (today it still sizes the Apple Colima VM — see the *Current
+state* note above). See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
 
+Two programs share the `hostbootstrap` name: the **pipx-installed Python bootstrapper** (the host CLI
+you install and run) and the **`hostbootstrap-core` command tree** that every built binary — the
+skeletal `hostbootstrap` binary and each project binary — exposes.
+
+The Python bootstrapper (installed with `pipx install …`):
+
 | Command | What it does |
 |---|---|
-| `hostbootstrap doctor` | Detect host; assert host minimums and report tool status for the detected substrate |
-| `hostbootstrap build` | Build the project binary host-native into `./.build/` |
-| `hostbootstrap run [args...]` | Build if needed, then forward args to the project binary |
-| `hostbootstrap ensure <tool>` | Reconcile a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); fail-fast on the wrong host |
-| `hostbootstrap cluster ...` | Forward cluster lifecycle to the project binary (kind/Helm, with the never-delete-`.data` invariant) |
-| `hostbootstrap base build` | Cold-rebuild the base image(s) locally |
+| `hostbootstrap doctor` | Detect the host and assert the fail-fast host minimums for the detected substrate |
+| `hostbootstrap up [args...]` | Run the bootstrap — build the project binary into `./.build/`, then exec it with `args` |
+| `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push |
 | `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s) |
 
-The `ensure` and `cluster` verbs are owned by `hostbootstrap-core` and behave identically whether
-invoked through the skeletal binary or a project binary. Project binaries add their own verbs on top.
-See [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
+The `hostbootstrap-core` command tree (exposed by every built binary; project binaries add their own
+verbs on top):
+
+| Command | What it does |
+|---|---|
+| `<binary> ensure <tool>` | Reconcile a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); fail-fast on the wrong host |
+| `<binary> config show <FILE>` | Decode a skeletal `hostbootstrap.dhall` and print its fields |
+| `<binary> cluster up\|down\|delete <FILE>` | Drive the kind/Helm cluster lifecycle within the cordoned budget, preserving host `.data` |
+
+These core verbs behave identically whether invoked through the skeletal `hostbootstrap` binary or a
+project binary. See
+[`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
 for the command-tree extension contract.
 
 ## Installing The CLI
@@ -142,13 +161,13 @@ pipx ensurepath
 Then install `hostbootstrap` as an isolated host CLI app:
 
 ```bash
-pipx install "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"
+pipx install "git+https://github.com/tuee22/hostbootstrap.git#subdirectory=python&egg=hostbootstrap"
 ```
 
 For local development against a checkout:
 
 ```bash
-pipx install --force /path/to/hostbootstrap
+pipx install --force /path/to/hostbootstrap/python
 ```
 
 ## Repository Map
@@ -178,7 +197,7 @@ all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_
 │   └── haskell-deps/                 # warm Cabal store package
 ├── python/
 │   ├── pyproject.toml
-│   ├── hostbootstrap/                # thin Python bootstrapper (minimums → docker → build → copy → exec)
+│   ├── hostbootstrap/                # thin Python bootstrapper (pre-binary: minimums → toolchain → build → exec)
 │   ├── stubs/   tests/
 │   └── README.md
 ├── cabal.project                     # pins GHC; points at haskell/hostbootstrap-core

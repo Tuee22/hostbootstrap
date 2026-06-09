@@ -14,12 +14,20 @@
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native** (the project container the binary later builds is
-accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is the thin pre-binary bootstrapper; the
-three-execution-model machinery is removed and the Python suite passes at 100% coverage (Sprint 6.2). This
-phase reopens against the layered-warm-store and in-image-freeze contract.
+accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is reduced to the `doctor` / `up` /
+`base` surface — the three-execution-model machinery and the `--force-target` dispatch are removed and
+the Python suite passes at 100% coverage (Sprint 6.2). This phase reopens on two fronts: the
+bootstrapper has **not yet converged** on the thin pre-binary boundary (§ M, § N) — it still ensures
+Docker by starting a per-project Colima VM, builds the project container, sizes that VM to the
+`resources` budget, and on Linux builds the binary in-container and copies it out (only Apple silicon
+builds host-native today) — and the layered-warm-store / in-image-freeze contract is net-new (§ V).
 
 **Remaining Work** (reopened; the freeze split is tracked in the net-new
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md)):
+- Converge `python/hostbootstrap/bootstrap.py` on the pre-binary boundary (§ M, § N): move Docker-ensure
+  (the per-project Colima VM), the project-container build, the Colima VM sizing, and the budget cordon to
+  the project binary, and build the binary **host-native on Linux too** (drop the in-container build +
+  copy-out). Until then the Python layer does more than the boundary permits.
 - Split the warm store into `core.freeze` / `daemon.freeze` so a non-daemon consumer is not coupled to
   the daemon dependency closure (Phase 12).
 - Generate both freezes in-image by `cabal freeze`, never committed (`.dockerignore`/`.gitignore`
@@ -76,9 +84,9 @@ base image bakes **no** `hostbootstrap` binary.
 
 None.
 
-### Sprint 6.2: Shrink Python to the bootstrapper [Done]
+### Sprint 6.2: Shrink Python to the bootstrapper [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `python/hostbootstrap/cli.py` (thin `doctor` / `up` / `base` surface),
 `python/hostbootstrap/bootstrap.py` (the pre-binary bootstrap path), `python/hostbootstrap/spec.py`
 (static-base `SkeletalSpec` reader), `python/hostbootstrap/prereqs.py` (trimmed), static-base
@@ -105,15 +113,15 @@ is updated to match.
 
 #### Deliverables
 
-- The Python bootstrapper runs the pre-binary path: fail-fast minimums → ensure the host toolchain
-  prerequisites to build the binary → build the project binary host-native → exec it. (Ensuring Docker,
-  building the project container, and cordoning are the project binary's job, once running.)
-- The binary is built **host-native** on every substrate (Python ensures the host toolchain — Homebrew →
-  `ghcup` → GHC/Cabal on Apple; the equivalent on Linux), never copied out of a container, because a
-  Linux ELF cannot exec on a general host; Tart is build-only.
-- `python/hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed `cli.py`
-  branching are removed; the residual fail-fast subset of `prereqs.py` is reclaimed into the
-  bootstrapper.
+- **Done:** `python/hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed
+  `cli.py` branching are removed; the CLI is the thin `doctor` / `up` / `base` surface; the residual
+  fail-fast subset of `prereqs.py` is reclaimed into the bootstrapper.
+- **Target (not yet met):** the pre-binary path is fail-fast minimums → ensure the host toolchain
+  prerequisites to build the binary → build the project binary **host-native on every substrate** → exec
+  it, with Docker-ensure, the project-container build, the Colima VM sizing, and the cordon all left to
+  the project binary (§ M, § N). The current `bootstrap.py` instead ensures Docker (a per-project Colima
+  VM sized to the budget), builds the project container, and on Linux builds in-container and copies the
+  binary out — only Apple silicon builds host-native today. Converging this is the Remaining Work below.
 
 #### Validation
 
@@ -127,8 +135,10 @@ is updated to match.
 
 #### Remaining Work
 
-None. The removed surfaces are moved to **Completed** in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+Converge `bootstrap.py` on the § M / § N boundary: move Docker-ensure (the per-project Colima VM), the
+project-container build, the Colima VM sizing, and the cordon to the project binary, and build the binary
+host-native on Linux (drop the in-container build + copy-out). The removed three-execution-model surfaces
+are recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Documentation Requirements
 

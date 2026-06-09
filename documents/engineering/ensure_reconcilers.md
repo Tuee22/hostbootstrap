@@ -29,6 +29,14 @@ successful no-op. Running it on a host where the applicability predicate is fals
 error, not a quiet skip — this surfaces operator mistakes (for example, asking for `ensure tart` on
 Linux) instead of hiding them.
 
+> **Note (current state)**: Today the reconcile actions verify/probe the host and emit remediation
+> guidance when it is not in the desired state; they do not install or provision the dependency. The
+> one exception is `ensure colima`, which runs `colima start`. Auto-provisioning (install) is the
+> install-and-verify target tracked in
+> [phase-3-ensure-reconcilers](../../DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md); the
+> "brings the host to the desired state" contract above describes that target, and the current state
+> differs.
+
 Reconcilers live under `HostBootstrap.Ensure.*` and are surfaced on the command tree described in
 [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md). Every external tool a
 reconciler drives is resolved through the closed `HostTool` enumeration to an absolute path.
@@ -37,10 +45,10 @@ reconciler drives is resolved through the closed `HostTool` enumeration to an ab
 
 | Subcommand | Applies to | Fail-fast behavior on wrong host |
 |------------|------------|----------------------------------|
-| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` provisions it). On Apple it also implies the per-project Colima VM exists. |
+| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` verifies it today and emits guidance when it is missing — auto-install is the Phase-3 target). On Apple it also implies the per-project Colima VM exists. |
 | `ensure colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
 | `ensure cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
-| `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager used to provision the host toolchain. |
+| `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; today `ensure homebrew` verifies its presence and emits guidance, with auto-install being the Phase-3 target. |
 | `ensure ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
 

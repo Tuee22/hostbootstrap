@@ -13,8 +13,9 @@
 These pure-Python surfaces are still present. Each entry names its location, its disposition, and the
 owning phase. Two entries are **retained by decision** (not slated for deletion) — `prereqs.py` until its residual
 checks are lifted into `hostbootstrap-core`, and `dhall_tool.py` permanently (the pre-binary static-base
-config read via `dhall-to-json`). Two more are **slated for deletion** under the global-architecture
-phases (below). When a surface is removed, its entry moves to **Completed** in the same change. Per
+config read via `dhall-to-json`). Three more are **slated for deletion / relocation** as the inversion
+and the global-architecture phases land (below). When a surface is removed, its entry moves to
+**Completed** in the same change. Per
 [development_plan_standards.md § I](development_plan_standards.md).
 
 - **`python/hostbootstrap/prereqs.py`** — the Python host-prerequisite checks. The fail-fast host
@@ -43,16 +44,30 @@ phases (below). When a surface is removed, its entry moves to **Completed** in t
   from the Haskell `HostBootstrap.Cluster.Cordon` (it mishandles the `"8Gi"` form). **Slated for
   deletion**: the host VM argv is emitted by the one canonical Haskell parser and the Python layer builds
   argv only from that output. Owning phase: phase-9 (sprint 9.1). Replacement:
-  `HostBootstrap.Cluster.Cordon` canonical parser/arg-builder.
+  `HostBootstrap.Cluster.Cordon` canonical parser/arg-builder. (The Python Colima-sizing surface this
+  refers to is also part of the broader pre-binary-boundary overreach tracked in the next entry; the
+  `_gib` quantity interpreter specifically is the phase-9 one-canonical-parser dedup.)
+- **The pre-binary-boundary overreach in `python/hostbootstrap/bootstrap.py`** — the Python bootstrapper
+  currently ensures Docker (starts a per-project Colima VM via `colima_start_command`), builds the
+  project container (`docker_ops.build` on `container_build_spec`), and on Linux builds the binary
+  in-container and copies it out (`copy_out_create_command` / `copy_out_cp_command` /
+  `copy_out_rm_command`). § M / § N place all of this on the **project binary**, with the binary built
+  **host-native on every substrate**. **Slated to move to the project binary / be removed** as the
+  inversion converges. Owning phase: phase-6 (Sprint 6.2). Replacement: the project binary's `ensure
+  docker` + container build + applied cordon, plus a host-native Linux build.
+
 ## Completed
 
-These surfaces were removed when the Python layer was shrunk to the thin pre-binary bootstrapper in
-phase-6 (Sprint 6.2). The Python suite passes at 100% coverage after their removal.
+These three-execution-model surfaces were removed when the Python CLI was reduced to the `doctor` /
+`up` / `base` surface in phase-6 (Sprint 6.2). The Python suite passes at 100% coverage after their
+removal. *(The Python bootstrapper is not yet the fully thin pre-binary layer — see
+[phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md)
+Remaining Work and the Pending entry above — but the surfaces listed here are gone.)*
 
 - **`python/hostbootstrap/models/*`** (`container.py`, `host_binary.py`, `host_daemon.py`,
   `__init__.py`) — the three execution-model implementations. **Removed.** Every project now produces
-  one binary through the host-native build model (`python/hostbootstrap/bootstrap.py`), with
-  substrate-driven build/run logic; there is no model dispatch. Owning phase: phase-6.
+  one binary through a single substrate-driven build/run path (`python/hostbootstrap/bootstrap.py`);
+  there is no model dispatch. Owning phase: phase-6.
 - **The three-execution-model + `Cluster`/`NoCluster` + `Mount` Dhall schema in
   `python/hostbootstrap/dhall/package.dhall`** — the rich union schema. **Replaced** with the skeletal
   schema (`project`, `dockerfile`, `resources {cpu, memory, storage}`) matching

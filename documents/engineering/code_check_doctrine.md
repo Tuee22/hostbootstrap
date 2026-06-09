@@ -23,8 +23,8 @@ This applies in two places:
 
 | Image | Where the check runs | Command |
 |---|---|---|
-| Base | Host pre-flight + Dockerfile smoke | `hostbootstrap check-code` (skeletal core gate) + `fourmolu --mode check` + `hlint` |
-| Derived | Dockerfile RUN step | `<project> check-code` |
+| Base | Host pre-flight + Dockerfile smoke | `fourmolu --mode check` + `hlint` (run directly today; folding into a core `check-code` verb is the Phase-10 target) |
+| Derived | Dockerfile RUN step | `<project> check-code` (Phase-10 target; see below) |
 
 ## Base image
 
@@ -111,14 +111,19 @@ construction. There is no separate "did the lint pass?" question to ask later.
 
 ## What counts as the "canonical code-check" command
 
-* **A `check-code` subcommand on the project binary.** Every derived project's
-  binary exposes a single `check-code` subcommand (inherited from the
-  `hostbootstrap-core` command tree and extended with project-specific checks)
-  that wraps `fourmolu --mode check`, `hlint`, custom file-level checks, and
-  doc-drift checks, fail-fast.
-* **Multi-language projects.** The same `<project> check-code` subcommand
-  dispatches per-language checks (the foreign-backend formatters/linters) in
-  sequence and fails on any.
+* **A `check-code` subcommand on the project binary (Phase-10 target).** The
+  target model is that every derived project's binary exposes a single
+  `check-code` subcommand (inherited from the `hostbootstrap-core` command tree
+  and extended with project-specific checks) that wraps `fourmolu --mode check`,
+  `hlint`, custom file-level checks, and doc-drift checks, fail-fast. That
+  inherited verb does not exist yet: today `coreCommands` exposes only
+  `ensure`/`config`/`cluster`, and the base image gates by invoking the
+  formatter and linter directly (see "Base image"). The `check-code` core verb
+  is a Phase-10 deliverable
+  ([../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md)).
+* **Multi-language projects (Phase-10 target).** Under that same target model
+  the `<project> check-code` subcommand dispatches per-language checks (the
+  foreign-backend formatters/linters) in sequence and fails on any.
 
 A project should expose **one** canonical entrypoint — its binary's `check-code`
 subcommand — and the Dockerfile invokes that one. If you find yourself listing

@@ -10,17 +10,24 @@
 
 ## Where the repository is today
 
-The inversion is complete. `hostbootstrap` is the Haskell `hostbootstrap-core` library (under
-`haskell/`) plus a thin Python bootstrapper (under `python/`). `hostbootstrap-core` owns
+The inversion is well advanced. `hostbootstrap` is the Haskell `hostbootstrap-core` library (under
+`haskell/`) plus a Python bootstrapper (under `python/`). `hostbootstrap-core` owns
 host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
 cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
-The Python layer is the thin pre-binary bootstrapper (`doctor` / `up` / `base`): it asserts the
-fail-fast host minimums, ensures the host toolchain prerequisites to **build** the binary, builds the
-project binary **host-native**, and execs it — and still builds and publishes the
-`basecontainer-<flavor>-<arch>` base images. Ensuring Docker, building the project container, and
-cordoning are the project binary's job, once it is running. The three-execution-model machinery is gone; the residual
+The Python CLI is reduced to `doctor` / `up` / `base`: it asserts the fail-fast host minimums,
+ensures a host toolchain, builds the project binary, and execs it — and still builds and publishes the
+`basecontainer-<flavor>-<arch>` base images. The three-execution-model machinery is gone; the residual
 Dhall read (`python/hostbootstrap/dhall_tool.py`, `python/hostbootstrap/spec.py`) decodes only the
-static-base config tier. The narrative below records how each phase delivered this shape.
+static-base config tier.
+
+The Python layer has **not yet converged** on the thin pre-binary boundary that § M / § N define (and
+that the architecture docs describe as the target): today `bootstrap.py` still ensures Docker by
+starting a per-project Colima VM, builds the project container, sizes that VM to the `resources`
+budget, and on Linux builds the binary in-container and copies it out (only Apple silicon builds
+host-native). Moving Docker-ensure, the container build, and the cordon to the project binary — and
+building host-native on Linux too — is the remaining inversion work, tracked in
+[Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md). The narrative below records how each
+phase delivered this shape.
 
 ## Where the repository is going
 
@@ -33,8 +40,10 @@ The buildout reads as one ordered narrative:
 
 Convert the existing YAML-front-matter `documents/` suite to the unified metadata-block standard,
 create this `DEVELOPMENT_PLAN/` tree, and land the documentation validator. No code-writing phase may
-be marked `Active` or `Done` before Phase 0 closes. This phase is `Done`: the metadata-block
-conversion, the plan tree, and the `HostBootstrap.DocValidator` code-check gate are all in place.
+be marked `Active` or `Done` before Phase 0 closes. This phase's foundational deliverables have
+**landed** — the metadata-block conversion, the plan tree, and the `HostBootstrap.DocValidator`
+code-check gate are all in place — so its status is `Active`, reopened only for the expanded
+doc-coverage the global-architecture contract adds (§ A).
 
 ### Phase 1 — hostbootstrap-core scaffolding
 
@@ -91,9 +100,12 @@ binary later builds (`FROM` the base image) is accelerated by the warm store. Sh
 the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host toolchain prerequisites to
 build the binary, build the project binary host-native, and exec it — leaving Docker, the project
 container, and cordoning to the project binary. This phase is `Active`: the
-warm store carries the closure (no baked binary) and the Python CLI is the thin `doctor` / `up` / `base`
-bootstrapper, but the phase reopens against the layered-warm-store contract (§ V) — split the freeze into
-`core.freeze`/`daemon.freeze`, generate it in-image and never commit it, and add `purescript-bridge`.
+warm store carries the closure (no baked binary) and the Python CLI is reduced to `doctor` / `up` /
+`base`, but it reopens on two fronts — the bootstrapper has **not yet converged** on the thin
+pre-binary boundary (it still ensures Docker via a per-project Colima VM, builds the project container,
+sizes that VM, and copies the binary out on Linux), and the layered-warm-store contract (§ V) is net-new
+(split the freeze into `core.freeze`/`daemon.freeze`, generate it in-image and never commit it, and add
+`purescript-bridge`).
 
 ### Phase 7 — consumer migration
 
