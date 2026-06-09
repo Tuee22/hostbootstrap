@@ -9,14 +9,40 @@
 
 ## TL;DR
 
-- `hostbootstrap-core` (Haskell) carries the bulk of the test surface: host-tool resolution,
-  substrate detection, the `ensure` reconcilers' pure decision logic, the skeletal-Dhall decoder,
-  cluster-lifecycle semantics, and the documentation validator.
+- Every project's tests run through one standardized engine — `runMatrix` over a `Seams` record — and
+  the inherited `test` verb prints its report card. The mechanics live once in
+  `HostBootstrap.Harness`; the app supplies only its case matrix. See
+  [../architecture/harness_workflow.md](../architecture/harness_workflow.md).
+- `hostbootstrap-core` (Haskell) carries the bulk of the unit-test surface: host-tool resolution,
+  substrate detection, the `ensure` reconcilers' pure decision logic, the static-base-Dhall decoder,
+  cluster-lifecycle semantics, the harness driver, and the documentation validator.
 - The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
   bootstrapping steps it owns.
 - A mechanical documentation validator (`HostBootstrap.DocValidator`) is an implemented
   `hostbootstrap-core` quality-gate deliverable that runs through `cabal test`.
 - The default test run touches no network, no Docker daemon, no `sudo`, and no host service manager.
+
+## The Standardized Harness and the `test` Verb
+
+Every `hostbootstrap` binary inherits a `test` verb from the core command tree. `<project> test
+<suite>` drives `runMatrix :: Seams env -> [Case] -> IO Report` over the project's case matrix and
+prints the report card. The bare core binary ships an empty matrix, so `test` prints
+`test report: 0/0 passed`; a real project supplies its `Case`s and its `Seams`.
+
+The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` →
+`seamTeardown`, with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never
+leaked), aggregates a `Report`, and renders it with `reportCard` / checks it with `allPassed`. The
+driver, the isolated per-case profiles (cluster name `<project>-test-<case>`, data root
+`./.test_data/<case>/`), the mechanical never-touch-production guard (`guardTestDelete`), and
+budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. The default `defaultSeams`
+realize the `OneShot` container run; a cluster project supplies kind/Helm seams instead. The full
+per-case loop, the seam-split, and budget-slicing are documented in
+[../architecture/harness_workflow.md](../architecture/harness_workflow.md); the four run-models the
+`Seams` realize are in [../architecture/run_models.md](../architecture/run_models.md).
+
+The harness runs through the **project binary**, against the runtime — distinct from the `check-code`
+verb, which is the fail-fast image-build gate over source shape (see
+[code_check_doctrine.md](code_check_doctrine.md)).
 
 ## hostbootstrap-core (Haskell)
 
@@ -32,10 +58,13 @@ suite stays hermetic:
   its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
-- **Skeletal-Dhall decoder** — decoding `hostbootstrap.dhall` into `project`, `dockerfile`, and the
+- **Static-Base-Dhall decoder** — decoding `hostbootstrap.dhall` into `project`, `dockerfile`, and the
   `resources` budget, plus rejection of malformed values. See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
+- **Harness driver** — `HarnessSpec` asserts the per-case profile/path derivation, that teardown runs
+  on a failing case body, that `guardTestDelete` rejects a non-prefixed name, and that `sliceBudget`
+  keeps the concurrent slices within budget (with an indivisible case running at concurrency 1).
 - **Documentation validator** — `HostBootstrap.DocValidator` exercised by `DocValidatorSpec`,
   asserting required metadata lines, broad-doctrine structure, relative-link resolution, and the
   phase-plan `## Documentation Requirements` retention.

@@ -14,7 +14,7 @@
 - The repository-root `cabal.project` pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match
   the warm store baked into the base image (see [warm_store](warm_store.md)).
 - The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
-  (the skeletal binary, built like any project binary — not baked into the base image), and one
+  (the bare binary, built like any project binary — not baked into the base image), and one
   `test-suite`.
 
 ## GHC Pin
@@ -37,13 +37,13 @@ dependency set into the frozen Cabal store. Pinning both means a derived project
 | Stanza | Contents |
 |--------|----------|
 | `library` | the `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md) |
-| `executable hostbootstrap` | `app/Main.hs`, the skeletal binary: `runHostBootstrapCLI "hostbootstrap" []` |
+| `executable hostbootstrap` | `app/Main.hs`, the bare binary: `runHostBootstrapCLI "hostbootstrap" []` |
 | `test-suite hostbootstrap-core-test` | the `tasty` suite, including the documentation validator gate |
 
 ## Dependency Surface
 
 The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
-skeletal-schema decoder) as its defining dependencies, plus the small set used by host-tool
+static-base-schema decoder) as its defining dependencies, plus the small set used by host-tool
 resolution and the reconcilers (`base`, `containers`, `directory`, `filepath`, `process`,
 `safe-exceptions`, `text`, and `unix` — the last backing the POSIX prereq checks in
 `HostPrereqs` via `System.Posix`). Every one of these is already warmed into the base-image Cabal
@@ -51,7 +51,7 @@ store.
 
 ## Build And Test
 
-- `cabal build all` builds the library and the skeletal executable.
+- `cabal build all` builds the library and the static-base executable.
 - `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
 - `hostbootstrap --help` prints the composed core command tree, which lists the `ensure`, `config`,
   and `cluster` verbs today.

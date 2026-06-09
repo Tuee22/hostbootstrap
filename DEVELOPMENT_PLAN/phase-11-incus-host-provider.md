@@ -10,17 +10,22 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-3 (the install-and-verify reconciler model), phase-9 (the one canonical parser /
-sizing args), phase-10 (the harness and the delete-guard idiom)
-
-`incus` (the LXD successor; installs via Homebrew on apple-silicon and apt on ubuntu-24.04) is added
-alongside the other host tools. It is not a substrate (the VM is still `linux-cpu`/`linux-gpu` inside) and
-not a fifth run-model; it parameterizes the existing build / ensure-docker / cluster / harbor / run /
-harness machinery by a typed `HostTarget`. `incus` is not standardized for all workflows — the demo uses
-it to encapsulate a fresh linux host — but it is first-class (see
-[development_plan_standards.md § U](development_plan_standards.md)).
+`incus` is **landed** as the host-provider axis. `HostTool` gained the `Incus` constructor (resolved to
+an `AbsExe` like every tool); `HostBootstrap.Ensure.Incus` is the first cross-substrate reconciler
+(`appliesTo = isAppleSilicon || isLinux`, install-and-verify via `brew`/`apt` + `incus admin init
+--minimal`); `HostBootstrap.HostTarget` parameterizes every linux-host operation by `HostTarget =
+Local | InVM IncusVM` (`runInTarget` dispatches one `incus exec`); `HostBootstrap.Incus` carries the VM
+lifecycle argv (`launch`/`exec`/`restart`/name-guarded `delete`) and the pure
+`classifyDockerReadiness`; and `incusSizingArgs` (one canonical parser) cordons the VM at the wall
+(`limits.cpu`/`limits.memory`/`root,size`). It is not a substrate and not a fifth run-model; it is not
+standardized for all workflows — the demo uses it to encapsulate a fresh linux host — but it is
+first-class (see [development_plan_standards.md § U](development_plan_standards.md)). The pure cores, the
+argv builders, and the dispatch are implemented and unit-tested; the live in-VM run is exercised in real
+runs (the [demo](phase-13-hostbootstrap-demo.md)), the same standard the cluster lifecycle (Phase 5)
+follows, so this phase is closed. GPU passthrough (`linux-gpu` inside an incus VM, CUDA/nvkind) and
+apple-silicon nested-virt are documented **future follow-ons**, outside this phase's scope.
 
 ## Phase Objective
 
@@ -30,11 +35,10 @@ operation runs against `Local` or `InVM` with no per-call branching.
 
 ## Sprints
 
-### Sprint 11.1: `HostTool Incus` and `ensure incus` [Blocked]
+### Sprint 11.1: `HostTool Incus` and `ensure incus` [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-3
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`, `haskell/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -63,11 +67,10 @@ the reconciler list so the host `incus` resolves to an `AbsExe` across apple-sil
 
 None.
 
-### Sprint 11.2: `HostTarget` and the incus driver [Blocked]
+### Sprint 11.2: `HostTarget` and the incus driver [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-11 (sprint 11.1)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/architecture/build_and_run_model.md`, `documents/architecture/run_models.md`
 
 #### Objective
@@ -92,11 +95,10 @@ Land the typed target abstraction and the VM lifecycle.
 
 None.
 
-### Sprint 11.3: Reboot-to-ready reconcile [Blocked]
+### Sprint 11.3: Reboot-to-ready reconcile [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-11 (sprint 11.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs` (`classifyDockerReadiness`), `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs` (`rebootDockerToReady`), `haskell/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`
 
 #### Objective
@@ -117,11 +119,10 @@ Ensure Docker on a fresh VM, rebooting if the install needs it.
 
 None.
 
-### Sprint 11.4: `incusSizingArgs` and the in-VM deployment path [Blocked]
+### Sprint 11.4: `incusSizingArgs` and the in-VM deployment path [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-9 (sprint 9.1), phase-11 (sprint 11.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective
@@ -141,8 +142,9 @@ Cordon the VM to the budget and run the full deployment surface inside it.
 
 #### Remaining Work
 
-GPU passthrough (`linux-gpu` inside an incus VM, CUDA/nvkind) is a documented follow-on; apple-silicon
-nested-virt is confirmed or deferred per the open item in the unified plan.
+None for this sprint's scope (`incusSizingArgs` + the `InVM`-target deployment path are implemented and
+unit-tested; the live in-VM run is exercised in real runs). GPU passthrough (`linux-gpu` inside an incus
+VM, CUDA/nvkind) and apple-silicon nested-virt are documented **future follow-ons**, outside this phase.
 
 ## Documentation Requirements
 

@@ -11,18 +11,35 @@
 --   * relative-link resolution for governed docs, root docs, and phase docs
 --   * root @README.md@ references to both @documents/@ and @DEVELOPMENT_PLAN/@
 --   * @DEVELOPMENT_PLAN/@ phase docs retaining @## Documentation Requirements@
+--   * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)
+--   * the canonical @documents/@ taxonomy (no top-level category outside the
+--     declared set)
 --
--- It runs through the project's canonical code-check via the
--- @hostbootstrap-core-test@ suite (exercised by @DocValidatorSpec@).
+-- The individual checks are exported so the same mechanical floor can be reused
+-- across the project family (the reusable family doc-floor). It runs through the
+-- project's canonical code-check via the @hostbootstrap-core-test@ suite
+-- (exercised by @DocValidatorSpec@).
 module HostBootstrap.DocValidator
   ( Violation (..),
     validateRepo,
     renderViolation,
     findRepoRoot,
+    allowedTaxonomy,
+
+    -- * Reusable per-check functions (the family doc-floor)
+    checkGovernedMeta,
+    checkRootDoc,
+    checkBroadDoctrine,
+    checkDocRequirements,
+    checkLinks,
+    checkReadmeRefs,
+    checkNaming,
+    checkTaxonomy,
   )
 where
 
 import Control.Monad (filterM, foldM)
+import Data.Char (isDigit)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sortOn)
 import System.Directory
   ( doesDirectoryExist,
@@ -64,7 +81,13 @@ validateRepo root = do
   reqV <- concatMapM (checkDocRequirements root) phaseDocs
   linkV <- concatMapM (checkLinks root) (docFiles ++ planFiles ++ rootDocs)
   readmeV <- checkReadmeRefs root
-  pure (sortOn (\v -> (vFile v, vMessage v)) (metaV ++ rootV ++ broadV ++ reqV ++ linkV ++ readmeV))
+  let namingV = concatMap (checkNaming root) docFiles
+  taxonomyV <- checkTaxonomy root
+  pure
+    ( sortOn
+        (\v -> (vFile v, vMessage v))
+        (metaV ++ rootV ++ broadV ++ reqV ++ linkV ++ readmeV ++ namingV ++ taxonomyV)
+    )
 
 -- | Locate the repository root by walking up from @start@ until a directory
 -- containing both @documents/@ and @DEVELOPMENT_PLAN/@ is found.
@@ -142,6 +165,56 @@ checkReadmeRefs root = do
       [ [Violation rel "root README.md does not reference documents/" | not ("documents/" `isInfixOf` contents)],
         [Violation rel "root README.md does not reference DEVELOPMENT_PLAN/" | not ("DEVELOPMENT_PLAN/" `isInfixOf` contents)]
       ]
+
+-- | The canonical top-level categories under @documents/@. A directory outside
+-- this set is a taxonomy violation; adding a category requires updating
+-- @documents/documentation_standards.md § Taxonomy@ and this list in the same
+-- change (see @development_plan_standards.md@).
+allowedTaxonomy :: [String]
+allowedTaxonomy = ["architecture", "engineering", "operations", "languages"]
+
+-- | Governed @documents/@ files use lowercase @snake_case@ names with a @.md@
+-- suffix; @README.md@ is the only permitted exception under @documents/@ (the
+-- other ALL-CAPS root names live at the repository root). Pure.
+checkNaming :: FilePath -> FilePath -> [Violation]
+checkNaming root file =
+  let rel = rrel root file
+      name = takeFileName file
+   in [ Violation rel ("file name is not lowercase snake_case: " ++ name)
+        | name /= "README.md",
+          not (isSnakeCaseMd name)
+      ]
+
+-- | A name is @snake_case.md@ when the stem is non-empty and uses only
+-- lowercase letters, digits, and underscores.
+isSnakeCaseMd :: String -> Bool
+isSnakeCaseMd name =
+  case reverse <$> stripPrefix' "dm." (reverse name) of
+    Nothing -> False
+    Just stem -> not (null stem) && all isSnakeChar stem
+  where
+    isSnakeChar c = isDigit c || c == '_' || (c >= 'a' && c <= 'z')
+    stripPrefix' p s = if p `isPrefixOf` s then Just (drop (length p) s) else Nothing
+
+-- | Every immediate subdirectory of @documents/@ must be a declared taxonomy
+-- category ('allowedTaxonomy'). Files directly under @documents/@ (the suite
+-- @README.md@ and @documentation_standards.md@) are unconstrained here.
+checkTaxonomy :: FilePath -> IO [Violation]
+checkTaxonomy root = do
+  let docsDir = root </> "documents"
+  exists <- doesDirectoryExist docsDir
+  if not exists
+    then pure []
+    else do
+      entries <- listDirectory docsDir
+      subdirs <- filterM (doesDirectoryExist . (docsDir </>)) entries
+      pure
+        [ Violation
+            ("documents" </> d)
+            ("documents/ category not in the canonical taxonomy " ++ show allowedTaxonomy)
+          | d <- subdirs,
+            d `notElem` allowedTaxonomy
+        ]
 
 checkLinks :: FilePath -> FilePath -> IO [Violation]
 checkLinks root file = do

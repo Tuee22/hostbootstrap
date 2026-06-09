@@ -44,13 +44,14 @@ surface; the column records whether the module exists yet.
 | `HostBootstrap.Config.Schema` | 4 | yes | static-base `hostbootstrap.dhall` schema + in-process decoder |
 | `HostBootstrap.Command` | 4 | yes | the core command tree projects extend |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
-| `HostBootstrap.Cluster.Cordon` | 5, 9 | partial | budget verification + sizing args (yes); `fitsBudget` + the applied `docker update` cordon + the one canonical parser (Phase 9, no) |
+| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `fitsBudget`/`preflightBudget`, and the applied `docker update` kind-node cordon |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
-| `HostBootstrap.Dhall.Gen` | 8 | no | the Dhall-generation substrate + the `ConfigArtifact` registry |
-| `HostBootstrap.Harness` | 10 | no | `runMatrix` + `Seams` + `guardTestDelete` + budget-slicing |
-| `HostBootstrap.HostTarget` | 11 | no | `Local \| InVM` target dispatch (`runInTarget`) |
-| `HostBootstrap.Incus` | 11 | no | incus VM lifecycle (`create`/`exec`/`reboot`/`destroy`, name-guarded) |
-| `HostBootstrap.Ensure.Incus` | 11 | no | `ensure incus` install-and-verify reconciler |
+| `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
+| `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render) |
+| `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
+| `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop |
+| `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
+| `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (cross-substrate) |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -104,41 +105,33 @@ same shape.
 
 ## Thin Python bootstrapper surface
 
-The Python bootstrapper's **target** surface is only what must run before any project binary exists (see
+The Python bootstrapper's surface is only what must run before any project binary exists (see
 [development_plan_standards.md § M](development_plan_standards.md)):
 
 | Step | Responsibility |
 |------|----------------|
 | 1 | assert the fail-fast host minimums |
-| 2 | ensure the host toolchain prerequisites needed to **build** the binary (Homebrew → `ghcup` → GHC/Cabal on Apple; the equivalent on Linux) |
-| 3 | build the project binary **host-native** |
+| 2 | ensure the host toolchain prerequisites needed to **build** the binary (Homebrew → `ghcup` → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux) |
+| 3 | build the project binary **host-native** (every substrate) |
 | 4 | exec the binary |
 
-In the target boundary the bootstrapper does **not** ensure Docker, build the project container, size a
-VM, or copy a binary out of a container — those are the project binary's job once it is running (§ M,
-§ N). All other host-management logic lives in `hostbootstrap-core`; new host logic defaults to the
-project binary (Haskell), and a Python addition must be justified by the pre-binary bootstrapping
-constraint.
-
-> **Current state (not yet at the target).** `python/hostbootstrap/bootstrap.py` still runs a five-step
-> path — assert minimums → ensure Docker (start a per-project Colima VM sized to the budget) → build the
-> project container → place the binary in `./.build/` (Apple: host-native build; Linux: build in-container
-> and copy it out) → exec. Converging it to the four-step boundary above is tracked in
-> [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md).
+The bootstrapper does **not** ensure Docker, build the project container, size a VM, or copy a binary
+out of a container — those are the project binary's job once it is running (§ M, § N). All other
+host-management logic lives in `hostbootstrap-core`; new host logic defaults to the project binary
+(Haskell), and a Python addition must be justified by the pre-binary bootstrapping constraint. This
+four-step boundary is implemented in `python/hostbootstrap/bootstrap.py`.
 
 ## Host-native binary build
 
-The **target** (§ N) is that every project's binary is built **host-native** on every substrate — not
-built in a container and copied out (a Linux-container binary cannot exec on a general host such as
-Apple silicon). The universal pre-binary dependency is then the **build toolchain**, not Docker (see
-[development_plan_standards.md § N](development_plan_standards.md)). *(Current state: only Apple silicon
-builds host-native; on Linux `bootstrap.py` builds the binary in the project container and copies it out —
-tracked in [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md).)*
+Every project's binary is built **host-native** on every substrate — not built in a container and copied
+out (a Linux-container binary cannot exec on a general host such as Apple silicon). The universal
+pre-binary dependency is then the **build toolchain**, not Docker (see
+[development_plan_standards.md § N](development_plan_standards.md)).
 
-| Substrate | Binary build (target) | Run location | Notes |
-|-----------|-----------------------|--------------|-------|
+| Substrate | Binary build | Run location | Notes |
+|-----------|--------------|--------------|-------|
 | `apple-silicon` | host-native (Python ensures Homebrew → `ghcup` → GHC/Cabal) | host | a Linux ELF cannot exec on macOS |
-| `linux-cpu`, `linux-gpu` | host-native (Python ensures the host GHC/Cabal toolchain) | host | target: no container copy-out (currently copies out — Phase 6) |
+| `linux-cpu`, `linux-gpu` | host-native (Python ensures the host `ghcup` → GHC/Cabal toolchain) | host | no container copy-out |
 | Tart (Apple, build-only) | Tart VM (Swift/Metal artifacts → `./.build/`) | host | no built binary runs inside the Tart VM |
 
 A `./.build/<binary>` is always present on the host. The project **container** (the workload image and the
@@ -147,13 +140,12 @@ not by the Python layer.
 
 ## Resource budget and cordoning
 
-In the **target** boundary the **project binary** verifies the host has the spare budget declared in
-`resources` and applies the cordon: on Apple by sizing a dedicated per-project Colima/incus VM (via
-`ensure docker`), on Linux by applying kind node resource limits (via `cluster up`); the Python
-bootstrapper does not cordon. *(Current state: `bootstrap.py` still sizes the per-project Colima VM to
-the budget — tracked for removal in [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md) — and
-the project binary so far only **computes and reports** the cordon, not applies it; the applied cordon
-and the `verifyBudget` gate are Phase 5/9 work.)* The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
+The **project binary** verifies the host has the spare budget declared in `resources` and applies the
+cordon: on Apple by sizing a dedicated per-project Colima/incus VM (via `ensure docker`), on Linux by
+applying kind node resource limits (via `cluster up`); the Python bootstrapper does not cordon (it no
+longer sizes any VM — Phase 6, Sprint 6.3). *(Current state: the project binary so far only **computes
+and reports** the cordon, not applies it; the applied cordon and the `verifyBudget` gate are Phase 9
+work.)* The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
 selects fixed names / `.data` paths for production and per-case isolated paths for the test profile.
 See `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).
 
@@ -179,7 +171,7 @@ The base image continues to publish `basecontainer-<flavor>-<arch>` tags (CPU an
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus the generic
 entrypoint `runHostBootstrapCLI progName projectCommands` (`HostBootstrap.CLI`, Phase 1; command
 tree in `HostBootstrap.Command`, Phase 4). A project binary extends the core tree with its own
-subcommands rather than re-implementing core verbs. The skeletal `hostbootstrap` binary
+subcommands rather than re-implementing core verbs. The bare `hostbootstrap` binary
 (`hostbootstrap-core`'s own executable) is the core tree with no project commands, built like any
 project binary rather than baked into the base image. See
 [development_plan_standards.md § P](development_plan_standards.md).
@@ -189,18 +181,22 @@ project binary rather than baked into the base image. See
 | `ensure <tool>` (incl. `incus`) | 3, 11 | the `ensure` reconcilers |
 | `config show` (static-base decode) | 4 | `HostBootstrap.Config.Schema` |
 | `config schema` / `config render` | 8 | `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry |
-| `cluster up/down/delete/status` | 5 | `HostBootstrap.Cluster.Lifecycle` (`status` is Phase-5 remaining work) |
+| `cluster up/down/delete/status` | 5 | `HostBootstrap.Cluster.Lifecycle` |
 | `test <suite>` | 10 | `HostBootstrap.Harness` (`runMatrix`) |
 | `check-code` | 10 | project-defined body, the image-build gate |
 
 ## hostbootstrap-demo (worked consumer)
 
 `hostbootstrap-demo` (Phase 13) is the self-contained worked consumer under `demo/` (own static-base
-`hostbootstrap.dhall`, Haskell source, build path `demo/.build`). It extends `hostbootstrap-core` directly
-(L0-direct) and exercises the full surface — `ensure incus`, the host-provider axis, `config schema`/
-`render`, the standardized harness, the applied budget cordons, an idiomatic in-Dockerfile `check-code`
-gate, a `purescript-bridge`/`spago` webservice and SPA, and Playwright e2e — centered on a from-zero
-pristine-host bootstrap inside an incus VM. It supersedes `haskell/hostbootstrap-core/example/Main.hs`.
+`hostbootstrap.dhall`, Haskell source `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`, build
+path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) via `runHostBootstrapCLI` and
+demonstrates the four-stream extension — the CLI append (`incus`/`vm`/`harbor`/`web` noun verbs alongside
+the inherited core verbs), the schema-gen concat (`demo web schema` → `coreArtifacts ++ demoArtifacts`),
+and the harness (`demo vm test` → `runMatrix` over the demo's case matrix). Its verbs drive the live
+surface — `ensure incus`, the host-provider axis, the applied budget cordons, an idiomatic in-Dockerfile
+`check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA, and
+Playwright e2e — centered on a from-zero pristine-host bootstrap inside an incus VM. It supersedes the
+retired `haskell/hostbootstrap-core/example/Main.hs`.
 
 ## Update rule
 

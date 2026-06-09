@@ -20,13 +20,15 @@
 ## What the Lifecycle Provides
 
 `HostBootstrap.Cluster.Lifecycle` provides the verbs consumers and the test harness drive (`cluster
-up` / `cluster down` / `cluster delete`), and applies the resource cordon
-(`HostBootstrap.Cluster.Cordon`) from [resource_budgeting](resource_budgeting.md). The plan
-resolution (`resolvePlan`) and the teardown partition (`teardown`) are pure, so the
-never-delete-`.data` invariant and the production-versus-test profile distinction are unit-tested; the
-IO drivers run `kind`/`Helm` through the `HostTool` enumeration. The semantics are shared so a project
-does not re-implement cluster orchestration; it selects a profile and supplies its bootstrap
-instructions.
+up` / `cluster down` / `cluster delete`, plus the read-only `cluster status`), and applies the
+resource cordon (`HostBootstrap.Cluster.Cordon`) from [resource_budgeting](resource_budgeting.md). The
+plan resolution (`resolvePlan`), the teardown partition (`teardown`), and the status report
+(`statusReport`) are pure, so the never-delete-`.data` invariant, the production-versus-test profile
+distinction, and the status shape are unit-tested; the IO drivers run `kind`/`Helm` through the
+`HostTool` enumeration. `cluster status` probes `kind get clusters` and reports whether the resolved
+cluster is live alongside the preserved `.data` and derived paths, never mutating state. The semantics
+are shared so a project does not re-implement cluster orchestration; it selects a profile and supplies
+its bootstrap instructions.
 
 ## The Never-Delete-`.data` Invariant
 

@@ -10,17 +10,25 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Active
 
-**Blocked by**: phase-8 (binary-generated config), phase-9 (applied cordon), phase-10 (the harness and
-run-models), phase-11 (incus), phase-12 (the layered warm store + `purescript-bridge`)
+`hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`
+(`project="hostbootstrap-demo"`, `resources {cpu=6, memory="10GiB", storage="40GiB"}`), Haskell source,
+and build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `mcts`) via
+`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`. The package **builds** and
+`hostbootstrap-demo --help` shows the inherited core verbs plus the demo's noun-first verbs
+(`incus`/`vm`/`harbor`/`web`); it exercises the four-stream extension end-to-end — CLI append
+(`demoCommands`), schema-gen concat (`demo web schema` → `coreArtifacts ++ demoArtifacts`), and the
+harness (`demo vm test` → `runMatrix` over the demo's case matrix). The idiomatic `demo/docker/Dockerfile`
+reference shape and the operations runbook are landed, and `example/Main.hs` is **retired** (Sprint 13.7).
+The phase stays `Active` for the **live infrastructure** exercise — the in-VM pristine bootstrap, kind +
+Harbor, the `purescript-bridge`/`spago`/`esbuild` web build, and Playwright e2e — which requires incus /
+Docker / the web toolchain and is exercised during a real demo run (not in a code-only environment).
 
-`hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`, Haskell source, and
-build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `mcts`) and exercises
-the full surface: install-and-verify `ensure incus`, the host-provider axis, the host-native build
-model, the applied budget cordons, `config schema`/`render`, the standardized harness, an idiomatic
-in-Dockerfile `check-code` gate, a `purescript-bridge`/`spago` webservice and SPA, and Playwright e2e.
-It supersedes `haskell/hostbootstrap-core/example/Main.hs`.
+**Remaining Work**:
+- The live in-VM/kind/Harbor/web/Playwright execution (Sprints 13.2–13.6) is driven by the demo's verbs
+  and exercised in a real demo run; the verb structure, the reference Dockerfile, and the runbook are
+  landed, but the infrastructure execution cannot run in a code-only environment.
 
 ## Phase Objective
 
@@ -35,11 +43,10 @@ project-container build.
 
 ## Sprints
 
-### Sprint 13.1: `demo/` skeleton and the metal orchestrator binary [Blocked]
+### Sprint 13.1: `demo/` skeleton and the metal orchestrator binary [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8
-**Implementation**: `demo/hostbootstrap.dhall`, `demo/hostbootstrap-demo.cabal`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs` (planned)
+**Status**: Done
+**Implementation**: `demo/hostbootstrap.dhall`, `demo/hostbootstrap-demo.cabal`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `cabal.project`
 **Docs to update**: `documents/operations/demo_runbook.md`, `system-components.md`
 
 #### Objective
@@ -62,11 +69,10 @@ extending `hostbootstrap-core`, and build #1.
 
 None.
 
-### Sprint 13.2: `ensure incus` and the pristine VM [Blocked]
+### Sprint 13.2: `ensure incus` and the pristine VM [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-11, phase-13 (sprint 13.1)
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (planned)
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (the `incus`/`vm` verbs are landed; live VM execution is real-run)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -87,13 +93,12 @@ demo's noun-first project verbs.
 
 #### Remaining Work
 
-None.
+The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
 
-### Sprint 13.3: Pristine-host bootstrap inside the VM [Blocked]
+### Sprint 13.3: Pristine-host bootstrap inside the VM [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-13 (sprint 13.2)
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (planned)
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (the `vm pristine-bootstrap` verb is landed; the live 3-build flow is real-run)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -114,12 +119,11 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Remaining Work
 
-None.
+The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
 
-### Sprint 13.4: kind + Harbor on the VM and image push [Blocked]
+### Sprint 13.4: kind + Harbor on the VM and image push [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-9, phase-13 (sprint 13.3)
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Harbor.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/harbor.md`
 
@@ -139,13 +143,12 @@ registry.
 
 #### Remaining Work
 
-None.
+The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
 
-### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Blocked]
+### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-12, phase-13 (sprint 13.1)
-**Implementation**: `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs`, `demo/web/`, `demo/docker/Dockerfile` (planned)
+**Status**: Active
+**Implementation**: `demo/docker/Dockerfile` (the idiomatic reference shape is landed), `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs`, `demo/web/` (the servant/Halogen web stack is real-run)
 **Docs to update**: `documents/engineering/derived_dockerfile.md`, `documents/languages/purescript.md`
 
 #### Objective
@@ -167,12 +170,11 @@ that is the reference shape derived projects copy.
 
 #### Remaining Work
 
-None.
+The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
 
-### Sprint 13.6: Playwright on the incus host [Blocked]
+### Sprint 13.6: Playwright on the incus host [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-13 (sprints 13.3, 13.5)
+**Status**: Active
 **Implementation**: `demo/playwright/`, `demo/src/HostBootstrapDemo/Harness.hs` (planned)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/languages/playwright.md`
 
@@ -192,13 +194,12 @@ Serve the webservice on the incus host and run the Playwright e2e suite from the
 
 #### Remaining Work
 
-None.
+The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
 
-### Sprint 13.7: Retire `example/Main.hs` [Blocked]
+### Sprint 13.7: Retire `example/Main.hs` [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-13 (sprint 13.1)
-**Implementation**: `haskell/hostbootstrap-core/example/Main.hs`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/hostbootstrap-core.cabal` (stanza removed), `documents/engineering/derived_project_standards.md`, `README.md`, `legacy-tracking-for-deletion.md`
 **Docs to update**: `documents/engineering/derived_project_standards.md`, `legacy-tracking-for-deletion.md`
 
 #### Objective

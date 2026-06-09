@@ -1,0 +1,35 @@
+cabal-version: 3.12
+name: hostbootstrap-demo
+version: 0.1.0.0
+synopsis: The worked hostbootstrap consumer (L0-direct)
+category: Development
+description:
+  hostbootstrap-demo is the canonical worked consumer of hostbootstrap-core. It
+  extends the core command tree directly (L0-direct, like mcts) via
+  @runHostBootstrapCLI@ and exercises the four-stream extension contract: the
+  CLI tree (appended noun-first project verbs), the schema-gen registry
+  (@coreArtifacts ++ demoArtifacts@), and the test-harness @Seams@ (its own case
+  matrix). The live in-VM / kind / Harbor / web / Playwright surface is driven by
+  the verbs and exercised during a real demo run; see
+  documents/operations/demo_runbook.md.
+license: MIT
+author: hostbootstrap contributors
+maintainer: hostbootstrap contributors
+build-type: Simple
+tested-with: GHC ==9.12.4
+
+common warnings
+  default-language: Haskell2010
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+
+executable hostbootstrap-demo
+  import: warnings
+  hs-source-dirs: app, src
+  main-is: Main.hs
+  other-modules:
+      HostBootstrapDemo.Commands
+  build-depends:
+      base >=4.18 && <5
+    , hostbootstrap-core
+    , optparse-applicative
+    , text

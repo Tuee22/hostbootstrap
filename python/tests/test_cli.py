@@ -9,14 +9,14 @@ import pytest
 from click.testing import CliRunner
 
 from hostbootstrap import cli, docker_ops, process
-from hostbootstrap.spec import Resources, SkeletalSpec
+from hostbootstrap.spec import Resources, StaticBaseSpec
 from hostbootstrap.substrate import Substrate, SubstrateName
 
 LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
 
 
-def _spec() -> SkeletalSpec:
-    return SkeletalSpec(
+def _spec() -> StaticBaseSpec:
+    return StaticBaseSpec(
         project="proj",
         dockerfile=Path("docker/proj.Dockerfile"),
         resources=Resources(cpu=4, memory="8GiB", storage="20GiB"),
@@ -45,11 +45,12 @@ def test_removed_commands_are_gone(removed: str) -> None:
     assert "No such command" in result.output
 
 
-def test_up_has_no_force_target_option() -> None:
+def test_up_has_no_force_target_or_pull_option() -> None:
     result = CliRunner().invoke(cli.main, ["up", "--help"])
     assert result.exit_code == 0
+    # The pre-binary bootstrapper neither builds the container nor pulls the base.
     assert "--force-target" not in result.output
-    assert "--no-pull" in result.output
+    assert "--no-pull" not in result.output
 
 
 def test_default_spec_path_is_dhall() -> None:
@@ -61,37 +62,32 @@ def test_default_spec_path_is_dhall() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_up_forwards_trailing_args_and_no_pull(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_up_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project = _spec()
     spec_path = tmp_path / "hostbootstrap.dhall"
     captured: dict[str, object] = {}
     monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
 
     async def _fake_bootstrap(
-        spec: SkeletalSpec,
+        spec: StaticBaseSpec,
         *,
         project_root: Path,
         args: tuple[str, ...],
-        pull: bool,
     ) -> None:
         captured["spec"] = spec
         captured["root"] = project_root
         captured["args"] = args
-        captured["pull"] = pull
 
     monkeypatch.setattr(cli.bootstrap, "bootstrap", _fake_bootstrap)
 
     result = CliRunner().invoke(
         cli.main,
-        ["up", "--spec", str(spec_path), "--no-pull", "play", "--seed", "7"],
+        ["up", "--spec", str(spec_path), "play", "--seed", "7"],
     )
     assert result.exit_code == 0, result.output
     assert captured["spec"] is project
     assert captured["root"] == spec_path.resolve().parent
     assert captured["args"] == ("play", "--seed", "7")
-    assert captured["pull"] is False
 
 
 def test_up_missing_spec_fails_cleanly(tmp_path: Path) -> None:
@@ -156,12 +152,12 @@ def test_doctor_command_wraps_prereq_error(monkeypatch: pytest.MonkeyPatch) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_load_detect_and_base_context_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_and_detect_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     project = _spec()
     monkeypatch.setattr(cli.spec, "load", lambda _path: project)
     assert cli._load_spec(Path("x.dhall")) is project
 
-    def _bad_spec(_path: Path) -> SkeletalSpec:
+    def _bad_spec(_path: Path) -> StaticBaseSpec:
         raise cli.SpecError("bad spec")
 
     monkeypatch.setattr(cli.spec, "load", _bad_spec)
@@ -177,19 +173,6 @@ def test_load_detect_and_base_context_helpers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(cli.substrate, "detect", _bad_detect)
     with pytest.raises(cli.click.ClickException, match="bad host"):
         cli._detect_substrate()
-
-    assert cli._base_context_value(False, Path("/repo")) is None
-    assert cli._base_context_value(True, Path("/repo")) == Path("/repo")
-    with pytest.raises(cli.click.ClickException, match="--base-context"):
-        cli._base_context_value(True, None)
-
-
-def test_resolve_pull_combinations() -> None:
-    assert cli._resolve_pull(build_base=False, no_pull=False) is True
-    assert cli._resolve_pull(build_base=True, no_pull=False) is False
-    assert cli._resolve_pull(build_base=False, no_pull=True) is False
-    with pytest.raises(cli.click.ClickException, match="mutually exclusive"):
-        cli._resolve_pull(build_base=True, no_pull=True)
 
 
 def test_arch_default_uses_detection(monkeypatch: pytest.MonkeyPatch) -> None:

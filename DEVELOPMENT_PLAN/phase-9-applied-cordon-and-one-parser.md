@@ -10,16 +10,18 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-5 (the lifecycle and the pure cordon cores), phase-8 (`Budget/fitsWithin`,
-`Budget/split`)
-
-Phase 5 leaves the cordon **computed and reported but not applied** (`kindNodeLimits` is printed by
-`reportCordon`, never run) and `verifyBudget` unwired. Two budget interpreters disagree (Haskell
-`colimaSizingArgs` vs Python `_gib`/`colima_start_command`; the Python path mishandles `"8Gi"`). This
-phase wires real enforcement and unifies the parser, so the one budget number is a hard ceiling at every
-spinup and in every generated config (see
+The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
+builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
+`docker update` cap; `incusSizingArgs` emits the VM `limits.cpu`/`limits.memory`/`root,size`), so the
+bare `"8Gi"` form is interpreted identically everywhere (the removed Python `_gib` mishandled it).
+`clusterUp` runs the `verifyBudget` spare-capacity preflight, then applies the Linux kind-node cordon
+(`docker update --cpus/--memory/--memory-swap <cluster>-control-plane`) after `kind create` and before
+Helm, fail-closed; the print-only `reportCordon` is gone. The pure `fitsBudget` proves a concurrent pod
+set fits, and storage is cordoned per substrate (Colima `--disk`, incus `root,size`) while omitted from
+the `docker update` argv. All argv builders and the wiring are implemented and unit-tested (live
+`docker`/`incus` execution is exercised in real runs) (see
 [development_plan_standards.md § O](development_plan_standards.md)).
 
 ## Phase Objective
@@ -30,11 +32,10 @@ all fed by a single canonical quantity parser and argument builder.
 
 ## Sprints
 
-### Sprint 9.1: One canonical quantity parser and argument builder [Blocked]
+### Sprint 9.1: One canonical quantity parser and argument builder [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-5
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `python/hostbootstrap/bootstrap.py` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective
@@ -51,18 +52,19 @@ from the Haskell-emitted output.
 
 #### Validation
 
-- A golden test asserts the Haskell-emitted argv equals what the Python layer would build, byte-for-byte,
-  including a `"8Gi"` fixture (which the old Python `_gib` mishandled). Python `test_all` covers it.
+- `CordonSpec` asserts the full profiled `colima start` argv and the `docker update` cordon argv from
+  the one `parseQuantity`, including a `"8Gi"` fixture (which the removed Python `_gib` mishandled).
+  `cabal test` passes. The Python layer no longer builds any sizing argv (removed in phase-6,
+  Sprint 6.3), so there is no Python interpreter to dedup against.
 
 #### Remaining Work
 
 None.
 
-### Sprint 9.2: Applied Linux kind-node cordon [Blocked]
+### Sprint 9.2: Applied Linux kind-node cordon [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-9 (sprint 9.1)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -84,11 +86,10 @@ Actually apply the cordon on Linux instead of printing it.
 
 None.
 
-### Sprint 9.3: `verifyBudget` and `fitsBudget` wired before bring-up [Blocked]
+### Sprint 9.3: `verifyBudget` and `fitsBudget` wired before bring-up [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprint 8.1), phase-9 (sprint 9.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`
 
 #### Objective
@@ -110,11 +111,10 @@ Run the spare-capacity gate and the fits-within proof before any spinup.
 
 None.
 
-### Sprint 9.4: Per-substrate storage cordon [Blocked]
+### Sprint 9.4: Per-substrate storage cordon [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-9 (sprint 9.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective
@@ -129,11 +129,16 @@ Enforce the storage dimension where each substrate allows it.
 
 #### Validation
 
-- The sizing args for each substrate reflect the declared storage; the `docker update` argv omits storage.
+- `CordonSpec` asserts Colima `--disk` reflects the declared storage and the `docker update` argv omits
+  storage; `verifyBudget` keeps the storage dimension. `cabal test` passes.
 
 #### Remaining Work
 
-None.
+None. The incus VM storage cordon (`incusSizingArgs` — `limits.cpu`/`limits.memory`/`root,size`, where
+incus cordons storage at the VM wall) landed with
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (Sprint 11.4). The bare-Linux quota'd
+hostPath + image GC is a deployment convention documented in
+[applied_cordon](../documents/engineering/applied_cordon.md), not a `hostbootstrap-core` arg-builder.
 
 ## Documentation Requirements
 

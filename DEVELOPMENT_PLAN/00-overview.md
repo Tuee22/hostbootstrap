@@ -20,14 +20,14 @@ ensures a host toolchain, builds the project binary, and execs it — and still 
 Dhall read (`python/hostbootstrap/dhall_tool.py`, `python/hostbootstrap/spec.py`) decodes only the
 static-base config tier.
 
-The Python layer has **not yet converged** on the thin pre-binary boundary that § M / § N define (and
-that the architecture docs describe as the target): today `bootstrap.py` still ensures Docker by
-starting a per-project Colima VM, builds the project container, sizes that VM to the `resources`
-budget, and on Linux builds the binary in-container and copies it out (only Apple silicon builds
-host-native). Moving Docker-ensure, the container build, and the cordon to the project binary — and
-building host-native on Linux too — is the remaining inversion work, tracked in
-[Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md). The narrative below records how each
-phase delivered this shape.
+The Python layer has **converged** on the thin pre-binary boundary that § M / § N define: `bootstrap.py`
+is the four-step path — assert the fail-fast minimums, ensure the host build toolchain, build the project
+binary **host-native on every substrate** (Linux included; there is no build-in-container-and-copy-out
+path), and `exec` it. Ensuring Docker, building the project container, sizing the VM, and the cordon are
+all the **project binary's** job once it is running, not the Python layer's. The inversion-side Python
+work is therefore complete; [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md) reopens only
+for the net-new layered warm store (§ V). The narrative below records how each phase delivered this
+shape.
 
 ## Where the repository is going
 
@@ -48,7 +48,7 @@ doc-coverage the global-architecture contract adds (§ A).
 ### Phase 1 — hostbootstrap-core scaffolding
 
 Stand up the `hostbootstrap-core` Cabal package: a `library` stanza for the `HostBootstrap.*` module
-surface and a skeletal executable. Pin GHC to the base-image toolchain, take
+surface and a bare executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
 `runHostBootstrapCLI progName projectCommands` over an empty-but-buildable command tree. No host
 logic lands yet; this is the structural shell every later phase fills in. This phase is `Done`:
@@ -99,13 +99,12 @@ every host; instead every project builds its own binary **host-native**, and the
 binary later builds (`FROM` the base image) is accelerated by the warm store. Shrink the Python layer to
 the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host toolchain prerequisites to
 build the binary, build the project binary host-native, and exec it — leaving Docker, the project
-container, and cordoning to the project binary. This phase is `Active`: the
-warm store carries the closure (no baked binary) and the Python CLI is reduced to `doctor` / `up` /
-`base`, but it reopens on two fronts — the bootstrapper has **not yet converged** on the thin
-pre-binary boundary (it still ensures Docker via a per-project Colima VM, builds the project container,
-sizes that VM, and copies the binary out on Linux), and the layered-warm-store contract (§ V) is net-new
-(split the freeze into `core.freeze`/`daemon.freeze`, generate it in-image and never commit it, and add
-`purescript-bridge`).
+container, and cordoning to the project binary. This phase is `Done`: the warm store carries the
+closure (no baked binary), the Python CLI is reduced to `doctor` / `up` / `base`, and the bootstrapper
+has **converged** on the thin pre-binary boundary (the four-step path above, building host-native on
+every substrate with no Docker-ensure, container build, VM sizing, or copy-out). The **layering** of the
+warm-store freeze into `core.freeze`/`daemon.freeze` is a net-new deliverable owned by Phase 12, not this
+phase.
 
 ### Phase 7 — consumer migration
 
@@ -126,39 +125,55 @@ named slice of the architecture; see [system-components.md](system-components.md
 
 The project binary generates its own schema (reflected from its decoder types, so it cannot drift) and
 renders all deploy/test configs from a reusable `Core.dhall` vocabulary; the four-stream extension
-contract (CLI append, Dhall embed, schema concatenation, harness seams) is formalized. `Blocked by`
-phase-4 (Phase 0's reopened doc-coverage does not gate code phases — § A).
+contract (CLI append, Dhall embed, schema concatenation, harness seams) is formalized. This phase is
+`Done`: `Core.dhall`, `HostBootstrap.Config.Vocab`, `HostBootstrap.Dhall.Gen`, and the
+`config schema`/`render` verbs are implemented and tested; all four streams are implemented (the
+harness `Seams` landed in Phase 10) and the demo (Phase 13) exercises them end-to-end.
 
 ### Phase 9 — Applied budget cordon and one canonical parser
 
-The declared budget becomes an enforced ceiling: one canonical quantity parser shared across Python and
-Haskell, the applied Linux `docker update` kind-node cordon wired into `cluster up`, and the
-`verifyBudget`/`fitsBudget` gates run before bring-up. `Blocked by` phase-5 and phase-8.
+The declared budget becomes an enforced ceiling: one canonical `parseQuantity` feeding every argument
+builder, the applied Linux `docker update` kind-node cordon wired into `cluster up` (after `kind
+create`, before Helm, fail-closed), and the `verifyBudget`/`fitsBudget` gates run before bring-up. This
+phase is `Active`: all of the above are implemented and tested; only the incus VM storage cordon
+(`incusSizingArgs`) is outstanding and lands in Phase 11.
 
 ### Phase 10 — Standardized test harness and run-models
 
 One `hostbootstrap-core` harness (`runMatrix` over a `Seams` record, with isolated per-case profiles, the
 prefix delete-guard, and budget-slicing) and the minimal four run-models
-(`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) the system selects between. `Blocked by` phase-8 and
-phase-9.
+(`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) the system selects between. This phase is `Done`: the L0
+engine, the pure cores, the `selectRunModel` key, the L0 OneShot seam (`oneShotRunArgs` + the IO-wired
+`oneShotSeams`), and the `test`/`check-code` verbs are implemented and unit-tested; the live container/
+cluster run is exercised in real runs (the demo), the same standard the cluster lifecycle (Phase 5)
+follows.
 
 ### Phase 11 — incus first-class host-provider
 
 `incus` becomes a host-provider axis (`HostTarget = Local | InVM`): `ensure incus` installs and verifies,
 and the existing build/cluster/run/harness machinery runs inside a budget-sized incus VM with no per-call
-branching. `Blocked by` phase-3, phase-9, and phase-10.
+branching. This phase is `Done`: the `Incus` host tool, the cross-substrate `ensure incus` reconciler,
+`runInTarget`, the VM lifecycle argv + name-guard, `classifyDockerReadiness`, and `incusSizingArgs` are
+implemented and unit-tested; the live in-VM run is exercised in real runs (the demo), the same standard
+Phase 5 follows. GPU passthrough is a documented future follow-on.
 
 ### Phase 12 — Layered warm store
 
 The warm-store freeze splits into `core.freeze` (base + core; for `mcts` and `daemon-substrate`) and
 `daemon.freeze` (daemon-family deps), both generated in-image and never committed; `purescript-bridge` is
-added. `Blocked by` phase-6 and phase-8.
+added. This phase is `Active`: `purescript-bridge` is in the `core.freeze` manifest, the freezes are
+gitignored/dockerignored (none committed), and the layered import contract is documented; the two-freeze
+in-image generation itself is validated by a base-image build (not runnable in a code-only environment).
 
 ### Phase 13 — hostbootstrap-demo worked app
 
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
 on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
-hostbootstrap` → `hostbootstrap up`). It supersedes `example/Main.hs`. `Blocked by` phases 8–12.
+hostbootstrap` → `hostbootstrap up`). It supersedes the retired `example/Main.hs`. This phase is `Active`:
+the `demo/` package builds and demonstrates the four-stream extension end-to-end (`hostbootstrap-demo
+--help` shows core + demo verbs; `demo web schema` concatenates the registry; `demo vm test` drives the
+harness), the idiomatic `demo/docker/Dockerfile` and the operations runbook are landed, and the example
+is retired; the live in-VM/kind/Harbor/web/Playwright execution is exercised in a real demo run.
 
 ## Dependency edges
 

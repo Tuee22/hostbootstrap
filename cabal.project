@@ -6,7 +6,9 @@
 -- so derived project builds reuse the pre-built dependency unfoldings
 -- (documents/engineering/warm_store.md).
 
-packages: haskell/hostbootstrap-core/hostbootstrap-core.cabal
+packages:
+  haskell/hostbootstrap-core/hostbootstrap-core.cabal
+  demo/hostbootstrap-demo.cabal
 
 with-compiler: ghc-9.12.4
 

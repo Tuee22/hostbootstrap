@@ -1,10 +1,11 @@
---| hostbootstrap skeletal project-config schema (Dhall).
+--| hostbootstrap static-base project-config schema (Dhall).
 --
 -- This is the one configuration tier the Python bootstrapper reads; it is
 -- identical in shape across every project. It matches
--- `haskell/hostbootstrap-core/dhall/Type.dhall`: the rich project-level and
--- per-case test Dhall are artifacts the project binary generates — core owns
--- only this skeletal type and its in-process decoder.
+-- `haskell/hostbootstrap-core/dhall/Type.dhall` (an anti-drift test asserts the
+-- two share one shape): the rich project-level and per-case test Dhall are
+-- artifacts the project binary generates — core owns only this static-base type
+-- and its in-process decoder.
 --
 -- A project's `hostbootstrap.dhall` imports this package (injected as `H`) and
 -- builds a typed value: `H.config { project = …, dockerfile = …, resources = …

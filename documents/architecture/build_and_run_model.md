@@ -19,11 +19,11 @@
   ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
 
-> **Current state.** This is the *target* model. Today the Python bootstrapper
-> (`python/hostbootstrap/bootstrap.py`) still ensures Docker (a per-project Colima VM), builds the
-> project container, and on Linux builds the binary in-container and copies it out — only Apple silicon
-> builds host-native. Converging the bootstrapper to the host-native, no-copy-out model described here is
-> tracked in
+> **Current state.** This model is implemented. The Python bootstrapper
+> (`python/hostbootstrap/bootstrap.py`) builds the binary host-native on **every** substrate — Linux
+> included; there is no build-in-container, copy-out path — and execs it. Ensuring Docker, building the
+> project container, and the cordon are owned by the execed binary, not the bootstrapper. The original
+> convergence to this host-native, no-copy-out model is recorded in
 > [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md).
 
 ## Why the binary is built host-native
@@ -72,3 +72,24 @@ The two builds are distinct and owned by distinct layers: the bootstrapper's hos
 (the prerequisite to having any binary at all) and the binary's later container build (the code-check
 gate and any container-resident services). Neither is redundant — collapsing them would either skip
 the gate or ship an unrunnable binary.
+
+## The `HostTarget` Parameterization
+
+A linux-host operation runs against a typed **host target**: the local host or an incus VM. This is a
+host-provider axis orthogonal to substrate — the VM is still a `linux-cpu`/`linux-gpu` machine inside,
+and the host target is not a fifth run-model. It parameterizes the existing run-models rather than
+adding to them:
+
+```
+data HostTarget = Local | InVM IncusVM
+```
+
+Every linux-host operation runs through one dispatch point, `runInTarget`, against `Local` or `InVM`,
+with **no per-call branching** at the call sites. `runInTarget cfg Local t args` runs the resolved
+tool directly; `runInTarget cfg (InVM vm) t args` dispatches through one host
+`incus exec <name> -- <tool> <args>` into the VM (where the in-VM `<tool>` is the VM's own `$PATH`
+binary, since the VM is a separate machine). The run-models in [run_models](run_models.md) are
+unchanged; the host target sits underneath them, so the same machinery runs identically whether the
+linux host is local or encapsulated in an incus VM. See
+[incus](../engineering/incus.md) for the host-provider axis, the `ensure incus` install, and the VM
+lifecycle.

@@ -29,7 +29,10 @@ npm-shrinkwrap.json
 yarn.lock
 pnpm-lock.yaml
 spago.lock
+# Warm-store freezes are generated in-image, never committed or sent in context.
 cabal.project.freeze
+core.freeze
+daemon.freeze
 .tox/
 .nox/
 htmlcov/

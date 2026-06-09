@@ -10,25 +10,26 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
-the fail-fast `runReconciler`, and the generic `ensure <tool>` dispatcher. The six reconcilers (`docker`,
-`colima`, `cuda`, `homebrew`, `ghc`, `tart`) carry their applicability predicates and idempotent
-reconcile actions, wired into the command tree (on this `linux-gpu` host `ensure colima` fails fast while
-`ensure docker`/`ensure cuda` are no-ops). This phase reopens against the install-and-verify contract:
-the reconcile actions currently **probe/verify** but do not yet **install** a missing dependency, and the
-set grows to the host-provider (see [development_plan_standards.md § L](development_plan_standards.md)).
+the fail-fast `runReconciler`, the generic `ensure <tool>` dispatcher, and the shared
+`installAndVerify` probe-first install-and-verify driver. The seven reconcilers (`docker`, `colima`,
+`cuda`, `homebrew`, `ghc`, `tart`, and the cross-substrate `incus`) carry their applicability
+predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
+`installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
+toolkit on linux), unit-tested without invoking the package manager. They are wired into the command
+tree (on this `linux-gpu` host `ensure colima` fails fast while `ensure docker`/`ensure cuda`/`ensure
+incus` install-and-verify). The install-action half of the contract has landed (Sprint 3.3), and
+`ensure incus` — the first reconciler applicable on apple-silicon **and** linux — was added in
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md), so this phase is closed (see
+[development_plan_standards.md § L](development_plan_standards.md)).
 
-**Remaining Work** (reopened):
-- Give each reconcile action a real, substrate-branched **install** (Homebrew on apple-silicon;
-  apt/ghcup on linux), probe-first/idempotent; keep the pure `decide` unit-tested without invoking the
-  package manager.
-- Add `ensure incus` — the first reconciler applicable on apple-silicon AND linux (designed in
-  [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)).
-- The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
-  drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
-  GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-stream merge.
+The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
+drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
+GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-stream merge.
+
+The substrate-branched **install** actions (Sprint 3.3) and `ensure incus` (Phase 11) have **landed**.
 
 ## Phase Objective
 
@@ -110,9 +111,47 @@ Land the six concrete reconcilers as `ensure` subcommands.
 
 #### Remaining Work
 
-None for Sprint 3.2's original scope. The reconcile actions currently probe state through resolved tools
-and report/no-op; giving them real **install** actions (run by the project binary) is the reopened
-phase-level Remaining Work above.
+None.
+
+### Sprint 3.3: Install-and-verify reconcile actions [Done]
+
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`InstallStep`,
+`installAndVerify`), `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `Colima.hs`,
+`Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`, `haskell/hostbootstrap-core/test/EnsureSpec.hs`
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
+
+#### Objective
+
+Give each reconcile action a real, substrate-branched **install** so it brings the host to the desired
+state when the dependency is absent and is a verified no-op when it is present (install-and-verify, not
+check-only; see [development_plan_standards.md § L](development_plan_standards.md)).
+
+#### Reconciler Contract
+
+- `HostBootstrap.Ensure` exposes `InstallStep` (a resolved `HostTool` plus arguments) and
+  `installAndVerify name probe plan` — the probe-first loop: no-op when satisfied; otherwise run the
+  plan re-resolving tools after each step; re-verify and fail fast if still missing.
+- Each reconciler exposes a pure `installSteps :: Substrate -> Either String [InstallStep]` planner
+  (Homebrew on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container toolkit on linux), so the plan is
+  unit-tested without invoking the package manager. The live IO driver is exercised in real bootstrap
+  runs.
+
+#### Deliverables
+
+- The six reconcile actions route through `installAndVerify` with their probe and pure `installSteps`
+  planner; `homebrew` (toolchain root) and Apple `docker` (deferred to `ensure colima`) return `Left`
+  with a fail-fast instruction by design.
+
+#### Validation
+
+- `EnsureSpec` "install plans" asserts the planned steps for every reconciler across substrates
+  (Homebrew formulae on apple; apt/ghcup/container-toolkit on linux; `Left` for `homebrew` and Apple
+  `docker`). `cabal build all` and `cabal test` pass.
+
+#### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

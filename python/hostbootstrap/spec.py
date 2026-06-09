@@ -1,6 +1,6 @@
-"""Read the skeletal ``hostbootstrap.dhall`` into frozen dataclasses.
+"""Read the static-base ``hostbootstrap.dhall`` into frozen dataclasses.
 
-The schema is the skeletal Dhall package under ``dhall/`` — identical in shape
+The schema is the static-base Dhall package under ``dhall/`` — identical in shape
 across every project and matching ``haskell/hostbootstrap-core/dhall/Type.dhall``
 (``{ project, dockerfile, resources { cpu, memory, storage } }``). The
 pre-binary Python layer decodes this tier itself because the base image bakes no
@@ -36,7 +36,7 @@ class Resources:
 
 
 @dataclass(frozen=True)
-class SkeletalSpec:
+class StaticBaseSpec:
     """The one config tier the Python bootstrapper reads."""
 
     project: str
@@ -70,7 +70,7 @@ def _as_int(value: object, *, where: str) -> int:
     return value
 
 
-def load(path: Path) -> SkeletalSpec:
+def load(path: Path) -> StaticBaseSpec:
     if not path.is_file():
         raise SpecError(f"hostbootstrap.dhall not found at {path}")
 
@@ -81,7 +81,7 @@ def load(path: Path) -> SkeletalSpec:
 
     data = _as_map(rendered, where="<root>")
     resources = _as_map(data.get("resources"), where="resources")
-    return SkeletalSpec(
+    return StaticBaseSpec(
         project=_as_str(data.get("project"), where="project"),
         dockerfile=Path(_as_str(data.get("dockerfile"), where="dockerfile")),
         resources=Resources(

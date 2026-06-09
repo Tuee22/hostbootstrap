@@ -3,12 +3,21 @@
 module EnsureSpec (tests) where
 
 import Control.Exception (try)
+import Data.Either (isLeft)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
-import HostBootstrap.Ensure (Reconciler (..), decide, runReconciler)
+import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, runReconciler)
+import qualified HostBootstrap.Ensure.Colima as Colima
+import qualified HostBootstrap.Ensure.Cuda as Cuda
+import qualified HostBootstrap.Ensure.Docker as Docker
+import qualified HostBootstrap.Ensure.Ghc as Ghc
+import qualified HostBootstrap.Ensure.Homebrew as Homebrew
+import qualified HostBootstrap.Ensure.Incus as EIncus
+import qualified HostBootstrap.Ensure.Tart as Tart
 import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import System.Exit (ExitCode (..))
 import Test.Tasty (TestTree, testGroup)
@@ -30,15 +39,19 @@ tests =
     "EnsureSpec"
     [ testGroup "applicability matrix" applicabilityCases,
       testGroup "decide" decideCases,
-      testGroup "runReconciler" runCases
+      testGroup "runReconciler" runCases,
+      testGroup "install plans" installPlanCases
     ]
 
 applicabilityCases :: [TestTree]
 applicabilityCases =
-  [ testCase "the six reconcilers are present" $
-      map reconcilerName allReconcilers @?= ["docker", "colima", "cuda", "homebrew", "ghc", "tart"],
+  [ testCase "the seven reconcilers are present (incl. cross-substrate incus)" $
+      map reconcilerName allReconcilers
+        @?= ["docker", "colima", "cuda", "homebrew", "ghc", "tart", "incus"],
     testCase "docker applies to every substrate" $
       map (appliesTo (findR "docker")) [apple, cpu, gpu] @?= [True, True, True],
+    testCase "incus applies to apple AND linux (the first cross-substrate reconciler)" $
+      map (appliesTo (findR "incus")) [apple, cpu, gpu] @?= [True, True, True],
     testCase "colima applies to apple-silicon only" $
       map (appliesTo (findR "colima")) [apple, cpu, gpu] @?= [True, False, False],
     testCase "cuda applies to linux-gpu only" $
@@ -82,6 +95,42 @@ runCases =
       runReconciler r cfg
       ran <- readIORef ref
       ran @?= True
+  ]
+
+-- | The pure, substrate-branched install planners (install-and-verify, § L):
+-- Homebrew formulae on apple-silicon; apt/ghcup/container-toolkit on linux. The
+-- IO driver is exercised during real bootstrap runs; these assert the plans.
+installPlanCases :: [TestTree]
+installPlanCases =
+  [ testCase "colima: brew install + start on apple, Left elsewhere" $ do
+      Colima.installSteps apple
+        @?= Right [InstallStep Brew ["install", "colima"], InstallStep Colima ["start"]]
+      assertBool "colima Left on linux-cpu" (isLeft (Colima.installSteps cpu)),
+    testCase "tart: brew install cirruslabs/cli/tart on apple" $
+      Tart.installSteps apple @?= Right [InstallStep Brew ["install", "cirruslabs/cli/tart"]],
+    testCase "ghc: brew ghcup then ghcup install ghc on apple" $
+      Ghc.installSteps apple
+        @?= Right [InstallStep Brew ["install", "ghcup"], InstallStep Ghcup ["install", "ghc"]],
+    testCase "homebrew: no resolved-tool plan (toolchain root)" $
+      assertBool "homebrew Left on apple" (isLeft (Homebrew.installSteps apple)),
+    testCase "docker: apt install on linux, defer to colima on apple" $ do
+      let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "docker.io"], InstallStep Sudo ["systemctl", "enable", "--now", "docker"]]
+      Docker.installSteps cpu @?= linux
+      Docker.installSteps gpu @?= linux
+      assertBool "docker Left on apple" (isLeft (Docker.installSteps apple)),
+    testCase "cuda: container toolkit on linux-gpu, Left elsewhere" $ do
+      Cuda.installSteps gpu
+        @?= Right
+          [ InstallStep Sudo ["apt-get", "install", "-y", "nvidia-container-toolkit"],
+            InstallStep Sudo ["nvidia-ctk", "runtime", "configure", "--runtime=docker"],
+            InstallStep Sudo ["systemctl", "restart", "docker"]
+          ]
+      assertBool "cuda Left on linux-cpu" (isLeft (Cuda.installSteps cpu)),
+    testCase "incus: brew on apple, apt + admin init on linux (cross-substrate)" $ do
+      EIncus.installSteps apple @?= Right [InstallStep Brew ["install", "incus"]]
+      let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "incus"], InstallStep Incus ["admin", "init", "--minimal"]]
+      EIncus.installSteps cpu @?= linux
+      EIncus.installSteps gpu @?= linux
   ]
 
 isRight :: Either a b -> Bool

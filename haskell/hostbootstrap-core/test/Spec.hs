@@ -1,9 +1,12 @@
 module Main (main) where
 
 import qualified CordonSpec
+import qualified DhallGenSpec
 import qualified DocValidatorSpec
 import qualified EnsureSpec
+import qualified HarnessSpec
 import qualified HostToolSpec
+import qualified IncusSpec
 import qualified LifecycleSpec
 import qualified SchemaSpec
 import qualified SubstrateSpec
@@ -19,7 +22,10 @@ main = do
         HostToolSpec.tests,
         EnsureSpec.tests,
         SchemaSpec.tests,
+        DhallGenSpec.tests,
         CordonSpec.tests,
         LifecycleSpec.tests,
+        HarnessSpec.tests,
+        IncusSpec.tests,
         docTests
       ]

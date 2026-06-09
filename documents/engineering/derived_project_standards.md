@@ -28,30 +28,77 @@ main = runHostBootstrapCLI "app" appProjectCommands
 
 `runHostBootstrapCLI progName projectCommands` composes the project's own subcommands onto the core
 tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
-`config render`). The skeletal `hostbootstrap` binary is the same tree with no project commands, built
+`config render`). The bare `hostbootstrap` binary is the same tree with no project commands, built
 the same way (host-native, like every project binary), not baked into the base image. There is no
 execution-model, lifecycle, or mount declaration anywhere in the
 project — those concepts are removed; the binary's own subcommands and its generated project/test
 Dhall carry whatever runtime shape the project needs.
 
-A worked example lives in the repository at `haskell/hostbootstrap-core/example/Main.hs`: it calls
-`runHostBootstrapCLI "hostbootstrap-example" projectCommands` with one project verb, so
-`hostbootstrap-example --help` shows the core verbs (`ensure`, `config`, `cluster`) plus the project's
-own — the extension contract a consumer follows, with no core verb re-implemented.
+The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
+`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, so `hostbootstrap-demo --help` shows the core
+verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own noun-first verbs
+(`incus`/`vm`/`harbor`/`web`) — the extension contract a consumer follows, with no core verb
+re-implemented. It also exercises the other extension streams: `demo web schema` prints the
+`coreArtifacts ++ demoArtifacts` schema union, and `demo vm test` drives the harness over the demo's
+case matrix.
+
+## The three-level library hierarchy
+
+The reusable surface is a three-level Cabal library hierarchy. Each level adds **only its delta** and
+imports the level below it; nothing re-implements a lower level's verbs:
+
+| Level | Library | Consumers |
+|-------|---------|-----------|
+| L0 | `hostbootstrap-core` | `mcts` and `hostbootstrap-demo` consume it directly; `daemon-substrate` imports it |
+| L1 | `daemon-substrate` | the daemon apps import it |
+| L2 | `{jitML, infernix}` | the leaf apps |
+
+Each level extends the same **four parallel streams**, one additive merge idiom each:
+
+| Stream | Merge idiom | Rule |
+|--------|-------------|------|
+| optparse **CLI tree** | `runHostBootstrapCLI progName (lower ++ delta)` | append; never shadow a lower verb |
+| **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
+| **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
+| **test-harness** `Seams` | supply the level's seams | the app supplies only its case matrix |
+
+"L0-direct" (consuming L0 without going through L1) is independent of the integration mode below:
+`mcts` is L0-direct via mode 1; `hostbootstrap-demo` is L0-direct via mode 2; `daemon-substrate` is L1
+via mode 2.
+
+## Two integration modes
+
+A project integrates with `hostbootstrap` in one of two modes:
+
+1. **Freeze-import + the base-image contract** (no Cabal dependency on `hostbootstrap-core`). The
+   project imports only the warm-store freeze and consumes the base image's `LABEL`/`ENTRYPOINT`
+   contract; it does not depend on the `hostbootstrap-core` library in its `cabal.project`. This suits
+   a project that wants the warm toolchain and the base-image binary contract without extending the
+   command tree in Haskell (e.g. `mcts`).
+2. **`source-repository-package` + `runHostBootstrapCLI` extension.** The project adds
+   `hostbootstrap-core` (or `daemon-substrate` at L1) as a `source-repository-package` dependency and
+   ships one binary that calls `runHostBootstrapCLI progName projectCommands`, appending its own verbs
+   to the inherited tree (e.g. `daemon-substrate` and its apps, and the worked `demo/` consumer). This
+   is the mode the *Worked compliant Dockerfile shape* below illustrates.
+
+Both modes build the binary **host-native** into `./.build/<project>` and gate the project container on
+`check-code`; they differ only in whether the project takes a Cabal dependency to extend the command
+tree in Haskell.
 
 ## The rules
 
 1. **Inherit `FROM ${BASE_IMAGE}` and follow the Dockerfile rules.** POSIX `/bin/sh`, no pipes, no
    buildx, no `--platform`. See [base_image.md](base_image.md#dockerfile-rules).
-2. **Use the warm-store `cabal.project` template AND import the warm-store freeze.** Set
+2. **Use the warm-store `cabal.project` template AND import the layered warm-store freeze.** Set
    `with-compiler: ghc-9.12.4`, `tests: True`, `benchmarks: True`, `shared: True`,
-   `optimization: 2`, and add `import: /opt/basecontainer/haskell-deps/cabal.project.freeze` in
-   `cabal.project`. Derived projects ship **zero** `cabal.project.freeze` files of their own — the
-   freeze lives only in the base image and is referenced at build time so version drift cannot
-   happen. Add `hostbootstrap-core` as a `source-repository-package` (or local) dependency; its
-   transitive closure is already warm in the store. Without the freeze import, the resolver picks
-   different transitive versions than the warm store and rebuilds. See
-   [warm_store.md](warm_store.md#required-import-the-freeze-file).
+   `optimization: 2`, and import the fragment(s) for the project's layer in `cabal.project`: an
+   L0-direct consumer adds `import: /opt/basecontainer/haskell-deps/core.freeze`; a daemon app
+   additionally adds `import: /opt/basecontainer/haskell-deps/daemon.freeze`. Derived projects ship
+   **zero** freeze files of their own — the freezes live only in the base image and are referenced
+   at build time so version drift cannot happen. Add `hostbootstrap-core` as a
+   `source-repository-package` (or local) dependency; its transitive closure is already warm in the
+   store. Without the freeze import, the resolver picks different transitive versions than the warm
+   store and rebuilds. See [warm_store.md](warm_store.md#required-import-the-freeze-fragments).
 3. **Build the binary, run `<project> check-code`, and add a tini-wrapped `ENTRYPOINT`.** The check
    runs after the binary is installed and before any expensive backend work; the container is built
    on every substrate as the mandatory code-check gate. See
@@ -118,7 +165,7 @@ packages: .
 
 with-compiler: ghc-9.12.4
 
-import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+import: /opt/basecontainer/haskell-deps/core.freeze
 
 tests: True
 benchmarks: True
@@ -131,12 +178,15 @@ source-repository-package
   subdir: hostbootstrap-core
 ```
 
-No `cabal.project.freeze` is committed in the project — the warm-store freeze is imported from the
+This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon app would add a second
+`import: /opt/basecontainer/haskell-deps/daemon.freeze` line alongside it.
+
+No freeze is committed in the project — the layered warm-store freezes are imported from the
 base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
 
 ## See also
 
-* [base_image.md](base_image.md) — what the base image ships, including the skeletal `hostbootstrap`
+* [base_image.md](base_image.md) — what the base image ships, including the static-base `hostbootstrap`
   binary and the warm core closure
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate

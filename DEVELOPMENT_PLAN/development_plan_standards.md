@@ -259,7 +259,7 @@ tier into both the spinup cordon and the binary-generated configs.
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus a generic
 entrypoint (`runHostBootstrapCLI progName projectCommands`). A project binary extends the core tree
 with its own subcommands rather than re-implementing core verbs. This CLI tree is the first of the four
-parallel extension streams the library hierarchy composes additively (§ T). The skeletal `hostbootstrap`
+parallel extension streams the library hierarchy composes additively (§ T). The bare `hostbootstrap`
 binary (`hostbootstrap-core`'s own executable) is the core tree with no project commands; it is built
 like any project binary, not baked into the base image.
 

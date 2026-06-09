@@ -17,11 +17,14 @@ module HostBootstrap.Ensure
     ensureCommand,
     toolPresent,
     runTool,
+    InstallStep (..),
+    installAndVerify,
   )
 where
 
 import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
+import Control.Monad (foldM)
 import Data.Maybe (isJust)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool, absExePath, toolCommandName)
@@ -98,6 +101,65 @@ ensureCommand reconcilers =
       command
         (reconcilerName r)
         (info (pure (runEnsure r)) (progDesc (reconcilerSummary r)))
+
+-- | A single install step: a resolved host tool run with arguments. The step is
+-- a pure, inspectable value so the substrate-branched install plan can be
+-- unit-tested without invoking the package manager.
+data InstallStep = InstallStep
+  { stepTool :: HostTool,
+    stepArgs :: [String]
+  }
+  deriving (Eq, Show)
+
+-- | Probe-first install-and-verify (see @development_plan_standards.md § L@). If
+-- the dependency is already satisfied the reconciler is a verified no-op;
+-- otherwise it runs the substrate-branched install plan and re-verifies, failing
+-- fast with a one-line diagnostic if the dependency is still missing. Tools are
+-- re-resolved after each step so a freshly installed tool (e.g. @ghcup@ just laid
+-- down by @brew@) is discoverable by the next step and the verify probe. The
+-- @plan@ argument is pure and unit-tested per reconciler; this driver is the IO
+-- shell exercised during real bootstrap runs.
+installAndVerify ::
+  -- | reconciler name (for messages)
+  String ->
+  -- | probe: is the dependency satisfied?
+  (HostConfig -> IO Bool) ->
+  -- | substrate-branched install plan
+  (Substrate -> Either String [InstallStep]) ->
+  HostConfig ->
+  IO ()
+installAndVerify name probe plan cfg0 = do
+  satisfied <- probe cfg0
+  if satisfied
+    then putStrLn ("ensure " ++ name ++ ": present (no-op)")
+    else case plan (hcSubstrate cfg0) of
+      Left err -> die ("ensure " ++ name ++ ": " ++ err)
+      Right steps -> do
+        putStrLn ("ensure " ++ name ++ ": installing (" ++ show (length steps) ++ " step(s))")
+        cfg1 <- foldM runStep cfg0 steps
+        ok <- probe cfg1
+        if ok
+          then putStrLn ("ensure " ++ name ++ ": installed and verified")
+          else die ("ensure " ++ name ++ ": still not satisfied after install; install manually and retry")
+  where
+    runStep cfg (InstallStep tool args) = do
+      result <- runTool cfg tool args
+      case result of
+        Right (ExitSuccess, _, _) -> buildHostConfig (hcSubstrate cfg)
+        Right (ExitFailure n, _, errOut) ->
+          die
+            ( "ensure "
+                ++ name
+                ++ ": install step `"
+                ++ toolCommandName tool
+                ++ " "
+                ++ unwords args
+                ++ "` failed (exit "
+                ++ show n
+                ++ ") "
+                ++ errOut
+            )
+        Left err -> die ("ensure " ++ name ++ ": " ++ err)
 
 -- | Whether a host tool is resolved in the configuration.
 toolPresent :: HostConfig -> HostTool -> Bool

@@ -2,20 +2,21 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | The skeletal @hostbootstrap.dhall@ schema and its in-process decoder.
+-- | The static-base @hostbootstrap.dhall@ schema and its in-process decoder.
 --
 -- This is the one config tier the Python bootstrapper reads; it is identical in
 -- shape across projects and carries only the fields needed before any project
--- binary exists. The decoder is in-process Haskell using the @dhall@ library —
--- there is no external @dhall-to-json@ binary. The rich project-level and
--- per-case test Dhall are artifacts the project binary generates; core owns only
--- this skeletal decoder (see @development_plan_standards.md § Q@).
+-- binary exists. The decoder is in-process Haskell using the @dhall@ library and
+-- backs @config show@ after the binary exists; the pre-binary read is done by
+-- the Python bootstrapper via the pinned @dhall-to-json@. The rich project-level
+-- and per-case test Dhall are artifacts the project binary generates; core owns
+-- only this static-base decoder (see @development_plan_standards.md § Q@).
 module HostBootstrap.Config.Schema
-  ( Skeleton (..),
+  ( StaticBase (..),
     Resources (..),
-    decodeSkeletonText,
-    decodeSkeletonFile,
-    renderSkeleton,
+    decodeStaticBaseText,
+    decodeStaticBaseFile,
+    renderStaticBase,
   )
 where
 
@@ -35,26 +36,26 @@ data Resources = Resources
   }
   deriving (Eq, Show, Generic, FromDhall)
 
--- | The skeletal @hostbootstrap.dhall@ record.
-data Skeleton = Skeleton
+-- | The static-base @hostbootstrap.dhall@ record.
+data StaticBase = StaticBase
   { project :: Text,
     dockerfile :: Text,
     resources :: Resources
   }
   deriving (Eq, Show, Generic, FromDhall)
 
--- | Decode a skeletal config from Dhall source text. Throws a typed Dhall error
--- on a malformed or ill-typed config.
-decodeSkeletonText :: Text -> IO Skeleton
-decodeSkeletonText = Dhall.input auto
+-- | Decode a static-base config from Dhall source text. Throws a typed Dhall
+-- error on a malformed or ill-typed config.
+decodeStaticBaseText :: Text -> IO StaticBase
+decodeStaticBaseText = Dhall.input auto
 
--- | Decode a skeletal config from a @hostbootstrap.dhall@ file.
-decodeSkeletonFile :: FilePath -> IO Skeleton
-decodeSkeletonFile = inputFile auto
+-- | Decode a static-base config from a @hostbootstrap.dhall@ file.
+decodeStaticBaseFile :: FilePath -> IO StaticBase
+decodeStaticBaseFile = inputFile auto
 
--- | A short human-readable summary of a decoded skeleton.
-renderSkeleton :: Skeleton -> String
-renderSkeleton s =
+-- | A short human-readable summary of a decoded static-base config.
+renderStaticBase :: StaticBase -> String
+renderStaticBase s =
   T.unpack $
     T.unlines
       [ "project:    " <> project s,

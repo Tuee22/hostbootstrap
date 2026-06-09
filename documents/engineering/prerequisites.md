@@ -23,7 +23,7 @@ and a handful of system tools. Its job is to assert the host is bootstrappable, 
 toolchain, build the project binary host-native into `./.build/<project>`, and exec it. The fail-fast
 minimums below are the preconditions for that pre-binary work. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
-project binary (or `hostbootstrap-core`'s own skeletal binary).
+project binary (or `hostbootstrap-core`'s own bare binary).
 
 ## Linux Minimums
 
@@ -96,5 +96,5 @@ until Phase 6 reclaims the residual pre-binary subset into the thin bootstrapper
 
 - [ensure_reconcilers.md](ensure_reconcilers.md) — the reconcilers that cover everything beyond the
   minimums
-- [schema.md](schema.md) — the skeletal config the Python layer reads after the minimums pass
+- [schema.md](schema.md) — the static-base config the Python layer reads after the minimums pass
 - [base_image.md](base_image.md) — the image the project container is built from

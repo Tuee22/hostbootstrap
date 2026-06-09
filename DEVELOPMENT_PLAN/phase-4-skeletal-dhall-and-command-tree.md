@@ -9,28 +9,27 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Config.Schema` provides the in-process Haskell decoder for the static-base
 `hostbootstrap.dhall` (`{ project, dockerfile, resources {cpu, memory, storage} }`), backing
 `hostbootstrap config show`. `HostBootstrap.Command` composes the `ensure` and `config` verbs, and
-`runHostBootstrapCLI` extends the tree with project commands (demonstrated today by the
-`hostbootstrap-example` binary; to be superseded by the worked `demo/` consumer). **Correction:** the
-**pre-binary** read of the static base is done by the Python bootstrapper via the pinned `dhall-to-json`
-(`python/hostbootstrap/dhall_tool.py`), which is **retained** — it must run before any binary exists —
-not removed; the in-process Haskell decoder serves `config show` *after* the binary exists. This phase
-reopens against the binary-generated-schema contract (see
-[development_plan_standards.md § P, Q](development_plan_standards.md)).
+`runHostBootstrapCLI` extends the tree with project commands (demonstrated by the worked `demo/`
+consumer). **Correction:** the **pre-binary** read of the static base is done by the Python bootstrapper
+via the pinned `dhall-to-json` (`python/hostbootstrap/dhall_tool.py`), which is **retained** — it must run
+before any binary exists — not removed; the in-process Haskell decoder serves `config show` *after* the
+binary exists. The reopened binary-generated-schema items are delivered (see
+[development_plan_standards.md § P, Q](development_plan_standards.md)), so this phase is closed: `config
+schema` / `config render` over `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry and the reusable
+`Core.dhall` vocabulary (`Budget/fitsWithin`, `Budget/split`) **landed** in
+[phase-8-dhall-generation-and-extension.md](phase-8-dhall-generation-and-extension.md); the four-stream
+contract and the three-level hierarchy are documented (Phase 7 / Phase 8; the harness-`Seams` stream is
+Phase 10); and the `skeletal` → `static-base` rename + the `Type.dhall` ↔ Python `package.dhall`
+anti-drift check landed (Sprint 4.3).
 
-**Remaining Work** (reopened; the generation substrate is tracked in the net-new Phase 8):
-- Build `config schema` (the binary emits its own Dhall schema, reflected from its decoder types) and
-  `config render` (materialize deploy/per-case configs) over a `HostBootstrap.Dhall.Gen` +
-  `ConfigArtifact` registry and the reusable `Core.dhall` vocabulary (`Budget/fitsWithin`,
-  `Budget/split`).
-- Formalize the four-stream extension contract (CLI append, Dhall embed, schema concat, harness seams)
-  and the three-level library hierarchy.
-- Rename "skeletal" → "static base" consistently; add a CI check that `Type.dhall` and the Python-side
-  `package.dhall` keep the same shape (the anti-drift guarantee).
+The `skeletal` → `static-base` rename (code identifiers, comments, and the governed-docs prose; the
+phase-4 file path retains the historical token by the § E canonical layout) and the `Type.dhall` ↔
+Python `package.dhall` anti-drift check have **landed** (Sprint 4.3).
 
 ## Phase Objective
 
@@ -107,6 +106,40 @@ project-specific subcommands.
 
 - `hostbootstrap --help` shows the composed core tree (`ensure`, `config`); the
   `hostbootstrap-example` binary shows the core verbs plus its own `greet` verb.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.3: Static-base rename and anti-drift check [Done]
+
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`haskell/hostbootstrap-core/dhall/Type.dhall`, `python/hostbootstrap/spec.py`,
+`python/hostbootstrap/dhall/package.dhall`, `haskell/hostbootstrap-core/test/SchemaSpec.hs`
+**Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`
+
+#### Objective
+
+Make the static-base terminology consistent and mechanically prevent the two static-base schema
+files (the Haskell `Type.dhall` and the Python `package.dhall`) from drifting apart.
+
+#### Deliverables
+
+- The `Skeleton`/`Skeletal` token is renamed to `StaticBase`/`static-base` across the Haskell decoder
+  (`StaticBase`, `decodeStaticBaseText`/`File`, `renderStaticBase`), the Python reader
+  (`StaticBaseSpec`), the Dhall comments, and the governed-docs prose. The bare `hostbootstrap`
+  executable (formerly "skeletal executable") is renamed to "bare". The phase-4 file path keeps the
+  historical token per the § E canonical layout.
+- `SchemaSpec` adds an anti-drift test: `Type.dhall` and `(package.dhall).Config` are imported,
+  type-checked, and normalised by the `dhall` library and compared judgmentally (field-order
+  insensitive), so a change to one without the other fails `cabal test`.
+
+#### Validation
+
+- `cabal build all` and `cabal test` pass (the anti-drift test confirms `Type.dhall` ≡
+  `package.dhall.Config`); the Python suite passes at 100% coverage (`check_code` clean) on the
+  renamed identifiers.
 
 #### Remaining Work
 

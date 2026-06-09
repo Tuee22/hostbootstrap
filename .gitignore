@@ -28,7 +28,12 @@ npm-shrinkwrap.json
 yarn.lock
 pnpm-lock.yaml
 spago.lock
+# The warm-store freezes are generated in-image by `cabal freeze` and never
+# committed (the base image is the single source of truth for transitive dep
+# versions). See documents/engineering/warm_store.md and gitignore_guardrails.md.
 cabal.project.freeze
+core.freeze
+daemon.freeze
 .tox/
 .nox/
 htmlcov/

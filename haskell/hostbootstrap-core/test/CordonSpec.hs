@@ -5,6 +5,7 @@ module CordonSpec (tests) where
 import Data.List (isInfixOf)
 import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Config.Schema (Resources (..))
+import qualified HostBootstrap.Config.Vocab as V
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -24,7 +25,8 @@ tests =
     [ testGroup "parseQuantity" quantityCases,
       testGroup "budget" budgetCases,
       testGroup "verifyBudget" verifyCases,
-      testGroup "sizing" sizingCases
+      testGroup "fitsBudget" fitsCases,
+      testGroup "sizing + applied cordon" sizingCases
     ]
 
 quantityCases :: [TestTree]
@@ -62,14 +64,47 @@ verifyCases =
   where
     budget = ResourceBudget 4 (8 * gib) (20 * gib)
 
+fitsCases :: [TestTree]
+fitsCases =
+  [ testCase "a fitting pod set is accepted" $
+      fitsBudget (V.Budget 4 8 20) [V.PodResources 2 1 1 1 2] @?= Right (),
+    testCase "an over-cpu pod set is rejected naming cpu" $
+      fitsBudget (V.Budget 2 8 20) [V.PodResources 3 1 2 1 1]
+        @?= Left (Overflow "cpu" 6 2),
+    testCase "an over-memory pod set is rejected naming memory" $
+      fitsBudget (V.Budget 8 4 20) [V.PodResources 3 1 1 1 4]
+        @?= Left (Overflow "memory" 12 4),
+    testCase "preflightBudget passes within spare capacity" $
+      preflightBudget demoResources (HostCapacity 8 (16 * gib) (100 * gib)) @?= Right (),
+    testCase "preflightBudget fails fast when short" $
+      leftHas "cpu" (preflightBudget demoResources (HostCapacity 2 (16 * gib) (100 * gib)))
+  ]
+
 sizingCases :: [TestTree]
 sizingCases =
-  [ testCase "colima sizing reflects the budget" $
-      colimaSizingArgs demoResources
-        @?= Right ["start", "--cpu", "4", "--memory", "8", "--disk", "20"],
-    testCase "kind node limits reflect the budget" $
-      kindNodeLimits demoResources
-        @?= Right [("cpus", "4"), ("memory", show (8 * gib)), ("storage", show (20 * gib))]
+  [ testCase "colima sizing emits the full profiled argv" $
+      colimaSizingArgs "demo" demoResources
+        @?= Right ["start", "--profile", "demo", "--cpu", "4", "--memory", "8", "--disk", "20"],
+    testCase "colima handles the bare 8Gi form (old Python _gib mishandled it)" $
+      colimaSizingArgs "demo" (Resources {cpu = 2, memory = "8Gi", storage = "20Gi"})
+        @?= Right ["start", "--profile", "demo", "--cpu", "2", "--memory", "8", "--disk", "20"],
+    testCase "applied Linux cordon targets the control-plane with budget caps" $
+      kindNodeCordonArgs "demo-test-case1" demoResources
+        @?= Right
+          [ "update",
+            "--cpus",
+            "4",
+            "--memory",
+            show (8 * gib),
+            "--memory-swap",
+            show (8 * gib),
+            "demo-test-case1-control-plane"
+          ],
+    testCase "the docker update cordon argv omits storage (no docker flag)" $
+      assertBool "no storage in docker update argv" $
+        case kindNodeCordonArgs "demo" demoResources of
+          Right args -> show (20 * gib) `notElem` args
+          Left _ -> False
   ]
 
 leftHas :: String -> Either String a -> IO ()

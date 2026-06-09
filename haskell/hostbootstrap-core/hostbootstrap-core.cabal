@@ -36,9 +36,15 @@ library
       HostBootstrap.Ensure.Homebrew
       HostBootstrap.Ensure.Ghc
       HostBootstrap.Ensure.Tart
+      HostBootstrap.Ensure.Incus
+      HostBootstrap.Incus
+      HostBootstrap.HostTarget
       HostBootstrap.Config.Schema
+      HostBootstrap.Config.Vocab
+      HostBootstrap.Dhall.Gen
       HostBootstrap.Cluster.Lifecycle
       HostBootstrap.Cluster.Cordon
+      HostBootstrap.Harness
       HostBootstrap.DocValidator
   build-depends:
       base >=4.18 && <5
@@ -60,19 +66,6 @@ executable hostbootstrap
       base >=4.18 && <5
     , hostbootstrap-core
 
--- A worked example of a project binary extending the core command tree. It
--- demonstrates the runHostBootstrapCLI contract (core verbs + project verbs)
--- without re-implementing any core verb. See
--- documents/engineering/derived_project_standards.md.
-executable hostbootstrap-example
-  import: warnings
-  hs-source-dirs: example
-  main-is: Main.hs
-  build-depends:
-      base >=4.18 && <5
-    , hostbootstrap-core
-    , optparse-applicative
-
 test-suite hostbootstrap-core-test
   import: warnings
   type: exitcode-stdio-1.0
@@ -83,12 +76,16 @@ test-suite hostbootstrap-core-test
       HostToolSpec
       EnsureSpec
       SchemaSpec
+      DhallGenSpec
       CordonSpec
       LifecycleSpec
+      HarnessSpec
+      IncusSpec
       DocValidatorSpec
   build-depends:
       base >=4.18 && <5
     , containers
+    , dhall
     , directory
     , filepath
     , hostbootstrap-core

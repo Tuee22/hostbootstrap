@@ -1,5 +1,6 @@
 module LifecycleSpec (tests) where
 
+import Data.List (isInfixOf)
 import HostBootstrap.Cluster.Lifecycle
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -16,7 +17,8 @@ tests =
     "LifecycleSpec"
     [ testGroup "resolvePlan" planCases,
       testGroup "profiles are distinct" profileCases,
-      testGroup "never-delete-.data" dataInvariantCases
+      testGroup "never-delete-.data" dataInvariantCases,
+      testGroup "status report" statusCases
     ]
 
 planCases :: [TestTree]
@@ -55,4 +57,17 @@ dataInvariantCases =
           (removeDel, _) = teardown Delete test1
       assertBool "down keeps test .data" (dataPath test1 `notElem` removeDown)
       assertBool "delete keeps test .data" (dataPath test1 `notElem` removeDel)
+  ]
+
+statusCases :: [TestTree]
+statusCases =
+  [ testCase "running cluster reports (running) and preserves .data" $ do
+      let report = statusReport prod True
+      assertBool "names the cluster" ("demo" `isInfixOf` report)
+      assertBool "marks it running" ("(running)" `isInfixOf` report)
+      assertBool "shows preserved .data" ("/srv/demo/.data (preserved)" `isInfixOf` report),
+    testCase "absent cluster reports (absent), still preserving .data" $ do
+      let report = statusReport prod False
+      assertBool "marks it absent" ("(absent)" `isInfixOf` report)
+      assertBool "still preserves .data" ("(preserved)" `isInfixOf` report)
   ]

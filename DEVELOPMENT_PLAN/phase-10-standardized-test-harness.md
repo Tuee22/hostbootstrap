@@ -10,16 +10,22 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-8 (the `config render` per-case Dhall and the `Core.dhall` budget helpers), phase-9
-(the applied cordon and `fitsBudget`/`Budget/split`)
-
-Every project's tests run through one L0 engine: `runMatrix` drives a list of generated per-case configs,
-each spinning up an isolated, budget-sliced environment that tears down while preserving production
-`.data`. The harness is parameterized by a `Seams` record (the default seams do a container run; cluster
-projects supply kind/Helm seams), and the app supplies only the case matrix. The same phase names the
-four run-models the wider system selects between.
+`HostBootstrap.Harness` is **landed**: `runMatrix :: Seams env -> [Case] -> IO Report` drives the case
+matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
+`./.test_data/<case>/`), running the body, and tearing down in a guaranteed `finally` (a body exception
+is recorded as `Fail`, not leaked). Never-touch-production is mechanical: `guardTestDelete` refuses any
+non-prefixed cluster name and the pure `teardown` partition keeps `.data` out of the removal set.
+`sliceBudget` divides the budget across divisible cases by weight (`splitByWeight`, floor) while
+indivisible (GPU) cases each get the full budget at concurrency 1. `selectRunModel` derives the four
+run-models (`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) from the collapsed selection key — never
+declared in Dhall. The L0 `OneShot` model ships both the pure `oneShotRunArgs` argv and the real
+`oneShotSeams` IO seam (wired through the resolved Docker tool like `cluster up`). The `test` and
+`check-code` verbs are on the core tree, inherited by every binary. The L0 engine, the pure cores, and
+the verbs are implemented and unit-tested; the live container/cluster run is exercised in real runs (the
+demo, [Phase 13](phase-13-hostbootstrap-demo.md)), the same standard the cluster lifecycle (Phase 5)
+follows. This phase is closed.
 
 ## Phase Objective
 
@@ -30,11 +36,10 @@ matrix; never-touch-production is mechanical and unit-tested.
 
 ## Sprints
 
-### Sprint 10.1: `runMatrix` driver and per-case isolation [Blocked]
+### Sprint 10.1: `runMatrix` driver and per-case isolation [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprint 8.4)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `system-components.md`
 
 #### Objective
@@ -55,11 +60,10 @@ Land the matrix driver and the isolated per-case profile derivation.
 
 None.
 
-### Sprint 10.2: `guardTestDelete` and the never-touch-production invariant [Blocked]
+### Sprint 10.2: `guardTestDelete` and the never-touch-production invariant [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-5 (the teardown partition)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -82,11 +86,10 @@ teardown partition.
 
 None.
 
-### Sprint 10.3: Budget-slicing [Blocked]
+### Sprint 10.3: Budget-slicing [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-9 (sprint 9.3)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`
 
 #### Objective
@@ -107,11 +110,10 @@ Keep the matrix within the project ceiling.
 
 None.
 
-### Sprint 10.4: The four run-models and the selection key [Blocked]
+### Sprint 10.4: The four run-models and the selection key [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-6 (host-native build), phase-10 (sprint 10.1)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `python/hostbootstrap/bootstrap.py` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/run_models.md`, `documents/architecture/build_and_run_model.md`
 
 #### Objective
@@ -123,21 +125,25 @@ Name the minimal run-model set and how it is selected.
 - The four models — `OneShot` (build-if-needed + `docker run --rm [-it] [mounts]`, budget-capped),
   `HostNative` (host-native build + host exec), `HostDaemon` (long-running host service), `Cluster`
   (kind+Helm) — and the selection key `(verb x detected-substrate x library-layer x generated-topology)`,
-  never declared in Dhall. The default container-run (`OneShot`) `Seams` ship in L0.
+  never declared in Dhall (`selectRunModel`). The L0 `OneShot` model ships the pure, budget-capped
+  `oneShotRunArgs` (`docker run --rm [-it] --cpus/--memory [-v mounts] <image> <cmd>`) **and** the real
+  `oneShotSeams` IO seam that runs it through the resolved Docker tool (wired like `cluster up`; live run
+  is real-run); `defaultSeams` is the trivial pass-through for the bare binary's empty matrix.
 
 #### Validation
 
-- The default `Seams` run a one-shot container case; `run_models.md` documents the selection key.
+- `HarnessSpec` asserts `selectRunModel` for all four models and that `oneShotRunArgs` is budget-capped,
+  mount-bound (`:ro` on read-only), `-it` when interactive, and command-tailed. `run_models.md` documents
+  the selection key. `cabal test` passes.
 
 #### Remaining Work
 
 None.
 
-### Sprint 10.5: `test` and `check-code` verbs [Blocked]
+### Sprint 10.5: `test` and `check-code` verbs [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-10 (sprint 10.1)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/testing.md`, `documents/engineering/code_check_doctrine.md`
 
 #### Objective

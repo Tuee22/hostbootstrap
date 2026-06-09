@@ -156,7 +156,7 @@ documents are easier to skim than one combined one.
   substrate detection, cluster-lifecycle semantics, the command tree projects extend) changes,
   update the relevant `documents/architecture/*.md` and `documents/engineering/*.md` files and the
   affected phase document in the same change
-- when the skeletal `hostbootstrap.dhall` schema changes, update
+- when the static-base `hostbootstrap.dhall` schema changes, update
   `documents/engineering/schema.md` and the affected phase document in the same change
 - when the base image contents or warm store change, update `documents/engineering/base_image.md`,
   `documents/engineering/warm_store.md`, and the affected phase document in the same change
@@ -178,6 +178,15 @@ runs through the project's canonical code-check. It verifies:
 - relative link resolution for governed docs, governed root docs, and phase-plan docs
 - root `README.md` references to both `documents/` and `DEVELOPMENT_PLAN/`
 - `DEVELOPMENT_PLAN/` phase documents retaining their `## Documentation Requirements` section
+- lowercase `snake_case` file naming under `documents/` (only `README.md` is exempt)
+- the canonical `documents/` taxonomy: every top-level category is one of
+  `architecture`, `engineering`, `operations`, `languages` (the declared
+  `allowedTaxonomy` set)
+
+The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
+`checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
+from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
+family.
 
 Running `cabal test` (the canonical Haskell code-check) fails when any governed document drifts from
 the rules above.

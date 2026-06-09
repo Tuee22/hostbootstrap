@@ -12,25 +12,24 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `hostbootstrap-core` is a consumable Cabal package and
 `documents/engineering/derived_project_standards.md` documents the consume-as-library pattern. This phase
-reopens against the **three-level library hierarchy** contract: `hostbootstrap-core` (L0) ◄
+reopened against the **three-level library hierarchy** contract: `hostbootstrap-core` (L0) ◄
 `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2), with `mcts` consuming L0 directly; each level extends
 the four parallel streams (CLI tree, Dhall vocabulary, schema-gen registry, harness seams). The worked
-consumer is now **`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)),
-which supersedes the thin `hostbootstrap-example` binary. The bulk of each consumer migration remains the
-consuming repository's own work.
+consumer is **`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)),
+which supersedes the retired `hostbootstrap-example` binary. The three-level hierarchy and the two
+integration modes are documented (Sprint 7.3), and the worked-example references are re-pointed from the
+retired `example/Main.hs` to `demo/` (Phase 13, Sprint 13.7), so this phase is closed. The bulk of each
+consumer migration remains the consuming repository's own work.
 
-**Remaining Work** (reopened):
-- Document the three-level hierarchy and the **two integration modes** — (1) freeze-import + the
-  base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`), and (2)
-  `source-repository-package` + `runHostBootstrapCLI` extension (`daemon-substrate` and its apps) — in
-  `documents/engineering/derived_project_standards.md` (see
-  [development_plan_standards.md § P, § T](development_plan_standards.md)).
-- Re-point the "worked example" references from `example/Main.hs` to `demo/` (the retirement lands in
-  [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)).
+The three-level hierarchy and the **two integration modes** — (1) freeze-import + the base-image
+`LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`), and (2) `source-repository-package` +
+`runHostBootstrapCLI` extension (`daemon-substrate` and its apps, and the `demo/` consumer) — are
+**documented** in `documents/engineering/derived_project_standards.md` (Sprint 7.3; see
+[development_plan_standards.md § P, § T](development_plan_standards.md)).
 
 ## Phase Objective
 
@@ -104,6 +103,37 @@ Record the future-consumer outline so the contract stays honest while the migrat
 None on the `hostbootstrap` side. `infernix` migrating to consume the host trio back from
 `hostbootstrap-core`, and `jitML` reusing the CUDA/cluster logic while keeping Swift/Metal (Tart
 build-only), are future consumer-repository work.
+
+### Sprint 7.3: Three-level hierarchy and the two integration modes [Done]
+
+**Status**: Done
+**Implementation**: `documents/engineering/derived_project_standards.md`
+**Docs to update**: `documents/engineering/derived_project_standards.md`
+
+#### Objective
+
+Document the three-level library hierarchy (`hostbootstrap-core` L0 ◄ `daemon-substrate` L1 ◄
+`{jitML, infernix}` L2; `mcts` and `hostbootstrap-demo` L0-direct) and the two integration modes a
+consumer chooses between, so the derived-project contract states how each level extends the four
+parallel streams (see [development_plan_standards.md § P, § T](development_plan_standards.md)).
+
+#### Deliverables
+
+- `derived_project_standards.md` gains a *three-level library hierarchy* section (the L0/L1/L2 table
+  and the four-stream merge-idiom table) and a *two integration modes* section: (1) freeze-import + the
+  base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`); (2)
+  `source-repository-package` + `runHostBootstrapCLI` extension (`daemon-substrate` and its apps, and
+  the `demo/` consumer). It also notes that the thin `example/Main.hs` is superseded by `demo/`.
+
+#### Validation
+
+- `cabal test` passes (the `HostBootstrap.DocValidator` gate keeps the doc's metadata, links, and
+  structure conformant).
+
+#### Remaining Work
+
+The example→`demo/` reference re-point and the `hostbootstrap-example` retirement land in
+[phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md) (Sprint 13.7), once `demo/` exists.
 
 ## Documentation Requirements
 

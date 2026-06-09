@@ -1,28 +1,57 @@
 -- | The @ensure colima@ reconciler: the per-project Colima VM on Apple silicon.
-module HostBootstrap.Ensure.Colima (reconciler) where
+--
+-- Install-and-verify (see @development_plan_standards.md § L@): @brew install@
+-- the @colima@ formula if absent and start the VM, a verified no-op when it is
+-- already installed and running. The pure 'installSteps' planner is unit-tested.
+module HostBootstrap.Ensure.Colima (reconciler, installSteps) where
 
-import HostBootstrap.Ensure (Reconciler (..), runTool, toolPresent)
-import HostBootstrap.HostTool (HostTool (Colima))
-import HostBootstrap.Substrate (isAppleSilicon)
-import System.Exit (ExitCode (..), die)
+import HostBootstrap.Ensure
+  ( InstallStep (..),
+    Reconciler (..),
+    installAndVerify,
+    runTool,
+    toolPresent,
+  )
+import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.HostTool (HostTool (Brew, Colima))
+import HostBootstrap.Substrate
+  ( Substrate,
+    SubstrateName (AppleSilicon),
+    isAppleSilicon,
+    renderSubstrateName,
+    substrateName,
+  )
+import System.Exit (ExitCode (..))
 
 reconciler :: Reconciler
 reconciler =
   Reconciler
     { reconcilerName = "colima",
-      reconcilerSummary = "Ensure the per-project Colima VM is running (Apple silicon)",
+      reconcilerSummary = "Ensure the per-project Colima VM is installed and running (Apple silicon)",
       appliesTo = isAppleSilicon,
       requirement = "apple-silicon",
-      reconcile = \cfg ->
-        if not (toolPresent cfg Colima)
-          then die "ensure colima: colima not installed. Run `ensure homebrew` then `brew install colima`."
-          else do
-            status <- runTool cfg Colima ["status"]
-            case status of
-              Right (ExitSuccess, _, _) -> putStrLn "ensure colima: VM running (no-op)"
-              _ -> do
-                started <- runTool cfg Colima ["start"]
-                case started of
-                  Right (ExitSuccess, _, _) -> putStrLn "ensure colima: VM started"
-                  _ -> die "ensure colima: failed to start the Colima VM."
+      reconcile = installAndVerify "colima" satisfied installSteps
     }
+
+-- | Colima is satisfied when it is installed and @colima status@ reports the VM
+-- is running.
+satisfied :: HostConfig -> IO Bool
+satisfied cfg
+  | not (toolPresent cfg Colima) = pure False
+  | otherwise = do
+      status <- runTool cfg Colima ["status"]
+      pure $ case status of
+        Right (ExitSuccess, _, _) -> True
+        _ -> False
+
+-- | The substrate-branched install plan: @brew install colima@ then
+-- @colima start@. @brew install@ is idempotent (a no-op when already installed).
+installSteps :: Substrate -> Either String [InstallStep]
+installSteps sub
+  | substrateName sub == AppleSilicon =
+      Right
+        [ InstallStep Brew ["install", "colima"],
+          InstallStep Colima ["start"]
+        ]
+  | otherwise =
+      Left ("colima is only applicable on apple-silicon, not " ++ renderSubstrateName (substrateName sub))

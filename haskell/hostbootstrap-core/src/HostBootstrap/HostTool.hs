@@ -35,6 +35,7 @@ data HostTool
   | Tart
   | Sudo
   | XcodeSelect
+  | Incus
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Every host tool, for building a fully-resolved 'HostBootstrap.HostConfig'.
@@ -56,6 +57,7 @@ toolCommandName NvidiaSmi = "nvidia-smi"
 toolCommandName Tart = "tart"
 toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"
+toolCommandName Incus = "incus"
 
 -- | An absolute path to a resolved executable. The constructor is not exported;
 -- 'mkAbsExe' is the only way to build one, so a value of this type is always an

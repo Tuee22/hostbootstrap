@@ -22,27 +22,44 @@ material lives here. Conventions are defined in
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
   build/run model, Tart as build-only, `./.build/`, and why the binary (not the bootstrapper) builds
   the project container.
+- [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
+  library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively.
+- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the two-kinds / three-tiers /
+  three-vocabulary Dhall model and the reflect-from-decoders vs hand-written-assert nuance.
+- [architecture/run_models.md](architecture/run_models.md) — the four run-models (`OneShot`,
+  `HostNative`, `HostDaemon`, `Cluster`) and the collapsed key that selects one, never declared in Dhall.
+- [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
+  the seam-split (L0 driver vs cluster seams vs app matrix), the mechanical delete-guard, and budget-slicing.
 
 ## Engineering
 
-- [engineering/schema.md](engineering/schema.md) — the skeletal `hostbootstrap.dhall` schema.
+- [engineering/schema.md](engineering/schema.md) — the static-base `hostbootstrap.dhall` schema.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model and the
   rule that rich schemas are binary-generated artifacts.
+- [engineering/config_generation.md](engineering/config_generation.md) — the `ConfigArtifact`
+  registry, the `config schema`/`config render` verbs, and the render round-trip guarantee.
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
   contract and the fail-fast-on-wrong-host CLIs.
 - [engineering/resource_budgeting.md](engineering/resource_budgeting.md) — the resource budget,
   verify-spare-resources, and Colima/kind cordoning.
+- [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
+  one canonical parser, the three rings, and the per-substrate storage cordon.
+- [engineering/incus.md](engineering/incus.md) — the `incus` host-provider axis: the `HostTarget`
+  parameterization, `ensure incus`, the VM lifecycle and `incus exec` dispatch, and the sizing cordon.
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm lifecycle
   semantics, the never-delete-`.data` invariant, and production-vs-test profiles.
 - [engineering/base_image.md](engineering/base_image.md) — the base image contents.
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
   semantics.
 - [engineering/prerequisites.md](engineering/prerequisites.md) — the Python fail-fast host minimums.
-- [engineering/testing.md](engineering/testing.md) — the layered test suite and development test
-  runner.
+- [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the `test`
+  verb, and the project test suites.
 - [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
   every derived project follows.
+- [engineering/derived_dockerfile.md](engineering/derived_dockerfile.md) — the idiomatic derived
+  project container: the in-Dockerfile `check-code` gate, the `purescript-bridge` → `spago` →
+  `esbuild` web build, and the build-stage ordering.
 - [engineering/cabal_layout.md](engineering/cabal_layout.md) — the `hostbootstrap-core` Cabal
   package layout, the GHC pin, and the dependency surface.
 - [engineering/warm_store.md](engineering/warm_store.md) — the warm Cabal store contents and
@@ -53,6 +70,12 @@ material lives here. Conventions are defined in
   linking and optimization policy.
 - [engineering/gitignore_guardrails.md](engineering/gitignore_guardrails.md) — what stays out of
   version control.
+
+## Operations
+
+- [operations/demo_runbook.md](operations/demo_runbook.md) — the `hostbootstrap-demo` runbook: the
+  a–j pristine-bootstrap flow, the feature-to-harness-case table, and the
+  three-builds-vs-standard-host-native-build explanation.
 
 ## Languages
 

@@ -1,4 +1,4 @@
-"""Unit tests for skeletal spec parsing against crafted JSON (no real Dhall)."""
+"""Unit tests for static-base spec parsing against crafted JSON (no real Dhall)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from hostbootstrap import spec
-from hostbootstrap.spec import Resources, SkeletalSpec, SpecError
+from hostbootstrap.spec import Resources, StaticBaseSpec, SpecError
 
 
 def _valid() -> dict[str, object]:
@@ -18,14 +18,14 @@ def _valid() -> dict[str, object]:
     }
 
 
-def _load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data: object) -> SkeletalSpec:
+def _load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data: object) -> StaticBaseSpec:
     path = tmp_path / "hostbootstrap.dhall"
     path.write_text("-- placeholder; to_json is monkeypatched\n")
     monkeypatch.setattr(spec.dhall_tool, "to_json", lambda _p: data)
     return spec.load(path)
 
 
-def test_load_skeletal_spec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_static_base_spec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     result = _load(monkeypatch, tmp_path, _valid())
     assert result.project == "demo"
     assert result.dockerfile == Path("docker/demo.Dockerfile")
@@ -99,7 +99,7 @@ def test_memory_must_be_string(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
-# Real Dhall round-trip against the bundled skeletal package
+# Real Dhall round-trip against the bundled static-base package
 # (covers dhall_tool._package_path and validates the schema end to end).
 # ---------------------------------------------------------------------------
 

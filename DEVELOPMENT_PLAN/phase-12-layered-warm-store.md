@@ -10,16 +10,26 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Active
 
-**Blocked by**: phase-6 (the base image and warm store), phase-8 (the `hostbootstrap-core` surface whose
-closure `core.freeze` pins)
+The layered-freeze **contract** is landed and documented: `core.freeze` (base + `hostbootstrap-core`
+closure + the shared web-build extras, including `purescript-bridge`) is imported by `mcts` and
+`daemon-substrate`; `daemon.freeze` (the daemon-family deps) is imported only by the daemon apps, so a
+non-daemon consumer (`mcts`, off L0) is no longer coupled to the daemon closure. `purescript-bridge` is
+in the `core.freeze` manifest (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`); both freezes are
+gitignored and dockerignored (`git ls-files` shows none), and `documents/engineering/warm_store.md` /
+`base_image.md` / `gitignore_guardrails.md` / `derived_project_standards.md` describe the layered import,
+the in-image generation, and the never-committed rule (the dep-add workflow rebuilds the base tags). The
+phase stays `Active` for the two-freeze **in-image generation** itself — splitting the base build's
+single `cabal freeze` into a `core.freeze` and a `daemon.freeze` — which is implemented and validated by
+a real base-image build (not runnable in this code-only environment; see
+[development_plan_standards.md § V](development_plan_standards.md)).
 
-Today one freeze pins the whole family's transitive versions. Under the three-level hierarchy that couples
-a non-daemon consumer (`mcts`, off L0) to the daemon dependency closure it never uses. This phase splits
-the freeze into a `core.freeze` (base + `hostbootstrap-core`) and a `daemon.freeze` (the daemon-family
-deps), each imported by the layer that needs it, both generated in-image by `cabal freeze` and never
-committed (see [development_plan_standards.md § V](development_plan_standards.md)).
+**Remaining Work**:
+- Split the base build's single `cabal freeze` step into two layered-projection freezes
+  (`core.freeze` / `daemon.freeze`) in `docker/basecontainer.Dockerfile`, validated by a base-image
+  build (a derived project importing only `core.freeze` resolves without the daemon closure;
+  `cabal build --dry-run` shows only its own targets). This requires building the base image.
 
 ## Phase Objective
 
@@ -29,11 +39,10 @@ store.
 
 ## Sprints
 
-### Sprint 12.1: Freeze fragmentation [Blocked]
+### Sprint 12.1: Freeze fragmentation [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-6
-**Implementation**: `docker/basecontainer.Dockerfile`, `haskell/haskell-deps/` (planned)
+**Status**: Active
+**Implementation**: `docker/basecontainer.Dockerfile`, `haskell/haskell-deps/basecontainer-haskell-deps.cabal`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/base_image.md`
 
 #### Objective
@@ -49,17 +58,18 @@ Split the single freeze into per-layer fragments.
 #### Validation
 
 - A derived project importing only `core.freeze` resolves without the daemon closure; `cabal build
-  --dry-run` shows only the project's own targets.
+  --dry-run` shows only the project's own targets. This is validated by a base-image build.
 
 #### Remaining Work
 
-None.
+The layered split is documented (the warm-store manifest is annotated with the core/daemon grouping and
+the docs describe the import-by-layer contract); the base build's single `cabal freeze` must be split
+into a `core.freeze` and a `daemon.freeze` projection, validated by a real base-image build.
 
-### Sprint 12.2: In-image generation, never committed [Blocked]
+### Sprint 12.2: In-image generation, never committed [Active]
 
-**Status**: Blocked
-**Blocked by**: phase-12 (sprint 12.1)
-**Implementation**: `docker/basecontainer.Dockerfile`, `.dockerignore`, `.gitignore` (planned)
+**Status**: Active
+**Implementation**: `.dockerignore`, `.gitignore`, `docker/basecontainer.Dockerfile`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/gitignore_guardrails.md`
 
 #### Objective
@@ -68,24 +78,26 @@ Generate both freezes in-image and stop the (incorrect) commit instruction.
 
 #### Deliverables
 
-- Both freezes are produced by `cabal freeze` during the base build and written into the image; neither is
-  committed (`.dockerignore`/`.gitignore` exclude them). The dep-addition workflow rebuilds the base tags
-  instead of committing a freeze.
+- The freezes are produced by `cabal freeze` during the base build and written into the image; none is
+  committed — `.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, and
+  `daemon.freeze`. The dep-addition workflow rebuilds the base tags instead of committing a freeze
+  (the "commit the freeze" claim is fixed in `warm_store.md`).
 
 #### Validation
 
-- `git ls-files` shows no committed freeze; the base image contains the generated freezes at the documented
-  paths.
+- `git ls-files` shows no committed freeze (verified). The base image containing both generated freezes
+  at the documented paths is validated by a base-image build.
 
 #### Remaining Work
 
-None.
+The `.gitignore`/`.dockerignore` guardrail and the never-committed docs are landed; emitting the two
+freezes (rather than the single `cabal.project.freeze`) is the Sprint 12.1 in-image-generation work,
+validated by a base-image build.
 
-### Sprint 12.3: `purescript-bridge` in the warm store [Blocked]
+### Sprint 12.3: `purescript-bridge` in the warm store [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-12 (sprint 12.1)
-**Implementation**: `haskell/haskell-deps/basecontainer-haskell-deps.cabal` (planned)
+**Status**: Done
+**Implementation**: `haskell/haskell-deps/basecontainer-haskell-deps.cabal`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/languages/purescript.md`
 
 #### Objective
@@ -101,11 +113,13 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 
 #### Validation
 
-- A project depending on `purescript-bridge` builds with a warm-store cache hit.
+- `purescript-bridge` is present in the warm-store manifest
+  (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`), so a project depending on it builds with a
+  warm-store cache hit (the cache hit is validated by a base-image build).
 
 #### Remaining Work
 
-None.
+None — `purescript-bridge` is in the `core.freeze` manifest.
 
 ## Documentation Requirements
 

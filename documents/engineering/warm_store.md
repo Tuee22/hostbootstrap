@@ -10,16 +10,30 @@
 The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
 package listed in
 [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal)
-is compiled at base-image build time, in the configurations downstream projects
-actually use, then frozen via
-`haskell/haskell-deps/cabal.project.freeze`
-so the registry copy of each base tag pins the exact versions baked in.
+is compiled at base-image build time, in the configurations downstream projects actually use.
 
-The frozen closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
+The warm Cabal store (the prebuilt packages) is **shared**, but the version-pin
+**freezes** it produces are **layered by library level**. The base build runs
+`cabal freeze` in-image to emit two fragments under `/opt/basecontainer/haskell-deps/`:
+
+* **`core.freeze`** pins base + the `hostbootstrap-core` closure + the shared
+  web-build extras (including `purescript-bridge`, the demo's web bridge). It is
+  imported by `mcts` and `daemon-substrate` — and by any L0-direct consumer such
+  as the demo.
+* **`daemon.freeze`** pins the daemon-family deps (Pulsar/MinIO/proto/HTTP — e.g.
+  `hedis`, `postgresql-simple`, `proto-lens*`, `http-client*`, `network`,
+  `websockets`, `warp`, `wai*`). It is imported **only** by the daemon apps.
+
+Each project's `cabal.project` imports only the fragment(s) for its layer: an
+L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze`
+**and** `daemon.freeze`. A non-daemon consumer (e.g. `mcts`) is therefore **not** coupled
+to the daemon dependency closure.
+
+The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
 `optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
 extends `hostbootstrap-core` via `runHostBootstrapCLI` hits the warm store for the core's
-dependencies, not only its own. The `hostbootstrap-core` dependency set is part of
-`cabal.project.freeze` and is treated like any other warm-store dependency for cache-hit purposes.
+dependencies, not only its own. The `hostbootstrap-core` dependency set is part of `core.freeze`
+and is treated like any other warm-store dependency for cache-hit purposes.
 
 This page is the contract between the warm store and derived projects: follow
 it and `cabal build` skips the dependency closure; deviate and Cabal silently
@@ -35,8 +49,8 @@ For every package in
   vanilla, profiling, **and** dynamic (`dyn`) ways are all in the store.
 * Compiled at **`-O2`** (`optimization: 2` in
   [`haskell/haskell-deps/cabal.project`](../../haskell/haskell-deps/cabal.project)).
-* Pinned to the versions in
-  `haskell/haskell-deps/cabal.project.freeze`.
+* Pinned to the versions in the in-image freezes (`core.freeze` and, for the
+  daemon-family deps, `daemon.freeze`).
 
 `fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
 (see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
@@ -57,8 +71,9 @@ following hold:
    or `-O0` does not "downgrade" — Cabal treats it as a different configuration
    and rebuilds.
 4. **Same resolved versions.** The project's dependency resolver picks the same
-   versions as those pinned in `cabal.project.freeze`. Tight upper bounds in a
-   project's `*.cabal` that disagree with the freeze cause cabal to rebuild the
+   versions as those pinned in the imported freeze(s) — `core.freeze` for every
+   layer, plus `daemon.freeze` for a daemon app. Tight upper bounds in a
+   project's `*.cabal` that disagree with a freeze cause cabal to rebuild the
    conflicting package against the project's preferred version.
 
 If any condition is violated for a given package, **only that package and its
@@ -67,14 +82,15 @@ not corrupted, it just stops being used for that subtree.
 
 ## Recommended project `cabal.project`
 
-The minimal compliant template for a derived project:
+The minimal compliant template for a derived L0-direct project (e.g. `mcts` or
+the demo) imports `core.freeze`:
 
 ```cabal
 packages: .
 
 with-compiler: ghc-9.12.4
 
-import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+import: /opt/basecontainer/haskell-deps/core.freeze
 
 tests: True
 benchmarks: True
@@ -83,55 +99,64 @@ shared: True
 optimization: 2
 ```
 
-The `import:` line is the cache-hit guarantee — see
-[Required: import the freeze file](#required-import-the-freeze-file) below.
-The rest matches the warm-store flag set verbatim. Adding `allow-newer:` or
-source-repository-package stanzas is fine as long as the resolver still
-lands on versions compatible with the imported freeze; if it cannot, Cabal
-fails with a clear error.
-
-## Required: import the freeze file
-
-The warm store and the derived project **must use the same
-`cabal.project.freeze`** or the resolver will pick different versions of
-transitive dependencies (microlens, statistics, vty-unix, …) and Cabal will
-rebuild every package whose store key differs.
-
-Derived projects MUST NOT commit a `cabal.project.freeze` of their own.
-Instead, the project's `cabal.project` **imports** the freeze that ships in
-the base image:
+A daemon app adds the second fragment alongside `core.freeze`:
 
 ```cabal
-import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+import: /opt/basecontainer/haskell-deps/core.freeze
+import: /opt/basecontainer/haskell-deps/daemon.freeze
 ```
 
-That one line is the whole sync mechanism. No copy step, no
+The `import:` line(s) are the cache-hit guarantee — see
+[Required: import the freeze fragments](#required-import-the-freeze-fragments) below.
+The rest matches the warm-store flag set verbatim. Adding `allow-newer:` or
+source-repository-package stanzas is fine as long as the resolver still
+lands on versions compatible with the imported freeze(s); if it cannot, Cabal
+fails with a clear error.
+
+## Required: import the freeze fragments
+
+The warm store and the derived project **must use the same freeze pins** or the
+resolver will pick different versions of transitive dependencies (microlens,
+statistics, vty-unix, …) and Cabal will rebuild every package whose store key
+differs.
+
+Derived projects MUST NOT commit any freeze of their own. Instead, the project's
+`cabal.project` **imports** the fragment(s) for its layer from the base image:
+
+```cabal
+# every layer:
+import: /opt/basecontainer/haskell-deps/core.freeze
+# daemon apps additionally:
+import: /opt/basecontainer/haskell-deps/daemon.freeze
+```
+
+Those `import:` lines are the whole sync mechanism. No copy step, no
 "remember to refresh when the base updates," no two-repo drift.
 
 Why this works:
 
-* The base image bakes `/opt/basecontainer/haskell-deps/cabal.project.freeze`
-  by running `cabal freeze` **in-image** during the base build, against the
-  warm-store project under `/opt/basecontainer/haskell-deps/`. The freeze is
-  not a committed file copied in — `cabal.project.freeze` is in `.gitignore`
-  and `.dockerignore`, so the `COPY haskell/haskell-deps/` step never carries
-  it; the in-image `cabal freeze` step produces it. Every
-  `basecontainer-<flavor>-<arch>` tag carries one specific freeze, frozen at
-  the moment the base was built.
-* The binary is built **host-native** on every substrate, where the freeze is read
-  through the project's `import:` line resolved against the host toolchain. When the
-  binary later builds the project container `FROM` the base image, the same freeze at
-  `/opt/basecontainer/haskell-deps/cabal.project.freeze` is present in the image at the
-  point Cabal reads `cabal.project` and the absolute path resolves. How the host-native
-  build reaches the same warm store is detailed in [base_image.md](base_image.md); either
-  way the project commits no freeze of its own. See [base_image.md](base_image.md) for the
-  host-native build model.
+* The base image bakes the freeze fragments under
+  `/opt/basecontainer/haskell-deps/` by running `cabal freeze` **in-image**
+  during the base build, against the warm-store project there. The freezes are
+  not committed files copied in — `cabal.project.freeze`, `core.freeze`, and
+  `daemon.freeze` are all in `.gitignore` and `.dockerignore`, so the
+  `COPY haskell/haskell-deps/` step never carries them; the in-image
+  `cabal freeze` step produces them. Every `basecontainer-<flavor>-<arch>` tag
+  carries one specific set of freezes, frozen at the moment the base was built.
+* The binary is built **host-native** on every substrate, where the freezes are read
+  through the project's `import:` line(s) resolved against the host toolchain. When the
+  binary later builds the project container `FROM` the base image, the same fragments at
+  `/opt/basecontainer/haskell-deps/core.freeze` (and `daemon.freeze` for a daemon app)
+  are present in the image at the point Cabal reads `cabal.project` and the absolute
+  paths resolve. How the host-native build reaches the same warm store is detailed in
+  [base_image.md](base_image.md); either way the project commits no freeze of its own.
+  See [base_image.md](base_image.md) for the host-native build model.
 * When `hostbootstrap base build-and-push` ships a new base tag with a
   refreshed warm store, the derived project's next container build
-  automatically picks up the new freeze. Nothing in the derived project
+  automatically picks up the new freezes. Nothing in the derived project
   needs to change.
 * If a derived project's own `*.cabal` constrains a package to a version
-  incompatible with the freeze, Cabal errors out clearly with "could not
+  incompatible with an imported freeze, Cabal errors out clearly with "could not
   satisfy" — the right behaviour. The project then either bumps its own
   bound, or the warm-store manifest is updated and a new base tag cut. The
   conflict is loud, not silent.
@@ -149,7 +174,7 @@ Why this works:
 > optimization: 2
 > ```
 >
-> Project repo also contains a committed `cabal.project.freeze`, copied once
+> Project repo also contains a committed `core.freeze`, copied once
 > from the base image and now drifting.
 >
 > The freeze in the project lags behind the base image's. Cabal resolves
@@ -158,21 +183,21 @@ Why this works:
 >
 > **RIGHT**
 >
-> Project `cabal.project`:
+> Project `cabal.project` (L0-direct consumer):
 >
 > ```cabal
 > packages: .
 > with-compiler: ghc-9.12.4
-> import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+> import: /opt/basecontainer/haskell-deps/core.freeze
 > tests: True
 > benchmarks: True
 > shared: True
 > optimization: 2
 > ```
 >
-> No `cabal.project.freeze` in the project repo. The import resolves at
+> No freeze committed in the project repo. The import resolves at
 > build time to whatever freeze the current base image ships. Cache hits
-> are automatic.
+> are automatic. (A daemon app additionally imports `daemon.freeze`.)
 
 ## How to add a dep to the warm store
 
@@ -180,21 +205,23 @@ Adding a new dep is a one-PR loop:
 
 1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
    [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
-2. **Regenerate the freeze in-image.** The freeze is **never committed** —
-   `cabal.project.freeze` is in `.gitignore` and `.dockerignore`. It is
-   regenerated by the `cabal freeze` step the base Dockerfile runs against the
-   warm-store project during the next base rebuild (step 3), so the new dep's
-   pinned versions land in the freeze baked into each fresh base tag.
-3. **Rebuild and push every base tag.** Use the canonical publish workflow in
-   [build_release.md](build_release.md):
+   A daemon-family dep belongs to the `daemon.freeze` layer; a base / core /
+   shared web-build dep belongs to `core.freeze`.
+2. **Rebuild and push every base tag.** The freezes are **never committed** —
+   `cabal.project.freeze`, `core.freeze`, and `daemon.freeze` are all in
+   `.gitignore` and `.dockerignore`. There is no "commit the freeze" step. The
+   `cabal freeze` step the base build runs in-image against the warm-store
+   project regenerates the freezes during the rebuild, so the new dep's pinned
+   versions land in the layered freezes baked into each fresh base tag. Use the
+   canonical publish workflow in [build_release.md](build_release.md):
 
    ```sh
    hostbootstrap base build-and-push --arch amd64
    hostbootstrap base build-and-push --arch arm64
    ```
 
-The freeze file is the **SSoT for "what versions ship with each base tag"**.
-Treat it as a public API.
+The layered freezes are the **SSoT for "what versions ship with each base tag"**.
+Treat them as a public API.
 
 ## How to verify your project hits the cache
 
@@ -211,8 +238,10 @@ package appears in the plan with `(requires build)`, the warm store missed it.
 Most common causes, in order of likelihood:
 
 1. The project's `cabal.project` does not match the canonical template (a flag
-   missing, `optimization` not set to `2`).
-2. The project's `*.cabal` has an upper bound that conflicts with the freeze.
+   missing, `optimization` not set to `2`, or the wrong freeze fragment imported
+   — an L0-direct project imports `core.freeze`; a daemon app imports both
+   `core.freeze` and `daemon.freeze`).
+2. The project's `*.cabal` has an upper bound that conflicts with a freeze.
 3. The package is genuinely not in the warm store — open a PR adding it to
    [`basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
 

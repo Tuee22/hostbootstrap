@@ -10,18 +10,18 @@
 ## TL;DR
 
 - The Python bootstrapper does only what must run *before any project binary exists*.
-- Everything else — host-tool resolution, `ensure` reconcilers, substrate detection, the skeletal
+- Everything else — host-tool resolution, `ensure` reconcilers, substrate detection, the static-base
   Dhall decoder, cluster lifecycle, and the command tree — lives in `hostbootstrap-core`.
 - New host logic defaults to Haskell. A Python addition must be justified by the pre-binary
   bootstrapping constraint: the host build toolchain must exist before the binary can be built
   host-native. Ensuring Docker and building the project container are **not** pre-binary work — the
   execed binary owns them.
 
-> **Current state.** The ownership boundary below is the *target*. Today the Python bootstrapper
-> (`python/hostbootstrap/bootstrap.py`) still ensures Docker (a per-project Colima VM sized to the
-> budget), builds the project container, and on Linux builds the binary in-container and copies it out;
-> only Apple silicon builds host-native. Moving Docker-ensure, the container build, and the cordon to the
-> project binary — and building host-native on Linux too — is tracked in
+> **Current state.** The ownership boundary below is implemented. The Python bootstrapper
+> (`python/hostbootstrap/bootstrap.py`) does only the pre-binary work — assert host minimums, ensure
+> the host build toolchain, build the binary host-native on **every** substrate (Linux included; there
+> is no build-in-container, copy-out path), and exec it. Docker-ensure, the project container build,
+> and the cordon are owned by the execed project binary. The original convergence is recorded in
 > [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md).
 
 ## Ownership Matrix
@@ -36,7 +36,7 @@
 | Host-tool resolution (`HostTool` to absolute paths) | `hostbootstrap-core` | Typed, closed enumeration; no `$PATH` resolution. |
 | `ensure` reconcilers (docker/colima/cuda/homebrew/ghc/tart) | `hostbootstrap-core` | Idempotent reconcilers with host-applicability predicates. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | Substrate detection | `hostbootstrap-core` | `apple-silicon`, `linux-cpu`, `linux-gpu`. |
-| Skeletal Dhall decoder | `hostbootstrap-core` | Core decodes only the skeletal schema; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
+| Static-Base Dhall decoder | `hostbootstrap-core` | Core decodes only the static-base schema; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
 | Resource budgeting and cordoning | `hostbootstrap-core` | Verify spare resources; cordon via Colima sizing / kind limits. See [resource_budgeting](../engineering/resource_budgeting.md). |
 | Cluster lifecycle | `hostbootstrap-core` | kind/Helm semantics, never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | The optparse command tree | `hostbootstrap-core` | `runHostBootstrapCLI` is the entrypoint project binaries extend. See [hostbootstrap_core_library](hostbootstrap_core_library.md). |

@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-0-documentation-and-governance.md](phase-0-documentation-and-governance.md), [phase-2-host-tools-and-config.md](phase-2-host-tools-and-config.md)
 
-> **Purpose**: Stand up the `hostbootstrap-core` Cabal package, the skeletal executable, the
+> **Purpose**: Stand up the `hostbootstrap-core` Cabal package, the bare executable, the
 > optparse/dhall dependency surface, and the generic `runHostBootstrapCLI` entrypoint so later phases
 > have a buildable place to land host-management logic.
 
@@ -13,14 +13,14 @@
 **Status**: Done
 
 The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
-`HostBootstrap.*` module surface, the skeletal `hostbootstrap` executable, and the generic
+`HostBootstrap.*` module surface, the bare `hostbootstrap` executable, and the generic
 `runHostBootstrapCLI` entrypoint over a buildable command tree. `cabal build all` and `cabal test`
 pass, and `hostbootstrap --help` exits 0. Later phases fill in the placeholder modules.
 
 ## Phase Objective
 
 Create `hostbootstrap-core` as a Cabal package: a `library` stanza for the `HostBootstrap.*` module
-surface and a skeletal `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
+surface and a bare `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
 `runHostBootstrapCLI progName projectCommands` over a buildable but empty command tree. No host logic
 lands here; Phase 1 produces a structural shell that compiles and runs `--help`.
@@ -35,7 +35,7 @@ lands here; Phase 1 produces a structural shell that compiles and runs `--help`.
 
 #### Objective
 
-Create the `hostbootstrap-core` Cabal package with a `library` stanza and a skeletal executable
+Create the `hostbootstrap-core` Cabal package with a `library` stanza and a bare executable
 stanza, pinned to the base-image GHC toolchain.
 
 #### Deliverables
@@ -77,7 +77,7 @@ onward has named modules to fill in and the command-tree extension contract has 
 - Bare `HostBootstrap.*` module declarations for the surfaces named in
   [system-components.md](system-components.md) (host tools, prereqs, substrate, ensure, config,
   cluster) with no implementation yet.
-- The skeletal `hostbootstrap` executable calls `runHostBootstrapCLI "hostbootstrap" []` and prints
+- The bare `hostbootstrap` executable calls `runHostBootstrapCLI "hostbootstrap" []` and prints
   `--help`.
 
 #### Command Surface

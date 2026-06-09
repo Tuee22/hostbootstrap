@@ -10,16 +10,20 @@
 
 ## Phase Status
 
-**Status**: Blocked
-
-**Blocked by**: phase-4 (the static-base decoder and command tree)
+**Status**: Done
 
 The static-base decoder (`HostBootstrap.Config.Schema`, Phase 4) reads the one Python-facing tier; the
-**rich** tiers are intentionally not hand-written. This phase makes the project binary the source of its
-own schema and configs: `config schema` prints the Dhall type its decoders accept (reflected, so it
-cannot drift), and `config render` materializes deploy and per-case test configs from a shared
-`Core.dhall` vocabulary. It also formalizes the **four-stream extension contract** (CLI tree, Dhall
-vocabulary, schema-gen registry, harness seams) that the three library levels compose additively.
+**rich** tiers are binary-generated. This phase is **landed**: `HostBootstrap.Config.Vocab` mirrors the
+reusable `Core.dhall` vocabulary; `HostBootstrap.Dhall.Gen` carries the `ConfigArtifact` registry whose
+`schemaText` is reflected from the decoder type (so it cannot drift) and whose `renderText` is the
+`ToDhall` embedding; `config schema` prints the in-scope schema union (guarded by a committed snapshot)
+and `config render` materializes configs; the hand-written `Core.dhall` `fitsWithin`/`split` are
+evaluation-tested and a deploy config carries the `fitsWithin` assert so an over-budget render fails to
+type-check. The **four-stream extension contract** is complete: the CLI-tree, Dhall-vocabulary, and
+schema-gen-registry streams are implemented in L0, the fourth (test-harness `Seams`) landed in
+[Phase 10](phase-10-standardized-test-harness.md), and the `hostbootstrap-demo` consumer
+([Phase 13](phase-13-hostbootstrap-demo.md)) exercises all four end-to-end (`--help` CLI append,
+`web schema` registry concat, `vm test` harness). This phase is closed.
 
 ## Phase Objective
 
@@ -31,11 +35,10 @@ so the schema and the configs both flow from the binary's types and round-trip b
 
 ## Sprints
 
-### Sprint 8.1: `Core.dhall` vocabulary and budget helpers [Blocked]
+### Sprint 8.1: `Core.dhall` vocabulary and budget helpers [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-4
-**Implementation**: `haskell/hostbootstrap-core/dhall/Core.dhall` (planned), `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/dhall/Core.dhall`, `haskell/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/architecture/dhall_generation.md`, `system-components.md`
 
 #### Objective
@@ -60,11 +63,10 @@ Export the reusable Dhall vocabulary every project composes from, plus the budge
 The `Daemon.dhall` and `App.dhall` vocabulary layers are downstream (consumer repositories), not in
 scope here.
 
-### Sprint 8.2: `HostBootstrap.Dhall.Gen` and the `ConfigArtifact` registry [Blocked]
+### Sprint 8.2: `HostBootstrap.Dhall.Gen` and the `ConfigArtifact` registry [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprint 8.1)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`, `system-components.md`
 
 #### Objective
@@ -86,11 +88,10 @@ Land the schema-generation substrate: a registry whose entries carry a reflected
 
 None.
 
-### Sprint 8.3: `config schema` [Blocked]
+### Sprint 8.3: `config schema` [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprint 8.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/test/golden/config_schema.dhall`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`
 
 #### Objective
@@ -117,11 +118,10 @@ of its in-scope `ConfigArtifact` schemas, guarded by a committed CI snapshot.
 
 None.
 
-### Sprint 8.4: `config render` and the round-trip guarantee [Blocked]
+### Sprint 8.4: `config render` and the round-trip guarantee [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprint 8.2)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`, `documents/architecture/dhall_generation.md`
 
 #### Objective
@@ -149,11 +149,10 @@ to type-check.
 
 None.
 
-### Sprint 8.5: The four-stream extension contract [Blocked]
+### Sprint 8.5: The four-stream extension contract [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-8 (sprints 8.2-8.4)
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs` (planned)
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `documents/architecture/library_hierarchy.md`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/library_hierarchy.md`, `documents/engineering/derived_project_standards.md`
 
 #### Objective
@@ -162,15 +161,21 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 #### Deliverables
 
-- The contract stated for all four streams: CLI tree (`runHostBootstrapCLI progName (lower ++ delta)`,
-  append-only), Dhall vocabulary (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (registry
-  concatenation), test harness (`Seams`). Worked end-to-end by the `hostbootstrap-demo` consumer
+- The contract is stated for all four streams in
+  [`documents/architecture/library_hierarchy.md`](../documents/architecture/library_hierarchy.md): CLI
+  tree (`runHostBootstrapCLI progName (lower ++ delta)`, append-only), Dhall vocabulary
+  (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (registry concatenation), test harness
+  (`Seams`). All four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the
+  `Core.dhall` vocabulary, the `ConfigArtifact` registry concatenation, and the `Seams` record + the L0
+  `oneShotRunArgs` (Phase 10). The contract is worked end-to-end by the `hostbootstrap-demo` consumer
   (Phase 13).
 
 #### Validation
 
-- The worked consumer's `config schema` prints the union of its in-scope decoders; its verbs inherit the
-  core tree without shadowing.
+- The `hostbootstrap-demo` binary exercises all four streams: `hostbootstrap-demo --help` shows the
+  inherited core verbs plus the appended demo verbs (CLI tree, no shadowing); `demo web schema` prints
+  `coreArtifacts ++ demoArtifacts` (schema-gen concatenation); `demo vm test` drives `runMatrix` over the
+  demo's case matrix with `demoSeams` (the harness `Seams`). `cabal test` and the demo `--help`/verbs pass.
 
 #### Remaining Work
 

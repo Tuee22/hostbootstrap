@@ -10,27 +10,28 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,
-`kindNodeLimits`) and `verifyBudget` checks spare capacity; `HostBootstrap.Cluster.Lifecycle` provides
-`cluster up` / `down` / `delete` with the never-delete-`.data` invariant (per-case test data is now
-under `./.test_data/<case>/`) and the production-versus-test profile distinction. The pure cores
-(`parseQuantity`, `verifyBudget`, `resolvePlan`, `teardown`) are unit-tested, and `cluster up` reports
-the cordon and degrades gracefully when `kind`/`Helm` are absent. **The cordon is computed and
-reported but not yet APPLIED**, and `verifyBudget` is not yet wired into the bring-up path — so the
-declared budget ceiling is not actually enforced on Linux. This phase reopens against the
-budget-as-ceiling contract (see [development_plan_standards.md § O](development_plan_standards.md)).
+`kindNodeCordonArgs`, `incusSizingArgs`) and `verifyBudget` checks spare capacity;
+`HostBootstrap.Cluster.Lifecycle` provides `cluster up` / `down` / `delete` / `status` with the
+never-delete-`.data` invariant (per-case test data is under `./.test_data/<case>/`) and the
+production-versus-test profile distinction. The pure cores (`parseQuantity`, `verifyBudget`,
+`resolvePlan`, `teardown`, `statusReport`) are unit-tested. The applied cordon and the wired
+`verifyBudget` preflight **landed** (delivered in
+[phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md)): `cluster up` runs
+the spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
+before Helm, fail-closed. The incus storage cordon landed in
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). All reopened items are closed (see
+[development_plan_standards.md § O](development_plan_standards.md)).
 
-**Remaining Work** (reopened; the applied cordon is tracked in the net-new Phase 9):
-- Wire the applied Linux cordon: `docker update --cpus/--memory <cluster>-control-plane` after
-  `kind create`, before Helm, fail-closed (today `kindNodeLimits` is computed and only printed by
-  `reportCordon`).
-- Run `verifyBudget` (and the net-new pure `fitsBudget`) as a real pre-bring-up fail-fast gate.
-- Collapse the dual budget interpreters (Haskell `colimaSizingArgs` vs Python `_gib` /
-  `colima_start_command`) to one canonical quantity parser/arg-builder, with a golden test (covers
-  the Python `_gib("8Gi")` mishandling).
-- Add `cluster status` (read-only) and a per-substrate storage cordon.
+All reopened items have **landed**: the read-only `cluster status` verb (Sprint 5.3); the applied Linux
+`docker update` kind-node cordon, the wired `verifyBudget` preflight, the pure `fitsBudget`, and the one
+canonical `parseQuantity`/arg-builder (all in
+[phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md); the dual Python
+budget interpreter was already removed in Phase 6); and the incus VM storage cordon (`incusSizingArgs`,
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). Live `docker`/`kind`/`incus`
+execution is exercised in real runs.
 
 ## Phase Objective
 
@@ -104,6 +105,40 @@ never-delete-`.data` invariant and the production-vs-test profile distinction.
 - `LifecycleSpec` asserts `teardown Down` / `teardown Delete` never place `.data` in the removal set
   (for both profiles), and that the production and test profiles resolve distinct cluster names and
   host paths. `cabal test` passes; `hostbootstrap cluster --help` lists `up`/`down`/`delete`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.3: Read-only `cluster status` [Done]
+
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`haskell/hostbootstrap-core/test/LifecycleSpec.hs`
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
+
+#### Objective
+
+Add a read-only `cluster status` verb that reports whether the resolved cluster is live without
+mutating any state, completing the Phase-5-owned command surface (the applied cordon and the
+`verifyBudget`/one-parser work are Phase 9).
+
+#### Command Surface
+
+- `hostbootstrap cluster status` — probe `kind get clusters` and report the resolved cluster's
+  liveness, the preserved `.data` path, and the derived paths. Never mutates state.
+
+#### Deliverables
+
+- The pure `statusReport :: ClusterPlan -> Bool -> String` renderer and the IO `clusterStatus` driver
+  in `HostBootstrap.Cluster.Lifecycle`, with `cluster status` wired into the `cluster` command group.
+
+#### Validation
+
+- `LifecycleSpec` asserts the status report names the cluster, marks it running/absent, and always
+  shows the preserved `.data` path. `cabal test` passes; `hostbootstrap cluster --help` lists
+  `up`/`down`/`delete`/`status`.
 
 #### Remaining Work
 

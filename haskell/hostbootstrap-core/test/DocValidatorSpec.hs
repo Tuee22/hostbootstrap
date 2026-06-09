@@ -60,6 +60,22 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
   writeFile (root </> "CLAUDE.md") (unlines ["# Claude", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
   -- A phase doc missing its Documentation Requirements section.
   writeFile (root </> "DEVELOPMENT_PLAN" </> "phase-9-x.md") (unlines ["# Phase 9", "body"])
+  -- A mis-named governed doc (not snake_case) under a valid category; it carries
+  -- a complete metadata block so only the naming check fires on it.
+  writeFile
+    (root </> "documents" </> "architecture" </> "BadName.md")
+    ( unlines
+        [ "# Bad",
+          "**Status**: Authoritative source",
+          "**Supersedes**: N/A",
+          "**Referenced by**: x",
+          "> **Purpose**: y",
+          "## TL;DR",
+          "- z"
+        ]
+    )
+  -- A documents/ category outside the canonical taxonomy.
+  createDirectoryIfMissing True (root </> "documents" </> "reference")
   violations <- validateRepo root
   let msgs = map renderViolation violations
       expect needle =
@@ -72,6 +88,8 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
       "unresolved relative link: does_not_exist.md",
       "does not reference DEVELOPMENT_PLAN/",
       "phase document missing '## Documentation Requirements' section",
-      "broad doctrine doc missing"
+      "broad doctrine doc missing",
+      "file name is not lowercase snake_case: BadName.md",
+      "category not in the canonical taxonomy"
     ]
     expect

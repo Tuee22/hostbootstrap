@@ -4,7 +4,7 @@
 -- A project binary calls 'runHostBootstrapCLI' with its own subcommands; the
 -- entrypoint merges them with the core command tree
 -- ('HostBootstrap.Command.coreCommands') and runs the resulting parser. The
--- skeletal @hostbootstrap@ binary (built like any project binary, not baked
+-- bare @hostbootstrap@ binary (built like any project binary, not baked
 -- into the base image) passes no project commands. See
 -- @documents/architecture/hostbootstrap_core_library.md@.
 module HostBootstrap.CLI

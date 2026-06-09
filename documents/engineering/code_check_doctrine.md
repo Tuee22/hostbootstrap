@@ -23,8 +23,8 @@ This applies in two places:
 
 | Image | Where the check runs | Command |
 |---|---|---|
-| Base | Host pre-flight + Dockerfile smoke | `fourmolu --mode check` + `hlint` (run directly today; folding into a core `check-code` verb is the Phase-10 target) |
-| Derived | Dockerfile RUN step | `<project> check-code` (Phase-10 target; see below) |
+| Base | Host pre-flight + Dockerfile smoke | `fourmolu --mode check` + `hlint`, run directly |
+| Derived | Dockerfile RUN step | `<project> check-code` — the inherited core verb whose body is project-defined |
 
 ## Base image
 
@@ -34,7 +34,7 @@ The base image enforces its own self-check in two layers:
   `hostbootstrap-core` (the Haskell library) and the thin Python bootstrapper
   **before** `docker build` runs. If anything fails the build exits with a
   one-line message for local reproduction and Docker is never invoked.
-* **In-Dockerfile smoke.** After the warm Cabal store and the skeletal
+* **In-Dockerfile smoke.** After the warm Cabal store and the static-base
   `hostbootstrap` binary are built, a single `RUN` step verifies that `fourmolu`
   and `hlint` actually start (catching install regressions) and runs them against
   the warm-store sample source at
@@ -111,19 +111,19 @@ construction. There is no separate "did the lint pass?" question to ask later.
 
 ## What counts as the "canonical code-check" command
 
-* **A `check-code` subcommand on the project binary (Phase-10 target).** The
-  target model is that every derived project's binary exposes a single
-  `check-code` subcommand (inherited from the `hostbootstrap-core` command tree
-  and extended with project-specific checks) that wraps `fourmolu --mode check`,
-  `hlint`, custom file-level checks, and doc-drift checks, fail-fast. That
-  inherited verb does not exist yet: today `coreCommands` exposes only
-  `ensure`/`config`/`cluster`, and the base image gates by invoking the
-  formatter and linter directly (see "Base image"). The `check-code` core verb
-  is a Phase-10 deliverable
-  ([../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md)).
-* **Multi-language projects (Phase-10 target).** Under that same target model
-  the `<project> check-code` subcommand dispatches per-language checks (the
-  foreign-backend formatters/linters) in sequence and fails on any.
+* **A `check-code` subcommand on the project binary.** `check-code` is a **core
+  verb**: every binary inherits it from the `hostbootstrap-core` command tree, and
+  its **body is project-defined**. The verb is the single fail-fast image-build
+  gate; the project fills in the checks it should run (`fourmolu --mode check`,
+  `hlint`, custom file-level checks, doc-drift checks). The bare core binary has
+  no project checks, so its `check-code` passes with a message; a derived project
+  extends the body with its own checks. The base image still gates by invoking the
+  formatter and linter directly (see "Base image"), because the full
+  `hostbootstrap` source tree is not copied into the base image.
+* **Multi-language projects.** A project's `check-code` body dispatches its
+  per-language checks (the foreign-backend formatters/linters) in sequence and
+  fails on any. The core verb supplies the inherited entrypoint and the fail-fast
+  contract; the project supplies what runs inside it.
 
 A project should expose **one** canonical entrypoint — its binary's `check-code`
 subcommand — and the Dockerfile invokes that one. If you find yourself listing

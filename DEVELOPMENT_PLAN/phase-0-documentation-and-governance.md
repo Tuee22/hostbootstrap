@@ -10,27 +10,20 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 Phase 0's **foundational** governance is closed and holds: the governed `documents/` suite carries the
 unified metadata block, this `DEVELOPMENT_PLAN/` tree exists in the canonical layout, and the mechanical
 documentation validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical
-code-check. That foundation gates the code phases, so phases 1–7 stay `Active`/`Done` (see
-[development_plan_standards.md § A](development_plan_standards.md)). Phase 0 reopens only for the
-**expanded doc-coverage** obligation the global-architecture contract adds: the governed suite and
-`README.md` must be rewritten to the new architecture, the taxonomy resolved, and the validator extended
-into the reusable family doc-floor.
-
-**Remaining Work** (reopened against the global-architecture contract):
-- Author/rewrite the governed `documents/` suite and `README.md` to the architecture (the new
-  architecture/engineering/operations docs and the rewrites named in their owning phases'
-  `## Documentation Requirements`).
-- Resolve the taxonomy: add `documents/operations/`, trim `development/` and `reference/` from
-  `documents/documentation_standards.md` § Taxonomy and `documents/README.md` (same change).
-- Extend `HostBootstrap.DocValidator`: add `snake_case` file-naming and an optional taxonomy check;
-  export the per-check functions as a reusable family doc-floor.
-- Land the remaining stale-claim corrections (the `dhall-to-json`, baked-binary, and freeze-commit doc
-  claims; carried by phases 4/6/12).
+code-check. That foundation gates the code phases (see
+[development_plan_standards.md § A](development_plan_standards.md)). The reopened **expanded doc-coverage**
+obligation is now satisfied: the governed suite and `README.md` are authored to the global architecture
+(each owning phase landed its `## Documentation Requirements` docs — the new architecture, engineering,
+and operations docs); `documents/operations/` exists with its first runbook (`demo_runbook.md`); the
+`snake_case` file-naming and taxonomy checks and the exported reusable family doc-floor have landed
+(Sprint 0.4); and the stale-claim corrections (`dhall-to-json`, baked-binary, freeze-commit) landed with
+phases 4/6/12. Every governed doc conforms to the validator (`cabal test` passes), so this phase is
+closed.
 
 ## Phase Objective
 
@@ -135,6 +128,41 @@ root-document metadata, relative-link resolution, the root `README.md` reference
 `cabal test` passes: the validator reports zero violations against the converted `documents/` suite,
 the governed root documents, and this `DEVELOPMENT_PLAN/` tree, and the negative case confirms it
 flags missing metadata, unresolved links, and missing sections.
+
+#### Remaining Work
+
+None.
+
+### Sprint 0.4: Family doc-floor and taxonomy gate [Done]
+
+**Status**: Done
+**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`haskell/hostbootstrap-core/test/DocValidatorSpec.hs`, `documents/documentation_standards.md`
+**Docs to update**: `documents/documentation_standards.md`
+
+#### Objective
+
+Extend the mechanical validator into the reusable family doc-floor the global-architecture contract
+reopened Phase 0 for: mechanical `snake_case` file-naming under `documents/`, a taxonomy check that
+rejects any top-level category outside the declared set, and exported per-check functions so the same
+floor can be reused across the project family.
+
+#### Deliverables
+
+- `checkNaming` gates lowercase `snake_case` file naming under `documents/` (only `README.md` is
+  exempt); `checkTaxonomy` rejects any `documents/` top-level category not in `allowedTaxonomy`
+  (`architecture`, `engineering`, `operations`, `languages`).
+- The per-check functions (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
+  `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) and
+  `allowedTaxonomy` are exported from `HostBootstrap.DocValidator`.
+- `documents/documentation_standards.md § Validation` lists the two new gated checks and the exported
+  floor.
+
+#### Validation
+
+`cabal test` passes: the validator reports zero violations against the converted suite, and the
+`DocValidatorSpec` negative case proves the naming and taxonomy checks are not vacuous (a `BadName.md`
+and a `documents/reference/` category are both flagged).
 
 #### Remaining Work
 

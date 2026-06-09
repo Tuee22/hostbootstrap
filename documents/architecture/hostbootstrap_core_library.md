@@ -10,13 +10,13 @@
 ## TL;DR
 
 - `hostbootstrap-core` is the Haskell library that owns all host-management logic: host-tool
-  resolution, substrate detection, `ensure` reconcilers, the skeletal-Dhall decoder, and
+  resolution, substrate detection, `ensure` reconcilers, the static-base-Dhall decoder, and
   cluster-lifecycle semantics.
 - It exposes its subcommands as a composable `optparse-applicative` value plus a generic entrypoint,
   `runHostBootstrapCLI progName projectCommands`.
 - Project binaries import the library through a pinned `source-repository-package` git dependency and
   extend the core command tree with their own subcommands.
-- The skeletal `hostbootstrap` binary is the core tree with no project commands; it is built like any
+- The bare `hostbootstrap` binary is the core tree with no project commands; it is built like any
   project binary (host-native), not baked into the base image.
 
 ## Module Surface
@@ -33,7 +33,7 @@ consumers depend on; it is the canonical inventory tracked in
 | `HostBootstrap.Substrate` | Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) and host-applicability predicates. |
 | `HostBootstrap.Ensure` | The `Reconciler` value type and the generic `ensure <tool>` subcommand dispatcher. |
 | `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Cuda`, `Homebrew`, `Ghc`, `Tart`); each is an idempotent value with a host-applicability predicate and a reconcile action. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
-| `HostBootstrap.Config.Schema` | Decoder for the skeletal `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu,memory,storage}`). Core owns only this decoder; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
+| `HostBootstrap.Config.Schema` | Decoder for the static-base `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu,memory,storage}`). Core owns only this decoder; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
 | `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (per-project Colima VM on Apple, kind node limits on Linux). See [resource_budgeting](../engineering/resource_budgeting.md). |
 | `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Command` | The composable core command tree (`coreCommands`) merging the `ensure`, `config`, and `cluster` verbs. |
@@ -85,7 +85,7 @@ main :: IO ()
 main = runHostBootstrapCLI "daemon-substrate" projectCommands
 ```
 
-The skeletal `hostbootstrap` binary is the same entrypoint with no project commands (built like any
+The bare `hostbootstrap` binary is the same entrypoint with no project commands (built like any
 project binary, not baked into the base image):
 
 ```haskell
@@ -94,7 +94,7 @@ main = runHostBootstrapCLI "hostbootstrap" []
 ```
 
 This guarantees that `ensure …`, `cluster …`, and `config …` behave identically whether invoked
-through the skeletal binary or through any project binary; a project only adds verbs, it never
+through the bare binary or through any project binary; a project only adds verbs, it never
 shadows or rewrites the core ones.
 
 ## Consumption

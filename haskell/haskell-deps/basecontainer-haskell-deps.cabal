@@ -6,6 +6,16 @@ category: Development
 description:
   This package intentionally exposes a tiny executable with the shared
   dependency set in build-depends so the base image can prebuild the Cabal store.
+  .
+  The warm Cabal store is shared, but the version-pin *freezes* it produces are
+  layered (see documents/engineering/warm_store.md): `core.freeze` pins the base
+  + hostbootstrap-core closure + the shared web-build extras (including
+  `purescript-bridge`, the demo's web bridge), imported by `mcts` and
+  `daemon-substrate`; `daemon.freeze` pins the daemon-family deps (Pulsar/MinIO/
+  proto/HTTP — e.g. `hedis`, `postgresql-simple`, `proto-lens*`, `http-client*`,
+  `network`, `websockets`, `warp`, `wai*`), imported only by the daemon apps.
+  Both freezes are generated in-image by `cabal freeze` and never committed
+  (.gitignore / .dockerignore exclude `core.freeze` / `daemon.freeze`).
 license: MIT
 author: basecontainer contributors
 maintainer: basecontainer contributors

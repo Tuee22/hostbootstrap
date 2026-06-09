@@ -2,11 +2,12 @@
 
 The single entrypoint installed on every downstream host (via
 ``pip install git+…``). The surface is thin: ``doctor`` asserts the fail-fast
-host minimums; ``up`` runs the five-step bootstrapper (ensure Docker → build the
-project container → copy the binary to ``./.build/`` → ensure host runtimes →
-exec the binary); ``base build`` / ``base build-and-push`` produce the
-``basecontainer-<flavor>-<arch>`` tags. All richer host-management logic lives
-in ``hostbootstrap-core`` and runs through the execed project binary.
+host minimums; ``up`` runs the pre-binary bootstrapper (assert minimums → ensure
+the host build toolchain → build the binary host-native → exec it); ``base
+build`` / ``base build-and-push`` produce the ``basecontainer-<flavor>-<arch>``
+tags. Ensuring Docker, building the project container, and cordoning are the
+project binary's job; all richer host-management logic lives in
+``hostbootstrap-core`` and runs through the execed project binary.
 """
 
 from __future__ import annotations
@@ -31,13 +32,13 @@ from . import (
     substrate,
 )
 from .base_image import Flavor
-from .spec import SkeletalSpec, SpecError
+from .spec import SpecError, StaticBaseSpec
 from .substrate import Substrate
 
 _DEFAULT_SPEC_PATH: Final[Path] = Path("hostbootstrap.dhall")
 
 
-def _load_spec(spec_path: Path) -> SkeletalSpec:
+def _load_spec(spec_path: Path) -> StaticBaseSpec:
     try:
         return spec.load(spec_path)
     except SpecError as exc:
@@ -49,32 +50,6 @@ def _detect_substrate() -> Substrate:
         return substrate.detect()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
-
-
-def _base_context_value(build_base: bool, base_context: Path | None) -> Path | None:
-    if not build_base:
-        return None
-    if base_context is None:
-        raise click.ClickException(
-            "--build-base requires --base-context pointing at the hostbootstrap repo"
-        )
-    return base_context
-
-
-def _resolve_pull(build_base: bool, no_pull: bool) -> bool:
-    """Decide whether ``docker build`` passes ``--pull`` for the base image.
-
-    Default: ``--pull`` (refresh from Docker Hub). ``--build-base`` rebuilds
-    the base locally and skips the pull. ``--no-pull`` reuses an existing
-    locally-tagged base without rebuilding (useful after a separate
-    ``hostbootstrap base build``).
-    """
-    if build_base and no_pull:
-        raise click.ClickException(
-            "--build-base and --no-pull are mutually exclusive; "
-            "--build-base already skips the pull."
-        )
-    return not (build_base or no_pull)
 
 
 # ---------------------------------------------------------------------------
@@ -202,15 +177,6 @@ _SPEC_OPTION = click.option(
     help="Path to the project's hostbootstrap.dhall",
 )
 
-_NO_PULL_OPTION = click.option(
-    "--no-pull",
-    is_flag=True,
-    help=(
-        "Do not pull the base image from Docker Hub. Use the locally-tagged "
-        "image as-is (e.g. one previously built with `hostbootstrap base build`)."
-    ),
-)
-
 
 @click.group(cls=_FriendlyGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
@@ -238,10 +204,9 @@ def doctor(spec_path: Path) -> None:
 
 @main.command(context_settings={"allow_interspersed_args": False})
 @_SPEC_OPTION
-@_NO_PULL_OPTION
 @click.argument("args", nargs=-1)
-def up(spec_path: Path, no_pull: bool, args: tuple[str, ...]) -> None:
-    """Run the five-step bootstrapper, then exec the project binary with ``args``."""
+def up(spec_path: Path, args: tuple[str, ...]) -> None:
+    """Run the pre-binary bootstrapper, then exec the project binary with ``args``."""
     project_spec = _load_spec(spec_path)
     project_root = spec_path.resolve().parent
     asyncio.run(
@@ -249,7 +214,6 @@ def up(spec_path: Path, no_pull: bool, args: tuple[str, ...]) -> None:
             project_spec,
             project_root=project_root,
             args=args,
-            pull=not no_pull,
         )
     )
 
