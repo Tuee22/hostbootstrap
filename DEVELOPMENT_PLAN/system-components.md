@@ -121,7 +121,7 @@ The bootstrapper does **not** ensure Docker, build the project container, size a
 out of a container — those are the project binary's job once it is running (§ M, § N). All other
 host-management logic lives in `hostbootstrap-core`; new host logic defaults to the project binary
 (Haskell), and a Python addition must be justified by the pre-binary bootstrapping constraint. This
-four-step boundary is implemented in `python/hostbootstrap/bootstrap.py`.
+four-step boundary is implemented in `hostbootstrap/bootstrap.py`.
 
 ## Host-native binary build
 
@@ -199,7 +199,7 @@ and the harness (`demo vm test` → `runMatrix` over the demo's case matrix). It
 surface — `ensure incus`, the host-provider axis, the applied budget cordons, an idiomatic in-Dockerfile
 `check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA, and
 Playwright e2e — centered on a from-zero pristine-host bootstrap inside an incus VM. It supersedes the
-retired `haskell/hostbootstrap-core/example/Main.hs`.
+retired `core/hostbootstrap-core/example/Main.hs`.
 
 ## Update rule
 

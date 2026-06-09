@@ -47,7 +47,7 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 ### Sprint 5.1: Resource budget verification + cordoning [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
 **Docs to update**: `documents/engineering/resource_budgeting.md`, `system-components.md`
 
 #### Objective
@@ -78,8 +78,8 @@ Phase 6 bootstrapping.
 ### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
 
 #### Objective
@@ -113,9 +113,9 @@ None.
 ### Sprint 5.3: Read-only `cluster status` [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`haskell/hostbootstrap-core/test/LifecycleSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
 
 #### Objective

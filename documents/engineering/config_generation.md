@@ -74,7 +74,7 @@ registry's schemas, each labelled by name:
 ```
 
 The output is guarded by a committed snapshot at
-`haskell/hostbootstrap-core/test/golden/config_schema.dhall`. A decoder-type change that is not
+`core/hostbootstrap-core/test/golden/config_schema.dhall`. A decoder-type change that is not
 re-snapshotted fails the golden diff, so the printed schema and the committed contract stay in
 lock-step.
 

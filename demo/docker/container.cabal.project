@@ -7,7 +7,7 @@
 -- exist off-image. See documents/engineering/warm_store.md.
 packages:
   ./hostbootstrap-demo.cabal
-  ../haskell/hostbootstrap-core/hostbootstrap-core.cabal
+  ../core/hostbootstrap-core/hostbootstrap-core.cabal
 
 with-compiler: ghc-9.12.4
 

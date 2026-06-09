@@ -38,7 +38,7 @@ operation runs against `Local` or `InVM` with no per-call branching.
 ### Sprint 11.1: `HostTool Incus` and `ensure incus` [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`, `haskell/hostbootstrap-core/test/EnsureSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -70,7 +70,7 @@ None.
 ### Sprint 11.2: `HostTarget` and the incus driver [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`, `core/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/architecture/build_and_run_model.md`, `documents/architecture/run_models.md`
 
 #### Objective
@@ -98,7 +98,7 @@ None.
 ### Sprint 11.3: Reboot-to-ready reconcile [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Incus.hs` (`classifyDockerReadiness`), `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs` (`rebootDockerToReady`), `haskell/hostbootstrap-core/test/IncusSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Incus.hs` (`classifyDockerReadiness`), `core/hostbootstrap-core/src/HostBootstrap/HostTarget.hs` (`rebootDockerToReady`), `core/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`
 
 #### Objective
@@ -122,7 +122,7 @@ None.
 ### Sprint 11.4: `incusSizingArgs` and the in-VM deployment path [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`, `core/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective

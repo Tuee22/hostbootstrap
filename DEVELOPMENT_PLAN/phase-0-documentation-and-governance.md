@@ -103,8 +103,8 @@ None.
 ### Sprint 0.3: Documentation validator [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
-`haskell/hostbootstrap-core/test/DocValidatorSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Docs to update**: `documents/documentation_standards.md`,
 `DEVELOPMENT_PLAN/phase-1-hostbootstrap-core-scaffolding.md`
 
@@ -137,8 +137,8 @@ None.
 ### Sprint 0.4: Family doc-floor and taxonomy gate [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
-`haskell/hostbootstrap-core/test/DocValidatorSpec.hs`, `documents/documentation_standards.md`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`core/hostbootstrap-core/test/DocValidatorSpec.hs`, `documents/documentation_standards.md`
 **Docs to update**: `documents/documentation_standards.md`
 
 #### Objective

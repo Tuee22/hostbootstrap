@@ -42,7 +42,7 @@ are left to the project binary, once it is running.
 
 **Status**: Done
 **Implementation**: `docker/basecontainer.Dockerfile`,
-`haskell/haskell-deps/core/basecontainer-core-deps.cabal`
+`core/warm-deps/core/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/base_image.md`, `documents/engineering/warm_store.md`,
 `system-components.md`
 
@@ -59,7 +59,7 @@ base image bakes **no** `hostbootstrap` binary.
 - The warm Cabal store + the layered freezes carry `hostbootstrap-core`'s prebuilt dependencies
   for every project's in-container project-container build (the host-native binary build uses the host
   toolchain the bootstrapper ensures). The warm-store core manifest
-  (`haskell/haskell-deps/core/basecontainer-core-deps.cabal`) lists the full
+  (`core/warm-deps/core/basecontainer-core-deps.cabal`) lists the full
   `hostbootstrap-core` dependency closure (the freeze layering itself is Phase 12).
 - `ormolu`/`fourmolu` and `hlint` remain pinned in the base for the quality gate.
 
@@ -77,10 +77,10 @@ None.
 ### Sprint 6.2: Shrink Python to the bootstrapper [Done]
 
 **Status**: Done
-**Implementation**: `python/hostbootstrap/cli.py` (thin `doctor` / `up` / `base` surface),
-`python/hostbootstrap/bootstrap.py` (the pre-binary bootstrap path), `python/hostbootstrap/spec.py`
-(static-base `StaticBaseSpec` reader), `python/hostbootstrap/prereqs.py` (trimmed), static-base
-`python/hostbootstrap/dhall/package.dhall`; `python/hostbootstrap/models/` removed.
+**Implementation**: `hostbootstrap/cli.py` (thin `doctor` / `up` / `base` surface),
+`hostbootstrap/bootstrap.py` (the pre-binary bootstrap path), `hostbootstrap/spec.py`
+(static-base `StaticBaseSpec` reader), `hostbootstrap/prereqs.py` (trimmed), static-base
+`hostbootstrap/dhall/package.dhall`; `hostbootstrap/models/` removed.
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`,
 `documents/architecture/build_and_run_model.md`, `system-components.md`
 
@@ -96,14 +96,14 @@ running a baked `hostbootstrap config show`. Yet it must learn the `project` nam
 `exe:<project>` host-native and exec `./.build/<project>` — all before any project binary exists — so
 the pre-binary layer (Python) must decode the static-base Dhall itself, which the ownership boundary
 already permits ("Python reads only the static-base tier"). The decision: **retain a
-minimized `python/hostbootstrap/dhall_tool.py`** (the in-process Haskell decoder backs `config show`;
+minimized `hostbootstrap/dhall_tool.py`** (the in-process Haskell decoder backs `config show`;
 the rich project/test tiers are binary-generated via `config render`). This reverses the earlier ledger intent to remove
 `dhall_tool.py` in phase-6, a direct consequence of the no-baked-binary decision; the legacy ledger
 is updated to match.
 
 #### Deliverables
 
-- `python/hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed
+- `hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed
   `cli.py` branching are removed; the CLI is the thin `doctor` / `up` / `base` surface; the residual
   fail-fast subset of `prereqs.py` is reclaimed into the bootstrapper.
 
@@ -121,8 +121,8 @@ None. The thin-pre-binary-boundary convergence is Sprint 6.3.
 ### Sprint 6.3: Converge `bootstrap.py` on the §M/§N boundary [Done]
 
 **Status**: Done
-**Implementation**: `python/hostbootstrap/bootstrap.py`, `python/hostbootstrap/cli.py`,
-`python/tests/test_bootstrap.py`, `python/tests/test_cli.py`
+**Implementation**: `hostbootstrap/bootstrap.py`, `hostbootstrap/cli.py`,
+`tests/test_bootstrap.py`, `tests/test_cli.py`
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`,
 `documents/architecture/build_and_run_model.md`, `system-components.md`,
 `legacy-tracking-for-deletion.md`

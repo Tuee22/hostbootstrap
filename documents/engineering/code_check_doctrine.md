@@ -38,7 +38,7 @@ The base image enforces its own self-check in two layers:
   **no** `hostbootstrap` binary — see [base_image.md](base_image.md)), a single
   `RUN` step verifies that `fourmolu` and `hlint` actually start (catching install
   regressions) and runs them against the warm-store sample source at
-  [`haskell/haskell-deps/core/app/`](../../haskell/haskell-deps/core/app/)
+  [`core/warm-deps/core/app/`](../../core/warm-deps/core/app/)
   (catching sample drift).
 
 The split is deliberate: the full `hostbootstrap` source tree is **not** copied

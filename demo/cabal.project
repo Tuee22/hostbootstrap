@@ -3,14 +3,14 @@
 -- hostbootstrap-demo extends hostbootstrap-core via runHostBootstrapCLI; this
 -- project builds the demo binary against hostbootstrap-core from local source,
 -- with the GHC pin and optimisation level that match the warm Cabal store
--- (../haskell/cabal.project). This is the in-repo, host-native form: an external
+-- (../core/cabal.project). This is the in-repo, host-native form: an external
 -- derived project instead follows the warm-store template (packages: . plus an
 -- `import:` of the base image's core.freeze and a source-repository-package
 -- dependency) documented in ../documents/engineering/derived_project_standards.md.
 
 packages:
   hostbootstrap-demo.cabal
-  ../haskell/hostbootstrap-core/hostbootstrap-core.cabal
+  ../core/hostbootstrap-core/hostbootstrap-core.cabal
 
 with-compiler: ghc-9.12.4
 

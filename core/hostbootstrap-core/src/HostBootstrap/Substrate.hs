@@ -4,7 +4,7 @@
 -- the hardware targets downstream projects declare in @hostbootstrap.dhall@.
 -- The classification core ('classify', 'parseDockerArch') is pure; 'detect'
 -- wraps it with the platform reads and NVIDIA probe. Ported from the Python
--- @python/hostbootstrap/substrate.py@.
+-- @hostbootstrap/substrate.py@.
 module HostBootstrap.Substrate
   ( SubstrateName (..),
     Arch (..),

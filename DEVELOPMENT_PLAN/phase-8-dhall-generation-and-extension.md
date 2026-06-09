@@ -38,7 +38,7 @@ so the schema and the configs both flow from the binary's types and round-trip b
 ### Sprint 8.1: `Core.dhall` vocabulary and budget helpers [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/dhall/Core.dhall`, `haskell/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
+**Implementation**: `core/hostbootstrap-core/dhall/Core.dhall`, `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`, `core/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/architecture/dhall_generation.md`, `system-components.md`
 
 #### Objective
@@ -66,7 +66,7 @@ scope here.
 ### Sprint 8.2: `HostBootstrap.Dhall.Gen` and the `ConfigArtifact` registry [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `core/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`, `system-components.md`
 
 #### Objective
@@ -91,7 +91,7 @@ None.
 ### Sprint 8.3: `config schema` [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/test/golden/config_schema.dhall`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/golden/config_schema.dhall`, `core/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`
 
 #### Objective
@@ -121,7 +121,7 @@ None.
 ### Sprint 8.4: `config render` and the round-trip guarantee [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `haskell/hostbootstrap-core/test/DhallGenSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`, `core/hostbootstrap-core/test/DhallGenSpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`, `documents/architecture/dhall_generation.md`
 
 #### Objective
@@ -155,7 +155,7 @@ None.
 ### Sprint 8.5: The four-stream extension contract [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `documents/architecture/library_hierarchy.md`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `documents/architecture/library_hierarchy.md`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/library_hierarchy.md`, `documents/engineering/derived_project_standards.md`
 
 #### Objective

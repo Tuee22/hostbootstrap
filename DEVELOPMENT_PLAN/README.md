@@ -19,8 +19,8 @@ cluster-lifecycle and resource cordoning, and the optparse command tree projects
 layer shrinks to the pre-binary bootstrap. See [00-overview.md](00-overview.md) for the cross-phase
 narrative and [system-components.md](system-components.md) for the component inventory.
 
-The repository runs the Haskell `hostbootstrap-core` library (under `haskell/`) plus the thin Python
-bootstrapper (under `python/`). The phases below describe the ordered buildout. The host-management
+The repository runs the Haskell `hostbootstrap-core` library (under `core/`) plus the thin Python
+bootstrapper (rooted at the repository root). The phases below describe the ordered buildout. The host-management
 surface is implemented and the Python layer is the thin pre-binary bootstrapper; the global-architecture
 deltas have largely landed — the binary-generated `config schema`/`config render` (Phase 8), the applied
 budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus host-provider

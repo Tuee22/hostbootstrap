@@ -42,3 +42,18 @@ The hostbootstrap repo uses Poetry with an **in-project** `.venv`
 development only*. Downstream installs use `pipx install
 "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"`, or
 `pipx install --force /path/to/hostbootstrap` for a local checkout.
+
+The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
+`hostbootstrap/` package, `stubs/`, and `tests/` all live there alongside
+`core/`). Run all Python commands from the repo root:
+
+- Code checks: `poetry run python -m hostbootstrap.check_code`
+  (runs `ruff check hostbootstrap stubs`, `black --check hostbootstrap stubs`, then `mypy hostbootstrap`).
+- Tests: `poetry run python -m hostbootstrap.test_all`.
+- Coverage: `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`
+  (configured with `fail_under = 100`).
+
+Do not invoke `pytest` directly; `tests/conftest.py` requires the
+`hostbootstrap.test_all` runner. See
+[../architecture/python_haskell_boundary.md](../architecture/python_haskell_boundary.md)
+for the ownership boundary between this bootstrapper and `hostbootstrap-core`.

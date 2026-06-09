@@ -9,7 +9,7 @@
 
 The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
 package listed in the two layer manifests under
-[`haskell/haskell-deps/`](../../haskell/haskell-deps/) —
+[`core/warm-deps/`](../../core/warm-deps/) —
 `basecontainer-core-deps.cabal` (core + web) and `basecontainer-daemon-deps.cabal`
 (daemon-family) — is compiled at base-image build time, in the configurations
 downstream projects actually use.
@@ -59,15 +59,15 @@ rebuilds packages that look pre-built but have a different store key.
 ## What the warm store ships
 
 For every package in the two layer manifests
-([`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/core/basecontainer-core-deps.cabal)
+([`basecontainer-core-deps.cabal`](../../core/warm-deps/core/basecontainer-core-deps.cabal)
 and
-[`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal)):
+[`basecontainer-daemon-deps.cabal`](../../core/warm-deps/daemon/basecontainer-daemon-deps.cabal)):
 
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
 * Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
   vanilla, profiling, **and** dynamic (`dyn`) ways are all in the store.
 * Compiled at **`-O2`** (`optimization: 2` in
-  [`haskell/haskell-deps/cabal.project`](../../haskell/haskell-deps/cabal.project)).
+  [`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project)).
 * Pinned to the versions in the in-image freezes (`core.freeze` and, for the
   daemon-family deps, `daemon.freeze`).
 
@@ -159,7 +159,7 @@ Why this works:
   during the base build, against the warm-store project there. The freezes are
   not committed files copied in — `cabal.project.freeze`, `core.freeze`, and
   `daemon.freeze` are all in `.gitignore` and `.dockerignore`, so the
-  `COPY haskell/haskell-deps/` step never carries them; the in-image
+  `COPY core/warm-deps/` step never carries them; the in-image
   `cabal freeze` step produces them. Every `basecontainer-<flavor>-<arch>` tag
   carries one specific set of freezes, frozen at the moment the base was built.
 * The binary is built **host-native** on every substrate, where the freezes are read
@@ -224,9 +224,9 @@ Adding a new dep is a one-PR loop:
 
 1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
    the layer manifest for its level: a daemon-family dep goes in
-   [`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal)
+   [`basecontainer-daemon-deps.cabal`](../../core/warm-deps/daemon/basecontainer-daemon-deps.cabal)
    (the `daemon.freeze` layer); a base / core / shared web-build dep goes in
-   [`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/core/basecontainer-core-deps.cabal)
+   [`basecontainer-core-deps.cabal`](../../core/warm-deps/core/basecontainer-core-deps.cabal)
    (the `core.freeze` layer).
 2. **Rebuild and push every base tag.** The freezes are **never committed** —
    `cabal.project.freeze`, `core.freeze`, and `daemon.freeze` are all in
@@ -265,7 +265,7 @@ Most common causes, in order of likelihood:
 2. The project's `*.cabal` has an upper bound that conflicts with a freeze.
 3. The package is genuinely not in the warm store — open a PR adding it to the
    appropriate layer manifest under
-   [`haskell/haskell-deps/`](../../haskell/haskell-deps/) (core + web →
+   [`core/warm-deps/`](../../core/warm-deps/) (core + web →
    `basecontainer-core-deps.cabal`; daemon-family → `basecontainer-daemon-deps.cabal`).
 
 ## WRONG vs RIGHT

@@ -20,7 +20,7 @@
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
 
 > **Current state.** This model is implemented. The Python bootstrapper
-> (`python/hostbootstrap/bootstrap.py`) builds the binary host-native on **every** substrate — Linux
+> (`hostbootstrap/bootstrap.py`) builds the binary host-native on **every** substrate — Linux
 > included; there is no build-in-container, copy-out path — and execs it. Ensuring Docker, building the
 > project container, and the cordon are owned by the execed binary, not the bootstrapper. The original
 > convergence to this host-native, no-copy-out model is recorded in

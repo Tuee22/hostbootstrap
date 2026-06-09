@@ -1,7 +1,7 @@
 """Read the static-base ``hostbootstrap.dhall`` into frozen dataclasses.
 
 The schema is the static-base Dhall package under ``dhall/`` — identical in shape
-across every project and matching ``haskell/hostbootstrap-core/dhall/Type.dhall``
+across every project and matching ``core/hostbootstrap-core/dhall/Type.dhall``
 (``{ project, dockerfile, resources { cpu, memory, storage } }``). The
 pre-binary Python layer decodes this tier itself because the base image bakes no
 ``hostbootstrap`` binary (a Linux ELF cannot run on Apple silicon); the

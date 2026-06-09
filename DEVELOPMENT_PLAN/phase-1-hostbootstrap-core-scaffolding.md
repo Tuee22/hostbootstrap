@@ -32,7 +32,7 @@ compiles and runs `--help`.
 ### Sprint 1.1: Cabal package + GHC pin [Done]
 
 **Status**: Done
-**Implementation**: `haskell/cabal.project`, `haskell/hostbootstrap-core/hostbootstrap-core.cabal`
+**Implementation**: `core/cabal.project`, `core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Docs to update**: `documents/engineering/cabal_layout.md`, `system-components.md`
 
 #### Objective
@@ -44,7 +44,7 @@ stanza, pinned to the base-image GHC toolchain.
 
 - `hostbootstrap-core.cabal` with one `library` stanza (`HostBootstrap.*` exposed modules) and one
   `executable hostbootstrap` stanza.
-- `haskell/cabal.project` pinning the GHC version that matches the base image, plus any required
+- `core/cabal.project` pinning the GHC version that matches the base image, plus any required
   `allow-newer` carve-out.
 - `optparse-applicative` and `dhall` declared as library dependencies.
 - `cabal build all` succeeds with placeholder modules.
@@ -61,9 +61,9 @@ None.
 ### Sprint 1.2: Module skeleton + runHostBootstrapCLI [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`, `haskell/hostbootstrap-core/app/Main.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/app/Main.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `system-components.md`
 
 #### Objective

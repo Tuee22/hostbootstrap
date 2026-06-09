@@ -53,7 +53,7 @@ The binary-generated tiers are composed from a three-level Dhall vocabulary that
 
 | Layer | File | Embeds | In repo |
 |-------|------|--------|---------|
-| L0 | `Core.dhall` | — | `haskell/hostbootstrap-core/dhall/Core.dhall` |
+| L0 | `Core.dhall` | — | `core/hostbootstrap-core/dhall/Core.dhall` |
 | L1 | `Daemon.dhall` | `Core.dhall` | Downstream (`daemon-substrate`) |
 | L2 | `App.dhall` | `Daemon.dhall` | Downstream (`jitML`, `infernix`) |
 

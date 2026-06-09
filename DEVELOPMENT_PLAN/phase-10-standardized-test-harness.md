@@ -39,7 +39,7 @@ matrix; never-touch-production is mechanical and unit-tested.
 ### Sprint 10.1: `runMatrix` driver and per-case isolation [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `system-components.md`
 
 #### Objective
@@ -63,7 +63,7 @@ None.
 ### Sprint 10.2: `guardTestDelete` and the never-touch-production invariant [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -90,7 +90,7 @@ None.
 ### Sprint 10.3: Budget-slicing [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`
 
 #### Objective
@@ -114,7 +114,7 @@ None.
 ### Sprint 10.4: The four run-models and the selection key [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `haskell/hostbootstrap-core/test/HarnessSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/run_models.md`, `documents/architecture/build_and_run_model.md`
 
 #### Objective
@@ -144,7 +144,7 @@ None.
 ### Sprint 10.5: `test` and `check-code` verbs [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/testing.md`, `documents/engineering/code_check_doctrine.md`
 
 #### Objective

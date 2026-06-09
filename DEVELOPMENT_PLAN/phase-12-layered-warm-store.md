@@ -13,7 +13,7 @@
 **Status**: Done
 
 The warm-store freeze is **layered and in-image-generated**. The warm-store package is split into two
-layer manifests under `haskell/haskell-deps/` — `basecontainer-core-deps.cabal` (base + the
+layer manifests under `core/warm-deps/` — `basecontainer-core-deps.cabal` (base + the
 `hostbootstrap-core` closure + the shared web-build extras: `purescript-bridge` and the web-server stack
 `warp`/`wai*`/`network`/`http-types`/`websockets`) and `basecontainer-daemon-deps.cabal` (the
 daemon-family deps: Redis/Postgres/proto/secure-WS-client — `hedis`, `postgresql-simple`, `proto-lens*`,
@@ -47,7 +47,7 @@ store.
 ### Sprint 12.1: Freeze fragmentation [Done]
 
 **Status**: Done
-**Implementation**: `haskell/haskell-deps/core/basecontainer-core-deps.cabal`, `haskell/haskell-deps/daemon/basecontainer-daemon-deps.cabal`, `haskell/haskell-deps/{cabal,core,daemon}.project`, `haskell/haskell-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
+**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`, `core/warm-deps/daemon/basecontainer-daemon-deps.cabal`, `core/warm-deps/{cabal,core,daemon}.project`, `core/warm-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/base_image.md`
 
 #### Objective
@@ -108,7 +108,7 @@ None.
 ### Sprint 12.3: `purescript-bridge` in the warm store [Done]
 
 **Status**: Done
-**Implementation**: `haskell/haskell-deps/core/basecontainer-core-deps.cabal`
+**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/languages/purescript.md`
 
 #### Objective
@@ -125,7 +125,7 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 #### Validation
 
 - `purescript-bridge` is present in the `core.freeze` manifest
-  (`haskell/haskell-deps/core/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
+  (`core/warm-deps/core/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
   (verified in the host and in-container freeze runs), so a project depending on it builds with a
   warm-store cache hit (the full cache hit is validated by a base-image build).
 

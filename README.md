@@ -37,7 +37,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
 > **Current state.** The thin, host-native bootstrapper described in this README is **implemented**:
-> `python/hostbootstrap/bootstrap.py` is the four-step pre-binary path (assert minimums → ensure the host
+> `hostbootstrap/bootstrap.py` is the four-step pre-binary path (assert minimums → ensure the host
 > build toolchain → build the binary host-native on every substrate → exec), with no Docker-ensure,
 > container build, VM sizing, or copy-out. The host-management library — the `ensure` install-and-verify
 > suite, the applied budget cordon, the standardized harness, and the incus host-provider — is
@@ -184,7 +184,7 @@ all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_
 
 ```text
 .
-├── haskell/
+├── core/
 │   ├── cabal.project                 # self-contained Cabal workspace (pins GHC; lists hostbootstrap-core)
 │   ├── hostbootstrap-core/           # Haskell core package
 │   │   ├── hostbootstrap-core.cabal
@@ -200,14 +200,12 @@ all-Python layout to this shape is tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_
 │   │   ├── app/Main.hs               # bare hostbootstrap binary (core tree, no project commands)
 │   │   ├── dhall/                    # static-base schema (Type.dhall, Core.dhall) + example.dhall
 │   │   └── test/                     # tasty suite (incl. the documentation validator)
-│   └── haskell-deps/                 # warm Cabal store package
+│   └── warm-deps/                    # warm Cabal store package
 ├── demo/                             # hostbootstrap-demo: the worked L0-direct consumer
-│   └── cabal.project                 # the consumer's own workspace (builds against haskell/hostbootstrap-core)
-├── python/
-│   ├── pyproject.toml
-│   ├── hostbootstrap/                # thin Python bootstrapper (pre-binary: minimums → toolchain → build → exec)
-│   ├── stubs/   tests/
-│   └── README.md
+│   └── cabal.project                 # the consumer's own workspace (builds against core/hostbootstrap-core)
+├── pyproject.toml                   # Poetry project: the hostbootstrap CLI distribution
+├── hostbootstrap/                   # thin Python bootstrapper (pre-binary: minimums → toolchain → build → exec)
+├── stubs/   tests/                  # mypy stubs + pytest suite
 ├── docker/basecontainer.Dockerfile
 ├── documents/                        # canonical documentation tree
 └── DEVELOPMENT_PLAN/                 # phased implementation status

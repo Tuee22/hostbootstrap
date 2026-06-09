@@ -45,7 +45,7 @@ one-line diagnostic and a non-zero exit.
 ### Sprint 3.1: Reconciler abstraction + ensure subcommand wiring [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -82,9 +82,9 @@ None.
 ### Sprint 3.2: The six reconcilers [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
 `Colima.hs`, `Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -119,9 +119,9 @@ None.
 ### Sprint 3.3: Install-and-verify reconcile actions [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`InstallStep`,
-`installAndVerify`), `haskell/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `Colima.hs`,
-`Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`, `haskell/hostbootstrap-core/test/EnsureSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`InstallStep`,
+`installAndVerify`), `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `Colima.hs`,
+`Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective

@@ -11,13 +11,13 @@
 ## Where the repository is today
 
 The inversion is well advanced. `hostbootstrap` is the Haskell `hostbootstrap-core` library (under
-`haskell/`) plus a Python bootstrapper (under `python/`). `hostbootstrap-core` owns
+`core/`) plus a Python bootstrapper (rooted at the repository root). `hostbootstrap-core` owns
 host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
 cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
 The Python CLI is reduced to `doctor` / `up` / `base`: it asserts the fail-fast host minimums,
 ensures a host toolchain, builds the project binary, and execs it — and still builds and publishes the
 `basecontainer-<flavor>-<arch>` base images. The three-execution-model machinery is gone; the residual
-Dhall read (`python/hostbootstrap/dhall_tool.py`, `python/hostbootstrap/spec.py`) decodes only the
+Dhall read (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`) decodes only the
 static-base config tier.
 
 The Python layer has **converged** on the thin pre-binary boundary that § M / § N define: `bootstrap.py`

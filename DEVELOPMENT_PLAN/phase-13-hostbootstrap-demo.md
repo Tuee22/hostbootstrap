@@ -160,7 +160,7 @@ warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbu
 `demo/docker/container.cabal.project` which imports the base warm-store freeze) are both validated by real
 builds, completing the 3-build sequence. The first-run prerequisites this surfaced — `qemu-system-x86`/
 `ovmf` for incus VMs, the `incusbr0`↔Docker `iptables` forwarding rule, the pinned **GHC 9.12.4** (fixed in
-`python/hostbootstrap/bootstrap.py`), and `zlib1g-dev` — are now ensured by the demo verbs and the
+`hostbootstrap/bootstrap.py`), and `zlib1g-dev` — are now ensured by the demo verbs and the
 bootstrapper.
 
 ### Sprint 13.4: kind + Harbor on the VM and image push [Done]
@@ -269,7 +269,7 @@ live-validated.
 ### Sprint 13.7: Retire `example/Main.hs` [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/hostbootstrap-core.cabal` (stanza removed), `documents/engineering/derived_project_standards.md`, `README.md`, `legacy-tracking-for-deletion.md`
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal` (stanza removed), `documents/engineering/derived_project_standards.md`, `README.md`, `legacy-tracking-for-deletion.md`
 **Docs to update**: `documents/engineering/derived_project_standards.md`, `legacy-tracking-for-deletion.md`
 
 #### Objective

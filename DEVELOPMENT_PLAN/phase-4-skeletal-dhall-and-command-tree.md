@@ -16,7 +16,7 @@
 `hostbootstrap config show`. `HostBootstrap.Command` composes the `ensure` and `config` verbs, and
 `runHostBootstrapCLI` extends the tree with project commands (demonstrated by the worked `demo/`
 consumer). **Correction:** the **pre-binary** read of the static base is done by the Python bootstrapper
-via the pinned `dhall-to-json` (`python/hostbootstrap/dhall_tool.py`), which is **retained** — it must run
+via the pinned `dhall-to-json` (`hostbootstrap/dhall_tool.py`), which is **retained** — it must run
 before any binary exists — not removed; the in-process Haskell decoder serves `config show` *after* the
 binary exists. The reopened binary-generated-schema items are delivered (see
 [development_plan_standards.md § P, Q](development_plan_standards.md)), so this phase is closed: `config
@@ -45,8 +45,8 @@ project binary generates; core owns only the static-base decoder.
 ### Sprint 4.1: Static-base schema + in-process decoder [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`haskell/hostbootstrap-core/dhall/Type.dhall`, `haskell/hostbootstrap-core/dhall/example.dhall`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/dhall/Type.dhall`, `core/hostbootstrap-core/dhall/example.dhall`
 **Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
 `system-components.md`
 
@@ -79,8 +79,8 @@ remain live until the Python layer is rewritten in phase-6; see
 ### Sprint 4.2: Composable command tree [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`haskell/hostbootstrap-core/app/Main.hs` (the bare `hostbootstrap` binary; the worked extension is now
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/app/Main.hs` (the bare `hostbootstrap` binary; the worked extension is now
 `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`)
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `system-components.md`
 
@@ -116,9 +116,9 @@ None.
 ### Sprint 4.3: Static-base rename and anti-drift check [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`haskell/hostbootstrap-core/dhall/Type.dhall`, `python/hostbootstrap/spec.py`,
-`python/hostbootstrap/dhall/package.dhall`, `haskell/hostbootstrap-core/test/SchemaSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/dhall/Type.dhall`, `hostbootstrap/spec.py`,
+`hostbootstrap/dhall/package.dhall`, `core/hostbootstrap-core/test/SchemaSpec.hs`
 **Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`
 
 #### Objective

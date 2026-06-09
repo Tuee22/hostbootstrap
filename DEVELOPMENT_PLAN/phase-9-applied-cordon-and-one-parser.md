@@ -35,7 +35,7 @@ all fed by a single canonical quantity parser and argument builder.
 ### Sprint 9.1: One canonical quantity parser and argument builder [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective
@@ -64,7 +64,7 @@ None.
 ### Sprint 9.2: Applied Linux kind-node cordon [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -89,7 +89,7 @@ None.
 ### Sprint 9.3: `verifyBudget` and `fitsBudget` wired before bring-up [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`
 
 #### Objective
@@ -115,7 +115,7 @@ None.
 ### Sprint 9.4: Per-substrate storage cordon [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `haskell/hostbootstrap-core/test/CordonSpec.hs`, `haskell/hostbootstrap-core/test/IncusSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`, `core/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`
 
 #### Objective

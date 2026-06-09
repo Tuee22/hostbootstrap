@@ -403,7 +403,10 @@ def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
 
 
-def test_self_check_runs_poetry_in_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_self_check_runs_poetry_in_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").touch()
     captured: list[tuple[list[str], Path]] = []
 
     class _CompletedOK:
@@ -415,16 +418,20 @@ def test_self_check_runs_poetry_in_context(monkeypatch: pytest.MonkeyPatch) -> N
         return _CompletedOK()
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
-    cli._run_self_check_or_abort(Path("/tmp/repo"))
+    cli._run_self_check_or_abort(tmp_path)
     assert captured == [
         (
             ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
-            Path("/tmp/repo/python"),
+            tmp_path,
         )
     ]
 
 
-def test_self_check_nonzero_raises_click_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_self_check_nonzero_raises_click_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").touch()
+
     class _Completed:
         returncode = 7
 
@@ -433,13 +440,28 @@ def test_self_check_nonzero_raises_click_exception(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
     with pytest.raises(cli.click.ClickException, match="self-check failed"):
-        cli._run_self_check_or_abort(Path("/tmp/repo"))
+        cli._run_self_check_or_abort(tmp_path)
 
 
-def test_self_check_missing_poetry_raises_click_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_self_check_missing_poetry_raises_click_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").touch()
+
     def _fake_run(*_a: object, **_kw: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", "poetry")
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
     with pytest.raises(cli.click.ClickException, match="poetry"):
-        cli._run_self_check_or_abort(Path("/tmp/repo"))
+        cli._run_self_check_or_abort(tmp_path)
+
+
+def test_self_check_rejects_non_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _fake_run(*_a: object, **_kw: object) -> object:
+        raise AssertionError("subprocess.run must not be reached without pyproject.toml")
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    with pytest.raises(cli.click.ClickException, match="not a hostbootstrap repo root"):
+        cli._run_self_check_or_abort(tmp_path)

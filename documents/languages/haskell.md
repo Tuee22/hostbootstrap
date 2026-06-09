@@ -17,7 +17,7 @@ project builds.
 
 ## Warm store
 
-[`haskell/haskell-deps/`](../../haskell/haskell-deps/) declares the shared
+[`core/warm-deps/`](../../core/warm-deps/) declares the shared
 dependency set. The base image builds it with
 `--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via the layered
 `core.freeze` / `daemon.freeze`, so

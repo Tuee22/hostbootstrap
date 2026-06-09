@@ -242,15 +242,20 @@ def _run_self_check_or_abort(context: Path) -> None:
 
     The base image build flow MUST NOT publish source with style or type
     errors. We shell out to ``poetry run python -m hostbootstrap.check_code``
-    in the ``python/`` subdir of the build context (where the Poetry project
-    lives) so the check runs against Poetry's development venv — ruff, black,
-    and mypy are dev-only dependencies and are not available in the
-    pipx-installed CLI's own venv. See documents/engineering/code_check_doctrine.md.
+    in the build context root (where the Poetry project lives) so the check
+    runs against Poetry's development venv — ruff, black, and mypy are
+    dev-only dependencies and are not available in the pipx-installed CLI's
+    own venv. See documents/engineering/code_check_doctrine.md.
     """
+    if not (context / "pyproject.toml").is_file():
+        raise click.ClickException(
+            f"{context} is not a hostbootstrap repo root (no pyproject.toml); "
+            "run from the repo root or pass --context."
+        )
     try:
         completed = subprocess.run(
             ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
-            cwd=context / "python",
+            cwd=context,
             check=False,
         )
     except FileNotFoundError as exc:

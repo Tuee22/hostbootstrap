@@ -11,7 +11,7 @@ This page documents what the cuda-flavored base image ships.
 The `basecontainer-cuda-<arch>` tags are built `FROM` the latest
 `nvidia/cuda:*-cudnn-devel-ubuntu24.04` image that has a manifest for the
 target arch. Resolution lives in
-[`python/hostbootstrap/base_image.py`](../../python/hostbootstrap/base_image.py):
+[`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py):
 
 1. Query Docker Hub for `nvidia/cuda` tags matching
    `*-cudnn-devel-ubuntu24.04`.

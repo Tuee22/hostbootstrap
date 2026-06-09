@@ -17,7 +17,7 @@ config read via `dhall-to-json`). No surface is currently slated for deletion. W
 its entry moves to **Completed** in the same change. Per
 [development_plan_standards.md § I](development_plan_standards.md).
 
-- **`python/hostbootstrap/prereqs.py`** — the Python host-prerequisite checks. The fail-fast host
+- **`hostbootstrap/prereqs.py`** — the Python host-prerequisite checks. The fail-fast host
   minimums have been trimmed to the pre-binary subset (Linux: Ubuntu 24.04 + passwordless sudo,
   `linux-gpu` additionally the NVIDIA container runtime; Apple: passwordless sudo + Xcode CLT +
   Homebrew), dispatched by substrate alone (no `ProjectSpec`/`ResolvedTarget`). All richer host logic
@@ -25,7 +25,7 @@ its entry moves to **Completed** in the same change. Per
   **retained as the trimmed thin-bootstrapper minimums**, not removed; this entry stays Pending
   tracking the eventual lift of the residual checks into `hostbootstrap-core`. Owning phase: phase-2
   (host trio lift) and phase-3 (reconcilers).
-- **`python/hostbootstrap/dhall_tool.py`** — provisions and shells out to a pinned `dhall-to-json`
+- **`hostbootstrap/dhall_tool.py`** — provisions and shells out to a pinned `dhall-to-json`
   release binary to render Dhall to JSON. **Retained (minimized), not removed.** The no-baked-binary
   decision (phase-6.1) means the pre-binary Python layer must decode the static-base `hostbootstrap.dhall`
   itself (to learn the `project` name it builds and execs, before any project binary exists), so Python
@@ -41,13 +41,13 @@ These three-execution-model surfaces were removed when the Python CLI was reduce
 `bootstrap.py` converged on the thin § M / § N boundary (phase-6, Sprint 6.3). The Python suite passes
 at 100% coverage after their removal.
 
-- **`haskell/hostbootstrap-core/example/Main.hs`** (and the `hostbootstrap-example` executable stanza in
-  `haskell/hostbootstrap-core/hostbootstrap-core.cabal`) — the thin one-verb (`greet`) worked example.
+- **`core/hostbootstrap-core/example/Main.hs`** (and the `hostbootstrap-example` executable stanza in
+  `core/hostbootstrap-core/hostbootstrap-core.cabal`) — the thin one-verb (`greet`) worked example.
   **Removed**, superseded by the full worked consumer under `demo/` (`hostbootstrap-demo`), which extends
   the core tree (`runHostBootstrapCLI`), the schema-gen registry (`coreArtifacts ++ demoArtifacts`), and
   the harness (its own case matrix). `cabal build all` succeeds without the example stanza. Owning phase:
   phase-13 (Sprint 13.7). Replacement: `demo/`.
-- **The pre-binary-boundary overreach in `python/hostbootstrap/bootstrap.py`** — the Docker-ensure
+- **The pre-binary-boundary overreach in `hostbootstrap/bootstrap.py`** — the Docker-ensure
   (`colima_start_command`), the project-container build (`container_build_spec` + `docker_ops.build`),
   the Colima VM sizing, and the Linux build-in-container-and-copy-out
   (`copy_out_create_command`/`copy_out_cp_command`/`copy_out_rm_command`/`_copy_binary_out`).
@@ -62,21 +62,21 @@ at 100% coverage after their removal.
   project binary uses to size the VM is the phase-9 (Sprint 9.1) work; there is no longer a Python
   budget interpreter to dedup against.
 
-- **`python/hostbootstrap/models/*`** (`container.py`, `host_binary.py`, `host_daemon.py`,
+- **`hostbootstrap/models/*`** (`container.py`, `host_binary.py`, `host_daemon.py`,
   `__init__.py`) — the three execution-model implementations. **Removed.** Every project now produces
-  one binary through a single substrate-driven build/run path (`python/hostbootstrap/bootstrap.py`);
+  one binary through a single substrate-driven build/run path (`hostbootstrap/bootstrap.py`);
   there is no model dispatch. Owning phase: phase-6.
 - **The three-execution-model + `Cluster`/`NoCluster` + `Mount` Dhall schema in
-  `python/hostbootstrap/dhall/package.dhall`** — the rich union schema. **Replaced** with the static-base
+  `hostbootstrap/dhall/package.dhall`** — the rich union schema. **Replaced** with the static-base
   schema (`project`, `dockerfile`, `resources {cpu, memory, storage}`) matching
-  `haskell/hostbootstrap-core/dhall/Type.dhall`; read by the static-base `python/hostbootstrap/spec.py`
+  `core/hostbootstrap-core/dhall/Type.dhall`; read by the static-base `hostbootstrap/spec.py`
   (`StaticBaseSpec`) and decoded in-process for the rich tiers by `HostBootstrap.Config.Schema`. Owning
   phase: phase-6.
 - **The `spec.py` model dataclasses** (`Model`, `Lifecycle`, `Mount`, `ContainerArtifact`,
   `ContainerModel`, `HostBinaryModel`, `HostDaemonModel`, `TargetSpec`, `ResolvedTarget`, `target_for`).
-  **Removed.** `python/hostbootstrap/spec.py` is rewritten to the static-base `StaticBaseSpec` reader.
+  **Removed.** `hostbootstrap/spec.py` is rewritten to the static-base `StaticBaseSpec` reader.
   Owning phase: phase-6.
-- **The `--force-target` model dispatch** in `python/hostbootstrap/cli.py` — the `--force-target`
+- **The `--force-target` model dispatch** in `hostbootstrap/cli.py` — the `--force-target`
   option, the `isinstance(model, …)` branching across `_build` / `_run` / `_daemon_run` /
   `_cluster_*`, the `cluster` / `daemon` Click groups, and the `_model_name` / `_require_daemon` /
   `_require_cluster` helpers. **Removed.** The thin CLI is `doctor` / `up` / `base`; the bootstrapper

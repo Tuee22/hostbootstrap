@@ -79,7 +79,7 @@ The Python layer is small and so is its suite. It covers only the pre-binary boo
 Python layer owns: asserting the fail-fast host minimums (see [prerequisites.md](prerequisites.md)),
 ensuring the host build toolchain, building the project binary host-native into `./.build/`, and
 exec'ing it. Tests are hermetic — host detection and process invocation are stubbed or recorded. The
-process-touching paths are exercised through a recorded-runner fixture (`python/tests/conftest.py`)
+process-touching paths are exercised through a recorded-runner fixture (`tests/conftest.py`)
 that replaces the process runner with an argv recorder, so they assert the exact commands without
 executing them. The canonical Python code-check (formatter, linter, strict type-check) runs as part
 of the base self-check (see [code_check_doctrine.md](code_check_doctrine.md)).

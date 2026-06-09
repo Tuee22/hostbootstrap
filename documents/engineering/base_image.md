@@ -26,7 +26,7 @@ together name exactly one tag.
 
 The four published tags above are the **source of truth** every derived project (and the in-repo
 `demo/`) builds `FROM`. Whenever the repo's base inputs change — `docker/basecontainer.Dockerfile`
-or the warm-store inputs under [`haskell/haskell-deps/`](../../haskell/haskell-deps/) (the layer
+or the warm-store inputs under [`core/warm-deps/`](../../core/warm-deps/) (the layer
 manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection) — the published
 tag no longer matches the repo and **must be rebuilt and republished**
 (`hostbootstrap base build-and-push`; see [build_release.md](build_release.md)). Consumers then
@@ -90,7 +90,7 @@ scheme, not a host the bootstrapper reaches today).
   `daemon.freeze`, and the `*.project.freeze` intermediates). See [warm_store.md](warm_store.md).
 * **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned fourmolu `0.19.0.1` / hlint `3.10` at
   `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and the warm Cabal store
-  from [`haskell/haskell-deps/`](../../haskell/haskell-deps/).
+  from [`core/warm-deps/`](../../core/warm-deps/).
 * **Go** — first-class toolchain installed at `/opt/go`; `GOPATH`, `GOCACHE`, `GOMODCACHE`,
   `GOTOOLCHAIN`, and `PATH` set alongside other languages.
 * **nvkind** — built once in the final image (`CGO_ENABLED=1 go install …/nvkind@latest`) and copied

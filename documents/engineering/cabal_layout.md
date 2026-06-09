@@ -11,8 +11,8 @@
 ## TL;DR
 
 - `hostbootstrap-core` is a single Cabal package built with the base-image GHC toolchain.
-- `haskell/cabal.project` — the self-contained Cabal workspace for the core, the peer of `python/`'s
-  Poetry project — pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match the warm store
+- `core/cabal.project` — the self-contained Cabal workspace for the core, the peer of the
+  root-level Poetry project — pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match the warm store
   baked into the base image (see [warm_store](warm_store.md)). The `demo/` consumer carries its own
   `demo/cabal.project`; the repository root holds no Cabal project file.
 - The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
@@ -21,20 +21,20 @@
 
 ## GHC Pin
 
-The GHC version is pinned in `haskell/cabal.project` to the base-image toolchain:
+The GHC version is pinned in `core/cabal.project` to the base-image toolchain:
 
 ```cabal
 with-compiler: ghc-9.12.4
 optimization: 2
 ```
 
-The pin and optimisation level match `haskell/haskell-deps/cabal.project`, which warms the shared
+The pin and optimisation level match `core/warm-deps/cabal.project`, which warms the shared
 dependency set into the frozen Cabal store. Pinning both means a derived project that builds
 `hostbootstrap-core` reuses the pre-built dependency unfoldings instead of recompiling them.
 
 ## Package Stanzas
 
-`haskell/hostbootstrap-core/hostbootstrap-core.cabal` declares:
+`core/hostbootstrap-core/hostbootstrap-core.cabal` declares:
 
 | Stanza | Contents |
 |--------|----------|

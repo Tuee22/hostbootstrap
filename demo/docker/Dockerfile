@@ -16,8 +16,8 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /workspace
 # The demo is L0-direct: it needs hostbootstrap-core's source (the in-repo
-# cabal.project references ../haskell/hostbootstrap-core).
-COPY haskell/hostbootstrap-core /workspace/haskell/hostbootstrap-core
+# cabal.project references ../core/hostbootstrap-core).
+COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY demo /workspace/demo
 
 WORKDIR /workspace/demo

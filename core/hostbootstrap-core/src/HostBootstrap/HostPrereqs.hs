@@ -1,7 +1,7 @@
 -- | Fail-fast host-minimum checks.
 --
 -- These are the typed host minimums dispatched by substrate, ported from the
--- Python @python/hostbootstrap/prereqs.py@. Each check is fail-fast: it returns a
+-- Python @hostbootstrap/prereqs.py@. Each check is fail-fast: it returns a
 -- one-line 'PrereqError' the moment a minimum is unmet. The pure-Python
 -- @prereqs.py@ remains the live implementation until Phase 6 reclaims the
 -- residual subset into the thin bootstrapper.

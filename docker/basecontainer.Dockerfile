@@ -231,7 +231,7 @@ RUN set -eux; \
     rm -rf "${tmpdir}"; \
     rustup component add --toolchain "${RUSTUP_TOOLCHAIN}" llvm-tools-preview rustfmt
 
-COPY haskell/haskell-deps/ /opt/basecontainer/haskell-deps/
+COPY core/warm-deps/ /opt/basecontainer/haskell-deps/
 
 # Warm-store contract: see documents/engineering/warm_store.md. The flags
 # below MUST match the canonical project cabal.project so downstream Cabal

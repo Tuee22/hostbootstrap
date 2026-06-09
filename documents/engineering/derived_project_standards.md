@@ -110,7 +110,7 @@ tree in Haskell.
    `cabal build --dry-run --enable-tests --enable-benchmarks all` inside the container. If a
    third-party package (including a `hostbootstrap-core` dependency) shows up in the plan, fix your
    project's flags first; if it's a genuine miss, add it to the appropriate layer
-   manifest under [`haskell/haskell-deps/`](../../haskell/haskell-deps/)
+   manifest under [`core/warm-deps/`](../../core/warm-deps/)
    (core + web → `basecontainer-core-deps.cabal`; daemon-family →
    `basecontainer-daemon-deps.cabal`).
    See [warm_store.md](warm_store.md#how-to-verify-your-project-hits-the-cache).
@@ -177,7 +177,7 @@ optimization: 2
 source-repository-package
   type: git
   location: https://github.com/tuee22/hostbootstrap.git
-  subdir: haskell/hostbootstrap-core
+  subdir: core/hostbootstrap-core
 ```
 
 This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon app would add a second

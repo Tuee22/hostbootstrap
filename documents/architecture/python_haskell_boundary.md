@@ -25,7 +25,7 @@
   execed binary owns them.
 
 > **Current state.** The ownership boundary below is implemented. The Python bootstrapper
-> (`python/hostbootstrap/bootstrap.py`) does only the pre-binary work — assert host minimums, ensure
+> (`hostbootstrap/bootstrap.py`) does only the pre-binary work — assert host minimums, ensure
 > the host build toolchain, build the binary host-native on **every** substrate (Linux included; there
 > is no build-in-container, copy-out path), and exec it. Docker-ensure, the project container build,
 > and the cordon are owned by the execed project binary. The original convergence is recorded in

@@ -2,7 +2,7 @@
 --
 -- This is the one configuration tier the Python bootstrapper reads; it is
 -- identical in shape across every project. It matches
--- `haskell/hostbootstrap-core/dhall/Type.dhall` (an anti-drift test asserts the
+-- `core/hostbootstrap-core/dhall/Type.dhall` (an anti-drift test asserts the
 -- two share one shape): the rich project-level and per-case test Dhall are
 -- artifacts the project binary generates — core owns only this static-base type
 -- and its in-process decoder.

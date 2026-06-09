@@ -32,8 +32,8 @@ command names (see [development_plan_standards.md § K](development_plan_standar
 ### Sprint 2.1: HostTool resolution + HostConfig [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
 `documents/engineering/prerequisites.md`, `system-components.md`
 
@@ -70,15 +70,15 @@ None.
 ### Sprint 2.2: HostPrereqs + substrate detection [Done]
 
 **Status**: Done
-**Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
-`haskell/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs`
 **Docs to update**: `documents/engineering/prerequisites.md`, `system-components.md`
 
 #### Objective
 
 Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootstrap.Substrate`
-(substrate detection), porting the logic currently in `python/hostbootstrap/prereqs.py` and
-`python/hostbootstrap/substrate.py` into Haskell.
+(substrate detection), porting the logic currently in `hostbootstrap/prereqs.py` and
+`hostbootstrap/substrate.py` into Haskell.
 
 #### Deliverables
 
