@@ -8,9 +8,11 @@
 > closure — the cache-hit contract derived projects rely on, and the dep-addition workflow.
 
 The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
-package listed in
-[`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal)
-is compiled at base-image build time, in the configurations downstream projects actually use.
+package listed in the two layer manifests under
+[`haskell/haskell-deps/`](../../haskell/haskell-deps/) —
+`basecontainer-core-deps.cabal` (core + web) and `basecontainer-daemon-deps.cabal`
+(daemon-family) — is compiled at base-image build time, in the configurations
+downstream projects actually use.
 
 The warm Cabal store (the prebuilt packages) is **shared**, but the version-pin
 **freezes** it produces are **layered by library level** — the base build's in-image
@@ -20,23 +22,29 @@ The warm Cabal store (the prebuilt packages) is **shared**, but the version-pin
   web-build extras (including `purescript-bridge`, the demo's web bridge). It is
   imported by `mcts` and `daemon-substrate` — and by any L0-direct consumer such
   as the demo.
-* **`daemon.freeze`** pins the daemon-family deps (Pulsar/MinIO/proto/HTTP — e.g.
-  `hedis`, `postgresql-simple`, `proto-lens*`, `http-client*`, `network`,
-  `websockets`, `warp`, `wai*`). It is imported **only** by the daemon apps.
+* **`daemon.freeze`** pins the daemon-family deps a non-daemon consumer does not
+  need (Redis / Postgres / proto / secure-websocket-client — e.g. `hedis`,
+  `postgresql-simple`, `proto-lens*`, `wuss`). It is imported **only** by the
+  daemon apps. The web-server stack (`warp` / `wai*` / `network` / `http-types` /
+  `websockets`) is in `core.freeze` — those are the shared web-build extras an
+  L0-direct web consumer such as the demo needs; `http-client*` is in `core.freeze`
+  too, pulled into the core closure by `dhall` (remote imports).
 
 Each project's `cabal.project` imports only the fragment(s) for its layer: an
 L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze`
 **and** `daemon.freeze`. A non-daemon consumer (e.g. `mcts`) is therefore **not** coupled
 to the daemon dependency closure.
 
-> **Current state.** Projecting the single in-image `cabal freeze` into the two
-> layered `core.freeze` / `daemon.freeze` fragments is the warm-store layering
-> deliverable (tracked in the development plan), validated by a real base-image
-> build — including settling the membership of the shared web-server packages
-> (`warp` / `wai*` / `network`) that an L0-direct web consumer such as the demo
-> also needs. The base build today emits the single full `cabal.project.freeze`;
-> a derived project hits the warm store by importing whichever freeze the current
-> base tag ships.
+> **Current state.** The base build projects the shared store into the two
+> layered fragments in-image: `cabal freeze --project-file=core.project` pins the
+> core + web closure into `core.freeze`, and `--project-file=daemon.project` pins
+> the daemon-family closure into `daemon.freeze` (all three project files import
+> `warm-store.config`, so both freezes are projections of one store, then the base
+> build moves `core.project.freeze`/`daemon.project.freeze` to
+> `core.freeze`/`daemon.freeze`). The membership of the shared web-server packages
+> (`warp` / `wai*` / `network`) is **settled into `core.freeze`**. The published
+> `basecontainer-<flavor>-<arch>` tag's full warm-store compile is produced by the
+> operator's `base build-and-push`.
 
 The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
 `optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
@@ -50,8 +58,10 @@ rebuilds packages that look pre-built but have a different store key.
 
 ## What the warm store ships
 
-For every package in
-[`basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal):
+For every package in the two layer manifests
+([`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/basecontainer-core-deps.cabal)
+and
+[`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/basecontainer-daemon-deps.cabal)):
 
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
 * Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
@@ -213,9 +223,11 @@ Why this works:
 Adding a new dep is a one-PR loop:
 
 1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
-   [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
-   A daemon-family dep belongs to the `daemon.freeze` layer; a base / core /
-   shared web-build dep belongs to `core.freeze`.
+   the layer manifest for its level: a daemon-family dep goes in
+   [`basecontainer-daemon-deps.cabal`](../../haskell/haskell-deps/basecontainer-daemon-deps.cabal)
+   (the `daemon.freeze` layer); a base / core / shared web-build dep goes in
+   [`basecontainer-core-deps.cabal`](../../haskell/haskell-deps/basecontainer-core-deps.cabal)
+   (the `core.freeze` layer).
 2. **Rebuild and push every base tag.** The freezes are **never committed** —
    `cabal.project.freeze`, `core.freeze`, and `daemon.freeze` are all in
    `.gitignore` and `.dockerignore`. There is no "commit the freeze" step. The
@@ -251,8 +263,10 @@ Most common causes, in order of likelihood:
    — an L0-direct project imports `core.freeze`; a daemon app imports both
    `core.freeze` and `daemon.freeze`).
 2. The project's `*.cabal` has an upper bound that conflicts with a freeze.
-3. The package is genuinely not in the warm store — open a PR adding it to
-   [`basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
+3. The package is genuinely not in the warm store — open a PR adding it to the
+   appropriate layer manifest under
+   [`haskell/haskell-deps/`](../../haskell/haskell-deps/) (core + web →
+   `basecontainer-core-deps.cabal`; daemon-family → `basecontainer-daemon-deps.cabal`).
 
 ## WRONG vs RIGHT
 

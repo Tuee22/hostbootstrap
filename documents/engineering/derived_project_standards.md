@@ -109,8 +109,10 @@ tree in Haskell.
 5. **Don't rebuild what the warm store already builds.** Check
    `cabal build --dry-run --enable-tests --enable-benchmarks all` inside the container. If a
    third-party package (including a `hostbootstrap-core` dependency) shows up in the plan, fix your
-   project's flags first; if it's a genuine miss, add it to
-   [`haskell/haskell-deps/basecontainer-haskell-deps.cabal`](../../haskell/haskell-deps/basecontainer-haskell-deps.cabal).
+   project's flags first; if it's a genuine miss, add it to the appropriate layer
+   manifest under [`haskell/haskell-deps/`](../../haskell/haskell-deps/)
+   (core + web → `basecontainer-core-deps.cabal`; daemon-family →
+   `basecontainer-daemon-deps.cabal`).
    See [warm_store.md](warm_store.md#how-to-verify-your-project-hits-the-cache).
 
 A project that follows all five rules has a Dockerfile that is small, a build that hits the cache,

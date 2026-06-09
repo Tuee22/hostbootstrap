@@ -237,18 +237,28 @@ COPY haskell/haskell-deps/ /opt/basecontainer/haskell-deps/
 # below MUST match the canonical project cabal.project so downstream Cabal
 # store keys line up; otherwise derived projects silently rebuild.
 #
-# `cabal freeze` at the end pins the resolved versions into
-# /opt/basecontainer/haskell-deps/cabal.project.freeze inside the image, so
-# derived projects can `import:` it from their own cabal.project and the
-# base image is the single source of truth for transitive dep versions.
+# `cabal build all` warms the single shared store from both layer packages
+# (basecontainer-core-deps + basecontainer-daemon-deps). The version-pin freezes
+# are then projected per library layer (warm_store.md): `cabal freeze` against
+# core.project pins base + the hostbootstrap-core closure + the shared web-build
+# extras into core.freeze; against daemon.project it pins the daemon-family deps
+# into daemon.freeze. All three project files import warm-store.config (same
+# compiler/flags/builddir) so the two freezes are projections of one store.
+# A derived project `import:`s the fragment(s) for its layer; an L0-direct
+# consumer imports only core.freeze and is never coupled to the daemon closure.
+# The freezes are generated here, never committed (.gitignore / .dockerignore).
 RUN cd /opt/basecontainer/haskell-deps \
     && cabal update \
     && cabal build all --only-dependencies \
          --enable-tests --enable-benchmarks --enable-shared \
     && cabal build all \
          --enable-tests --enable-benchmarks --enable-shared \
-    && cabal freeze \
-         --enable-tests --enable-benchmarks --enable-shared
+    && cabal freeze --project-file=core.project \
+         --enable-tests --enable-benchmarks --enable-shared \
+    && cabal freeze --project-file=daemon.project \
+         --enable-tests --enable-benchmarks --enable-shared \
+    && mv core.project.freeze core.freeze \
+    && mv daemon.project.freeze daemon.freeze
 
 # Code-check guardrail: see documents/engineering/code_check_doctrine.md.
 # Smoke-tests the pinned fourmolu/hlint binaries against the warm-store

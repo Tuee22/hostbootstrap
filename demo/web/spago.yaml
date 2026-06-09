@@ -1,0 +1,18 @@
+package:
+  name: hostbootstrap-demo-web
+  dependencies:
+    - aff
+    - argonaut
+    - argonaut-aeson-generic
+    - effect
+    - either
+    - fetch
+    - halogen
+    - maybe
+    - newtype
+    - prelude
+    - profunctor-lenses
+workspace:
+  packageSet:
+    registry: 77.5.0
+  extraPackages: {}

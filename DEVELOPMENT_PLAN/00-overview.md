@@ -25,9 +25,9 @@ is the four-step path — assert the fail-fast minimums, ensure the host build t
 binary **host-native on every substrate** (Linux included; there is no build-in-container-and-copy-out
 path), and `exec` it. Ensuring Docker, building the project container, sizing the VM, and the cordon are
 all the **project binary's** job once it is running, not the Python layer's. The inversion-side Python
-work is therefore complete; [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md) reopens only
-for the net-new layered warm store (§ V). The narrative below records how each phase delivered this
-shape.
+work is therefore complete; the net-new layered warm store (§ V) was carved out to
+[Phase 12](phase-12-layered-warm-store.md), now `Done`. The narrative below records how each phase
+delivered this shape.
 
 ## Where the repository is going
 
@@ -71,29 +71,29 @@ paths; substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) moves int
 Land each host dependency as an idempotent `ensure` reconciler — a host-applicability predicate plus
 a reconcile action — exposed as an optparse subcommand: `ensure docker`, `ensure colima`,
 `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`. A reconciler run on the wrong host
-fails fast with a one-line diagnostic and a non-zero exit. This phase is `Active`: the six reconcilers
-are implemented and wired into the command tree, but they currently probe/verify rather than
-**install** — the phase reopens against the install-and-verify contract (§ L) and adds `ensure incus`.
+fails fast with a one-line diagnostic and a non-zero exit. This phase is `Done`: each reconciler is
+**install-and-verify** (installs the dependency if absent, verified no-op if present), wired into the
+command tree, with the cross-substrate `ensure incus` host-provider reconciler added in Phase 11 (§ U).
 
 ### Phase 4 — static-base Dhall and command tree
 
 Land the static-base `hostbootstrap.dhall` schema (`project`, `dockerfile`, `resources {cpu, memory,
 storage}`) and its in-process Haskell decoder, replacing the shelled `dhall-to-json` path. Land the
 composable optparse command tree that project binaries extend through `runHostBootstrapCLI`. This
-phase is `Active`: the in-process `config show` decoder and the composable tree (with a worked
-extending binary) are implemented, but the binary-generated `config schema` / `config render` and the
-four-stream extension contract are net-new (Phase 8), and the pre-binary static-base read remains
-Python-via-`dhall-to-json` (retained, not removed).
+phase is `Done`: the in-process `config show` decoder and the composable tree (with the worked
+extending demo binary) are implemented; the binary-generated `config schema` / `config render` and the
+four-stream extension contract landed in Phase 8; and the pre-binary static-base read remains
+Python-via-`dhall-to-json` (retained by design, not removed).
 
 ### Phase 5 — cluster lifecycle and resource cordoning
 
 Land kind/Helm cluster-lifecycle semantics and resource-budget verification and cordoning: on Apple
 by sizing a dedicated per-project Colima VM, on Linux by applying kind node resource limits. Land
 the never-delete-`.data` invariant and the production-vs-test cluster profile distinction. This phase
-is `Active`: the kind/Helm lifecycle (with the `.data` invariant and the profile distinction, test data
-under `./.test_data/<case>/`) and the pure cordon cores are implemented and unit-tested, but the cordon
-is computed and only **reported** — not yet applied — and `verifyBudget` is unwired, so the declared
-budget ceiling is not enforced (the applied cordon is net-new, Phase 9).
+is `Done`: the kind/Helm lifecycle (with the `.data` invariant and the profile distinction, test data
+under `./.test_data/<case>/`) and the cordon cores are implemented and unit-tested; the **applied** cordon
+and the `verifyBudget` spare-capacity preflight landed in Phase 9 and are exercised in real runs (the demo
+brings up a per-case kind cluster, applies the `docker update` node cap, and tears it down).
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -114,11 +114,11 @@ phase.
 
 Outline the migration of consumers onto `hostbootstrap-core`: `daemon-substrate` and `mcts` first,
 with `infernix` and `jitML` as future work. Each consumer ships one optparse binary that extends the
-core rather than re-implementing core verbs. This phase is `Active`: `hostbootstrap-core` is consumable
-and the derived-project standard is documented, but the phase reopens against the **three-level library
-hierarchy** (L0 core ◄ L1 `daemon-substrate` ◄ L2 `{jitML, infernix}`; `mcts` L0-direct) and the worked
-consumer is now `hostbootstrap-demo` (superseding the thin example binary). The consumer-side wiring is
-each consuming repository's own work.
+core rather than re-implementing core verbs. This phase is `Done`: `hostbootstrap-core` is consumable,
+the derived-project standard and the **three-level library hierarchy** (L0 core ◄ L1 `daemon-substrate`
+◄ L2 `{jitML, infernix}`; `mcts` L0-direct) are documented, and the worked consumer is `hostbootstrap-demo`
+(Phase 13, superseding the retired thin example binary). The consumer-side wiring of each sibling project
+is that repository's own work.
 
 ## Where the architecture extends the plan
 
@@ -163,21 +163,30 @@ Phase 5 follows. GPU passthrough is a documented future follow-on.
 
 ### Phase 12 — Layered warm store
 
-The warm-store freeze splits into `core.freeze` (base + core; for `mcts` and `daemon-substrate`) and
-`daemon.freeze` (daemon-family deps), both generated in-image and never committed; `purescript-bridge` is
-added. This phase is `Active`: `purescript-bridge` is in the `core.freeze` manifest, the freezes are
-gitignored/dockerignored (none committed), and the layered import contract is documented; the two-freeze
-in-image generation itself is validated by a base-image build (not runnable in a code-only environment).
+The warm-store freeze splits into `core.freeze` (base + core + shared web-build extras; for `mcts`,
+`daemon-substrate`, and any L0-direct consumer) and `daemon.freeze` (daemon-family deps), both generated
+in-image and never committed; `purescript-bridge` is added. This phase is `Done`: the warm-store package
+is two layer manifests (`basecontainer-core-deps.cabal` / `basecontainer-daemon-deps.cabal`), the base
+build projects the shared store into the two freezes via `core.project`/`daemon.project`, and the split
+is validated — `core.freeze` carries no daemon-distinctive package and a core-only `cabal build
+--dry-run` of `hostbootstrap-core` resolves without the daemon closure, confirmed on the host toolchain
+and in a `ghc-9.12.4` container. The shared web-server packages (`warp`/`wai*`/`network`) are settled
+into `core.freeze`. The published tag's full warm-store compile is the operator's `base build-and-push`
+(the real-build standard Phases 5/10/11 follow).
 
 ### Phase 13 — hostbootstrap-demo worked app
 
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
 on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
-hostbootstrap` → `hostbootstrap up`). It supersedes the retired `example/Main.hs`. This phase is `Active`:
-the `demo/` package builds and demonstrates the four-stream extension end-to-end (`hostbootstrap-demo
---help` shows core + demo verbs; `demo web schema` concatenates the registry; `demo vm test` drives the
-harness), the idiomatic `demo/docker/Dockerfile` and the operations runbook are landed, and the example
-is retired; the live in-VM/kind/Harbor/web/Playwright execution is exercised in a real demo run.
+hostbootstrap` → `hostbootstrap up`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
+the demo has been **exercised in a real run** on a bare-metal host. Every verb is real (no narrate stubs)
+and validated live — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2
+host-native + build #3 the project container `FROM` the pulled base), `vm test` (the harness brings up a
+per-case kind cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve`
+(the `warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
+(registry push/pull validated). The operator-scale real runs — the multi-arch published base tags, the
+full 8-pod Harbor Helm deployment, and the multi-GB image push — follow the same real-run standard
+Phases 5/10/11/12 use.
 
 ## Dependency edges
 

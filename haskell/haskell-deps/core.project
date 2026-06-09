@@ -1,0 +1,10 @@
+-- The core+web freeze projection. `cabal freeze --project-file=core.project`
+-- solves only the base + hostbootstrap-core closure + shared web-build extras
+-- and writes core.project.freeze, which the base build moves to core.freeze.
+-- Because daemon-only packages are not in this projection, core.freeze does not
+-- pin them, so an L0-direct consumer importing only core.freeze resolves without
+-- the daemon closure. See documents/engineering/warm_store.md.
+import: warm-store.config
+
+packages:
+  ./basecontainer-core-deps.cabal

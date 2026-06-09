@@ -67,7 +67,7 @@ The pure cordon **derives** the args; **applying** them — the Colima/incus VM 
 #### Validation
 
 - `CordonSpec` asserts a budget exceeding spare capacity fails fast naming the over-committed
-  dimension, and that `colimaSizingArgs` / `kindNodeLimits` reflect the declared budget. `cabal test`
+  dimension, and that `colimaSizingArgs` / `kindNodeCordonArgs` reflect the declared budget. `cabal test`
   passes.
 
 #### Remaining Work

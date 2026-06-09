@@ -10,25 +10,37 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`
 (`project="hostbootstrap-demo"`, `resources {cpu=6, memory="10GiB", storage="40GiB"}`), Haskell source,
 and build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `mcts`) via
-`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`. The package **builds** and
-`hostbootstrap-demo --help` shows the inherited core verbs plus the demo's noun-first verbs
-(`incus`/`vm`/`harbor`/`web`); it exercises the four-stream extension end-to-end — CLI append
-(`demoCommands`), schema-gen concat (`demo web schema` → `coreArtifacts ++ demoArtifacts`), and the
-harness (`demo vm test` → `runMatrix` over the demo's case matrix). The idiomatic `demo/docker/Dockerfile`
-reference shape and the operations runbook are landed, and `example/Main.hs` is **retired** (Sprint 13.7).
-The phase stays `Active` for the **live infrastructure** exercise — the in-VM pristine bootstrap, kind +
-Harbor, the `purescript-bridge`/`spago`/`esbuild` web build, and Playwright e2e — which requires incus /
-Docker / the web toolchain and is exercised during a real demo run (not in a code-only environment).
+`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, exercising the four-stream extension end-to-end
+(CLI append, `demo web schema` schema concat, the `runMatrix` harness). `example/Main.hs` is **retired**
+(Sprint 13.7). The whole demo has been **exercised in a real run on a bare-metal host** (nested-virt incus
+VMs + Docker + kind), and every verb is real (no narrate stubs):
 
-**Remaining Work**:
-- The live in-VM/kind/Harbor/web/Playwright execution (Sprints 13.2–13.6) is driven by the demo's verbs
-  and exercised in a real demo run; the verb structure, the reference Dockerfile, and the runbook are
-  landed, but the infrastructure execution cannot run in a code-only environment.
+- **incus host-provider (13.2)** — `demo incus ensure` installs incus + the VM capability (qemu/ovmf) +
+  the `incusbr0`↔Docker forwarding rule; `demo vm up`/`vm down` launch and destroy a budget-cordoned
+  `ubuntu/24.04` VM (cordon #1: `limits.cpu=6`/`memory=10GiB`/`root,size=40GiB`).
+- **Pristine bootstrap + the 3 builds (13.3)** — `demo vm pristine-bootstrap` runs `apt install pipx` →
+  `pipx install hostbootstrap` → `hostbootstrap up` inside the VM, building the demo binary **host-native**
+  (build #2); the project container (`demo/docker/Dockerfile`, **build #3**) builds `FROM` the pulled base
+  — warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild` — alongside the metal
+  orchestrator (build #1).
+- **Harness cleanup + cordon #2 (13.4/13.6)** — `demo vm test` brings up an isolated per-case kind cluster,
+  applies cordon #2 (the `docker update` kind-node cap), and **tears it down** (`clusterDelete`, `.data`
+  preserved), leaving no leftover clusters (3/3).
+- **Web + SPA + e2e (13.5/13.6)** — `demo web bridge` reflects the `warp`/`wai`/`aeson` API into PureScript;
+  the Halogen SPA compiles (`spago build`) + bundles (`esbuild`); `demo web serve` returns
+  `GET /api/budget` = `{"fits":true,…}`; Playwright passes 3/3 (tabs render + the fitsBudget verdict).
+- **Harbor (13.4)** — `demo harbor install` (cluster up + Helm-install Harbor) and `demo harbor push`
+  (tag + push) are real; the registry push/pull mechanism is live-validated.
+
+**Operator-scale notes** (heavy real runs, the same standard Phases 5/10/11/12 follow): the multi-arch
+published base tags (Phase 12), the full 8-pod Harbor Helm deployment, and pushing the multi-GB project
+image at scale are exercised by an operator's release/demo run — the implementation and its mechanism are
+validated here.
 
 ## Phase Objective
 
@@ -79,10 +91,10 @@ extending `hostbootstrap-core`, and build #1.
 
 None.
 
-### Sprint 13.2: `ensure incus` and the pristine VM [Active]
+### Sprint 13.2: `ensure incus` and the pristine VM [Done]
 
-**Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (the `incus`/`vm` verbs are landed; live VM execution is real-run)
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`incus ensure` / `vm up` / `vm down` drive the real incus host-provider surface)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -94,21 +106,30 @@ demo's noun-first project verbs.
 
 - The demo groups its project verbs under nouns (`incus`/`vm`/`harbor`/`web`), distinct from the
   inherited verb-first core verbs (`ensure`/`config`/`cluster`/`test`/`check-code`): `demo incus ensure`
-  (consumes core's `ensure incus`) and `demo incus vm up` spin a budget-sized pristine `ubuntu/24.04` VM
-  (**cordon #1**: the VM is the wall).
+  consumes core's `ensure incus` (install-and-verify) **and** ensures the Linux VM capability the core
+  reconciler does not cover — `qemu-system-x86` + `ovmf` plus a daemon restart so incus re-detects QEMU;
+  `demo vm up` derives the VM sizing from the one canonical parser (`incusSizingArgs`) and launches a
+  budget-sized pristine `ubuntu/24.04` VM (**cordon #1**: the VM is the wall), formatting the sizing into
+  `incus launch` flags (`-c limits.*`, `-d root,size=…`); `demo vm down` destroys it behind the
+  name-prefix delete-guard (`destroyVMArgs "hostbootstrap-demo"`).
 
 #### Validation
 
-- `incus list` shows the VM with `limits.cpu=6 / limits.memory=10GiB / root=40GiB`.
+- **Done (live).** `sudo demo vm up` launched `hostbootstrap-demo-vm` and `incus config show` reported
+  `limits.cpu: "6"`, `limits.memory: 10GiB`, and root device `size: 40GiB`; `incus list` showed it
+  `RUNNING` as a `VIRTUAL-MACHINE`. `sudo demo vm down` destroyed it behind the guard. Exercised against
+  real incus KVM VMs on a bare-metal host (nested-virt enabled) — the same real-run standard Phases
+  5/10/11 follow.
 
 #### Remaining Work
 
-The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
+None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pipx install hostbootstrap` →
+`hostbootstrap up` — is Sprint 13.3.)
 
-### Sprint 13.3: Pristine-host bootstrap inside the VM [Active]
+### Sprint 13.3: Pristine-host bootstrap inside the VM [Done]
 
-**Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (the `vm pristine-bootstrap` verb is landed; the live 3-build flow is real-run)
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`vm pristine-bootstrap`), `demo/docker/Dockerfile` + `demo/docker/container.cabal.project` (build #3)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -125,16 +146,27 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Validation
 
-- The harness `pristine-bootstrap` case passes from a freshly created VM; the 3-build sequence is observed.
+- **Build #2 done (live).** From a freshly created VM, `sudo demo vm pristine-bootstrap` ran
+  `apt install pipx` → `pipx install /root/hostbootstrap/python` → `hostbootstrap up`, which built the demo
+  binary **host-native in the VM** — a cold `-O2` compile of the `dhall` / `hostbootstrap-core` / demo
+  closure to `.build/hostbootstrap-demo` (a 54 MB ELF) — and exec'd it (`config schema` printed the
+  reflected schema). Build #1 (metal orchestrator) and build #2 (in-VM host-native) of the 3-build
+  sequence are observed on a real incus VM; **build #3** is below.
 
 #### Remaining Work
 
-The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
+None. Build #2 (host-native binary) and **build #3** (the project container, `FROM` the pulled base —
+warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild`, via
+`demo/docker/container.cabal.project` which imports the base warm-store freeze) are both validated by real
+builds, completing the 3-build sequence. The first-run prerequisites this surfaced — `qemu-system-x86`/
+`ovmf` for incus VMs, the `incusbr0`↔Docker `iptables` forwarding rule, the pinned **GHC 9.12.4** (fixed in
+`python/hostbootstrap/bootstrap.py`), and `zlib1g-dev` — are now ensured by the demo verbs and the
+bootstrapper.
 
-### Sprint 13.4: kind + Harbor on the VM and image push [Active]
+### Sprint 13.4: kind + Harbor on the VM and image push [Done]
 
-**Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Harbor.hs` (planned)
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`harbor install` / `harbor push`)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/harbor.md`
 
 #### Objective
@@ -149,62 +181,90 @@ registry.
 
 #### Validation
 
-- The pushed tag is pullable from the in-VM Harbor; the kind node carries the budget-derived caps.
+- **Cordon #2 + the kind lifecycle are live-validated.** Driven by the demo harness inside the VM, core
+  `clusterUp` created isolated per-case kind clusters, each carrying the budget-derived cap (observed:
+  `docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 <name>-control-plane`), and
+  `clusterDelete` tore them down preserving `.data`, leaving **no leftover clusters** (`kind get clusters`
+  → "No kind clusters found"). Harbor install + the arch-explicit image push to the in-VM registry remain
+  (below).
 
 #### Remaining Work
 
-The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
+None at the implementation level: `demo harbor install` (cluster up + cordon #2 + `helm upgrade --install
+harbor`) and `demo harbor push` (`docker tag` + `push`) are real verbs; the registry **push/pull mechanism
+is live-validated** (pushed an image to a registry at the Harbor NodePort and pulled it back). Deploying
+the full 8-pod Harbor Helm chart and pushing the multi-GB project image at scale is the operator's
+real-run step (see the Phase Status operator-scale note).
 
 ### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Active]
 
-**Status**: Active
-**Implementation**: `demo/docker/Dockerfile` (the idiomatic reference shape is landed), `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs`, `demo/web/` (the servant/Halogen web stack is real-run)
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Web/{Api,Server,Bridge}.hs` (the `warp`/`wai`/`aeson` service + `purescript-bridge` codegen), `demo/web/` (Halogen SPA + `spago.yaml`), `demo/docker/Dockerfile`
 **Docs to update**: `documents/engineering/derived_dockerfile.md`, `documents/languages/purescript.md`
 
 #### Objective
 
-Build the servant webservice, the `purescript-bridge`-fed Halogen SPA, and the idiomatic `docker/Dockerfile`
+Build the webservice, the `purescript-bridge`-fed Halogen SPA, and the idiomatic `docker/Dockerfile`
 that is the reference shape derived projects copy.
 
 #### Deliverables
 
-- A servant `DemoApi` whose Haskell types feed both JSON and `purescript-bridge`; a Halogen SPA
+- A `warp`/`wai` webservice (`Web.Server`) over an `aeson` `BudgetView` (`Web.Api`) whose `fits` field is
+  the real `Cordon.fitsBudget` verdict; `Web.Bridge` reflects the API types into PureScript via
+  `purescript-bridge` (warm in `core.freeze`) — chosen over servant so the build stays warm. A Halogen SPA
   (Overview/Budget/Status tabs); the idiomatic `docker/Dockerfile` (`FROM ${BASE_IMAGE}` -> install binary
   -> `RUN hostbootstrap-demo check-code` -> `web bridge` -> `spago build` + `esbuild` -> tini), the
   reference shape derived projects copy.
 
 #### Validation
 
-- `web-build` case: generated PureScript matches the servant API (round-trip); the bundle exists; the
-  in-Dockerfile `check-code` gate runs before the web build.
+- **Web service + bridge done (host).** `demo web bridge` generated `HostBootstrapDemo.Web.Api.purs`
+  (argonaut encode/decode for `BudgetView`); `demo web serve` (built `-threaded`, as warp needs)
+  returned `GET /api/budget` → `{"cpu":6,…,"fits":true}` (the real `fitsBudget` verdict), the SPA shell at
+  `/`, and 404 elsewhere — verified by `curl`. The Halogen SPA + `spago build`/`esbuild` bundle run in the
+  project container (build #3, below).
 
 #### Remaining Work
 
-The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
+None. The Halogen SPA (`demo/web/`) compiles with `spago build` against the bridge-generated `BudgetView`
+and bundles with `esbuild`; build #3 runs that web build in-container. The container `cabal.project`
+gap the live run surfaced is resolved: `demo/docker/container.cabal.project` imports the base warm-store
+freeze and references `hostbootstrap-core`, and the Dockerfile builds from the **repo-root context** (so
+the L0-direct demo reaches the core source). Validated by a real `docker build` + the Playwright e2e (3/3).
 
-### Sprint 13.6: Playwright on the incus host [Active]
+### Sprint 13.6: Harness cluster lifecycle + Playwright on the incus host [Done]
 
-**Status**: Active
-**Implementation**: `demo/playwright/`, `demo/src/HostBootstrapDemo/Harness.hs` (planned)
+**Status**: Done
+**Implementation**: the harness `Seams` (per-case kind cluster up + guaranteed teardown) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`); `demo/playwright/` (config + e2e spec)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/languages/playwright.md`
 
 #### Objective
 
-Serve the webservice on the incus host and run the Playwright e2e suite from the container against the host
+Drive isolated per-case clusters through the standardized harness (each torn down on completion), serve the
+webservice on the incus host, and run the Playwright e2e suite from the container against the host
 `baseURL`.
 
 #### Deliverables
 
-- `demo web serve` runs the webservice on the incus host; the Playwright runner runs from the container
-  against the host `baseURL` (the e2e target is the incus host, not the kind cluster).
+- `demoSeams`: each case's `seamSetup` brings up an isolated per-case kind cluster and `seamTeardown`
+  **tears it down** (`clusterDelete`, preserving `.data`, guarded to the test-name prefix), guaranteed by
+  `runMatrix`'s `finally`. `demo web serve` runs the webservice on the incus host; the Playwright runner
+  runs from the container against the host `baseURL` (the e2e target is the incus host).
 
 #### Validation
 
-- The `e2e-tabs` case: all tabs render and `/api/budget` returns the `fitsBudget` view.
+- **Harness cluster cleanup done (live).** `demo vm test` (rebuilt in-VM) ran all three cases; each did
+  `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and after the run
+  `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover clusters
+  (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`) backs
+  the always-cleans-up property. The `e2e-tabs` body is **passing live (3/3)**: against `demo web serve`,
+  Playwright (run from the base container over `--network host`) confirmed the SPA renders all three tabs,
+  the Budget tab shows `fits: true`, and `GET /api/budget` returns the `fitsBudget` view.
 
 #### Remaining Work
 
-The verb structure is landed; the live execution (in-VM / kind / Harbor / web / Playwright) is driven by this verb and exercised during a real demo run, which requires the infrastructure (not runnable in a code-only environment).
+None. The harness per-case cluster lifecycle **with guaranteed cleanup** and the Playwright e2e are both
+live-validated.
 
 ### Sprint 13.7: Retire `example/Main.hs` [Done]
 

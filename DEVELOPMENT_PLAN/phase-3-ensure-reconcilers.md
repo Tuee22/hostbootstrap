@@ -56,7 +56,10 @@ the wrong host.
 
 #### Reconciler Contract
 
-- `data Reconciler = Reconciler { applies :: Substrate -> Bool, reconcile :: HostConfig -> IO () }`.
+- `data Reconciler = Reconciler { reconcilerName :: String, reconcilerSummary :: String, appliesTo ::
+  Substrate -> Bool, requirement :: String, reconcile :: HostConfig -> IO () }` — the host-applicability
+  predicate (`appliesTo`) and the idempotent `reconcile` action, plus the subcommand name, the optparse
+  summary, and the human-readable applicability used in the wrong-host diagnostic.
 - Running an inapplicable reconciler prints a one-line diagnostic and exits non-zero before any
   side effect.
 - `reconcile` is idempotent: a second run on a satisfied host is a no-op.

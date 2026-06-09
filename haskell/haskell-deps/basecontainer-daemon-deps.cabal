@@ -1,0 +1,41 @@
+cabal-version: 3.12
+name: basecontainer-daemon-deps
+version: 0.1.0.0
+synopsis: Daemon-family layer of the basecontainer warm Cabal store
+category: Development
+description:
+  The `daemon.freeze` layer of the warm Cabal store: the daemon-family deps that
+  a non-daemon, L0-direct consumer does NOT need — the Redis / Postgres / proto /
+  secure-websocket-client stack (`hedis`, `postgresql-simple`, `proto-lens*`,
+  `wuss`). Listing them as one tiny executable's build-depends lets the base build
+  prebuild them into the shared Cabal store and project `daemon.project` into
+  `daemon.freeze`.
+  .
+  Note: `http-client` / `http-client-tls` are NOT here — they are pulled into the
+  core closure by `dhall` (remote imports), so they live in `core.freeze`.
+  .
+  Imported ONLY by the daemon apps, alongside `core.freeze`; `mcts` and any other
+  L0-direct consumer import `core.freeze` only and so are not coupled to this
+  closure. The base + core + shared web-build deps live in the sibling
+  `basecontainer-core-deps.cabal` (`core.freeze`). Both freezes are generated
+  in-image by `cabal freeze` and never committed (.gitignore / .dockerignore
+  exclude `core.freeze` / `daemon.freeze`).
+  See documents/engineering/warm_store.md.
+license: MIT
+author: basecontainer contributors
+maintainer: basecontainer contributors
+build-type: Simple
+tested-with: GHC ==9.12.4
+
+executable basecontainer-daemon-deps
+  main-is: Main.hs
+  hs-source-dirs: app
+  default-language: Haskell2010
+  build-depends:
+      base >=4.18 && <5
+    , hedis
+    , postgresql-simple
+    , proto-lens
+    , proto-lens-runtime
+    , proto-lens-setup
+    , wuss

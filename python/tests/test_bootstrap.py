@@ -33,7 +33,7 @@ def test_toolchain_ensure_commands_apple() -> None:
     # Apple silicon: Homebrew installs ghcup, then ghcup installs GHC and Cabal.
     assert bootstrap.toolchain_ensure_commands(APPLE) == (
         ("brew", "install", "ghcup"),
-        ("ghcup", "install", "ghc", "--set"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "install", "cabal", "--set"),
     )
 
@@ -42,7 +42,7 @@ def test_toolchain_ensure_commands_apple() -> None:
 def test_toolchain_ensure_commands_linux(sub: Substrate) -> None:
     # Linux: ghcup installs GHC and Cabal; no Homebrew step.
     assert bootstrap.toolchain_ensure_commands(sub) == (
-        ("ghcup", "install", "ghc", "--set"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "install", "cabal", "--set"),
     )
 
@@ -111,7 +111,7 @@ async def test_bootstrap_linux_builds_host_native(
     assert doctored == [LINUX_CPU]
     # No Docker, no Colima, no copy-out: ensure ghcup toolchain then build native.
     assert recorded_commands == [
-        ("ghcup", "install", "ghc", "--set"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "install", "cabal", "--set"),
         (
             "cabal",
@@ -158,7 +158,7 @@ async def test_bootstrap_apple_ensures_homebrew_toolchain_then_builds_native(
     # Homebrew installs ghcup, ghcup installs GHC+Cabal, then native cabal install.
     assert recorded_commands == [
         ("brew", "install", "ghcup"),
-        ("ghcup", "install", "ghc", "--set"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "install", "cabal", "--set"),
         (
             "cabal",

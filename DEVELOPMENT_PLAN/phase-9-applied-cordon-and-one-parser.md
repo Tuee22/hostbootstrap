@@ -98,7 +98,8 @@ Run the spare-capacity gate and the fits-within proof before any spinup.
 
 #### Deliverables
 
-- The pure `fitsBudget :: ResourceBudget -> [PodResources] -> Either Overflow ()`.
+- The pure `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` (the Haskell mirror
+  of `Core.dhall`'s `fitsWithin`).
 - `verifyBudget` invoked as a real fail-fast preflight (resolve host spare capacity, fail with a one-line
   diagnostic if short); `fitsBudget` proves the generated/concurrent pods fit before bring-up.
 

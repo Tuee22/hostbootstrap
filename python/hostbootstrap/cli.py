@@ -302,8 +302,8 @@ def base_build(flavor: str | None, arch: str | None, context: Path) -> None:
     """Cold-rebuild base image(s) locally (``--no-cache --pull``); no push.
 
     For local validation: rebuilds the base image from scratch and leaves it
-    tagged in the local Docker daemon. Use this before ``hostbootstrap up
-    --no-pull`` to validate downstream projects against an unpublished base.
+    tagged in the local Docker daemon, so a downstream project image build
+    resolves the local tag instead of pulling a published base.
     """
     _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()

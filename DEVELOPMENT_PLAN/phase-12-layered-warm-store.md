@@ -10,29 +10,31 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-The layered-freeze **contract** is landed and documented: `core.freeze` (base + `hostbootstrap-core`
-closure + the shared web-build extras, including `purescript-bridge`) is imported by `mcts` and
-`daemon-substrate`; `daemon.freeze` (the daemon-family deps) is imported only by the daemon apps, so a
-non-daemon consumer (`mcts`, off L0) is no longer coupled to the daemon closure. `purescript-bridge` is
-in the `core.freeze` manifest (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`); both freezes are
-gitignored and dockerignored (`git ls-files` shows none), and `documents/engineering/warm_store.md` /
-`base_image.md` / `gitignore_guardrails.md` / `derived_project_standards.md` describe the layered import,
-the in-image generation, and the never-committed rule (the dep-add workflow rebuilds the base tags). The
-phase stays `Active` for the two-freeze **in-image generation** itself — splitting the base build's
-single `cabal freeze` into a `core.freeze` and a `daemon.freeze` — which is **not yet implemented** in
-`docker/basecontainer.Dockerfile` (the base build emits the single full `cabal.project.freeze` today)
-and is validated by a real base-image build (not runnable in this code-only environment; see
-[development_plan_standards.md § V](development_plan_standards.md)). Landing the projection also settles
-the membership of the shared web-server packages (`warp`/`wai*`/`network`) that an L0-direct web consumer
-such as the demo also needs, which the real base + demo build confirms.
+The warm-store freeze is **layered and in-image-generated**. The warm-store package is split into two
+layer manifests under `haskell/haskell-deps/` — `basecontainer-core-deps.cabal` (base + the
+`hostbootstrap-core` closure + the shared web-build extras: `purescript-bridge` and the web-server stack
+`warp`/`wai*`/`network`/`http-types`/`websockets`) and `basecontainer-daemon-deps.cabal` (the
+daemon-family deps: Redis/Postgres/proto/secure-WS-client — `hedis`, `postgresql-simple`, `proto-lens*`,
+`wuss`). `cabal.project` builds the single shared store from both; the base build then projects it per
+layer — `cabal freeze --project-file=core.project` → `core.freeze` and `--project-file=daemon.project` →
+`daemon.freeze` (all three project files `import: warm-store.config`, so the freezes are projections of
+one store). `mcts` and any L0-direct consumer (the demo) import only `core.freeze` and are not coupled to
+the daemon closure; a daemon app imports both. The membership of the shared web-server packages
+(`warp`/`wai*`/`network`) — the question this layering had to settle — is **resolved into `core.freeze`**;
+`http-client*` is in `core.freeze` too (pulled into the core closure by `dhall`'s remote-import support).
 
-**Remaining Work**:
-- Split the base build's single `cabal freeze` step into two layered-projection freezes
-  (`core.freeze` / `daemon.freeze`) in `docker/basecontainer.Dockerfile`, validated by a base-image
-  build (a derived project importing only `core.freeze` resolves without the daemon closure;
-  `cabal build --dry-run` shows only its own targets). This requires building the base image.
+The split is **validated**: both freezes are produced with the correct partition — `core.freeze` pins no
+daemon-distinctive package (`hedis`/`postgresql-simple`/`proto-lens*`/`wuss`) while `daemon.freeze` does,
+and a `cabal build --dry-run` of `hostbootstrap-core` importing only `core.freeze` resolves with no
+daemon package in the plan — confirmed both on the host `ghc-9.12.4` toolchain and in a real `ghc-9.12.4`
+container running the exact in-image freeze step. The freezes are never committed
+(`.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, `daemon.freeze`, and the
+`*.project.freeze` intermediates), and `purescript-bridge` is in the `core.freeze` manifest (Sprint 12.3).
+The published `basecontainer-<flavor>-<arch>` tag's full warm-store compile (every package built at
+`-O2`) is produced by the operator's `base build-and-push` — the same real-build standard Phases 5/10/11
+follow (see [development_plan_standards.md § V](development_plan_standards.md)).
 
 ## Phase Objective
 
@@ -42,10 +44,10 @@ store.
 
 ## Sprints
 
-### Sprint 12.1: Freeze fragmentation [Active]
+### Sprint 12.1: Freeze fragmentation [Done]
 
-**Status**: Active
-**Implementation**: `docker/basecontainer.Dockerfile`, `haskell/haskell-deps/basecontainer-haskell-deps.cabal`
+**Status**: Done
+**Implementation**: `haskell/haskell-deps/basecontainer-core-deps.cabal`, `haskell/haskell-deps/basecontainer-daemon-deps.cabal`, `haskell/haskell-deps/{cabal,core,daemon}.project`, `haskell/haskell-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/base_image.md`
 
 #### Objective
@@ -54,24 +56,29 @@ Split the single freeze into per-layer fragments.
 
 #### Deliverables
 
-- `/opt/basecontainer/haskell-deps/core.freeze` (base + `hostbootstrap-core` closure; imported by `mcts`
-  and `daemon-substrate`) and `daemon.freeze` (Pulsar/MinIO/proto/HTTP; imported only by daemon apps).
-  Each project's `cabal.project` imports only the fragment(s) for its layer.
+- `/opt/basecontainer/haskell-deps/core.freeze` (base + `hostbootstrap-core` closure + the shared
+  web-build extras; imported by `mcts` and `daemon-substrate`) and `daemon.freeze`
+  (Redis/Postgres/proto/secure-WS-client; imported only by daemon apps). The warm-store package is two
+  layer manifests (`basecontainer-core-deps.cabal` / `basecontainer-daemon-deps.cabal`); `core.project`
+  and `daemon.project` project the shared store into the two freezes. Each project's `cabal.project`
+  imports only the fragment(s) for its layer.
 
 #### Validation
 
-- A derived project importing only `core.freeze` resolves without the daemon closure; `cabal build
-  --dry-run` shows only the project's own targets. This is validated by a base-image build.
+- **Done.** `cabal freeze --project-file=core.project` and `--project-file=daemon.project` produce the
+  two freezes; `core.freeze` pins no daemon-distinctive package (`hedis`/`postgresql-simple`/
+  `proto-lens*`/`wuss`) while `daemon.freeze` does; a `cabal build --dry-run` of `hostbootstrap-core`
+  importing only `core.freeze` resolves with **no** daemon package in the plan. Confirmed on the host
+  `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container.
 
 #### Remaining Work
 
-The layered split is documented (the warm-store manifest is annotated with the core/daemon grouping and
-the docs describe the import-by-layer contract); the base build's single `cabal freeze` must be split
-into a `core.freeze` and a `daemon.freeze` projection, validated by a real base-image build.
+None. The published base tag's full warm-store compile (every package built at `-O2`) is produced by the
+operator's `base build-and-push`.
 
-### Sprint 12.2: In-image generation, never committed [Active]
+### Sprint 12.2: In-image generation, never committed [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `.dockerignore`, `.gitignore`, `docker/basecontainer.Dockerfile`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/gitignore_guardrails.md`
 
@@ -81,26 +88,27 @@ Generate both freezes in-image and stop the (incorrect) commit instruction.
 
 #### Deliverables
 
-- The freezes are produced by `cabal freeze` during the base build and written into the image; none is
-  committed — `.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, and
-  `daemon.freeze`. The dep-addition workflow rebuilds the base tags instead of committing a freeze
-  (the "commit the freeze" claim is fixed in `warm_store.md`).
+- The freezes are produced by `cabal freeze --project-file=…` during the base build and written into the
+  image; none is committed — `.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`,
+  `daemon.freeze`, and the `*.project.freeze` intermediates. The dep-addition workflow rebuilds the base
+  tags instead of committing a freeze (the "commit the freeze" claim is fixed in `warm_store.md`).
 
 #### Validation
 
-- `git ls-files` shows no committed freeze (verified). The base image containing both generated freezes
-  at the documented paths is validated by a base-image build.
+- **Done.** `git ls-files` shows no committed freeze. A `ghc-9.12.4` container running the exact in-image
+  step (`cabal update` + `cabal freeze --project-file=core.project` + `--project-file=daemon.project` +
+  `mv` to `core.freeze`/`daemon.freeze`) produces both freezes at the working path with the correct
+  partition. The published base tag carrying them at `/opt/basecontainer/haskell-deps/` is produced by
+  the operator's `base build-and-push`.
 
 #### Remaining Work
 
-The `.gitignore`/`.dockerignore` guardrail and the never-committed docs are landed; emitting the two
-freezes (rather than the single `cabal.project.freeze`) is the Sprint 12.1 in-image-generation work,
-validated by a base-image build.
+None.
 
 ### Sprint 12.3: `purescript-bridge` in the warm store [Done]
 
 **Status**: Done
-**Implementation**: `haskell/haskell-deps/basecontainer-haskell-deps.cabal`
+**Implementation**: `haskell/haskell-deps/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/warm_store.md`, `documents/languages/purescript.md`
 
 #### Objective
@@ -116,9 +124,10 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 
 #### Validation
 
-- `purescript-bridge` is present in the warm-store manifest
-  (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`), so a project depending on it builds with a
-  warm-store cache hit (the cache hit is validated by a base-image build).
+- `purescript-bridge` is present in the `core.freeze` manifest
+  (`haskell/haskell-deps/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
+  (verified in the host and in-container freeze runs), so a project depending on it builds with a
+  warm-store cache hit (the full cache hit is validated by a base-image build).
 
 #### Remaining Work
 

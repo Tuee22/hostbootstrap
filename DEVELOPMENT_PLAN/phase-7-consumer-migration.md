@@ -133,8 +133,9 @@ parallel streams (see [development_plan_standards.md § P, § T](development_pla
 
 #### Remaining Work
 
-The example→`demo/` reference re-point and the `hostbootstrap-example` retirement land in
-[phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md) (Sprint 13.7), once `demo/` exists.
+None. The example→`demo/` reference re-point and the `hostbootstrap-example` retirement landed in
+[phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md) (Sprint 13.7); `example/Main.hs` is
+retired (see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
 ## Documentation Requirements
 

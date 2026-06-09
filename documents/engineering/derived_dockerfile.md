@@ -12,8 +12,9 @@
   Python bootstrapper (see
   [build and run model](../architecture/build_and_run_model.md) is referenced from
   the runbook; here the binary is the builder).
-- The idiomatic container is `FROM ${BASE_IMAGE}` → install the host-native binary
-  → `RUN <project> check-code` → web build (`<project> web bridge` →
+- The idiomatic container is `FROM ${BASE_IMAGE}` → build + install the project
+  binary (reusing the warm store) → `RUN <project> check-code` → web build
+  (`<project> web bridge` →
   `spago build` → `esbuild`) → tini ENTRYPOINT.
 - The in-Dockerfile `check-code` step is a **build-time gate**: an image with
   style or lint violations cannot be produced. See
@@ -24,8 +25,9 @@
 ## The reference shape
 
 The idiomatic derived Dockerfile (the worked example is `demo/docker/Dockerfile`)
-inherits the warm-store base image, installs the host-native-built binary, runs
-the code-check gate, then builds the web bundle, with tini as PID 1. Its skeleton:
+inherits the warm-store base image, builds and installs the project binary
+(reusing the warm store), runs the code-check gate, then builds the web bundle,
+with tini as PID 1. Its skeleton:
 
 ```dockerfile
 # check=skip=InvalidDefaultArgInFrom

@@ -41,8 +41,8 @@ are left to the project binary, once it is running.
 ### Sprint 6.1: Base image warm store (no baked binary) [Done]
 
 **Status**: Done
-**Implementation**: `docker/basecontainer.Dockerfile` (unchanged),
-`haskell/haskell-deps/basecontainer-haskell-deps.cabal`
+**Implementation**: `docker/basecontainer.Dockerfile`,
+`haskell/haskell-deps/basecontainer-core-deps.cabal`
 **Docs to update**: `documents/engineering/base_image.md`, `documents/engineering/warm_store.md`,
 `system-components.md`
 
@@ -56,11 +56,11 @@ base image bakes **no** `hostbootstrap` binary.
 - The base image bakes no `hostbootstrap` binary: a Linux ELF cannot run on Apple silicon, so it
   could not be copied out to every host. Every project builds its own binary **host-native**; the
   project container the binary later builds (`FROM` the base) is accelerated by the warm store.
-- The warm Cabal store + `cabal.project.freeze` carry `hostbootstrap-core`'s prebuilt dependencies
+- The warm Cabal store + the layered freezes carry `hostbootstrap-core`'s prebuilt dependencies
   for every project's in-container project-container build (the host-native binary build uses the host
-  toolchain the bootstrapper ensures). The warm-store manifest
-  (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`) already lists the full
-  `hostbootstrap-core` dependency closure, so **no Dockerfile change is required**.
+  toolchain the bootstrapper ensures). The warm-store core manifest
+  (`haskell/haskell-deps/basecontainer-core-deps.cabal`) lists the full
+  `hostbootstrap-core` dependency closure (the freeze layering itself is Phase 12).
 - `ormolu`/`fourmolu` and `hlint` remain pinned in the base for the quality gate.
 
 #### Validation

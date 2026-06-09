@@ -33,6 +33,15 @@ spago.lock
 cabal.project.freeze
 core.freeze
 daemon.freeze
+# Intermediate per-projection freezes (cabal freeze --project-file=core.project
+# writes core.project.freeze, moved to core.freeze in the base build).
+*.project.freeze
+# demo web build artifacts — regenerated in-container by web bridge / spago / esbuild.
+demo/web/.spago/
+demo/web/output/
+demo/web/node_modules/
+demo/web/public/
+demo/web/src/Generated/
 .tox/
 .nox/
 htmlcov/

@@ -1,0 +1,20 @@
+-- The container build (#3) project config.
+--
+-- Like the in-repo ../cabal.project, but it imports the base image's warm-store
+-- freeze so the dependency closure is reused from /opt/cache/cabal (only
+-- hostbootstrap-core and the demo's own modules compile). The host-native build
+-- (#2) uses the in-repo cabal.project instead, since the freeze path does not
+-- exist off-image. See documents/engineering/warm_store.md.
+packages:
+  ./hostbootstrap-demo.cabal
+  ../haskell/hostbootstrap-core/hostbootstrap-core.cabal
+
+with-compiler: ghc-9.12.4
+
+import: /opt/basecontainer/haskell-deps/cabal.project.freeze
+
+tests: True
+benchmarks: True
+shared: True
+
+optimization: 2

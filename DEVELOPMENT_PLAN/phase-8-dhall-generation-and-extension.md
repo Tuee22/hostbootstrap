@@ -132,8 +132,11 @@ to type-check.
 
 #### Command Surface
 
-- `<project> config render [--profile production|test --case <k>]` — materialize concrete Dhall (the rich
-  project/deploy config, or one record per test case under `./.test_data/<case>/`).
+- `<project> config render [--artifact NAME]` — materialize the registry's renders: with no flag every
+  in-scope `ConfigArtifact`, or just the named one with `--artifact NAME`. The rich deploy tier is
+  rendered by `deployConfigText coreImport budget pods` (a budget plus a concurrent pod set composed into
+  a config carrying the `Budget/fitsWithin` assertion); the per-case test tier is rendered by the project
+  binary / test harness under `./.test_data/<case>/` (Phase 10), not an L0 `config render` flag.
 
 #### Deliverables
 

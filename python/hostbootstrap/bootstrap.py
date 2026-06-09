@@ -37,6 +37,12 @@ _BREW: str = "brew"
 _GHCUP: str = "ghcup"
 _CABAL: str = "cabal"
 
+# The family-pinned GHC every project's ``cabal.project`` selects (matches
+# ``base_image.GHC_VERSION`` and the warm-store toolchain). The toolchain ensure
+# installs exactly this version so the host-native build resolves its pinned
+# ``with-compiler: ghc-9.12.4`` rather than whatever ``ghcup`` calls recommended.
+GHC_VERSION: str = "9.12.4"
+
 # The host-native build output directory; ./.build/<project> is always present.
 _BUILD_DIR: str = ".build"
 
@@ -56,7 +62,7 @@ def toolchain_ensure_commands(sub: Substrate) -> tuple[tuple[str, ...], ...]:
     tool is already present.
     """
     ghcup_steps = (
-        (_GHCUP, "install", "ghc", "--set"),
+        (_GHCUP, "install", "ghc", GHC_VERSION, "--set"),
         (_GHCUP, "install", "cabal", "--set"),
     )
     if sub.name is SubstrateName.APPLE_SILICON:

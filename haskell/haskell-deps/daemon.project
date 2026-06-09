@@ -1,0 +1,10 @@
+-- The daemon-family freeze projection. `cabal freeze --project-file=daemon.project`
+-- solves the daemon-only closure (Redis / Postgres / proto / outbound-HTTP /
+-- secure-websocket-client) and writes daemon.project.freeze, which the base
+-- build moves to daemon.freeze. A daemon app imports core.freeze AND
+-- daemon.freeze; the shared transitive pins agree because both projections solve
+-- against the same in-image index. See documents/engineering/warm_store.md.
+import: warm-store.config
+
+packages:
+  ./basecontainer-daemon-deps.cabal

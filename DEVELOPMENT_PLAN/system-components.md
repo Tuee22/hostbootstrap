@@ -12,11 +12,13 @@
 > Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist,
 > the Python CLI is the thin `doctor` / `up` / `base` pre-binary bootstrapper (converged on the
 > §M/§N boundary), and `hostbootstrap-core` is consumable via `runHostBootstrapCLI`. The
-> **global-architecture deltas** are largely implemented and unit-tested — Dhall generation (Phase 8),
+> **global-architecture deltas** are implemented and unit-tested — Dhall generation (Phase 8),
 > the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
-> (Phase 11) are all landed; the layered warm store (Phase 12, the in-image two-freeze generation) and
-> the demo's live run (Phase 13) are the remaining **real-build / real-run-gated** work (in scope, open;
-> see [README.md](README.md) § Validation Policy). The rows below carry their owning phase and an
+> (Phase 11) are all landed; the layered warm store (Phase 12) and the worked demo (Phase 13) are
+> implemented and **exercised in real runs** (incus VMs, the pristine 3-build bootstrap, the harness
+> cluster lifecycle, the web/Playwright stack). **All phases are `Done`**; the operator-scale real runs
+> (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow the
+> § Validation Policy standard. The rows below carry their owning phase and an
 > Implemented column. The Python surfaces removed along the way are recorded in
 > [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This repository does not use
 > `.github/` workflows or GitHub Actions as a validation surface; see [README.md](README.md) for

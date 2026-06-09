@@ -24,12 +24,17 @@ bootstrapper (under `python/`). The phases below describe the ordered buildout. 
 surface is implemented and the Python layer is the thin pre-binary bootstrapper; the global-architecture
 deltas have largely landed — the binary-generated `config schema`/`config render` (Phase 8), the applied
 budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus host-provider
-(Phase 11) are all implemented and unit-tested. The two phases that remain `Active` are so because their
-live end-to-end half is real-run/real-build-gated (the layered warm store, Phase 12; the worked demo,
-Phase 13 — see § Validation Policy); the Phase-0 governance, including the doctrine-clarity sweep, has
-**closed** (per § A it may reopen only when a future architecture contract adds a new doc-coverage
-obligation). See [00-overview.md](00-overview.md) for the cross-phase narrative and the net-new phases. Consumer-side
-migration of individual projects is tracked in those projects' own repositories (see Phase 7).
+(Phase 11) are all implemented and unit-tested; the layered warm store (Phase 12) is implemented with its
+two-freeze split validated on the host `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container; and the
+worked demo (Phase 13) has been **exercised in a real run** on a bare-metal host — incus VMs, the pristine
+3-build bootstrap, the harness cluster lifecycle with cleanup, the `warp`/`wai` + `purescript-bridge`/
+Halogen web stack, and Playwright e2e (3/3). **All phases are now `Done`.** The operator-scale real runs
+(the multi-arch published base tags, the full 8-pod Harbor deployment, the multi-GB image push) are
+exercised by an operator's release/demo run, the same standard the validation policy defines. The Phase-0
+governance, including the doctrine-clarity sweep, has **closed** (per § A it may reopen only when a future
+architecture contract adds a new doc-coverage obligation). See [00-overview.md](00-overview.md) for the
+cross-phase narrative. Consumer-side migration of individual projects is tracked in those projects' own
+repositories (see Phase 7).
 
 ## Phases
 
@@ -47,8 +52,8 @@ migration of individual projects is tracked in those projects' own repositories 
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
-| 12 | [Layered warm store](phase-12-layered-warm-store.md) | Active |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
+| 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
 
 ## Governance
 

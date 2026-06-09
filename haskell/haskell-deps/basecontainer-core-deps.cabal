@@ -1,28 +1,31 @@
 cabal-version: 3.12
-name: basecontainer-haskell-deps
+name: basecontainer-core-deps
 version: 0.1.0.0
-synopsis: Cabal store warm-up target for basecontainer
+synopsis: Core+web layer of the basecontainer warm Cabal store
 category: Development
 description:
-  This package intentionally exposes a tiny executable with the shared
-  dependency set in build-depends so the base image can prebuild the Cabal store.
+  The `core.freeze` layer of the warm Cabal store: base + the
+  `hostbootstrap-core` dependency closure + the shared web-build extras
+  (`purescript-bridge` for the demo's web bridge, and the web-server stack —
+  `warp` / `wai*` / `network` / `http-types` / `websockets` — an L0-direct web
+  consumer such as the demo needs). Listing these as one tiny executable's
+  build-depends lets the base build prebuild the shared Cabal store and project
+  `core.project` into `core.freeze`.
   .
-  The warm Cabal store is shared, but the version-pin *freezes* it produces are
-  layered (see documents/engineering/warm_store.md): `core.freeze` pins the base
-  + hostbootstrap-core closure + the shared web-build extras (including
-  `purescript-bridge`, the demo's web bridge), imported by `mcts` and
-  `daemon-substrate`; `daemon.freeze` pins the daemon-family deps (Pulsar/MinIO/
-  proto/HTTP — e.g. `hedis`, `postgresql-simple`, `proto-lens*`, `http-client*`,
-  `network`, `websockets`, `warp`, `wai*`), imported only by the daemon apps.
-  Both freezes are generated in-image by `cabal freeze` and never committed
-  (.gitignore / .dockerignore exclude `core.freeze` / `daemon.freeze`).
+  Imported by every layer: `mcts` and `daemon-substrate` (and any L0-direct
+  consumer like the demo) import only `core.freeze`; a daemon app imports
+  `core.freeze` AND `daemon.freeze`. The daemon-only deps live in the sibling
+  `basecontainer-daemon-deps.cabal` (`daemon.freeze`). Both freezes are
+  generated in-image by `cabal freeze` and never committed (.gitignore /
+  .dockerignore exclude `core.freeze` / `daemon.freeze`).
+  See documents/engineering/warm_store.md.
 license: MIT
 author: basecontainer contributors
 maintainer: basecontainer contributors
 build-type: Simple
 tested-with: GHC ==9.12.4
 
-executable basecontainer-haskell-deps
+executable basecontainer-core-deps
   main-is: Main.hs
   hs-source-dirs: app
   default-language: Haskell2010
@@ -53,10 +56,7 @@ executable basecontainer-haskell-deps
     , flat
     , fsnotify
     , hedgehog
-    , hedis
     , hspec
-    , http-client
-    , http-client-tls
     , http-types
     , lens-family
     , lens-family-core
@@ -66,13 +66,9 @@ executable basecontainer-haskell-deps
     , optparse-applicative
     , path
     , path-io
-    , postgresql-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
     , process
-    , proto-lens
-    , proto-lens-runtime
-    , proto-lens-setup
     , purescript-bridge
     , random
     , safe-exceptions
@@ -97,6 +93,5 @@ executable basecontainer-haskell-deps
     , wai-websockets
     , warp
     , websockets
-    , wuss
     , yaml
     , zlib

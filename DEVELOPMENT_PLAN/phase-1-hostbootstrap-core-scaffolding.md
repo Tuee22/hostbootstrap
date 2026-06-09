@@ -23,8 +23,9 @@ later phases (2–5, now `Done`) that own each module's host-management logic.
 Create `hostbootstrap-core` as a Cabal package: a `library` stanza for the `HostBootstrap.*` module
 surface and a bare `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
-`runHostBootstrapCLI progName projectCommands` over a buildable but empty command tree. No host logic
-lands here; Phase 1 produces a structural shell that compiles and runs `--help`.
+`runHostBootstrapCLI progName projectCommands` over a buildable command tree (scaffolded empty in this
+phase and filled in by Phases 2–5). No host logic lands here; Phase 1 produces a structural shell that
+compiles and runs `--help`.
 
 ## Sprints
 
@@ -75,9 +76,9 @@ onward has named modules to fill in and the command-tree extension contract has 
 - `HostBootstrap.CLI` exporting `runHostBootstrapCLI :: String -> [Mod CommandFields a] -> IO ()`
   (or the equivalent composable optparse value plus entrypoint), wired to a buildable but empty core
   command tree.
-- Bare `HostBootstrap.*` module declarations for the surfaces named in
+- `HostBootstrap.*` module declarations for the surfaces named in
   [system-components.md](system-components.md) (host tools, prereqs, substrate, ensure, config,
-  cluster) with no implementation yet.
+  cluster), scaffolded here and filled in by Phases 2–5.
 - The bare `hostbootstrap` executable calls `runHostBootstrapCLI "hostbootstrap" []` and prints
   `--help`.
 
@@ -92,7 +93,8 @@ onward has named modules to fill in and the command-tree extension contract has 
 - `cabal build all` succeeds; the library compiles every declared `HostBootstrap.*` module (the net-new
   § T/§ U/§ V modules — `Dhall.Gen`, `Harness`, `HostTarget`, `Incus`, `Ensure.Incus` — are added in
   later phases).
-- `hostbootstrap --help` exits 0 and prints the (initially empty) core command tree.
+- `hostbootstrap --help` exits 0 and prints the core command tree (scaffolded empty in this phase; the
+  `ensure`/`config`/`cluster`/`test`/`check-code` verbs are added by Phases 2–5).
 
 #### Remaining Work
 
