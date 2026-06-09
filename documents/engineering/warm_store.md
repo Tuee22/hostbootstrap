@@ -116,15 +116,14 @@ Why this works:
   `COPY haskell/haskell-deps/` step in the base Dockerfile). Every
   `basecontainer-<flavor>-<arch>` tag carries one specific freeze, frozen at
   the moment the base was built.
-* On Linux substrates the project container is built `FROM` the base image and
-  the binary is compiled inside it, so
-  `/opt/basecontainer/haskell-deps/cabal.project.freeze` is always present at the
-  point Cabal reads `cabal.project` and the absolute path resolves. On Apple
-  silicon the binary is built natively on the host, where the same freeze is read
-  through the project's `import:` line resolved against the base image's copy at
-  container build time and against the host toolchain for the native build; either
-  way the project commits no freeze of its own. See
-  [base_image.md](base_image.md) for the build-twice/copy-out model.
+* The binary is built **host-native** on every substrate, where the freeze is read
+  through the project's `import:` line resolved against the host toolchain. When the
+  binary later builds the project container `FROM` the base image, the same freeze at
+  `/opt/basecontainer/haskell-deps/cabal.project.freeze` is present in the image at the
+  point Cabal reads `cabal.project` and the absolute path resolves. How the host-native
+  build reaches the same warm store is detailed in [base_image.md](base_image.md); either
+  way the project commits no freeze of its own. See [base_image.md](base_image.md) for the
+  host-native build model.
 * When `hostbootstrap base build-and-push` ships a new base tag with a
   refreshed warm store, the derived project's next container build
   automatically picks up the new freeze. Nothing in the derived project

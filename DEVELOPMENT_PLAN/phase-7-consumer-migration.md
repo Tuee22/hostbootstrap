@@ -37,8 +37,8 @@ consuming repository's own work.
 Make `hostbootstrap-core` a consumable library. Each consumer ships one optparse-applicative binary
 that calls `runHostBootstrapCLI "<project>" projectCommands` to extend the core command tree rather
 than re-implementing core verbs (see [development_plan_standards.md § P](development_plan_standards.md)).
-The consumer's container `FROM` the `hostbootstrap` base image, gates on the project `check-code`, and
-copies its binary to `./.build/`.
+The consumer's binary is built **host-native** into `./.build/`; the project **container** it later
+builds `FROM` the `hostbootstrap` base image gates on the project `check-code`.
 
 ## Sprints
 
@@ -58,8 +58,8 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 
 - `hostbootstrap-core` exposed as a sibling-path / `source-repository-package` dependency consumers
   add to their `cabal.project`.
-- The derived-project standard documents the `FROM` base image, the `check-code` gate, the copy to
-  `./.build/`, and the `runHostBootstrapCLI` extension pattern.
+- The derived-project standard documents the host-native build into `./.build/`, the project
+  container's `FROM` base image + `check-code` gate, and the `runHostBootstrapCLI` extension pattern.
 - `daemon-substrate` (see https://github.com/Tuee22/daemon-substrate) and `mcts` (see
   https://github.com/Tuee22/mcts) each ship one binary extending the core; the consumer-side
   migration work is tracked in those repositories' own plans.
@@ -74,7 +74,8 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 #### Remaining Work
 
 None on the `hostbootstrap` side. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in
-those repositories' own plans.
+those repositories' own plans. (This sprint's `hostbootstrap-example` evidence is current-state; the
+worked-example reference is re-pointed to `demo/` and the example binary retired in Phase 13, Sprint 13.7.)
 
 ### Sprint 7.2: infernix and jitML future migration (outline) [Done]
 
@@ -107,8 +108,9 @@ build-only), are future consumer-repository work.
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/derived_project_standards.md` - the consume-as-library pattern, the `FROM`
-  base / `check-code` / copy-to-`./.build/` flow, and the `runHostBootstrapCLI` extension contract.
+- `documents/engineering/derived_project_standards.md` - the consume-as-library pattern, the
+  host-native build into `./.build/`, the project container's `FROM` base / `check-code` gate, and the
+  `runHostBootstrapCLI` extension contract.
 
 **Cross-references to add:**
 - `system-components.md` notes `hostbootstrap-core` as a consumable dependency.

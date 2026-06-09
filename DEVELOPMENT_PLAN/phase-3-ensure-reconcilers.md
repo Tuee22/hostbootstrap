@@ -26,8 +26,9 @@ set grows to the host-provider (see [development_plan_standards.md § L](develop
   package manager.
 - Add `ensure incus` — the first reconciler applicable on apple-silicon AND linux (designed in
   [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)).
-- The cluster-tool reconcilers (`kubectl`/`helm`/`kind`/`nvkind`) are contributed by `daemon-substrate`
-  (L1) via the four-stream merge, not the core set.
+- The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
+  drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
+  GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-stream merge.
 
 ## Phase Objective
 
@@ -109,8 +110,9 @@ Land the six concrete reconcilers as `ensure` subcommands.
 
 #### Remaining Work
 
-None. The reconcile actions probe state through resolved tools and report/no-op; performing host
-mutations (package installs) is exercised on the target substrates during Phase 6 bootstrapping.
+None for Sprint 3.2's original scope. The reconcile actions currently probe state through resolved tools
+and report/no-op; giving them real **install** actions (run by the project binary) is the reopened
+phase-level Remaining Work above.
 
 ## Documentation Requirements
 

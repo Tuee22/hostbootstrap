@@ -19,9 +19,9 @@ material lives here. Conventions are defined in
   contract project binaries build on.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
-- [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the
-  substrate-dependent build/run model, Tart as build-only, `./.build/`, and the build-twice
-  rationale.
+- [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
+  build/run model, Tart as build-only, `./.build/`, and why the binary (not the bootstrapper) builds
+  the project container.
 
 ## Engineering
 

@@ -110,7 +110,7 @@ None.
 ### Sprint 10.4: The four run-models and the selection key [Blocked]
 
 **Status**: Blocked
-**Blocked by**: phase-6 (build-twice/copy-out), phase-10 (sprint 10.1)
+**Blocked by**: phase-6 (host-native build), phase-10 (sprint 10.1)
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `python/hostbootstrap/bootstrap.py` (planned)
 **Docs to update**: `documents/architecture/run_models.md`, `documents/architecture/build_and_run_model.md`
 
@@ -121,7 +121,7 @@ Name the minimal run-model set and how it is selected.
 #### Deliverables
 
 - The four models — `OneShot` (build-if-needed + `docker run --rm [-it] [mounts]`, budget-capped),
-  `HostNative` (build-twice/copy-out + host exec), `HostDaemon` (long-running host service), `Cluster`
+  `HostNative` (host-native build + host exec), `HostDaemon` (long-running host service), `Cluster`
   (kind+Helm) — and the selection key `(verb x detected-substrate x library-layer x generated-topology)`,
   never declared in Dhall. The default container-run (`OneShot`) `Seams` ship in L0.
 

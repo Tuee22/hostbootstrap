@@ -16,7 +16,7 @@
 closure `core.freeze` pins)
 
 Today one freeze pins the whole family's transitive versions. Under the three-level hierarchy that couples
-a non-daemon consumer (`MCTS`, off L0) to the daemon dependency closure it never uses. This phase splits
+a non-daemon consumer (`mcts`, off L0) to the daemon dependency closure it never uses. This phase splits
 the freeze into a `core.freeze` (base + `hostbootstrap-core`) and a `daemon.freeze` (the daemon-family
 deps), each imported by the layer that needs it, both generated in-image by `cabal freeze` and never
 committed (see [development_plan_standards.md § V](development_plan_standards.md)).
@@ -42,7 +42,7 @@ Split the single freeze into per-layer fragments.
 
 #### Deliverables
 
-- `/opt/basecontainer/haskell-deps/core.freeze` (base + `hostbootstrap-core` closure; imported by `MCTS`
+- `/opt/basecontainer/haskell-deps/core.freeze` (base + `hostbootstrap-core` closure; imported by `mcts`
   and `daemon-substrate`) and `daemon.freeze` (Pulsar/MinIO/proto/HTTP; imported only by daemon apps).
   Each project's `cabal.project` imports only the fragment(s) for its layer.
 
@@ -94,8 +94,10 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 
 #### Deliverables
 
-- `purescript-bridge` added to the warm-store manifest so a derived project's `web bridge` step hits the
-  warm store.
+- `purescript-bridge` added to the **`core.freeze`** manifest (it is a shared web-build dependency an
+  L0-direct web consumer like the demo needs, not part of the daemon closure; `core.freeze`'s scope is
+  therefore base + `hostbootstrap-core` closure + the shared web-build extras) so a derived project's
+  `web bridge` step hits the warm store.
 
 #### Validation
 

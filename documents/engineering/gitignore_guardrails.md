@@ -22,7 +22,7 @@ Every project that adopts hostbootstrap must keep these out of git:
 * `*.lock`, `poetry.lock`, `package-lock.json`, `yarn.lock`,
   `pnpm-lock.yaml`, `spago.lock`, `npm-shrinkwrap.json` — package manager
   lockfiles.
-* `.build/` — the host binary copied out of (or built natively for) every
+* `.build/` — the host binary built host-native for every
   project; always present after a successful bootstrap. It must never be
   bind-mounted into an outer container.
 * `.data/` — host persistent state. It is bind-mounted while a cluster is

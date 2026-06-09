@@ -88,7 +88,9 @@ onward has named modules to fill in and the command-tree extension contract has 
 
 #### Validation
 
-- `cabal build all` succeeds; the library compiles all 17 `HostBootstrap.*` modules.
+- `cabal build all` succeeds; the library compiles every declared `HostBootstrap.*` module (the net-new
+  § T/§ U/§ V modules — `Dhall.Gen`, `Harness`, `HostTarget`, `Incus`, `Ensure.Incus` — are added in
+  later phases).
 - `hostbootstrap --help` exits 0 and prints the (initially empty) core command tree.
 
 #### Remaining Work

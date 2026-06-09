@@ -21,7 +21,7 @@ narrative and [system-components.md](system-components.md) for the component inv
 
 The repository runs the Haskell `hostbootstrap-core` library (under `haskell/`) plus the thin Python
 bootstrapper (under `python/`). The phases below describe the ordered buildout. The host-management
-surface is implemented and the Python layer is the thin five-step bootstrapper; phases reopen to
+surface is implemented and the Python layer is the thin pre-binary bootstrapper; phases reopen to
 `Active` where the global-architecture contract adds work or a review found an over-claim — notably
 the resource cordon is computed but **not yet applied** (Phase 5) and the binary-generated `config
 schema`/`config render` are not yet built (Phase 4). See [00-overview.md](00-overview.md) for the
@@ -36,7 +36,7 @@ tracked in those projects' own repositories (see Phase 7).
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
-| 4 | [Skeletal Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
+| 4 | [Static-Base Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
 | 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Active |
 | 7 | [Consumer migration](phase-7-consumer-migration.md) | Active |

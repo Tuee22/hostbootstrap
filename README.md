@@ -27,48 +27,52 @@ the orientation layer and points at those canonical homes rather than duplicatin
   the `optparse-applicative` command tree that project binaries extend through
   `runHostBootstrapCLI progName projectCommands`. See
   [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md).
-- **The Python bootstrapper** is thin. It asserts fail-fast host minimums, ensures Docker is
-  available, builds the project container behind the `check-code` gate, copies the resulting binary to
-  `./.build/`, and execs it. Everything else is delegated to the Haskell core. The ownership boundary
-  is described in
+- **The Python bootstrapper** is thin. It does only what must run **before any project binary
+  exists**: it asserts fail-fast host minimums, ensures the host toolchain prerequisites needed to
+  **build** the binary, builds the project binary **host-native** into `./.build/`, and execs it. It
+  does **not** ensure Docker or build the project container — the execed binary does that, and
+  everything else it reasonably can, once running. The ownership boundary is described in
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The skeletal `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
 entrypoint with no project commands — so the core verbs behave identically everywhere. Like every
-project binary it is built host-native and in-container; it is not baked into the base image.
+project binary it is built **host-native**; it is not baked into the base image.
 
 ## Bootstrap Flow
 
-The Python bootstrapper runs a fixed, fail-fast sequence:
+The Python bootstrapper does only what must run **before any project binary exists** — a short,
+fail-fast sequence:
 
 1. **Assert host minimums.** On Linux: Ubuntu 24.04 and passwordless `sudo`. On Apple: passwordless
    `sudo`, the Xcode Command Line Tools, and Homebrew. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
-2. **Ensure Docker.** On Apple this provisions a per-project Colima VM sized to the project's resource
-   budget; on Linux it confirms the host Docker daemon.
-3. **Build the project container.** The image build runs behind the project's `check-code` gate.
-4. **Copy the binary to `./.build/`.** `./.build/` always holds a runnable host binary.
-5. **Exec the binary**, forwarding the requested command.
+2. **Ensure the host build toolchain.** The prerequisites needed to build the binary host-native — on
+   Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux.
+3. **Build the project binary host-native** into `./.build/<project>`. The build is the same on every
+   substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
+   general host such as Apple silicon.
+4. **Exec the binary**, forwarding the requested command.
 
-Host details beyond these minimums — provisioning toolchains, reconciling Docker/Colima/CUDA, and
-cluster lifecycle — are owned by the Haskell `ensure` reconcilers, not by Python. See
+Ensuring Docker, building the project container, applying the resource cordon, and cluster lifecycle
+are **not** the bootstrapper's job — the execed binary does them, through the Haskell `ensure`
+reconcilers and the core command tree, because it can do everything a built binary reasonably can. See
 [`documents/engineering/ensure_reconcilers.md`](documents/engineering/ensure_reconcilers.md).
 
 ## Build And Run Model
 
-How the host binary is produced depends on the substrate, because a Linux ELF cannot exec on macOS:
+The host binary is built **host-native** on every substrate — the same way everywhere — because a
+Linux ELF cannot exec on a general host such as Apple silicon, so there is no build-in-container,
+copy-out path:
 
-- **Linux** builds the binary inside the project container and copies it out to run on the host (the
-  in-container and host glibc families match).
-- **Apple** builds the binary natively on the host; the Python bootstrapper ensures `ghcup` via
-  Homebrew so the host toolchain exists. **Tart is build-only** (Swift/Metal build environments) and is
-  never a runtime.
+- The Python bootstrapper ensures the host toolchain (on Apple, `ghcup` via Homebrew; the equivalent
+  on Linux), builds the binary host-native into `./.build/<project>`, and execs it.
+- **Tart is build-only** on Apple (Swift/Metal build environments) and is never a runtime.
 
-Either way, `./.build/` ends up holding a host-runnable binary. The base image bakes **no**
-`hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it could not be copied out to
-every host. Instead the base image warms `hostbootstrap-core`'s dependencies into the frozen Cabal
-store so every project's host-native and in-container binary build hits the warm store. See
+The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it
+could not be copied out to every host. Instead the base image warms `hostbootstrap-core`'s
+dependencies into the frozen Cabal store so every project's host-native binary build hits the warm
+store. The project **container** the binary later builds (`FROM` the base) hits the same store. See
 [`documents/architecture/build_and_run_model.md`](documents/architecture/build_and_run_model.md).
 
 ## Configuration: Three-Tier Dhall
@@ -97,8 +101,10 @@ The skeletal `hostbootstrap.dhall` at a project root looks like this:
 }
 ```
 
-The `project` value is also the command name. On Apple, the `resources` budget sizes the per-project
-Colima VM; on Linux it informs kind resource cordoning. See
+The `project` value is also the command name. The `resources` budget is the ceiling the **project
+binary** enforces once running — sizing the per-project Colima VM on Apple, capping the kind nodes on
+Linux. The Python bootstrapper reads the budget only to fail fast when the host cannot satisfy the
+minimum; it does not size any VM. See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
@@ -106,7 +112,7 @@ Colima VM; on Linux it informs kind resource cordoning. See
 | Command | What it does |
 |---|---|
 | `hostbootstrap doctor` | Detect host; assert host minimums and report tool status for the detected substrate |
-| `hostbootstrap build` | Build the project container behind the `check-code` gate and copy the binary to `./.build/` |
+| `hostbootstrap build` | Build the project binary host-native into `./.build/` |
 | `hostbootstrap run [args...]` | Build if needed, then forward args to the project binary |
 | `hostbootstrap ensure <tool>` | Reconcile a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); fail-fast on the wrong host |
 | `hostbootstrap cluster ...` | Forward cluster lifecycle to the project binary (kind/Helm, with the never-delete-`.data` invariant) |

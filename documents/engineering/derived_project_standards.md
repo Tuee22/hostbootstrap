@@ -29,7 +29,7 @@ main = runHostBootstrapCLI "app" appProjectCommands
 `runHostBootstrapCLI progName projectCommands` composes the project's own subcommands onto the core
 tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
 `config render`). The skeletal `hostbootstrap` binary is the same tree with no project commands, built
-the same way (host-native and in-container), not baked into the base image. There is no
+the same way (host-native, like every project binary), not baked into the base image. There is no
 execution-model, lifecycle, or mount declaration anywhere in the
 project — those concepts are removed; the binary's own subcommands and its generated project/test
 Dhall carry whatever runtime shape the project needs.
@@ -72,18 +72,19 @@ violations.
 
 ## Build and run: where the binary lives
 
-Every project produces a host binary at `./.build/<project>`, and its container is built on every
-substrate as the code-check gate:
+Every project produces a host binary at `./.build/<project>`, built **host-native** on every
+substrate:
 
-- On **Linux** the binary is built inside the project container (`FROM` the base image) and copied
-  out to `./.build/<project>`; it runs on the host because host and container share the same glibc
-  family.
-- On **Apple silicon** a Linux ELF cannot exec on macOS, so the Python layer ensures a host GHC
-  toolchain (via Homebrew) and the binary is built natively on the host into `./.build/<project>`.
-  The container is still built as the code-check gate; Tart, when used, is build-only (Swift/Metal
-  artifacts copied to `./.build/`) and never a runtime.
+- The Python bootstrapper ensures the host build toolchain (on Apple, Homebrew → `ghcup` →
+  GHC/Cabal; the equivalent on Linux) and builds the binary host-native into `./.build/<project>`.
+  A Linux ELF cannot exec on a general host such as Apple silicon, so the binary is always built for
+  the host it runs on — there is no build-in-container, copy-out path.
+- Tart, when used on Apple, is build-only (Swift/Metal artifacts copied to `./.build/`) and never a
+  runtime.
 
-A `./.build/<project>` is always present after a successful bootstrap, regardless of substrate.
+Building the project **container** is the execed binary's job (its `check-code` gate), not the
+bootstrapper's. A `./.build/<project>` is always present after a successful bootstrap, regardless of
+substrate.
 
 ## Worked compliant Dockerfile shape
 

@@ -12,14 +12,15 @@
 
 The inversion is complete. `hostbootstrap` is the Haskell `hostbootstrap-core` library (under
 `haskell/`) plus a thin Python bootstrapper (under `python/`). `hostbootstrap-core` owns
-host-tool resolution, substrate detection, the `ensure` reconcilers, the skeletal-Dhall decoder,
+host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
 cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
-The Python layer is the thin five-step bootstrapper (`doctor` / `up` / `base`): it asserts the
-fail-fast host minimums, ensures Docker, builds the project container as the `check-code` gate, copies
-the binary to `./.build/`, and execs it — and still builds and publishes the
-`basecontainer-<flavor>-<arch>` base images. The three-execution-model machinery is gone; the residual
+The Python layer is the thin pre-binary bootstrapper (`doctor` / `up` / `base`): it asserts the
+fail-fast host minimums, ensures the host toolchain prerequisites to **build** the binary, builds the
+project binary **host-native**, and execs it — and still builds and publishes the
+`basecontainer-<flavor>-<arch>` base images. Ensuring Docker, building the project container, and
+cordoning are the project binary's job, once it is running. The three-execution-model machinery is gone; the residual
 Dhall read (`python/hostbootstrap/dhall_tool.py`, `python/hostbootstrap/spec.py`) decodes only the
-skeletal config tier. The narrative below records how each phase delivered this shape.
+static-base config tier. The narrative below records how each phase delivered this shape.
 
 ## Where the repository is going
 
@@ -57,12 +58,13 @@ paths; substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) moves int
 Land each host dependency as an idempotent `ensure` reconciler — a host-applicability predicate plus
 a reconcile action — exposed as an optparse subcommand: `ensure docker`, `ensure colima`,
 `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`. A reconciler run on the wrong host
-fails fast with a one-line diagnostic and a non-zero exit. This phase is `Done`: the six reconcilers
-are implemented, wired into the command tree, and validated end-to-end.
+fails fast with a one-line diagnostic and a non-zero exit. This phase is `Active`: the six reconcilers
+are implemented and wired into the command tree, but they currently probe/verify rather than
+**install** — the phase reopens against the install-and-verify contract (§ L) and adds `ensure incus`.
 
-### Phase 4 — skeletal Dhall and command tree
+### Phase 4 — static-base Dhall and command tree
 
-Land the skeletal `hostbootstrap.dhall` schema (`project`, `dockerfile`, `resources {cpu, memory,
+Land the static-base `hostbootstrap.dhall` schema (`project`, `dockerfile`, `resources {cpu, memory,
 storage}`) and its in-process Haskell decoder, replacing the shelled `dhall-to-json` path. Land the
 composable optparse command tree that project binaries extend through `runHostBootstrapCLI`. This
 phase is `Active`: the in-process `config show` decoder and the composable tree (with a worked
@@ -84,13 +86,14 @@ budget ceiling is not enforced (the applied cordon is net-new, Phase 9).
 
 Warm the `hostbootstrap-core` dependencies into the frozen Cabal store. The base image bakes **no**
 `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it could not be copied out to
-every host; instead every project builds its own binary host-native and in-container, accelerated by
-the warm store. Shrink the Python layer to the bootstrapper: assert fail-fast host minimums, ensure
-Docker (provision the per-project Colima VM on Apple sized to the budget), build the project container
-as the `check-code` gate, copy the built binary to `./.build/`, and exec it. This phase is `Done`: the
-warm store carries the closure (no Dockerfile change, no baked binary), and the Python CLI is the thin
-`doctor` / `up` / `base` bootstrapper — the three-execution-model machinery is removed and the suite
-passes at 100% coverage.
+every host; instead every project builds its own binary **host-native**, and the project container the
+binary later builds (`FROM` the base image) is accelerated by the warm store. Shrink the Python layer to
+the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host toolchain prerequisites to
+build the binary, build the project binary host-native, and exec it — leaving Docker, the project
+container, and cordoning to the project binary. This phase is `Active`: the
+warm store carries the closure (no baked binary) and the Python CLI is the thin `doctor` / `up` / `base`
+bootstrapper, but the phase reopens against the layered-warm-store contract (§ V) — split the freeze into
+`core.freeze`/`daemon.freeze`, generate it in-image and never commit it, and add `purescript-bridge`.
 
 ### Phase 7 — consumer migration
 
@@ -112,7 +115,7 @@ named slice of the architecture; see [system-components.md](system-components.md
 The project binary generates its own schema (reflected from its decoder types, so it cannot drift) and
 renders all deploy/test configs from a reusable `Core.dhall` vocabulary; the four-stream extension
 contract (CLI append, Dhall embed, schema concatenation, harness seams) is formalized. `Blocked by`
-phase-0 and phase-4.
+phase-4 (Phase 0's reopened doc-coverage does not gate code phases — § A).
 
 ### Phase 9 — Applied budget cordon and one canonical parser
 
@@ -151,7 +154,7 @@ hostbootstrap` → `hostbootstrap up`). It supersedes `example/Main.hs`. `Blocke
 phase-0  →  phase-1  →  phase-2  →  phase-3  →  phase-4  →  phase-5  →  phase-6  →  phase-7
                                                                                           │
 the global-architecture phases fan in on the inversion buildout and converge on the demo: │
-  phase-8  (Blocked by 0, 4)                                                               │
+  phase-8  (Blocked by 4)                                                                  │
   phase-9  (Blocked by 5, 8)                                                               │
   phase-10 (Blocked by 8, 9)                                                               │
   phase-11 (Blocked by 3, 9, 10)                                                           │

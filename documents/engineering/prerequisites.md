@@ -19,9 +19,9 @@
 ## Why The Split
 
 The Python layer runs *before any project binary exists*, so it can only depend on the host shell
-and a handful of system tools. Its job is to assert the host is bootstrappable, ensure Docker, build
-the project container, copy the binary to `./.build/`, ensure host runtimes, and exec the binary.
-The fail-fast minimums below are the preconditions for that pre-binary work. All richer
+and a handful of system tools. Its job is to assert the host is bootstrappable, ensure the host build
+toolchain, build the project binary host-native into `./.build/<project>`, and exec it. The fail-fast
+minimums below are the preconditions for that pre-binary work. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
 project binary (or `hostbootstrap-core`'s own skeletal binary).
 
@@ -45,9 +45,10 @@ The Python bootstrapper asserts, fail-fast:
 - **Homebrew.**
 
 These three are the bedrock the Apple bootstrap path needs before it can ensure anything else.
-Homebrew is the channel through which `ensure ghc` (host GHC for native Apple builds) and
-`ensure colima` (the Docker provider) install their tools, so Homebrew's own presence must be a
-hard precondition rather than something reconciled.
+Homebrew is the channel through which the bootstrapper installs the host GHC/Cabal toolchain
+(`ghcup`) needed to build the binary host-native, so Homebrew's own presence must be a hard
+precondition rather than something reconciled. (The Docker provider, `ensure colima`, runs later —
+the execed binary owns it, not the pre-binary bootstrapper.)
 
 ## Everything Else Is Ensured, Not Required
 

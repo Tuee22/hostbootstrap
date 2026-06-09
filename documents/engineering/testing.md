@@ -46,8 +46,8 @@ process runner with an argv recorder, so they assert the exact commands without 
 
 The Python layer is small and so is its suite. It covers only the pre-binary bootstrapping steps the
 Python layer owns: asserting the fail-fast host minimums (see [prerequisites.md](prerequisites.md)),
-selecting the base-image flavor for the build, building the project container, copying the binary to
-`./.build/`, and exec'ing it. Tests are hermetic — host detection and process invocation are stubbed
+ensuring the host build toolchain, building the project binary host-native into `./.build/`, and
+exec'ing it. Tests are hermetic — host detection and process invocation are stubbed
 or recorded, and the canonical Python code-check (formatter, linter, strict type-check) runs as part
 of the base self-check (see [code_check_doctrine.md](code_check_doctrine.md)).
 

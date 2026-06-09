@@ -37,11 +37,11 @@ reconciler drives is resolved through the closed `HostTool` enumeration to an ab
 
 | Subcommand | Applies to | Fail-fast behavior on wrong host |
 |------------|------------|----------------------------------|
-| `ensure docker` | all substrates | n/a (Docker is the universal build dependency). On Apple it also implies the per-project Colima VM exists. |
+| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` provisions it). On Apple it also implies the per-project Colima VM exists. |
 | `ensure colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
 | `ensure cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
 | `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager used to provision the host toolchain. |
-| `ensure ghc` | `apple-silicon` | Errors on Linux: the host GHC toolchain exists so the native Apple build can run (Linux builds GHC in-container). |
+| `ensure ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
 
 The `ensure colima` / `ensure ghc` / `ensure homebrew` chain on Apple silicon is exactly the

@@ -16,8 +16,8 @@
 run-models), phase-11 (incus), phase-12 (the layered warm store + `purescript-bridge`)
 
 `hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`, Haskell source, and
-build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `MCTS`) and exercises
-the full surface: install-and-verify `ensure incus`, the host-provider axis, the build-twice/copy-out
+build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `mcts`) and exercises
+the full surface: install-and-verify `ensure incus`, the host-provider axis, the host-native build
 model, the applied budget cordons, `config schema`/`render`, the standardized harness, an idiomatic
 in-Dockerfile `check-code` gate, a `purescript-bridge`/`spago` webservice and SPA, and Playwright e2e.
 It supersedes `haskell/hostbootstrap-core/example/Main.hs`.
@@ -27,10 +27,11 @@ It supersedes `haskell/hostbootstrap-core/example/Main.hs`.
 Provide the canonical worked consumer and operations runbook. The demo's point is to demonstrate
 `hostbootstrap` bootstrapping a **pristine** linux host from zero: because the metal host is not pristine,
 the demo orchestrates a pristine incus VM and runs the genuine first-run flow inside it
-(`apt install pipx` -> `pipx install hostbootstrap` -> `hostbootstrap up`). This is a deliberate **3-build**
-exception to the standard build-twice (see
-[development_plan_standards.md § N](development_plan_standards.md)): a metal orchestrator build plus the
-standard build-twice run inside the pristine VM.
+(`apt install pipx` -> `pipx install hostbootstrap` -> `hostbootstrap up`). This is a deliberate
+**3-build** illustration on top of the standard host-native build (see
+[development_plan_standards.md § N](development_plan_standards.md)): a metal orchestrator build plus,
+inside the pristine VM, the host-native binary build (by `hostbootstrap up`) and the binary-driven
+project-container build.
 
 ## Sprints
 
@@ -65,8 +66,10 @@ None.
 
 #### Deliverables
 
-- `demo incus ensure` (consumes core's `ensure incus`) and `demo incus vm up` spinning a budget-sized
-  pristine `ubuntu/24.04` VM (**cordon #1**: the VM is the wall).
+- The demo groups its project verbs under nouns (`incus`/`vm`/`harbor`/`web`), distinct from the
+  inherited verb-first core verbs (`ensure`/`config`/`cluster`/`test`/`check-code`): `demo incus ensure`
+  (consumes core's `ensure incus`) and `demo incus vm up` spin a budget-sized pristine `ubuntu/24.04` VM
+  (**cordon #1**: the VM is the wall).
 
 #### Validation
 
@@ -90,9 +93,10 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 #### Deliverables
 
 - `demo vm pristine-bootstrap`: `apt install pipx` -> `pipx install` the local hostbootstrap wrapper
-  (pushed into the VM) -> `hostbootstrap up`, which ensures Docker (rebooting the VM if needed), builds the
-  demo container (**build #3**, the in-container `check-code` gate), copies the binary out (**build #2**),
-  and execs it. Asserts a pristine VM reaches a runnable `hostbootstrap-demo` with no prior tooling.
+  (pushed into the VM) -> `hostbootstrap up`, which ensures the host toolchain prerequisites, builds the
+  demo binary **host-native** (**build #2**), and execs it. The execed binary then ensures Docker
+  (rebooting the VM if needed) and builds the demo container (**build #3**, the in-container `check-code`
+  gate). Asserts a pristine VM reaches a runnable `hostbootstrap-demo` with no prior tooling.
 
 #### Validation
 
@@ -193,7 +197,7 @@ None.
 
 **Operations docs to create/update:**
 - `documents/operations/demo_runbook.md` - the a-j pristine-bootstrap flow, the feature-to-case table, and
-  the 3-builds-vs-build-twice explanation.
+  the 3-builds-vs-standard-host-native-build explanation.
 
 **Cross-references to add:**
 - `documents/engineering/harbor.md`, `documents/languages/purescript.md`,

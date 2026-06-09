@@ -57,9 +57,11 @@ to the project.
 #### Deliverables
 
 - Budget verification reading `resources {cpu, memory, storage}` and checking spare host capacity.
-- Apple cordoning: size a dedicated per-project Colima VM to the budget (driven through
-  `ensure colima`).
-- Linux cordoning: apply kind node resource limits to the budget.
+- Apple cordoning: **derive** the sizing for a dedicated per-project Colima VM from the budget.
+- Linux cordoning: **derive** kind node resource limits from the budget.
+
+The pure cordon **derives** the args; **applying** them — the Colima/incus VM sizing and the
+`docker update` kind-node cap — is wired in Phase 9 (see this phase's Remaining Work).
 
 #### Validation
 

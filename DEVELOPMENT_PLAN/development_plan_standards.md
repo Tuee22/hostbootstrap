@@ -106,7 +106,7 @@ file, `README.md`, `00-overview.md`, and `system-components.md` in the same chan
 
 - `hostbootstrap-core` Haskell module surfaces (`HostBootstrap.*`)
 - the `ensure` reconcilers and their host applicability
-- the skeletal `hostbootstrap.dhall` schema
+- the static-base `hostbootstrap.dhall` schema
 - the thin Python bootstrapper surface
 - the base image contents and warm Cabal store
 - the optparse command tree that consuming project binaries extend
@@ -198,35 +198,44 @@ reconcile action **installs** the dependency if absent and is a verified no-op i
 (install-and-verify, not check-only). A reconciler run on the wrong host fails fast with a one-line
 diagnostic and a non-zero exit. `ensure incus` is the first reconciler applicable on **both**
 apple-silicon and linux — it installs the host-provider that encapsulates a fresh linux host (§ U). The
-cluster-tool reconcilers (`kubectl`/`helm`/`kind`/`nvkind`) are contributed by the mid-layer library
-(`daemon-substrate`) via the four-stream merge (§ T), not the core set.
+kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
+drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
+GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
+(`daemon-substrate`) contributes via the four-stream merge (§ T).
 
 ### M. Python-Thin / Haskell-Core Boundary
 
-The Python bootstrapper does only what must run before any project binary exists: assert the
-fail-fast host minimums, ensure Docker (provision the per-project Colima VM on Apple), build the
-project container, copy the binary to `./.build/`, ensure host runtimes, and exec the binary. All
-other host-management logic lives in `hostbootstrap-core`. New host logic defaults to Haskell; a
-Python addition must be justified by the pre-binary bootstrapping constraint.
+The Python bootstrapper does only what must run **before any project binary exists**: assert the
+fail-fast host minimums and ensure the host toolchain prerequisites needed to **build** the binary, then
+build the project binary **host-native** and exec it. It does **not** ensure Docker and does **not**
+build the project container — those are not pre-binary necessities; the project binary, once running,
+ensures Docker (provisioning the per-project Colima/incus VM on Apple), builds the project container,
+drives the cluster, and does everything else it reasonably can. There is **no copy-out**: a binary built
+inside a Linux container cannot exec on a general host such as Apple silicon, which is why the binary is
+built host-native and the Python layer must ensure the host build toolchain first. All other
+host-management logic lives in `hostbootstrap-core`; new host logic defaults to the project binary
+(Haskell), and a Python addition must be justified by the pre-binary bootstrapping constraint.
 
-### N. Build-Twice / Copy-Out Model
+### N. Host-Native Binary Build
 
-Every project's binary is produced through Docker so the only universal host dependency is Docker.
+Every project's binary is built **host-native** on every substrate — it is **not** built inside a Linux
+container and copied out, because a binary built in a Linux container cannot exec on a general host (e.g.
+Apple silicon). The universal pre-binary host dependency is therefore the **build toolchain**, not Docker.
 
-- On Linux substrates the binary is built in the project container (`FROM` the base image) and
-  copied out to `./.build/`; it runs on the host because the host and container share the same
-  glibc family.
-- On Apple silicon a Linux ELF cannot exec on macOS, so the Python layer ensures a host GHC
-  toolchain (via Homebrew) and the binary is built natively on the host into `./.build/`.
-- A `./.build/<binary>` is always present on the host, even for container workflows.
-- Tart is build-only (Swift/Metal artifacts copied to `./.build/` and run on the host); no built
-  binary ever runs inside the Tart VM.
-- The same build-twice/copy-out model applies **inside an incus VM** (the VM is a fresh linux host;
-  § U). The worked demo's pristine-host bootstrap is a deliberate **3-build** exception — a metal
-  orchestrator build plus the standard build-twice run inside the pristine VM via the pipx-installed
-  wrapper — and is demo-only, not the standard workflow.
-- The container image is built on every substrate, both for containerized workflows and as the
-  mandatory code-check quality gate.
+- The Python bootstrapper ensures the host build toolchain (Homebrew → `ghcup` → GHC/Cabal on Apple; the
+  equivalent on Linux) — the prerequisites to build the binary — then builds `./.build/<binary>`
+  host-native and execs it. A `./.build/<binary>` is always present on the host.
+- The project **container** is a separate artifact the **project binary** builds (via Docker, `FROM` the
+  base image) once it is running — the workload image and the mandatory code-check quality gate. The
+  Python layer neither ensures Docker nor builds the container (§ M).
+- Tart is build-only on Apple (Swift/Metal artifacts copied to `./.build/`); no built binary runs inside
+  the Tart VM.
+- Inside an incus VM (§ U) the same host-native build applies — the VM is a fresh linux host: the
+  pipx-installed `hostbootstrap` ensures the toolchain, builds the binary host-native, and execs it; the
+  binary then ensures Docker and builds the container in the VM. The worked demo's pristine-host bootstrap
+  counts **3 builds** — a metal orchestrator build plus, inside the pristine VM, the host-native binary
+  build and the binary-driven project-container build — a demo-only illustration, not the standard
+  workflow.
 
 ### O. Resource Budget and Cordoning
 
@@ -235,11 +244,12 @@ The static-base `hostbootstrap.dhall` declares a per-project resource budget (`c
 Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before
 bring-up, and the applied wall at runtime — a sized Colima VM (Apple), a sized incus VM (§ U), the
 applied `docker update` kind-node cap (Linux), or `docker run` caps (one-shot). All VM/node sizing is
-emitted by **one** canonical quantity parser/argument builder in `hostbootstrap-core`; the Python layer
-builds host argv only from that output (no second interpreter). Storage is cordoned where the substrate
-allows (Colima `--disk` / incus `root,size` / a quota'd hostPath on Linux), since `docker update` has no
-storage flag. The budget flows from the static tier into both the spinup cordon and the
-binary-generated configs.
+emitted by **one** canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the
+**project binary** (the per-project Colima/incus VM via `ensure docker`; the kind-node cap via
+`cluster up`); the Python bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second
+budget interpreter. Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` /
+a quota'd hostPath on Linux), since `docker update` has no storage flag. The budget flows from the static
+tier into both the spinup cordon and the binary-generated configs.
 
 ### P. optparse Command-Tree Extension Contract
 
@@ -294,7 +304,7 @@ delta to **four parallel streams**, one additive merge idiom each: the optparse 
 (concatenated across levels); and the **test-harness** `Seams`. A project integrates in one of two modes:
 freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
 `source-repository-package` + the `runHostBootstrapCLI` extension. The system runs one of four
-**run-models** — `OneShot` (one-shot `docker run`), `HostNative` (build-twice/copy-out + host exec),
+**run-models** — `OneShot` (one-shot `docker run`), `HostNative` (host-native build + host exec),
 `HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected by
 `(verb × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
 

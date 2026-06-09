@@ -5,16 +5,16 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md), [phase-7-consumer-migration.md](phase-7-consumer-migration.md)
 
 > **Purpose**: Warm `hostbootstrap-core`'s dependencies into the base image (no `hostbootstrap`
-> binary is baked), and shrink the Python layer to the pre-binary bootstrapper that ensures Docker,
-> builds the container, copies the binary out, and execs it.
+> binary is baked), and shrink the Python layer to the pre-binary bootstrapper that ensures the host
+> build toolchain, builds the binary host-native, and execs it.
 
 ## Phase Status
 
 **Status**: Active
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
-project builds its own binary host-native and in-container (the build-twice / copy-out model), accelerated
-by the warm Cabal store (Sprint 6.1). The Python CLI is the thin five-step bootstrapper; the
+project builds its own binary **host-native** (the project container the binary later builds is
+accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is the thin pre-binary bootstrapper; the
 three-execution-model machinery is removed and the Python suite passes at 100% coverage (Sprint 6.2). This
 phase reopens against the layered-warm-store and in-image-freeze contract.
 
@@ -31,12 +31,12 @@ phase reopens against the layered-warm-store and in-image-freeze contract.
 
 Complete the inversion. The base image warms the `hostbootstrap-core` dependencies into the frozen
 Cabal store and bakes **no** `hostbootstrap` binary (a Linux ELF cannot run on Apple silicon, so it
-could not be copied out to every host; every project builds its own binary host-native and
-in-container instead). The Python layer shrinks to the bootstrapper that does only what must run
-before any project binary exists (see [development_plan_standards.md § M, N](development_plan_standards.md)):
-assert the fail-fast host minimums, ensure Docker (per-project Colima VM on Apple sized to the
-budget), build the project container as the `check-code` gate, copy the binary to `./.build/`, and
-exec it.
+could not be copied out to every host; every project builds its own binary host-native instead). The
+Python layer shrinks to the pre-binary bootstrapper that does only what must run before any project
+binary exists (see [development_plan_standards.md § M, N](development_plan_standards.md)): assert the
+fail-fast host minimums, ensure the host toolchain prerequisites to **build** the binary, build the
+project binary host-native, and exec it. Ensuring Docker, building the project container, and cordoning
+are left to the project binary, once it is running.
 
 ## Sprints
 
@@ -56,10 +56,11 @@ base image bakes **no** `hostbootstrap` binary.
 #### Deliverables
 
 - The base image bakes no `hostbootstrap` binary: a Linux ELF cannot run on Apple silicon, so it
-  could not be copied out to every host. Every project builds its own binary host-native and
-  in-container, accelerated by the warm store.
+  could not be copied out to every host. Every project builds its own binary **host-native**; the
+  project container the binary later builds (`FROM` the base) is accelerated by the warm store.
 - The warm Cabal store + `cabal.project.freeze` carry `hostbootstrap-core`'s prebuilt dependencies
-  for every project's host-native and in-container build. The warm-store manifest
+  for every project's in-container project-container build (the host-native binary build uses the host
+  toolchain the bootstrapper ensures). The warm-store manifest
   (`haskell/haskell-deps/basecontainer-haskell-deps.cabal`) already lists the full
   `hostbootstrap-core` dependency closure, so **no Dockerfile change is required**.
 - `ormolu`/`fourmolu` and `hlint` remain pinned in the base for the quality gate.
@@ -79,8 +80,8 @@ None.
 
 **Status**: Done
 **Implementation**: `python/hostbootstrap/cli.py` (thin `doctor` / `up` / `base` surface),
-`python/hostbootstrap/bootstrap.py` (the five-step path), `python/hostbootstrap/spec.py`
-(skeletal `SkeletalSpec` reader), `python/hostbootstrap/prereqs.py` (trimmed), skeletal
+`python/hostbootstrap/bootstrap.py` (the pre-binary bootstrap path), `python/hostbootstrap/spec.py`
+(static-base `SkeletalSpec` reader), `python/hostbootstrap/prereqs.py` (trimmed), static-base
 `python/hostbootstrap/dhall/package.dhall`; `python/hostbootstrap/models/` removed.
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`,
 `documents/architecture/build_and_run_model.md`, `system-components.md`
@@ -90,26 +91,26 @@ None.
 Reduce the Python CLI to the thin bootstrapper, removing the three-execution-model dispatch and the
 `--force-target` model branching.
 
-#### Design Decision: skeletal config read
+#### Design Decision: static-base config read
 
-With no baked binary, the Python bootstrapper cannot read the skeletal `hostbootstrap.dhall` by
-running a baked `hostbootstrap config show`. The cordon step (sizing the Apple Colima VM from
-`resources`) and the container build (needing `dockerfile`) provably run **before** any project
-binary exists, so the pre-binary layer (Python) must decode the skeletal Dhall itself — which the
-ownership boundary already permits ("Python reads only the skeletal tier"). The decision: **retain a
-minimized `python/hostbootstrap/dhall_tool.py`** (the in-process Haskell decoder still owns the rich
-project/test tiers via the project binary). This reverses the earlier ledger intent to remove
+With no baked binary, the Python bootstrapper cannot read the static-base `hostbootstrap.dhall` by
+running a baked `hostbootstrap config show`. Yet it must learn the `project` name to build
+`exe:<project>` host-native and exec `./.build/<project>` — all before any project binary exists — so
+the pre-binary layer (Python) must decode the static-base Dhall itself, which the ownership boundary
+already permits ("Python reads only the static-base tier"). The decision: **retain a
+minimized `python/hostbootstrap/dhall_tool.py`** (the in-process Haskell decoder backs `config show`;
+the rich project/test tiers are binary-generated via `config render`). This reverses the earlier ledger intent to remove
 `dhall_tool.py` in phase-6, a direct consequence of the no-baked-binary decision; the legacy ledger
 is updated to match.
 
 #### Deliverables
 
-- The Python bootstrapper runs the five-step path: fail-fast minimums → ensure Docker (per-project
-  Colima VM on Apple sized to the budget) → build the project container (`check-code` gate) → copy
-  the binary to `./.build/` → ensure host runtimes and exec.
-- Linux builds the binary in-container and copies it out (shared glibc family); Apple builds natively
-  on the host (Python ensures host GHC via Homebrew) because a Linux ELF cannot exec on macOS; Tart
-  is build-only.
+- The Python bootstrapper runs the pre-binary path: fail-fast minimums → ensure the host toolchain
+  prerequisites to build the binary → build the project binary host-native → exec it. (Ensuring Docker,
+  building the project container, and cordoning are the project binary's job, once running.)
+- The binary is built **host-native** on every substrate (Python ensures the host toolchain — Homebrew →
+  `ghcup` → GHC/Cabal on Apple; the equivalent on Linux), never copied out of a container, because a
+  Linux ELF cannot exec on a general host; Tart is build-only.
 - `python/hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed `cli.py`
   branching are removed; the residual fail-fast subset of `prereqs.py` is reclaimed into the
   bootstrapper.

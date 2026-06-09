@@ -13,18 +13,19 @@
 - Everything else — host-tool resolution, `ensure` reconcilers, substrate detection, the skeletal
   Dhall decoder, cluster lifecycle, and the command tree — lives in `hostbootstrap-core`.
 - New host logic defaults to Haskell. A Python addition must be justified by the pre-binary
-  bootstrapping constraint: on Apple silicon, Colima must exist before the build can run.
+  bootstrapping constraint: the host build toolchain must exist before the binary can be built
+  host-native. Ensuring Docker and building the project container are **not** pre-binary work — the
+  execed binary owns them.
 
 ## Ownership Matrix
 
 | Concern | Owner | Why |
 |---------|-------|-----|
 | Fail-fast host minimums | Python | Must pass before anything else runs; see [prerequisites](../engineering/prerequisites.md). |
-| Ensure Docker (provision per-project Colima VM on Apple) | Python | Docker is the one universal build dependency; on Apple the VM must exist before the build. |
-| Build the project container (`check-code` gate) | Python | Produces the binary; gates on the project's canonical code-check. See [code_check_doctrine](../engineering/code_check_doctrine.md). |
-| Copy the built binary to `./.build/` | Python | Makes the host binary available for exec on every substrate. See [build_and_run_model](build_and_run_model.md). |
-| Ensure host runtimes (e.g. host GHC on Apple) | Python | A Linux ELF cannot exec on macOS, so the native build needs a host toolchain in place first. |
-| Exec the binary | Python | Hands control to the project binary, which owns everything afterward. |
+| Ensure the host **build** toolchain | Python | The prerequisites to build the binary host-native must exist first — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux. |
+| Build the project binary **host-native** | Python | A Linux ELF cannot exec on a general host, so the binary is built for the host it runs on into `./.build/<project>`; see [build_and_run_model](build_and_run_model.md). |
+| Exec the binary | Python | Hands control to the project binary, which owns everything afterward — Docker, the project container, the cordon, and the cluster. |
+| Ensure Docker + build the project container | `hostbootstrap-core` (the execed binary) | **Not** pre-binary work; the binary does it via `ensure docker` and its container build, gating on `check-code`. See [build_and_run_model](build_and_run_model.md). |
 | Host-tool resolution (`HostTool` to absolute paths) | `hostbootstrap-core` | Typed, closed enumeration; no `$PATH` resolution. |
 | `ensure` reconcilers (docker/colima/cuda/homebrew/ghc/tart) | `hostbootstrap-core` | Idempotent reconcilers with host-applicability predicates. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | Substrate detection | `hostbootstrap-core` | `apple-silicon`, `linux-cpu`, `linux-gpu`. |
@@ -35,15 +36,16 @@
 
 ## The Bootstrap Sequence
 
-The Python bootstrapper runs a fixed, minimal sequence:
+The Python bootstrapper runs a fixed, minimal sequence — only what must run *before any project
+binary exists*:
 
 1. Assert fail-fast host minimums.
-2. Ensure Docker; on Apple silicon, provision the per-project Colima VM sized to the resource budget.
-3. Build the project container `FROM` the base image, gating on the `check-code` quality gate.
-4. Copy the built binary to `./.build/`.
-5. Ensure host runtimes required to run the binary (on Apple, ensure a host GHC toolchain via
-   Homebrew so the native build can run).
-6. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
+2. Ensure the host build toolchain (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on
+   Linux) — the prerequisites to build the binary host-native.
+3. Build the project binary host-native into `./.build/<project>`.
+4. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
+   The binary then ensures Docker, builds the project container, applies the cordon, and drives the
+   cluster — everything a built binary can reasonably do.
 
 ## The Default-to-Haskell Rule
 
@@ -56,5 +58,7 @@ New host-management logic is added to `hostbootstrap-core`, not to the Python bo
   subcommand, so it is typed, idempotent, and shared by every consumer.
 
 A Python addition is justified only when the logic must run before the project binary can exist —
-the canonical example being that Colima must be provisioned before the build step on Apple silicon.
-When that boundary changes, update this document and the affected phase plan in the same change.
+the canonical example being that the host build toolchain must be present before the binary can be
+built host-native. Ensuring Docker and building the project container are **not** pre-binary work;
+the execed binary owns them. When that boundary changes, update this document and the affected phase
+plan in the same change.

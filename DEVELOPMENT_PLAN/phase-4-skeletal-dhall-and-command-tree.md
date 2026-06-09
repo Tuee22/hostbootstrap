@@ -1,10 +1,10 @@
-# Phase 4: Skeletal Dhall and Command Tree
+# Phase 4: Static-Base Dhall and Command Tree
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md)
 
-> **Purpose**: Land the skeletal `hostbootstrap.dhall` schema and its in-process Haskell decoder,
+> **Purpose**: Land the static-base `hostbootstrap.dhall` schema and its in-process Haskell decoder,
 > and the composable optparse command tree project binaries extend through `runHostBootstrapCLI`.
 
 ## Phase Status
@@ -34,16 +34,16 @@ reopens against the binary-generated-schema contract (see
 
 ## Phase Objective
 
-Replace the rich three-execution-model schema with the skeletal `hostbootstrap.dhall`
-(`project`, `dockerfile`, `resources {cpu, memory, storage}`) and decode it in-process with the
-Haskell `dhall` library — no external `dhall-to-json` binary. Land the composable optparse command
-tree projects extend (see [development_plan_standards.md § P, Q](development_plan_standards.md)). The
-rich project-level and per-case test Dhall are artifacts the project binary generates; core owns only
-the skeletal decoder.
+Land the static-base `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu, memory, storage}`)
+and the composable optparse command tree projects extend (see
+[development_plan_standards.md § P, Q](development_plan_standards.md)). The static base is read pre-binary
+by the Python bootstrapper via the pinned `dhall-to-json` (`dhall_tool.py`, retained); the in-process
+Haskell decoder backs `config show`. The rich project-level and per-case test Dhall are artifacts the
+project binary generates; core owns only the static-base decoder.
 
 ## Sprints
 
-### Sprint 4.1: Skeletal schema + in-process decoder [Done]
+### Sprint 4.1: Static-base schema + in-process decoder [Done]
 
 **Status**: Done
 **Implementation**: `haskell/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
@@ -53,14 +53,15 @@ the skeletal decoder.
 
 #### Objective
 
-Land the skeletal `hostbootstrap.dhall` schema and `HostBootstrap.Config.Schema`, the in-process
-decoder that reads it without provisioning or shelling out to `dhall-to-json`.
+Land the static-base `hostbootstrap.dhall` schema and `HostBootstrap.Config.Schema`, the in-process
+decoder that backs `config show`. (The pre-binary read is done by the Python bootstrapper via the pinned
+`dhall-to-json`, `dhall_tool.py`, which is retained — see this phase's Phase Status.)
 
 #### Deliverables
 
-- The skeletal schema: `{ project : Text, dockerfile : Text, resources : { cpu : Natural, memory :
+- The static-base schema: `{ project : Text, dockerfile : Text, resources : { cpu : Natural, memory :
   Text, storage : Text } }`, identical in shape across projects.
-- `HostBootstrap.Config.Schema` decoding the skeletal config via the Haskell `dhall` library.
+- `HostBootstrap.Config.Schema` decoding the static-base config via the Haskell `dhall` library.
 - The resource budget exposed as the single field both the Python layer and the project binary
   consume.
 
@@ -86,13 +87,13 @@ remain live until the Python layer is rewritten in phase-6; see
 #### Objective
 
 Land `HostBootstrap.Command` — the core optparse command tree composing `ensure <tool>` and the
-skeletal `config` verbs — and confirm `runHostBootstrapCLI progName projectCommands` extends it with
+static-base `config` verbs — and confirm `runHostBootstrapCLI progName projectCommands` extends it with
 project-specific subcommands.
 
 #### Command Surface
 
 - `hostbootstrap ensure <tool>` — the Phase 3 reconcilers.
-- `hostbootstrap config <...>` — decode/inspect the skeletal `hostbootstrap.dhall`.
+- `hostbootstrap config show` — decode/inspect the static-base `hostbootstrap.dhall`.
 - A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to add its own verbs;
   the skeletal `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
   commands.
@@ -117,11 +118,11 @@ None.
 - `documents/architecture/hostbootstrap_core_library.md` - the command-tree extension contract.
 
 **Engineering docs to create/update:**
-- `documents/engineering/schema.md` - the skeletal `hostbootstrap.dhall` schema.
+- `documents/engineering/schema.md` - the static-base `hostbootstrap.dhall` schema.
 - `documents/engineering/dhall_topology.md` - the three Dhall tiers; the binary-generated project/test
   schemas.
 
 **Cross-references to add:**
-- `system-components.md` updates the skeletal-schema and command-tree rows.
+- `system-components.md` updates the static-base-schema and command-tree rows.
 - `legacy-tracking-for-deletion.md` keeps the three-execution-model schema, `dhall_tool.py`, and
   `spec.py` owning-phase set to this phase.

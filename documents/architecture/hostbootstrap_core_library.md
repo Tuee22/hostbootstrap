@@ -17,7 +17,7 @@
 - Project binaries import the library through a pinned `source-repository-package` git dependency and
   extend the core command tree with their own subcommands.
 - The skeletal `hostbootstrap` binary is the core tree with no project commands; it is built like any
-  project binary (host-native and in-container), not baked into the base image.
+  project binary (host-native), not baked into the base image.
 
 ## Module Surface
 

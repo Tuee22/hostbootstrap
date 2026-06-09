@@ -12,7 +12,7 @@
 
 **Status**: Blocked
 
-**Blocked by**: phase-0 (governance/docs still open), phase-4 (the static-base decoder and command tree)
+**Blocked by**: phase-4 (the static-base decoder and command tree)
 
 The static-base decoder (`HostBootstrap.Config.Schema`, Phase 4) reads the one Python-facing tier; the
 **rich** tiers are intentionally not hand-written. This phase makes the project binary the source of its

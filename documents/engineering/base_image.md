@@ -48,14 +48,15 @@ There is no force-target override: substrate is detected, never declared (see [s
 
 * **No baked `hostbootstrap` binary** — the image bakes no `hostbootstrap` executable. A baked binary
   is a Linux ELF and cannot run on Apple silicon, so it could not be copied out to every host.
-  Instead every project builds its own binary host-native and in-container (the build-twice /
-  copy-out model), extending the core tree via `runHostBootstrapCLI progName projectCommands`; see
+  Instead every project builds its own binary **host-native** on every substrate, extending the core
+  tree via `runHostBootstrapCLI progName projectCommands`; see
   [derived_project_standards.md](derived_project_standards.md). The skeletal `hostbootstrap` binary
   (`hostbootstrap-core`'s own executable, no project commands) is built the same way, not pre-baked.
 * **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency
   closure is compiled into the frozen Cabal store at `/opt/cache/cabal/` alongside the shared
   warm-store deps, so a project that extends the core hits the cache for the core's dependencies on
-  both its host-native and in-container builds. See [warm_store.md](warm_store.md).
+  both the host-native binary build and the in-container project-container build. See
+  [warm_store.md](warm_store.md).
 * **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned fourmolu `0.19.0.1` / hlint `3.10` at
   `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and the warm Cabal store
   from [`haskell/haskell-deps/`](../../haskell/haskell-deps/).
