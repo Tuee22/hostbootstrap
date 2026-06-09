@@ -63,6 +63,10 @@ Rules:
 - If Phase 0 is still open, later code-writing phases use `Blocked`, not `Planned`.
 - A later phase may stay `Done` while an earlier phase is `Active`/`Blocked` only when the open
   item is a clearly named external dependency the later phase calls out.
+- `Active` remaining work may be **real-run/real-build-gated** — validated by a real host run or a
+  base-image build rather than the canonical code-check. Such work is **in scope and open**, never "out
+  of scope"; the phase stays `Active` until the real run or build closes it (see the
+  [README Validation Policy](README.md)).
 
 ### D. Declarative Current-State Language
 
@@ -194,13 +198,19 @@ host invocation).
 ### L. Substrate and Ensure-Reconciler Contract
 
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) is owned by `hostbootstrap-core`.
-Each host dependency is an `ensure` reconciler — an idempotent value with a host-applicability
-predicate and a reconcile action — exposed as an optparse subcommand (`ensure docker`,
-`ensure colima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`, `ensure incus`). A
-reconcile action **installs** the dependency if absent and is a verified no-op if present
-(install-and-verify, not check-only). A reconciler run on the wrong host fails fast with a one-line
-diagnostic and a non-zero exit. `ensure incus` is the first reconciler applicable on **both**
-apple-silicon and linux — it installs the host-provider that encapsulates a fresh linux host (§ U). The
+**The purpose of the `ensure` suite is that the project binary is never blocked by a host dependency
+that simply isn't installed.** Each host dependency is an idempotent `ensure` reconciler — a
+host-applicability predicate plus a reconcile action — exposed as an optparse subcommand
+(`ensure docker`, `ensure colima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`,
+`ensure incus`). A reconcile action **installs** the dependency if absent and is a verified no-op if
+present (install-and-verify, not check-only), so an absent-but-installable dependency is **installed,
+never a hard stop**. The **only** hard fail-fast surface in the entire system is the Python wrapper's
+host minimums (§ M) — the irreducible host floor that cannot be auto-installed. The *one* fail-fast
+inside the `ensure` suite is a reconciler run on the **wrong host** (an applicability misuse, e.g.
+`ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
+an absent dependency; the two must never be conflated. `ensure incus` is the first reconciler applicable
+on **both** apple-silicon and linux — it installs the host-provider that encapsulates a fresh linux host
+(§ U). The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
@@ -208,16 +218,20 @@ GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the m
 
 ### M. Python-Thin / Haskell-Core Boundary
 
-The Python bootstrapper does only what must run **before any project binary exists**: assert the
-fail-fast host minimums and ensure the host toolchain prerequisites needed to **build** the binary, then
-build the project binary **host-native** and exec it. It does **not** ensure Docker and does **not**
-build the project container — those are not pre-binary necessities; the project binary, once running,
-ensures Docker (provisioning the per-project Colima/incus VM on Apple), builds the project container,
-drives the cluster, and does everything else it reasonably can. There is **no copy-out**: a binary built
-inside a Linux container cannot exec on a general host such as Apple silicon, which is why the binary is
-built host-native and the Python layer must ensure the host build toolchain first. All other
-host-management logic lives in `hostbootstrap-core`; new host logic defaults to the project binary
-(Haskell), and a Python addition must be justified by the pre-binary bootstrapping constraint.
+The Python bootstrapper does only the **minimum to build the project binary**: assert the fail-fast host
+minimums and ensure the host toolchain prerequisites needed to **build** the binary, then build the
+project binary **host-native** and exec it. Those **fail-fast host minimums are the only hard
+prerequisites in the entire system** — the irreducible host floor the wrapper cannot itself install (OS
+version, passwordless sudo, Xcode CLT, Homebrew as the toolchain root); **every other host dependency the
+binary needs is installed by the `ensure` suite (§ L) when the binary runs, so the binary is never
+blocked by something merely absent.** The bootstrapper does **not** ensure Docker and does **not** build
+the project container — those are not pre-binary necessities; the project binary, once running, ensures
+Docker (provisioning the per-project Colima/incus VM on Apple), builds the project container, drives the
+cluster, and does everything else it reasonably can. There is **no copy-out**: a binary built inside a
+Linux container cannot exec on a general host such as Apple silicon, which is why the binary is built
+host-native and the Python layer must ensure the host build toolchain first. All other host-management
+logic lives in `hostbootstrap-core`; new host logic defaults to the project binary (Haskell), and a
+Python addition must be justified by the pre-binary bootstrapping constraint.
 
 ### N. Host-Native Binary Build
 

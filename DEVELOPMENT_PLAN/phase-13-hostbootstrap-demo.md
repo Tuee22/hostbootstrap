@@ -41,6 +41,16 @@ the demo orchestrates a pristine incus VM and runs the genuine first-run flow in
 inside the pristine VM, the host-native binary build (by `hostbootstrap up`) and the binary-driven
 project-container build.
 
+The demo is also the worked proof that **hostbootstrap owns the lifecycle of every resource** and that
+the **only fail-fast dependencies are the Python wrapper's host minimums**. The full a→f owned lifecycle
+(see [demo_runbook.md](../documents/operations/demo_runbook.md)): (a) the metal binary installs incus on
+the host via `brew`/`apt`; (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
+installs Docker and builds the project container; (d) the project container spins up the kind cluster and
+deploys the webservice; (e) Playwright (in a container on the VM) runs e2e against it; (f) hostbootstrap
+spins everything back down, preserving `.data`. Nothing in (a)–(f) is a host prerequisite beyond the
+Python minimums — every dependency is install-and-verify (the `ensure` suite, § L), so the binary is
+never blocked by an absent dependency.
+
 ## Sprints
 
 ### Sprint 13.1: `demo/` skeleton and the metal orchestrator binary [Done]

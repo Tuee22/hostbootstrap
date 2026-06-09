@@ -9,12 +9,18 @@
 
 ## TL;DR
 
-- Each host dependency is an `ensure` reconciler: an idempotent value with a host-applicability
-  predicate and a reconcile action.
-- Each reconciler is exposed as an `optparse-applicative` subcommand (`ensure docker`,
-  `ensure colima`, …) on the `hostbootstrap-core` command tree.
-- A reconciler run on a host it does not apply to fails fast with a one-line diagnostic and a
-  non-zero exit; it does not silently no-op.
+- **The `ensure` suite exists so the project binary is never blocked by a host dependency that simply
+  isn't installed.** Each host dependency is an idempotent `ensure` reconciler that **installs** it when
+  absent and is a verified no-op when present (install-and-verify) — an absent-but-installable
+  dependency is installed, not a hard stop.
+- The **only** hard fail-fast surface in the whole system is the Python wrapper's host minimums (the
+  irreducible host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
+  (Docker, incus, the NVIDIA container toolkit, …) is installed by the `ensure` suite when the binary
+  runs.
+- Each reconciler is an `optparse-applicative` subcommand (`ensure docker`, `ensure colima`, …) on the
+  `hostbootstrap-core` command tree. The *one* fail-fast inside the suite is a **wrong-host misuse**
+  (e.g. `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is an operator
+  error, **not** an absent dependency.
 
 ## Reconciler Contract
 
@@ -25,9 +31,13 @@ A reconciler is a value, not a free function, and carries two parts:
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
 
 Idempotence is required: running a reconciler when the host is already in the desired state is a
-successful no-op. Running it on a host where the applicability predicate is false is a fail-fast
-error, not a quiet skip — this surfaces operator mistakes (for example, asking for `ensure tart` on
-Linux) instead of hiding them.
+successful no-op. The point of the suite is that a **missing** dependency is **never** a hard stop for
+the project binary — the reconcile action installs it (see *Install-and-Verify* below). Running a
+reconciler on a host where the applicability predicate is false is a fail-fast error, not a quiet skip —
+this surfaces operator mistakes (for example, asking for `ensure tart` on Linux) instead of hiding them.
+That wrong-host fail-fast is the **only** fail-fast the suite performs, and it is a misuse signal, not an
+absent-dependency signal; the only other hard prerequisites in the system are the Python wrapper's host
+minimums (see [prerequisites](prerequisites.md)).
 
 Reconcilers live under `HostBootstrap.Ensure.*` and are surfaced on the command tree described in
 [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md). Every external tool a

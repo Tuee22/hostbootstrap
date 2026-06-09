@@ -9,12 +9,15 @@
 
 ## TL;DR
 
-- The Python bootstrapper asserts a **minimal, fail-fast** set of host prerequisites — only what
-  must hold before any project binary can be built or run.
-- Everything beyond those minimums (Docker, Colima, CUDA, Homebrew packages, GHC, Tart) is **ensured
-  by Haskell `ensure` reconcilers**, each an idempotent optparse subcommand that fails fast on the
-  wrong host. See [ensure_reconcilers.md](ensure_reconcilers.md).
-- A missing minimum aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
+- The Python bootstrapper asserts a **minimal, fail-fast** set of host minimums — only what must hold
+  before the project binary can be built. **These minimums are the only hard fail-fast surface in the
+  whole system.**
+- Everything beyond those minimums (Docker, Colima, CUDA, Homebrew packages, GHC, Tart, incus) is
+  **installed by Haskell `ensure` reconcilers** when the binary runs (install-and-verify), so the binary
+  is **never blocked by an absent-but-installable dependency**. See
+  [ensure_reconcilers.md](ensure_reconcilers.md).
+- A missing *minimum* aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
+  (A reconciler's only fail-fast is a wrong-host misuse, never mere absence.)
 
 ## Why The Split
 
@@ -52,8 +55,9 @@ the execed binary owns it, not the pre-binary bootstrapper.)
 
 ## Everything Else Is Ensured, Not Required
 
-The following are **not** Python prerequisites; they are reconciled in Haskell and fail fast on the
-wrong host:
+The following are **not** Python prerequisites; the `ensure` suite **installs** them (install-and-verify)
+when the binary runs, so the binary is never blocked by their absence. Each fails fast only on the wrong
+host (a misuse), never on mere absence:
 
 | Concern | Reconciler | Applies on |
 |---|---|---|
@@ -74,8 +78,10 @@ by the detected substrate (`HostBootstrap.Substrate`). Each check resolves its e
 the closed `HostTool` enumeration to absolute paths (`HostBootstrap.HostTool` /
 `HostBootstrap.HostConfig`) — no `$PATH`-resolved bare command names — and returns a one-line
 diagnostic on the first unmet minimum. Substrate detection and host-tool resolution are owned by
-`hostbootstrap-core`; the pure-Python `prereqs.py` / `substrate.py` remain the live implementation
-until Phase 6 reclaims the residual pre-binary subset into the thin bootstrapper. See
+`hostbootstrap-core`; the pure-Python `prereqs.py` / `substrate.py` are the **retained** pre-binary
+minimums implementation (the thin bootstrapper's fail-fast surface — the irreducible host floor), and
+the eventual lift of their residual checks into `HostBootstrap.HostPrereqs` is tracked in the
+[legacy ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
 [hostbootstrap_core_library.md](../architecture/hostbootstrap_core_library.md).
 
 > **WRONG** — treating an ensured tool as a manual host prerequisite

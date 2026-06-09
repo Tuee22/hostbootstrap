@@ -9,15 +9,15 @@
 > applicability, the static-base `hostbootstrap.dhall` schema, the thin Python bootstrapper surface,
 > the base image and warm Cabal store, and the optparse command tree projects extend.
 
-> Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist
-> and the Python CLI is reduced to the `doctor` / `up` / `base` surface — and `hostbootstrap-core` is
-> consumable via `runHostBootstrapCLI`. The Python bootstrapper has **not yet fully converged** on the
-> thin pre-binary boundary (see *Thin Python bootstrapper surface* below and
-> [Phase 6](phase-6-base-image-and-thin-python-bootstrapper.md)). The **global-architecture deltas**
-> (Dhall generation, the applied cordon, the
-> standardized harness, incus, the layered warm store, the demo) are scoped in Phases 8–13 and are **not
-> yet implemented**; the rows below carry their owning phase and an Implemented column. The Python
-> surfaces removed along the way are recorded in
+> Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist,
+> the Python CLI is the thin `doctor` / `up` / `base` pre-binary bootstrapper (converged on the
+> §M/§N boundary), and `hostbootstrap-core` is consumable via `runHostBootstrapCLI`. The
+> **global-architecture deltas** are largely implemented and unit-tested — Dhall generation (Phase 8),
+> the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
+> (Phase 11) are all landed; the layered warm store (Phase 12, the in-image two-freeze generation) and
+> the demo's live run (Phase 13) are the remaining **real-build / real-run-gated** work (in scope, open;
+> see [README.md](README.md) § Validation Policy). The rows below carry their owning phase and an
+> Implemented column. The Python surfaces removed along the way are recorded in
 > [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This repository does not use
 > `.github/` workflows or GitHub Actions as a validation surface; see [README.md](README.md) for
 > per-phase status.
@@ -143,9 +143,10 @@ not by the Python layer.
 The **project binary** verifies the host has the spare budget declared in `resources` and applies the
 cordon: on Apple by sizing a dedicated per-project Colima/incus VM (via `ensure docker`), on Linux by
 applying kind node resource limits (via `cluster up`); the Python bootstrapper does not cordon (it no
-longer sizes any VM — Phase 6, Sprint 6.3). *(Current state: the project binary so far only **computes
-and reports** the cordon, not applies it; the applied cordon and the `verifyBudget` gate are Phase 9
-work.)* The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
+longer sizes any VM — Phase 6, Sprint 6.3). The applied cordon is **landed** (Phase 9): `cluster up`
+runs the `verifyBudget` spare-capacity preflight and applies the Linux `docker update` kind-node cordon
+after `kind create`, before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs).
+The cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction
 selects fixed names / `.data` paths for production and per-case isolated paths for the test profile.
 See `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).
 

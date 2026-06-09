@@ -9,7 +9,14 @@
 
 ## TL;DR
 
-- The Python bootstrapper does only what must run *before any project binary exists*.
+- The Python bootstrapper does only the **minimum to build the project binary**: assert the fail-fast
+  host minimums and ensure the host build toolchain, then build host-native and exec. **Those host
+  minimums are the only hard fail-fast surface in the system.**
+- Once the binary runs it is **never blocked by an absent-but-installable dependency** — the `ensure`
+  suite installs whatever it needs (install-and-verify; see
+  [ensure_reconcilers](../engineering/ensure_reconcilers.md)). The binary also owns the **full
+  downstream resource lifecycle**: Docker, the project container, the cordon, the incus VM, the kind
+  cluster, the webservice, the Playwright e2e run, and **teardown**.
 - Everything else — host-tool resolution, `ensure` reconcilers, substrate detection, the static-base
   Dhall decoder, cluster lifecycle, and the command tree — lives in `hostbootstrap-core`.
 - New host logic defaults to Haskell. A Python addition must be justified by the pre-binary
@@ -28,7 +35,7 @@
 
 | Concern | Owner | Why |
 |---------|-------|-----|
-| Fail-fast host minimums | Python | Must pass before anything else runs; see [prerequisites](../engineering/prerequisites.md). |
+| Fail-fast host minimums | Python | The **only** hard fail-fast surface in the system — the irreducible host floor the wrapper cannot install; see [prerequisites](../engineering/prerequisites.md). |
 | Ensure the host **build** toolchain | Python | The prerequisites to build the binary host-native must exist first — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux. |
 | Build the project binary **host-native** | Python | A Linux ELF cannot exec on a general host, so the binary is built for the host it runs on into `./.build/<project>`; see [build_and_run_model](build_and_run_model.md). |
 | Exec the binary | Python | Hands control to the project binary, which owns everything afterward — Docker, the project container, the cordon, and the cluster. |
@@ -39,6 +46,9 @@
 | Static-Base Dhall decoder | `hostbootstrap-core` | Core decodes only the static-base schema; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
 | Resource budgeting and cordoning | `hostbootstrap-core` | Verify spare resources; cordon via Colima sizing / kind limits. See [resource_budgeting](../engineering/resource_budgeting.md). |
 | Cluster lifecycle | `hostbootstrap-core` | kind/Helm semantics, never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
+| incus VM lifecycle (create/exec/reboot/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: the binary spins, sizes, and tears down the VM via one `incus exec` dispatch. See [incus](../engineering/incus.md). |
+| Webservice + e2e (serve, Playwright) | `hostbootstrap-core` (the execed binary / its container) | The binary/container serve the webservice and run the Playwright e2e against it. |
+| Teardown / spin-down | `hostbootstrap-core` (the execed binary) | The binary owns spinning every resource back down, preserving host `.data`. |
 | The optparse command tree | `hostbootstrap-core` | `runHostBootstrapCLI` is the entrypoint project binaries extend. See [hostbootstrap_core_library](hostbootstrap_core_library.md). |
 
 ## The Bootstrap Sequence

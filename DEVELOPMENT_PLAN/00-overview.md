@@ -42,8 +42,10 @@ Convert the existing YAML-front-matter `documents/` suite to the unified metadat
 create this `DEVELOPMENT_PLAN/` tree, and land the documentation validator. No code-writing phase may
 be marked `Active` or `Done` before Phase 0 closes. This phase's foundational deliverables have
 **landed** — the metadata-block conversion, the plan tree, and the `HostBootstrap.DocValidator`
-code-check gate are all in place — so its status is `Active`, reopened only for the expanded
-doc-coverage the global-architecture contract adds (§ A).
+code-check gate are all in place — so its status is `Active`: the foundation and the earlier expanded
+doc-coverage have landed, and it is reopened (§ A, without reverting any code phase) for the
+**doctrine-clarity sweep** — the Python wrapper's minimum-to-build role and the never-blocked
+`ensure`-suite purpose, plus reconciling the inventory to the now-`Done` Phases 6/9 (Sprint 0.5).
 
 ### Phase 1 — hostbootstrap-core scaffolding
 

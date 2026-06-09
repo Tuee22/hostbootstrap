@@ -27,20 +27,23 @@ the orientation layer and points at those canonical homes rather than duplicatin
   the `optparse-applicative` command tree that project binaries extend through
   `runHostBootstrapCLI progName projectCommands`. See
   [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md).
-- **The Python bootstrapper** is thin. It does only what must run **before any project binary
-  exists**: it asserts fail-fast host minimums, ensures the host toolchain prerequisites needed to
-  **build** the binary, builds the project binary **host-native** into `./.build/`, and execs it. It
-  does **not** ensure Docker or build the project container — the execed binary does that, and
-  everything else it reasonably can, once running. The ownership boundary is described in
+- **The Python bootstrapper** is thin: it does only the **minimum to build the project binary** —
+  assert the fail-fast host minimums, ensure the host toolchain prerequisites needed to **build** the
+  binary, build it **host-native** into `./.build/`, and exec it. Those host minimums are the **only
+  hard fail-fast surface** in the system. Once the binary runs it is **never blocked by an
+  absent-but-installable dependency** — the `ensure` suite installs whatever it needs (Docker, incus,
+  the cluster tooling, …); the binary, not the bootstrapper, owns Docker, the project container, the
+  cordon, the VM, the cluster, the webservice, and teardown. The ownership boundary is described in
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
 > **Current state.** The thin, host-native bootstrapper described in this README is **implemented**:
 > `python/hostbootstrap/bootstrap.py` is the four-step pre-binary path (assert minimums → ensure the host
 > build toolchain → build the binary host-native on every substrate → exec), with no Docker-ensure,
-> container build, VM sizing, or copy-out. The applied budget cordon and the layered warm store are the
-> remaining net-new work, tracked in
-> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md)
-> (Phases 9 and 12).
+> container build, VM sizing, or copy-out. The host-management library — the `ensure` install-and-verify
+> suite, the applied budget cordon, the standardized harness, and the incus host-provider — is
+> implemented and unit-tested; the layered warm store (Phase 12) and the demo's live in-VM run
+> (Phase 13) are the remaining infra-gated work, tracked in
+> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -62,9 +65,11 @@ fail-fast sequence:
    general host such as Apple silicon.
 4. **Exec the binary**, forwarding the requested command.
 
-Ensuring Docker, building the project container, applying the resource cordon, and cluster lifecycle
-are **not** the bootstrapper's job — the execed binary does them, through the Haskell `ensure`
-reconcilers and the core command tree, because it can do everything a built binary reasonably can. See
+Ensuring Docker, building the project container, applying the resource cordon, the cluster lifecycle,
+the incus VM, the webservice, and teardown are **not** the bootstrapper's job — the execed binary owns
+them. The binary is **never blocked by a dependency that simply isn't installed**: that is the whole
+purpose of the `ensure` suite (install-and-verify), and the host minimums in step 1 are the **only** hard
+fail-fast surface in the system. See
 [`documents/engineering/ensure_reconcilers.md`](documents/engineering/ensure_reconcilers.md).
 
 ## Build And Run Model

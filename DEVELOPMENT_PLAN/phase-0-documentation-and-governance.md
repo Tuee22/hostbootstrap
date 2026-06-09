@@ -10,20 +10,24 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 Phase 0's **foundational** governance is closed and holds: the governed `documents/` suite carries the
 unified metadata block, this `DEVELOPMENT_PLAN/` tree exists in the canonical layout, and the mechanical
 documentation validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical
 code-check. That foundation gates the code phases (see
-[development_plan_standards.md § A](development_plan_standards.md)). The reopened **expanded doc-coverage**
-obligation is now satisfied: the governed suite and `README.md` are authored to the global architecture
-(each owning phase landed its `## Documentation Requirements` docs — the new architecture, engineering,
-and operations docs); `documents/operations/` exists with its first runbook (`demo_runbook.md`); the
-`snake_case` file-naming and taxonomy checks and the exported reusable family doc-floor have landed
-(Sprint 0.4); and the stale-claim corrections (`dhall-to-json`, baked-binary, freeze-commit) landed with
-phases 4/6/12. Every governed doc conforms to the validator (`cabal test` passes), so this phase is
-closed.
+[development_plan_standards.md § A](development_plan_standards.md)). The earlier expanded doc-coverage
+obligation closed (Sprint 0.4 + the owning phases' docs). Phase 0 is **reopened** (per § A — without
+reverting any code phase) for a **doctrine-clarity sweep**: the governed suite must read unmistakably on
+two load-bearing doctrines — the Python wrapper does only the minimum to **build** the binary, and the
+project binary is **never blocked by an un-installed dependency** (the purpose of the `ensure` suite),
+with the Python host minimums as the **only** hard fail-fast surface — and the `system-components.md`
+inventory must be reconciled to the now-`Done` Phases 6 and 9 (Sprint 0.5).
+
+**Remaining Work**:
+- The doctrine-clarity sweep across the standards (§§ L/M/C), the canonical engineering/architecture
+  homes, `README.md`, the Validation Policy, the demo runbook, and the inventory (Sprint 0.5). This is a
+  doc-coverage obligation; it does not reopen any code phase.
 
 ## Phase Objective
 
@@ -163,6 +167,48 @@ floor can be reused across the project family.
 `cabal test` passes: the validator reports zero violations against the converted suite, and the
 `DocValidatorSpec` negative case proves the naming and taxonomy checks are not vacuous (a `BadName.md`
 and a `documents/reference/` category are both flagged).
+
+#### Remaining Work
+
+None.
+
+### Sprint 0.5: Doctrine-clarity sweep and inventory reconciliation [Done]
+
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/development_plan_standards.md` (§§ L/M/C),
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`documents/engineering/ensure_reconcilers.md`, `documents/engineering/prerequisites.md`,
+`documents/architecture/python_haskell_boundary.md`, `documents/operations/demo_runbook.md`, `README.md`
+**Docs to update**: the governed suite, `README.md`, and the plan docs above
+
+#### Objective
+
+Make two load-bearing doctrines read unmistakably across every governed doc, and reconcile the
+inventory to the now-`Done` Phases 6 and 9: (1) the Python wrapper does only the **minimum to build the
+project binary**; (2) the project binary is **never blocked by a dependency that simply isn't
+installed** — the purpose of the `ensure` suite (install-and-verify) — with the Python host minimums as
+the **only** hard fail-fast surface (a reconciler's only fail-fast is a wrong-host misuse, not an absent
+dependency).
+
+#### Deliverables
+
+- `§ L` leads with the never-blocked purpose and names the only-fail-fast surface; `§ M` states the
+  wrapper's minimum-to-build role and cross-links `§ L`; `§ C` adds the real-run/real-build-gated
+  `Active` clause (in scope, open — never out of scope).
+- `ensure_reconcilers.md` and `prerequisites.md` TL;DRs **lead** with "never blocked by an un-installed
+  dependency; the only fail-fast surface is the host minimums"; `python_haskell_boundary.md` states it in
+  the TL;DR + ownership matrix and adds the binary-owned lifecycle rows (incus VM, webservice, e2e,
+  teardown).
+- `README.md` and the `DEVELOPMENT_PLAN/README.md` Validation Policy state both doctrines and the
+  two-gate model; `system-components.md` no longer claims the bootstrapper is un-converged or the cordon
+  un-applied (reconciled to Phases 6/9 `Done`); the demo runbook shows the full hostbootstrap-owned
+  a→f lifecycle including teardown.
+
+#### Validation
+
+- `cabal test` passes (the `HostBootstrap.DocValidator` gate keeps every governed doc's metadata, links,
+  naming, taxonomy, and `## Documentation Requirements` conformant). A manual read confirms the TL;DRs
+  lead with the doctrine and no stale state claim remains.
 
 #### Remaining Work
 

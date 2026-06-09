@@ -52,11 +52,28 @@ core verb:
 See [harness workflow](../architecture/harness_workflow.md) for the per-case
 `runMatrix` loop and the seam-split the demo's `demoSeams` plugs into.
 
-## Pristine-bootstrap flow (a–j)
+## Lifecycle ownership
+
+hostbootstrap owns the lifecycle of **every** resource in the demo; the **only** fail-fast dependencies
+are the basic host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `sudo`). Everything
+else is installed, orchestrated, and torn back down by hostbootstrap:
+
+- **(a)** the metal-orchestrator binary installs **incus on the host** (`brew`/`apt`, via core `ensure incus`);
+- **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap up`);
+- **(c)** that binary **installs Docker and builds the project container**;
+- **(d)** the **project container spins up the kind cluster and deploys the webservice**;
+- **(e)** **Playwright in a container on the VM reaches the webservice and runs the e2e tests**;
+- **(f)** hostbootstrap **spins everything back down**, preserving host `.data`.
+
+The detailed verb sequence below expands this. Nothing in it is a host prerequisite beyond the Python
+wrapper's minimums — every dependency is install-and-verify (the `ensure` suite), so the binary is never
+blocked by an absent dependency.
+
+## Pristine-bootstrap flow (a–k)
 
 The run drives a pristine `ubuntu/24.04` VM from zero to a running, e2e-tested
-`hostbootstrap-demo`. Each step is a demo verb that narrates the live step it
-drives in a real run.
+`hostbootstrap-demo`, then tears it all back down. Each step is a demo verb that
+narrates the live step it drives in a real run.
 
 a. `demo incus ensure` — drives core `ensure incus` (install-and-verify the
    host-provider on the metal host). See [incus](../engineering/incus.md).
@@ -96,6 +113,13 @@ i. `demo web bridge` / `demo web schema` — `web bridge` generates the PureScri
 j. Playwright e2e — runs from the container against the incus-host `baseURL` (the
    e2e target is the incus host, **not** the kind cluster): the Overview / Budget
    / Status tabs render and `/api/budget` returns the `fitsBudget` view.
+
+k. **Spin everything down** — hostbootstrap tears down the Playwright container,
+   the webservice, the kind cluster (`cluster down` / `delete`), Harbor, and the
+   incus VM (the name-guarded `destroy`), **preserving host `.data`** (the
+   never-delete-`.data` invariant). The whole lifecycle is hostbootstrap-owned,
+   end to end. See [cluster lifecycle](../engineering/cluster_lifecycle.md) and
+   [incus](../engineering/incus.md).
 
 ## Feature-to-harness-case table
 

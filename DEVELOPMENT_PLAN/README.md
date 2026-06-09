@@ -24,8 +24,10 @@ bootstrapper (under `python/`). The phases below describe the ordered buildout. 
 surface is implemented and the Python layer is the thin pre-binary bootstrapper; the global-architecture
 deltas have largely landed — the binary-generated `config schema`/`config render` (Phase 8), the applied
 budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus host-provider
-(Phase 11) are all implemented and unit-tested. The phases that remain `Active` are so because their
-live end-to-end exercise lands with the worked demo (Phase 13) or a named follow-on. See
+(Phase 11) are all implemented and unit-tested. The phases that remain `Active` are so for one of two
+reasons: their live end-to-end half is real-run/real-build-gated (the layered warm store, Phase 12; the
+worked demo, Phase 13 — see § Validation Policy), or doc-coverage governance is reopened (Phase 0, for
+the doctrine-clarity sweep, per § A — without reverting any code phase). See
 [00-overview.md](00-overview.md) for the cross-phase narrative and the net-new phases. Consumer-side
 migration of individual projects is tracked in those projects' own repositories (see Phase 7).
 
@@ -33,7 +35,7 @@ migration of individual projects is tracked in those projects' own repositories 
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
+| 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Active |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
@@ -65,6 +67,18 @@ supported gate is the project's canonical code-check, run on every base and deri
 [development_plan_standards.md § R](development_plan_standards.md)). The mechanical documentation
 validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical code-check
 (`cabal test`); manual review covers only the editorial tier.
+
+Two validation surfaces gate the plan, and a phase's two halves are validated by different ones:
+
+- **The code-check gate** — `cabal test` / `check_code` (above). Validates the library, the pure cores,
+  the argument builders, the command wiring, the unit tests, and the governed docs.
+- **The real-run / real-build gate** — a real host run (incus / Docker / kind / web / Playwright) and
+  the base-image build. Validates the live half — the part the phase docs describe as *"exercised in
+  real runs."*
+
+A phase is `Active` (in scope, open) when its remaining half is the real-run / real-build gate; that
+work is **not** out of scope — it is open until a real run or build closes it. The repository does not
+treat that gate as a CI surface; an operator (or a real demo run) exercises it.
 
 ## Authority
 
