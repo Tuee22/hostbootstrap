@@ -31,7 +31,11 @@ Every project that adopts hostbootstrap must keep these out of git:
   lockfiles.
 * `.build/` — the host binary built host-native for every
   project; always present after a successful bootstrap. It must never be
-  bind-mounted into an outer container.
+  bind-mounted into an outer container. It also holds the host-native cabal
+  package store at `.build/cabal-store/` (kept repo-local so `git clean -fxd`
+  resets the full build state, deps included — see
+  [build_and_run_model.md](../architecture/build_and_run_model.md)), so the
+  existing `.build/` ignore already covers the store; no separate entry is needed.
 * `.data/` — host persistent state. It is bind-mounted while a cluster is
   running and must **never** be deleted by cluster teardown; the
   never-delete-`.data` invariant is owned by `hostbootstrap-core`'s

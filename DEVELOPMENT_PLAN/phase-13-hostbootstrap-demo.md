@@ -14,7 +14,11 @@
 
 `hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`
 (`project="hostbootstrap-demo"`, `resources {cpu=6, memory="10GiB", storage="40GiB"}`), Haskell source,
-and build path `demo/.build`. It extends `hostbootstrap-core` directly (L0-direct, like `mcts`) via
+and build path `demo/.build` (the host-native build's cabal package store is kept repo-local at
+`demo/.build/cabal-store`, so `git clean -fxd` resets the full build state — deps included — rather
+than reusing the user-global store; see
+[build_and_run_model.md](../documents/architecture/build_and_run_model.md)). It extends
+`hostbootstrap-core` directly (L0-direct, like `mcts`) via
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, exercising the four-stream extension end-to-end
 (CLI append, `demo web schema` schema concat, the `runMatrix` harness). `example/Main.hs` is **retired**
 (Sprint 13.7). The whole demo has been **exercised in a real run on a bare-metal host** (nested-virt incus

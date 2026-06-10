@@ -77,8 +77,11 @@ scheme, not a host the bootstrapper reaches today).
   (`hostbootstrap-core`'s own executable, no project commands) is built the same way, not pre-baked.
 * **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency
   closure is compiled into the warm Cabal store at `/opt/cache/cabal/` alongside the shared
-  warm-store deps, so a project that extends the core hits the cache for the core's dependencies on
-  both the host-native binary build and the in-container project-container build. The warm store
+  warm-store deps, so a project that extends the core hits the cache for the core's dependencies
+  during the in-container project-container build. (`/opt/cache/cabal/` exists only inside the image;
+  the host-native binary build uses its own repo-local store at `.build/cabal-store/` — see
+  [build_and_run_model.md](../architecture/build_and_run_model.md) — and compiles the closure on the
+  host, cold on a freshly cleaned tree.) The warm store
   itself is **shared**, but the version-pin freezes it produces are **layered** by library level:
   `core.freeze` (base + the `hostbootstrap-core` closure + the shared web-build extras — including
   `purescript-bridge` and the web-server stack `warp`/`wai*`/`network`) and `daemon.freeze` (the

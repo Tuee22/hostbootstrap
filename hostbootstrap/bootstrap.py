@@ -47,6 +47,13 @@ GHC_VERSION: str = "9.12.4"
 # The host-native build output directory; ./.build/<project> is always present.
 _BUILD_DIR: str = ".build"
 
+# The host-native cabal package store, kept repo-local (under the already
+# git-ignored ./.build/) so `git clean -fxd` resets the full build state — the
+# compiled dependency closure included — instead of serving deps from the
+# user-global cabal store at ~/.local/state/cabal/store. This is the host build's
+# store only; the in-container build uses the warm store at /opt/cache/cabal.
+_STORE_DIR: str = f"{_BUILD_DIR}/cabal-store"
+
 
 # ---------------------------------------------------------------------------
 # Pure command-builders
@@ -102,10 +109,21 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
     return ghcup_steps
 
 
-def native_build_command(spec: StaticBaseSpec) -> tuple[str, ...]:
-    """Build the project binary host-native into ``./.build/`` (every substrate)."""
+def native_build_command(spec: StaticBaseSpec, project_root: Path) -> tuple[str, ...]:
+    """Build the project binary host-native into ``./.build/`` (every substrate).
+
+    ``--store-dir`` (a cabal *global* flag, so it precedes the ``install``
+    subcommand) keeps the package store repo-local under ``./.build/cabal-store``
+    rather than the user-global store, so ``git clean -fxd`` fully resets the host
+    build state — dependencies included. Cabal requires the store dir to be
+    **absolute** (it derives each package's ``--prefix`` from it, and a relative
+    prefix is rejected at configure time), so it is resolved against *project_root*
+    — unlike ``--installdir``, which cabal accepts relative to the build cwd.
+    """
     return (
         _CABAL,
+        "--store-dir",
+        str(project_root / _STORE_DIR),
         "install",
         f"exe:{spec.project}",
         "--installdir",
@@ -160,7 +178,7 @@ async def _ensure_toolchain(sub: Substrate) -> None:
 async def _build_native(spec: StaticBaseSpec, *, project_root: Path) -> None:
     """Build the binary host-native into ``./.build/<project>``."""
     binary_path(spec, project_root).parent.mkdir(parents=True, exist_ok=True)
-    await process.run_checked(native_build_command(spec), cwd=project_root)
+    await process.run_checked(native_build_command(spec, project_root), cwd=project_root)
 
 
 async def build_binary(spec: StaticBaseSpec, *, project_root: Path) -> Path:

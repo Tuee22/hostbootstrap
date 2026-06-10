@@ -48,6 +48,16 @@ it host-native on every substrate means downstream tooling does not branch on su
 run the binary. See [python_haskell_boundary](python_haskell_boundary.md) for the bootstrap sequence
 that produces it.
 
+## Where the host build cache lives
+
+The host-native `cabal install` keeps its package store **repo-local** at `./.build/cabal-store/`
+(passed as cabal's global `--store-dir`), not in the user-global store at
+`~/.local/state/cabal/store/`. Because `./.build/` is git-ignored, `git clean -fxd` resets the **full**
+host build state — the compiled dependency closure included — so a cleaned tree rebuilds cold rather
+than silently reusing deps from a shared user store. This is the host build's store only; it is
+distinct from, and shares nothing with, the in-container warm store at `/opt/cache/cabal/` that the
+later project-container build reuses (see [warm_store.md](../engineering/warm_store.md)).
+
 ## Tart Is Build-Only
 
 Tart hosts a macOS VM used to produce Swift/Metal build artifacts on Apple silicon. Those artifacts

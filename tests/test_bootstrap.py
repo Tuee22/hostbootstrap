@@ -65,8 +65,13 @@ def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
 
 def test_native_build_command() -> None:
     spec = _spec(Path("/proj"))
-    assert bootstrap.native_build_command(spec) == (
+    # The store dir is absolute (resolved against project_root) — cabal rejects a
+    # relative --store-dir at per-package configure time; --installdir stays
+    # relative to the build cwd.
+    assert bootstrap.native_build_command(spec, Path("/proj")) == (
         "cabal",
+        "--store-dir",
+        "/proj/.build/cabal-store",
         "install",
         "exe:demo",
         "--installdir",
@@ -126,19 +131,13 @@ async def test_bootstrap_linux_builds_host_native(
 
     assert doctored == [LINUX_CPU]
     # Already-provisioned host: each toolchain probe reports the tool present, so
-    # no `ghcup install` runs — only the probes and the native build.
+    # no `ghcup install` runs — only the probes and the native build. The build's
+    # exact argv (incl. the absolute repo-local --store-dir) is pinned in
+    # test_native_build_command; here we assert it is the recorded final command.
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
-        (
-            "cabal",
-            "install",
-            "exe:demo",
-            "--installdir",
-            ".build",
-            "--install-method=copy",
-            "--overwrite-policy=always",
-        ),
+        bootstrap.native_build_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
@@ -162,15 +161,7 @@ async def test_build_binary_builds_without_exec(
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
-        (
-            "cabal",
-            "install",
-            "exe:demo",
-            "--installdir",
-            ".build",
-            "--install-method=copy",
-            "--overwrite-policy=always",
-        ),
+        bootstrap.native_build_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert binary == bootstrap.binary_path(spec, tmp_path)
@@ -186,10 +177,11 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_GPU, doctored=doctored, execed=execed)
 
-    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path)
+    spec = _spec(tmp_path)
+    await bootstrap.bootstrap(spec, project_root=tmp_path)
 
     # linux-gpu takes the same host-native path (no container build / copy-out).
-    assert recorded_commands[-1][:3] == ("cabal", "install", "exe:demo")
+    assert recorded_commands[-1] == bootstrap.native_build_command(spec, tmp_path)
     assert execed == [[str(tmp_path / ".build/demo")]]
 
 
@@ -202,7 +194,8 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, APPLE, doctored=doctored, execed=execed)
 
-    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("--help",))
+    spec = _spec(tmp_path)
+    await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
     assert doctored == [APPLE]
     # Already-provisioned Apple host: ghcup, GHC, and Cabal all probe present, so
@@ -211,15 +204,7 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
-        (
-            "cabal",
-            "install",
-            "exe:demo",
-            "--installdir",
-            ".build",
-            "--install-method=copy",
-            "--overwrite-policy=always",
-        ),
+        bootstrap.native_build_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
@@ -239,7 +224,8 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
 
-    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("play",))
+    spec = _spec(tmp_path)
+    await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     # Pristine host: each probe reports absent, so its install runs after it.
     assert recorded_commands_fresh_host == [
@@ -247,15 +233,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
-        (
-            "cabal",
-            "install",
-            "exe:demo",
-            "--installdir",
-            ".build",
-            "--install-method=copy",
-            "--overwrite-policy=always",
-        ),
+        bootstrap.native_build_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
@@ -269,7 +247,8 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, APPLE, doctored=doctored, execed=execed)
 
-    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("--help",))
+    spec = _spec(tmp_path)
+    await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
     # Pristine Apple host: ghcup is absent, so Homebrew installs it, then ghcup
     # installs GHC and Cabal, then the native build runs.
@@ -280,15 +259,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
-        (
-            "cabal",
-            "install",
-            "exe:demo",
-            "--installdir",
-            ".build",
-            "--install-method=copy",
-            "--overwrite-policy=always",
-        ),
+        bootstrap.native_build_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
 

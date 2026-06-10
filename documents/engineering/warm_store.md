@@ -167,9 +167,12 @@ Why this works:
   binary later builds the project container `FROM` the base image, the same fragments at
   `/opt/basecontainer/haskell-deps/core.freeze` (and `daemon.freeze` for a daemon app)
   are present in the image at the point Cabal reads `cabal.project` and the absolute
-  paths resolve. How the host-native build reaches the same warm store is detailed in
-  [base_image.md](base_image.md); either way the project commits no freeze of its own.
-  See [base_image.md](base_image.md) for the host-native build model.
+  paths resolve. The host-native build does **not** reach `/opt/cache/cabal` (that warm
+  store exists only inside the image); it builds into its own repo-local store at
+  `.build/cabal-store/` and so compiles the closure on the host — either way the project
+  commits no freeze of its own. See
+  [build_and_run_model.md](../architecture/build_and_run_model.md) for the host-native
+  build model and its store.
 * When `hostbootstrap base build-and-push` ships a new base tag with a
   refreshed warm store, the derived project's next container build
   automatically picks up the new freezes. Nothing in the derived project
