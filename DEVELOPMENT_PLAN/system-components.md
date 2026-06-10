@@ -10,7 +10,7 @@
 > the base image and warm Cabal store, and the optparse command tree projects extend.
 
 > Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist,
-> the Python CLI is the thin `doctor` / `up` / `base` pre-binary bootstrapper (converged on the
+> the Python CLI is the thin `doctor` / `build` / `run` / `base` pre-binary bootstrapper (converged on the
 > §M/§N boundary), and `hostbootstrap-core` is consumable via `runHostBootstrapCLI`. The
 > **global-architecture deltas** are implemented and unit-tested — Dhall generation (Phase 8),
 > the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
@@ -50,7 +50,7 @@ surface; the column records whether the module exists yet.
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render) |
-| `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
+| `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop |
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (cross-substrate) |
@@ -185,7 +185,7 @@ project binary rather than baked into the base image. See
 | `config show` (static-base decode) | 4 | `HostBootstrap.Config.Schema` |
 | `config schema` / `config render` | 8 | `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry |
 | `cluster up/down/delete/status` | 5 | `HostBootstrap.Cluster.Lifecycle` |
-| `test <suite>` | 10 | `HostBootstrap.Harness` (`runMatrix`) |
+| `test <case\|all>` | 10 | `HostBootstrap.Harness` (`runSuiteSelection` / `runMatrix`) |
 | `check-code` | 10 | project-defined body, the image-build gate |
 
 ## hostbootstrap-demo (worked consumer)
@@ -195,7 +195,7 @@ project binary rather than baked into the base image. See
 path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) via `runHostBootstrapCLI` and
 demonstrates the four-stream extension — the CLI append (`incus`/`vm`/`harbor`/`web` noun verbs alongside
 the inherited core verbs), the schema-gen concat (`demo web schema` → `coreArtifacts ++ demoArtifacts`),
-and the harness (`demo vm test` → `runMatrix` over the demo's case matrix). Its verbs drive the live
+and the harness (`demo test all` → `runMatrix` over the demo's case matrix, bound to the inherited `test` verb). Its verbs drive the live
 surface — `ensure incus`, the host-provider axis, the applied budget cordons, an idiomatic in-Dockerfile
 `check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA, and
 Playwright e2e — centered on a from-zero pristine-host bootstrap inside an incus VM. It supersedes the

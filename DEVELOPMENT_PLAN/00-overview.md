@@ -14,7 +14,7 @@ The inversion is well advanced. `hostbootstrap` is the Haskell `hostbootstrap-co
 `core/`) plus a Python bootstrapper (rooted at the repository root). `hostbootstrap-core` owns
 host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
 cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
-The Python CLI is reduced to `doctor` / `up` / `base`: it asserts the fail-fast host minimums,
+The Python CLI is reduced to `doctor` / `build` / `run` / `base`: it asserts the fail-fast host minimums,
 ensures a host toolchain, builds the project binary, and execs it — and still builds and publishes the
 `basecontainer-<flavor>-<arch>` base images. The three-execution-model machinery is gone; the residual
 Dhall read (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`) decodes only the
@@ -104,7 +104,7 @@ binary later builds (`FROM` the base image) is accelerated by the warm store. Sh
 the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host toolchain prerequisites to
 build the binary, build the project binary host-native, and exec it — leaving Docker, the project
 container, and cordoning to the project binary. This phase is `Done`: the warm store carries the
-closure (no baked binary), the Python CLI is reduced to `doctor` / `up` / `base`, and the bootstrapper
+closure (no baked binary), the Python CLI is reduced to `doctor` / `build` / `run` / `base`, and the bootstrapper
 has **converged** on the thin pre-binary boundary (the four-step path above, building host-native on
 every substrate with no Docker-ensure, container build, VM sizing, or copy-out). The **layering** of the
 warm-store freeze into `core.freeze`/`daemon.freeze` is a net-new deliverable owned by Phase 12, not this
@@ -181,7 +181,7 @@ on a from-zero pristine-host bootstrap performed inside an incus VM (`apt instal
 hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
 the demo has been **exercised in a real run** on a bare-metal host. Every verb is real (no narrate stubs)
 and validated live — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2
-host-native + build #3 the project container `FROM` the pulled base), `vm test` (the harness brings up a
+host-native + build #3 the project container `FROM` the pulled base), `test all` (the harness brings up a
 per-case kind cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve`
 (the `warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
 (registry push/pull validated). The operator-scale real runs — the multi-arch published base tags, the

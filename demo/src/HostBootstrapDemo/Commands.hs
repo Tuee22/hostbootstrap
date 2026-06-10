@@ -12,8 +12,9 @@
 --     @runHostBootstrapCLI@ (append, never shadow);
 --   * schema-gen registry — @demo web schema@ prints @coreArtifacts ++
 --     demoArtifacts@ (registry concatenation);
---   * test harness — @demo vm test@ drives @runMatrix@ over 'demoCases' with
---     'demoSeams' (the app supplies only its case matrix).
+--   * test harness — the inherited @test@ verb drives the matrix over 'demoCases'
+--     with 'demoSeams' (the app supplies only its case matrix; the @(Seams, Cases)@
+--     pair is threaded into @test@ via @runHostBootstrapCLI@ in @app/Main.hs@).
 --
 -- The orchestration verbs (@incus@/@vm@) drive the real incus host-provider
 -- surface from @hostbootstrap-core@: @incus ensure@ installs+verifies incus and
@@ -41,7 +42,7 @@ import HostBootstrap.Config.Vocab (PodResources (..))
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, coreArtifacts, schemaUnion)
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.Incus as Incus
-import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), reportCard, runMatrix, testCaseProfile)
+import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCaseProfile)
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs)
@@ -216,7 +217,7 @@ vmCmd =
   command
     "vm"
     ( info
-        (hsubparser (vmUp <> vmDown <> vmBootstrap <> vmTest))
+        (hsubparser (vmUp <> vmDown <> vmBootstrap))
         (progDesc "incus VM lifecycle and the pristine-host bootstrap")
     )
   where
@@ -232,11 +233,6 @@ vmCmd =
       command
         "pristine-bootstrap"
         (info (pure runVmBootstrap) (progDesc "apt install pipx -> pipx install hostbootstrap -> hostbootstrap run (build #2 host-native in the VM)"))
-    vmTest =
-      command
-        "test"
-        (info (pure runDemoTests) (progDesc "drive the demo harness over its case matrix (the harness stream)"))
-    runDemoTests = runMatrix demoSeams demoCases >>= putStr . reportCard
 
 -- | @demo vm up@: read the static-base budget, derive the incus VM sizing from
 -- the one canonical parser ('incusSizingArgs'), and launch the VM cordoned to it

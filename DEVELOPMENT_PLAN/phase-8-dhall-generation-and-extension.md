@@ -23,7 +23,7 @@ type-check. The **four-stream extension contract** is complete: the CLI-tree, Dh
 schema-gen-registry streams are implemented in L0, the fourth (test-harness `Seams`) landed in
 [Phase 10](phase-10-standardized-test-harness.md), and the `hostbootstrap-demo` consumer
 ([Phase 13](phase-13-hostbootstrap-demo.md)) exercises all four end-to-end (`--help` CLI append,
-`web schema` registry concat, `vm test` harness). This phase is closed.
+`web schema` registry concat, `test all` harness). This phase is closed.
 
 ## Phase Objective
 
@@ -177,8 +177,9 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 - The `hostbootstrap-demo` binary exercises all four streams: `hostbootstrap-demo --help` shows the
   inherited core verbs plus the appended demo verbs (CLI tree, no shadowing); `demo web schema` prints
-  `coreArtifacts ++ demoArtifacts` (schema-gen concatenation); `demo vm test` drives `runMatrix` over the
-  demo's case matrix with `demoSeams` (the harness `Seams`). `cabal test` and the demo `--help`/verbs pass.
+  `coreArtifacts ++ demoArtifacts` (schema-gen concatenation); `demo test all` drives `runMatrix` over the
+  demo's case matrix with `demoSeams` (the harness `Seams`, bound to the inherited `test` verb). `cabal test`
+  and the demo `--help`/verbs pass.
 
 #### Remaining Work
 

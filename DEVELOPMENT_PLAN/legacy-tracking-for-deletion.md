@@ -37,7 +37,7 @@ its entry moves to **Completed** in the same change. Per
 ## Completed
 
 These three-execution-model surfaces were removed when the Python CLI was reduced to the `doctor` /
-`up` / `base` surface in phase-6 (Sprint 6.2), and the pre-binary-boundary overreach was removed when
+`build` / `run` / `base` surface in phase-6 (Sprint 6.2), and the pre-binary-boundary overreach was removed when
 `bootstrap.py` converged on the thin § M / § N boundary (phase-6, Sprint 6.3). The Python suite passes
 at 100% coverage after their removal.
 
@@ -79,12 +79,18 @@ at 100% coverage after their removal.
 - **The `--force-target` model dispatch** in `hostbootstrap/cli.py` — the `--force-target`
   option, the `isinstance(model, …)` branching across `_build` / `_run` / `_daemon_run` /
   `_cluster_*`, the `cluster` / `daemon` Click groups, and the `_model_name` / `_require_daemon` /
-  `_require_cluster` helpers. **Removed.** The thin CLI is `doctor` / `up` / `base`; the bootstrapper
+  `_require_cluster` helpers. **Removed.** The thin CLI is `doctor` / `build` / `run` / `base`; the bootstrapper
   has a single build-once-and-exec path driven by substrate detection. Owning phase: phase-6.
 - **`python/tests/test_models.py`, `python/tests/test_spec_dhall.py`, and
   `python/tests/fixtures/dhall/*`** — pinned to `models/*` and the three-model schema. **Removed.**
   `python/tests/test_cli.py`, `test_spec.py`, and `test_prereqs.py` were rewritten to the thin
   surface; `python/tests/test_dhall_tool.py` stays (`dhall_tool.py` is retained). Owning phase: phase-6.
+- **The demo's `vm test` subcommand** (`vmTest` + `runDemoTests` in
+  `demo/src/HostBootstrapDemo/Commands.hs`) — the per-noun test command that bound the demo's case
+  matrix to `vm test` instead of the inherited `test` verb. **Removed.** The core `test` verb now runs
+  the project matrix via the `TestSuite` hook (`runSuiteSelection` + the `all` selector); the demo
+  binds `demoSeams`/`demoCases` through `demo/app/Main.hs` and its cases run under `demo test all` /
+  `demo test <case>`. Owning phase: phase-10 (Sprint 10.6) / phase-13.
 
 ## Rules
 

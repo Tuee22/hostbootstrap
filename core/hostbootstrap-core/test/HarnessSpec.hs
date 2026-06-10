@@ -16,6 +16,7 @@ tests =
   testGroup
     "HarnessSpec"
     [ testGroup "per-case isolation + teardown" matrixCases,
+      testGroup "test-suite selection" suiteCases,
       testGroup "guardTestDelete" guardCases,
       testGroup "budget-slicing" sliceCases,
       testGroup "run-model selection" runModelCases,
@@ -81,6 +82,41 @@ matrixCases =
         other -> assertFailure ("expected boom to Fail, got " ++ show other)
       allPassed report @?= False
   ]
+
+suiteCases :: [TestTree]
+suiteCases =
+  [ testCase "emptySuite `all` renders 0/0 passed" $ do
+      outcome <- runSuiteSelection emptySuite allCasesSelector
+      case outcome of
+        Right report -> assertBool "report card shows 0/0" ("0/0 passed" `isInfixOf` reportCard report)
+        Left err -> assertFailure ("expected Right, got Left " ++ err),
+    testCase "`all` runs the whole matrix" $ do
+      outcome <- runSuiteSelection twoCaseSuite allCasesSelector
+      case outcome of
+        Right (Report rs) -> map fst rs @?= ["a", "b"]
+        Left err -> assertFailure ("expected Right, got Left " ++ err),
+    testCase "a named case runs only that case" $ do
+      outcome <- runSuiteSelection twoCaseSuite "b"
+      case outcome of
+        Right (Report rs) -> map fst rs @?= ["b"]
+        Left err -> assertFailure ("expected Right, got Left " ++ err),
+    testCase "an unknown case fails fast, listing the valid ids and `all`" $ do
+      outcome <- runSuiteSelection twoCaseSuite "nope"
+      case outcome of
+        Left err ->
+          assertBool
+            ("names the valid ids + all: " ++ err)
+            ("a" `isInfixOf` err && "b" `isInfixOf` err && "all" `isInfixOf` err)
+        Right _ -> assertFailure "expected Left for an unknown case"
+  ]
+  where
+    twoCaseSuite = TestSuite passSeams [Case "a" 1 False, Case "b" 1 False]
+    passSeams =
+      Seams
+        { seamSetup = \_ -> pure (),
+          seamRun = \_ _ -> pure Pass,
+          seamTeardown = \_ _ -> pure ()
+        }
 
 guardCases :: [TestTree]
 guardCases =

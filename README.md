@@ -226,14 +226,16 @@ the Playwright e2e target against. The full live VM/cluster/Harbor lifecycle is 
 
 The demo carries two test layers:
 
-- **Haskell harness** — `demo vm test` drives `runMatrix` over the demo's case matrix
-  (`pristine-bootstrap` / `web-build` / `e2e-tabs`), each case bringing up an isolated per-case kind
-  cluster in `seamSetup` and tearing it down in `seamTeardown` (guaranteed via `finally`, preserving
-  host `.data`). These seams need Docker + kind, so they run inside the demo VM / project container:
+- **Haskell harness** — `demo test all` drives `runMatrix` over the demo's case matrix
+  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with `demo test <case>`), each
+  case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
+  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The cases bind to the inherited
+  `test` verb (the harness extension stream). These seams need Docker + kind, so they run inside the
+  demo VM / project container:
 
   ```bash
   cd demo
-  hostbootstrap run -- vm test         # or: cabal run hostbootstrap-demo -- vm test
+  hostbootstrap run -- test all        # or: cabal run hostbootstrap-demo -- test all
   ```
 
 - **Playwright e2e** — [`demo/playwright/`](demo/playwright/) drives the served surface (the SPA tabs

@@ -28,7 +28,7 @@ import HostBootstrap.Dhall.Gen
     coreArtifacts,
     schemaUnion,
   )
-import HostBootstrap.Harness (defaultSeams, reportCard, runMatrix)
+import HostBootstrap.Harness (TestSuite, allCasesSelector, reportCard, runSuiteSelection)
 import HostBootstrap.Ensure (Reconciler, ensureCommand)
 import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
@@ -57,31 +57,41 @@ allReconcilers =
     Incus.reconciler
   ]
 
--- | The core subcommands every @hostbootstrap@-derived binary exposes.
-coreCommands :: [Mod CommandFields (IO ())]
-coreCommands =
+-- | The core subcommands every @hostbootstrap@-derived binary exposes. The
+-- project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
+-- cases run under @test@ (not a per-noun subcommand).
+coreCommands :: TestSuite -> [Mod CommandFields (IO ())]
+coreCommands suite =
   [ ensureCommand allReconcilers,
     configCommand,
     clusterCommand,
-    testCommand,
+    testCommand suite,
     checkCodeCommand
   ]
 
--- | The @test@ verb: drive the standardized harness ('runMatrix') over the
--- project's case matrix and print the report card. The bare binary has an empty
--- matrix; a project supplies its matrix and seams via the harness extension.
-testCommand :: Mod CommandFields (IO ())
-testCommand =
+-- | The @test@ verb: select over the project's case matrix and print the report
+-- card. @test all@ runs the whole matrix; @test \<case\>@ runs the single case
+-- with that id (an unknown id fails fast, listing the valid ids). The bare binary
+-- ships an empty matrix, so @test all@ prints @0/0 passed@; a project supplies its
+-- matrix and seams as the 'TestSuite' threaded through
+-- 'HostBootstrap.CLI.runHostBootstrapCLI'.
+testCommand :: TestSuite -> Mod CommandFields (IO ())
+testCommand suite =
   command
     "test"
     ( info
-        (pure runTests)
-        (progDesc "Run the standardized test harness and print the report card")
+        (runTests <$> caseArg)
+        (progDesc "Run a project test case, or `all` for the whole matrix")
     )
   where
-    runTests = do
-      report <- runMatrix defaultSeams []
-      putStr (reportCard report)
+    caseArg =
+      strArgument
+        ( metavar "CASE"
+            <> help ("test case id to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
+        )
+    runTests selector = do
+      outcome <- runSuiteSelection suite selector
+      either die (putStr . reportCard) outcome
 
 -- | The @check-code@ verb: the fail-fast image-build quality gate. Its body is
 -- project-defined; the bare binary has no project checks and passes.

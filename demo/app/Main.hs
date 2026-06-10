@@ -8,7 +8,8 @@
 module Main (main) where
 
 import HostBootstrap.CLI (runHostBootstrapCLI)
-import HostBootstrapDemo.Commands (demoCommands)
+import HostBootstrap.Harness (TestSuite (TestSuite))
+import HostBootstrapDemo.Commands (demoCases, demoCommands, demoSeams)
 
 main :: IO ()
-main = runHostBootstrapCLI "hostbootstrap-demo" demoCommands
+main = runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)

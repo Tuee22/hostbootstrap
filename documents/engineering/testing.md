@@ -24,10 +24,14 @@
 
 ## The Standardized Harness and the `test` Verb
 
-Every `hostbootstrap` binary inherits a `test` verb from the core command tree. `<project> test
-<suite>` drives `runMatrix :: Seams env -> [Case] -> IO Report` over the project's case matrix and
-prints the report card. The bare core binary ships an empty matrix, so `test` prints
-`test report: 0/0 passed`; a real project supplies its `Case`s and its `Seams`.
+Every `hostbootstrap` binary inherits a `test` verb from the core command tree. `<project> test all`
+drives `runMatrix :: Seams env -> [Case] -> IO Report` over the project's **whole** case matrix and
+prints the report card; `<project> test <case>` runs the single case with that id (an unknown id fails
+fast, listing the valid ids and `all`). A project supplies its `Case`s and `Seams` as a `TestSuite`
+threaded into the inherited `test` verb via `runHostBootstrapCLI` (its `app/Main.hs`), so the cases run
+under `test`, not a per-noun subcommand. The bare core binary ships an empty matrix
+(`emptySuite`), so `test all` prints `test report: 0/0 passed`. `all` is reserved by the verb, so a
+project may not name a case `all`.
 
 The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` →
 `seamTeardown`, with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never

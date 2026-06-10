@@ -46,7 +46,7 @@ core verb:
 |---|---|---|
 | CLI tree | `demoCommands` appended via `runHostBootstrapCLI` (append, never shadow) | `hostbootstrap-demo --help` |
 | Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (the demo adds a `demoWeb` pod) | `demo web schema` prints `coreArtifacts ++ demoArtifacts` |
-| Test harness | `demoCases` driven by `runMatrix` with `demoSeams` (the app supplies only its case matrix) | `demo vm test` |
+| Test harness | `demoCases` driven by `runMatrix` with `demoSeams`, threaded into the inherited `test` verb (the app supplies only its case matrix) | `demo test all` (or `demo test <case>`) |
 | Config | static-base `hostbootstrap.dhall` plus binary-generated rich schema | `demo web schema` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case
@@ -123,8 +123,8 @@ k. **Spin everything down** — hostbootstrap tears down the Playwright containe
 
 ## Feature-to-harness-case table
 
-`demo vm test` drives `runMatrix` over the demo's case matrix. Each `demoCases`
-case demonstrates a distinct slice of the surface.
+`demo test all` drives `runMatrix` over the demo's case matrix (a single case runs
+with `demo test <case>`). Each `demoCases` case demonstrates a distinct slice of the surface.
 
 | Harness case | Feature demonstrated |
 |---|---|

@@ -14,8 +14,8 @@
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native** (the project container the binary later builds is
-accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is reduced to the `doctor` / `up` /
-`base` surface — the three-execution-model machinery and the `--force-target` dispatch are removed and
+accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is reduced to the `doctor` / `build` /
+`run` / `base` surface — the three-execution-model machinery and the `--force-target` dispatch are removed and
 the Python suite passes at 100% coverage (Sprint 6.2). The bootstrapper has **converged** on the thin
 pre-binary boundary (§ M, § N): `bootstrap.py` is now the four-step path — assert minimums → ensure the
 host build toolchain → build the binary **host-native on every substrate** → exec — with Docker-ensure,
@@ -77,7 +77,7 @@ None.
 ### Sprint 6.2: Shrink Python to the bootstrapper [Done]
 
 **Status**: Done
-**Implementation**: `hostbootstrap/cli.py` (thin `doctor` / `up` / `base` surface),
+**Implementation**: `hostbootstrap/cli.py` (thin `doctor` / `build` / `run` / `base` surface),
 `hostbootstrap/bootstrap.py` (the pre-binary bootstrap path), `hostbootstrap/spec.py`
 (static-base `StaticBaseSpec` reader), `hostbootstrap/prereqs.py` (trimmed), static-base
 `hostbootstrap/dhall/package.dhall`; `hostbootstrap/models/` removed.
@@ -104,14 +104,14 @@ is updated to match.
 #### Deliverables
 
 - `hostbootstrap/models/*`, the `--force-target` model dispatch, and the model-keyed
-  `cli.py` branching are removed; the CLI is the thin `doctor` / `up` / `base` surface; the residual
+  `cli.py` branching are removed; the CLI is the thin `doctor` / `build` / `run` / `base` surface; the residual
   fail-fast subset of `prereqs.py` is reclaimed into the bootstrapper.
 
 #### Validation
 
 - `poetry run python -m hostbootstrap.check_code` is clean (ruff + black + mypy `--strict`); the test
   suite passes and `coverage report` is at **100%** (`fail_under = 100`), the only `# pragma: no cover`
-  being the terminal `os.execv`. `hostbootstrap --help` lists `doctor` / `up` / `base` and the
+  being the terminal `os.execv`. `hostbootstrap --help` lists `doctor` / `build` / `run` / `base` and the
   removed `cluster` / `daemon` / `build` / `run` / `--force-target` surfaces are gone.
 
 #### Remaining Work
@@ -138,7 +138,7 @@ the binary **host-native on every substrate** → exec it.
 - The Docker-ensure (`colima_start_command`), the project-container build (`container_build_spec` +
   `docker_ops.build`), the Colima VM sizing, the Python budget interpreter (`_gib`), and the Linux
   build-in-container-and-copy-out (`copy_out_*` / `_copy_binary_out`) are **removed** from
-  `bootstrap.py`; the `up` command drops `--no-pull`/`pull` (nothing to pull — the container build is
+  `bootstrap.py`; the `run` command drops `--no-pull`/`pull` (nothing to pull — the container build is
   the project binary's job).
 - `toolchain_ensure_commands` ensures the host build toolchain substrate-branched (Homebrew → `ghcup`
   → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux); the binary is built host-native on **every**

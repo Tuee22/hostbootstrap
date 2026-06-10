@@ -155,7 +155,9 @@ project's own checks.
 
 #### Command Surface
 
-- `<project> test <suite>` — drive `runMatrix` and print the report card.
+- `<project> test <case|all>` — drive `runMatrix` over the named case (or the whole matrix with
+  `all`) and print the report card (the project matrix is threaded in via the `TestSuite` hook,
+  Sprint 10.6).
 - `<project> check-code` — the image-build gate; the body is project-defined.
 
 #### Deliverables
@@ -165,7 +167,54 @@ project's own checks.
 
 #### Validation
 
-- `<project> test --help` lists suites; `<project> check-code` exits non-zero on a seeded failure.
+- `<project> test all` runs the matrix and `<project> test <case>` runs one case (an unknown case
+  exits non-zero); `<project> check-code` exits non-zero on a seeded failure.
+
+#### Remaining Work
+
+None.
+
+### Sprint 10.6: Project test-matrix hook + `all` selector on the inherited `test` verb [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`
+(`TestSuite`/`emptySuite`/`allCasesSelector`/`runSuiteSelection`),
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs` (`testCommand` parses the `CASE` argument),
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`runHostBootstrapCLI` threads the suite)
+**Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`,
+`documents/engineering/derived_project_standards.md`, `README.md`
+
+#### Objective
+
+Make the inherited `test` verb run a project's **own** case matrix, so project tests live under
+`test` rather than a per-noun subcommand. Before this, `testCommand` hardcoded an empty matrix and a
+project's cases could only be bound to a separately-named command (the demo's former `vm test`).
+
+#### Command Surface
+
+- `<project> test all` — run the whole supplied matrix and print the report card.
+- `<project> test <case>` — run the single case with that id; an unknown id exits non-zero, listing
+  the valid ids and `all`.
+
+#### Deliverables
+
+- The `TestSuite` hook in `HostBootstrap.Harness`: an existential `TestSuite` over the per-project
+  `Seams env` plus its `[Case]`, the reserved `allCasesSelector` (`"all"`, always available so a
+  project may not name a case `all`), `runSuiteSelection` (selector → chosen cases → `runMatrix`),
+  and `emptySuite` for the bare binary.
+- `coreCommands`/`testCommand`/`runHostBootstrapCLI` thread the `TestSuite`; `testCommand` parses a
+  required `CASE` argument and fails fast on an unknown id.
+- The bare `hostbootstrap` binary passes `emptySuite`; the demo binds `demoSeams`/`demoCases` through
+  `demo/app/Main.hs`. The demo's `vm test` subcommand is removed (recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
+#### Validation
+
+- `cabal build` (core library, bare binary, demo) succeeds. `HarnessSpec` covers `runSuiteSelection`:
+  `all` → whole matrix, a named id → that one case, an unknown id → `Left` listing the valid ids +
+  `all`, and `emptySuite all` → `test report: 0/0 passed`. Live CLI surface: `hostbootstrap test all`
+  → `0/0`; `hostbootstrap-demo --help` lists a top-level `test`; `hostbootstrap-demo vm --help` no
+  longer lists `test`; `hostbootstrap-demo test bogus` exits non-zero.
 
 #### Remaining Work
 

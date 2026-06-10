@@ -28,7 +28,7 @@ VMs + Docker + kind), and every verb is real (no narrate stubs):
   (build #2); the project container (`demo/docker/Dockerfile`, **build #3**) builds `FROM` the pulled base
   — warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild` — alongside the metal
   orchestrator (build #1).
-- **Harness cleanup + cordon #2 (13.4/13.6)** — `demo vm test` brings up an isolated per-case kind cluster,
+- **Harness cleanup + cordon #2 (13.4/13.6)** — `demo test all` brings up an isolated per-case kind cluster,
   applies cordon #2 (the `docker update` kind-node cap), and **tears it down** (`clusterDelete`, `.data`
   preserved), leaving no leftover clusters (3/3).
 - **Web + SPA + e2e (13.5/13.6)** — `demo web bridge` reflects the `warp`/`wai`/`aeson` API into PureScript;
@@ -253,7 +253,7 @@ webservice on the incus host, and run the Playwright e2e suite from the containe
 
 #### Validation
 
-- **Harness cluster cleanup done (live).** `demo vm test` (rebuilt in-VM) ran all three cases; each did
+- **Harness cluster cleanup done (live).** `demo test all` (rebuilt in-VM) ran all three cases; each did
   `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and after the run
   `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover clusters
   (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`) backs

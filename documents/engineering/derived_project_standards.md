@@ -35,12 +35,12 @@ project — those concepts are removed; the binary's own subcommands and its gen
 Dhall carry whatever runtime shape the project needs.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
-`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, so `hostbootstrap-demo --help` shows the core
-verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own noun-first verbs
-(`incus`/`vm`/`harbor`/`web`) — the extension contract a consumer follows, with no core verb
-re-implemented. It also exercises the other extension streams: `demo web schema` prints the
-`coreArtifacts ++ demoArtifacts` schema union, and `demo vm test` drives the harness over the demo's
-case matrix.
+`runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)`, so
+`hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`)
+plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`) — the extension contract a consumer
+follows, with no core verb re-implemented. It also exercises the other extension streams: `demo web
+schema` prints the `coreArtifacts ++ demoArtifacts` schema union, and `demo test all` drives the harness
+(`demoSeams`/`demoCases`, bound to the inherited `test` verb) over the demo's case matrix.
 
 ## The three-level library hierarchy
 
@@ -60,7 +60,7 @@ Each level extends the same **four parallel streams**, one additive merge idiom 
 | optparse **CLI tree** | `runHostBootstrapCLI progName (lower ++ delta)` | append; never shadow a lower verb |
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
-| **test-harness** `Seams` | supply the level's seams | the app supplies only its case matrix |
+| **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test` verb |
 
 "L0-direct" (consuming L0 without going through L1) is independent of the integration mode below:
 `mcts` is L0-direct via mode 1; `hostbootstrap-demo` is L0-direct via mode 2; `daemon-substrate` is L1

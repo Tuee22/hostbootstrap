@@ -1,3 +1,4 @@
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -18,6 +19,10 @@ module HostBootstrap.Harness
     CaseResult (..),
     Report (..),
     Seams (..),
+    TestSuite (..),
+    emptySuite,
+    allCasesSelector,
+    runSuiteSelection,
     RunModel (..),
     Topology (..),
     RunModelKey (..),
@@ -39,7 +44,7 @@ where
 
 import Control.Exception (SomeException, try)
 import Control.Exception.Safe (finally)
-import Data.List (isPrefixOf, partition)
+import Data.List (intercalate, isPrefixOf, partition)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Lifecycle (ClusterProfile (TestCase))
 import qualified HostBootstrap.Config.Vocab as Vocab
@@ -198,6 +203,42 @@ defaultSeams =
       seamRun = \_ _ -> pure Pass,
       seamTeardown = \_ _ -> pure ()
     }
+
+-- | A project's complete test surface: its 'Seams' (with the per-project env type
+-- hidden behind the existential) and the 'Case' matrix they drive. A project
+-- supplies one 'TestSuite' to 'HostBootstrap.CLI.runHostBootstrapCLI'; the
+-- inherited @test@ verb selects over it ('runSuiteSelection'). The bare binary
+-- ships 'emptySuite'.
+data TestSuite = forall env. TestSuite (Seams env) [Case]
+
+-- | The empty suite the bare @hostbootstrap@ binary ships: the trivial
+-- 'defaultSeams' over no cases, so @test all@ renders @0/0 passed@.
+emptySuite :: TestSuite
+emptySuite = TestSuite defaultSeams []
+
+-- | The reserved selector that runs the whole matrix. It is always available on
+-- every binary (injected by the inherited @test@ verb), so a project may not name
+-- a case @all@.
+allCasesSelector :: String
+allCasesSelector = "all"
+
+-- | Resolve a @test@ selector against a suite and run the chosen case(s):
+-- 'allCasesSelector' runs the whole matrix; any other value runs the single case
+-- with that id; an unknown id is a 'Left' naming the valid case ids plus @all@,
+-- so the inherited @test@ verb can fail fast. The selection happens inside the
+-- existential unwrap, where the 'Seams' env type stays hidden.
+runSuiteSelection :: TestSuite -> String -> IO (Either String Report)
+runSuiteSelection (TestSuite seams cases) selector
+  | selector == allCasesSelector = Right <$> runMatrix seams cases
+  | otherwise = case filter ((== selector) . caseId) cases of
+      [] -> pure (Left unknown)
+      chosen -> Right <$> runMatrix seams chosen
+  where
+    unknown =
+      "unknown test case "
+        ++ show selector
+        ++ "; available: "
+        ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
 
 -- | The real L0 'OneShot' container-run seam: each case runs @docker run --rm@
 -- (budget-capped via 'oneShotRunArgs') through the resolved Docker tool, passing

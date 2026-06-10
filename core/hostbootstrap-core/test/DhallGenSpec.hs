@@ -25,7 +25,7 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 -- | The absolute path of @Core.dhall@, usable as a Dhall import in test source.
 corePath :: FilePath -> T.Text
-corePath root = T.pack (root </> "haskell" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
+corePath root = T.pack (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
 
 withRoot :: (FilePath -> IO ()) -> IO ()
 withRoot k = do
@@ -73,7 +73,7 @@ registryCases =
         ["budget", "podResources", "kindNode"]
       assertBool "union carries reflected Natural fields" ("Natural" `T.isInfixOf` u),
     testCase "config schema matches the committed CI snapshot" $ withRoot $ \root -> do
-      let goldenPath = root </> "haskell" </> "hostbootstrap-core" </> "test" </> "golden" </> "config_schema.dhall"
+      let goldenPath = root </> "core" </> "hostbootstrap-core" </> "test" </> "golden" </> "config_schema.dhall"
       golden <- readFile goldenPath
       -- A decoder-type change that is not re-snapshotted fails this diff.
       T.stripEnd (schemaUnion coreArtifacts) @?= T.stripEnd (T.pack golden)

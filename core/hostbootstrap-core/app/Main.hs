@@ -5,6 +5,7 @@
 module Main (main) where
 
 import HostBootstrap.CLI (runHostBootstrapCLI)
+import HostBootstrap.Harness (emptySuite)
 
 main :: IO ()
-main = runHostBootstrapCLI "hostbootstrap" []
+main = runHostBootstrapCLI "hostbootstrap" [] emptySuite

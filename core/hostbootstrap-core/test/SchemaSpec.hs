@@ -72,7 +72,7 @@ decodeFixture = do
   case mroot of
     Nothing -> assertFailure ("could not locate repo root from " ++ cwd)
     Just root -> do
-      let path = root </> "haskell" </> "hostbootstrap-core" </> "dhall" </> "example.dhall"
+      let path = root </> "core" </> "hostbootstrap-core" </> "dhall" </> "example.dhall"
       exists <- doesFileExist path
       assertBool ("fixture exists: " ++ path) exists
       decoded <- decodeStaticBaseFile path
@@ -91,8 +91,8 @@ antiDrift = do
   case mroot of
     Nothing -> assertFailure ("could not locate repo root from " ++ cwd)
     Just root -> do
-      let typeDhall = root </> "haskell" </> "hostbootstrap-core" </> "dhall" </> "Type.dhall"
-          packageDhall = root </> "python" </> "hostbootstrap" </> "dhall" </> "package.dhall"
+      let typeDhall = root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Type.dhall"
+          packageDhall = root </> "hostbootstrap" </> "dhall" </> "package.dhall"
       haskExpr <- Dhall.inputExpr (T.pack typeDhall)
       pyExpr <- Dhall.inputExpr (T.pack ("(" <> packageDhall <> ").Config"))
       assertBool
