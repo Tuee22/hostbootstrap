@@ -167,13 +167,13 @@ pipx ensurepath
 Then install `hostbootstrap` as an isolated host CLI app:
 
 ```bash
-pipx install "git+https://github.com/tuee22/hostbootstrap.git#subdirectory=python&egg=hostbootstrap"
+pipx install "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"
 ```
 
 For local development against a checkout:
 
 ```bash
-pipx install --force /path/to/hostbootstrap/python
+pipx install --force /path/to/hostbootstrap
 ```
 
 ## Repository Map
