@@ -24,7 +24,7 @@ VMs + Docker + kind), and every verb is real (no narrate stubs):
   the `incusbr0`↔Docker forwarding rule; `demo vm up`/`vm down` launch and destroy a budget-cordoned
   `ubuntu/24.04` VM (cordon #1: `limits.cpu=6`/`memory=10GiB`/`root,size=40GiB`).
 - **Pristine bootstrap + the 3 builds (13.3)** — `demo vm pristine-bootstrap` runs `apt install pipx` →
-  `pipx install hostbootstrap` → `hostbootstrap up` inside the VM, building the demo binary **host-native**
+  `pipx install hostbootstrap` → `hostbootstrap run` inside the VM, building the demo binary **host-native**
   (build #2); the project container (`demo/docker/Dockerfile`, **build #3**) builds `FROM` the pulled base
   — warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild` — alongside the metal
   orchestrator (build #1).
@@ -47,10 +47,10 @@ validated here.
 Provide the canonical worked consumer and operations runbook. The demo's point is to demonstrate
 `hostbootstrap` bootstrapping a **pristine** linux host from zero: because the metal host is not pristine,
 the demo orchestrates a pristine incus VM and runs the genuine first-run flow inside it
-(`apt install pipx` -> `pipx install hostbootstrap` -> `hostbootstrap up`). This is a deliberate
+(`apt install pipx` -> `pipx install hostbootstrap` -> `hostbootstrap run`). This is a deliberate
 **3-build** illustration on top of the standard host-native build (see
 [development_plan_standards.md § N](development_plan_standards.md)): a metal orchestrator build plus,
-inside the pristine VM, the host-native binary build (by `hostbootstrap up`) and the binary-driven
+inside the pristine VM, the host-native binary build (by `hostbootstrap run`) and the binary-driven
 project-container build.
 
 The demo is also the worked proof that **hostbootstrap owns the lifecycle of every resource** and that
@@ -124,7 +124,7 @@ demo's noun-first project verbs.
 #### Remaining Work
 
 None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pipx install hostbootstrap` →
-`hostbootstrap up` — is Sprint 13.3.)
+`hostbootstrap run` — is Sprint 13.3.)
 
 ### Sprint 13.3: Pristine-host bootstrap inside the VM [Done]
 
@@ -139,7 +139,7 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 #### Deliverables
 
 - `demo vm pristine-bootstrap`: `apt install pipx` -> `pipx install` the local hostbootstrap wrapper
-  (pushed into the VM) -> `hostbootstrap up`, which ensures the host toolchain prerequisites, builds the
+  (pushed into the VM) -> `hostbootstrap run`, which ensures the host toolchain prerequisites, builds the
   demo binary **host-native** (**build #2**), and execs it. The execed binary then ensures Docker
   (rebooting the VM if needed) and builds the demo container (**build #3**, the in-container `check-code`
   gate). Asserts a pristine VM reaches a runnable `hostbootstrap-demo` with no prior tooling.
@@ -147,7 +147,7 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 #### Validation
 
 - **Build #2 done (live).** From a freshly created VM, `sudo demo vm pristine-bootstrap` ran
-  `apt install pipx` → `pipx install /root/hostbootstrap/python` → `hostbootstrap up`, which built the demo
+  `apt install pipx` → `pipx install /root/hostbootstrap/python` → `hostbootstrap run`, which built the demo
   binary **host-native in the VM** — a cold `-O2` compile of the `dhall` / `hostbootstrap-core` / demo
   closure to `.build/hostbootstrap-demo` (a 54 MB ELF) — and exec'd it (`config schema` printed the
   reflected schema). Build #1 (metal orchestrator) and build #2 (in-VM host-native) of the 3-build

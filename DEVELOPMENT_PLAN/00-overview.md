@@ -178,7 +178,7 @@ into `core.freeze`. The published tag's full warm-store compile is the operator'
 
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
 on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
-hostbootstrap` → `hostbootstrap up`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
+hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
 the demo has been **exercised in a real run** on a bare-metal host. Every verb is real (no narrate stubs)
 and validated live — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2
 host-native + build #3 the project container `FROM` the pulled base), `vm test` (the harness brings up a

@@ -114,13 +114,14 @@ async def _build_native(spec: StaticBaseSpec, *, project_root: Path) -> None:
     await process.run_checked(native_build_command(spec), cwd=project_root)
 
 
-async def bootstrap(
-    spec: StaticBaseSpec,
-    *,
-    project_root: Path,
-    args: tuple[str, ...] = (),
-) -> None:
-    """Run the pre-binary bootstrap (§§ M, N), then ``exec`` the project binary."""
+async def build_binary(spec: StaticBaseSpec, *, project_root: Path) -> Path:
+    """Run the pre-binary bootstrap (§§ M, N) and build the binary host-native.
+
+    Asserts the fail-fast host minimums, ensures the host build toolchain, and
+    builds the project binary into ``./.build/<project>``. Returns the built
+    binary's path. Does **not** exec — this is the shared build path behind both
+    ``hostbootstrap build`` and ``hostbootstrap run``.
+    """
     sub = substrate.detect()
 
     # 1. fail-fast host minimums.
@@ -132,6 +133,18 @@ async def bootstrap(
     # 3. build the project binary host-native on every substrate.
     await _build_native(spec, project_root=project_root)
 
-    # 4. exec the binary, handing control to the project command tree.
+    return binary_path(spec, project_root)
+
+
+async def bootstrap(
+    spec: StaticBaseSpec,
+    *,
+    project_root: Path,
+    args: tuple[str, ...] = (),
+) -> None:
+    """Build the project binary host-native, then ``exec`` it with ``args``."""
+    await build_binary(spec, project_root=project_root)
+
+    # exec the binary, handing control to the project command tree.
     argv = exec_argv(spec, project_root, args)
     os.execv(argv[0], list(argv))  # pragma: no cover

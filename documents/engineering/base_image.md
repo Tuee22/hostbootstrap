@@ -63,7 +63,7 @@ There is no force-target override: substrate is detected, never declared (see [s
 The four-tag scheme above covers Linux/arm64, but the pre-binary Python layer cannot yet run there:
 `dhall_tool.py` pins a `dhall-to-json` release asset only for Darwin/arm64, Darwin/amd64, and
 Linux/amd64 — there is no Linux/arm64 asset. Until that asset is added, `hostbootstrap doctor` and
-`hostbootstrap up` cannot run on a Linux/arm64 **host**, so Linux is effectively amd64-only for the
+`hostbootstrap run` cannot run on a Linux/arm64 **host**, so Linux is effectively amd64-only for the
 pre-binary bootstrapper (the `linux-cpu` arm64 and `linux-gpu` arm64 rows describe the target tag
 scheme, not a host the bootstrapper reaches today).
 

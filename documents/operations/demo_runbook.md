@@ -18,7 +18,7 @@
   (`incus` / `vm` / `harbor` / `web`) — no core verb is re-implemented.
 - The headline is a from-zero pristine-host bootstrap performed **inside an incus
   VM** (the metal host is not pristine): `apt install pipx` → `pipx install` the
-  local hostbootstrap → `hostbootstrap up`.
+  local hostbootstrap → `hostbootstrap run`.
 - Three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the
   surface; the run is a demo-only **three-build** illustration on top of the
   standard single host-native build.
@@ -59,7 +59,7 @@ are the basic host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordl
 else is installed, orchestrated, and torn back down by hostbootstrap:
 
 - **(a)** the metal-orchestrator binary installs **incus on the host** (`brew`/`apt`, via core `ensure incus`);
-- **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap up`);
+- **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker and builds the project container**;
 - **(d)** the **project container spins up the kind cluster and deploys the webservice**;
 - **(e)** **Playwright in a container on the VM reaches the webservice and runs the e2e tests**;
@@ -87,7 +87,7 @@ c. `demo vm pristine-bootstrap` (the headline) — inside the from-zero VM:
    `apt install pipx`, then `pipx install` the local hostbootstrap wrapper pushed
    into the VM.
 
-d. `hostbootstrap up` (run inside the VM by step c) — ensures the host toolchain
+d. `hostbootstrap run` (run inside the VM by step c) — ensures the host toolchain
    prerequisites, then builds the demo binary **host-native** (**build #2**) and
    execs it. See [build and run model](../architecture/build_and_run_model.md).
 
@@ -128,7 +128,7 @@ case demonstrates a distinct slice of the surface.
 
 | Harness case | Feature demonstrated |
 |---|---|
-| `pristine-bootstrap` | The from-zero first-run flow (steps a–g): `ensure incus`, the VM sizing cordon, the in-VM `apt`/`pipx`/`hostbootstrap up` chain, the host-native binary build, Docker ensure with reboot, the project-container build, and the kind + Harbor cordon and push. |
+| `pristine-bootstrap` | The from-zero first-run flow (steps a–g): `ensure incus`, the VM sizing cordon, the in-VM `apt`/`pipx`/`hostbootstrap run` chain, the host-native binary build, Docker ensure with reboot, the project-container build, and the kind + Harbor cordon and push. |
 | `web-build` | The web build path (steps e, i): the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp`/`wai` webservice's API types (round-trip); the `spago`/`esbuild` bundle exists. |
 | `e2e-tabs` | The served surface (steps h, j): the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the Playwright run against the incus-host `baseURL`. |
 
@@ -143,7 +143,7 @@ build so an operator can watch a pristine host come up from zero:
   metal host via the usual workflow. This is the binary that runs `demo incus
   ensure` / `demo vm up` / `demo vm pristine-bootstrap`.
 - **Build #2 — the in-VM host-native binary.** Inside the pristine VM,
-  `hostbootstrap up` builds `hostbootstrap-demo` host-native (step d). This is the
+  `hostbootstrap run` builds `hostbootstrap-demo` host-native (step d). This is the
   standard host-native build, reproduced from zero inside the VM.
 - **Build #3 — the binary-driven project container.** The in-VM binary builds the
   demo container from `demo/docker/Dockerfile` (step e), whose in-Dockerfile

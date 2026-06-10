@@ -2,8 +2,9 @@
 
 The single entrypoint installed on every downstream host (via
 ``pip install git+…``). The surface is thin: ``doctor`` asserts the fail-fast
-host minimums; ``up`` runs the pre-binary bootstrapper (assert minimums → ensure
-the host build toolchain → build the binary host-native → exec it); ``base
+host minimums; ``build`` runs the pre-binary bootstrapper (assert minimums →
+ensure the host build toolchain → build the binary host-native) without exec'ing;
+``run`` does the same and then execs the binary with the forwarded args; ``base
 build`` / ``base build-and-push`` produce the ``basecontainer-<flavor>-<arch>``
 tags. Ensuring Docker, building the project container, and cordoning are the
 project binary's job; all richer host-management logic lives in
@@ -202,11 +203,21 @@ def doctor(spec_path: Path) -> None:
         sys.exit(1)
 
 
+@main.command()
+@_SPEC_OPTION
+def build(spec_path: Path) -> None:
+    """Build the project binary host-native into ``./.build/`` (no exec)."""
+    project_spec = _load_spec(spec_path)
+    project_root = spec_path.resolve().parent
+    binary = asyncio.run(bootstrap.build_binary(project_spec, project_root=project_root))
+    click.echo(f"built {binary}")
+
+
 @main.command(context_settings={"allow_interspersed_args": False})
 @_SPEC_OPTION
 @click.argument("args", nargs=-1)
-def up(spec_path: Path, args: tuple[str, ...]) -> None:
-    """Run the pre-binary bootstrapper, then exec the project binary with ``args``."""
+def run(spec_path: Path, args: tuple[str, ...]) -> None:
+    """Build idempotently, then exec the project binary with ``args``."""
     project_spec = _load_spec(spec_path)
     project_root = spec_path.resolve().parent
     asyncio.run(

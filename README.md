@@ -131,7 +131,8 @@ The Python bootstrapper (installed with `pipx install …`):
 | Command | What it does |
 |---|---|
 | `hostbootstrap doctor` | Detect the host and assert the fail-fast host minimums for the detected substrate |
-| `hostbootstrap up [args...]` | Run the bootstrap — build the project binary into `./.build/`, then exec it with `args` |
+| `hostbootstrap build` | Run the bootstrap — build the project binary host-native into `./.build/`; no exec |
+| `hostbootstrap run [args...]` | Build idempotently, then exec the project binary with `args` |
 | `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push |
 | `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s) |
 
@@ -175,6 +176,79 @@ For local development against a checkout:
 ```bash
 pipx install --force /path/to/hostbootstrap
 ```
+
+## Demo App
+
+[`demo/`](demo/) is `hostbootstrap-demo`, the worked consumer of `hostbootstrap-core`. It consumes the
+core directly (L0-direct, like `mcts`) and extends the core command tree through
+`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, so `hostbootstrap-demo --help` shows the
+inherited core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own
+noun-first verbs (`incus` / `vm` / `harbor` / `web`) without re-implementing any core verb. It is the
+end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
+registry (`coreArtifacts ++ demoArtifacts`), the test harness (`demoCases` driven by `runMatrix`), and
+the static-base config. Its static-base budget (`demo/hostbootstrap.dhall`) is the demo's one ceiling —
+6 cores, 10 GiB memory, 40 GiB storage — feeding both the VM sizing cordon and the kind-node cap.
+
+The fully worked, infra-gated end-to-end run is the canonical
+[demo runbook](documents/operations/demo_runbook.md): a from-zero pristine `ubuntu/24.04` incus VM
+driven by the verb sequence `demo incus ensure` → `demo vm up` → `demo vm pristine-bootstrap` →
+`demo harbor install`/`push` → `demo web serve` → Playwright e2e → teardown (preserving host `.data`).
+That run needs incus, Docker, kind, Helm, and KVM on the host; the runbook is the source of truth for
+it. The two entry points below are the parts you run directly.
+
+### Spin it up
+
+Build and exec the demo binary host-native through the Python bootstrapper, from the demo project root —
+the same workflow every consumer follows (assert host minimums → ensure the host toolchain → build into
+`./.build/` → exec):
+
+```bash
+cd demo
+hostbootstrap run -- --help           # inherited core verbs + the demo's incus/vm/harbor/web verbs
+hostbootstrap run -- web schema       # the L0 + demo schema union (coreArtifacts ++ demoArtifacts)
+hostbootstrap run -- web serve        # serve the warp/wai webservice + Halogen SPA on :8080
+```
+
+To build and run the binary directly against the local core (no bootstrapper), use Cabal with the
+demo's own workspace:
+
+```bash
+cd demo
+cabal build                           # builds hostbootstrap-demo against ../core/hostbootstrap-core
+cabal run hostbootstrap-demo -- web serve
+```
+
+`demo web serve` brings up the webservice that `demo web bridge` (PureScript-bridge type generation) and
+the Playwright e2e target against. The full live VM/cluster/Harbor lifecycle is driven by the
+`incus`/`vm`/`harbor` verbs and is documented step by step in the runbook.
+
+### Run its test suite
+
+The demo carries two test layers:
+
+- **Haskell harness** — `demo vm test` drives `runMatrix` over the demo's case matrix
+  (`pristine-bootstrap` / `web-build` / `e2e-tabs`), each case bringing up an isolated per-case kind
+  cluster in `seamSetup` and tearing it down in `seamTeardown` (guaranteed via `finally`, preserving
+  host `.data`). These seams need Docker + kind, so they run inside the demo VM / project container:
+
+  ```bash
+  cd demo
+  hostbootstrap run -- vm test         # or: cabal run hostbootstrap-demo -- vm test
+  ```
+
+- **Playwright e2e** — [`demo/playwright/`](demo/playwright/) drives the served surface (the SPA tabs
+  render and `/api/budget` returns the `fitsBudget` view). It targets the webservice `demo web serve`
+  publishes — the incus host in a real run, `http://localhost:8080` locally (override with `BASE_URL`):
+
+  ```bash
+  cd demo/playwright
+  npm install
+  npx playwright install --with-deps
+  npx playwright test                  # BASE_URL=http://host:8080 npx playwright test to retarget
+  ```
+
+See the [feature-to-harness-case table](documents/operations/demo_runbook.md#feature-to-harness-case-table)
+in the runbook for which case proves which slice of the surface.
 
 ## Repository Map
 

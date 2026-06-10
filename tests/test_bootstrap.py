@@ -127,6 +127,39 @@ async def test_bootstrap_linux_builds_host_native(
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
 
+async def test_build_binary_builds_without_exec(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
+
+    spec = _spec(tmp_path)
+    binary = await bootstrap.build_binary(spec, project_root=tmp_path)
+
+    # Same pre-binary build path as bootstrap(), but it returns the path and
+    # never execs.
+    assert doctored == [LINUX_CPU]
+    assert recorded_commands == [
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
+        ("ghcup", "install", "cabal", "--set"),
+        (
+            "cabal",
+            "install",
+            "exe:demo",
+            "--installdir",
+            ".build",
+            "--install-method=copy",
+            "--overwrite-policy=always",
+        ),
+    ]
+    assert (tmp_path / ".build").is_dir()
+    assert binary == bootstrap.binary_path(spec, tmp_path)
+    assert execed == []
+
+
 async def test_bootstrap_linux_gpu_builds_host_native(
     monkeypatch: pytest.MonkeyPatch,
     recorded_commands: list[tuple[str, ...]],

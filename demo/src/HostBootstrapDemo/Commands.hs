@@ -231,7 +231,7 @@ vmCmd =
     vmBootstrap =
       command
         "pristine-bootstrap"
-        (info (pure runVmBootstrap) (progDesc "apt install pipx -> pipx install hostbootstrap -> hostbootstrap up (build #2 host-native in the VM)"))
+        (info (pure runVmBootstrap) (progDesc "apt install pipx -> pipx install hostbootstrap -> hostbootstrap run (build #2 host-native in the VM)"))
     vmTest =
       command
         "test"
@@ -261,7 +261,7 @@ runVmUp = do
 -- (the project source is staged at @/root/hostbootstrap@; see the runbook).
 -- Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
 -- pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
--- @hostbootstrap up@ — which asserts the host minimums, ensures the toolchain,
+-- @hostbootstrap run@ — which asserts the host minimums, ensures the toolchain,
 -- and builds the demo binary **host-native** in the VM (**build #2**) before
 -- exec'ing it (here with @config schema@, so the built binary proves itself).
 runVmBootstrap :: IO ()
@@ -280,8 +280,8 @@ runVmBootstrap = do
     "pipx install the local hostbootstrap CLI"
     "pipx install --force /root/hostbootstrap/python"
   inVM
-    "hostbootstrap up (build #2: the demo binary, host-native in the VM)"
-    ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap up -- config schema"
+    "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
+    ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
   putStrLn "pristine-bootstrap: done (the demo binary built host-native in the VM and ran)"
 
 -- | @demo vm down@: destroy the demo VM behind the name-prefix delete-guard.

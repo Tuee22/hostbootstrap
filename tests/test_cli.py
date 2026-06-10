@@ -32,21 +32,21 @@ def _spec() -> StaticBaseSpec:
 def test_help_lists_thin_commands_and_omits_removed() -> None:
     result = CliRunner().invoke(cli.main, ["--help"])
     assert result.exit_code == 0
-    for command in ("doctor", "up", "base"):
+    for command in ("doctor", "build", "run", "base"):
         assert command in result.output
-    for gone in ("cluster", "daemon", "build", "run", "push"):
+    for gone in ("up", "cluster", "daemon", "push"):
         assert gone not in result.output
 
 
-@pytest.mark.parametrize("removed", ["cluster", "daemon", "build", "run", "push"])
+@pytest.mark.parametrize("removed", ["up", "cluster", "daemon", "push"])
 def test_removed_commands_are_gone(removed: str) -> None:
     result = CliRunner().invoke(cli.main, [removed])
     assert result.exit_code != 0
     assert "No such command" in result.output
 
 
-def test_up_has_no_force_target_or_pull_option() -> None:
-    result = CliRunner().invoke(cli.main, ["up", "--help"])
+def test_run_has_no_force_target_or_pull_option() -> None:
+    result = CliRunner().invoke(cli.main, ["run", "--help"])
     assert result.exit_code == 0
     # The pre-binary bootstrapper neither builds the container nor pulls the base.
     assert "--force-target" not in result.output
@@ -58,11 +58,11 @@ def test_default_spec_path_is_dhall() -> None:
 
 
 # ---------------------------------------------------------------------------
-# up command
+# build / run commands
 # ---------------------------------------------------------------------------
 
 
-def test_up_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project = _spec()
     spec_path = tmp_path / "hostbootstrap.dhall"
     captured: dict[str, object] = {}
@@ -82,7 +82,7 @@ def test_up_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     result = CliRunner().invoke(
         cli.main,
-        ["up", "--spec", str(spec_path), "play", "--seed", "7"],
+        ["run", "--spec", str(spec_path), "play", "--seed", "7"],
     )
     assert result.exit_code == 0, result.output
     assert captured["spec"] is project
@@ -90,9 +90,42 @@ def test_up_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert captured["args"] == ("play", "--seed", "7")
 
 
-def test_up_missing_spec_fails_cleanly(tmp_path: Path) -> None:
+def test_run_missing_spec_fails_cleanly(tmp_path: Path) -> None:
     missing = tmp_path / "hostbootstrap.dhall"
-    result = CliRunner().invoke(cli.main, ["up", "--spec", str(missing)])
+    result = CliRunner().invoke(cli.main, ["run", "--spec", str(missing)])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+def test_build_invokes_build_binary_and_echoes_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _spec()
+    spec_path = tmp_path / "hostbootstrap.dhall"
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
+
+    async def _fake_build_binary(
+        spec: StaticBaseSpec,
+        *,
+        project_root: Path,
+    ) -> Path:
+        captured["spec"] = spec
+        captured["root"] = project_root
+        return project_root / ".build" / "proj"
+
+    monkeypatch.setattr(cli.bootstrap, "build_binary", _fake_build_binary)
+
+    result = CliRunner().invoke(cli.main, ["build", "--spec", str(spec_path)])
+    assert result.exit_code == 0, result.output
+    assert captured["spec"] is project
+    assert captured["root"] == spec_path.resolve().parent
+    assert f"built {spec_path.resolve().parent / '.build' / 'proj'}" in result.output
+
+
+def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "hostbootstrap.dhall"
+    result = CliRunner().invoke(cli.main, ["build", "--spec", str(missing)])
     assert result.exit_code != 0
     assert "not found" in result.output
 
