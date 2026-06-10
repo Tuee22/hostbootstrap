@@ -178,15 +178,18 @@ into `core.freeze`. The published tag's full warm-store compile is the operator'
 
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
 on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
-hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
-the demo has been **exercised in a real run** on a bare-metal host. Every verb is real (no narrate stubs)
-and validated live — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2
-host-native + build #3 the project container `FROM` the pulled base), `test all` (the harness brings up a
-per-case kind cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve`
-(the `warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
-(registry push/pull validated). The operator-scale real runs — the multi-arch published base tags, the
-full 8-pod Harbor Helm deployment, and the multi-GB image push — follow the same real-run standard
-Phases 5/10/11/12 use.
+hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is
+`Active`: the demo was **exercised in a real run** on a bare-metal host, and every verb is real (no narrate
+stubs) — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2 host-native +
+build #3 the project container `FROM` the pulled base), `test all` (the harness brings up a per-case kind
+cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve` (the
+`warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
+(registry push/pull validated). The open item is a **real-run re-validation of the pristine bootstrap**:
+the `folder reorg` moved the Python project to the repository root after that live run, so the `vm
+pristine-bootstrap` pipx target is corrected in code (`pipx install --force /root/hostbootstrap`) and the
+demo rebuilds, but the pristine flow has not been re-exercised end-to-end (Sprint 13.3); all other verbs
+are unaffected. The operator-scale real runs — the multi-arch published base tags, the full 8-pod Harbor
+Helm deployment, and the multi-GB image push — follow the same real-run standard Phases 5/10/11/12 use.
 
 ## Dependency edges
 

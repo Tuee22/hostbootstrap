@@ -28,9 +28,12 @@ budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus
 two-freeze split validated on the host `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container; and the
 worked demo (Phase 13) has been **exercised in a real run** on a bare-metal host — incus VMs, the pristine
 3-build bootstrap, the harness cluster lifecycle with cleanup, the `warp`/`wai` + `purescript-bridge`/
-Halogen web stack, and Playwright e2e (3/3). **All phases are now `Done`.** The operator-scale real runs
-(the multi-arch published base tags, the full 8-pod Harbor deployment, the multi-GB image push) **remain
-operator steps**, run per the same § Validation Policy standard. The Phase-0
+Halogen web stack, and Playwright e2e (3/3). **Phases 0–12 are `Done`; Phase 13 is `Active`** — the
+`folder reorg` moved the Python project to the repository root after the demo's live run, so the `vm
+pristine-bootstrap` pipx target is corrected in code and the demo rebuilds, but the pristine bootstrap
+awaits a real-run re-validation (Sprint 13.3); all other demo verbs are unaffected and remain validated.
+The operator-scale real runs (the multi-arch published base tags, the full 8-pod Harbor deployment, the
+multi-GB image push) **remain operator steps**, run per the same § Validation Policy standard. The Phase-0
 governance, including the doctrine-clarity sweep, has **closed** (per § A it may reopen only when a future
 architecture contract adds a new doc-coverage obligation). See [00-overview.md](00-overview.md) for the
 cross-phase narrative. Consumer-side migration of individual projects is tracked in those projects' own
@@ -53,7 +56,7 @@ repositories (see Phase 7).
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
 
 ## Governance
 

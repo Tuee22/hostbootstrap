@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`
 (`project="hostbootstrap-demo"`, `resources {cpu=6, memory="10GiB", storage="40GiB"}`), Haskell source,
@@ -41,6 +41,18 @@ VMs + Docker + kind), and every verb is real (no narrate stubs):
 published base tags (Phase 12), the full 8-pod Harbor Helm deployment, and pushing the multi-GB project
 image at scale are exercised by an operator's release/demo run — the implementation and its mechanism are
 validated here.
+
+#### Remaining Work
+
+**Real-run re-validation of the pristine bootstrap, gated by the `folder reorg`.** The reorg moved the
+Python project from `python/` to the repository root after the demo's live run, leaving the `vm
+pristine-bootstrap` pipx target pointing at the now-removed `python/` subdir. The path is **corrected** in
+`demo/src/HostBootstrapDemo/Commands.hs` (`pipx install --force /root/hostbootstrap`) and the demo
+rebuilds against `ghc-9.12.4`, but the live pristine-bootstrap flow has not been re-exercised on the
+post-reorg code. Phase 13 therefore stays `Active` until `sudo demo vm pristine-bootstrap` is re-run
+end-to-end (Sprint 13.3). All other demo verbs — `incus ensure`/`vm up`/`vm down`, the harness cluster
+lifecycle + cordon #2, `web bridge`/`serve` + Playwright, and `harbor install`/`push` — are unaffected by
+the reorg and remain validated.
 
 ## Phase Objective
 
@@ -126,9 +138,9 @@ demo's noun-first project verbs.
 None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pipx install hostbootstrap` →
 `hostbootstrap run` — is Sprint 13.3.)
 
-### Sprint 13.3: Pristine-host bootstrap inside the VM [Done]
+### Sprint 13.3: Pristine-host bootstrap inside the VM [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`vm pristine-bootstrap`), `demo/docker/Dockerfile` + `demo/docker/container.cabal.project` (build #3)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
@@ -146,22 +158,27 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Validation
 
-- **Build #2 done (live).** From a freshly created VM, `sudo demo vm pristine-bootstrap` ran
-  `apt install pipx` → `pipx install /root/hostbootstrap/python` → `hostbootstrap run`, which built the demo
-  binary **host-native in the VM** — a cold `-O2` compile of the `dhall` / `hostbootstrap-core` / demo
-  closure to `.build/hostbootstrap-demo` (a 54 MB ELF) — and exec'd it (`config schema` printed the
-  reflected schema). Build #1 (metal orchestrator) and build #2 (in-VM host-native) of the 3-build
-  sequence are observed on a real incus VM; **build #3** is below.
+- **Build #2 observed (live), but on pre-reorg code.** From a freshly created VM, `sudo demo vm
+  pristine-bootstrap` ran `apt install pipx` → `pipx install <staged hostbootstrap>` → `hostbootstrap run`,
+  which built the demo binary **host-native in the VM** — a cold `-O2` compile of the `dhall` /
+  `hostbootstrap-core` / demo closure to `.build/hostbootstrap-demo` (a 54 MB ELF) — and exec'd it
+  (`config schema` printed the reflected schema). Build #1 (metal orchestrator) and build #2 (in-VM
+  host-native) of the 3-build sequence were observed on a real incus VM; **build #3** is below.
 
 #### Remaining Work
 
-None. Build #2 (host-native binary) and **build #3** (the project container, `FROM` the pulled base —
-warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild`, via
-`demo/docker/container.cabal.project` which imports the base warm-store freeze) are both validated by real
-builds, completing the 3-build sequence. The first-run prerequisites this surfaced — `qemu-system-x86`/
-`ovmf` for incus VMs, the `incusbr0`↔Docker `iptables` forwarding rule, the pinned **GHC 9.12.4** (fixed in
-`hostbootstrap/bootstrap.py`), and `zlib1g-dev` — are now ensured by the demo verbs and the
-bootstrapper.
+**Real-run re-validation, gated by the folder reorg.** The live run above predates the `folder reorg`
+commit, which moved the Python project from `python/` to the repository root. The `vm pristine-bootstrap`
+verb's pipx target had drifted to the now-removed `python/` subdir (`pipx install
+/root/hostbootstrap/python`); it is **corrected** to the repo-root Poetry project (`pipx install --force
+/root/hostbootstrap`) in `demo/src/HostBootstrapDemo/Commands.hs`, and the demo rebuilds. Per the
+[README Validation Policy](README.md), the real-run gate has not re-confirmed the corrected path
+end-to-end, so this sprint is `Active` until `sudo demo vm pristine-bootstrap` is re-exercised on a
+pristine VM. Build #3 (the project container, `FROM` the pulled base — warm `cabal build` → `check-code` →
+`web bridge` → `spago build` → `esbuild`, via `demo/docker/container.cabal.project`) is unaffected by the
+reorg. The first-run prerequisites this surfaced — `qemu-system-x86`/`ovmf` for incus VMs, the
+`incusbr0`↔Docker `iptables` forwarding rule, the pinned **GHC 9.12.4**, and `zlib1g-dev` — remain ensured
+by the demo verbs and the bootstrapper.
 
 ### Sprint 13.4: kind + Harbor on the VM and image push [Done]
 

@@ -16,9 +16,12 @@
 > the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
 > (Phase 11) are all landed; the layered warm store (Phase 12) and the worked demo (Phase 13) are
 > implemented and **exercised in real runs** (incus VMs, the pristine 3-build bootstrap, the harness
-> cluster lifecycle, the web/Playwright stack). **All phases are `Done`**; the operator-scale real runs
-> (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow the
-> § Validation Policy standard. The rows below carry their owning phase and an
+> cluster lifecycle, the web/Playwright stack). **Phases 0–12 are `Done`; Phase 13 is `Active`** — the
+> `folder reorg` moved the Python project to the repository root after the demo's live run, so the `vm
+> pristine-bootstrap` pipx target is corrected in code and the demo rebuilds, but the pristine bootstrap
+> awaits a real-run re-validation (Sprint 13.3); all other demo verbs are unaffected. The operator-scale
+> real runs (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow
+> the § Validation Policy standard. The rows below carry their owning phase and an
 > Implemented column. The Python surfaces removed along the way are recorded in
 > [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This repository does not use
 > `.github/` workflows or GitHub Actions as a validation surface; see [README.md](README.md) for

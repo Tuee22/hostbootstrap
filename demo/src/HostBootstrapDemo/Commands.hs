@@ -274,7 +274,7 @@ runVmBootstrap = do
     "test -x \"$HOME/.ghcup/bin/ghcup\" || { export BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_GHC_VERSION=9.12.4 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1; curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh; }"
   inVM
     "pipx install the local hostbootstrap CLI"
-    "pipx install --force /root/hostbootstrap/python"
+    "pipx install --force /root/hostbootstrap"
   inVM
     "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
     ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
