@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 from . import prereqs, process, substrate
 from .spec import StaticBaseSpec
@@ -52,21 +53,52 @@ _BUILD_DIR: str = ".build"
 # ---------------------------------------------------------------------------
 
 
-def toolchain_ensure_commands(sub: Substrate) -> tuple[tuple[str, ...], ...]:
-    """The host build-toolchain ensure commands (§ N), run before the build.
+class ToolchainStep(NamedTuple):
+    """A single toolchain-ensure step: a quiet *probe* and its *install* fallback.
+
+    ``probe`` is a cheap, local, side-effect-free check (it never touches the
+    network); ``install`` is run **only** when the probe reports the tool absent.
+    """
+
+    probe: tuple[str, ...]
+    install: tuple[str, ...]
+
+
+def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
+    """The host build-toolchain ensure steps (§ N), run before the build.
 
     Apple silicon: Homebrew installs ``ghcup``, which installs GHC and Cabal.
     Linux: ``ghcup`` installs GHC and Cabal (``ghcup`` is the documented host
-    prerequisite, the Linux counterpart of Homebrew on Apple). The commands are
-    probe-tolerant: ``brew install`` / ``ghcup install`` are no-ops when the
-    tool is already present.
+    prerequisite, the Linux counterpart of Homebrew on Apple). Each step is
+    **probe-then-install**: a quiet local probe (``ghcup whereis …`` /
+    ``ghcup --version``) runs first, and the ``install`` command runs only when
+    the probe reports the tool missing. This keeps the common path silent and
+    offline — ``ghcup install`` would otherwise refresh its metadata from GitHub
+    and warn that the pinned tools are already installed on every command.
+
+    The GHC probe checks the pinned ``ghc-9.12.4`` itself: every project's
+    ``cabal.project`` selects it via ``with-compiler: ghc-9.12.4``, which ghcup
+    exposes as a version-suffixed binary once installed regardless of which GHC
+    is "set", so probing installed-ness (not set-ness) is sufficient.
     """
     ghcup_steps = (
-        (_GHCUP, "install", "ghc", GHC_VERSION, "--set"),
-        (_GHCUP, "install", "cabal", "--set"),
+        ToolchainStep(
+            probe=(_GHCUP, "whereis", "ghc", GHC_VERSION),
+            install=(_GHCUP, "install", "ghc", GHC_VERSION, "--set"),
+        ),
+        ToolchainStep(
+            probe=(_GHCUP, "whereis", "cabal"),
+            install=(_GHCUP, "install", "cabal", "--set"),
+        ),
     )
     if sub.name is SubstrateName.APPLE_SILICON:
-        return ((_BREW, "install", "ghcup"), *ghcup_steps)
+        # ghcup itself must exist before its probes can run; probe for it, and
+        # install it via Homebrew only when absent.
+        brew_step = ToolchainStep(
+            probe=(_GHCUP, "--version"),
+            install=(_BREW, "install", "ghcup"),
+        )
+        return (brew_step, *ghcup_steps)
     return ghcup_steps
 
 
@@ -102,10 +134,27 @@ async def _assert_minimums(sub: Substrate) -> None:
     await prereqs.run_doctor(sub)
 
 
+async def _already_present(probe: tuple[str, ...]) -> bool:
+    """Whether *probe* reports its tool present (quiet; missing binary ⇒ absent)."""
+    try:
+        result = await process.run(probe, quiet=True)
+    except FileNotFoundError:
+        # The probe binary itself is missing (e.g. ``ghcup`` on a pristine Apple
+        # host before Homebrew installs it) — treat as absent so install runs.
+        return False
+    return result.ok
+
+
 async def _ensure_toolchain(sub: Substrate) -> None:
-    """Ensure the host build toolchain (the prerequisites to build the binary)."""
-    for command in toolchain_ensure_commands(sub):
-        await process.run_checked(command)
+    """Ensure the host build toolchain (the prerequisites to build the binary).
+
+    Each step probes first and installs only when the tool is absent, so the
+    common (already-provisioned) path stays silent and makes no network call.
+    """
+    for step in toolchain_ensure_steps(sub):
+        if await _already_present(step.probe):
+            continue
+        await process.run_checked(step.install)
 
 
 async def _build_native(spec: StaticBaseSpec, *, project_root: Path) -> None:

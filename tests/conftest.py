@@ -32,7 +32,12 @@ DHALL_PACKAGE = PYTHON_ROOT / "hostbootstrap" / "dhall" / "package.dhall"
 
 @pytest.fixture
 def recorded_commands(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
-    """Replace process.run/run_checked with recorders; return the captured argv list."""
+    """Replace process.run/run_checked with recorders; return the captured argv list.
+
+    Every recorded command succeeds (``returncode=0``). Since the toolchain-ensure
+    probes go through ``process.run``, this models the common *already-provisioned*
+    host: each probe reports the tool present, so no ``ghcup install`` runs.
+    """
     calls: list[tuple[str, ...]] = []
 
     async def _fake(cmd: object, **_: object) -> process.CommandResult:
@@ -42,6 +47,31 @@ def recorded_commands(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
     monkeypatch.setattr(process, "run", _fake)
     monkeypatch.setattr(process, "run_checked", _fake)
+    return calls
+
+
+@pytest.fixture
+def recorded_commands_fresh_host(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+    """Like :func:`recorded_commands`, but models a *pristine* host.
+
+    The toolchain-ensure probes (``process.run``) report the tool **absent**
+    (``returncode=1``), so every ``ghcup install`` (and Homebrew, on Apple) runs;
+    installs and the native build (``process.run_checked``) succeed.
+    """
+    calls: list[tuple[str, ...]] = []
+
+    async def _probe(cmd: object, **_: object) -> process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        calls.append(argv)
+        return process.CommandResult(args=argv, returncode=1, stdout="", stderr="")
+
+    async def _checked(cmd: object, **_: object) -> process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        calls.append(argv)
+        return process.CommandResult(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(process, "run", _probe)
+    monkeypatch.setattr(process, "run_checked", _checked)
     return calls
 
 

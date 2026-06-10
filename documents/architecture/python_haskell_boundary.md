@@ -58,7 +58,9 @@ binary exists*:
 
 1. Assert fail-fast host minimums.
 2. Ensure the host build toolchain (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on
-   Linux) — the prerequisites to build the binary host-native.
+   Linux) — the prerequisites to build the binary host-native. Each tool is **probed first**
+   (a quiet, offline `ghcup whereis …` / `ghcup --version`) and installed only when absent, so an
+   already-provisioned host makes no network call and prints nothing on the common path.
 3. Build the project binary host-native into `./.build/<project>`.
 4. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
    The binary then ensures Docker, builds the project container, applies the cordon, and drives the

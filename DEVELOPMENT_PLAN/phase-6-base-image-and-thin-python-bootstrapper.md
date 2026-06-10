@@ -140,14 +140,15 @@ the binary **host-native on every substrate** → exec it.
   build-in-container-and-copy-out (`copy_out_*` / `_copy_binary_out`) are **removed** from
   `bootstrap.py`; the `run` command drops `--no-pull`/`pull` (nothing to pull — the container build is
   the project binary's job).
-- `toolchain_ensure_commands` ensures the host build toolchain substrate-branched (Homebrew → `ghcup`
-  → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux); the binary is built host-native on **every**
-  substrate (`native_build_command`), then execed. The removed surfaces move to Completed in the
-  legacy ledger.
+- `toolchain_ensure_steps` ensures the host build toolchain substrate-branched (Homebrew → `ghcup`
+  → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux), **probing each tool first and installing only
+  when absent** so the already-provisioned common path is silent and offline; the binary is built
+  host-native on **every** substrate (`native_build_command`), then execed. The removed surfaces move
+  to Completed in the legacy ledger.
 
 #### Validation
 
-- The new pure command-builders (`toolchain_ensure_commands`, `native_build_command`, `binary_path`,
+- The new pure command-builders (`toolchain_ensure_steps`, `native_build_command`, `binary_path`,
   `exec_argv`) and the driver are unit-tested via the mocked subprocess seams (no Docker/host mutation);
   `test_all` passes at **100%** coverage and `check_code` is clean. `up --help` shows neither
   `--force-target` nor `--no-pull`. Live per-substrate execution is exercised during real bootstrap

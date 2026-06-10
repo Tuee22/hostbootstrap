@@ -29,21 +29,37 @@ def _spec(project_root: Path) -> StaticBaseSpec:
 # ---------------------------------------------------------------------------
 
 
-def test_toolchain_ensure_commands_apple() -> None:
-    # Apple silicon: Homebrew installs ghcup, then ghcup installs GHC and Cabal.
-    assert bootstrap.toolchain_ensure_commands(APPLE) == (
-        ("brew", "install", "ghcup"),
-        ("ghcup", "install", "ghc", "9.12.4", "--set"),
-        ("ghcup", "install", "cabal", "--set"),
+def test_toolchain_ensure_steps_apple() -> None:
+    # Apple silicon: probe ghcup itself (Homebrew installs it if absent), then
+    # probe/install GHC and Cabal.
+    assert bootstrap.toolchain_ensure_steps(APPLE) == (
+        bootstrap.ToolchainStep(
+            probe=("ghcup", "--version"),
+            install=("brew", "install", "ghcup"),
+        ),
+        bootstrap.ToolchainStep(
+            probe=("ghcup", "whereis", "ghc", "9.12.4"),
+            install=("ghcup", "install", "ghc", "9.12.4", "--set"),
+        ),
+        bootstrap.ToolchainStep(
+            probe=("ghcup", "whereis", "cabal"),
+            install=("ghcup", "install", "cabal", "--set"),
+        ),
     )
 
 
 @pytest.mark.parametrize("sub", [LINUX_CPU, LINUX_GPU])
-def test_toolchain_ensure_commands_linux(sub: Substrate) -> None:
-    # Linux: ghcup installs GHC and Cabal; no Homebrew step.
-    assert bootstrap.toolchain_ensure_commands(sub) == (
-        ("ghcup", "install", "ghc", "9.12.4", "--set"),
-        ("ghcup", "install", "cabal", "--set"),
+def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
+    # Linux: probe/install GHC and Cabal via ghcup; no Homebrew step.
+    assert bootstrap.toolchain_ensure_steps(sub) == (
+        bootstrap.ToolchainStep(
+            probe=("ghcup", "whereis", "ghc", "9.12.4"),
+            install=("ghcup", "install", "ghc", "9.12.4", "--set"),
+        ),
+        bootstrap.ToolchainStep(
+            probe=("ghcup", "whereis", "cabal"),
+            install=("ghcup", "install", "cabal", "--set"),
+        ),
     )
 
 
@@ -109,10 +125,11 @@ async def test_bootstrap_linux_builds_host_native(
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     assert doctored == [LINUX_CPU]
-    # No Docker, no Colima, no copy-out: ensure ghcup toolchain then build native.
+    # Already-provisioned host: each toolchain probe reports the tool present, so
+    # no `ghcup install` runs — only the probes and the native build.
     assert recorded_commands == [
-        ("ghcup", "install", "ghc", "9.12.4", "--set"),
-        ("ghcup", "install", "cabal", "--set"),
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "whereis", "cabal"),
         (
             "cabal",
             "install",
@@ -140,11 +157,11 @@ async def test_build_binary_builds_without_exec(
     binary = await bootstrap.build_binary(spec, project_root=tmp_path)
 
     # Same pre-binary build path as bootstrap(), but it returns the path and
-    # never execs.
+    # never execs. Already-provisioned host: probes only, no install.
     assert doctored == [LINUX_CPU]
     assert recorded_commands == [
-        ("ghcup", "install", "ghc", "9.12.4", "--set"),
-        ("ghcup", "install", "cabal", "--set"),
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "whereis", "cabal"),
         (
             "cabal",
             "install",
@@ -176,7 +193,7 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     assert execed == [[str(tmp_path / ".build/demo")]]
 
 
-async def test_bootstrap_apple_ensures_homebrew_toolchain_then_builds_native(
+async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
     monkeypatch: pytest.MonkeyPatch,
     recorded_commands: list[tuple[str, ...]],
     tmp_path: Path,
@@ -188,11 +205,12 @@ async def test_bootstrap_apple_ensures_homebrew_toolchain_then_builds_native(
     await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("--help",))
 
     assert doctored == [APPLE]
-    # Homebrew installs ghcup, ghcup installs GHC+Cabal, then native cabal install.
+    # Already-provisioned Apple host: ghcup, GHC, and Cabal all probe present, so
+    # neither Homebrew nor any `ghcup install` runs — only probes and the build.
     assert recorded_commands == [
-        ("brew", "install", "ghcup"),
-        ("ghcup", "install", "ghc", "9.12.4", "--set"),
-        ("ghcup", "install", "cabal", "--set"),
+        ("ghcup", "--version"),
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "whereis", "cabal"),
         (
             "cabal",
             "install",
@@ -205,3 +223,108 @@ async def test_bootstrap_apple_ensures_homebrew_toolchain_then_builds_native(
     ]
     assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
+
+
+# ---------------------------------------------------------------------------
+# Pristine host: probes report absent, so the toolchain installs run
+# ---------------------------------------------------------------------------
+
+
+async def test_bootstrap_linux_fresh_host_installs_toolchain(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands_fresh_host: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
+
+    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("play",))
+
+    # Pristine host: each probe reports absent, so its install runs after it.
+    assert recorded_commands_fresh_host == [
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
+        ("ghcup", "whereis", "cabal"),
+        ("ghcup", "install", "cabal", "--set"),
+        (
+            "cabal",
+            "install",
+            "exe:demo",
+            "--installdir",
+            ".build",
+            "--install-method=copy",
+            "--overwrite-policy=always",
+        ),
+    ]
+    assert execed == [[str(tmp_path / ".build/demo"), "play"]]
+
+
+async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands_fresh_host: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    _patch_seams(monkeypatch, APPLE, doctored=doctored, execed=execed)
+
+    await bootstrap.bootstrap(_spec(tmp_path), project_root=tmp_path, args=("--help",))
+
+    # Pristine Apple host: ghcup is absent, so Homebrew installs it, then ghcup
+    # installs GHC and Cabal, then the native build runs.
+    assert recorded_commands_fresh_host == [
+        ("ghcup", "--version"),
+        ("brew", "install", "ghcup"),
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "install", "ghc", "9.12.4", "--set"),
+        ("ghcup", "whereis", "cabal"),
+        ("ghcup", "install", "cabal", "--set"),
+        (
+            "cabal",
+            "install",
+            "exe:demo",
+            "--installdir",
+            ".build",
+            "--install-method=copy",
+            "--overwrite-policy=always",
+        ),
+    ]
+    assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
+
+
+# ---------------------------------------------------------------------------
+# _already_present: probe outcome → present / absent
+# ---------------------------------------------------------------------------
+
+
+async def test_already_present_true_when_probe_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok(cmd: object, **_: object) -> bootstrap.process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        return bootstrap.process.CommandResult(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(bootstrap.process, "run", _ok)
+    assert await bootstrap._already_present(("ghcup", "whereis", "cabal")) is True
+
+
+async def test_already_present_false_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fail(cmd: object, **_: object) -> bootstrap.process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        return bootstrap.process.CommandResult(args=argv, returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(bootstrap.process, "run", _fail)
+    assert await bootstrap._already_present(("ghcup", "whereis", "cabal")) is False
+
+
+async def test_already_present_false_when_probe_binary_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _missing(cmd: object, **_: object) -> bootstrap.process.CommandResult:
+        raise FileNotFoundError(2, "No such file or directory", "ghcup")
+
+    monkeypatch.setattr(bootstrap.process, "run", _missing)
+    assert await bootstrap._already_present(("ghcup", "--version")) is False
