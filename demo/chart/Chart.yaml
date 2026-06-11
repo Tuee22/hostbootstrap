@@ -1,0 +1,9 @@
+apiVersion: v2
+name: hostbootstrap-demo
+description: >-
+  The hostbootstrap-demo webservice (the warp/wai BudgetView server), deployed
+  into the per-case kind cluster and exposed via NodePort. `cluster up` installs
+  this chart; the Playwright e2e reaches the service through the NodePort.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

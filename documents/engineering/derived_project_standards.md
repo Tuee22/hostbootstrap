@@ -37,7 +37,7 @@ Dhall carry whatever runtime shape the project needs.
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)`, so
 `hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`)
-plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`) — the extension contract a consumer
+plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`) — the extension contract a consumer
 follows, with no core verb re-implemented. It also exercises the other extension streams: `demo web
 schema` prints the `coreArtifacts ++ demoArtifacts` schema union, and `demo test all` drives the harness
 (`demoSeams`/`demoCases`, bound to the inherited `test` verb) over the demo's case matrix.

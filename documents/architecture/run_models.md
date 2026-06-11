@@ -26,7 +26,7 @@
 |-------|--------------|------------------|
 | `OneShot` | Build-if-needed, then `docker run --rm [-it] [mounts]` — a single container invocation that exits. | Budget-capped: the container runs within the project ceiling. |
 | `HostNative` | Host-native build (into `./.build/`) plus a host exec of the resulting binary. | Host process, sliced by the harness budget when run as a case. |
-| `HostDaemon` | A long-running host service (not a one-shot exec). | Host process; the daemon holds its share for its lifetime. |
+| `HostDaemon` | A long-running host service (not a one-shot exec) — the **role model**: a stateless role over durable external stores (message bus + object store). See [composition_methodology](composition_methodology.md). | Host process; the daemon holds its share for its lifetime. |
 | `Cluster` | A kind cluster plus Helm releases — the full orchestrated substrate. | Cordoned per substrate; `fitsBudget` proves the concurrent set fits. |
 
 `OneShot` and `HostNative` differ only in **where the code runs**: `OneShot` runs inside a container
@@ -103,3 +103,5 @@ topology), so the model is always derived.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind/Helm lifecycle the `Cluster`
   model drives.
 - [testing](../engineering/testing.md) — the `test` verb that runs the harness over a project's matrix.
+- [composition_methodology](composition_methodology.md) — operations and the deploy ≡ business-logic
+  unification; `HostDaemon` is the role model.

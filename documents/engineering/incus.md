@@ -40,6 +40,14 @@ per-call branching — is in [build and run model](../architecture/build_and_run
 `incus` is not standardized for all workflows. The worked demo uses it to encapsulate a fresh linux
 host; outside that, the local host is the default target. It is fully supported either way.
 
+The two-case `HostTarget = Local | InVM` described here is the **tool-level** lift (run one resolved tool
+in a target). It is generalized by the **subcommand-level self-reference lift** (`HostBootstrap.Lift`),
+which composes contexts as an n-level stack (`Local | InVM | InContainer`): a binary crosses any boundary
+by invoking its *own* subcommand in the nested context, so `incus exec` is the VM layer and
+`docker run --rm` is the container layer (folding e.g. to `incus exec <vm> -- docker run --rm <image>
+<subcmd>`). `HostTarget`/`runInTarget` are retained as the narrower tool-level lift. See
+[composition_methodology](../architecture/composition_methodology.md).
+
 ## `ensure incus`
 
 `ensure incus` (`HostBootstrap.Ensure.Incus`) is the **first cross-substrate reconciler**: its
@@ -142,5 +150,7 @@ cordon table.
 - [applied cordon](applied_cordon.md) — the one canonical parser and the storage cordon.
 - [build and run model](../architecture/build_and_run_model.md) — the `HostTarget` parameterization.
 - [harness workflow](../architecture/harness_workflow.md) — the `guardTestDelete` delete-guard idiom.
+- [composition_methodology](../architecture/composition_methodology.md) — the n-level self-reference lift
+  that generalizes the two-case `HostTarget`.
 - [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) — the development plan for this
   surface.

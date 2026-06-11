@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [python_haskell_boundary](python_haskell_boundary.md), [build_and_run_model](build_and_run_model.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [dhall_topology](../engineering/dhall_topology.md)
+**Referenced by**: [documents-index](../README.md), [composition_methodology](composition_methodology.md), [python_haskell_boundary](python_haskell_boundary.md), [build_and_run_model](build_and_run_model.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [dhall_topology](../engineering/dhall_topology.md)
 
 > **Purpose**: Describe the `hostbootstrap-core` Haskell library — its module surface and the
 > command-tree extension contract project binaries use to build on top of it.
@@ -36,6 +36,7 @@ consumers depend on; it is the canonical inventory tracked in
 | `HostBootstrap.Config.Schema` | Decoder for the static-base `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu,memory,storage}`). Core owns only this decoder; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
 | `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (per-project Colima VM on Apple, kind node limits on Linux). See [resource_budgeting](../engineering/resource_budgeting.md). |
 | `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
+| `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/`InVM`/`InContainer`) by invoking the binary again there. The pure argv fold is unit-tested; the IO seam reuses tool resolution. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Command` | The composable core command tree (`coreCommands`) merging the `ensure`, `config`, and `cluster` verbs. |
 | `HostBootstrap.CLI` | `runHostBootstrapCLI`, the generic entrypoint that merges `coreCommands` with project commands. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |

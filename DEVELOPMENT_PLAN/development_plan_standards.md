@@ -98,6 +98,7 @@ DEVELOPMENT_PLAN/
 ├── phase-11-incus-host-provider.md
 ├── phase-12-layered-warm-store.md
 ├── phase-13-hostbootstrap-demo.md
+├── phase-14-composition-methodology.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -325,14 +326,24 @@ freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependenc
 `HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected by
 `(verb × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
 
-### U. Host-Provider Axis (incus)
+### U. Host-Provider Axis And The Self-Reference Lift
 
-`incus` is a first-class host-provider axis orthogonal to substrate: a target linux host is either the
-local host or an incus VM (`HostTarget = Local | InVM`). Anything `hostbootstrap` deploys on an
-unvirtualized linux host it can deploy inside an incus VM (build, ensure docker, kind, Harbor, run, the
-harness) via a single `incus exec` dispatch; the VM is budget-cordoned by the one canonical parser (§ O).
-`incus` is installed by `ensure incus` (§ L) and is **not** standardized for all workflows — it is used
-in the worked demo to encapsulate a fresh linux host — but it is fully supported.
+A project binary crosses an execution-context boundary by invoking its **own** subcommand in the nested
+context — the self-reference lift (`HostBootstrap.Lift`). Contexts compose as a stack of layers,
+outermost-first; the empty stack is the local host. `incus` is the VM layer (a target linux host is the
+local host or an incus VM, reached by one `incus exec`); a container is the `docker run --rm` layer
+(whose `ENTRYPOINT` is the binary); the stack nests — host → VM → container folds to
+`incus exec <vm> -- docker run --rm <image> <subcmd>`. Each nested call runs the same command tree, so a
+step runs "locally", unaware it was lifted, and the reconcilers stay context-agnostic
+(`HostConfig -> IO ()`). The argv fold is pure (unit-tested) and honors § K: only the outermost host
+dispatch names a tool the resolver maps to an absolute path; every nested tool is the target's own bare
+`$PATH` name. The two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the
+subcommand-level lift generalizes it to the n-level stack (`Local | InVM | InContainer`). `incus` is
+installed by `ensure incus` (§ L) and each layer is budget-cordoned by the one canonical parser (§ O).
+L0 owns only the generic lift; the *specific* chain (the worked demo's host → VM → container) is project
+logic. `incus` is **not** standardized for all workflows — the demo uses it to encapsulate a fresh linux
+host — but it is fully supported. See
+[composition_methodology](../documents/architecture/composition_methodology.md).
 
 ### V. Layered Warm Store
 

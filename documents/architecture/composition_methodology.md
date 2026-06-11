@@ -1,0 +1,153 @@
+# Composition Methodology: Operations, Self-Reference Lifts, And Deploy ≡ Business-Logic
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
+
+> **Purpose**: Define the foundational composition model of `hostbootstrap-core` — a project binary
+> composes **operations**, crosses execution-context boundaries by **invoking itself** (the
+> self-reference lift), and expresses both deployment and runtime business logic through the **same**
+> algebra.
+
+## TL;DR
+
+- The foundational unit is a composable **operation**, not a fixed command. A project binary sequences
+  operations; the `optparse-applicative` command tree makes composition a plain Haskell value.
+- The **self-reference lift** is the operation that crosses an execution-context boundary: the binary
+  re-invokes its *own* subcommand in a nested context — `incus exec <vm> -- <pb> <subcmd>` for a VM,
+  `docker run --rm <image> <subcmd>` for a container (whose `ENTRYPOINT` is the binary). Each nested
+  call runs the same command tree, so a step runs "locally", unaware it was lifted. See
+  [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
+- The same algebra expresses **deployment** (the bootstrap topology) and **runtime business logic** (the
+  runtime topology): both are declarative topologies over durable external stores, executed by stateless
+  **roles**. "Bring up a cluster" and "run an inference/training pipeline" are the same kind of
+  composition at different altitudes.
+- `hostbootstrap-core` (L0) owns the generic primitive (the algebra, the lift, the `ensure` kind, the
+  role-lifecycle skeleton, run-model selection); concrete higher operation kinds and the specific chain
+  of lifts are contributed per the [library hierarchy](library_hierarchy.md) (L1/L2) and are project
+  logic.
+
+## The Composable Operation
+
+An operation is a composable step a binary runs and reports. Operations **sequence, nest in a context,
+branch, retry, loop, and observe**. They differ in execution semantics, and the difference drives
+plan/apply, retry, and run-model selection:
+
+| Operation kind | Semantics | Target / control plane | Layer |
+|---|---|---|---|
+| `ensure` reconciler | idempotent converge | the local host | L0 |
+| **self-reference lift** | run a subcommand in a nested context | the same binary, elsewhere | L0 |
+| cloud / IaC deploy | plan→apply converge | a remote API + external state backend | L2 |
+| REST / RPC | one-shot request→response | an external/in-cluster endpoint | L1/L2 |
+| pub/sub publish | at-least-once async action | a message-bus topic | L1 |
+| observe-and-scale | continuous/periodic control loop | read a signal → mutate a deployment | L1 |
+| finite-job lifecycle | run-to-completion / scheduled | one-off or repeating jobs | L1 |
+
+`ensure` (the install-and-verify reconciler, see [ensure_reconcilers](../engineering/ensure_reconcilers.md))
+and the self-reference lift are the two operation kinds L0 ships. The rest are an **open, extensible
+set** added through the four-stream merge (see [library_hierarchy](library_hierarchy.md)); L0 carries no
+message-bus or cloud dependency.
+
+## The Self-Reference Lift
+
+Execution contexts compose as a stack of layers, outermost-first; the empty stack is the local host. A
+binary crosses a boundary by invoking *itself* in the nested context — there is no separate
+"remote-exec" abstraction threaded through every step. The reconcilers stay context-agnostic
+(`HostConfig -> IO ()`); a step is lifted purely by *where* the self-invocation places it.
+
+| Context layer | Crossing | The binary in that context |
+|---|---|---|
+| `Local` | run directly | the running executable (`getExecutablePath`) |
+| `InVM` | `incus exec <vm> -- …` | the binary the VM bootstrap installed on the VM's `$PATH` |
+| `InContainer` | `docker run --rm <image> …` | the project container's `ENTRYPOINT` (the binary) |
+
+The argv fold is pure (so it is unit-tested): only the outermost host dispatch names a tool the resolver
+maps to an absolute path; every nested tool is the target's own bare `$PATH` name (see
+[development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md)). A `VM`-then-`Container`
+nesting folds to `incus exec <vm> -- docker run --rm <image> <subcmd>`. This generalizes the
+[`incus`](../engineering/incus.md) host-provider axis from the two-case `HostTarget = Local | InVM` to an
+n-level lift.
+
+- **WRONG**: a project threads an explicit "execution context" parameter through every reconciler and
+  cluster step so they can run "in the VM". This is wrong because it duplicates dispatch logic in every
+  operation and couples each step to the context machinery — the very thing the command tree already
+  composes for free.
+- **RIGHT**: the project sequences ordinary steps and crosses a boundary by lifting a subcommand
+  (`liftSubcommand cfg self (inContainer ctr localContext) ["cluster","up","hostbootstrap.dhall"]`, where
+  `ctr` is the project-container `ContainerLift`); inside the container the step runs as if local,
+  resolving `helm`/`kind` on the container `$PATH`.
+
+The kube tools (`kubectl`/`helm`/`kind`) are baked into the base image and the cluster lifecycle that
+drives them runs in the in-container path (see
+[development_plan_standards § L](../../DEVELOPMENT_PLAN/development_plan_standards.md) for the baked-in
+kube tools and [§ U](../../DEVELOPMENT_PLAN/development_plan_standards.md) for the lift); they are not host
+tools. A failed lifted step is loud, never swallowed — the
+[cluster lifecycle](../engineering/cluster_lifecycle.md) `cluster up` fails closed so a lifting parent
+process sees a non-zero exit.
+
+## Deploy ≡ Business-Logic Unification
+
+The same algebra expresses both **deployment** — the *bootstrap* topology that stands a system up — and
+**runtime business logic** — the *runtime* topology a system runs once up. Both are declarative
+topologies over durable external stores (a message bus carrying work-in-flight, an object store carrying
+static binary artifacts, a relational store, …), executed by **roles**: stateless long-running daemons
+that subscribe to a request topic, dispatch to an engine, publish a result topic, fetch/store artifacts,
+and recover by replay + refetch rather than by holding authoritative local state. The role lifecycle is
+the `HostDaemon` [run-model](run_models.md); its state-machine skeleton (Load → Prereq → Acquire → Ready
+→ Serve → Drain → Exit) is L0 with callback injection, while the concrete bus/store/role primitives are
+L1's delta.
+
+The invariant: **stateless roles + durable external stores + topic-as-contract = repeatable composition
+without mutable coordination.** "Bring up a cluster" declares in-cluster services; "run a pipeline"
+declares request/result topics and artifact buckets — the same algebra, different altitude. A
+webservice/SPA is the same shape: a serving role whose API and UI are generated from typed Dhall (see
+[dhall_generation](dhall_generation.md)); an arbitrary-SPA DSL is an aspirational extension built on the
+streams, not baked into L0.
+
+## Foundational Principles
+
+Three principles keep the foundation general — they are design rubric, not new mechanisms:
+
+1. **Pure representation ⟂ effectful interpreter.** Every composed artifact — a deployment topology, a
+   message topology, an ML compute graph, an inference plan, an SPA — is a *pure declarative value*
+   (data / a DSL), separate from the role/engine that interprets it. "Topology as data" and Dhall
+   config/schema-gen are instances of this principle.
+2. **Durable external stores are an open, pluggable set** — object store, message bus, relational
+   database, …; the role contract is "stateless role + durable external stores", store kinds open.
+3. **Composition is recursive / self-similar.** A managed resource can itself be a
+   `hostbootstrap`-managed *manager* — a cluster that owns and manages other clusters — i.e.
+   deployment-as-business-logic at the fixpoint.
+
+The test the L0 foundation must pass: any new consumer shape is expressible as *(pure representation) +
+(role/interpreter) + (durable stores) + (operations composed across contexts)* through the four-stream
+merge, without L0 changes.
+
+## Layering
+
+Concrete operation kinds and the specific chain of lifts are layered per the
+[library hierarchy](library_hierarchy.md):
+
+- **L0 — `hostbootstrap-core`**: the composition algebra, the generic operation interface, the
+  self-reference lift, the `ensure` kind, run-model selection, and the role-lifecycle skeleton. No
+  bus/cloud dependency.
+- **L1 — `daemon-substrate`**: the business-logic composition primitives (roles, declared topologies,
+  batching/scheduler policy, lifecycle reconciler, the WAN-egress hydrator).
+- **L2 — consumers**: their pipelines composed from L1 roles, plus cloud/IaC deploy and concrete RPC
+  endpoints.
+
+The *specific chain* a binary runs — e.g. metal → VM → container → cluster — is project logic composed
+from these primitives, never baked into L0.
+
+## See also
+
+- [hostbootstrap_core_library](hostbootstrap_core_library.md) — the `HostBootstrap.Lift` module surface
+  and the command-tree extension contract.
+- [library_hierarchy](library_hierarchy.md) — the L0/L1/L2 levels and the four-stream merge that adds
+  operation kinds.
+- [run_models](run_models.md) — the four run-models the algebra selects between.
+- [incus](../engineering/incus.md) and [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the
+  `InVM` lift context and the fail-closed in-container cluster path.
+- [composition_patterns](../engineering/composition_patterns.md) — the cookbook of shapes that
+  instantiate this model.
+- [authoring_project_binaries](../engineering/authoring_project_binaries.md) — how a consumer composes a
+  chain from those shapes.

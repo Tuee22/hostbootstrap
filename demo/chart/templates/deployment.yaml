@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+  labels:
+    app: {{ .Release.Name }}-web
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-web
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-web
+    spec:
+      containers:
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The project container's ENTRYPOINT is the demo binary; `web serve`
+          # binds the warp/wai webservice on the service port.
+          args: ["web", "serve"]
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          readinessProbe:
+            httpGet:
+              path: /api/budget
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5

@@ -15,13 +15,29 @@
 - `demo/app/Main.hs` calls `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`,
   so `hostbootstrap-demo --help` shows the inherited core verbs (`ensure`,
   `config`, `cluster`, `test`, `check-code`) plus the demo's noun-first verbs
-  (`incus` / `vm` / `harbor` / `web`) — no core verb is re-implemented.
+  (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) — no core verb is re-implemented.
 - The headline is a from-zero pristine-host bootstrap performed **inside an incus
   VM** (the metal host is not pristine): `apt install pipx` → `pipx install` the
   local hostbootstrap → `hostbootstrap run`.
 - Three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the
-  surface; the run is a demo-only **three-build** illustration on top of the
+  surface (live-validated); the run is a demo-only **three-build** illustration on top of the
   standard single host-native build.
+
+## Current status
+
+This runbook describes the end-to-end flow, **live-validated** on a real host (DEVELOPMENT_PLAN
+[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) is `Done`). The cluster/deploy/e2e steps
+run through the **self-reference lift** (the project container via `incus exec … docker run --rm`; see
+[composition_methodology](../architecture/composition_methodology.md)). The harness's per-case `demoSeams`
+are **real** (no longer a shared hollow body): each case asserts its slice — `pristine-bootstrap` the live
+cluster, `web-build` the bundle, `e2e-tabs` a Playwright run. `cluster up` deploys the demo's webservice
+**into the per-case kind cluster** via `demo/chart` (a NodePort Service); the `e2e-tabs` case lifts a
+Playwright container onto the kind network and reaches the service through its NodePort. The chart is
+validated offline (`helm lint`/`helm template`), and the live deploy + NodePort reachability + Playwright
+run are validated on a real host — `pristine-bootstrap` + `e2e-tabs` on the host and the production lifted
+path in-container (`docker run … hostbootstrap-demo:local test web-build` / `… test e2e-tabs`, both `1/1`).
+The `demo deploy --dry-run` (the lift chain as a pure value) and `demo role serve`/`submit` verbs are also
+landed.
 
 ## The demo and its extension contract
 
@@ -62,7 +78,7 @@ else is installed, orchestrated, and torn back down by hostbootstrap:
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker and builds the project container**;
 - **(d)** the **project container spins up the kind cluster and deploys the webservice**;
-- **(e)** **Playwright in a container on the VM reaches the webservice and runs the e2e tests**;
+- **(e)** **Playwright in a container on the kind network reaches the in-cluster webservice via its NodePort and runs the e2e tests**;
 - **(f)** hostbootstrap **spins everything back down**, preserving host `.data`.
 
 The detailed verb sequence below expands this. Nothing in it is a host prerequisite beyond the Python
@@ -103,16 +119,19 @@ f. `demo harbor install` — core `cluster up` inside the VM (**cordon #2**: the
 g. `demo harbor push` — push the arch-explicit image tag to the in-VM Harbor;
    the tag is then pullable from inside the VM.
 
-h. `demo web serve` — serve the `warp`/`wai` webservice on the incus host (this host
-   is the Playwright `baseURL`).
+h. The `warp`/`wai` webservice is deployed **into the kind cluster** via `demo/chart`
+   (the pod runs `demo web serve`), exposed on a NodePort — this in-cluster NodePort
+   is the Playwright `baseURL`.
 
 i. `demo web bridge` / `demo web schema` — `web bridge` generates the PureScript
    types from the webservice's `BudgetView` via `purescript-bridge`; `web schema` prints
    the L0 + demo schema union (`coreArtifacts ++ demoArtifacts`).
 
-j. Playwright e2e — runs from the container against the incus-host `baseURL` (the
-   e2e target is the incus host, **not** the kind cluster): the Overview / Budget
-   / Status tabs render and `/api/budget` returns the `fitsBudget` view.
+j. Playwright e2e — a container on the kind network runs against the **in-cluster**
+   service via its **NodePort** (the e2e target is the kind cluster): the Overview /
+   Budget / Status tabs render and `/api/budget` returns the `fitsBudget` view. The
+   spec is delivered into the runner through a context-agnostic named volume
+   (`deliverSpec`, `docker cp`), so the e2e lifts into any context.
 
 k. **Spin everything down** — hostbootstrap tears down the Playwright container,
    the webservice, the kind cluster (`cluster down` / `delete`), Harbor, and the
@@ -124,13 +143,14 @@ k. **Spin everything down** — hostbootstrap tears down the Playwright containe
 ## Feature-to-harness-case table
 
 `demo test all` drives `runMatrix` over the demo's case matrix (a single case runs
-with `demo test <case>`). Each `demoCases` case demonstrates a distinct slice of the surface.
+with `demo test <case>`). Each `demoCases` case asserts a distinct slice of the surface via its real
+per-case seam; the live pass/fail is exercised on a real host (see [Current status](#current-status)).
 
 | Harness case | Feature demonstrated |
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (steps a–g): `ensure incus`, the VM sizing cordon, the in-VM `apt`/`pipx`/`hostbootstrap run` chain, the host-native binary build, Docker ensure with reboot, the project-container build, and the kind + Harbor cordon and push. |
 | `web-build` | The web build path (steps e, i): the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp`/`wai` webservice's API types (round-trip); the `spago`/`esbuild` bundle exists. |
-| `e2e-tabs` | The served surface (steps h, j): the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the Playwright run against the incus-host `baseURL`. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. |
 
 ## Three builds vs the standard host-native build
 

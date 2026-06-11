@@ -27,6 +27,16 @@ runs (the [demo](phase-13-hostbootstrap-demo.md)), the same standard the cluster
 follows, so this phase is closed. GPU passthrough (`linux-gpu` inside an incus VM, CUDA/nvkind) and
 apple-silicon nested-virt are documented **future follow-ons**, outside this phase's scope.
 
+**Reopened (Sprint 11.5).** Sprints 11.1–11.4 remain `Done`; the phase is reopened to add the
+**self-reference lift** (`HostBootstrap.Lift`), which generalizes the two-case `HostTarget = Local | InVM`
+(retained as the tool-level lift) to an n-level context stack (`Local | InVM | InContainer`) so a binary
+crosses any boundary by invoking its own subcommand in the nested context (see
+[development_plan_standards.md § U](development_plan_standards.md) and
+[composition_methodology](../documents/architecture/composition_methodology.md)). Sprints 11.1–11.5 are
+closed: the lift primitive and its `LiftSpec` tests are landed and the demo composes it (the `deploy`
+chain and the lifted cluster seams); the live in-container run is exercised in the
+[demo](phase-13-hostbootstrap-demo.md), the same standard the original phase closed under.
+
 ## Phase Objective
 
 Land the host-provider axis: the `ensure incus` install-and-verify reconciler, the `HostTarget` dispatch,
@@ -145,6 +155,41 @@ Cordon the VM to the budget and run the full deployment surface inside it.
 None for this sprint's scope (`incusSizingArgs` + the `InVM`-target deployment path are implemented and
 unit-tested; the live in-VM run is exercised in real runs). GPU passthrough (`linux-gpu` inside an incus
 VM, CUDA/nvkind) and apple-silicon nested-virt are documented **future follow-ons**, outside this phase.
+
+### Sprint 11.5: The self-reference lift (`HostBootstrap.Lift`) [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `core/hostbootstrap-core/test/LiftSpec.hs`
+**Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/incus.md`, `system-components.md`
+
+#### Objective
+
+Generalize the host-provider axis from the two-case `HostTarget` (tool-level lift) to the n-level
+subcommand-level **self-reference lift**: a binary crosses a context boundary by re-invoking its own
+subcommand in the nested context (`incus exec` for a VM, `docker run --rm` for a container whose
+`ENTRYPOINT` is the binary).
+
+#### Deliverables
+
+- `HostBootstrap.Lift`: `LiftContext` (a stack of `ViaVM`/`ViaContainer` layers with `inVM`/`inContainer`
+  builders), `SelfRef` (binary identity, separate from `HostConfig`), the pure
+  `foldLift :: SelfRef -> LiftContext -> [String] -> LiftDispatch`, and the `liftSubcommand` IO seam
+  (reusing `runTool`; a new `runSelf` for the binary itself). `HostTarget`/`runInTarget` are kept
+  alongside as the narrower tool-level lift.
+- The argv fold honors § K (absolute tool only at the outermost host hop; bare `$PATH` names nested) and
+  the container `ENTRYPOINT`-is-the-binary contract; a `VM`-then-`Container` stack folds to
+  `incus exec <vm> -- docker run --rm <image> <subcmd>`.
+
+#### Validation
+
+- `LiftSpec` asserts the pure fold for `Local`, `InVM`, `InContainer`, and `VM`-then-`Container` nesting,
+  plus the container argv builder. `cabal test` passes.
+
+#### Remaining Work
+
+None. The lift primitive and its `LiftSpec` tests are landed and the demo composes it; the live
+in-container run is exercised in the [demo](phase-13-hostbootstrap-demo.md), the standard this phase
+closes under.
 
 ## Documentation Requirements
 

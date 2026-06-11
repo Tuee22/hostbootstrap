@@ -30,6 +30,22 @@ cluster is live alongside the preserved `.data` and derived paths, never mutatin
 are shared so a project does not re-implement cluster orchestration; it selects a profile and supplies
 its bootstrap instructions.
 
+## Fail-closed `up`, best-effort teardown
+
+`cluster up` is **fail-closed** on its kind/helm steps: `requireStep` `die`s on a non-zero `kind create`
+or `helm upgrade --install`, so a broken deploy is loud — never a swallowed message a lifting parent
+process would read as success. The deploy is **chart-conditional**: a project ships its chart at `./chart`
+(relative to the directory `cluster up` runs in — the project root, or `/workspace/<project>` inside the
+project container) and `cluster up` installs it fail-closed; a project with no chart gets a clean
+kind + cordon bring-up with the deploy skipped — "no deploy requested", not a swallowed failure. The
+worked demo ships `demo/chart/` (the webservice as a NodePort Service the Playwright e2e reaches).
+Teardown (`down`/`delete`) uses the
+best-effort `reportStep`, which logs a failed step without aborting the rest of teardown. The kube tools
+(`kubectl`/`helm`/`kind`) are **container** tools baked into the base image, run in the in-container path
+reached by the self-reference lift — not host tools (see
+[composition_methodology](../architecture/composition_methodology.md) and
+[development_plan_standards § L](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+
 ## The Never-Delete-`.data` Invariant
 
 Cluster teardown removes the kind cluster and its compute, but it never deletes the cluster's data

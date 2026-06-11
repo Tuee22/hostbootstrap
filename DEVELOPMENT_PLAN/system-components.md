@@ -16,10 +16,10 @@
 > the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
 > (Phase 11) are all landed; the layered warm store (Phase 12) and the worked demo (Phase 13) are
 > implemented and **exercised in real runs** (incus VMs, the pristine 3-build bootstrap, the harness
-> cluster lifecycle, the web/Playwright stack). **Phases 0–12 are `Done`; Phase 13 is `Active`** — the
-> `folder reorg` moved the Python project to the repository root after the demo's live run, so the `vm
-> pristine-bootstrap` pipx target is corrected in code and the demo rebuilds, but the pristine bootstrap
-> awaits a real-run re-validation (Sprint 13.3); all other demo verbs are unaffected. The operator-scale
+> cluster lifecycle, the web/Playwright stack). **Phases 0–14 are `Done`** — the demo's pristine 3-build
+> bootstrap is live-validated on the post-reorg, post-refactor code, and all three harness cases are
+> live-validated (`pristine-bootstrap` + `e2e-tabs` on the host, plus the production lifted path
+> in-container via `docker run … test web-build` / `… test e2e-tabs`). The operator-scale
 > real runs (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow
 > the § Validation Policy standard. The rows below carry their owning phase and an
 > Implemented column. The Python surfaces removed along the way are recorded in
@@ -54,7 +54,10 @@ surface; the column records whether the module exists yet.
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render) |
 | `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
-| `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop |
+| `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
+| `HostBootstrap.Lift` | 11 | yes | the self-reference compositional lift: `LiftContext` (`Local`/`InVM`/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`); the subcommand-level superset of `HostTarget` |
+| `HostBootstrap.Container` | 13 | yes | the project-container build (build #3): pure `dockerBuildArgs`/`projectImageTag` + `buildProjectContainer` (`docker build` `FROM` the base, tagged `<project>:local`) |
+| `HostBootstrap.RoleLifecycle` | 14 | yes | the role-lifecycle skeleton: the `RolePhase` enum + pure `rolePhases` ordering + `RoleSpec`/`runRole` (acquire→serve→drain, drain via `finally`) — the `HostDaemon` substrate L1 builds roles on |
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (cross-substrate) |
 

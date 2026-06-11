@@ -45,7 +45,7 @@
 | Substrate detection | `hostbootstrap-core` | `apple-silicon`, `linux-cpu`, `linux-gpu`. |
 | Static-Base Dhall decoder | `hostbootstrap-core` | Core decodes only the static-base schema; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
 | Resource budgeting and cordoning | `hostbootstrap-core` | Verify spare resources; cordon via Colima sizing / kind limits. See [resource_budgeting](../engineering/resource_budgeting.md). |
-| Cluster lifecycle | `hostbootstrap-core` | kind/Helm semantics, never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
+| Cluster lifecycle (lifted in-container) | `hostbootstrap-core` (the execed binary) | kind/Helm semantics, never-delete-`.data` invariant; the binary lifts `cluster up` into the project container via the self-reference lift (`helm`/`kind` are container tools). See [cluster_lifecycle](../engineering/cluster_lifecycle.md) and [composition_methodology](composition_methodology.md). |
 | incus VM lifecycle (create/exec/reboot/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: the binary spins, sizes, and tears down the VM via one `incus exec` dispatch. See [incus](../engineering/incus.md). |
 | Webservice + e2e (serve, Playwright) | `hostbootstrap-core` (the execed binary / its container) | The binary/container serve the webservice and run the Playwright e2e against it. |
 | Teardown / spin-down | `hostbootstrap-core` (the execed binary) | The binary owns spinning every resource back down, preserving host `.data`. |

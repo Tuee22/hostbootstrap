@@ -89,11 +89,12 @@ Python-via-`dhall-to-json` (retained by design, not removed).
 
 Land kind/Helm cluster-lifecycle semantics and resource-budget verification and cordoning: on Apple
 by sizing a dedicated per-project Colima VM, on Linux by applying kind node resource limits. Land
-the never-delete-`.data` invariant and the production-vs-test cluster profile distinction. This phase
-is `Done`: the kind/Helm lifecycle (with the `.data` invariant and the profile distinction, test data
-under `./.test_data/<case>/`) and the cordon cores are implemented and unit-tested; the **applied** cordon
-and the `verifyBudget` spare-capacity preflight landed in Phase 9 and are exercised in real runs (the demo
-brings up a per-case kind cluster, applies the `docker update` node cap, and tears it down).
+the never-delete-`.data` invariant and the production-vs-test cluster profile distinction. This phase is
+`Done` (Sprint 5.4 closed): the kind/Helm lifecycle (with the `.data` invariant and the profile
+distinction, test data under `./.test_data/<case>/`) and the cordon cores are implemented and unit-tested,
+and the **applied** cordon + the `verifyBudget` spare-capacity preflight landed in Phase 9; the reopen
+makes `cluster up` **fail-closed** on its helm/kind steps (`requireStep` replacing the swallowed
+`reportStep`), run in the in-container path via the self-reference lift.
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -146,20 +147,23 @@ phase is `Done`: all of the above are implemented and tested; the incus VM stora
 
 One `hostbootstrap-core` harness (`runMatrix` over a `Seams` record, with isolated per-case profiles, the
 prefix delete-guard, and budget-slicing) and the minimal four run-models
-(`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) the system selects between. This phase is `Done`: the L0
-engine, the pure cores, the `selectRunModel` key, the L0 OneShot seam (`oneShotRunArgs` + the IO-wired
-`oneShotSeams`), and the `test`/`check-code` verbs are implemented and unit-tested; the live container/
-cluster run is exercised in real runs (the demo), the same standard the cluster lifecycle (Phase 5)
-follows.
+(`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) the system selects between. This phase is `Done`
+(Sprint 10.7 closed): the L0 engine, the pure cores, the `selectRunModel` key, the L0 OneShot seam
+(`oneShotRunArgs` + the IO-wired `oneShotSeams`), and the `test`/`check-code` verbs are implemented and
+unit-tested; the reopen isolates a throwing `seamSetup` to its own case (`try`-wrapped in `runMatrix`,
+so a failed setup fails that case rather than crashing the matrix) and replaces the hollow demo seams
+with real per-case assertions (phase-13).
 
 ### Phase 11 — incus first-class host-provider
 
 `incus` becomes a host-provider axis (`HostTarget = Local | InVM`): `ensure incus` installs and verifies,
 and the existing build/cluster/run/harness machinery runs inside a budget-sized incus VM with no per-call
-branching. This phase is `Done`: the `Incus` host tool, the cross-substrate `ensure incus` reconciler,
-`runInTarget`, the VM lifecycle argv + name-guard, `classifyDockerReadiness`, and `incusSizingArgs` are
-implemented and unit-tested; the live in-VM run is exercised in real runs (the demo), the same standard
-Phase 5 follows. GPU passthrough is a documented future follow-on.
+branching. This phase is `Done` (Sprint 11.5 closed): the `Incus` host tool, the cross-substrate
+`ensure incus` reconciler, `runInTarget`, the VM lifecycle argv + name-guard, `classifyDockerReadiness`,
+and `incusSizingArgs` are implemented and unit-tested; the reopen adds the **self-reference lift**
+(`HostBootstrap.Lift`), generalizing the two-case `HostTarget` to the n-level `Local | InVM | InContainer`
+stack — a binary crosses a boundary by invoking its own subcommand there. GPU passthrough is a documented
+future follow-on.
 
 ### Phase 12 — Layered warm store
 
@@ -179,17 +183,33 @@ into `core.freeze`. The published tag's full warm-store compile is the operator'
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
 on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
 hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is
-`Active`: the demo was **exercised in a real run** on a bare-metal host, and every verb is real (no narrate
+`Done`: the demo was **exercised in a real run** on a bare-metal host, and every verb is real (no narrate
 stubs) — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2 host-native +
 build #3 the project container `FROM` the pulled base), `test all` (the harness brings up a per-case kind
 cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve` (the
 `warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
-(registry push/pull validated). The open item is a **real-run re-validation of the pristine bootstrap**:
-the `folder reorg` moved the Python project to the repository root after that live run, so the `vm
-pristine-bootstrap` pipx target is corrected in code (`pipx install --force /root/hostbootstrap`) and the
-demo rebuilds, but the pristine flow has not been re-exercised end-to-end (Sprint 13.3); all other verbs
-are unaffected. The operator-scale real runs — the multi-arch published base tags, the full 8-pod Harbor
-Helm deployment, and the multi-GB image push — follow the same real-run standard Phases 5/10/11/12 use.
+(registry push/pull validated). The pristine 3-build bootstrap is **live-validated** on the post-reorg,
+post-refactor code (`vm up` → `vm pristine-bootstrap` cold-builds the full refactored closure → guarded `vm
+down`), and the self-reference lift adoption (Sprints 13.8–13.11) is complete: the demo composes its chain
+on `HostBootstrap.Lift`, and all three harness cases are live-validated — `pristine-bootstrap` + `e2e-tabs`
+on the host and the **production lifted path in-container** (`docker run … hostbootstrap-demo:local test
+web-build` and `… test e2e-tabs`, both `1/1`, `helm`/`kind` on the container `$PATH`, guarded teardown), the
+e2e spec delivered through a context-agnostic named volume. The operator-scale real runs — the multi-arch
+published base tags, the full 8-pod Harbor Helm deployment, and the multi-GB image push — follow the same
+real-run standard Phases 5/10/11/12 use.
+
+### Phase 14 — Composable-operation algebra and composition methodology
+
+`hostbootstrap-core` composes host management as **operations**; a binary crosses an execution-context
+boundary by invoking its own subcommand in the nested context (the self-reference lift, Phase 11), and the
+same algebra expresses both deployment and runtime business logic (stateless roles over durable external
+stores). This phase is `Done`: the composition **methodology** and cookbook are documented
+([composition_methodology.md](../documents/architecture/composition_methodology.md),
+[composition_patterns.md](../documents/engineering/composition_patterns.md),
+[authoring_project_binaries.md](../documents/engineering/authoring_project_binaries.md)) and § U is
+rewritten to the n-level lift (Sprint 14.1); the L0 role-lifecycle skeleton
+(`HostBootstrap.RoleLifecycle`, consumed by the demo's F2 role) is landed (Sprint 14.2). The concrete
+bus/store/role primitives are **L1 (`daemon-substrate`)** work, out of scope here.
 
 ## Dependency edges
 
@@ -203,6 +223,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-11 (Blocked by 3, 9, 10)                                                           │
   phase-12 (Blocked by 6, 8)                                                               │
   phase-13 (Blocked by 8, 9, 10, 11, 12)  ← the demo exercises all of them ───────────────┘
+  phase-14 (builds on 11; the composition methodology the demo's chain exercises via 13)
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

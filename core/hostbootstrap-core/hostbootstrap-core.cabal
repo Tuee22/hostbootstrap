@@ -39,6 +39,9 @@ library
       HostBootstrap.Ensure.Incus
       HostBootstrap.Incus
       HostBootstrap.HostTarget
+      HostBootstrap.Lift
+      HostBootstrap.RoleLifecycle
+      HostBootstrap.Container
       HostBootstrap.Config.Schema
       HostBootstrap.Config.Vocab
       HostBootstrap.Dhall.Gen
@@ -81,6 +84,9 @@ test-suite hostbootstrap-core-test
       LifecycleSpec
       HarnessSpec
       IncusSpec
+      LiftSpec
+      RoleLifecycleSpec
+      ContainerSpec
       DocValidatorSpec
   build-depends:
       base >=4.18 && <5

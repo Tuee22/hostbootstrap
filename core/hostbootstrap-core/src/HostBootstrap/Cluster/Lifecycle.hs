@@ -111,11 +111,28 @@ clusterUp cfg plan resources = do
           putStrLn ("cluster up: kind cluster " ++ clusterName plan ++ " already exists")
     Right (ExitSuccess, _, _) -> do
       created <- runTool cfg Kind ["create", "cluster", "--name", clusterName plan]
-      reportStep "kind create cluster" created
-    _ -> putStrLn "cluster up: kind not available; install kind and retry"
+      requireStep "kind create cluster" created
+    _ -> die "cluster up: kind not available; install kind and retry"
   applyLinuxCordon cfg plan resources
-  release <- runTool cfg Helm ["upgrade", "--install", clusterName plan, "."]
-  reportStep "helm upgrade --install" release
+  deployChart cfg plan
+
+-- | Deploy the project's Helm chart if one is present. A project ships its chart
+-- at @./chart@ (relative to the directory the lifecycle runs in — the project root
+-- on the host, or @/workspace/\<project\>@ inside the project container); @cluster
+-- up@ installs it **fail-closed**. A project with no chart (the cluster is the
+-- workload, or it deploys via another path such as @harbor install@) gets a clean
+-- kind + cordon bring-up with the deploy skipped — that is "no deploy requested",
+-- not a swallowed failure.
+deployChart :: HostConfig -> ClusterPlan -> IO ()
+deployChart cfg plan = do
+  hasChart <- doesDirectoryExist chartPath
+  if hasChart
+    then do
+      release <- runTool cfg Helm ["upgrade", "--install", clusterName plan, chartPath]
+      requireStep "helm upgrade --install" release
+    else putStrLn ("cluster up: no chart at ./" ++ chartPath ++ "; skipping deploy (kind + cordon only)")
+  where
+    chartPath = "chart"
 
 -- | Apply the Linux kind-node cordon: @docker update@ the budget caps onto the
 -- resolved control-plane container, fail-closed. On Apple the per-project Colima
@@ -174,3 +191,13 @@ reportStep label result = case result of
   Right (ExitSuccess, _, _) -> putStrLn (label ++ ": ok")
   Right (ExitFailure n, _, err) -> putStrLn (label ++ ": exit " ++ show n ++ " " ++ err)
   Left err -> putStrLn (label ++ ": " ++ err)
+
+-- | Like 'reportStep' but fail-closed: a non-zero exit or an unresolved tool
+-- aborts (the @cluster up@ helm/kind steps must match the fail-closed cordon, so
+-- a broken deploy is loud — never a swallowed @putStrLn@ that lets the caller,
+-- or a lifting parent process, see success).
+requireStep :: String -> Either String (ExitCode, String, String) -> IO ()
+requireStep label result = case result of
+  Right (ExitSuccess, _, _) -> putStrLn (label ++ ": ok")
+  Right (ExitFailure n, _, err) -> die (label ++ ": exit " ++ show n ++ " " ++ err)
+  Left err -> die (label ++ ": " ++ err)

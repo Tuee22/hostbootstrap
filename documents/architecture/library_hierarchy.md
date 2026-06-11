@@ -17,9 +17,9 @@
 - Every merge is additive: lower levels are appended/embedded/concatenated, never shadowed or
   redefined. A level only contributes verbs, vocabulary, artifacts, and seams; it never rewrites the
   level below.
-- The CLI, vocabulary, and schema-gen streams are landed in `hostbootstrap-core`; the test-harness
-  `Seams` stream is the fourth stream, planned for the standardized test harness
-  ([Phase 10](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)).
+- All four streams are landed in `hostbootstrap-core`: the CLI, vocabulary, and schema-gen streams, and
+  the test-harness `Seams` stream (the standardized test harness,
+  [Phase 10](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)).
 
 ## The Three Library Levels
 
@@ -27,8 +27,8 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: `ensure`/`cluster`/`config` verbs, the `Core.dhall` vocabulary, and the `coreArtifacts` registry. |
-| L1 | `daemon-substrate` | L0 | The daemon run-model surface on top of core. |
+| L0 | `hostbootstrap-core` | — | The host-management base: `ensure`/`cluster`/`config` verbs, the `Core.dhall` vocabulary, the `coreArtifacts` registry, and the composable-operation algebra + the self-reference lift (see [composition_methodology](composition_methodology.md)). |
+| L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
 | L2 | `jitML`, `infernix` | L1 | App-level verbs, vocabulary, and artifacts on top of the daemon substrate. |
 
 `mcts` and `hostbootstrap-demo` consume L0 directly — they take the core surface without the daemon
@@ -109,11 +109,11 @@ materializes the in-scope renders. See [config_generation](../engineering/config
 ### Stream 4 — Test-Harness Seams
 
 The fourth stream is the standardized test harness, whose extension point is a `Seams` value each
-level contributes to additively, in the same append idiom as the other three. The harness itself is
-planned — it is the standardized-test-harness phase
-([development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)) — and is named
-here so the four-stream contract is complete: every level extends the surface through exactly these
-four parallel, additive streams.
+level contributes to additively, in the same append idiom as the other three. The harness is
+**implemented** — the standardized-test-harness phase
+([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) — completing the
+four-stream contract: every level extends the surface through exactly these four parallel, additive
+streams.
 
 ## Why Four Parallel Streams
 

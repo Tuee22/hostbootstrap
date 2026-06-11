@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `hostbootstrap-demo` lives at `demo/` with its own static-base `hostbootstrap.dhall`
 (`project="hostbootstrap-demo"`, `resources {cpu=6, memory="10GiB", storage="40GiB"}`), Haskell source,
@@ -22,7 +22,9 @@ than reusing the user-global store; see
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, exercising the four-stream extension end-to-end
 (CLI append, `demo web schema` schema concat, the `runMatrix` harness). `example/Main.hs` is **retired**
 (Sprint 13.7). The whole demo has been **exercised in a real run on a bare-metal host** (nested-virt incus
-VMs + Docker + kind), and every verb is real (no narrate stubs):
+VMs + Docker + kind), and the project verbs (`incus`/`vm`/`harbor`/`web`) are real (no narrate stubs) —
+the harness *seams* are now real per-case assertions, **all three live-validated** (`pristine-bootstrap`
+and `e2e-tabs` on the host, `web-build` and `e2e-tabs` again in-container — the production lifted path):
 
 - **incus host-provider (13.2)** — `demo incus ensure` installs incus + the VM capability (qemu/ovmf) +
   the `incusbr0`↔Docker forwarding rule; `demo vm up`/`vm down` launch and destroy a budget-cordoned
@@ -32,31 +34,63 @@ VMs + Docker + kind), and every verb is real (no narrate stubs):
   (build #2); the project container (`demo/docker/Dockerfile`, **build #3**) builds `FROM` the pulled base
   — warm `cabal build` → `check-code` → `web bridge` → `spago build` → `esbuild` — alongside the metal
   orchestrator (build #1).
-- **Harness cleanup + cordon #2 (13.4/13.6)** — `demo test all` brings up an isolated per-case kind cluster,
-  applies cordon #2 (the `docker update` kind-node cap), and **tears it down** (`clusterDelete`, `.data`
-  preserved), leaving no leftover clusters (3/3).
-- **Web + SPA + e2e (13.5/13.6)** — `demo web bridge` reflects the `warp`/`wai`/`aeson` API into PureScript;
+- **Harness cluster lifecycle + cordon #2 (13.4/13.6)** — `demo test all` brings up an isolated per-case
+  kind cluster, applies cordon #2 (the `docker update` kind-node cap), and **tears it down**
+  (`clusterDelete`, `.data` preserved), leaving no leftover clusters. The cluster up/teardown and the
+  per-case **bodies are now real assertions** (caveat below); `pristine-bootstrap` is live-validated.
+- **Web + SPA (13.5)** — `demo web bridge` reflects the `warp`/`wai`/`aeson` API into PureScript;
   the Halogen SPA compiles (`spago build`) + bundles (`esbuild`); `demo web serve` returns
-  `GET /api/budget` = `{"fits":true,…}`; Playwright passes 3/3 (tabs render + the fitsBudget verdict).
+  `GET /api/budget` = `{"fits":true,…}`. A **manual** Playwright run against `demo web serve` passes 3/3
+  (tabs render + the fitsBudget verdict); the harness `e2e-tabs` case now lifts a Playwright container
+  against the in-cluster service via NodePort (caveat below).
 - **Harbor (13.4)** — `demo harbor install` (cluster up + Helm-install Harbor) and `demo harbor push`
   (tag + push) are real; the registry push/pull mechanism is live-validated.
+
+**Harness seams (landed; all three cases live-validated).** The hollow `demoSeams` are **replaced**
+by real per-case seams (Sprint 13.9): `pristine-bootstrap` asserts the live cluster, `web-build` the
+bundle, `e2e-tabs` a Playwright run against the in-cluster service via NodePort; `cluster up` deploys the
+webservice into the per-case cluster via `demo/chart`. `demo test pristine-bootstrap` is **live-validated**
+on a real host (kind create → cordon → `helm upgrade --install: ok` → the per-case assertion → clean
+teardown, `1/1 passed`, no leftover cluster) — the original "helm not found" failure is fixed end to end.
+`e2e-tabs` is **live-validated** both on the host (the full harness Playwright run, below) and **in-container**
+(`docker run … hostbootstrap-demo:local test e2e-tabs`, the production lifted path, `1/1 passed`, no leftover
+cluster/volume); `web-build` is **live-validated in-container** (`docker run … test web-build` asserts the
+in-image bundle, `1/1 passed`). The e2e spec is delivered through a context-agnostic named volume
+(`deliverSpec`, `docker cp`), so the e2e lifts into any context. The new `demo deploy
+--dry-run` (F1) and `demo role serve`/`submit` (F2) verbs are landed; the hollow-seam entry in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is **closed** (the in-container harness
+runs are live-validated). **Build #3 is live-validated:** the project container builds — the in-Dockerfile
+`check-code` gate (fourmolu + hlint + warning-clean build) **passes on the refactor's new modules**
+(`Lift`/`Container`/`RoleLifecycle`/`Chain`/`Role`/`Commands`) — the `spago`/`esbuild` web bundle builds
+(`public/app.js`), and the image's `web serve` returns the correct `/api/budget` (`{"fits":true,…}`). The
+**in-cluster deploy + NodePort path is live-validated** (an e2e probe): the 20 GB image `kind load`ed into
+a real kind cluster (~2m), the chart `STATUS: deployed`, and the webservice answered `/api/budget`
+(`{"fits":true,…}`) **through its NodePort** from a container on the kind network — exactly how the
+Playwright container reaches it; clean teardown. The `e2e-tabs` seam encodes this (`kind load` + a NodePort
+readiness wait + the Playwright run); the full harness `test e2e-tabs` (incl. the Playwright spec) is
+**live-validated** (`1/1 passed`, clean teardown, source tree untouched).
 
 **Operator-scale notes** (heavy real runs, the same standard Phases 5/10/11/12 follow): the multi-arch
 published base tags (Phase 12), the full 8-pod Harbor Helm deployment, and pushing the multi-GB project
 image at scale are exercised by an operator's release/demo run — the implementation and its mechanism are
 validated here.
 
-#### Remaining Work
+#### Completion
 
-**Real-run re-validation of the pristine bootstrap, gated by the `folder reorg`.** The reorg moved the
-Python project from `python/` to the repository root after the demo's live run, leaving the `vm
-pristine-bootstrap` pipx target pointing at the now-removed `python/` subdir. The path is **corrected** in
-`demo/src/HostBootstrapDemo/Commands.hs` (`pipx install --force /root/hostbootstrap`) and the demo
-rebuilds against `ghc-9.12.4`, but the live pristine-bootstrap flow has not been re-exercised on the
-post-reorg code. Phase 13 therefore stays `Active` until `sudo demo vm pristine-bootstrap` is re-run
-end-to-end (Sprint 13.3). All other demo verbs — `incus ensure`/`vm up`/`vm down`, the harness cluster
-lifecycle + cordon #2, `web bridge`/`serve` + Playwright, and `harbor install`/`push` — are unaffected by
-the reorg and remain validated.
+All sprints are `Done` and the substantive surface is **live-validated on a real host**. The pristine
+3-build bootstrap (Sprint 13.3): `demo vm up` (cordon #1) → `demo vm pristine-bootstrap` ran the from-zero
+flow on the post-reorg, post-refactor code (a cold, warm-store-less host-native build of the full refactored
+closure, build #2, that linked and ran the binary) → guarded `vm down`. The self-reference lift adoption
+(Sprints 13.8–13.11): the demo composes its chain on `HostBootstrap.Lift`; the per-case seams are real and
+**all three live-validated** — `pristine-bootstrap` + `e2e-tabs` on the host, and the **production lifted
+path in-container** (`docker run … hostbootstrap-demo:local test web-build` and `… test e2e-tabs`, both
+`1/1 passed`, `helm`/`kind` on the container `$PATH`, guarded teardown, no leftover cluster/volume); the e2e
+spec delivery is context-agnostic (`deliverSpec`). F1 (`demo deploy --dry-run`) and F2 (`demo role
+serve`/`submit`) are landed and unit-validated. These exercise Phase 11's lift and Phase 14's methodology.
+
+**Operator-scale runs** (the same standard Phases 5/10/11/12 follow) remain an operator's release/demo
+activity: the multi-arch published base tags, the full 8-pod Harbor deployment at scale, and pushing the
+multi-GB project image — implementation and mechanism are validated here.
 
 ## Phase Objective
 
@@ -142,9 +176,9 @@ demo's noun-first project verbs.
 None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pipx install hostbootstrap` →
 `hostbootstrap run` — is Sprint 13.3.)
 
-### Sprint 13.3: Pristine-host bootstrap inside the VM [Active]
+### Sprint 13.3: Pristine-host bootstrap inside the VM [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`vm pristine-bootstrap`), `demo/docker/Dockerfile` + `demo/docker/container.cabal.project` (build #3)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
@@ -162,27 +196,24 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Validation
 
-- **Build #2 observed (live), but on pre-reorg code.** From a freshly created VM, `sudo demo vm
-  pristine-bootstrap` ran `apt install pipx` → `pipx install <staged hostbootstrap>` → `hostbootstrap run`,
-  which built the demo binary **host-native in the VM** — a cold `-O2` compile of the `dhall` /
-  `hostbootstrap-core` / demo closure to `.build/hostbootstrap-demo` (a 54 MB ELF) — and exec'd it
-  (`config schema` printed the reflected schema). Build #1 (metal orchestrator) and build #2 (in-VM
-  host-native) of the 3-build sequence were observed on a real incus VM; **build #3** is below.
+- **Build #2 live-validated (post-reorg, post-refactor code).** `sudo demo vm up` launched a
+  budget-cordoned (cordon #1) pristine `ubuntu/24.04` VM with network egress; `sudo demo vm
+  pristine-bootstrap` ran `apt install pipx` → ghcup + GHC 9.12.4 → `pipx install --force
+  /root/hostbootstrap` → `hostbootstrap run`, doing a **cold, warm-store-less host-native build** of the
+  full refactored closure — all 26 `hostbootstrap-core` modules (incl. the new
+  `Lift`/`RoleLifecycle`/`Container`) + all 7 demo modules (`Chain`/`Role`/Web.*/Commands) — linking the
+  binary and running it (`config schema` printed the reflected `budget`/`podResources`/`kindNode`
+  vocabulary). The VM was then destroyed behind the name-prefix guard (`vm down`). Builds #1 (metal) and #2
+  (in-VM host-native) of the 3-build sequence are live-validated; build #3 (the project container) is
+  live-validated on the host.
 
 #### Remaining Work
 
-**Real-run re-validation, gated by the folder reorg.** The live run above predates the `folder reorg`
-commit, which moved the Python project from `python/` to the repository root. The `vm pristine-bootstrap`
-verb's pipx target had drifted to the now-removed `python/` subdir (`pipx install
-/root/hostbootstrap/python`); it is **corrected** to the repo-root Poetry project (`pipx install --force
-/root/hostbootstrap`) in `demo/src/HostBootstrapDemo/Commands.hs`, and the demo rebuilds. Per the
-[README Validation Policy](README.md), the real-run gate has not re-confirmed the corrected path
-end-to-end, so this sprint is `Active` until `sudo demo vm pristine-bootstrap` is re-exercised on a
-pristine VM. Build #3 (the project container, `FROM` the pulled base — warm `cabal build` → `check-code` →
-`web bridge` → `spago build` → `esbuild`, via `demo/docker/container.cabal.project`) is unaffected by the
-reorg. The first-run prerequisites this surfaced — `qemu-system-x86`/`ovmf` for incus VMs, the
-`incusbr0`↔Docker `iptables` forwarding rule, the pinned **GHC 9.12.4**, and `zlib1g-dev` — remain ensured
-by the demo verbs and the bootstrapper.
+None. The corrected post-reorg path (`pipx install --force /root/hostbootstrap`) is **live-validated end to
+end** on a real host: `vm up` (cordon #1) → the cold in-VM build of the full refactored closure → the
+binary ran `config schema` → guarded `vm down`. The first-run prerequisites this surfaced —
+`qemu-system-x86`/`ovmf`, the `incusbr0`↔Docker `iptables` forwarding, the pinned GHC 9.12.4, and
+`zlib1g-dev` — are ensured by the demo verbs and the bootstrapper.
 
 ### Sprint 13.4: kind + Harbor on the VM and image push [Done]
 
@@ -253,7 +284,7 @@ gap the live run surfaced is resolved: `demo/docker/container.cabal.project` imp
 freeze and references `hostbootstrap-core`, and the Dockerfile builds from the **repo-root context** (so
 the L0-direct demo reaches the core source). Validated by a real `docker build` + the Playwright e2e (3/3).
 
-### Sprint 13.6: Harness cluster lifecycle + Playwright on the incus host [Done]
+### Sprint 13.6: Harness cluster lifecycle + Playwright (in-cluster, via NodePort) [Done]
 
 **Status**: Done
 **Implementation**: the harness `Seams` (per-case kind cluster up + guaranteed teardown) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`); `demo/playwright/` (config + e2e spec)
@@ -261,31 +292,36 @@ the L0-direct demo reaches the core source). Validated by a real `docker build` 
 
 #### Objective
 
-Drive isolated per-case clusters through the standardized harness (each torn down on completion), serve the
-webservice on the incus host, and run the Playwright e2e suite from the container against the host
-`baseURL`.
+Drive isolated per-case clusters through the standardized harness (each torn down on completion), deploy the
+webservice **into** the per-case kind cluster via `demo/chart`, and run the Playwright e2e suite from a
+container on the kind network against the in-cluster service via its **NodePort**.
 
 #### Deliverables
 
 - `demoSeams`: each case's `seamSetup` brings up an isolated per-case kind cluster and `seamTeardown`
   **tears it down** (`clusterDelete`, preserving `.data`, guarded to the test-name prefix), guaranteed by
-  `runMatrix`'s `finally`. `demo web serve` runs the webservice on the incus host; the Playwright runner
-  runs from the container against the host `baseURL` (the e2e target is the incus host).
+  `runMatrix`'s `finally`. The webservice is deployed into the per-case kind cluster via `demo/chart` (the
+  pod runs `web serve`); the Playwright runner runs from a container on the kind network against the
+  in-cluster service via its **NodePort** (the e2e target is the kind cluster).
+- **Resolved (Sprint 13.9):** the real per-case seams and the harness-driven Playwright (a container
+  lifted against the in-cluster NodePort) are landed; `e2e-tabs` is live-validated.
 
 #### Validation
 
-- **Harness cluster cleanup done (live).** `demo test all` (rebuilt in-VM) ran all three cases; each did
-  `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and after the run
-  `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover clusters
-  (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`) backs
-  the always-cleans-up property. The `e2e-tabs` body is **passing live (3/3)**: against `demo web serve`,
-  Playwright (run from the base container over `--network host`) confirmed the SPA renders all three tabs,
-  the Budget tab shows `fits: true`, and `GET /api/budget` returns the `fitsBudget` view.
+- **Harness cluster lifecycle + cleanup done (live).** `demo test all` (rebuilt in-VM) ran all three
+  cases; each did `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and
+  after the run `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover
+  clusters (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`)
+  backs the always-cleans-up property. The per-case bodies are **real assertions**. **`demo test e2e-tabs`
+  is live-validated end to end on a real host:** `cluster up` (chart deployed) → `kind load` the project
+  image → NodePort readiness → a Playwright container runs `demo/playwright` against the in-cluster service
+  via its NodePort, all 3 specs green (tabs render, the Budget tab shows `fits: true`, `GET /api/budget`
+  returns `fits:true`) → clean teardown (`1/1 passed`, no leftover cluster, source tree untouched).
 
 #### Remaining Work
 
-None. The harness per-case cluster lifecycle **with guaranteed cleanup** and the Playwright e2e are both
-live-validated.
+None. The harness cluster lifecycle, the real per-case seams, and the harness-driven Playwright
+(`e2e-tabs`) are live-validated.
 
 ### Sprint 13.7: Retire `example/Main.hs` [Done]
 
@@ -311,6 +347,148 @@ Retire the `hostbootstrap-example` executable and `example/`, re-point the "work
 
 None.
 
+### Sprint 13.8: Wire the demo through the self-reference lift [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
+**Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
+
+#### Objective
+
+Replace `runVmBootstrap`'s hand-rolled `bash -lc` self-reference and the host-process `clusterUp` call
+with `HostBootstrap.Lift`: the cluster/Harbor/deploy/e2e steps run in the project container (`helm`/`kind`
+on the container `$PATH`), reached by the binary re-invoking its own subcommand.
+
+#### Deliverables
+
+- `demo` composes its chain (metal → VM → container) on `liftSubcommand`; `cluster up` / `harbor install`
+  lift into the container; build #3 (the project-container build) is wired into the chain.
+
+#### Validation
+
+- `cabal build` (demo) succeeds; build #3 (the project container) builds host-native FROM the pulled base
+  with the in-Dockerfile `check-code` gate.
+- **Live (in-container, the production path).** `docker run --rm -v
+  /var/run/docker.sock:/var/run/docker.sock --network host hostbootstrap-demo:local test e2e-tabs` is green
+  end to end (`1/1 passed`): the harness runs **inside the project container** (build #3, ENTRYPOINT = the
+  binary — the self-reference needs no name in argv) and drives kind-in-container via the mounted socket →
+  cordon → `helm upgrade --install: ok` → `kind load` the project image → NodePort readiness → the Playwright
+  spec delivered through the context-agnostic named volume → `npx playwright test` green → guarded teardown
+  with **no leftover cluster or volume**. This exercises the lifted in-container execution (`helm`/`kind` on
+  the container `$PATH`, never the host) and closes the real-run halves of Phase 5 Sprint 5.4 and Phase 11
+  Sprint 11.5. With build #2 (in-VM host-native, Sprint 13.3) and the container lift both live-validated, the
+  full metal → VM → container nesting is validated by every level plus this in-container run of the heaviest
+  case.
+
+#### Remaining Work
+
+None. The demo composes its chain on `liftSubcommand` (the `deploy` chain and the per-case seams lift into
+the container), and the in-container execution of the full e2e path is live-validated on a real host.
+
+### Sprint 13.9: Real per-case seams [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`)
+**Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/testing.md`
+
+#### Objective
+
+Replace the hollow `demoSeams` with real per-case seams that assert the deployed workload, and actually
+run Playwright in the `e2e-tabs` case.
+
+#### Deliverables
+
+- The demo ships `demo/chart` (a NodePort Service deploying the webservice **into** the per-case kind
+  cluster); `cluster up` installs it (chart-conditional, fail-closed — Phase 5 Sprint 5.4). Per-case
+  bodies: `pristine-bootstrap` asserts the live cluster; `web-build` asserts the `spago`/`esbuild` bundle;
+  `e2e-tabs` lifts a Playwright container onto the kind network and runs `demo/playwright/demo.spec.ts`
+  against the in-cluster service via its NodePort, passing iff the spec passes. Closes the
+  hollow-`demoSeams` entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+#### Validation
+
+- The chart is validated offline (`helm lint` / `helm template` render the NodePort Service + the
+  Deployment running `hostbootstrap-demo:local web serve`). A failing deploy makes the case FAIL (no longer
+  vacuous); the live deploy + NodePort reachability + the Playwright run are exercised on a real host (the
+  project image is made available to the cluster via `kind load` or the Harbor pull).
+- **Live (real host):** `demo test pristine-bootstrap` ran kind create → cordon → `helm upgrade --install:
+  ok` (the chart deployed) → the per-case assertion → clean teardown (`test report: 1/1 passed`, no
+  leftover cluster), confirming the fail-closed `cluster up` + chart-conditional deploy + per-case seam +
+  teardown on a real host.
+- **Live (real host):** `demo test e2e-tabs` is green end to end (`1/1 passed`): `cluster up` (chart
+  deployed) → `kind load` the project image → NodePort readiness → a Playwright container runs
+  `demo/playwright` against the in-cluster NodePort (3 specs green) → clean teardown.
+- **Live (in-container, the production path):** `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+  --network host hostbootstrap-demo:local test web-build` is green (`1/1 passed`): the harness runs **inside
+  the project container** — kind-in-container via the mounted socket → cordon → `helm upgrade --install: ok`
+  → `assertWebBundle` confirms the in-image `web/public/app.js` bundle → guarded teardown, no leftover
+  cluster. This validates the lifted in-container execution (build #3 running its own harness) and
+  `web-build`'s assertion against the bundle build #3 produces.
+- **Context-agnostic e2e spec delivery.** `assertE2E` now delivers `demo/playwright` through a named Docker
+  volume populated by `docker cp` (`deliverSpec`), which streams from the harness's own filesystem — so the
+  e2e lifts into **any** context (host or in-container) instead of silently depending on a host path the
+  daemon would resolve on the host. Re-validated live on the host (`demo test e2e-tabs`, `1/1 passed`, real
+  Playwright through the volume).
+
+#### Remaining Work
+
+None. The per-case seams (`assertClusterLive` / `assertWebBundle` / `assertE2E`, dispatched on the case id)
+are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e spec
+delivery is context-agnostic.
+
+### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`
+**Docs to update**: `documents/engineering/composition_patterns.md`
+
+#### Objective
+
+Reify the demo deploy/lift chain as a pure data value run by a small interpreter; `demo deploy [--dry-run]`
+prints the planned operation/argv sequence without effect, while apply runs it via `liftSubcommand`.
+
+#### Deliverables
+
+- `HostBootstrapDemo.Chain`: the pure chain value + interpreter, wired as `demo deploy`; a pure unit test
+  asserting the dry-run plan is a pure function of the chain value.
+
+#### Validation
+
+- `demo deploy --dry-run` prints the planned operation sequence with no side effects (verified); the pure
+  `renderPlan` is a function of the chain value.
+
+#### Remaining Work
+
+None. The apply path runs the chain via `liftSubcommand`, exercised in the demo's live run (Sprint 13.8).
+
+### Sprint 13.11: F2 — `demo role serve`/`submit` (role over toy bus + object store) [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Role.hs`
+**Docs to update**: `documents/engineering/composition_patterns.md`, `documents/architecture/run_models.md`
+
+#### Objective
+
+A stateless role (the `HostDaemon` run-model) over a hand-rolled toy bus + MinIO, dispatching to the
+existing `fitsBudget` engine — the in-tree worked instance of the business-logic role shape.
+
+#### Deliverables
+
+- `HostBootstrapDemo.Role`: the role loop, the toy-bus stand-in, the MinIO artifact fetch, dispatch to
+  `fitsBudget`; `demo role serve`/`submit`. A harness case asserts submit → correct `fitsBudget`
+  round-trips the bus. If a new warm-stored Haskell dependency is required, it triggers the base
+  rebuild+republish (the conditional base build-and-push, performed only when directed).
+
+#### Validation
+
+- `demo role submit` then `demo role serve` round-trips the toy bus and returns the correct `fitsBudget`
+  verdict against the capacity artifact (a filesystem object-store stand-in) — verified locally. The role
+  drives through the L0 `runRole` lifecycle skeleton (Phase 14, `HostBootstrap.RoleLifecycle`).
+
+#### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -318,8 +496,10 @@ None.
   `check-code` gate; the `purescript-bridge` -> `spago` -> `esbuild` web build; the build-stage ordering).
 
 **Operations docs to create/update:**
-- `documents/operations/demo_runbook.md` - the a-j pristine-bootstrap flow, the feature-to-case table, and
-  the 3-builds-vs-standard-host-native-build explanation.
+- `documents/operations/demo_runbook.md` - **rewrite** for the lift-based flow (the chain run via
+  `HostBootstrap.Lift`), real per-case seams (no vacuous passes), the new `deploy --dry-run` / `role`
+  verbs, and the 3-builds explanation; drop the old feature-to-case table that implied the hollow seams
+  proved the features.
 
 **Cross-references to add:**
 - `documents/engineering/harbor.md`, `documents/languages/purescript.md`,

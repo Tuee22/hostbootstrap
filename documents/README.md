@@ -17,6 +17,9 @@ material lives here. Conventions are defined in
 - [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md) — the
   `hostbootstrap-core` Haskell library: module surface and the optparse command-tree extension
   contract project binaries build on.
+- [architecture/composition_methodology.md](architecture/composition_methodology.md) — the
+  composable-operation algebra, the self-reference lift across `Local | InVM | InContainer`, and the
+  deploy ≡ business-logic unification (one algebra for deployment and runtime business logic).
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
@@ -38,6 +41,11 @@ material lives here. Conventions are defined in
   rule that rich schemas are binary-generated artifacts.
 - [engineering/config_generation.md](engineering/config_generation.md) — the `ConfigArtifact`
   registry, the `config schema`/`config render` verbs, and the render round-trip guarantee.
+- [engineering/composition_patterns.md](engineering/composition_patterns.md) — a cookbook of composition
+  shapes (context topologies, operation kinds, business-logic shapes) consumers compose their chain from.
+- [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
+  step-by-step guide to authoring a project binary on `hostbootstrap-core` (verbs, the lift chain, the
+  test seams, the budget).
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
   contract and the fail-fast-on-wrong-host CLIs.
 - [engineering/resource_budgeting.md](engineering/resource_budgeting.md) — the resource budget,

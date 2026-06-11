@@ -32,26 +32,31 @@ module HostBootstrapDemo.Commands
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (unless)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (incusSizingArgs)
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterDelete, clusterUp, resolvePlan)
 import HostBootstrap.Config.Schema (Resources (..), StaticBase (..), decodeStaticBaseFile)
-import HostBootstrap.Config.Vocab (PodResources (..))
+import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, coreArtifacts, schemaUnion)
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.Incus as Incus
 import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCaseProfile)
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Sudo), toolCommandName)
-import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs)
+import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs)
+import HostBootstrap.Lift (ContainerLift (..))
 import HostBootstrap.Substrate (detect)
+import qualified HostBootstrapDemo.Chain as Chain
+import qualified HostBootstrapDemo.Role as Role
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Options.Applicative
-import System.Directory (getCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory)
 import System.Exit (ExitCode (..), die)
+import System.Process (readProcessWithExitCode)
 
 -- | The demo's schema-gen artifacts, appended to @coreArtifacts@ (the registry
 -- concatenation stream). A demo web-pod footprint reflected from the vocabulary.
@@ -100,16 +105,126 @@ demoSeams =
         putStrLn ("harness setup: cluster up " ++ clusterName plan)
         clusterUp cfg plan caseResources
         pure (CaseEnv cfg plan),
-      seamRun = \(CaseEnv cfg plan) _ -> do
-        result <- runTool cfg Kind ["get", "clusters"]
-        pure $ case result of
-          Right (ExitSuccess, out, _)
-            | clusterName plan `elem` lines out -> Pass
-          _ -> Fail ("cluster " ++ clusterName plan ++ " is not live"),
+      seamRun = \(CaseEnv cfg plan) c -> case caseId c of
+        "pristine-bootstrap" -> assertClusterLive cfg plan
+        "web-build" -> assertWebBundle
+        "e2e-tabs" -> assertE2E cfg plan
+        other -> pure (Fail ("unknown demo case: " ++ other)),
       seamTeardown = \(CaseEnv cfg plan) _ -> do
         putStrLn ("harness teardown: cluster delete " ++ clusterName plan ++ " (preserving .data)")
         clusterDelete cfg plan
     }
+
+-- | Per-case assertion: the kind cluster the case stood up is live.
+assertClusterLive :: HostConfig -> ClusterPlan -> IO CaseResult
+assertClusterLive cfg plan = do
+  result <- runTool cfg Kind ["get", "clusters"]
+  pure $ case result of
+    Right (ExitSuccess, out, _)
+      | clusterName plan `elem` lines out -> Pass
+    _ -> Fail ("cluster " ++ clusterName plan ++ " is not live")
+
+-- | Per-case assertion: the web build produced the bundled SPA.
+assertWebBundle :: IO CaseResult
+assertWebBundle = do
+  built <- doesFileExist "web/public/app.js"
+  pure $
+    if built
+      then Pass
+      else Fail "web bundle web/public/app.js is missing (run `web bridge` + spago build + esbuild)"
+
+-- | Per-case assertion: the Playwright e2e passes against the in-cluster
+-- webservice, reached through its NodePort. Lifts a Playwright container onto the
+-- kind docker network and points it at the control-plane node's NodePort
+-- (live-gated: needs the chart deployed and the e2e image).
+assertE2E :: HostConfig -> ClusterPlan -> IO CaseResult
+assertE2E cfg plan = do
+  cwd <- getCurrentDirectory
+  let baseUrl = "http://" ++ clusterName plan ++ "-control-plane:30080"
+      specVol = "hostbootstrap-demo-e2e-spec-" ++ clusterName plan
+      specDir = cwd ++ "/playwright"
+  -- Make the project image available to the per-case cluster (the chart pod runs it).
+  loaded <- runTool cfg Kind ["load", "docker-image", "hostbootstrap-demo:local", "--name", clusterName plan]
+  case loaded of
+    Left err -> pure (Fail ("e2e: kind load: " ++ err))
+    Right (ExitFailure n, _, err) -> pure (Fail ("e2e: kind load exit " ++ show n ++ " " ++ err))
+    Right (ExitSuccess, _, _) -> do
+      ready <- waitNodePort cfg (baseUrl ++ "/api/budget") 72
+      if not ready
+        then pure (Fail "e2e: the in-cluster webservice did not become reachable via its NodePort")
+        else do
+          -- Deliver the spec through a named volume via `docker cp` (which streams from the
+          -- harness's own filesystem, host or in-container) rather than a bind mount of a path
+          -- the daemon would resolve on the host — so the e2e lifts into any context.
+          delivered <- deliverSpec cfg specVol specDir
+          case delivered of
+            Left err -> pure (Fail ("e2e: spec delivery: " ++ err))
+            Right () -> do
+              result <-
+                runTool
+                  cfg
+                  Docker
+                  [ "run",
+                    "--rm",
+                    "--network",
+                    "kind",
+                    "-e",
+                    "BASE_URL=" ++ baseUrl,
+                    "-v",
+                    specVol ++ ":/src:ro",
+                    playwrightImage,
+                    "sh",
+                    "-lc",
+                    "cp -r /src /work && cd /work && npm install --no-audit --no-fund && npx playwright test"
+                  ]
+              _ <- runTool cfg Docker ["volume", "rm", "-f", specVol]
+              pure $ case result of
+                Right (ExitSuccess, _, _) -> Pass
+                Right (_, _, err) -> Fail ("e2e failed: " ++ err)
+                Left err -> Fail ("e2e: " ++ err)
+
+-- | Populate a named Docker volume with the Playwright spec by @docker cp@-ing it from
+-- the harness's own filesystem into a throwaway container that mounts the volume. @docker
+-- cp@ reads the source on the client side, so this works whether the harness runs on the
+-- host or is itself lifted into the project container — the bind-mount alternative would
+-- have the daemon resolve the path on the host and find nothing.
+deliverSpec :: HostConfig -> String -> FilePath -> IO (Either String ())
+deliverSpec cfg vol specDir = do
+  let tmpName = vol ++ "-load"
+  _ <- runTool cfg Docker ["volume", "rm", "-f", vol]
+  _ <- runTool cfg Docker ["rm", "-f", tmpName]
+  created <- runTool cfg Docker ["create", "--name", tmpName, "-v", vol ++ ":/spec", specLoaderImage]
+  case created of
+    Left err -> pure (Left err)
+    Right (ExitFailure n, _, err) -> pure (Left ("create exit " ++ show n ++ " " ++ err))
+    Right (ExitSuccess, _, _) -> do
+      copied <- runTool cfg Docker ["cp", specDir ++ "/.", tmpName ++ ":/spec"]
+      _ <- runTool cfg Docker ["rm", "-f", tmpName]
+      pure $ case copied of
+        Right (ExitSuccess, _, _) -> Right ()
+        Right (ExitFailure n, _, err) -> Left ("cp exit " ++ show n ++ " " ++ err)
+        Left err -> Left err
+
+-- | Poll the in-cluster NodePort (via a curl container on the kind network) until
+-- it serves, bounded by @n@ five-second attempts — the readiness check the e2e
+-- probe validated (the @Service@ routes only to ready pods).
+waitNodePort :: HostConfig -> String -> Int -> IO Bool
+waitNodePort _ _ 0 = pure False
+waitNodePort cfg url n = do
+  r <- runTool cfg Docker ["run", "--rm", "--network", "kind", "curlimages/curl:latest", "-fsS", url]
+  case r of
+    Right (ExitSuccess, _, _) -> pure True
+    _ -> threadDelay 5000000 >> waitNodePort cfg url (n - 1)
+
+-- | The Playwright runner image the e2e seam lifts.
+playwrightImage :: String
+playwrightImage = "mcr.microsoft.com/playwright:v1.49.0-noble"
+
+-- | A tiny image used only as the throwaway @docker create@ target whose mounted volume
+-- the spec is @docker cp@-ed into (the container is never started). Reuses the image the
+-- NodePort poll already pulls, so no extra layer is fetched.
+specLoaderImage :: String
+specLoaderImage = "curlimages/curl:latest"
 
 -- | The managed demo VM: a name carrying the delete-guard prefix and the
 -- pristine @ubuntu/24.04@ image the from-zero bootstrap starts from.
@@ -124,7 +239,7 @@ demoGuardPrefix = "hostbootstrap-demo"
 
 -- | The appended demo command tree (noun-first).
 demoCommands :: [Mod CommandFields (IO ())]
-demoCommands = [incusCmd, vmCmd, harborCmd, webCmd]
+demoCommands = [incusCmd, vmCmd, harborCmd, webCmd, deployCmd, roleCmd]
 
 -- ---------------------------------------------------------------------------
 -- Metal-host orchestration helpers (the demo resolves and runs incus directly)
@@ -247,11 +362,26 @@ runVmUp = do
   let argv = createVMArgs demoVM (concatMap toLaunchFlag sizing)
   putStrLn ("vm up: launching " ++ vmName demoVM ++ " cordoned to the budget " ++ show sizing)
   runOrDie cfg Incus argv
+  putStrLn ("vm up: waiting for the " ++ vmName demoVM ++ " guest agent to come up")
+  waitVMAgent cfg demoVM 60
   putStrLn ("vm up: launched " ++ vmName demoVM)
   where
     toLaunchFlag a
       | "root," `isPrefixOf` a = ["-d", a]
       | otherwise = ["-c", a]
+
+-- | Poll @incus exec <vm> -- true@ until the VM's guest agent answers — an incus
+-- VM accepts @incus exec@ only once its agent has started (a few seconds after
+-- launch), so @vm up@ waits here rather than returning a VM that a chained
+-- @pristine-bootstrap@ (or any immediate @incus exec@) would race. Bounded by @n@
+-- two-second attempts.
+waitVMAgent :: HostConfig -> IncusVM -> Int -> IO ()
+waitVMAgent _ vm 0 = die ("vm up: " ++ vmName vm ++ " guest agent did not become ready")
+waitVMAgent cfg vm n = do
+  r <- runTool cfg Incus (execVMArgs vm ["true"])
+  case r of
+    Right (ExitSuccess, _, _) -> pure ()
+    _ -> threadDelay 2000000 >> waitVMAgent cfg vm (n - 1)
 
 -- | @demo vm pristine-bootstrap@: the from-zero first-run flow inside the VM
 -- (the project source is staged at @/root/hostbootstrap@; see the runbook).
@@ -263,6 +393,7 @@ runVmUp = do
 runVmBootstrap :: IO ()
 runVmBootstrap = do
   cfg <- metalConfig
+  stageSource cfg
   let inVM label script = do
         putStrLn ("pristine-bootstrap: " ++ label)
         runOrDie cfg Incus (execVMArgs demoVM ["bash", "-lc", script])
@@ -279,6 +410,52 @@ runVmBootstrap = do
     "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
     ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
   putStrLn "pristine-bootstrap: done (the demo binary built host-native in the VM and ran)"
+
+-- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
+-- source @pipx install@ and the in-VM @hostbootstrap run@ build from. The host
+-- working tree (uncommitted changes included) is tarred minus build/VCS
+-- artifacts, pushed as a single file (@pushFileArgs@), and extracted in the VM.
+-- Without this step the from-zero bootstrap has nothing to install — the runbook
+-- documents the source as "staged at @/root/hostbootstrap@", and this is where
+-- that staging happens.
+stageSource :: HostConfig -> IO ()
+stageSource cfg = do
+  cwd <- getCurrentDirectory
+  let repoRoot = cwd ++ "/.." -- cwd is demo/; the repo root is its parent
+      tarball = "/tmp/hostbootstrap-src.tgz"
+  putStrLn ("pristine-bootstrap: staging the project source into " ++ vmName demoVM ++ ":/root/hostbootstrap")
+  (tc, _, terr) <-
+    readProcessWithExitCode
+      "tar"
+      [ "czf",
+        tarball,
+        "--exclude=.git",
+        "--exclude=dist-newstyle",
+        "--exclude=.build",
+        "--exclude=node_modules",
+        "--exclude=.test_data",
+        "--exclude=.role-bus",
+        "--exclude=.venv",
+        "--exclude=*.tgz",
+        "-C",
+        repoRoot,
+        "."
+      ]
+      ""
+  case tc of
+    ExitFailure _ -> die ("pristine-bootstrap: source tar failed: " ++ terr)
+    ExitSuccess -> pure ()
+  runOrDie cfg Incus (pushFileArgs demoVM tarball "/root/hostbootstrap-src.tgz")
+  runOrDie
+    cfg
+    Incus
+    ( execVMArgs
+        demoVM
+        [ "bash",
+          "-lc",
+          "rm -rf /root/hostbootstrap && mkdir -p /root/hostbootstrap && tar -xzf /root/hostbootstrap-src.tgz -C /root/hostbootstrap && rm -f /root/hostbootstrap-src.tgz"
+        ]
+    )
 
 -- | @demo vm down@: destroy the demo VM behind the name-prefix delete-guard.
 runVmDown :: IO ()
@@ -380,3 +557,56 @@ webCmd =
         "schema"
         (info (pure printSchema) (progDesc "print the L0 + demo schema union (the schema-gen extension stream)"))
     printSchema = putStrLn (T.unpack (schemaUnion (coreArtifacts ++ demoArtifacts)))
+
+-- | @demo deploy [--dry-run]@: the demo's deploy chain (F1). The chain is a pure
+-- value (see "HostBootstrapDemo.Chain"); @--dry-run@ prints the plan, while apply
+-- lifts each step through the self-reference lift.
+deployCmd :: Mod CommandFields (IO ())
+deployCmd =
+  command
+    "deploy"
+    ( info
+        (Chain.runDeploy demoVM demoDeployImage <$> dryRunFlag)
+        (progDesc "Run the demo deploy chain (operations lifted across contexts); --dry-run prints the plan")
+    )
+  where
+    dryRunFlag =
+      switch (long "dry-run" <> help "print the planned operation/context sequence without running it")
+
+-- | The project container the deploy chain lifts into: the demo image, with the
+-- host Docker socket mounted (so kind nodes are siblings on the VM daemon) and
+-- host networking.
+demoDeployImage :: ContainerLift
+demoDeployImage =
+  ContainerLift
+    { clImage = "hostbootstrap-demo:local",
+      clMounts = [Mount "/var/run/docker.sock" "/var/run/docker.sock" False],
+      clExtraArgs = ["--network=host"],
+      clRemoveAfter = True
+    }
+
+-- | @demo role serve|submit@ (F2): a stateless role over a toy bus + object-store
+-- stand-in, dispatching budget-eval requests to the budget-fit engine. See
+-- "HostBootstrapDemo.Role".
+roleCmd :: Mod CommandFields (IO ())
+roleCmd =
+  command
+    "role"
+    ( info
+        (hsubparser (serveSub <> submitSub))
+        (progDesc "A stateless role over a toy bus + object store (the business-logic shape)")
+    )
+  where
+    serveSub =
+      command
+        "serve"
+        (info (pure Role.roleServe) (progDesc "drain the request topic: dispatch budget-eval requests to the engine"))
+    submitSub =
+      command
+        "submit"
+        (info (Role.roleSubmit <$> budgetArg) (progDesc "enqueue a budget-eval request (CPU MEMORY STORAGE)"))
+    budgetArg =
+      Budget
+        <$> argument auto (metavar "CPU")
+        <*> argument auto (metavar "MEMORY")
+        <*> argument auto (metavar "STORAGE")

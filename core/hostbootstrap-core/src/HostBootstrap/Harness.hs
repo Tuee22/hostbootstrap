@@ -180,16 +180,21 @@ oneShotRunArgs s =
 
 -- | Drive the case matrix: per case run setup → body → teardown, guaranteeing
 -- teardown via 'finally' (the body's exception is recorded as a 'Fail', not
--- leaked), and aggregate a 'Report'.
+-- leaked), and aggregate a 'Report'. A throwing /setup/ is isolated too — it
+-- fails that one case (there is nothing to tear down, since setup did not
+-- complete) rather than crashing the whole matrix.
 runMatrix :: Seams env -> [Case] -> IO Report
 runMatrix seams cases = Report <$> mapM runOne cases
   where
     runOne c = do
-      env <- seamSetup seams c
-      result <-
-        (try (seamRun seams env c) :: IO (Either SomeException CaseResult))
-          `finally` seamTeardown seams env c
-      pure (caseId c, either (Fail . show) id result)
+      esetup <- try (seamSetup seams c)
+      case esetup of
+        Left (err :: SomeException) -> pure (caseId c, Fail ("setup: " ++ show err))
+        Right env -> do
+          result <-
+            (try (seamRun seams env c) :: IO (Either SomeException CaseResult))
+              `finally` seamTeardown seams env c
+          pure (caseId c, either (Fail . show) id result)
 
 -- | The default L0 seams: a one-shot container run (the 'OneShot' model). Setup
 -- and teardown are no-ops because a one-shot @docker run --rm@ leaves nothing to

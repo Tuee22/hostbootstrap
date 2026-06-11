@@ -33,6 +33,14 @@ budget interpreter was already removed in Phase 6); and the incus VM storage cor
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). Live `docker`/`kind`/`incus`
 execution is exercised in real runs.
 
+**Reopened (Sprint 5.4).** Sprints 5.1–5.3 remain `Done`; the phase is reopened to make `cluster up`
+**fail-closed on its helm/kind steps** — `requireStep` replaces the swallowed `reportStep`, so a failed
+`kind create` / `helm upgrade --install` aborts loudly (matching the already-fail-closed cordon) instead
+of returning a success a lifting parent process would read as ok. The kube tools are container tools
+(§ L), so the lifecycle runs in the in-container path reached by the self-reference lift (phase-11). The
+fail-closed `cluster up` is landed; the live in-container run is exercised in the
+[demo](phase-13-hostbootstrap-demo.md).
+
 ## Phase Objective
 
 Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
@@ -143,6 +151,35 @@ mutating any state, completing the Phase-5-owned command surface (the applied co
 #### Remaining Work
 
 None.
+
+### Sprint 5.4: Fail-closed `cluster up` and the in-container path [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`, `documents/architecture/composition_methodology.md`
+
+#### Objective
+
+Make `cluster up` fail-closed on its helm/kind steps, and run the lifecycle in the in-container path (the
+kube tools are baked into the base image, not host tools — § L).
+
+#### Deliverables
+
+- `requireStep` replaces the swallowed `reportStep` for `kind create cluster` and
+  `helm upgrade --install`: a non-zero exit or an unresolved tool `die`s, so a broken deploy is loud and a
+  lifting parent process sees a non-zero exit. (`reportStep` is retained for best-effort teardown.)
+- The lifecycle is invoked in the project container via the self-reference lift (`HostBootstrap.Lift`,
+  phase-11), so `helm`/`kind` resolve on the container `$PATH` rather than the host.
+
+#### Validation
+
+- The pure `LifecycleSpec` is unchanged; the fail-closed behaviour and the in-container run are exercised
+  in the [demo](phase-13-hostbootstrap-demo.md)'s real run. `cabal test` passes.
+
+#### Remaining Work
+
+None. The fail-closed `cluster up` is landed; the live in-container run is exercised in the
+[demo](phase-13-hostbootstrap-demo.md).
 
 ## Documentation Requirements
 

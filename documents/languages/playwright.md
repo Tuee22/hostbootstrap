@@ -19,6 +19,6 @@ expect that path automatically pick them up.
 `/root/.npm` is removed after install to keep the image lean.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
-this Playwright runtime: `demo web serve` serves the webservice on the incus host
-and the container-side Playwright run targets that host `baseURL` (the live e2e
-run is exercised during the demo run).
+this Playwright runtime: the webservice is deployed into the kind cluster (the pod
+runs `demo web serve`) and the container-side Playwright run targets the in-cluster
+service via its NodePort `baseURL` (the live e2e run is validated during the demo run).

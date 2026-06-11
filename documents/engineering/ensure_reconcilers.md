@@ -21,6 +21,9 @@
   `hostbootstrap-core` command tree. The *one* fail-fast inside the suite is a **wrong-host misuse**
   (e.g. `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is an operator
   error, **not** an absent dependency.
+- `ensure` is **one operation kind** in the composable-operation algebra — the idempotent-converge kind;
+  the self-reference lift, cluster/deploy steps, and (at L1) roles are other kinds composed the same way.
+  See [composition_methodology](../architecture/composition_methodology.md).
 
 ## Reconciler Contract
 

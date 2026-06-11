@@ -93,8 +93,8 @@ The web build follows the gate, in three ordered steps:
 3. `esbuild --bundle --minify` — bundle the compiled output into the served
    `public/app.js`.
 
-The Playwright e2e suite is not part of the image build; it runs from the container
-against the incus-host `baseURL` during a demo run. See
+The Playwright e2e suite is not part of the image build; it runs from a container on
+the kind network against the in-cluster service via its NodePort during a demo run. See
 [playwright](../languages/playwright.md) and the
 [demo runbook](../operations/demo_runbook.md).
 

@@ -30,6 +30,8 @@ executable hostbootstrap-demo
   ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
   other-modules:
       HostBootstrapDemo.Commands
+      HostBootstrapDemo.Chain
+      HostBootstrapDemo.Role
       HostBootstrapDemo.Web.Api
       HostBootstrapDemo.Web.Server
       HostBootstrapDemo.Web.Bridge
@@ -41,6 +43,7 @@ executable hostbootstrap-demo
     , hostbootstrap-core
     , http-types
     , optparse-applicative
+    , process
     , purescript-bridge
     , text
     , wai

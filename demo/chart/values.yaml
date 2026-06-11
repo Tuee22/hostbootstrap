@@ -1,0 +1,15 @@
+# The project image the in-cluster webservice runs from. Built host-native into
+# the project container (build #3) and loaded into / pulled by the kind cluster;
+# IfNotPresent so a kind-loaded image is used without a registry round-trip.
+image:
+  repository: hostbootstrap-demo
+  tag: local
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+service:
+  # The in-cluster service port (the webservice binds :8080) and the NodePort the
+  # Playwright e2e reaches it through.
+  port: 8080
+  nodePort: 30080

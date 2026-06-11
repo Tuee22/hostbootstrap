@@ -80,7 +80,20 @@ matrixCases =
       case lookup "boom" (reportResults report) of
         Just (Fail msg) -> assertBool ("failure mentions the cause: " ++ msg) ("kaboom" `isInfixOf` msg)
         other -> assertFailure ("expected boom to Fail, got " ++ show other)
-      allPassed report @?= False
+      allPassed report @?= False,
+    testCase "a throwing setup fails that case without crashing the matrix" $ do
+      let seams =
+            Seams
+              { seamSetup = \c ->
+                  if caseId c == "boom" then ioError (userError "setup-kaboom") else pure (caseId c),
+                seamRun = \_ _ -> pure Pass,
+                seamTeardown = \_ _ -> pure ()
+              }
+      report <- runMatrix seams [Case "boom" 1 False, Case "ok" 1 False]
+      case lookup "boom" (reportResults report) of
+        Just (Fail msg) -> assertBool ("setup failure surfaced: " ++ msg) ("setup-kaboom" `isInfixOf` msg)
+        other -> assertFailure ("expected boom to Fail, got " ++ show other)
+      lookup "ok" (reportResults report) @?= Just Pass
   ]
 
 suiteCases :: [TestTree]

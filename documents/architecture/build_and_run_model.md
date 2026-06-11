@@ -111,3 +111,9 @@ unchanged; the host target sits underneath them, so the same machinery runs iden
 linux host is local or encapsulated in an incus VM. See
 [incus](../engineering/incus.md) for the host-provider axis, the `ensure incus` install, and the VM
 lifecycle.
+
+The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level self-reference lift**
+(`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
+binary crosses a boundary by invoking its *own* subcommand in the nested context (`incus exec` for a VM,
+`docker run --rm` for a container). See
+[composition_methodology](composition_methodology.md).

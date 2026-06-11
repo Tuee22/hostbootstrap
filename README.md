@@ -36,14 +36,25 @@ the orientation layer and points at those canonical homes rather than duplicatin
   cordon, the VM, the cluster, the webservice, and teardown. The ownership boundary is described in
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
 
+`hostbootstrap-core` composes host management as **operations** — `ensure` reconcilers, cluster/deploy
+steps, and the **self-reference lift** that crosses an execution-context boundary by re-invoking the
+binary's *own* subcommand in a nested context (`incus exec <vm> -- <pb> …` for a VM,
+`docker run --rm <image> …` for the project container, whose `ENTRYPOINT` is the binary). Each nested
+call runs the same command tree, so a step runs "locally", unaware it was lifted — which is why
+`helm`/`kind` resolve on the container `$PATH` rather than the host. The same algebra expresses both
+deployment and runtime business logic (stateless roles over durable external stores). See
+[`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
+
 > **Current state.** The thin, host-native bootstrapper described in this README is **implemented**:
 > `hostbootstrap/bootstrap.py` is the four-step pre-binary path (assert minimums → ensure the host
 > build toolchain → build the binary host-native on every substrate → exec), with no Docker-ensure,
 > container build, VM sizing, or copy-out. The host-management library — the `ensure` install-and-verify
 > suite, the applied budget cordon, the standardized harness, and the incus host-provider — is
-> implemented and unit-tested; the layered warm store (Phase 12) and the demo's live in-VM run
-> (Phase 13) are the remaining infra-gated work, tracked in
-> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
+> implemented and unit-tested, and the **self-reference lift** (`HostBootstrap.Lift`) and the composition
+> methodology have landed. Phases 5, 10, 11, 13, and 14 are `Active`: the remaining work is real-run-gated
+> — the demo wiring the lift end-to-end, **real per-case test seams** (the current `demoSeams` are a
+> hollow placeholder that assert only cluster existence), and the new `deploy --dry-run` / `role` verbs —
+> tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -183,7 +194,7 @@ pipx install --force /path/to/hostbootstrap
 core directly (L0-direct, like `mcts`) and extends the core command tree through
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, so `hostbootstrap-demo --help` shows the
 inherited core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own
-noun-first verbs (`incus` / `vm` / `harbor` / `web`) without re-implementing any core verb. It is the
+noun-first verbs (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) without re-implementing any core verb. It is the
 end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
 registry (`coreArtifacts ++ demoArtifacts`), the test harness (`demoCases` driven by `runMatrix`), and
 the static-base config. Its static-base budget (`demo/hostbootstrap.dhall`) is the demo's one ceiling —
@@ -229,8 +240,10 @@ The demo carries two test layers:
 - **Haskell harness** — `demo test all` drives `runMatrix` over the demo's case matrix
   (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with `demo test <case>`), each
   case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
-  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The cases bind to the inherited
-  `test` verb (the harness extension stream). These seams need Docker + kind, so they run inside the
+  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The per-case bodies are **real
+  assertions**: `pristine-bootstrap` (a live cluster) and `e2e-tabs` (a Playwright container against the
+  in-cluster webservice via its NodePort) are **live-validated** on a real host; `web-build` asserts the
+  `spago`/`esbuild` bundle. The cases bind to the inherited `test` verb (the harness extension stream). These seams need Docker + kind, so they run inside the
   demo VM / project container:
 
   ```bash
@@ -239,8 +252,9 @@ The demo carries two test layers:
   ```
 
 - **Playwright e2e** — [`demo/playwright/`](demo/playwright/) drives the served surface (the SPA tabs
-  render and `/api/budget` returns the `fitsBudget` view). It targets the webservice `demo web serve`
-  publishes — the incus host in a real run, `http://localhost:8080` locally (override with `BASE_URL`):
+  render and `/api/budget` returns the `fitsBudget` view). It targets the webservice the `demo/chart`
+  deployment publishes — the in-cluster NodePort in a real run, `http://localhost:8080` against a manual
+  `demo web serve` locally (override with `BASE_URL`):
 
   ```bash
   cd demo/playwright
