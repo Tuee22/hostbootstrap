@@ -27,6 +27,7 @@ cover``.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import NamedTuple
 
@@ -110,26 +111,44 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
 
 
 def native_build_command(spec: StaticBaseSpec, project_root: Path) -> tuple[str, ...]:
-    """Build the project binary host-native into ``./.build/`` (every substrate).
+    """Build the project binary host-native, in place (every substrate).
 
-    ``--store-dir`` (a cabal *global* flag, so it precedes the ``install``
+    Plain ``cabal build`` (not ``cabal install``): it is incremental and, on an
+    unchanged rerun, prints just ``Up to date`` — it does **not** re-package each
+    local source into an sdist tarball, re-resolve, or copy the exe on every
+    invocation the way ``install`` does. The built binary is then located via
+    :func:`native_listbin_command` and copied to the stable ``./.build/<project>``
+    path by :func:`_build_native`, so the no-branching exec contract is preserved
+    without the install-time chatter.
+
+    ``--store-dir`` (a cabal *global* flag, so it precedes the ``build``
     subcommand) keeps the package store repo-local under ``./.build/cabal-store``
     rather than the user-global store, so ``git clean -fxd`` fully resets the host
     build state — dependencies included. Cabal requires the store dir to be
     **absolute** (it derives each package's ``--prefix`` from it, and a relative
-    prefix is rejected at configure time), so it is resolved against *project_root*
-    — unlike ``--installdir``, which cabal accepts relative to the build cwd.
+    prefix is rejected at configure time), so it is resolved against *project_root*.
     """
     return (
         _CABAL,
         "--store-dir",
         str(project_root / _STORE_DIR),
-        "install",
+        "build",
         f"exe:{spec.project}",
-        "--installdir",
-        _BUILD_DIR,
-        "--install-method=copy",
-        "--overwrite-policy=always",
+    )
+
+
+def native_listbin_command(spec: StaticBaseSpec, project_root: Path) -> tuple[str, ...]:
+    """Print the built exe's path under ``dist-newstyle/`` (no rebuild, no chatter).
+
+    Carries the same absolute ``--store-dir`` as :func:`native_build_command` so it
+    resolves the identical build plan and reports the binary that build produced.
+    """
+    return (
+        _CABAL,
+        "--store-dir",
+        str(project_root / _STORE_DIR),
+        "list-bin",
+        f"exe:{spec.project}",
     )
 
 
@@ -176,9 +195,20 @@ async def _ensure_toolchain(sub: Substrate) -> None:
 
 
 async def _build_native(spec: StaticBaseSpec, *, project_root: Path) -> None:
-    """Build the binary host-native into ``./.build/<project>``."""
+    """Build the binary host-native and copy it to ``./.build/<project>``.
+
+    ``cabal build`` leaves the exe at a hashed path under ``dist-newstyle/``; we
+    ask cabal for that path (``list-bin``, quiet so its one line is not echoed as
+    chatter) and copy it to the stable ``./.build/<project>`` location every
+    consumer execs. :func:`shutil.copy2` preserves the exec bit and overwrites any
+    prior binary.
+    """
     binary_path(spec, project_root).parent.mkdir(parents=True, exist_ok=True)
     await process.run_checked(native_build_command(spec, project_root), cwd=project_root)
+    located = await process.run_checked(
+        native_listbin_command(spec, project_root), cwd=project_root, quiet=True
+    )
+    shutil.copy2(Path(located.stdout.strip()), binary_path(spec, project_root))
 
 
 async def build_binary(spec: StaticBaseSpec, *, project_root: Path) -> Path:

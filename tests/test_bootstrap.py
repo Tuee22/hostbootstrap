@@ -65,19 +65,28 @@ def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
 
 def test_native_build_command() -> None:
     spec = _spec(Path("/proj"))
+    # Plain incremental `cabal build` (not `install`): no sdist/resolve/copy chatter.
     # The store dir is absolute (resolved against project_root) — cabal rejects a
-    # relative --store-dir at per-package configure time; --installdir stays
-    # relative to the build cwd.
+    # relative --store-dir at per-package configure time.
     assert bootstrap.native_build_command(spec, Path("/proj")) == (
         "cabal",
         "--store-dir",
         "/proj/.build/cabal-store",
-        "install",
+        "build",
         "exe:demo",
-        "--installdir",
-        ".build",
-        "--install-method=copy",
-        "--overwrite-policy=always",
+    )
+
+
+def test_native_listbin_command() -> None:
+    spec = _spec(Path("/proj"))
+    # Same absolute --store-dir as the build, so list-bin resolves the same plan
+    # and reports the binary that build produced under dist-newstyle/.
+    assert bootstrap.native_listbin_command(spec, Path("/proj")) == (
+        "cabal",
+        "--store-dir",
+        "/proj/.build/cabal-store",
+        "list-bin",
+        "exe:demo",
     )
 
 
@@ -131,13 +140,14 @@ async def test_bootstrap_linux_builds_host_native(
 
     assert doctored == [LINUX_CPU]
     # Already-provisioned host: each toolchain probe reports the tool present, so
-    # no `ghcup install` runs — only the probes and the native build. The build's
-    # exact argv (incl. the absolute repo-local --store-dir) is pinned in
-    # test_native_build_command; here we assert it is the recorded final command.
+    # no `ghcup install` runs — only the probes, the native build, and the list-bin
+    # locate. The build/list-bin argv (incl. the absolute repo-local --store-dir)
+    # is pinned in test_native_build_command / test_native_listbin_command.
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
@@ -162,6 +172,7 @@ async def test_build_binary_builds_without_exec(
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert binary == bootstrap.binary_path(spec, tmp_path)
@@ -181,7 +192,10 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     await bootstrap.bootstrap(spec, project_root=tmp_path)
 
     # linux-gpu takes the same host-native path (no container build / copy-out).
-    assert recorded_commands[-1] == bootstrap.native_build_command(spec, tmp_path)
+    assert recorded_commands[-2:] == [
+        bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
+    ]
     assert execed == [[str(tmp_path / ".build/demo")]]
 
 
@@ -199,12 +213,13 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
 
     assert doctored == [APPLE]
     # Already-provisioned Apple host: ghcup, GHC, and Cabal all probe present, so
-    # neither Homebrew nor any `ghcup install` runs — only probes and the build.
+    # neither Homebrew nor any `ghcup install` runs — only probes, build, list-bin.
     assert recorded_commands == [
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
@@ -234,6 +249,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
         bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
@@ -251,7 +267,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
     # Pristine Apple host: ghcup is absent, so Homebrew installs it, then ghcup
-    # installs GHC and Cabal, then the native build runs.
+    # installs GHC and Cabal, then the native build and list-bin locate run.
     assert recorded_commands_fresh_host == [
         ("ghcup", "--version"),
         ("brew", "install", "ghcup"),
@@ -260,6 +276,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
         bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
 

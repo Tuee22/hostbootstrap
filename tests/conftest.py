@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hostbootstrap import dhall_tool, process
+from hostbootstrap import bootstrap, dhall_tool, process
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -47,6 +47,9 @@ def recorded_commands(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
     monkeypatch.setattr(process, "run", _fake)
     monkeypatch.setattr(process, "run_checked", _fake)
+    # _build_native copies the located binary to the stable path; with the fakes
+    # above there is no real source file, so stub the copy to keep tests off-disk.
+    monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
     return calls
 
 
@@ -72,6 +75,7 @@ def recorded_commands_fresh_host(monkeypatch: pytest.MonkeyPatch) -> list[tuple[
 
     monkeypatch.setattr(process, "run", _probe)
     monkeypatch.setattr(process, "run_checked", _checked)
+    monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
     return calls
 
 

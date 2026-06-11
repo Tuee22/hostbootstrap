@@ -48,9 +48,17 @@ it host-native on every substrate means downstream tooling does not branch on su
 run the binary. See [python_haskell_boundary](python_haskell_boundary.md) for the bootstrap sequence
 that produces it.
 
+The bootstrapper populates that path with a plain, incremental `cabal build exe:<project>` (not
+`cabal install`): it asks cabal for the freshly built executable's path under `dist-newstyle/` via
+`cabal list-bin exe:<project>` and copies it to `./.build/<project>`. `cabal build` is incremental and,
+on an unchanged rerun, prints just `Up to date` — it does not re-package each local source into an
+sdist tarball, re-resolve the plan, or copy the exe on every invocation the way `cabal install` does,
+so a warm `hostbootstrap run` is quiet while a genuine cold build still shows live compile progress.
+This mirrors the in-container build, which already uses `cabal build` + `list-bin`.
+
 ## Where the host build cache lives
 
-The host-native `cabal install` keeps its package store **repo-local** at `./.build/cabal-store/`
+The host-native `cabal build` keeps its package store **repo-local** at `./.build/cabal-store/`
 (passed as cabal's global `--store-dir`), not in the user-global store at
 `~/.local/state/cabal/store/`. Because `./.build/` is git-ignored, `git clean -fxd` resets the **full**
 host build state — the compiled dependency closure included — so a cleaned tree rebuilds cold rather
