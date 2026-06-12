@@ -191,12 +191,20 @@ cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`
 (registry push/pull validated). The pristine 3-build bootstrap is **live-validated** on the post-reorg,
 post-refactor code (`vm up` → `vm pristine-bootstrap` cold-builds the full refactored closure → guarded `vm
 down`), and the self-reference lift adoption (Sprints 13.8–13.11) is complete: the demo composes its chain
-on `HostBootstrap.Lift`, and all three harness cases are live-validated — `pristine-bootstrap` + `e2e-tabs`
-on the host and the **production lifted path in-container** (`docker run … hostbootstrap-demo:local test
-web-build` and `… test e2e-tabs`, both `1/1`, `helm`/`kind` on the container `$PATH`, guarded teardown), the
-e2e spec delivered through a context-agnostic named volume. The operator-scale real runs — the multi-arch
-published base tags, the full 8-pod Harbor Helm deployment, and the multi-GB image push — follow the same
-real-run standard Phases 5/10/11/12 use.
+on `HostBootstrap.Lift`, and all three harness cases are live-validated **on the metal host** —
+`pristine-bootstrap` + `e2e-tabs` directly on the host and `web-build` + `e2e-tabs` again in a container
+**on the metal host's Docker** (`docker run … hostbootstrap-demo:local test web-build` and `… test
+e2e-tabs`, both `1/1`, `helm`/`kind` on the container `$PATH`, guarded teardown), the e2e spec delivered
+through a context-agnostic named volume. The **single-representation doctrine** (§ W) is **realized**:
+**Sprint 13.12** collapsed the deploy to one lift sequence whose only lifted compute step is `test all`
+lifted into the project container in the VM (`incus exec <vm> -- docker run --rm <image> test all`), so the
+harness — the one representation — runs `clusterUp` "locally" on the VM's Docker and the kind cluster lives
+**in the VM**; the redundant parallel `Chain.hs` chain is removed. Live-validated: the lifted `test all`
+brings kind up on the VM's Docker (`3/3`, poller-confirmed in the VM, **none** on metal), and the literal
+`demo deploy` apply ran clean end to end (guarded `vm down`, no leftovers); the earlier metal-host
+in-container runs were a dev shortcut, superseded. The
+operator-scale real runs — the multi-arch published base tags, the full 8-pod Harbor Helm deployment, and
+the multi-GB image push — follow the same real-run standard Phases 5/10/11/12 use.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -208,8 +216,13 @@ stores). This phase is `Done`: the composition **methodology** and cookbook are 
 [composition_patterns.md](../documents/engineering/composition_patterns.md),
 [authoring_project_binaries.md](../documents/engineering/authoring_project_binaries.md)) and § U is
 rewritten to the n-level lift (Sprint 14.1); the L0 role-lifecycle skeleton
-(`HostBootstrap.RoleLifecycle`, consumed by the demo's F2 role) is landed (Sprint 14.2). The concrete
-bus/store/role primitives are **L1 (`daemon-substrate`)** work, out of scope here.
+(`HostBootstrap.RoleLifecycle`, consumed by the demo's F2 role) is landed (Sprint 14.2); and the
+**single-representation doctrine** (§ W) — one operation, one representation; the standardized test
+harness is the one representation, **lifted** into the project container in the VM, with **no** parallel
+deploy chain alongside it — is captured (Sprint 14.3) and **realized**: Phase 13 **Sprint 13.12**
+collapsed the demo to the single lift sequence and live-validated it (kind on the VM's Docker, `3/3`, none
+on metal). The concrete bus/store/role primitives are
+**L1 (`daemon-substrate`)** work, out of scope here.
 
 ## Dependency edges
 

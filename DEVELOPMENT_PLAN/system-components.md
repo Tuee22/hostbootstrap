@@ -16,10 +16,14 @@
 > the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
 > (Phase 11) are all landed; the layered warm store (Phase 12) and the worked demo (Phase 13) are
 > implemented and **exercised in real runs** (incus VMs, the pristine 3-build bootstrap, the harness
-> cluster lifecycle, the web/Playwright stack). **Phases 0–14 are `Done`** — the demo's pristine 3-build
-> bootstrap is live-validated on the post-reorg, post-refactor code, and all three harness cases are
-> live-validated (`pristine-bootstrap` + `e2e-tabs` on the host, plus the production lifted path
-> in-container via `docker run … test web-build` / `… test e2e-tabs`). The operator-scale
+> cluster lifecycle, the web/Playwright stack). **Phases 0–14 are `Done`.** The **single-representation
+> doctrine** ([development_plan_standards.md § W](development_plan_standards.md) — one operation, one
+> representation; the standardized test harness is the one representation, **lifted** into the project
+> container in the VM via `incus exec <vm> -- docker run --rm <image> test all`, with no parallel deploy
+> chain alongside it) is **implemented and live-validated**: Phase-13 Sprint 13.12 collapsed the demo deploy
+> to the single lift sequence, and the literal `demo deploy` apply runs `3/3` with the kind cluster on the
+> **VM's** Docker (poller-confirmed in the VM, none on metal), guarded teardown, no leftovers. The earlier
+> metal-host in-container runs were a dev shortcut, superseded by the in-VM lift. The operator-scale
 > real runs (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow
 > the § Validation Policy standard. The rows below carry their owning phase and an
 > Implemented column. The Python surfaces removed along the way are recorded in

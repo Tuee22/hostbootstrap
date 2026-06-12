@@ -26,7 +26,11 @@ subcommand there (`incus exec` for a VM, `docker run --rm` for a container).
 1. **One-shot container lift** — `host → docker run --rm <project-container> <pb> <verb>`. Run a tool the
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container → deploy`.
-   The worked [demo](../operations/demo_runbook.md); the no-copy-out rebuild-in-context case.
+   The worked [demo](../operations/demo_runbook.md); the no-copy-out rebuild-in-context case. Its deploy is
+   a **single** lift sequence whose only lifted compute step lifts the *whole* test workflow into the
+   project container in the VM — `test all` in `inContainer img (inVM vm localContext)`, folding to
+   `incus exec <vm> -- docker run --rm <image> test all` — not a parallel chain of lifted cluster/web-serve/e2e
+   ops (see [single representation](#single-representation-applied-to-shape-2-pristine-host-vm-bootstrap)).
 3. **Host → managed cloud cluster** — build the container, then a container-lift uses a cloud CLI to
    provision a managed Kubernetes cluster against an external state backend, then a second container-lift
    runs `helm` into it. No VM; the cloud is the substrate.
@@ -44,6 +48,30 @@ subcommand there (`incus exec` for a VM, `docker run --rm` for a container).
    platform-specific artifact, copy it out, never run the workload in the VM (the `ensure tart` shape).
 8. **GPU cluster variant** — substrate-select a GPU cluster (device-plugin / GPU-aware kind /
    `RuntimeClass`) and pin accelerator-owning pods; the same chains with a GPU node.
+
+## Single Representation Applied To Shape 2 (Pristine-Host VM Bootstrap)
+
+One operation has one representation; the test workflow is a **lifted** operation, not a parallel
+representation of the deploy. The canonical home for this doctrine is
+[composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-test-workflow-is-a-lifted-operation)
+(and [development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)); the summary
+for shape 2:
+
+- The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is context-agnostic — it runs
+  its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` "locally", so it is a **lift target**, not a
+  lift-aware component (no `LiftContext` inside it).
+- The shape-2 deploy is therefore a single lift sequence whose only compute step lifts the *whole* harness:
+  `test all` in `inContainer img (inVM vm localContext)`. Inside that one lifted context the harness runs
+  `clusterUp` on the VM's Docker, so the kind cluster lives **in the VM**, reached with no second
+  "bring up a cluster" path.
+- Standing up cluster/Harbor/web-serve/e2e as a **separate** chain of lifted ops alongside the harness is a
+  redundant second representation (it duplicates the harness and double-creates clusters when it lifts a
+  harness case). There is one representation, and the harness is it.
+
+The single canonical chain (`demo deploy`) is `ensure incus` (local) → `vm up` (local, cordon #1) →
+`vm pristine-bootstrap` (local → VM: build #2 host-native + build #3 project image) → `test all` (the only
+lifted compute step) → `vm down` (local, guarded teardown). Whether the worked demo realizes this yet is
+tracked in [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md).
 
 ## Operation Kinds
 
@@ -81,8 +109,12 @@ Reused across shapes and kinds:
 - **Plan→Apply** — a dry-run that prints the planned operation/argv sequence before the mutating apply.
 - **Substrate multiplexing** — the same pure workflow parameterized over `(model × substrate)` under one
   control-plane contract.
-- **The test harness lifts too** — a case lifts into a container for e2e, or into the cluster as a Job
-  (itself a finite-job operation); see [harness_workflow](../architecture/harness_workflow.md).
+- **The whole test workflow lifts as one operation** — the consumer's deploy lifts the *entire* harness
+  (`test all`) into the project container in the VM as its single compute step; the harness itself stays
+  context-agnostic and may further lift a case into the cluster as a Job (a finite-job operation). It is
+  one representation, not a parallel chain of lifted cluster/e2e ops; see
+  [single representation](#single-representation-applied-to-shape-2-pristine-host-vm-bootstrap) and
+  [harness_workflow](../architecture/harness_workflow.md).
 
 ## See also
 

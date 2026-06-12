@@ -347,7 +347,7 @@ vmCmd =
     vmBootstrap =
       command
         "pristine-bootstrap"
-        (info (pure runVmBootstrap) (progDesc "apt install pipx -> pipx install hostbootstrap -> hostbootstrap run (build #2 host-native in the VM)"))
+        (info (pure runVmBootstrap) (progDesc "apt/pipx/ghcup -> hostbootstrap run (build #2 host-native) -> ensure docker + docker build (build #3 project image), in the VM"))
 
 -- | @demo vm up@: read the static-base budget, derive the incus VM sizing from
 -- the one canonical parser ('incusSizingArgs'), and launch the VM cordoned to it
@@ -409,7 +409,18 @@ runVmBootstrap = do
   inVM
     "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
     ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
-  putStrLn "pristine-bootstrap: done (the demo binary built host-native in the VM and ran)"
+  inVM
+    "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
+    "cd /root/hostbootstrap/demo && .build/hostbootstrap-demo ensure docker"
+  inVM
+    "build #3 — the project container FROM the pulled base (repo-root context, L0-direct)"
+    ("cd /root/hostbootstrap && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE=" ++ demoBaseImage ++ " -t hostbootstrap-demo:local .")
+  putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
+
+-- | The published base tag the demo's project container builds @FROM@ — cpu /
+-- amd64 (the demo is single-arch). The base is pulled inside the VM by build #3.
+demoBaseImage :: String
+demoBaseImage = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
 
 -- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
 -- source @pipx install@ and the in-VM @hostbootstrap run@ build from. The host

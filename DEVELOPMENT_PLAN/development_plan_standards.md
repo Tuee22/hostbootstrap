@@ -352,3 +352,20 @@ The base-image warm Cabal store freeze is split by library layer: `core.freeze` 
 (daemon-family deps; imported only by the daemon apps). Both are generated in-image by `cabal freeze` and
 **never committed** (`.dockerignore`/`.gitignore` exclude them); each project imports only its layer's
 fragment(s), so cache-hit and version-pinning track the hierarchy.
+
+### W. Single Representation And The Lifted Test Workflow
+
+An operation has exactly **one** representation. The standardized test harness (`HostBootstrap.Harness`:
+`runMatrix` + `Seams`) is the context-agnostic test engine — it brings up an isolated per-case
+environment, runs the case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`) as
+`HostConfig -> IO ()` **locally**, unaware of any enclosing context. The harness is therefore a **lift
+target**, not a lift-aware component: there is **no** `LiftContext` inside it, and that is correct (per the
+self-reference-lift rule, § U). A consumer composes its deploy as a **single** explicit lift sequence
+(§ U) whose final compute step **lifts the whole test workflow** into the project container in the VM — it
+folds to `incus exec <vm> -- docker run --rm <image> test all`. Inside that lifted context the harness
+runs `clusterUp` "locally" on the VM's Docker (the mounted socket), so the kind cluster lives **in the
+VM**, reached with no second "bring up a cluster" path. Re-expressing cluster bring-up / Harbor / web-serve
+/ e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation**: it
+duplicates the harness and double-creates clusters when it lifts a harness case. There is one
+representation, and the harness is it. Cross-references: § T (the harness and the four-stream extension)
+and § U (the self-reference lift the deploy sequence is built from).

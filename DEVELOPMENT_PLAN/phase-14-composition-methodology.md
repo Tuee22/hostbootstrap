@@ -22,7 +22,15 @@ is `Done`; Sprint 14.2 (the L0 role-lifecycle skeleton `HostBootstrap.RoleLifecy
 demo's F2 role) is `Done` — the operation *interface* is the documented taxonomy, not a Haskell typeclass
 (reconcilers stay `HostConfig -> IO ()`, no threaded context). The concrete bus/store/role primitives are
 **L1 (`daemon-substrate`)** work, out of scope here; this phase ships only the L0 substrate and the
-methodology.
+methodology. The phase reopened to fold in the single-representation doctrine (§ W) — the test workflow
+is a **lifted operation**, not a parallel representation — captured in Sprint 14.3 below, and now realized.
+
+The **single-representation doctrine** (one operation, one representation; the standardized test harness is
+the one representation, lifted into the VM-container; no parallel deploy chain alongside it — § W) is
+documented in Sprint 14.3 and **realized in the worked instance**: Phase 13 **Sprint 13.12** collapsed the
+demo to the single lift sequence and is **live-validated** (the lifted `test all` brings kind up on the
+VM's Docker, `3/3`, none on metal; the literal `demo deploy` apply ran clean end to end). See
+[phase-13 Sprint 13.12](phase-13-hostbootstrap-demo.md).
 
 ## Phase Objective
 
@@ -96,11 +104,55 @@ reconcilers stay `HostConfig -> IO ()` (no threaded context), per the compositio
 
 None.
 
+### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Done]
+
+**Status**: Done
+**Implementation**: `documents/architecture/composition_methodology.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ W)
+**Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`
+
+#### Objective
+
+Capture the **single-representation doctrine** as the methodology's worked refinement of the operation
+algebra: an operation has exactly **one** representation. The standardized test harness
+(`HostBootstrap.Harness`: `runMatrix` + `Seams`) **is** that one representation for the cluster-deploy
+workflow — the context-agnostic test engine that brings up an isolated per-case environment, runs the
+case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
+"locally", unaware of any enclosing context. The harness is therefore a **lift target**, not a lift-aware
+component (no `LiftContext` inside it — per the self-reference-lift rule, § U), and that is correct. A
+consumer composes its deploy as a **single** explicit lift sequence (§ U) whose final compute step
+**lifts the whole test workflow** into the project container in the VM — folding to
+`incus exec <vm> -- docker run --rm <image> test all` — so the harness runs `clusterUp` "locally" on the
+VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / Harbor / web-serve
+/ e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation** (it
+duplicates the harness and double-creates clusters); there is one representation, and the harness is it.
+
+#### Deliverables
+
+- The doctrine is documented in `documents/architecture/composition_methodology.md` (the harness as the
+  one representation, lifted; no parallel deploy chain) and stated as a contract in § W of the
+  development-plan standards, cross-referencing § T (the harness/four-stream) and § U (the self-reference
+  lift).
+
+#### Validation
+
+- `HostBootstrap.DocValidator` passes on the updated `composition_methodology.md` (metadata, TL;DR for
+  architecture, resolving relative links). The standards § W cross-references § T and § U.
+
+#### Remaining Work
+
+None. The **worked-instance adoption** landed in Phase 13 **Sprint 13.12**: the demo deploy collapsed to
+the single lift sequence (only lifted compute step `test all` in `inContainer img (inVM vm localContext)`,
+the redundant `Chain.hs` ops removed) and is **live-validated** — the lifted `test all` brings the kind
+cluster up on the **VM's** Docker (`3/3`, poller-confirmed in the VM, **none** on metal), and the literal
+`demo deploy` apply ran clean end to end. See [phase-13 Sprint 13.12](phase-13-hostbootstrap-demo.md).
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/composition_methodology.md` - the operation algebra, the self-reference lift,
-  and the deploy ≡ business-logic unification (created, Sprint 14.1).
+  and the deploy ≡ business-logic unification (created, Sprint 14.1); **extended (Sprint 14.3)** with the
+  single-representation doctrine — the standardized test harness is the one representation, lifted into the
+  VM-container, with no parallel deploy chain alongside it (cross-references standards § W, § T, § U).
 
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the shape cookbook (created).

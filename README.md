@@ -198,14 +198,42 @@ noun-first verbs (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) without
 end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
 registry (`coreArtifacts ++ demoArtifacts`), the test harness (`demoCases` driven by `runMatrix`), and
 the static-base config. Its static-base budget (`demo/hostbootstrap.dhall`) is the demo's one ceiling —
-6 cores, 10 GiB memory, 40 GiB storage — feeding both the VM sizing cordon and the kind-node cap.
+6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node cap.
 
-The fully worked, infra-gated end-to-end run is the canonical
-[demo runbook](documents/operations/demo_runbook.md): a from-zero pristine `ubuntu/24.04` incus VM
-driven by the verb sequence `demo incus ensure` → `demo vm up` → `demo vm pristine-bootstrap` →
-`demo harbor install`/`push` → `demo web serve` → Playwright e2e → teardown (preserving host `.data`).
-That run needs incus, Docker, kind, Helm, and KVM on the host; the runbook is the source of truth for
-it. The two entry points below are the parts you run directly.
+### The single lift sequence
+
+The demo's end-to-end deploy is **one explicit lift sequence**, not a parallel chain that re-expresses
+cluster bring-up, Harbor, web-serve, and e2e alongside the harness. There is **one operation, one
+representation**: the standardized test harness (`HostBootstrap.Harness`: `runMatrix` + the per-case
+`Seams`) is the context-agnostic test engine that brings up an isolated per-case environment, runs the
+case body, and tears it down. It invokes its reconcilers (`clusterUp`, …) as `HostConfig -> IO ()`
+"locally", unaware of any enclosing context — so the harness is a **lift target**, not a lift-aware
+component, and carries no `LiftContext` of its own. Re-expressing the same work as a separate chain of
+lifted ops would be a **redundant representation** that duplicates the harness (and double-creates
+clusters when it lifts a harness case). The single canonical chain `demo deploy` is:
+
+| Step | Context | Role |
+|---|---|---|
+| ensure incus | `local` | reconciler on metal |
+| `vm up` | `local` | the cordon — the VM is the isolation wall |
+| `vm pristine-bootstrap` | `local → VM` | host-native build **in** the VM, then the project-image build, **in** the VM |
+| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step |
+| `vm down` | `local` | guarded teardown (host `.data` preserved) |
+
+The one lifted compute step folds (per the [self-reference lift](documents/architecture/composition_methodology.md))
+to `incus exec <vm> -- docker run --rm <image> test all`. Inside that lifted context the harness runs
+`clusterUp` "locally" = on the **VM's Docker** (the mounted socket), so the kind cluster lives **in the
+VM**, reached with no second "bring up a cluster" path. The doctrine — one operation, one
+representation; the test workflow is a *lifted* operation, not a parallel representation — is stated
+canonically in
+[`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
+
+> **Status — live-validated.** `demo deploy` as the single lift sequence above is implemented and validated
+> on a real host: the literal `demo deploy` apply runs `ensure incus -> vm up -> pristine[#2+#3] -> lifted
+> test all (3/3) -> vm down` clean, with the kind cluster on the **VM's Docker** (poller-confirmed in the
+> VM, none on metal). The earlier metal-host in-container runs were a dev shortcut, superseded by the in-VM
+> lift. See [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md) (Phase 13 Sprint 13.12). The two entry points
+> below are the parts you run directly.
 
 ### Spin it up
 
@@ -230,8 +258,10 @@ cabal run hostbootstrap-demo -- web serve
 ```
 
 `demo web serve` brings up the webservice that `demo web bridge` (PureScript-bridge type generation) and
-the Playwright e2e target against. The full live VM/cluster/Harbor lifecycle is driven by the
-`incus`/`vm`/`harbor` verbs and is documented step by step in the runbook.
+the Playwright e2e target against. The integrated VM/cluster lifecycle is **not** a separate chain of
+verbs: in the target shape it is the single `demo deploy` lift sequence above, whose one lifted compute
+step (`test all`) carries cluster bring-up, web-serve, and e2e **inside** the harness in the VM. The
+`incus`/`vm` verbs are the metal-side cordon steps of that one sequence, documented in the runbook.
 
 ### Run its test suite
 
@@ -240,11 +270,17 @@ The demo carries two test layers:
 - **Haskell harness** — `demo test all` drives `runMatrix` over the demo's case matrix
   (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with `demo test <case>`), each
   case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
-  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The per-case bodies are **real
-  assertions**: `pristine-bootstrap` (a live cluster) and `e2e-tabs` (a Playwright container against the
-  in-cluster webservice via its NodePort) are **live-validated** on a real host; `web-build` asserts the
-  `spago`/`esbuild` bundle. The cases bind to the inherited `test` verb (the harness extension stream). These seams need Docker + kind, so they run inside the
-  demo VM / project container:
+  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The harness is the **one**
+  representation of this work and the lift target — it invokes `clusterUp` as `HostConfig -> IO ()`
+  "locally", with no `LiftContext` of its own. In the target shape the harness is reached **only** as the
+  single lifted compute step of `demo deploy` (`incus exec <vm> -- docker run --rm <image> test all`), so
+  `clusterUp` runs on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
+  (`pristine-bootstrap` a live cluster, `e2e-tabs` a Playwright container against the in-cluster
+  webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
+  when run via `demo deploy` (live-validated, `3/3`); they can also be invoked directly on the metal host
+  for a quick local check. The cases bind to the inherited `test` verb (the harness extension stream). These seams need Docker + kind,
+  so they run inside the demo VM / project container — invoked directly for a local check, or as the
+  lifted step of `demo deploy` end-to-end:
 
   ```bash
   cd demo

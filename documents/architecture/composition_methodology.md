@@ -26,6 +26,11 @@
   role-lifecycle skeleton, run-model selection); concrete higher operation kinds and the specific chain
   of lifts are contributed per the [library hierarchy](library_hierarchy.md) (L1/L2) and are project
   logic.
+- **One operation, one representation.** The standardized test harness (`HostBootstrap.Harness`) is the
+  one context-agnostic test engine, so it is a **lift target**, not a lift-aware component; a consumer's
+  deploy is a **single** lift sequence whose only compute step lifts the *whole* test workflow into the
+  project container in the VM. A parallel chain of lifted cluster/Harbor/web-serve/e2e ops is a redundant
+  second representation. See [§ Single Representation](#single-representation-the-test-workflow-is-a-lifted-operation).
 
 ## The Composable Operation
 
@@ -104,6 +109,59 @@ webservice/SPA is the same shape: a serving role whose API and UI are generated 
 [dhall_generation](dhall_generation.md)); an arbitrary-SPA DSL is an aspirational extension built on the
 streams, not baked into L0.
 
+## Single Representation: The Test Workflow Is A Lifted Operation
+
+An operation has exactly **one** representation. The test workflow is a **lifted** operation, not a
+parallel representation of the deploy.
+
+The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`, see
+[harness_workflow](harness_workflow.md)) is the context-agnostic test engine: it brings up an isolated
+per-case environment, runs the case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`)
+as `HostConfig -> IO ()` **locally**, unaware of any enclosing context. The harness is therefore a **lift
+target**, not a lift-aware component — there is **no** `LiftContext` inside it, and that is correct (it is
+exactly the context-agnostic reconciler the self-reference-lift rule requires).
+
+A consumer composes its deploy as a **single** explicit lift sequence whose final compute step **lifts the
+whole test workflow** into the project container in the VM: it folds to
+`incus exec <vm> -- docker run --rm <image> test all`. Inside that one lifted context the harness runs
+`clusterUp` "locally" = on the VM's Docker (the mounted socket), so the kind cluster lives **in the VM**,
+reached with **no** second "bring up a cluster" path.
+
+- **WRONG**: re-expressing cluster bring-up / Harbor / web-serve / e2e as a **separate** chain of lifted
+  ops *alongside* the harness. This is wrong because it is a redundant second representation of the same
+  operation: it duplicates the harness, and it even double-creates clusters when that separate chain lifts
+  a harness case (the case stands up its own per-case cluster too). There is one representation, and the
+  harness is it.
+- **RIGHT**: the deploy is a single lift sequence whose only compute step is `test all` lifted into
+  `inContainer img (inVM vm localContext)`; the in-cluster bring-up, deploy, and e2e are the harness's job
+  inside that one lifted context, not separate lifted steps.
+
+The single canonical demo chain — the `demo deploy` sequence — is exactly this:
+
+| Step | Context | Role |
+|---|---|---|
+| `ensure incus` | `localContext` | reconciler on metal |
+| `vm up` | `localContext` | cordon #1 (the VM is the wall) |
+| `vm pristine-bootstrap` | `localContext` → VM | build #2 (host-native) + build #3 (project image), in the VM |
+| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step; folds to `incus exec <vm> -- docker run --rm <image> test all` |
+| `vm down` | `localContext` | guarded teardown (`.data` preserved) |
+
+The deploy crosses two cordons (the VM at `vm up`, the in-cluster cap inside the harness) and performs two
+of the three builds inside the VM at `vm pristine-bootstrap`; the lone lifted compute step is `test all`.
+This is the same self-reference lift as everywhere else — the harness is just the thing being lifted.
+
+## Current Status
+
+The doctrine above is **realized** in the worked demo. The `demo deploy` chain is the single lift sequence
+whose only lifted compute step is `test all`, lifted into the project container in the VM, so the harness
+runs `clusterUp` "locally" on the VM's Docker and the kind cluster lives in the VM — there is no second,
+parallel representation. It is **live-validated** (DEVELOPMENT_PLAN
+[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) Sprint 13.12, and
+[Phase 14](../../DEVELOPMENT_PLAN/phase-14-composition-methodology.md) Sprint 14.3, both `Done`): the
+literal `demo deploy` apply runs `3/3` with the kind cluster on the VM's Docker (poller-confirmed in the
+VM, none on metal). The doctrine is canonical
+([development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+
 ## Foundational Principles
 
 Three principles keep the foundation general — they are design rubric, not new mechanisms:
@@ -147,6 +205,8 @@ from these primitives, never baked into L0.
 - [run_models](run_models.md) — the four run-models the algebra selects between.
 - [incus](../engineering/incus.md) and [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the
   `InVM` lift context and the fail-closed in-container cluster path.
+- [harness_workflow](harness_workflow.md) — the `runMatrix` + `Seams` test engine that is the lift target
+  of the single canonical `test all` step.
 - [composition_patterns](../engineering/composition_patterns.md) — the cookbook of shapes that
   instantiate this model.
 - [authoring_project_binaries](../engineering/authoring_project_binaries.md) — how a consumer composes a

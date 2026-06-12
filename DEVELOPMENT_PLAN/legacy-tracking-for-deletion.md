@@ -39,6 +39,19 @@ These three-execution-model surfaces were removed when the Python CLI was reduce
 `bootstrap.py` converged on the thin § M / § N boundary (phase-6, Sprint 6.3). The Python suite passes
 at 100% coverage after their removal.
 
+- **The redundant demo deploy-chain representation** (the explicit `cluster up` / `harbor install` /
+  `web serve` / `e2e` ops in `demo/src/HostBootstrapDemo/Chain.hs`, plus running the harness standalone on
+  metal as a separate path) — a **second representation** of the cluster deploy alongside the standardized
+  harness (`HostBootstrap.Harness`), violating the single-representation doctrine
+  ([development_plan_standards.md § W](development_plan_standards.md)). **Removed.** `Chain.hs` now folds to
+  the single canonical deploy lift sequence whose only lifted compute step is `test all` lifted into the
+  project container in the VM (`incus exec <vm> -- docker run --rm <image> test all`); the harness (the one
+  representation, the context-agnostic lift target) runs `clusterUp` "locally" on the VM's Docker and the
+  kind cluster lives in the VM. **Live-validated** — the literal `demo deploy` apply runs `3/3` with kind on
+  the VM's Docker and **none** on metal, guarded teardown, no leftovers. Owning phase: phase-13 (Sprint
+  13.12). Replacement: the single canonical deploy lift sequence in `Chain.hs` (see
+  [composition_methodology](../documents/architecture/composition_methodology.md)).
+
 - **`core/hostbootstrap-core/example/Main.hs`** (and the `hostbootstrap-example` executable stanza in
   `core/hostbootstrap-core/hostbootstrap-core.cabal`) — the thin one-verb (`greet`) worked example.
   **Removed**, superseded by the full worked consumer under `demo/` (`hostbootstrap-demo`), which extends
@@ -93,9 +106,14 @@ at 100% coverage after their removal.
   in-cluster NodePort with the spec delivered through a context-agnostic named volume (`deliverSpec`). The
   enabling fixes — the fail-closed `cluster up` (`requireStep` replacing the swallowed `reportStep`) and the
   `seamSetup`-in-`try` case isolation in `HostBootstrap.Harness` — landed under phase-5 / phase-10. All three
-  cases are **live-validated**: `pristine-bootstrap` + `e2e-tabs` on the host and the production lifted path
-  in-container (`docker run … hostbootstrap-demo:local test web-build` / `… test e2e-tabs`, both `1/1`).
-  Owning phase: phase-13 (Sprints 13.8/13.9). Replacement: real `demoSeams` driving the lift (see
+  cases are **live-validated on the metal host**: `pristine-bootstrap` + `e2e-tabs` directly on the host
+  and `web-build` / `e2e-tabs` in a container **on the metal host's Docker**
+  (`docker run … hostbootstrap-demo:local test web-build` / `… test e2e-tabs`, both `1/1`) — a dev
+  shortcut, kind on the metal host's Docker, **not** the in-VM lifted path (the integrated in-VM run is
+  the open phase-13 Sprint 13.12). This entry stays in **Completed** because the hollow-`demoSeams`
+  surface itself **was** removed; the separate redundant deploy-chain representation it left in place is
+  tracked as its own **Pending** entry above. Owning phase: phase-13 (Sprints 13.8/13.9). Replacement:
+  real `demoSeams` driving the lift (see
   [composition_methodology](../documents/architecture/composition_methodology.md)).
 - **The demo's `vm test` subcommand** (`vmTest` + `runDemoTests` in
   `demo/src/HostBootstrapDemo/Commands.hs`) — the per-noun test command that bound the demo's case

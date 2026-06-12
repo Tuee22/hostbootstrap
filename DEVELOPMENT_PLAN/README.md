@@ -28,12 +28,15 @@ budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus
 two-freeze split validated on the host `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container; and the
 worked demo (Phase 13) has been **exercised in a real run** on a bare-metal host — incus VMs, the pristine
 3-build bootstrap, the harness cluster lifecycle with cleanup, the `warp`/`wai` + `purescript-bridge`/
-Halogen web stack, and Playwright e2e (3/3). **Phases 0–14 are `Done`.** The demo's pristine 3-build
-bootstrap is live-validated on the post-reorg, post-refactor code (`vm up` → `vm pristine-bootstrap` →
-guarded `vm down`), and all three harness cases are live-validated — `pristine-bootstrap` + `e2e-tabs` on
-the host and the **production lifted path in-container** (`docker run … hostbootstrap-demo:local test
-web-build` and `… test e2e-tabs`, both `1/1`, `helm`/`kind` on the container `$PATH`), with the e2e spec
-delivered through a context-agnostic named volume.
+Halogen web stack, and Playwright e2e (3/3). **Phases 0–14 are `Done`.** The **single-representation
+doctrine** (§ W — one operation, one representation: the standardized test harness is the one
+representation, **lifted** into the project container in the VM via
+`incus exec <vm> -- docker run --rm <image> test all`, with **no** parallel deploy chain alongside it) is
+**implemented and live-validated**: the demo deploy collapsed to one explicit lift sequence (Phase-13
+Sprint 13.12), and the literal `demo deploy` apply ran `ensure incus -> vm up -> pristine[#2+#3] -> lifted
+test all (3/3) -> vm down` clean — the kind cluster comes up on the **VM's** Docker (poller-confirmed in
+the VM, **none** on metal). The earlier metal-host in-container runs were a dev shortcut, superseded by the
+in-VM lift; the e2e spec is delivered through a context-agnostic named volume.
 The operator-scale real runs (the multi-arch published base tags, the full 8-pod Harbor deployment, the
 multi-GB image push) **remain operator steps**, run per the same § Validation Policy standard. The Phase-0
 governance, including the doctrine-clarity sweep, has **closed** (per § A it may reopen only when a future

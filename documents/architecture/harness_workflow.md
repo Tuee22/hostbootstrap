@@ -20,6 +20,12 @@
   project's test prefix, and the pure `teardown` partition keeps `.data` out of the removal set.
 - `sliceBudget` keeps the matrix within the project ceiling — divisible cases split by weight,
   indivisible cases run serially at the full budget.
+- The harness is **context-agnostic**: its seams invoke reconcilers (e.g. `clusterUp`) "locally", with no
+  `LiftContext` inside the engine. It is therefore a **lift target** — a consumer lifts the whole `test all`
+  workflow into a nested context (e.g. a VM-container), and the per-case cluster comes up wherever the
+  harness lands. The harness is the **one** representation of the test workflow; cluster bring-up / deploy /
+  e2e are not re-expressed as a parallel chain of lifted ops. See
+  [composition_methodology](composition_methodology.md).
 
 ## The Per-Case Loop
 
@@ -55,6 +61,14 @@ project-specific:
 container run (the `OneShot` run-model from [run models](run_models.md)); a cluster project supplies
 kind/Helm seams instead (the `Cluster` model). The app never re-implements the loop, the isolation, or
 the guard — it supplies its case matrix, and a cluster project additionally supplies its seams.
+
+The seams call `clusterUp` (and the per-case deploy/e2e) **"locally"** — they hold no execution-context
+parameter and are unaware of any enclosing lift. A consumer that needs the cluster to come up elsewhere
+(say on a VM's Docker) lifts the **whole** `test all` workflow into that context (e.g. `incus exec <vm> --
+docker run --rm <image> test all`), so the seams run as if local and the cluster lands wherever the harness
+was lifted to. This is why the harness is a lift target, not a lift-aware component, and why a separate
+chain of lifted cluster/deploy/e2e ops alongside it would be a redundant second representation. See
+[composition_methodology](composition_methodology.md).
 
 ## Never-Touch-Production Is Mechanical
 

@@ -35,9 +35,9 @@ data BudgetView = BudgetView
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 -- | The demo's declared budget (mirrors @hostbootstrap.dhall@: 6 cpu, 10 GiB,
--- 40 GiB) as the vocabulary 'V.Budget'.
+-- 80 GiB) as the vocabulary 'V.Budget'.
 demoBudget :: V.Budget
-demoBudget = V.Budget 6 10 40
+demoBudget = V.Budget 6 10 80
 
 -- | The demo's concurrent web-pod set (the @demoWeb@ schema-gen artifact).
 demoPods :: [V.PodResources]

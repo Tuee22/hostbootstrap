@@ -48,6 +48,15 @@ The harness runs through the **project binary**, against the runtime — distinc
 verb, which is the fail-fast image-build gate over source shape (see
 [code_check_doctrine.md](code_check_doctrine.md)).
 
+The harness is the **context-agnostic test engine**: its seams invoke reconcilers (e.g. `cluster up`)
+"locally", carrying no execution-context parameter and unaware of any enclosing lift. It is therefore a
+**lift target**, lifted as a whole — a consumer that needs the per-case cluster to come up in a nested
+context lifts the entire `test all` workflow there (e.g. `incus exec <vm> -- docker run --rm <image> test
+all`), and the cluster lands on that context's Docker. The `test all` workflow is the **one** representation
+of the test path; re-expressing cluster bring-up / web-serve / e2e as a parallel chain of lifted ops
+alongside the harness would be a redundant second representation. See
+[../architecture/composition_methodology.md](../architecture/composition_methodology.md).
+
 ## hostbootstrap-core (Haskell)
 
 The Haskell library is tested as part of the project's canonical `check-code` and test targets,

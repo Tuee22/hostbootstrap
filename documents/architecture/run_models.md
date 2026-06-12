@@ -19,6 +19,12 @@
 - The model feeds the test harness through `Seams`: the default L0 `defaultSeams` realize the
   `OneShot` model; a cluster project supplies kind/Helm seams for the `Cluster` model. See
   [harness workflow](harness_workflow.md).
+- The harness is the **context-agnostic test engine** — it invokes its reconcilers (e.g. `cluster up`)
+  "locally", unaware of any enclosing context — so it is a **lift target**, not a lift-aware component.
+  The `Cluster` run-model therefore runs **wherever the harness is lifted to**: lift `test all` into a
+  VM-container and the kind cluster comes up on that VM's Docker. The harness is lifted as a whole, never
+  re-expressed as a parallel chain of lifted cluster ops. See
+  [composition_methodology](composition_methodology.md).
 
 ## The Four Run-Models
 
@@ -34,6 +40,12 @@ the binary builds; `HostNative` runs the host binary directly. `HostDaemon` diff
 in **lifetime**: a daemon stays up rather than running to completion. `Cluster` is the only model that
 stands up an orchestrated multi-node substrate; it is realized by the cluster lifecycle in
 [cluster lifecycle](../engineering/cluster_lifecycle.md).
+
+The `Cluster` model is **context-agnostic**: the harness drives `cluster up` "locally" against whatever
+Docker the running process sees. Lifting the whole `test all` workflow into a VM-container therefore stands
+the kind cluster up on the **VM's** Docker (the mounted socket), with no second "bring up a cluster" path —
+the harness is the one representation, lifted as a unit (see
+[composition_methodology](composition_methodology.md)).
 
 ## The Selection Key
 

@@ -18,7 +18,9 @@ material lives here. Conventions are defined in
   `hostbootstrap-core` Haskell library: module surface and the optparse command-tree extension
   contract project binaries build on.
 - [architecture/composition_methodology.md](architecture/composition_methodology.md) — the
-  composable-operation algebra, the self-reference lift across `Local | InVM | InContainer`, and the
+  composable-operation algebra, the self-reference lift across `Local | InVM | InContainer`, the
+  one-operation-one-representation rule (the test harness is a context-agnostic lift target, so a
+  consumer lifts the whole test workflow rather than re-expressing it as a parallel chain), and the
   deploy ≡ business-logic unification (one algebra for deployment and runtime business logic).
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
