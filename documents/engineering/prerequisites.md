@@ -95,12 +95,12 @@ the eventual lift of their residual checks into `HostBootstrap.HostPrereqs` is t
 >
 > **RIGHT**
 >
-> Let the bootstrap path run `ensure colima`, which provisions a per-project VM sized to the
-> `resources` budget in [`hostbootstrap.dhall`](schema.md).
+> Let the project binary run `ensure colima`, which provisions a per-project VM sized to the
+> `resources` budget in [`<project>.dhall`](schema.md).
 
 ## See also
 
 - [ensure_reconcilers.md](ensure_reconcilers.md) — the reconcilers that cover everything beyond the
   minimums
-- [schema.md](schema.md) — the static-base config the Python layer reads after the minimums pass
+- [schema.md](schema.md) — the project-local config the binary reads after it is built
 - [base_image.md](base_image.md) — the image the project container is built from

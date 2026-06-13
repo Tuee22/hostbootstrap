@@ -13,21 +13,21 @@
   substrate — the same way everywhere.
 - A Linux ELF cannot exec on a general host such as Apple silicon, so there is **no**
   build-in-container, copy-out path; the binary is always built for the host it will run on.
-- The Python bootstrapper ensures the host **build toolchain** (on Apple, Homebrew → `ghcup` →
-  GHC/Cabal; the equivalent on Linux), builds the binary host-native, writes the host-level
-  `project-binary-context-config.dhall`, and execs it.
+- The Python bootstrapper derives the project name from the Cabal file, ensures the host **build
+  toolchain** (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux), builds the binary
+  host-native, and execs it.
 - Building the **project container** is the execed binary's job, not the bootstrapper's — the binary
   ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
 
-> **Current state.** This model is implemented. The Python bootstrapper
-> (`hostbootstrap/bootstrap.py`) builds the binary host-native on **every** substrate — Linux
-> included; there is no build-in-container, copy-out path — writes the host-level
-> `project-binary-context-config.dhall`, and execs it. Normal binary commands read the sibling context;
-> `config show FILE` is the explicit static-base inspection path. Ensuring Docker, building the project
-> container, and the cordon are owned by the execed binary, not the bootstrapper.
-> The original convergence to this host-native, no-copy-out model is recorded in
-> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md).
+> **Current status.** The host-native, no-copy-out model is implemented. Python no longer writes any Dhall
+> file after the build; the built binary creates or validates its sibling `<project>.dhall`. Ensuring
+> Docker, building the project container, and the cordon are owned by the execed binary, not the
+> bootstrapper. The original convergence
+> to the host-native model is recorded in
+> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md);
+> the project-local config handoff is recorded in
+> [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
 
 ## Why the binary is built host-native
 
@@ -42,9 +42,9 @@ reason. Every substrate now builds the binary **host-native**, for the host it w
 | `apple-silicon` | Host-native (the bootstrapper ensures a host GHC toolchain via Homebrew → `ghcup`) | On the host | A Linux ELF cannot exec on macOS, so the runnable binary must be a native macOS build. |
 
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
-`./.build/<binary>`; they never reach into a container to run the binary. The sibling
-`./.build/project-binary-context-config.dhall` is written beside that executable before exec; normal
-command dispatch requires it.
+`./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
+requires the sibling `./.build/<project>.dhall`, created by the built binary's config initialization
+surface rather than by Python.
 
 ## Why `./.build/` Is Always Present
 
@@ -81,16 +81,16 @@ see [ensure_reconcilers](../engineering/ensure_reconcilers.md).
 ## The Project Container Is the Binary's Job
 
 The Python bootstrapper does **not** ensure Docker or build the project container. Once the
-host-native binary is built, given its host-level context config, and execd, the **binary** does that
-work, because it can do everything a built binary reasonably can:
+host-native binary is built and execed, the **binary** does that work, because it can do everything a
+built binary reasonably can:
 
 - **Ensure Docker**: the binary's `ensure docker` reconciler provisions and verifies Docker (on Apple,
   the per-project Colima VM sized to the resource budget). See
   [resource_budgeting](../engineering/resource_budgeting.md).
 - **Build the project container** `FROM` the base image, gating on the project's canonical code-check
   (formatting, lint, type/compile checks). Building the container is the mechanism that enforces this
-  gate. The Dockerfile first runs `--create-container-config` so the container's normal commands read a
-  sibling context file. See
+  gate. The Dockerfile first runs the binary's config initialization surface so the container's normal
+  commands read a sibling `/usr/local/bin/<project>.dhall`. See
   [code_check_doctrine](../engineering/code_check_doctrine.md) and
   [binary_context_config](binary_context_config.md).
 

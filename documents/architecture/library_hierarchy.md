@@ -97,7 +97,8 @@ projectArtifacts = coreArtifacts ++ [ artifactOf @ProjectConfig "project" sample
 ```
 
 `config schema` then prints the transitive union of the in-scope schemas, and `config render`
-materializes the in-scope renders. See [config_generation](../engineering/config_generation.md).
+materializes static example renders from the same registry. Runtime child/deploy projections are separate
+gated commands that derive from the active local config. See [config_generation](../engineering/config_generation.md).
 
 - **WRONG**: a project builds a fresh registry that omits `coreArtifacts`, so `config schema` no
   longer prints `budget`/`podResources`/`kindNode`. This is wrong because the core artifacts are part

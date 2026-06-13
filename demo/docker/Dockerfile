@@ -3,7 +3,7 @@
 # The idiomatic hostbootstrap-demo project container — the reference shape every
 # derived project copies (see documents/engineering/derived_dockerfile.md). It
 # inherits the warm-store base, builds and installs the project binary (reusing
-# the warm store via the imported freeze), creates the container binary-context
+# the warm store via the imported freeze), creates the project-local container
 # config, runs the in-Dockerfile `check-code` quality gate, then builds the web
 # bundle (purescript-bridge -> spago -> esbuild). tini is PID 1.
 #
@@ -29,9 +29,16 @@ RUN cp docker/container.cabal.project cabal.project
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" /usr/local/bin/hostbootstrap-demo
 
-# The bootstrap-only context hook is the one command allowed to run before the
-# sibling project-binary-context-config.dhall exists.
-RUN hostbootstrap-demo --create-container-config /usr/local/bin/project-binary-context-config.dhall
+# The target project-local config hook is allowed before normal command gating.
+RUN hostbootstrap-demo config init \
+    --role vm-project-container \
+    --output /usr/local/bin/hostbootstrap-demo.dhall \
+    --source-root /workspace/demo \
+    --dockerfile docker/Dockerfile \
+    --cpu 6 \
+    --memory 10GiB \
+    --storage 80GiB \
+    --ha-replicas 1
 
 # The mandatory code-check quality gate: the image cannot exist with violations.
 RUN hostbootstrap-demo check-code

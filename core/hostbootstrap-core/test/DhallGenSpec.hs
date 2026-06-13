@@ -8,6 +8,7 @@ import Control.Exception (SomeException, try)
 import Data.List (find)
 import qualified Data.Text as T
 import qualified Dhall
+import HostBootstrap.Config.Schema (projectConfigSchemaText)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Dhall.Gen
   ( ConfigArtifact (..),
@@ -75,8 +76,12 @@ registryCases =
     testCase "config schema matches the committed CI snapshot" $ withRoot $ \root -> do
       let goldenPath = root </> "core" </> "hostbootstrap-core" </> "test" </> "golden" </> "config_schema.dhall"
       golden <- readFile goldenPath
+      let emitted =
+            schemaUnion coreArtifacts
+              <> "\n\n-- projectConfig\n"
+              <> projectConfigSchemaText
       -- A decoder-type change that is not re-snapshotted fails this diff.
-      T.stripEnd (schemaUnion coreArtifacts) @?= T.stripEnd (T.pack golden)
+      T.stripEnd emitted @?= T.stripEnd (T.pack golden)
   ]
 
 renderCases :: [TestTree]

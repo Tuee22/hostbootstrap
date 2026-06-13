@@ -16,7 +16,7 @@
 - The **self-reference lift** is the operation that crosses an execution-context boundary: the binary
   re-invokes its *own* subcommand in a nested context — `incus exec <vm> -- <pb> <subcmd>` for a VM,
   `docker run --rm <image> <subcmd>` for a container (whose `ENTRYPOINT` is the binary). Each nested
-  call runs the same command tree and reads the sibling `project-binary-context-config.dhall` runtime
+  call runs the same command tree and reads the sibling `<project>.dhall` runtime
   check so the binary can validate where it is in the global chain. See
   [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 - The same algebra expresses **deployment** (the bootstrap topology) and **runtime business logic** (the
@@ -74,7 +74,7 @@ maps to an absolute path; every nested tool is the target's own bare `$PATH` nam
 generalizes the [`incus`](../engineering/incus.md) host-provider axis from the two-case
 `HostTarget = Local | InVM` to an n-level lift.
 
-Every normal nested invocation reads `project-binary-context-config.dhall` next to the binary before
+Every normal nested invocation reads `<project>.dhall` next to the binary before
 command dispatch. The command tree is still the same everywhere, but a copy of the binary can explicitly
 reason about whether it is the host orchestrator, the VM binary, the project container on the VM, or a
 service pod.
@@ -103,7 +103,7 @@ process sees a non-zero exit.
 The lift explains how a command crosses a context boundary; the binary-context config explains how the
 callee decides whether the command belongs there.
 
-Every normal command reads `project-binary-context-config.dhall` from next to the executable before
+Every normal command reads `<project>.dhall` from next to the executable before
 dispatch. The context names the binary's position in the chain, such as host orchestrator, VM binary,
 project container on the VM, or cluster service. A command whose semantics do not match that context
 fails fast with exit code 1. For example, a service pod may serve the web role but must refuse `vm up`,

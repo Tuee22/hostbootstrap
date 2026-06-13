@@ -6,10 +6,9 @@
 
 -- | Runtime binary-context configuration.
 --
--- A project binary reads @project-binary-context-config.dhall@ from next to the
--- executable before normal command dispatch. This module provides the typed
--- Dhall shape, sibling-file discovery, validation, and command-gating helpers
--- used by the core and project command trees.
+-- A project binary reads a project-local @<project>.dhall@ before normal
+-- command dispatch; this module provides the typed context section embedded in
+-- that file plus validation helpers used by the command gate.
 module HostBootstrap.Context
   ( BinaryContext (..),
     Capability (..),
@@ -19,14 +18,16 @@ module HostBootstrap.Context
     ContextRequirement (..),
     ResourceEnvelope (..),
     BinaryContextError (..),
-    contextFileName,
     defaultResourceEnvelope,
-    contextPathForExecutable,
-    siblingContextPath,
+    defaultRoleName,
+    contextForKind,
     hostOrchestratorContext,
     deriveVMContext,
     deriveContainerContext,
     deriveServiceContext,
+    deriveDaemonContext,
+    deriveOneShotContext,
+    deriveTestHarnessContext,
     standaloneContainerContext,
     contextRequirement,
     decodeContextText,
@@ -38,9 +39,7 @@ module HostBootstrap.Context
     commandAllowed,
     readAndValidateContextFile,
     requireContextFile,
-    requireSiblingContext,
     withValidatedContext,
-    withSiblingContext,
     contextErrorMessage,
   )
 where
@@ -57,28 +56,14 @@ import Dhall.Marshal.Encode (Encoder (embed))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
-import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), exitWith)
-import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
 
--- | The canonical sibling runtime-context filename.
-contextFileName :: FilePath
-contextFileName = "project-binary-context-config.dhall"
-
--- | A build-time placeholder for bootstrap-only context creation surfaces, such
--- as the Dockerfile shortcut, that run before a parent context is available.
--- Normal derived contexts carry the parent envelope forward.
+-- | A build-time placeholder for bootstrap-only config initialization surfaces
+-- that run before a parent context is available. Normal derived contexts carry
+-- the parent envelope forward.
 defaultResourceEnvelope :: ResourceEnvelope
 defaultResourceEnvelope = ResourceEnvelope {cpu = 0, memory = "0GiB", storage = "0GiB"}
-
--- | Where a context file lives for a known executable path.
-contextPathForExecutable :: FilePath -> FilePath
-contextPathForExecutable exe = takeDirectory exe </> contextFileName
-
--- | The context path for the currently running executable.
-siblingContextPath :: IO FilePath
-siblingContextPath = contextPathForExecutable <$> getExecutablePath
 
 -- | The place this process occupies in the composed topology.
 data ContextKind
@@ -139,6 +124,7 @@ data BinaryContext = BinaryContext
     binary :: Text,
     sourceRoot :: Text,
     contextKind :: ContextKind,
+    roleName :: Text,
     parentChain :: [ContextFrame],
     capabilities :: [Capability],
     allowedCommandClasses :: [CommandClass],
@@ -147,37 +133,27 @@ data BinaryContext = BinaryContext
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
--- | Construct the first context created by the Python bootstrapper.
-hostOrchestratorContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
-hostOrchestratorContext projectName binaryName root envelope =
+-- | Construct a standalone context of the requested kind. Parent-generated
+-- child contexts use the same role-specific authority, plus a parent frame.
+contextForKind :: Text -> Text -> Text -> ResourceEnvelope -> ContextKind -> BinaryContext
+contextForKind projectName binaryName root envelope kind =
   BinaryContext
     { project = projectName,
       binary = binaryName,
       sourceRoot = root,
-      contextKind = HostOrchestrator,
+      contextKind = kind,
+      roleName = defaultRoleName kind,
       parentChain = [],
-      capabilities = [HostTools, IncusProvider],
-      allowedCommandClasses =
-        [ EnsureCommand,
-          ConfigInspectionCommand,
-          ConfigGenerationCommand,
-          ContextCreationCommand,
-          ClusterLifecycleCommand,
-          TestWorkflowCommand,
-          CheckCodeCommand,
-          HostOrchestratorCommand,
-          ProjectCommand
-        ],
+      capabilities = capabilitiesForKind kind,
+      allowedCommandClasses = commandClassesForKind kind,
       resourceEnvelope = envelope,
-      childContextKinds =
-        [ VMOrchestrator,
-          VMProjectContainer,
-          ClusterService,
-          Daemon,
-          OneShotJob,
-          TestHarness
-        ]
+      childContextKinds = childKindsForKind kind
     }
+
+-- | Construct a host-orchestrator context.
+hostOrchestratorContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
+hostOrchestratorContext projectName binaryName root envelope =
+  contextForKind projectName binaryName root envelope HostOrchestrator
 
 -- | Derive a VM-local orchestrator context from its parent.
 deriveVMContext :: BinaryContext -> Text -> BinaryContext
@@ -208,34 +184,49 @@ deriveServiceContext parent root =
     parent
     root
     ClusterService
-    [KubernetesAPI, DurableStore, ServicePort]
-    [ConfigInspectionCommand, ServiceCommand]
-    []
+    (capabilitiesForKind ClusterService)
+    (commandClassesForKind ClusterService)
+    (childKindsForKind ClusterService)
+
+-- | Derive a daemon context from its parent.
+deriveDaemonContext :: BinaryContext -> Text -> BinaryContext
+deriveDaemonContext parent root =
+  childContext
+    parent
+    root
+    Daemon
+    (capabilitiesForKind Daemon)
+    (commandClassesForKind Daemon)
+    (childKindsForKind Daemon)
+
+-- | Derive a one-shot-job context from its parent.
+deriveOneShotContext :: BinaryContext -> Text -> BinaryContext
+deriveOneShotContext parent root =
+  childContext
+    parent
+    root
+    OneShotJob
+    (capabilitiesForKind OneShotJob)
+    (commandClassesForKind OneShotJob)
+    (childKindsForKind OneShotJob)
+
+-- | Derive a test-harness context from its parent.
+deriveTestHarnessContext :: BinaryContext -> Text -> BinaryContext
+deriveTestHarnessContext parent root =
+  childContext
+    parent
+    root
+    TestHarness
+    (capabilitiesForKind TestHarness)
+    (commandClassesForKind TestHarness)
+    (childKindsForKind TestHarness)
 
 -- | Create a standalone project-container context for Dockerfile bootstrap
--- surfaces such as @--create-container-config@, which run before normal command
--- gating can require an existing sibling context.
+-- surfaces such as @config init --role vm-project-container@, which run before
+-- normal command gating can require an existing sibling config.
 standaloneContainerContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
 standaloneContainerContext projectName binaryName root envelope =
-  BinaryContext
-    { project = projectName,
-      binary = binaryName,
-      sourceRoot = root,
-      contextKind = VMProjectContainer,
-      parentChain = [],
-      capabilities = [DockerSocket, ContainerRuntime, KindNetwork],
-      allowedCommandClasses =
-        [ ConfigInspectionCommand,
-          ConfigGenerationCommand,
-          ContextCreationCommand,
-          ClusterLifecycleCommand,
-          TestWorkflowCommand,
-          CheckCodeCommand,
-          ProjectCommand
-        ],
-      resourceEnvelope = envelope,
-      childContextKinds = [ClusterService, OneShotJob, TestHarness]
-    }
+  contextForKind projectName binaryName root envelope VMProjectContainer
 
 childContext ::
   BinaryContext ->
@@ -251,12 +242,75 @@ childContext parent root kind caps classes childKinds =
       binary = binary parent,
       sourceRoot = root,
       contextKind = kind,
+      roleName = defaultRoleName kind,
       parentChain = parentChain parent ++ [ContextFrame (contextKind parent) (binary parent)],
       capabilities = caps,
       allowedCommandClasses = classes,
       resourceEnvelope = resourceEnvelope parent,
       childContextKinds = childKinds
     }
+
+capabilitiesForKind :: ContextKind -> [Capability]
+capabilitiesForKind HostOrchestrator = [HostTools, IncusProvider]
+capabilitiesForKind VMOrchestrator = [HostTools, DockerSocket, ContainerRuntime]
+capabilitiesForKind VMProjectContainer = [DockerSocket, ContainerRuntime, KindNetwork]
+capabilitiesForKind ClusterService = [KubernetesAPI, DurableStore, ServicePort]
+capabilitiesForKind Daemon = [DurableStore, ServicePort]
+capabilitiesForKind OneShotJob = [ContainerRuntime]
+capabilitiesForKind TestHarness = [DockerSocket, ContainerRuntime, KindNetwork]
+
+commandClassesForKind :: ContextKind -> [CommandClass]
+commandClassesForKind HostOrchestrator =
+  [ EnsureCommand,
+    ConfigInspectionCommand,
+    ConfigGenerationCommand,
+    ContextCreationCommand,
+    ClusterLifecycleCommand,
+    TestWorkflowCommand,
+    CheckCodeCommand,
+    HostOrchestratorCommand,
+    ProjectCommand
+  ]
+commandClassesForKind VMOrchestrator =
+  [EnsureCommand, ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
+commandClassesForKind VMProjectContainer =
+  [ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
+commandClassesForKind ClusterService =
+  [ConfigInspectionCommand, ServiceCommand]
+commandClassesForKind Daemon =
+  [ConfigInspectionCommand, DaemonCommand]
+commandClassesForKind OneShotJob =
+  [ConfigInspectionCommand, ProjectCommand]
+commandClassesForKind TestHarness =
+  [ConfigInspectionCommand, ConfigGenerationCommand, ClusterLifecycleCommand, TestWorkflowCommand]
+
+childKindsForKind :: ContextKind -> [ContextKind]
+childKindsForKind HostOrchestrator =
+  [ VMOrchestrator,
+    VMProjectContainer,
+    ClusterService,
+    Daemon,
+    OneShotJob,
+    TestHarness
+  ]
+childKindsForKind VMOrchestrator =
+  [VMProjectContainer, ClusterService, Daemon, OneShotJob, TestHarness]
+childKindsForKind VMProjectContainer =
+  [ClusterService, Daemon, OneShotJob, TestHarness]
+childKindsForKind ClusterService = []
+childKindsForKind Daemon = []
+childKindsForKind OneShotJob = []
+childKindsForKind TestHarness = [ClusterService]
+
+-- | The default stable role label used in generated configs and logs.
+defaultRoleName :: ContextKind -> Text
+defaultRoleName HostOrchestrator = "host-orchestrator"
+defaultRoleName VMOrchestrator = "vm-orchestrator"
+defaultRoleName VMProjectContainer = "vm-project-container"
+defaultRoleName ClusterService = "cluster-service"
+defaultRoleName Daemon = "daemon"
+defaultRoleName OneShotJob = "one-shot-job"
+defaultRoleName TestHarness = "test-harness"
 
 -- | What a command expects from the active context.
 data ContextRequirement = ContextRequirement
@@ -351,12 +405,6 @@ requireContextFile path req = do
       hPutStrLn stderr (contextErrorMessage err)
       exitWith (ExitFailure 1)
 
--- | Load and validate the currently running executable's sibling context.
-requireSiblingContext :: Text -> CommandClass -> [Capability] -> IO BinaryContext
-requireSiblingContext binaryName cls caps = do
-  path <- siblingContextPath
-  requireContextFile path (contextRequirement binaryName cls caps)
-
 -- | Run an action only when the decoded context satisfies the command
 -- requirement. This keeps command tests side-effect-free on gate failure.
 withValidatedContext :: BinaryContext -> ContextRequirement -> IO a -> IO (Either BinaryContextError a)
@@ -364,12 +412,6 @@ withValidatedContext ctx req action =
   case validateContext req ctx of
     Left err -> pure (Left err)
     Right _ -> Right <$> action
-
--- | Run an action with the validated sibling context.
-withSiblingContext :: Text -> CommandClass -> [Capability] -> (BinaryContext -> IO a) -> IO a
-withSiblingContext binaryName cls caps action = do
-  ctx <- requireSiblingContext binaryName cls caps
-  action ctx
 
 -- | A one-line diagnostic suitable for fail-fast CLI exits.
 contextErrorMessage :: BinaryContextError -> String

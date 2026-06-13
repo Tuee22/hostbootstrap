@@ -45,7 +45,7 @@ dependency set into the frozen Cabal store. Pinning both means a derived project
 ## Dependency Surface
 
 The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
-static-base-schema decoder) as its defining dependencies, plus the small set used by host-tool
+project-local config decoder/generator) as its defining dependencies, plus the small set used by host-tool
 resolution and the reconcilers (`base`, `containers`, `directory`, `filepath`, `process`,
 `safe-exceptions`, `text`, and `unix` — the last backing the POSIX prereq checks in
 `HostPrereqs` via `System.Posix`). Every one of these is already warmed into the base-image Cabal
@@ -53,7 +53,7 @@ store.
 
 ## Build And Test
 
-- `cabal build all` builds the library and the static-base executable.
+- `cabal build all` builds the library and the bare executable.
 - `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
 - `hostbootstrap --help` prints the composed core command tree, which lists the `ensure`, `config`,
   and `cluster` verbs today.

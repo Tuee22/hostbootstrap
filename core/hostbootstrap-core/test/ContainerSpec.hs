@@ -2,8 +2,9 @@
 
 module ContainerSpec (tests) where
 
-import HostBootstrap.Config.Schema (Resources (..), StaticBase (..))
+import HostBootstrap.Config.Schema (defaultProjectConfig)
 import HostBootstrap.Container (dockerBuildArgs, projectImageTag)
+import qualified HostBootstrap.Context as Context
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 
@@ -18,9 +19,4 @@ tests =
           @?= ["build", "-f", "docker/Dockerfile", "--build-arg", "BASE_IMAGE=base:tag", "-t", "demo:local", "."]
     ]
   where
-    sb =
-      StaticBase
-        { project = "demo",
-          dockerfile = "docker/Dockerfile",
-          resources = Resources 4 "8GiB" "20GiB"
-        }
+    sb = defaultProjectConfig "demo" "." Context.HostOrchestrator

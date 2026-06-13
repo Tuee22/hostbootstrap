@@ -14,7 +14,8 @@
   `HostBootstrap.Harness`; the app supplies only its case matrix. See
   [../architecture/harness_workflow.md](../architecture/harness_workflow.md).
 - `hostbootstrap-core` (Haskell) carries the bulk of the unit-test surface: host-tool resolution,
-  substrate detection, the `ensure` reconcilers' pure decision logic, the static-base-Dhall decoder,
+  substrate detection, the `ensure` reconcilers' pure decision logic, the project-local Dhall config
+  decoder/generator,
   cluster-lifecycle semantics, the harness driver, and the documentation validator.
 - The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
   bootstrapping steps it owns.
@@ -71,8 +72,8 @@ suite stays hermetic:
   its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
-- **Static-Base-Dhall decoder** — decoding `hostbootstrap.dhall` into `project`, `dockerfile`, and the
-  `resources` budget, plus rejection of malformed values. See [schema.md](schema.md).
+- **Project-local Dhall config** — decoding/generating `<project>.dhall`, including project settings,
+  runtime context authority, and rejection of malformed values. See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
 - **Harness driver** — `HarnessSpec` asserts the per-case profile/path derivation, that teardown runs

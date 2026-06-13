@@ -34,8 +34,9 @@ data BudgetView = BudgetView
   }
   deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
--- | The demo's declared budget (mirrors @hostbootstrap.dhall@: 6 cpu, 10 GiB,
--- 80 GiB) as the vocabulary 'V.Budget'.
+-- | The demo's declared budget (mirrors the host-level
+-- @hostbootstrap-demo.dhall@: 6 cpu, 10 GiB, 80 GiB) as the vocabulary
+-- 'V.Budget'.
 demoBudget :: V.Budget
 demoBudget = V.Budget 6 10 80
 

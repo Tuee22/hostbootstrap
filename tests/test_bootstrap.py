@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from hostbootstrap import bootstrap
-from hostbootstrap.spec import Resources, StaticBaseSpec
 from hostbootstrap.substrate import Substrate, SubstrateName
 
 APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
@@ -15,13 +14,39 @@ LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, "amd64")
 LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, "amd64")
 
 
-def _spec(project_root: Path) -> StaticBaseSpec:
-    return StaticBaseSpec(
+def _project(project_root: Path) -> bootstrap.ProjectBuildSpec:
+    return bootstrap.ProjectBuildSpec(
         project="demo",
-        dockerfile=Path("docker/demo.Dockerfile"),
-        resources=Resources(cpu=4, memory="8GiB", storage="20GiB"),
-        source_path=project_root / "hostbootstrap.dhall",
+        cabal_file=project_root / "demo.cabal",
     )
+
+
+# ---------------------------------------------------------------------------
+# Project discovery
+# ---------------------------------------------------------------------------
+
+
+def test_discover_project_derives_name_from_single_cabal_file(tmp_path: Path) -> None:
+    cabal = tmp_path / "hostbootstrap-demo.cabal"
+    cabal.touch()
+
+    assert bootstrap.discover_project(tmp_path) == bootstrap.ProjectBuildSpec(
+        project="hostbootstrap-demo",
+        cabal_file=cabal,
+    )
+
+
+def test_discover_project_rejects_missing_cabal_file(tmp_path: Path) -> None:
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="no .cabal file"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_rejects_multiple_cabal_files(tmp_path: Path) -> None:
+    (tmp_path / "a.cabal").touch()
+    (tmp_path / "b.cabal").touch()
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="multiple .cabal files"):
+        bootstrap.discover_project(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -30,8 +55,6 @@ def _spec(project_root: Path) -> StaticBaseSpec:
 
 
 def test_toolchain_ensure_steps_apple() -> None:
-    # Apple silicon: probe ghcup itself (Homebrew installs it if absent), then
-    # probe/install GHC and Cabal.
     assert bootstrap.toolchain_ensure_steps(APPLE) == (
         bootstrap.ToolchainStep(
             probe=("ghcup", "--version"),
@@ -50,7 +73,6 @@ def test_toolchain_ensure_steps_apple() -> None:
 
 @pytest.mark.parametrize("sub", [LINUX_CPU, LINUX_GPU])
 def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
-    # Linux: probe/install GHC and Cabal via ghcup; no Homebrew step.
     assert bootstrap.toolchain_ensure_steps(sub) == (
         bootstrap.ToolchainStep(
             probe=("ghcup", "whereis", "ghc", "9.12.4"),
@@ -64,10 +86,7 @@ def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
 
 
 def test_native_build_command() -> None:
-    spec = _spec(Path("/proj"))
-    # Plain incremental `cabal build` (not `install`): no sdist/resolve/copy chatter.
-    # The store dir is absolute (resolved against project_root) — cabal rejects a
-    # relative --store-dir at per-package configure time.
+    spec = _project(Path("/proj"))
     assert bootstrap.native_build_command(spec, Path("/proj")) == (
         "cabal",
         "--store-dir",
@@ -78,9 +97,7 @@ def test_native_build_command() -> None:
 
 
 def test_native_listbin_command() -> None:
-    spec = _spec(Path("/proj"))
-    # Same absolute --store-dir as the build, so list-bin resolves the same plan
-    # and reports the binary that build produced under dist-newstyle/.
+    spec = _project(Path("/proj"))
     assert bootstrap.native_listbin_command(spec, Path("/proj")) == (
         "cabal",
         "--store-dir",
@@ -91,46 +108,14 @@ def test_native_listbin_command() -> None:
 
 
 def test_binary_path_and_exec_argv() -> None:
-    spec = _spec(Path("/proj"))
+    spec = _project(Path("/proj"))
     assert bootstrap.binary_path(spec, Path("/proj")) == Path("/proj/.build/demo")
-    assert bootstrap.binary_context_path(spec, Path("/proj")) == Path(
-        "/proj/.build/project-binary-context-config.dhall"
-    )
     assert bootstrap.exec_argv(spec, Path("/proj"), ("play", "--seed", "7")) == (
         "/proj/.build/demo",
         "play",
         "--seed",
         "7",
     )
-
-
-def test_host_context_dhall_renders_host_orchestrator_context(tmp_path: Path) -> None:
-    spec = _spec(tmp_path)
-    rendered = bootstrap.host_context_dhall(spec, project_root=tmp_path)
-
-    assert 'project = "demo"' in rendered
-    assert 'binary = "demo"' in rendered
-    assert f'sourceRoot = "{tmp_path}"' in rendered
-    assert ">.HostOrchestrator" in rendered
-    assert ">.HostTools" in rendered
-    assert ">.IncusProvider" in rendered
-    assert ">.HostOrchestratorCommand" in rendered
-    assert "resourceEnvelope = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }" in rendered
-
-
-def test_write_host_context_is_idempotent_for_unchanged_content(tmp_path: Path) -> None:
-    spec = _spec(tmp_path)
-    path = bootstrap.write_host_context(spec, project_root=tmp_path)
-    first = path.read_text(encoding="utf-8")
-
-    path.chmod(0o444)
-    try:
-        second_path = bootstrap.write_host_context(spec, project_root=tmp_path)
-    finally:
-        path.chmod(0o644)
-
-    assert second_path == path
-    assert path.read_text(encoding="utf-8") == first
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +143,7 @@ def _patch_seams(
     monkeypatch.setattr(bootstrap.os, "execv", _fake_execv)
 
 
-async def test_bootstrap_linux_builds_host_native(
+async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
     monkeypatch: pytest.MonkeyPatch,
     recorded_commands: list[tuple[str, ...]],
     tmp_path: Path,
@@ -167,14 +152,10 @@ async def test_bootstrap_linux_builds_host_native(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     assert doctored == [LINUX_CPU]
-    # Already-provisioned host: each toolchain probe reports the tool present, so
-    # no `ghcup install` runs — only the probes, the native build, and the list-bin
-    # locate. The build/list-bin argv (incl. the absolute repo-local --store-dir)
-    # is pinned in test_native_build_command / test_native_listbin_command.
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
@@ -182,11 +163,11 @@ async def test_bootstrap_linux_builds_host_native(
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
-    assert bootstrap.binary_context_path(spec, tmp_path).is_file()
+    assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
 
-async def test_build_binary_builds_without_exec(
+async def test_build_binary_builds_without_exec_or_dhall(
     monkeypatch: pytest.MonkeyPatch,
     recorded_commands: list[tuple[str, ...]],
     tmp_path: Path,
@@ -195,11 +176,9 @@ async def test_build_binary_builds_without_exec(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     binary = await bootstrap.build_binary(spec, project_root=tmp_path)
 
-    # Same pre-binary build path as bootstrap(), but it returns the path and
-    # never execs. Already-provisioned host: probes only, no install.
     assert doctored == [LINUX_CPU]
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
@@ -207,9 +186,8 @@ async def test_build_binary_builds_without_exec(
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert (tmp_path / ".build").is_dir()
     assert binary == bootstrap.binary_path(spec, tmp_path)
-    assert bootstrap.binary_context_path(spec, tmp_path).is_file()
+    assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
     assert execed == []
 
 
@@ -222,10 +200,9 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_GPU, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path)
 
-    # linux-gpu takes the same host-native path (no container build / copy-out).
     assert recorded_commands[-2:] == [
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
@@ -242,12 +219,10 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, APPLE, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
     assert doctored == [APPLE]
-    # Already-provisioned Apple host: ghcup, GHC, and Cabal all probe present, so
-    # neither Homebrew nor any `ghcup install` runs — only probes, build, list-bin.
     assert recorded_commands == [
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
@@ -255,7 +230,6 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert (tmp_path / ".build").is_dir()
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
 
 
@@ -273,10 +247,9 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
-    # Pristine host: each probe reports absent, so its install runs after it.
     assert recorded_commands_fresh_host == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
@@ -297,11 +270,9 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, APPLE, doctored=doctored, execed=execed)
 
-    spec = _spec(tmp_path)
+    spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
-    # Pristine Apple host: ghcup is absent, so Homebrew installs it, then ghcup
-    # installs GHC and Cabal, then the native build and list-bin locate run.
     assert recorded_commands_fresh_host == [
         ("ghcup", "--version"),
         ("brew", "install", "ghcup"),
@@ -316,7 +287,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
 
 
 # ---------------------------------------------------------------------------
-# _already_present: probe outcome → present / absent
+# _already_present: probe outcome -> present / absent
 # ---------------------------------------------------------------------------
 
 

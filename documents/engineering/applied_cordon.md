@@ -8,8 +8,8 @@
 
 ## TL;DR
 
-- The static-base `resources` budget is a hard ceiling, not advice. One declared number is read once
-  and interpreted identically everywhere.
+- The host-level `<project>.dhall` `resources` budget is a hard ceiling, not advice. One declared number
+  is read once per invocation and interpreted identically everywhere.
 - One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon`, decodes every quantity; one
   arg-builder family emits the complete argv for every substrate.
 - The ceiling is held by three rings of defense in depth: the compile ring (a Dhall `assert`), the
@@ -108,6 +108,6 @@ The incus builder is a later phase and is named here in prose only.
 
 - [resource budgeting](resource_budgeting.md) — the budget field and the verify-spare step.
 - [cluster lifecycle](cluster_lifecycle.md) — where the runtime ring is applied.
-- [schema](schema.md) — the static-base `resources` record.
+- [schema](schema.md) — the project-local `resources` record.
 - [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md) — the development plan for
   this surface.

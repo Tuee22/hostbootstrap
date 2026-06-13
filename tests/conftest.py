@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hostbootstrap import bootstrap, dhall_tool, process
+from hostbootstrap import bootstrap, process
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -23,11 +23,6 @@ def pytest_configure(config: pytest.Config) -> None:
             "Run the test suite with `poetry run python -m hostbootstrap.test_all` "
             "(not pytest directly). hostbootstrap.test_all forwards extra args to pytest."
         )
-
-
-# The Python project root (the `python/` subtree), not the repository root.
-PYTHON_ROOT = Path(__file__).resolve().parent.parent
-DHALL_PACKAGE = PYTHON_ROOT / "hostbootstrap" / "dhall" / "package.dhall"
 
 
 @pytest.fixture
@@ -77,22 +72,6 @@ def recorded_commands_fresh_host(monkeypatch: pytest.MonkeyPatch) -> list[tuple[
     monkeypatch.setattr(process, "run_checked", _checked)
     monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
     return calls
-
-
-@pytest.fixture(scope="session")
-def dhall_binary() -> Path | None:
-    """A provisioned dhall-to-json, or None if it cannot be obtained (offline)."""
-    try:
-        return dhall_tool.ensure()
-    except dhall_tool.DhallToolError:
-        return None
-
-
-@pytest.fixture
-def require_dhall(dhall_binary: Path | None) -> Path:
-    if dhall_binary is None:
-        pytest.skip("dhall-to-json is not available")
-    return dhall_binary
 
 
 @pytest.fixture

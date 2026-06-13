@@ -24,7 +24,7 @@ material lives here. Conventions are defined in
   deploy ≡ business-logic unification (one algebra for deployment and runtime business logic).
 - [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
   place" binary-context contract: every normal project-binary command reads a sibling
-  `project-binary-context-config.dhall` and refuses commands that do not match its declared context.
+  `<project>.dhall` and refuses commands that do not match its declared context.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
@@ -32,8 +32,8 @@ material lives here. Conventions are defined in
   the project container.
 - [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
   library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively.
-- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the static bootstrap, binary
-  context, and generated Dhall roles, plus the three-vocabulary layering and the reflect-from-decoders vs
+- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the local runtime config,
+  generated child configs, and generated Dhall roles, plus the three-vocabulary layering and the reflect-from-decoders vs
   hand-written-assert nuance.
 - [architecture/run_models.md](architecture/run_models.md) — the four run-models (`OneShot`,
   `HostNative`, `HostDaemon`, `Cluster`) and the collapsed key that selects one, never declared in Dhall.
@@ -42,7 +42,8 @@ material lives here. Conventions are defined in
 
 ## Engineering
 
-- [engineering/schema.md](engineering/schema.md) — the static-base `hostbootstrap.dhall` schema.
+- [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
+  replaces the old static-base `hostbootstrap.dhall` input.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model and the
   rule that rich schemas are binary-generated artifacts.
 - [engineering/config_generation.md](engineering/config_generation.md) — the `ConfigArtifact`

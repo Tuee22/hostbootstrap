@@ -4,30 +4,28 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [schema](schema.md), [cluster_lifecycle](cluster_lifecycle.md), [applied_cordon](applied_cordon.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [build_and_run_model](../architecture/build_and_run_model.md), [binary_context_config](../architecture/binary_context_config.md)
 
-> **Purpose**: Define the per-project resource budget read from the static-base `hostbootstrap.dhall`,
-> copied into each binary-context config, and how that budget is enforced as a ceiling cordoned per
-> substrate.
+> **Purpose**: Define the per-project resource budget read from the project-local `<project>.dhall`,
+> projected into child configs, and enforced as a ceiling cordoned per substrate.
 
 ## TL;DR
 
-- The static-base `resources` field is the one ceiling: one declared `cpu` / `memory` / `storage`
-  number per project. The Python bootstrapper reads it from `hostbootstrap.dhall` and writes it into the
-  host-level `project-binary-context-config.dhall`; nested contexts carry the relevant slice forward.
+- The host-level `<project>.dhall` `resources` field is the one ceiling: one declared `cpu` / `memory` /
+  `storage` number per project. Child configs receive a generated resource envelope or slice.
 - The project binary verifies the active context has the spare budget available before proceeding, then
   applies the cordon — a dedicated per-project Colima/incus VM, a kind-node cap, or a container cap.
 - The ceiling is enforced by three rings (compile, bring-up, runtime). The applied detail lives in
   [applied_cordon](applied_cordon.md).
-- Normal binary commands do not re-read `hostbootstrap.dhall`; they consume the budget from their
-  sibling binary-context config.
+- Downstream binaries do not read the host config directly; they consume the budget projection in their
+  own sibling `<project>.dhall`.
 
 ## The Budget Field
 
-The resource budget is a `resources` record in the static-base schema described in [schema](schema.md):
+The resource budget is a `resources` record in the host-level project config described in
+[schema](schema.md):
 
 ```dhall
-{ project    = "app"
-, dockerfile = "docker/app.Dockerfile"
-, resources  = { cpu = 4, memory = "8GiB", storage = "20GiB" }
+{ project   = "app"
+, resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
 }
 ```
 
@@ -35,12 +33,10 @@ The resource budget is a `resources` record in the static-base schema described 
 - `memory` — memory ceiling for the project's substrate.
 - `storage` — disk budget for the project's substrate (image layers, cluster data, build outputs).
 
-The Python bootstrapper reads this field because it is the only component that can bridge the static
-bootstrap input into the first runtime context before any binary exists. It writes the host-level
-`project-binary-context-config.dhall` next to `./.build/<project>`. From there, each project binary passes
-the appropriate envelope to nested contexts before crossing a VM, container, daemon, or cluster-service
-boundary. The Python bootstrapper does not size the Colima/incus VM — it builds no sizing argv at all,
-and consumes the Haskell-emitted argv verbatim. See
+The project binary reads this field from its active config, validates it, and passes the appropriate
+envelope to nested configs before crossing a VM, container, daemon, or cluster-service boundary. The
+Python bootstrapper does not read this field and does not size the Colima/incus VM — it builds no sizing
+argv at all. See
 [python_haskell_boundary](../architecture/python_haskell_boundary.md) and
 [binary_context_config](../architecture/binary_context_config.md).
 

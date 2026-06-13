@@ -1,44 +1,45 @@
-# Phase 4: Static-Base Dhall and Command Tree
+# Phase 4: Project-Local Dhall and Command Tree
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md)
 
-> **Purpose**: Land the static-base `hostbootstrap.dhall` schema and its in-process Haskell decoder,
-> and the composable optparse command tree project binaries extend through `runHostBootstrapCLI`.
+> **Purpose**: Own the project-binary Dhall schema and the composable optparse command tree project
+> binaries extend through `runHostBootstrapCLI`.
 
 ## Phase Status
 
 **Status**: Done
 
-`HostBootstrap.Config.Schema` provides the in-process Haskell decoder for the static-base
-`hostbootstrap.dhall` (`{ project, dockerfile, resources {cpu, memory, storage} }`), backing
-`hostbootstrap config show`. `HostBootstrap.Command` composes the `ensure` and `config` verbs, and
+`HostBootstrap.Config.Schema` provides the in-process Haskell decoder/encoder for the project-local
+`<project>.dhall` shape: project settings, Dockerfile/build inputs, resource budget, deploy knobs, and the
+runtime context. `HostBootstrap.Command` composes the `ensure` and `config` verbs, and
 `runHostBootstrapCLI` extends the tree with project commands (demonstrated by the worked `demo/`
-consumer). **Correction:** the **pre-binary** read of the static base is done by the Python bootstrapper
-via the pinned `dhall-to-json` (`hostbootstrap/dhall_tool.py`), which is **retained** — it must run
-before any binary exists — not removed; the in-process Haskell decoder serves `config show` *after* the
-binary exists. The reopened binary-generated-schema items are delivered (see
-[development_plan_standards.md § P, Q](development_plan_standards.md)), so this phase is closed: `config
-schema` / `config render` over `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry and the reusable
-`Core.dhall` vocabulary (`Budget/fitsWithin`, `Budget/split`) **landed** in
+consumer). The binary-generated-schema items are delivered (see
+[development_plan_standards.md § P, Q](development_plan_standards.md)): `config schema` / `config render`
+over `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry and the reusable `Core.dhall` vocabulary
+(`Budget/fitsWithin`, `Budget/split`) landed in
 [phase-8-dhall-generation-and-extension.md](phase-8-dhall-generation-and-extension.md); the four-stream
 contract and the three-level hierarchy are documented (Phase 7 / Phase 8; the harness-`Seams` stream is
-Phase 10); and the `skeletal` → `static-base` rename + the `Type.dhall` ↔ Python `package.dhall`
-anti-drift check landed (Sprint 4.3).
+Phase 10); and Sprint 4.4 replaced the old static-base contract with the project-local schema.
 
-The `skeletal` → `static-base` rename (code identifiers, comments, and the governed-docs prose; the
-phase-4 file path retains the historical token by the § E canonical layout) and the `Type.dhall` ↔
-Python `package.dhall` anti-drift check have **landed** (Sprint 4.3).
+The `skeletal` → `static-base` rename landed historically (the phase-4 file path retains the historical
+token by the § E canonical layout). The old `Type.dhall` ↔ Python `package.dhall` anti-drift check was
+then retired when Sprint 4.4 replaced the fixture with the project-local schema and Phase 6 removed the
+Python Dhall package.
+
+## Remaining Work
+
+None. The legacy `StaticBase` Haskell compatibility API was removed in Phase 15 and is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Phase Objective
 
-Land the static-base `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu, memory, storage}`)
-and the composable optparse command tree projects extend (see
-[development_plan_standards.md § P, Q](development_plan_standards.md)). The static base is read pre-binary
-by the Python bootstrapper via the pinned `dhall-to-json` (`dhall_tool.py`, retained); the in-process
-Haskell decoder backs `config show`. The rich project-level and per-case test Dhall are artifacts the
-project binary generates; core owns only the static-base decoder.
+Land the project-local `<project>.dhall` schema and the composable optparse command tree projects extend
+(see [development_plan_standards.md § P, Q](development_plan_standards.md)). The schema is owned by the
+project binary, not Python. Normal commands read the sibling config through the command gate; bootstrap
+and inspection commands (`help`, `version`, `config init`, `config schema`, `config show`, `config path`,
+static `config render`) remain available without an existing local config.
 
 ## Sprints
 
@@ -52,17 +53,16 @@ project binary generates; core owns only the static-base decoder.
 
 #### Objective
 
-Land the static-base `hostbootstrap.dhall` schema and `HostBootstrap.Config.Schema`, the in-process
-decoder that backs `config show`. (The pre-binary read is done by the Python bootstrapper via the pinned
-`dhall-to-json`, `dhall_tool.py`, which is retained — see this phase's Phase Status.)
+Land the historical static-base `hostbootstrap.dhall` schema and `HostBootstrap.Config.Schema`, the
+in-process decoder that backed early `config show` inspection. Sprint 4.4 supersedes this as the supported
+schema.
 
 #### Deliverables
 
 - The static-base schema: `{ project : Text, dockerfile : Text, resources : { cpu : Natural, memory :
   Text, storage : Text } }`, identical in shape across projects.
 - `HostBootstrap.Config.Schema` decoding the static-base config via the Haskell `dhall` library.
-- The resource budget exposed as the single static field that the Python layer reads pre-binary; Phase 15
-  carries it into the runtime binary-context config consumed by normal project-binary commands.
+- The resource budget exposed as the single static field in the old static-base compatibility shape.
 
 #### Validation
 
@@ -72,9 +72,8 @@ decoder that backs `config show`. (The pre-binary read is done by the Python boo
 
 #### Remaining Work
 
-The Haskell decoder is complete. The three-execution-model schema, `dhall_tool.py`, and `spec.py`
-remain live until the Python layer is rewritten in phase-6; see
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+The old static-base decoder is complete. The project-local `<project>.dhall` decoder/generator is Sprint
+4.4.
 
 ### Sprint 4.2: Composable command tree [Done]
 
@@ -93,7 +92,7 @@ extends it with project-specific subcommands and the inherited test hook.
 #### Command Surface
 
 - `hostbootstrap ensure <tool>` — the Phase 3 reconcilers.
-- `hostbootstrap config show` — decode/inspect the static-base `hostbootstrap.dhall`.
+- `hostbootstrap config show` — decode/inspect a project-local config file.
 - A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to add its own verbs;
   the bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
   commands.
@@ -126,6 +125,10 @@ None.
 Make the static-base terminology consistent and mechanically prevent the two static-base schema
 files (the Haskell `Type.dhall` and the Python `package.dhall`) from drifting apart.
 
+This sprint is historical: Sprint 4.4 replaced `Type.dhall` with the project-local schema, Phase 6
+Sprint 6.4 removed the Python Dhall package and reader, and Phase 15 removed the Haskell `StaticBase`
+compatibility API.
+
 #### Deliverables
 
 - The `Skeleton`/`Skeletal` token is renamed to `StaticBase`/`static-base` across the Haskell decoder
@@ -147,17 +150,51 @@ files (the Haskell `Type.dhall` and the Python `package.dhall`) from drifting ap
 
 None.
 
+### Sprint 4.4: Project-local config schema [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/test/SchemaSpec.hs`
+**Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
+`system-components.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Replace the static-base schema as the supported project contract with a sibling `<project>.dhall` schema
+owned by the built project binary.
+
+#### Deliverables
+
+- A project-local config type covering project settings, Dockerfile/build inputs, resources, runtime
+  context, allowed command classes, role name, and child-config projection defaults.
+- Cabal-derived project identity: the config validates against the project name derived from the Cabal
+  file and does not require a user-authored `project` field to bootstrap Python.
+- Tests proving the new schema decodes, rejects malformed values, and supports the explicit `config show`
+  inspection path.
+
+#### Validation
+
+- `cabal test` covers valid/invalid `<project>.dhall` fixtures and command-gate decode failures.
+- Legacy static-base fixtures are either removed or retained only under the deletion ledger with tests
+  that explain the compatibility window.
+
+#### Remaining Work
+
+None. Validation: `cabal test all` passes from `core/` with `SchemaSpec` covering project-local decode,
+render/decode round-trip, malformed and wrong-typed configs, the canonical `example.dhall` fixture, and
+validation against the Cabal-derived project name.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/hostbootstrap_core_library.md` - the command-tree extension contract.
 
 **Engineering docs to create/update:**
-- `documents/engineering/schema.md` - the static-base `hostbootstrap.dhall` schema.
-- `documents/engineering/dhall_topology.md` - the three Dhall tiers; the binary-generated project/test
-  schemas.
+- `documents/engineering/schema.md` - the project-local `<project>.dhall` schema.
+- `documents/engineering/dhall_topology.md` - the local runtime config, generated child configs, and
+  binary-generated project/test schemas.
 
 **Cross-references to add:**
-- `system-components.md` updates the static-base-schema and command-tree rows.
-- `legacy-tracking-for-deletion.md` keeps the three-execution-model schema, `dhall_tool.py`, and
-  `spec.py` owning-phase set to this phase.
+- `system-components.md` updates the project-local-config and command-tree rows.
+- `legacy-tracking-for-deletion.md` tracks the remaining static-base compatibility API and records the
+  removed Python Dhall reader.

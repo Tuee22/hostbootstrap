@@ -12,25 +12,21 @@
 
 The inversion is well advanced. `hostbootstrap` is the Haskell `hostbootstrap-core` library (under
 `core/`) plus a Python bootstrapper (rooted at the repository root). `hostbootstrap-core` owns
-host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
-cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
-The Python CLI is reduced to `doctor` / `build` / `run` / `base`: it asserts the fail-fast host minimums,
-ensures a host toolchain, builds the project binary, writes the first binary context, and execs it — and
-still builds and publishes the `basecontainer-<flavor>-<arch>` base images. The three-execution-model
-machinery is gone; the residual Dhall read (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`)
-decodes only the static-base config tier. Phase 15 makes the next boundary explicit: the Python wrapper
-idempotently creates the host-level `project-binary-context-config.dhall`, and normal project-binary
-commands read a sibling context file instead of treating `hostbootstrap.dhall` as a runtime input.
+host-tool resolution, substrate detection, the `ensure` reconcilers, cluster lifecycle and cordoning, the
+project-local Dhall schema machinery, the binary-context command gate, and the composable optparse command
+tree project binaries extend.
+The Python CLI is reduced to `doctor` / `build` / `run` / `base`: the target boundary is that it derives
+the project name from the Cabal file, asserts the fail-fast host minimums, ensures a host toolchain,
+builds the project binary, and execs it — and still builds and publishes the
+`basecontainer-<flavor>-<arch>` base images when directed by the operator.
 
-The Python layer has **converged** on the thin pre-binary boundary that § M / § N define: `bootstrap.py`
-is the five-step path — assert the fail-fast minimums, ensure the host build toolchain, build the project
-binary **host-native on every substrate** (Linux included; there is no build-in-container-and-copy-out
-path), write the host-level context, and `exec` it. Phase 15 added that context write without
-expanding Python beyond the pre-binary bridge. Ensuring Docker, building the project container, sizing
-the VM, and the cordon are all the **project binary's** job once it is running, not the Python layer's.
-The inversion-side Python work is therefore complete; the net-new layered warm store (§ V) was carved
-out to [Phase 12](phase-12-layered-warm-store.md), now `Done`. The narrative below records how each phase
-delivered this shape.
+The previous runtime-context split is removed. Phase 4 replaced the supported schema surface with
+project-local config types, Phase 6 removed Python's Dhall reader/writer, Phase 8 added binary-owned
+default generation and child projection helpers, and Phases 13 and 15 wired that surface into normal
+runtime dispatch. Normal commands now fail fast when sibling `<project>.dhall` is missing or invalid;
+bootstrap/inspection config surfaces, including static `config render`, remain ungated. The demo uses
+`hostbootstrap-demo.dhall` in all runtime contexts, and daemons read one immutable config snapshot at
+process start.
 
 ## Where the repository is going
 
@@ -78,15 +74,14 @@ fails fast with a one-line diagnostic and a non-zero exit. This phase is `Done`:
 **install-and-verify** (installs the dependency if absent, verified no-op if present), wired into the
 command tree, with the cross-substrate `ensure incus` host-provider reconciler added in Phase 11 (§ U).
 
-### Phase 4 — static-base Dhall and command tree
+### Phase 4 — project-local Dhall and command tree
 
-Land the static-base `hostbootstrap.dhall` schema (`project`, `dockerfile`, `resources {cpu, memory,
-storage}`) and its in-process Haskell decoder, replacing the shelled `dhall-to-json` path. Land the
-composable optparse command tree that project binaries extend through `runHostBootstrapCLI`. This
-phase is `Done`: the in-process `config show` decoder and the composable tree (with the worked
-extending demo binary) are implemented; the binary-generated `config schema` / `config render` and the
-four-stream extension contract landed in Phase 8; and the pre-binary static-base read remains
-Python-via-`dhall-to-json` (retained by design, not removed).
+The implemented phase originally landed the static-base `hostbootstrap.dhall` schema and the composable
+optparse command tree that project binaries extend through `runHostBootstrapCLI`. It is now `Done` again:
+the supported schema is `ProjectConfig` for project-local `<project>.dhall`, project identity validates
+against the Cabal-derived name, Dockerfile/resources/runtime context live in the binary-owned config, and
+the old static-base compatibility API is tracked in the legacy ledger for removal during the Python
+migration.
 
 ### Phase 5 — cluster lifecycle and resource cordoning
 
@@ -104,15 +99,11 @@ makes `cluster up` **fail-closed** on its helm/kind steps (`requireStep` replaci
 Warm the `hostbootstrap-core` dependencies into the frozen Cabal store. The base image bakes **no**
 `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it could not be copied out to
 every host; instead every project builds its own binary **host-native**, and the project container the
-binary later builds (`FROM` the base image) is accelerated by the warm store. Shrink the Python layer to
-the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host toolchain prerequisites to
-build the binary, build the project binary host-native, and exec it — leaving Docker, the project
-container, and cordoning to the project binary. This phase is `Done`: the warm store carries the
-closure (no baked binary), the Python CLI is reduced to `doctor` / `build` / `run` / `base`, and the bootstrapper
-has **converged** on the thin pre-binary boundary (the five-step path above, building host-native on
-every substrate with no Docker-ensure, container build, VM sizing, or copy-out). The **layering** of the
-warm-store freeze into `core.freeze`/`daemon.freeze` is a net-new deliverable owned by Phase 12, not this
-phase.
+binary later builds (`FROM` the base image) is accelerated by the warm store. This phase is `Done`: Python
+derives the project name from the Cabal file, builds the host-native binary, and execs it without reading
+or writing Dhall. Docker, the project container, config initialization, VM sizing, and cordoning stay with
+the project binary. The
+`core.freeze`/`daemon.freeze` layering remains Phase 12 and is still `Done`.
 
 ### Phase 7 — consumer migration
 
@@ -132,11 +123,14 @@ named slice of the architecture; see [system-components.md](system-components.md
 ### Phase 8 — Dhall generation and the four-stream extension
 
 The project binary generates its own schema (reflected from its decoder types, so it cannot drift) and
-renders all deploy/test configs from a reusable `Core.dhall` vocabulary; the four-stream extension
-contract (CLI append, Dhall embed, schema concatenation, harness seams) is formalized. This phase is
-`Done`: `Core.dhall`, `HostBootstrap.Config.Vocab`, `HostBootstrap.Dhall.Gen`, and the
-`config schema`/`render` verbs are implemented and tested; all four streams are implemented (the
-harness `Seams` landed in Phase 10) and the demo (Phase 13) exercises them end-to-end.
+renders deploy/test configs from a reusable `Core.dhall` vocabulary; the four-stream extension contract
+(CLI append, Dhall embed, schema concatenation, harness seams) is formalized. The existing
+`Core.dhall`, `HostBootstrap.Config.Vocab`, `HostBootstrap.Dhall.Gen`, `config schema`/`render`, and
+`config init` work is implemented and tested. This phase is `Done`: `config init` emits role-specific
+project-local configs without requiring an existing config, `config schema` includes the reflected
+`ProjectConfig` type, and the pure child projection helpers generate narrower configs for VM, container,
+service, daemon, one-shot, and test-harness roles. Phase 15 wired those generated configs into the normal
+runtime gate through sibling `<project>.dhall`.
 
 ### Phase 9 — Applied budget cordon and one canonical parser
 
@@ -184,30 +178,11 @@ into `core.freeze`. The published tag's full warm-store compile is the operator'
 ### Phase 13 — hostbootstrap-demo worked app
 
 A self-contained worked consumer under `demo/` whose test suite demonstrates every main feature, centered
-on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` → `pipx install
-hostbootstrap` → `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is
-`Done`: the demo was **exercised in a real run** on a bare-metal host, and every verb is real (no narrate
-stubs) — `incus ensure`/`vm up`/`vm down` (cordon #1), `vm pristine-bootstrap` (build #2 host-native +
-build #3 the project container `FROM` the pulled base), `test all` (the harness brings up a per-case kind
-cluster, applies cordon #2, and tears it down with no leftovers), `web bridge`/`web serve` (the
-`warp`/`wai` + `purescript-bridge`/Halogen stack, Playwright e2e 3/3), and `harbor install`/`push`
-(registry push/pull validated). The pristine 3-build bootstrap is **live-validated** on the post-reorg,
-post-refactor code (`vm up` → `vm pristine-bootstrap` cold-builds the full refactored closure → guarded `vm
-down`), and the self-reference lift adoption (Sprints 13.8–13.11) is complete: the demo composes its chain
-on `HostBootstrap.Lift`, and all three harness cases are live-validated **on the metal host** —
-`pristine-bootstrap` + `e2e-tabs` directly on the host and `web-build` + `e2e-tabs` again in a container
-**on the metal host's Docker** (`docker run … hostbootstrap-demo:local test web-build` and `… test
-e2e-tabs`, both `1/1`, `helm`/`kind` on the container `$PATH`, guarded teardown), the e2e spec delivered
-through a context-agnostic named volume. The **single-representation doctrine** (§ W) is **realized**:
-**Sprint 13.12** collapsed the deploy to one lift sequence whose only lifted compute step is `test all`
-lifted into the project container in the VM (`incus exec <vm> -- docker run --rm <image> test all`), so the
-harness — the one representation — runs `clusterUp` "locally" on the VM's Docker and the kind cluster lives
-**in the VM**; the redundant parallel `Chain.hs` chain is removed. Live-validated: the lifted `test all`
-brings kind up on the VM's Docker (`3/3`, poller-confirmed in the VM, **none** on metal), and the literal
-`demo deploy` apply ran clean end to end (guarded `vm down`, no leftovers); the earlier metal-host
-in-container runs were a dev shortcut, superseded. The
-operator-scale real runs — the multi-arch published base tags, the full 8-pod Harbor Helm deployment, and
-the multi-GB image push — follow the same real-run standard Phases 5/10/11/12 use.
+on a from-zero pristine-host bootstrap performed inside an incus VM (`apt install pipx` -> `pipx install
+hostbootstrap` -> `hostbootstrap run`). It supersedes the retired `example/Main.hs`. This phase is `Done`:
+the live demo and single-representation deploy chain are implemented and validated, and the worked app now
+uses sibling `hostbootstrap-demo.dhall` configs for the host, VM, ad-hoc VM container, and
+cluster-service/daemon contexts.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -230,13 +205,14 @@ on metal). The concrete bus/store/role primitives are
 ### Phase 15 — Binary context config and command gating
 
 Make the self-reference lift explicit at runtime by giving each copy of a project binary a sibling
-`project-binary-context-config.dhall`. `hostbootstrap.dhall` becomes bootstrap-only: the Python wrapper
-reads it, builds the host-native binary, writes the host-level context, and execs. Each nested boundary
-gets its own context: VM bootstraps create VM-local context, Dockerfiles use `--create-container-config`
-after installing the binary, and Kubernetes service pods receive context from their owning controller
-(`StatefulSet` for durable services). Normal commands fail fast with exit code 1 when the context is
-missing or not commensurate with the command; daemon/service commands require daemon/service context, and
-host-orchestrator commands cannot run inside cluster-service pods. This phase is `Done`.
+`<project>.dhall`. The role is data inside the file rather than part of the filename, so the host binary,
+VM binary, ad-hoc container binary, and service/daemon binary all use the same local lookup rule while
+carrying different allowed commands and capabilities. Normal commands fail fast with exit code 1 when the
+local config is missing, malformed, for another project, or not commensurate with the command; help,
+version, `config init`, `config schema`, `config show`, `config path`, and static `config render` remain
+the inspection/bootstrap exceptions. This phase is `Done`: the old standalone context filename and Dockerfile shortcut are removed,
+normal command gating reads the context section of `<project>.dhall`, and the legacy static-base
+compatibility API is deleted.
 
 ## Dependency edges
 

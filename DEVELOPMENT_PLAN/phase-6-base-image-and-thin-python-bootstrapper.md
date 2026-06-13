@@ -5,8 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md), [phase-7-consumer-migration.md](phase-7-consumer-migration.md)
 
 > **Purpose**: Warm `hostbootstrap-core`'s dependencies into the base image (no `hostbootstrap`
-> binary is baked), and shrink the Python layer to the pre-binary bootstrapper that ensures the host
-> build toolchain, builds the binary host-native, and execs it.
+> binary is baked), and shrink the Python layer to the pre-binary bootstrapper that derives the project
+> name from the Cabal file, ensures the host build toolchain, builds the binary host-native, and execs it.
 
 ## Phase Status
 
@@ -17,14 +17,16 @@ project builds its own binary **host-native** (the project container the binary 
 accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is reduced to the `doctor` / `build` /
 `run` / `base` surface — the three-execution-model machinery and the `--force-target` dispatch are removed and
 the Python suite passes at 100% coverage (Sprint 6.2). The bootstrapper has **converged** on the thin
-pre-binary boundary (§ M, § N): `bootstrap.py` is now the five-step path — assert minimums → ensure the
-host build toolchain → build the binary **host-native on every substrate** → write the host-level binary
-context → exec — with Docker-ensure, the project-container build, the VM sizing, and the cordon all
-removed (they are the project binary's job; Sprint 6.3 plus the Phase-15 context handoff). This phase's
-deliverables (the warm-store base image, the thin pre-binary bootstrapper)
-are complete, so it is closed; the **layering** of the warm-store freeze into `core.freeze` /
-`daemon.freeze` is a net-new deliverable owned by
+pre-binary boundary (§ M, § N): `bootstrap.py` is now the five-step path — derive the project from the
+single Cabal file, assert minimums, ensure the host build toolchain, build the binary **host-native on
+every substrate**, and exec — with Docker-ensure, the project-container build, the VM sizing, the cordon,
+and all Dhall read/write removed (they are the project binary's job; Sprint 6.4). The **layering** of the warm-store freeze
+into `core.freeze` / `daemon.freeze` is a net-new deliverable owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
+
+## Remaining Work
+
+None.
 
 ## Phase Objective
 
@@ -32,10 +34,11 @@ Complete the inversion. The base image warms the `hostbootstrap-core` dependenci
 Cabal store and bakes **no** `hostbootstrap` binary (a Linux ELF cannot run on Apple silicon, so it
 could not be copied out to every host; every project builds its own binary host-native instead). The
 Python layer shrinks to the pre-binary bootstrapper that does only what must run before any project
-binary exists (see [development_plan_standards.md § M, N](development_plan_standards.md)): assert the
-fail-fast host minimums, ensure the host toolchain prerequisites to **build** the binary, build the
-project binary host-native, and exec it. Ensuring Docker, building the project container, and cordoning
-are left to the project binary, once it is running.
+binary exists (see [development_plan_standards.md § M, N](development_plan_standards.md)): derive the
+project name from the Cabal file, assert the fail-fast host minimums, ensure the host toolchain
+prerequisites to **build** the binary, build the project binary host-native, and exec it. Ensuring Docker,
+building the project container, initializing/editing Dhall config, and cordoning are left to the project
+binary, once it is running.
 
 ## Sprints
 
@@ -92,15 +95,10 @@ Reduce the Python CLI to the thin bootstrapper, removing the three-execution-mod
 
 #### Design Decision: static-base config read
 
-With no baked binary, the Python bootstrapper cannot read the static-base `hostbootstrap.dhall` by
-running a baked `hostbootstrap config show`. Yet it must learn the `project` name to build
-`exe:<project>` host-native and exec `./.build/<project>` — all before any project binary exists — so
-the pre-binary layer (Python) must decode the static-base Dhall itself, which the ownership boundary
-already permits ("Python reads only the static-base tier"). The decision: **retain a
-minimized `hostbootstrap/dhall_tool.py`** (the in-process Haskell decoder backs `config show`;
-the rich project/test tiers are binary-generated via `config render`). This reverses the earlier ledger intent to remove
-`dhall_tool.py` in phase-6, a direct consequence of the no-baked-binary decision; the legacy ledger
-is updated to match.
+This sprint originally retained a minimized Python static-base reader because no baked binary existed to
+decode `hostbootstrap.dhall` before the host-native build. The reopened target removes that need by
+deriving the project name from the Cabal file. `hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`, and
+the Python-side static-base schema are now legacy surfaces tracked for deletion.
 
 #### Deliverables
 
@@ -132,8 +130,8 @@ None. The thin-pre-binary-boundary convergence is Sprint 6.3.
 
 Reduce `bootstrap.py` to the pre-binary path so the Python layer does only what must run before any
 project binary exists (§ M, § N): assert minimums → ensure the host build toolchain → build the binary
-**host-native on every substrate** → exec it. Phase 15 later inserts the host-context write between
-build and exec without expanding Python into Docker, VM, or cluster lifecycle work.
+**host-native on every substrate** → exec it. Sprint 6.4 removes the residual Dhall read/write from that
+path.
 
 #### Deliverables
 
@@ -160,6 +158,41 @@ build and exec without expanding Python into Docker, VM, or cluster lifecycle wo
 
 None.
 
+### Sprint 6.4: Remove Python Dhall ownership [Done]
+
+**Status**: Done
+**Implementation**: `hostbootstrap/bootstrap.py`, `hostbootstrap/cli.py`, `tests/test_bootstrap.py`,
+`tests/test_cli.py`
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`,
+`documents/architecture/build_and_run_model.md`, `system-components.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make Python a pure pre-binary bridge: derive the project name from the Cabal file, build the host-native
+binary, and exec it without decoding or writing Dhall.
+
+#### Deliverables
+
+- Cabal-file project-name derivation, including a fail-fast diagnostic when zero or multiple Cabal files
+  make the project name ambiguous.
+- Removal of Python's static-base Dhall reader from the bootstrap path.
+- Removal of Python's host-context writer; initial config creation is a project-binary command
+  (`<project> config init`) and normal missing-config errors are emitted by the project binary.
+
+#### Validation
+
+- Python tests cover Cabal-name discovery and ambiguity failures.
+- Python tests prove `hostbootstrap run` invokes no `dhall-to-json` and writes no Dhall artifact.
+- Existing bootstrap command-builder tests still prove host-native build and exec argv behavior.
+
+#### Remaining Work
+
+None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetry run python -m
+hostbootstrap.test_all -q` passes with 113 tests. The tests cover Cabal-file project discovery,
+zero/multiple-Cabal diagnostics, host-native build/exec argv, and the absence of Python-written Dhall
+artifacts.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -174,4 +207,6 @@ None.
 
 **Cross-references to add:**
 - `system-components.md` updates the base-image and thin-bootstrapper sections.
-- `legacy-tracking-for-deletion.md` moves `models/*` and the `--force-target` dispatch to Completed.
+- `legacy-tracking-for-deletion.md` moves `models/*`, the `--force-target` dispatch,
+  `hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`, `hostbootstrap/dhall/package.dhall`, and the
+  Python context writer to Completed.

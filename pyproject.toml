@@ -62,7 +62,6 @@ files = ["hostbootstrap"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "dhall: requires a provisioned dhall-to-json binary (skips if unavailable)",
     "docker: requires a running Docker daemon (skips if unavailable)",
     "slow: long-running test",
 ]

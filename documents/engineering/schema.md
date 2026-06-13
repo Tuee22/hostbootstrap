@@ -1,134 +1,199 @@
-# Static-Base hostbootstrap.dhall schema
+# Project-Local `<project>.dhall` Schema
 
 **Status**: Authoritative source
-**Supersedes**: the three-execution-model / substrate-keyed / lifecycle `hostbootstrap.dhall` schema (Container/HostBinary/HostDaemon, Cluster/NoCluster, Mounts, force-target)
+**Supersedes**: static-base `hostbootstrap.dhall`; the three-execution-model / substrate-keyed / lifecycle `hostbootstrap.dhall` schema (Container/HostBinary/HostDaemon, Cluster/NoCluster, Mounts, force-target)
 **Referenced by**: [../README.md](../README.md), [prerequisites.md](prerequisites.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [dhall_topology.md](dhall_topology.md)
 
-> **Purpose**: Define the single static-base `hostbootstrap.dhall` the thin Python bootstrapper reads,
-> and explain why runtime project-binary context and rich/test Dhall are separate generated artifacts.
+> **Purpose**: Define the target project-local Dhall configuration file each project binary reads from
+> beside itself, superseding the old Python-read `hostbootstrap.dhall`.
 
 ## TL;DR
 
-- The repository-root `hostbootstrap.dhall` is **static-base and identical in shape across projects**:
-  it carries a `project` name, a `dockerfile` path, and a `resources` budget (`cpu`, `memory`,
-  `storage`).
-- It is the one configuration the Python bootstrapper reads. Normal project-binary commands read
-  sibling `project-binary-context-config.dhall` files instead.
-- The rich project-level Dhall (runtime roles plus cluster-bootstrap instructions) and the per-case
-  test-harness Dhall are **artifacts emitted by the project binary**, which also emits the schema
-  they validate against.
-- `HostBootstrap.Config.Schema` remains as the in-process static-base decoder for bootstrap support and
-  the explicit `config show FILE` inspection path; normal command dispatch uses the sibling context.
+- The runtime configuration file is the executable's sibling `<project>.dhall`, for example
+  `./.build/hostbootstrap-demo.dhall` beside `./.build/hostbootstrap-demo`.
+- The old Python-owned `hostbootstrap.dhall` input is removed. The Python bootstrapper derives the project
+  name from the Cabal file name, builds the project binary, and never reads or writes Dhall.
+- The project binary owns the schema, default rendering, validation, downstream projection, and help text
+  for the local config.
+- Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
+  limited to help/version and explicit config inspection/initialization commands, including static
+  `config render`.
+- Host, VM, ad-hoc container, daemon, and service copies use the same filename rule but different file
+  contents. The role is a field inside the Dhall value, not part of the filename.
 
-## Top-Level Shape
+## Current Status
 
-```dhall
-{ project = "app"
-, dockerfile = "docker/app.Dockerfile"
-, resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
-}
+The Python bootstrapper no longer reads or writes Dhall. The Haskell schema has a project-local config
+shape, `config init` can generate role-specific defaults, pure projection helpers derive narrower child
+configs, and normal command gating reads the context authority embedded in the sibling `<project>.dhall`.
+See
+[phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
+[phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
+
+## File Location
+
+The lookup rule is intentionally singular:
+
+```text
+sibling of executable: <project>.dhall
 ```
 
-The bootstrapper injects the `package.dhall` schema as `H`, so a project may instead write the typed
-form `H.config { project = "app", dockerfile = "docker/app.Dockerfile", resources = { cpu = 4, memory
-= "8GiB", storage = "20GiB" } }` (lowercase `config`, applied as a function — not `H.Config::{…}`).
+Examples:
 
-| field | type | required | meaning |
-|---|---|---|---|
-| `project` | `Text` | yes | project (and project-binary) name; the binary is `./.build/<project>` and `/usr/local/bin/<project>` inside the container |
-| `dockerfile` | `Text` | yes | project Dockerfile, relative to the project root; declares `ARG BASE_IMAGE`, `FROM ${BASE_IMAGE}`, and the project `ENTRYPOINT` |
-| `resources` | `Resources` | yes | the per-project resource budget copied into the generated binary-context config |
+| Binary copy | Default config path |
+|---|---|
+| Host binary | `./.build/<project>.dhall` |
+| VM host-native binary | sibling of the VM-local executable |
+| Project container binary | `/usr/local/bin/<project>.dhall` |
+| Cluster service or daemon binary | sibling path mounted or materialized by the controller |
 
-### Resources
+The filename does not encode the role. The binary always knows what to look for; the file tells the binary
+what role it has.
 
-```dhall
-{ cpu = 4, memory = "8GiB", storage = "20GiB" }
+## Project Name
+
+The Python bootstrapper derives the project name from the Cabal file name:
+
+```text
+hostbootstrap-demo.cabal -> hostbootstrap-demo
 ```
 
-| field | type | meaning |
+The bootstrapper should fail fast when a project root has zero or more than one candidate `.cabal` file,
+unless the user supplies an explicit Cabal file path. This keeps Python out of Dhall while preserving the
+single stable binary name used for `cabal build exe:<project>` and `./.build/<project>`.
+
+## Config Shape
+
+The exact project-level fields are binary-owned and may be extended by a consumer, but every local config
+has two conceptual sections:
+
+| Section | Owner | Purpose |
 |---|---|---|
-| `cpu` | `Natural` | whole CPU cores the project may consume |
-| `memory` | `Text` | memory budget (binary quantity, e.g. `8GiB` (Gi/GiB both accepted)) |
-| `storage` | `Text` | storage budget (e.g. `20GiB`) |
+| Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags |
+| Runtime context | `hostbootstrap-core` / project binary | local authority: identity, context kind, role name, parent chain, capabilities, allowed command classes, resource envelope, child-context rules |
 
-`resources` is consumed first by the Python bootstrapper, which writes the host-level
-`project-binary-context-config.dhall`. Project binaries consume the budget through their sibling context
-config, not by re-reading `hostbootstrap.dhall`. See [resource_budgeting.md](resource_budgeting.md) for
-the budgeting and cordoning contract.
+A host-level config has the same top-level shape as the generated `ProjectConfig` schema:
 
-## Why The Schema Is Minimal
+```dhall
+let ContextKind =
+      < HostOrchestrator
+      | VMOrchestrator
+      | VMProjectContainer
+      | ClusterService
+      | Daemon
+      | OneShotJob
+      | TestHarness
+      >
 
-The static-base schema deliberately carries **no** substrate, execution-model, lifecycle, mount, role,
-or command-allowance information. Substrate (`apple-silicon`, `linux-cpu`, `linux-gpu`) is detected
-at runtime by `hostbootstrap-core`; the binary's local role is declared in
-`project-binary-context-config.dhall`, not here. There is no `--force-target`, no
-`Cluster`/`NoCluster` lifecycle tag, and no `Container`/`HostBinary`/`HostDaemon` model. Every project
-builds its container as the code-check gate and always materializes a host binary at `./.build/<project>`
-(see [base_image.md](base_image.md) and [derived_project_standards.md](derived_project_standards.md)).
+let Capability = < HostTools | IncusProvider | DockerSocket | ContainerRuntime | KubernetesAPI | KindNetwork | DurableStore | ServicePort >
 
-> **WRONG** — declaring a substrate matrix or an execution model in the static-base file
->
-> ```dhall
-> H.config
->   { project = "app"
->   , substrates =
->     [ H.entry H.Substrate.LinuxGpu (H.cluster (H.Model.Container ...)) ]
->   }
-> ```
->
-> This is the removed substrate-keyed schema. The Python bootstrapper does not select an execution
-> model, so a substrate/lifecycle/model matrix has nothing to read it. Substrate is detected, not
-> declared.
->
-> **RIGHT** — one static-base value
->
-> ```dhall
-> { project = "app"
-> , dockerfile = "docker/app.Dockerfile"
-> , resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
-> }
-> ```
->
-> The bootstrapper injects the `package.dhall` schema as `H`, so a project may instead write the
-> typed form `H.config { project = "app", dockerfile = "docker/app.Dockerfile", resources = { cpu =
-> 4, memory = "8GiB", storage = "20GiB" } }` (lowercase `config`, applied as a function — not
-> `H.Config::{…}`).
+let CommandClass =
+      < EnsureCommand
+      | ConfigInspectionCommand
+      | ConfigGenerationCommand
+      | ContextCreationCommand
+      | ClusterLifecycleCommand
+      | TestWorkflowCommand
+      | CheckCodeCommand
+      | HostOrchestratorCommand
+      | DaemonCommand
+      | ServiceCommand
+      | ProjectCommand
+      >
 
-## Runtime Context And Rich/Test Dhall Are Separate
+in  { dockerfile = "docker/Dockerfile"
+    , resources = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+    , context =
+      { project = "hostbootstrap-demo"
+      , binary = "hostbootstrap-demo"
+      , sourceRoot = "/home/matt/hostbootstrap/demo"
+      , contextKind = ContextKind.HostOrchestrator
+      , roleName = "host-orchestrator"
+      , parentChain = [] : List { frameKind : ContextKind, frameBinary : Text }
+      , capabilities = [ Capability.HostTools, Capability.IncusProvider ]
+      , allowedCommandClasses =
+        [ CommandClass.EnsureCommand
+        , CommandClass.ConfigInspectionCommand
+        , CommandClass.ConfigGenerationCommand
+        , CommandClass.ContextCreationCommand
+        , CommandClass.ClusterLifecycleCommand
+        , CommandClass.TestWorkflowCommand
+        , CommandClass.CheckCodeCommand
+        , CommandClass.HostOrchestratorCommand
+        , CommandClass.ProjectCommand
+        ]
+      , resourceEnvelope = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+      , childContextKinds =
+        [ ContextKind.VMOrchestrator
+        , ContextKind.VMProjectContainer
+        , ContextKind.ClusterService
+        , ContextKind.Daemon
+        , ContextKind.OneShotJob
+        , ContextKind.TestHarness
+        ]
+      }
+    , deploy = { haReplicas = 1 }
+  }
+```
 
-Configuration is typed Dhall with separate bootstrap and runtime concerns; only the first item lives in
-this file:
+The exact generated value is owned by the binary. Use `<project> config init` for a valid default and
+`<project> config schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
+schema in project docs.
 
-1. **Static-Base `hostbootstrap.dhall`** (this document) — `project`, `dockerfile`, `resources` — read
-   by the Python bootstrapper, identical in shape across every project.
-2. **Binary context `project-binary-context-config.dhall`** — created during bootstrap or at a nested
-   boundary and read by the binary before normal command dispatch.
-3. **Rich project-level Dhall** — runtime roles plus cluster-bootstrap instructions — read by the
-   project binary. The project binary emits both the schema and the configuration.
-4. **Per-case test-harness Dhall** — generated by the project binary, one value per test case.
+## Default Generation
 
-The runtime tiers are artifacts the project binary produces or receives
-(`--create-container-config`, `<project> context create ...`, `<project> config schema`,
-`<project> config render`, and the binary's test entrypoint). See
-[dhall_topology.md](dhall_topology.md) and
-[binary_context_config](../architecture/binary_context_config.md) for the full topology.
+The project binary provides an ungated initialization command, for example:
 
-## Parsing
+```bash
+<project> config init --output ./.build/<project>.dhall
+```
 
-The normal path decodes the static-base file in the Python bootstrapper only.
-`HostBootstrap.Config.Schema` reads `project`, `dockerfile`, and `resources` into a typed `StaticBase`
-value for bootstrap support and exposes it as `hostbootstrap config show <file>`. Normal command
-dispatch reads the sibling binary-context file instead. The rich and test tiers are decoded by the
-project binary against the schema it emits.
+The generated file is a valid default; `config init --help` names the editable options (`--dockerfile`,
+`--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`) and `config schema` includes the
+reflected `ProjectConfig` type. Normal commands do not silently create a missing config. They fail fast
+and tell the user how to run the initialization command.
 
-## See also
+The Dockerfile creates a narrow ad-hoc container config after installing the binary:
 
-- [prerequisites.md](prerequisites.md) — the fail-fast host minimums the Python layer asserts before
-  reading this file
-- [resource_budgeting.md](resource_budgeting.md) — how `resources` is verified and cordoned
-- [dhall_topology.md](dhall_topology.md) — the Dhall topology across bootstrap, context, rich, and test
-  configs
-- [binary_context_config](../architecture/binary_context_config.md) — the per-binary runtime context
-  contract
-- [derived_project_standards.md](derived_project_standards.md) — the project Dockerfile and binary
-  this file points at
+```dockerfile
+RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall
+```
+
+Service or daemon deployments override that baked ad-hoc config by mounting or materializing a role-specific
+file at the same canonical path.
+
+## Downstream Projection
+
+Values may need to flow from the host config to children: resource limits, image names, ports, HA replica
+counts, chart values, storage sizes, and feature flags. The child must not read the host config directly.
+
+The parent binary reads and validates its own config, computes a typed plan, and writes a narrower child
+`<project>.dhall` at the boundary where the child process becomes real. This is a projection, not a copy:
+the child receives only the settings and authority it needs for its role.
+
+## Mutation And Reload
+
+Normal commands treat the active config as an immutable startup snapshot:
+
+- read the sibling config once at process start;
+- validate it;
+- run against that snapshot;
+- ignore later file changes during the same short-lived process.
+
+Allowed writes are explicit and narrow: `config init`, `config upgrade FILE`, user-requested config-edit
+commands, and parent commands generating child configs. Runtime status, discovered endpoints, locks,
+leader election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating
+the active config.
+
+Long-running daemons and services use the same rule by default: read once at startup, log the config path
+and hash, and require restart or reconcile to observe changes. If a project later supports live reload, it
+must never live-reload authority fields such as context kind, capabilities, allowed commands, parent chain,
+or project/binary identity.
+
+## See Also
+
+- [dhall_topology.md](dhall_topology.md) - how project-local, generated child, and per-case Dhall relate.
+- [binary_context_config](../architecture/binary_context_config.md) - the authority and command-gating
+  fields inside the local config.
+- [resource_budgeting.md](resource_budgeting.md) - how resource budgets are projected and cordoned.
+- [derived_project_standards.md](derived_project_standards.md) - project authoring rules.

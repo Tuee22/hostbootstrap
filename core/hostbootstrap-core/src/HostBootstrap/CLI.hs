@@ -13,12 +13,9 @@ module HostBootstrap.CLI
 where
 
 import Control.Monad (join)
-import qualified Data.Text as T
 import HostBootstrap.Command (coreCommands)
-import HostBootstrap.Context (defaultResourceEnvelope, standaloneContainerContext, writeContextFile)
 import HostBootstrap.Harness (TestSuite)
 import Options.Applicative
-import System.Directory (getCurrentDirectory)
 
 -- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 -- with @projectCommands@ and threading the project's @testSuite@ into the
@@ -42,25 +39,5 @@ runHostBootstrapCLI progName projectCommands testSuite =
         )
     parser :: Parser (IO ())
     parser = case allCommands of
-      [] -> createContainerShortcut <|> pure (putStrLn (progName ++ ": no commands available"))
-      cs -> createContainerShortcut <|> hsubparser (mconcat cs)
-
-    createContainerShortcut :: Parser (IO ())
-    createContainerShortcut =
-      writeDefaultContainerConfig
-        <$> strOption
-          ( long "create-container-config"
-              <> metavar "OUTPUT"
-              <> help "bootstrap-only shortcut: create a project-container binary-context config"
-          )
-
-    writeDefaultContainerConfig :: FilePath -> IO ()
-    writeDefaultContainerConfig out = do
-      root <- getCurrentDirectory
-      let ctx =
-            standaloneContainerContext
-              (T.pack progName)
-              (T.pack progName)
-              (T.pack root)
-              defaultResourceEnvelope
-      writeContextFile out ctx
+      [] -> pure (putStrLn (progName ++ ": no commands available"))
+      cs -> hsubparser (mconcat cs)

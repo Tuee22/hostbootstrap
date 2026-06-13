@@ -19,11 +19,22 @@ import HostBootstrap.Cluster.Lifecycle
     resolvePlan,
   )
 import HostBootstrap.Config.Schema
-  ( Resources (..),
-    decodeStaticBaseFile,
-    renderStaticBase,
+  ( DeployConfig (..),
+    Resources (..),
+    configRoleNames,
+    decodeProjectConfigFile,
+    defaultDeployConfig,
+    defaultResources,
+    deriveProjectConfigForKind,
+    parseConfigRole,
+    projectConfigFileName,
+    projectConfigForRole,
+    projectConfigSchemaText,
+    renderProjectConfigSummary,
+    withSiblingProjectConfigContext,
+    writeProjectConfigFile,
   )
-import Control.Monad (unless)
+import Control.Monad (when)
 import qualified Data.Text as T
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen
@@ -43,8 +54,10 @@ import qualified HostBootstrap.Ensure.Tart as Tart
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Substrate (detect)
 import Options.Applicative
-import System.Directory (getCurrentDirectory, withCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
+import System.Environment (getExecutablePath)
 import System.Exit (die)
+import System.FilePath (takeDirectory, (</>))
 
 -- | The concrete @ensure@ reconcilers (the six host-tool reconcilers plus the
 -- cross-substrate host-provider @ensure incus@).
@@ -74,7 +87,7 @@ coreCommands progName suite =
 
 gate :: String -> Context.CommandClass -> [Context.Capability] -> IO () -> IO ()
 gate progName commandClass caps body =
-  Context.withSiblingContext (T.pack progName) commandClass caps (const body)
+  withSiblingProjectConfigContext (T.pack progName) commandClass caps (\_ _ -> body)
 
 -- | The @test@ verb: select over the project's case matrix and print the report
 -- card. @test all@ runs the whole matrix; @test \<case\>@ runs the single case
@@ -111,14 +124,14 @@ checkCodeCommand progName =
         (progDesc "Run the project's fail-fast code-check gate (project-defined body)")
     )
 
--- | The @config@ command group: decode and inspect the static-base
--- @hostbootstrap.dhall@ via the in-process decoder.
+-- | The @config@ command group: decode, inspect, and generate project-local
+-- Dhall configs.
 configCommand :: String -> Mod CommandFields (IO ())
 configCommand progName =
   command
     "config"
     ( info
-        (hsubparser (showCmd <> schemaCmd <> renderCmd))
+        (hsubparser (initCmd <> showCmd <> schemaCmd <> renderCmd))
         (progDesc "Decode, inspect, and generate hostbootstrap Dhall configs")
     )
   where
@@ -126,28 +139,127 @@ configCommand progName =
       command
         "show"
         ( info
-            (showAction <$> fileArg)
-            (progDesc "Decode a hostbootstrap.dhall and print its fields")
+            (showAction <$> fileArg progName)
+            (progDesc "Decode a <project>.dhall and print its fields")
         )
     showAction path = do
-      staticBase <- decodeStaticBaseFile path
-      putStr (renderStaticBase staticBase)
+      cfg <- decodeProjectConfigFile path
+      putStr (renderProjectConfigSummary cfg)
+
+    initCmd =
+      command
+        "init"
+        ( info
+            ( initAction
+                <$> optional outputOpt
+                <*> roleOpt
+                <*> optional initSourceRootOpt
+                <*> dockerfileOpt
+                <*> optional initCpuOpt
+                <*> memoryOpt
+                <*> storageOpt
+                <*> optional haReplicasOpt
+                <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
+            )
+            (progDesc "Write a default project-local <project>.dhall without requiring an existing config")
+        )
+    initAction moutput roleName mroot cfgDockerfile mcpu cfgMemory cfgStorage mha force = do
+      role <- either die pure (parseConfigRole roleName)
+      root <- maybe getCurrentDirectory pure mroot
+      output <- maybe defaultProjectConfigPath pure moutput
+      let cfgResources =
+            Resources
+              { cpu = maybe (cpu defaultResources) id mcpu,
+                memory = T.pack cfgMemory,
+                storage = T.pack cfgStorage
+              }
+          cfgDeploy = DeployConfig {haReplicas = maybe (haReplicas defaultDeployConfig) id mha}
+          cfg =
+            projectConfigForRole
+              (T.pack progName)
+              (T.pack progName)
+              (T.pack root)
+              (T.pack cfgDockerfile)
+              cfgResources
+              cfgDeploy
+              role
+      exists <- doesFileExist output
+      when (exists && not force) $
+        die ("config init: " ++ output ++ " already exists (pass --force to overwrite)")
+      writeProjectConfigFile output cfg
+    defaultProjectConfigPath = do
+      exe <- getExecutablePath
+      pure (takeDirectory exe </> progName ++ ".dhall")
+    outputOpt =
+      strOption
+        ( long "output"
+            <> short 'o'
+            <> metavar "FILE"
+            <> help "path to write; defaults to the executable sibling <project>.dhall"
+        )
+    roleOpt =
+      strOption
+        ( long "role"
+            <> metavar "ROLE"
+            <> value "host-orchestrator"
+            <> showDefault
+            <> help ("local role (" ++ T.unpack (T.intercalate (T.pack ", ") configRoleNames) ++ ")")
+        )
+    dockerfileOpt =
+      strOption
+        ( long "dockerfile"
+            <> metavar "PATH"
+            <> value "docker/Dockerfile"
+            <> showDefault
+            <> help "project Dockerfile path recorded in the generated config"
+        )
+    initSourceRootOpt =
+      strOption
+        ( long "source-root"
+            <> metavar "DIR"
+            <> help "source root recorded in the generated context; defaults to the current directory"
+        )
+    initCpuOpt =
+      option auto (long "cpu" <> metavar "N" <> help "CPU resource budget")
+    memoryOpt =
+      strOption
+        ( long "memory"
+            <> metavar "TEXT"
+            <> value (T.unpack (memory defaultResources))
+            <> showDefault
+            <> help "memory resource budget"
+        )
+    storageOpt =
+      strOption
+        ( long "storage"
+            <> metavar "TEXT"
+            <> value (T.unpack (storage defaultResources))
+            <> showDefault
+            <> help "storage resource budget"
+        )
+    haReplicasOpt =
+      option auto (long "ha-replicas" <> metavar "N" <> help "HA replica count recorded in deploy settings")
 
     schemaCmd =
       command
         "schema"
         ( info
-            (pure (gate progName Context.ConfigGenerationCommand [] schemaAction))
+            (pure schemaAction)
             (progDesc "Print the Dhall schema the binary's decoders accept (the in-scope artifact union)")
         )
-    schemaAction = putStrLn (T.unpack (schemaUnion coreArtifacts))
+    schemaAction =
+      putStrLn $
+        T.unpack $
+          schemaUnion coreArtifacts
+            <> T.pack "\n\n-- projectConfig\n"
+            <> projectConfigSchemaText
 
     renderCmd =
       command
         "render"
         ( info
-            (gate progName Context.ConfigGenerationCommand [] . renderAction <$> optional artifactOpt)
-            (progDesc "Render concrete Dhall configs from the reusable vocabulary")
+            (renderAction <$> optional artifactOpt)
+            (progDesc "Render static Dhall artifact examples from the reusable vocabulary")
         )
     artifactOpt =
       strOption (long "artifact" <> metavar "NAME" <> help "render only the named artifact")
@@ -167,7 +279,7 @@ contextCommand progName =
     "context"
     ( info
         (hsubparser (createCmd <> showPathCmd))
-        (progDesc "Create or inspect binary-context configs")
+        (progDesc "Create or inspect project-local context configs")
     )
   where
     createCmd =
@@ -175,66 +287,66 @@ contextCommand progName =
         "create"
         ( info
             (hsubparser (vmCmd <> containerCmd <> serviceCmd))
-            (progDesc "Create a binary-context config for a nested context")
+            (progDesc "Create a project-local config for a nested context")
         )
     vmCmd =
       command
         "vm"
         ( info
-            (createDerived Context.VMOrchestrator Context.deriveVMContext <$> outputArg <*> optional sourceRootOpt)
-            (progDesc "Create a VM-orchestrator binary-context config from the active context")
+            (createDerived Context.VMOrchestrator <$> outputArg <*> optional sourceRootOpt)
+            (progDesc "Create a VM-orchestrator project config from the active config")
         )
     containerCmd =
       command
         "container"
         ( info
             (createContainer <$> outputArg <*> optional sourceRootOpt <*> optional cpuOpt <*> optional memoryOpt <*> optional storageOpt)
-            (progDesc "Create a project-container binary-context config")
+            (progDesc "Create a project-container project config")
         )
     serviceCmd =
       command
         "service"
         ( info
-            (createDerived Context.ClusterService Context.deriveServiceContext <$> outputArg <*> optional sourceRootOpt)
-            (progDesc "Create a cluster-service binary-context config from the active context")
+            (createDerived Context.ClusterService <$> outputArg <*> optional sourceRootOpt)
+            (progDesc "Create a cluster-service project config from the active config")
         )
     showPathCmd =
       command
         "path"
         ( info
-            (pure (putStrLn "project-binary-context-config.dhall"))
-            (progDesc "Print the canonical binary-context filename")
+            (pure (putStrLn (projectConfigFileName (T.pack progName))))
+            (progDesc "Print the canonical project-local config filename")
         )
 
     createContainer out mroot mcpu mmemory mstorage = do
       root <- maybe getCurrentDirectory pure mroot
-      let envelope =
-            case (mcpu, mmemory, mstorage) of
-              (Nothing, Nothing, Nothing) -> Context.defaultResourceEnvelope
-              _ ->
-                Context.ResourceEnvelope
-                  (maybe 0 id mcpu)
-                  (maybe (T.pack "0GiB") T.pack mmemory)
-                  (maybe (T.pack "0GiB") T.pack mstorage)
-          ctx =
-            Context.standaloneContainerContext
+      let cfgResources =
+            Resources
+              { cpu = maybe (cpu defaultResources) id mcpu,
+                memory = maybe (memory defaultResources) T.pack mmemory,
+                storage = maybe (storage defaultResources) T.pack mstorage
+              }
+          cfg =
+            projectConfigForRole
               (T.pack progName)
               (T.pack progName)
               (T.pack root)
-              envelope
-      Context.writeContextFile out ctx
+              (T.pack "docker/Dockerfile")
+              cfgResources
+              defaultDeployConfig
+              Context.VMProjectContainer
+      writeProjectConfigFile out cfg
 
-    createDerived kind derive out mroot = do
+    createDerived kind out mroot = do
       root <- maybe getCurrentDirectory pure mroot
-      Context.withSiblingContext (T.pack progName) Context.ContextCreationCommand [] $ \parent -> do
-        unless (kind `elem` Context.childContextKinds parent) $
-          die ("binary context: child context " ++ show kind ++ " is not allowed in " ++ show (Context.contextKind parent))
-        Context.writeContextFile out (derive parent (T.pack root))
+      withSiblingProjectConfigContext (T.pack progName) Context.ContextCreationCommand [] $ \parentCfg _ -> do
+        childCfg <- either die pure (deriveProjectConfigForKind kind parentCfg (T.pack root))
+        writeProjectConfigFile out childCfg
 
     outputArg =
       strArgument
         ( metavar "OUTPUT"
-            <> help "path to write project-binary-context-config.dhall"
+            <> help "path to write the child <project>.dhall"
         )
     sourceRootOpt =
       strOption (long "source-root" <> metavar "DIR" <> help "source root recorded in the context")
@@ -282,7 +394,7 @@ clusterCommand progName =
       clusterStatus cfg (planForContext ctx)
 
     withClusterContext run =
-      Context.withSiblingContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \ctx -> do
+      withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \_ ctx -> do
         cfg <- hostConfig
         withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (run cfg ctx)
 
@@ -293,14 +405,14 @@ hostConfig = do
     Left err -> die err
     Right sub -> buildHostConfig sub
 
--- | A @FILE@ argument defaulting to @hostbootstrap.dhall@.
-fileArg :: Parser FilePath
-fileArg =
+-- | A @FILE@ argument defaulting to @<project>.dhall@.
+fileArg :: String -> Parser FilePath
+fileArg progName =
   strArgument
     ( metavar "FILE"
-        <> value "hostbootstrap.dhall"
+        <> value (progName ++ ".dhall")
         <> showDefault
-        <> help "path to the static-base hostbootstrap.dhall"
+        <> help "path to the project-local <project>.dhall"
     )
 
 -- | The production cluster plan, rooted at the active context's source root.

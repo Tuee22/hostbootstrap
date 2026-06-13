@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  hostbootstrap-demo.dhall: |
+    let ContextKind =
+          < HostOrchestrator
+          | VMOrchestrator
+          | VMProjectContainer
+          | ClusterService
+          | Daemon
+          | OneShotJob
+          | TestHarness
+          >
+
+    let Capability =
+          < HostTools
+          | IncusProvider
+          | DockerSocket
+          | ContainerRuntime
+          | KubernetesAPI
+          | KindNetwork
+          | DurableStore
+          | ServicePort
+          >
+
+    let CommandClass =
+          < EnsureCommand
+          | ConfigInspectionCommand
+          | ConfigGenerationCommand
+          | ContextCreationCommand
+          | ClusterLifecycleCommand
+          | TestWorkflowCommand
+          | CheckCodeCommand
+          | HostOrchestratorCommand
+          | DaemonCommand
+          | ServiceCommand
+          | ProjectCommand
+          >
+
+    in  { dockerfile = "docker/Dockerfile"
+        , resources = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+        , context =
+            { project = "hostbootstrap-demo"
+            , binary = "hostbootstrap-demo"
+            , sourceRoot = "/workspace/demo"
+            , contextKind = ContextKind.ClusterService
+            , roleName = "cluster-service"
+            , parentChain =
+                [] : List { frameKind : ContextKind, frameBinary : Text }
+            , capabilities =
+                [ Capability.KubernetesAPI
+                , Capability.DurableStore
+                , Capability.ServicePort
+                ]
+            , allowedCommandClasses =
+                [ CommandClass.ConfigInspectionCommand
+                , CommandClass.ServiceCommand
+                ]
+            , resourceEnvelope = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+            , childContextKinds = [] : List ContextKind
+            }
+        , deploy = { haReplicas = {{ .Values.replicas }} }
+        }

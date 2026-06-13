@@ -8,19 +8,16 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from hostbootstrap import cli, docker_ops, process
-from hostbootstrap.spec import Resources, StaticBaseSpec
+from hostbootstrap import bootstrap, cli, docker_ops, process
 from hostbootstrap.substrate import Substrate, SubstrateName
 
 LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
 
 
-def _spec() -> StaticBaseSpec:
-    return StaticBaseSpec(
+def _project() -> bootstrap.ProjectBuildSpec:
+    return bootstrap.ProjectBuildSpec(
         project="proj",
-        dockerfile=Path("docker/proj.Dockerfile"),
-        resources=Resources(cpu=4, memory="8GiB", storage="20GiB"),
-        source_path=Path("/proj/hostbootstrap.dhall"),
+        cabal_file=Path("/proj/proj.cabal"),
     )
 
 
@@ -53,8 +50,8 @@ def test_run_has_no_force_target_or_pull_option() -> None:
     assert "--no-pull" not in result.output
 
 
-def test_default_spec_path_is_dhall() -> None:
-    assert Path("hostbootstrap.dhall") == cli._DEFAULT_SPEC_PATH
+def test_default_project_root_is_current_directory() -> None:
+    assert Path(".") == cli._DEFAULT_PROJECT_ROOT
 
 
 # ---------------------------------------------------------------------------
@@ -63,13 +60,12 @@ def test_default_spec_path_is_dhall() -> None:
 
 
 def test_run_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    project = _spec()
-    spec_path = tmp_path / "hostbootstrap.dhall"
+    project = _project()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
+    monkeypatch.setattr(cli, "_load_project", lambda _path: project)
 
     async def _fake_bootstrap(
-        spec: StaticBaseSpec,
+        spec: bootstrap.ProjectBuildSpec,
         *,
         project_root: Path,
         args: tuple[str, ...],
@@ -82,31 +78,29 @@ def test_run_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     result = CliRunner().invoke(
         cli.main,
-        ["run", "--spec", str(spec_path), "play", "--seed", "7"],
+        ["run", "--project-root", str(tmp_path), "play", "--seed", "7"],
     )
     assert result.exit_code == 0, result.output
     assert captured["spec"] is project
-    assert captured["root"] == spec_path.resolve().parent
+    assert captured["root"] == tmp_path.resolve()
     assert captured["args"] == ("play", "--seed", "7")
 
 
-def test_run_missing_spec_fails_cleanly(tmp_path: Path) -> None:
-    missing = tmp_path / "hostbootstrap.dhall"
-    result = CliRunner().invoke(cli.main, ["run", "--spec", str(missing)])
+def test_run_missing_cabal_fails_cleanly(tmp_path: Path) -> None:
+    result = CliRunner().invoke(cli.main, ["run", "--project-root", str(tmp_path)])
     assert result.exit_code != 0
-    assert "not found" in result.output
+    assert "no .cabal file found" in result.output
 
 
 def test_build_invokes_build_binary_and_echoes_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    project = _spec()
-    spec_path = tmp_path / "hostbootstrap.dhall"
+    project = _project()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_load_spec", lambda _path: project)
+    monkeypatch.setattr(cli, "_load_project", lambda _path: project)
 
     async def _fake_build_binary(
-        spec: StaticBaseSpec,
+        spec: bootstrap.ProjectBuildSpec,
         *,
         project_root: Path,
     ) -> Path:
@@ -116,18 +110,19 @@ def test_build_invokes_build_binary_and_echoes_path(
 
     monkeypatch.setattr(cli.bootstrap, "build_binary", _fake_build_binary)
 
-    result = CliRunner().invoke(cli.main, ["build", "--spec", str(spec_path)])
+    result = CliRunner().invoke(cli.main, ["build", "--project-root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured["spec"] is project
-    assert captured["root"] == spec_path.resolve().parent
-    assert f"built {spec_path.resolve().parent / '.build' / 'proj'}" in result.output
+    assert captured["root"] == tmp_path.resolve()
+    assert f"built {tmp_path.resolve() / '.build' / 'proj'}" in result.output
 
 
-def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
-    missing = tmp_path / "hostbootstrap.dhall"
-    result = CliRunner().invoke(cli.main, ["build", "--spec", str(missing)])
+def test_build_multiple_cabal_files_fails_cleanly(tmp_path: Path) -> None:
+    (tmp_path / "a.cabal").touch()
+    (tmp_path / "b.cabal").touch()
+    result = CliRunner().invoke(cli.main, ["build", "--project-root", str(tmp_path)])
     assert result.exit_code != 0
-    assert "not found" in result.output
+    assert "multiple .cabal files" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +131,6 @@ def test_build_missing_spec_fails_cleanly(tmp_path: Path) -> None:
 
 
 def test_doctor_command_outputs_messages_and_reboot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
     monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
     monkeypatch.setattr(
         cli.prereqs,
@@ -153,7 +147,6 @@ def test_doctor_command_outputs_messages_and_reboot(monkeypatch: pytest.MonkeyPa
 
 
 def test_doctor_command_no_reboot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
     monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
     monkeypatch.setattr(
         cli.prereqs,
@@ -167,7 +160,6 @@ def test_doctor_command_no_reboot(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_doctor_command_wraps_prereq_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_load_spec", lambda _path: _spec())
     monkeypatch.setattr(cli, "_detect_substrate", lambda: LINUX)
 
     def _raise(*_args: object) -> cli.prereqs.DoctorResult:
@@ -186,16 +178,16 @@ def test_doctor_command_wraps_prereq_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_load_and_detect_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
-    project = _spec()
-    monkeypatch.setattr(cli.spec, "load", lambda _path: project)
-    assert cli._load_spec(Path("x.dhall")) is project
+    project = _project()
+    monkeypatch.setattr(cli.bootstrap, "discover_project", lambda _path: project)
+    assert cli._load_project(Path("/proj")) is project
 
-    def _bad_spec(_path: Path) -> StaticBaseSpec:
-        raise cli.SpecError("bad spec")
+    def _bad_project(_path: Path) -> bootstrap.ProjectBuildSpec:
+        raise cli.bootstrap.ProjectDiscoveryError("bad project")
 
-    monkeypatch.setattr(cli.spec, "load", _bad_spec)
-    with pytest.raises(cli.click.ClickException, match="bad spec"):
-        cli._load_spec(Path("x.dhall"))
+    monkeypatch.setattr(cli.bootstrap, "discover_project", _bad_project)
+    with pytest.raises(cli.click.ClickException, match="bad project"):
+        cli._load_project(Path("/proj"))
 
     monkeypatch.setattr(cli.substrate, "detect", lambda: LINUX)
     assert cli._detect_substrate() == LINUX
@@ -346,7 +338,6 @@ def test_friendly_group_converts_http_error(monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.mark.parametrize(
     ("exc", "needle"),
     [
-        (cli.dhall_tool.DhallToolError("dhall failed"), "dhall failed"),
         (RuntimeError("runtime failed"), "runtime failed"),
         (KeyError("bad-value"), "unsupported value: 'bad-value'"),
     ],

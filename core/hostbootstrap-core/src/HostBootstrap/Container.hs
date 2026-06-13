@@ -11,35 +11,37 @@ module HostBootstrap.Container
 where
 
 import qualified Data.Text as T
-import HostBootstrap.Config.Schema (StaticBase (..))
+import HostBootstrap.Config.Schema (ProjectConfig (..))
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker))
 import System.Exit (ExitCode)
 
 -- | The local image tag a project's container build produces: @\<project\>:local@.
-projectImageTag :: StaticBase -> String
-projectImageTag sb = T.unpack (project sb) ++ ":local"
+projectImageTag :: ProjectConfig -> String
+projectImageTag cfg = T.unpack (Context.project (context cfg)) ++ ":local"
 
 -- | The @docker build@ argv: build the project's Dockerfile `FROM` the given base
 -- image, tagged @\<project\>:local@, from the build context @.@. Pure.
-dockerBuildArgs :: StaticBase -> String -> [String]
-dockerBuildArgs sb baseImage =
+dockerBuildArgs :: ProjectConfig -> String -> [String]
+dockerBuildArgs cfg baseImage =
   [ "build",
     "-f",
-    T.unpack (dockerfile sb),
+    T.unpack (dockerfile cfg),
     "--build-arg",
     "BASE_IMAGE=" ++ baseImage,
     "-t",
-    projectImageTag sb,
+    projectImageTag cfg,
     "."
   ]
 
 -- | Run the project-container build through the resolved Docker tool.
 buildProjectContainer ::
   HostConfig ->
-  StaticBase ->
+  ProjectConfig ->
   -- | the base image to build `FROM`
   String ->
   IO (Either String (ExitCode, String, String))
-buildProjectContainer cfg sb baseImage = runTool cfg Docker (dockerBuildArgs sb baseImage)
+buildProjectContainer hostCfg projectCfg baseImage =
+  runTool hostCfg Docker (dockerBuildArgs projectCfg baseImage)

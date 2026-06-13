@@ -4,29 +4,27 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [python_haskell_boundary](python_haskell_boundary.md), [composition_methodology](composition_methodology.md), [dhall_topology](../engineering/dhall_topology.md), [development plan](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md)
 
-> **Purpose**: Define the "know your place" context contract every project binary uses to reason
+> **Purpose**: Define the "know your place" authority contract every project binary uses to reason
 > explicitly about where it is running in a composed host/VM/container/cluster topology.
 
 ## TL;DR
 
-- `hostbootstrap.dhall` is the static bootstrap input. It is read only by the Python bootstrapper.
-- Every project binary reads a sibling `project-binary-context-config.dhall` before normal command
-  dispatch. This file tells that binary where it is in the global composition chain.
-- A normal command fails fast with exit code 1 when the context file is missing or the command is not
+- The runtime config file is the executable's sibling `<project>.dhall`; the runtime-context fields live
+  inside that file.
+- The binary always has one default lookup rule. The role is inside the Dhall value, not encoded in the
+  filename.
+- A normal command fails fast with exit code 1 when the config is missing or the requested command is not
   commensurate with the declared context.
-- Context files are created during bootstrap: the Python CLI creates the host-level context, and each
-  nested binary creates the next context before handing work across a boundary.
-- In Kubernetes, pods receive their context file through the controller that owns identity and durable
-  placement. For stateful services, that is a `StatefulSet`.
+- Python does not create the host context in the target model. The built binary has ungated config
+  initialization/inspection commands and owns default generation.
+- Parent binaries generate narrower child configs at VM, container, daemon, and service boundaries.
 
 ## Current Status
 
-[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) implements this contract in the
-shared substrate: `HostBootstrap.Context` decodes, renders, discovers, validates, and gates sibling
-context files; the Python bootstrapper writes the first host-level context; the core command tree gates
-normal commands; and the demo project verbs declare their command classes. `config show FILE` remains the
-explicit static-base inspection path. Kubernetes controller wiring is project-specific: a service
-controller or manifest generator must mount or materialize the context beside the service binary.
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) implements command gating through the
+project-local sibling `<project>.dhall`. Python does not create runtime config. The built binary owns
+ungated default generation, schema/help, validation, child-config projection, and the normal command gate
+that reads the context authority embedded in the local config.
 
 ## The Contract
 
@@ -34,71 +32,76 @@ The project binary is not a blind command receiver. It is the local interpreter 
 composition. A caller may lift a subcommand across several boundaries, but the callee still has enough
 typed information to know which segment of the composition it is responsible for.
 
-The canonical runtime context file is:
+The canonical lookup path is:
 
 ```text
-project-binary-context-config.dhall
+<directory containing executable>/<project>.dhall
 ```
 
-It lives next to the executable that reads it:
+Examples:
 
-| Context | Binary location | Context file location |
+| Context | Binary location | Config file location |
 |---|---|---|
-| Host binary | `./.build/<project>` | `./.build/project-binary-context-config.dhall` |
-| VM host-native binary | VM-local `./.build/<project>` or installed path | sibling of that VM binary |
-| Project container binary | `/usr/local/bin/<project>` | `/usr/local/bin/project-binary-context-config.dhall` |
-| Cluster service binary | container entrypoint path | sibling path mounted or materialized by the controller |
+| Host binary | `./.build/<project>` | `./.build/<project>.dhall` |
+| VM host-native binary | VM-local `./.build/<project>` or installed path | sibling `<project>.dhall` |
+| Ad-hoc project container binary | `/usr/local/bin/<project>` | `/usr/local/bin/<project>.dhall` |
+| Cluster service or daemon binary | container entrypoint path | sibling path mounted or materialized by the controller |
 
-The filename is intentionally separate from `hostbootstrap.dhall`. The static-base file answers "what
-project should the Python bootstrapper build?" The context file answers "which role in the composed
-system is this already-built binary currently allowed to perform?"
+There should not be alternate automatic filenames such as `<project>.host.dhall` or
+`<project>.service.dhall`. Those names require the binary to choose a role before it has read the file that
+declares its role. An explicit `--config FILE` may exist for inspection, testing, and bootstrap tooling, but
+normal dispatch defaults to the single sibling path.
 
 ## Context Shape
 
-The implemented Dhall type carries these concepts:
+The context portion of the local config carries these concepts:
 
 | Field family | Purpose |
 |---|---|
 | Project identity | project name, binary name, and source root |
 | Context kind | host orchestrator, VM orchestrator, VM project container, cluster service, daemon, one-shot job, or test harness |
+| Role name | optional project-specific role label such as `webservice`, `worker`, or `host` |
 | Parent chain | the pure lift/composition stack that led here, including host -> VM -> container -> cluster when applicable |
 | Local capabilities | tools and services this context may use, such as Docker socket, kind network, Kubernetes API, or durable store |
 | Allowed command classes | which command families are valid in this context |
 | Resource envelope | the budget slice or cordon this context is inside |
-| Child-context rules | how this binary may create the next context file before launching a nested binary |
+| Child-context rules | how this binary may create the next config file before launching a nested binary |
 
-Project-specific logic may extend the type, but it must not make `hostbootstrap.dhall` a runtime input
-again. The context file is the runtime authority.
+Project-specific logic may extend the value, but it must not make a child reach back to the parent's config
+or treat missing config as implicit authority.
 
 ## Creation Flow
 
 Context files are created at the boundary where the next binary becomes meaningful:
 
-1. The Python bootstrapper reads `hostbootstrap.dhall`, builds `./.build/<project>`, and idempotently
-   writes the host-level `./.build/project-binary-context-config.dhall` before it execs the binary.
-2. The host-level project binary can create a VM-level context with
-   `<project> context create vm OUTPUT` before a VM bootstrap launches or execs the project binary inside
-   the VM.
-3. The project container creates its own context during the Dockerfile build after the binary is
-   installed. The Dockerfile uses the project binary's context-creation entrypoint, exposed for this
-   purpose as `--create-container-config`, and stores the resulting Dhall next to the container binary.
-4. A cluster service receives its context from the Kubernetes controller that owns its identity. The
-   binary can render the service context with `<project> context create service OUTPUT`; durable services
-   should use a `StatefulSet` so pod identity, storage, and the mounted or materialized context remain
-   aligned.
+1. Python derives `<project>` from the Cabal file, builds `./.build/<project>`, and execs the requested
+   binary command. It does not read or write Dhall.
+2. The built binary exposes ungated config surfaces such as `config path`, `config schema`, `config init`,
+   and `config show FILE`. A user can generate the first host config with `config init` and then edit the
+   user-owned settings.
+3. A host or VM binary creates a VM-local or container-local `<project>.dhall` before launching the nested
+   binary.
+4. The project Dockerfile bakes a narrow ad-hoc container config at `/usr/local/bin/<project>.dhall` after
+   installing the binary and before `check-code`.
+5. A service or daemon receives a role-specific config from the controller or launcher that owns identity
+   and durable placement. For stateful Kubernetes services, that is usually a `StatefulSet`.
 
-The creation entrypoint is the only bootstrap operation allowed to run without an existing sibling
-context file. All normal commands load and validate the context before dispatch.
+The initialization and inspection entrypoints are the only binary entrypoints allowed to run without an
+existing sibling config: help/version, `config path`, `config schema`, `config init`, `config show FILE`,
+and `config render`. `config render` prints static typed artifact examples from the in-scope registry; it
+does not project child runtime authority. All other normal commands load and validate the config before
+dispatch.
 
 ## Command Gating
 
-Every normal command starts by loading the sibling context file. It fails fast with exit code 1 when:
+Every non-bootstrap/inspection command starts by loading the sibling config file. It fails fast with exit
+code 1 when:
 
-- `project-binary-context-config.dhall` is absent;
-- the Dhall does not decode against the binary's context schema;
-- the context names a different project or binary;
-- the requested command is not valid for the context kind;
-- the context claims capabilities the binary cannot verify locally.
+- `<project>.dhall` is absent;
+- the Dhall does not decode against the binary's config/context schema;
+- the config names a different project or binary;
+- the requested command is not valid for the context kind or role;
+- the config claims capabilities the binary cannot verify locally.
 
 Examples:
 
@@ -107,8 +110,33 @@ Examples:
 - A cluster-service process must not run host-level bootstrap commands, even if those command names exist
   in the same optparse tree.
 
-This turns the global composition into an explicit local precondition. A nested binary still runs the
-same command tree, but it refuses work that does not belong to its declared place.
+This turns the global composition into an explicit local precondition. A nested binary still runs the same
+command tree, but it refuses work that does not belong to its declared place.
+
+## Docker Defaults And Service Overrides
+
+A Docker image should normally contain a safe default ad-hoc container config so commands such as
+`docker run --rm <image> test all` can work without a mounted file. That baked config should be narrow:
+`VMProjectContainer` or equivalent, with only container/test/build capabilities.
+
+A long-running service or daemon should not rely on the baked ad-hoc config. Its controller or launcher
+must mount or materialize a role-specific file at the same canonical path. The same image can therefore
+serve both ad-hoc and service contexts while each container instance reads exactly one local file.
+
+## Config Snapshot And Daemons
+
+For short-lived commands, the config is read once at startup and treated as immutable for that invocation.
+Changes on disk affect future invocations only.
+
+For daemons and services, the default is the same: read once, validate, log the config path and hash, and
+run under that snapshot until restart or an explicit reconcile. Live reload is optional project work and
+must never live-reload authority fields such as project identity, context kind, parent chain, capabilities,
+or allowed command classes.
+
+Daemon logs should make the active authority obvious. A startup event should include project, binary,
+context kind, role name, config path, config hash, source root, and resource envelope. Projects that carry
+version/build metadata should include it in the same startup event. Logs should go to stdout/stderr by
+default so systemd, Docker, Kubernetes, or incus can collect and rotate them.
 
 ## Demo Contexts
 
@@ -119,16 +147,15 @@ The worked demo has four runtime contexts:
 | Host | metal-side orchestrator: ensure incus, size and launch the VM, destroy it behind the guard |
 | VM | fresh Linux host: re-establish the host-native binary and build the project container |
 | Container on the VM | lifted test workflow: run `test all`, bring up per-case kind clusters, run e2e |
-| Cluster service | the webservice pod launched by the chart: serve only the service role |
+| Cluster service | chart-launched webservice pod: serve only the service role |
 
-The same binary may exist in all four contexts, but each copy reads a different sibling context file and
-therefore accepts a different subset of commands.
+The same command tree exists in each copy of the binary. Each copy reads a different local `<project>.dhall`
+and therefore accepts a different subset of commands.
 
 ## See Also
 
 - [composition_methodology](composition_methodology.md) - the self-reference lift and the
   one-operation-one-representation rule.
-- [python_haskell_boundary](python_haskell_boundary.md) - the static bootstrap input versus binary-owned
-  runtime lifecycle.
-- [dhall_topology](../engineering/dhall_topology.md) - where the binary context tier fits in the Dhall
+- [python_haskell_boundary](python_haskell_boundary.md) - Python's pre-binary boundary.
+- [dhall_topology](../engineering/dhall_topology.md) - where the binary context fields fit in the Dhall
   configuration model.

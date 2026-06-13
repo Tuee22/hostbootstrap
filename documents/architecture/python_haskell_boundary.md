@@ -9,9 +9,9 @@
 
 ## TL;DR
 
-- The Python bootstrapper does only the **minimum to build the project binary**: assert the fail-fast
-  host minimums, ensure the host build toolchain, build host-native, write the host-level
-  `project-binary-context-config.dhall`, then exec.
+- The Python bootstrapper does only the **minimum to build the project binary**: derive the project name
+  from the Cabal file, assert the fail-fast host minimums, ensure the host build toolchain, build
+  host-native, then exec.
   **Those host minimums are the only hard fail-fast surface in the system.**
 - Once the binary runs it is **never blocked by an absent-but-installable dependency** — the `ensure`
   suite installs whatever it needs (install-and-verify; see
@@ -26,14 +26,13 @@
   host-native. Ensuring Docker and building the project container are **not** pre-binary work — the
   execed binary owns them.
 
-> **Current state.** The Python bootstrapper (`hostbootstrap/bootstrap.py`) does only the pre-binary work
-> — assert host minimums, ensure the host build toolchain, build the binary host-native on **every**
-> substrate (Linux included; there is no build-in-container, copy-out path), write the host-level
-> `project-binary-context-config.dhall`, and exec it. Docker-ensure, the project container build, and the
-> cordon are owned by the execed project binary. The original convergence is recorded in
-> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md);
-> the context handoff is Phase 15. Normal project-binary dispatch reads the sibling context;
-> `config show FILE` remains the explicit static-base inspection path.
+> **Current status.** Python now derives `<project>` from the Cabal file, builds
+> `./.build/<project>` host-native on every substrate, and execs without reading or writing Dhall. The
+> Haskell/project-binary runtime surface owns default `<project>.dhall` generation, child-config
+> projection, and normal command gating through the sibling project config. See
+> [DEVELOPMENT_PLAN Phase 8](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md),
+> [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), and
+> [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
 
 ## Ownership Matrix
 
@@ -41,15 +40,16 @@
 |---------|-------|-----|
 | Fail-fast host minimums | Python | The **only** hard fail-fast surface in the system — the irreducible host floor the wrapper cannot install; see [prerequisites](../engineering/prerequisites.md). |
 | Ensure the host **build** toolchain | Python | The prerequisites to build the binary host-native must exist first — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux. |
+| Derive project name | Python | The project name comes from the Cabal file name, for example `hostbootstrap-demo.cabal` -> `hostbootstrap-demo`; this is the only project metadata Python needs before the binary exists. |
 | Build the project binary **host-native** | Python | A Linux ELF cannot exec on a general host, so the binary is built for the host it runs on into `./.build/<project>`; see [build_and_run_model](build_and_run_model.md). |
-| Create the host-level binary context | Python | Python is the only component that can bridge from static `hostbootstrap.dhall` into the first sibling `project-binary-context-config.dhall`; see [binary_context_config](binary_context_config.md). |
+| Create or edit the local `<project>.dhall` | Project binary / user | The built binary exposes config initialization, schema, inspection, and upgrade surfaces; Python does not read or write Dhall. See [binary_context_config](binary_context_config.md). |
 | Exec the binary | Python | Hands control to the project binary, which owns everything afterward — Docker, the project container, the cordon, and the cluster. |
 | Ensure Docker + build the project container | `hostbootstrap-core` (the execed binary) | **Not** pre-binary work; the binary does it via `ensure docker` and its container build, gating on `check-code`. See [build_and_run_model](build_and_run_model.md). |
 | Host-tool resolution (`HostTool` to absolute paths) | `hostbootstrap-core` | Typed, closed enumeration; no `$PATH` resolution. |
 | `ensure` reconcilers (docker/colima/cuda/homebrew/ghc/tart) | `hostbootstrap-core` | Idempotent reconcilers with host-applicability predicates. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | Substrate detection | `hostbootstrap-core` | `apple-silicon`, `linux-cpu`, `linux-gpu`. |
-| Binary-context validation and command gating | `hostbootstrap-core` / project binary | Normal commands fail fast when the sibling context config is missing or incompatible with the requested command. |
-| Static bootstrap Dhall read | Python | `hostbootstrap.dhall` is bootstrap-only for normal execution. The Haskell inspection decoder remains for `config show FILE` and bootstrap support. See [dhall_topology](../engineering/dhall_topology.md). |
+| Binary-context validation and command gating | `hostbootstrap-core` / project binary | Normal commands fail fast when the sibling `<project>.dhall` is missing or incompatible with the requested command. |
+| Dhall config initialization and downstream projection | Project binary | The project binary renders defaults, validates local config, and generates narrower child configs at VM/container/service boundaries. See [dhall_topology](../engineering/dhall_topology.md). |
 | Resource budgeting and cordoning | `hostbootstrap-core` | Verify spare resources; cordon via Colima sizing / kind limits. See [resource_budgeting](../engineering/resource_budgeting.md). |
 | Cluster lifecycle | `hostbootstrap-core` (the execed binary) | kind/Helm semantics, never-delete-`.data` invariant; the lifecycle runs where the context says it may run. In the demo deploy, the lifted operation is `test all`, and the harness calls `clusterUp` locally inside that context. See [cluster_lifecycle](../engineering/cluster_lifecycle.md), [composition_methodology](composition_methodology.md), and [binary_context_config](binary_context_config.md). |
 | incus VM lifecycle (create/exec/reboot/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: the binary spins, sizes, and tears down the VM via one `incus exec` dispatch. See [incus](../engineering/incus.md). |
@@ -60,18 +60,20 @@
 ## The Bootstrap Sequence
 
 The Python bootstrapper runs a fixed, minimal sequence — only what must run *before any project
-binary exists*, plus the first context handoff that lets the binary know its place:
+binary exists*:
 
-1. Assert fail-fast host minimums.
-2. Ensure the host build toolchain (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on
+1. Derive `<project>` from the Cabal file name, failing fast on ambiguity unless the user provides an
+   explicit Cabal file.
+2. Assert fail-fast host minimums.
+3. Ensure the host build toolchain (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on
    Linux) — the prerequisites to build the binary host-native. Each tool is **probed first**
    (a quiet, offline `ghcup whereis …` / `ghcup --version`) and installed only when absent, so an
    already-provisioned host makes no network call and prints nothing on the common path.
-3. Build the project binary host-native into `./.build/<project>`.
-4. Create the host-level `./.build/project-binary-context-config.dhall` from the static bootstrap input.
+4. Build the project binary host-native into `./.build/<project>`.
 5. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
    The binary then ensures Docker, builds the project container, applies the cordon, and drives the
-   cluster — everything a built binary can reasonably do.
+   cluster — everything a built binary can reasonably do. If the requested command needs config and
+   `./.build/<project>.dhall` is absent, the binary fails fast and points the user to `config init`.
 
 ## The Default-to-Haskell Rule
 

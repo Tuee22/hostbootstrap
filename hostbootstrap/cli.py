@@ -22,27 +22,17 @@ from typing import Final
 import click
 import httpx
 
-from . import (
-    base_image,
-    bootstrap,
-    dhall_tool,
-    docker_ops,
-    prereqs,
-    process,
-    spec,
-    substrate,
-)
+from . import base_image, bootstrap, docker_ops, prereqs, process, substrate
 from .base_image import Flavor
-from .spec import SpecError, StaticBaseSpec
 from .substrate import Substrate
 
-_DEFAULT_SPEC_PATH: Final[Path] = Path("hostbootstrap.dhall")
+_DEFAULT_PROJECT_ROOT: Final[Path] = Path(".")
 
 
-def _load_spec(spec_path: Path) -> StaticBaseSpec:
+def _load_project(project_root: Path) -> bootstrap.ProjectBuildSpec:
     try:
-        return spec.load(spec_path)
-    except SpecError as exc:
+        return bootstrap.discover_project(project_root)
+    except bootstrap.ProjectDiscoveryError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
@@ -135,13 +125,7 @@ def _format_runtime_error(exc: BaseException) -> str:
 
 
 class _FriendlyGroup(click.Group):
-    """Click group that converts known exception types to ``ClickException``.
-
-    Why: a bare ``CommandError`` / ``httpx.HTTPError`` / ``DhallToolError`` /
-            ``RuntimeError`` from deep in the stack would otherwise
-    surface to the user as a Python traceback. Click prints ``ClickException``
-    as ``Error: <msg>`` with no traceback and a non-zero exit.
-    """
+    """Click group that converts known exception types to ``ClickException``."""
 
     def invoke(self, ctx: click.Context) -> object:
         try:
@@ -159,8 +143,6 @@ class _FriendlyGroup(click.Group):
             raise click.ClickException(message) from exc
         except httpx.HTTPError as exc:
             raise click.ClickException(_format_http_error(exc)) from exc
-        except dhall_tool.DhallToolError as exc:
-            raise click.ClickException(str(exc)) from exc
         except (RuntimeError, KeyError) as exc:
             raise click.ClickException(_format_runtime_error(exc)) from exc
 
@@ -169,13 +151,13 @@ class _FriendlyGroup(click.Group):
 # Click app
 # ---------------------------------------------------------------------------
 
-_SPEC_OPTION = click.option(
-    "--spec",
-    "spec_path",
+_PROJECT_ROOT_OPTION = click.option(
+    "--project-root",
+    "project_root",
     type=click.Path(path_type=Path),
-    default=_DEFAULT_SPEC_PATH,
+    default=_DEFAULT_PROJECT_ROOT,
     show_default=True,
-    help="Path to the project's hostbootstrap.dhall",
+    help="Project root containing exactly one .cabal file",
 )
 
 
@@ -186,10 +168,8 @@ def main() -> None:
 
 
 @main.command()
-@_SPEC_OPTION
-def doctor(spec_path: Path) -> None:
+def doctor() -> None:
     """Detect the substrate and assert the fail-fast host minimums."""
-    _load_spec(spec_path)
     sub = _detect_substrate()
     try:
         result = prereqs.run_doctor_sync(sub)
@@ -204,26 +184,26 @@ def doctor(spec_path: Path) -> None:
 
 
 @main.command()
-@_SPEC_OPTION
-def build(spec_path: Path) -> None:
+@_PROJECT_ROOT_OPTION
+def build(project_root: Path) -> None:
     """Build the project binary host-native into ``./.build/`` (no exec)."""
-    project_spec = _load_spec(spec_path)
-    project_root = spec_path.resolve().parent
-    binary = asyncio.run(bootstrap.build_binary(project_spec, project_root=project_root))
+    root = project_root.resolve()
+    project = _load_project(root)
+    binary = asyncio.run(bootstrap.build_binary(project, project_root=root))
     click.echo(f"built {binary}")
 
 
 @main.command(context_settings={"allow_interspersed_args": False})
-@_SPEC_OPTION
+@_PROJECT_ROOT_OPTION
 @click.argument("args", nargs=-1)
-def run(spec_path: Path, args: tuple[str, ...]) -> None:
+def run(project_root: Path, args: tuple[str, ...]) -> None:
     """Build idempotently, then exec the project binary with ``args``."""
-    project_spec = _load_spec(spec_path)
-    project_root = spec_path.resolve().parent
+    root = project_root.resolve()
+    project = _load_project(root)
     asyncio.run(
         bootstrap.bootstrap(
-            project_spec,
-            project_root=project_root,
+            project,
+            project_root=root,
             args=args,
         )
     )

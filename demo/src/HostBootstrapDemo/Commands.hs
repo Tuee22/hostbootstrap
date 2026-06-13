@@ -38,7 +38,7 @@ import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (incusSizingArgs)
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterDelete, clusterUp, resolvePlan)
-import HostBootstrap.Config.Schema (Resources (..))
+import HostBootstrap.Config.Schema (Resources (..), withSiblingProjectConfigContext)
 import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, coreArtifacts, schemaUnion)
@@ -81,11 +81,11 @@ demoProject = "hostbootstrap-demo"
 
 demoContext :: Context.CommandClass -> [Context.Capability] -> (Context.BinaryContext -> IO a) -> IO a
 demoContext cls caps =
-  Context.withSiblingContext (T.pack demoProject) cls caps
+  withSiblingProjectConfigContext (T.pack demoProject) cls caps . const
 
 demoAction :: Context.CommandClass -> [Context.Capability] -> IO a -> IO a
-demoAction cls caps action =
-  demoContext cls caps (const action)
+demoAction cls caps body =
+  demoContext cls caps (const body)
 
 resourcesFromContext :: Context.BinaryContext -> Resources
 resourcesFromContext ctx =
@@ -422,6 +422,9 @@ runVmBootstrap = demoAction Context.HostOrchestratorCommand [Context.IncusProvid
   inVM
     "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
     ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
+  inVM
+    "generate the VM-local project config"
+    "cd /root/hostbootstrap/demo && .build/hostbootstrap-demo config init --role vm-orchestrator --output .build/hostbootstrap-demo.dhall --source-root /root/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force"
   inVM
     "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
     "cd /root/hostbootstrap/demo && .build/hostbootstrap-demo ensure docker"

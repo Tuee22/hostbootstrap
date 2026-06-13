@@ -14,6 +14,10 @@ spec:
       labels:
         app: {{ .Release.Name }}-web
     spec:
+      volumes:
+        - name: demo-config
+          configMap:
+            name: {{ .Release.Name }}-config
       containers:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -21,6 +25,11 @@ spec:
           # The project container's ENTRYPOINT is the demo binary; `web serve`
           # binds the warp/wai webservice on the service port.
           args: ["web", "serve"]
+          volumeMounts:
+            - name: demo-config
+              mountPath: /usr/local/bin/hostbootstrap-demo.dhall
+              subPath: hostbootstrap-demo.dhall
+              readOnly: true
           ports:
             - containerPort: {{ .Values.service.port }}
           readinessProbe:

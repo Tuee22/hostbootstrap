@@ -71,7 +71,7 @@ from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
 identical name. The downstream project container would then be built without
 pulling the base tag from Docker Hub.
 
-The `run` command does **not** expose these flags today: it accepts only `--spec`.
+The `run` command does **not** expose these flags today: it accepts only `--project-root`.
 The supporting helpers exist (`_resolve_pull` and
 `_base_context_value` in `hostbootstrap/cli.py`), but no command wires
 them yet. The current default behaviour is to **pull** the base from Docker Hub,

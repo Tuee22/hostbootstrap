@@ -15,20 +15,22 @@
   model is [composition_methodology](../architecture/composition_methodology.md); the reusable shapes are
   [composition_patterns](composition_patterns.md).
 - Every normal command is context-gated. A project binary reads a sibling
-  `project-binary-context-config.dhall` before dispatch so it can fail fast when asked to perform work
+  `<project>.dhall` before dispatch so it can fail fast when asked to perform work
   outside its declared place in the chain.
 - Crossing an execution-context boundary is a self-reference lift — `liftSubcommand` re-invokes the
   binary's own subcommand in the nested context — not a bespoke remote-exec path.
 
 ## Steps
 
-1. **Declare the static bootstrap config.** A `hostbootstrap.dhall` at the project root names the project,
-   its Dockerfile, and the one resource budget. It is read by the Python bootstrapper only. See
-   [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
-2. **Define the binary context creation logic.** The host-level context is created by the Python
-   bootstrapper from `hostbootstrap.dhall`; nested contexts are created by the project binary before it
-   crosses a boundary. The project container creates its own context in the Dockerfile with
-   `--create-container-config`. See [binary_context_config](../architecture/binary_context_config.md).
+1. **Define the project-local config schema and defaults.** The project binary owns `<project>.dhall`:
+   Dockerfile path, resource budget, deploy settings, context fields, help text, and default rendering via
+   an ungated `config init`-style command. Python derives the project name from the Cabal file and does
+   not read Dhall. See [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
+2. **Define child config projection.** Nested contexts are created by the project binary before it crosses
+   a boundary. The project container creates its safe ad-hoc config in the Dockerfile with
+   `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`; service and daemon
+   launchers override that file with role-specific projections. See
+   [binary_context_config](../architecture/binary_context_config.md).
 3. **Define verbs as composable optparse values.** Hand the project's `command "…"` entries to
    `runHostBootstrapCLI progName projectCommands testSuite`; the core verbs (`ensure`/`config`/`cluster`/
    `test`/`check-code`) pass through unchanged. Append, never shadow (the CLI stream of the four-stream

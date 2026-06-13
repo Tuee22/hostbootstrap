@@ -5,8 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [binary_context_config](../documents/architecture/binary_context_config.md)
 
 > **Purpose**: Make every project binary explicitly know where it is in the composed
-> host/VM/container/cluster chain by reading a sibling `project-binary-context-config.dhall`, and make
-> normal commands fail fast when the context is missing or does not authorize the command.
+> host/VM/container/cluster chain by reading a sibling `<project>.dhall`, and make normal commands fail
+> fast when the local config is missing or does not authorize the command.
 
 ## Phase Status
 
@@ -17,9 +17,11 @@ generation, the self-reference lift, the worked demo chain, and the composition 
 turns the implicit context carried by lift composition into an explicit runtime precondition for every
 binary process.
 
-Sprints 15.1 through 15.4 are done. The core normal command tree and demo project verbs gate through the
-sibling binary context, context creation surfaces exist for host/VM/container/service placement, and
-normal cluster lifecycle commands use the active context instead of a `hostbootstrap.dhall` path.
+The runtime context is folded into the project-local `<project>.dhall` file. The core normal command tree
+and demo project verbs gate through the sibling project config, context creation surfaces materialize
+host/VM/container/service placement configs, and normal cluster lifecycle commands use the active context
+instead of any static-base path. The old standalone context filename, Dockerfile shortcut, and Haskell
+static-base compatibility API are removed.
 
 ## Remaining Work
 
@@ -29,14 +31,16 @@ None.
 
 Introduce the runtime binary-context contract:
 
-- `hostbootstrap.dhall` is the static bootstrap input read only by the Python wrapper.
-- Every normal binary command reads `project-binary-context-config.dhall` from next to the executable
-  before dispatch.
-- The Python wrapper idempotently creates the host-level context after building `./.build/<project>`.
-- Each nested boundary receives or creates its own context before the nested binary runs.
-- Dockerfiles use `--create-container-config` after installing the binary and before `check-code`.
-- Kubernetes service pods receive the context from their owning controller; durable services use a
-  `StatefulSet`.
+- Every normal binary command reads `<project>.dhall` from next to the executable before dispatch.
+- The project name in the filename is derived from the Cabal file/binary identity; the role is inside the
+  file content.
+- The built project binary creates defaults through `config init` and emits schema/help for editing.
+- Each nested boundary receives or creates its own role-specific local config before the nested binary
+  runs.
+- Dockerfiles use `<project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall`
+  after installing the binary and before `check-code`.
+- Kubernetes service pods receive a service/daemon local config from their owning controller; durable
+  services use a `StatefulSet`.
 - Missing, undecodable, wrong-project, wrong-capability, or wrong-command contexts fail fast with exit
   code 1.
 
@@ -80,29 +84,30 @@ and no-side-effect command gating.
 
 #### Objective
 
-Have the Python wrapper create the first runtime context because it is the only component that can bridge
-from static `hostbootstrap.dhall` to an already-built host binary.
+Record the old temporary Python host-context handoff for the separate-context artifact. This sprint is
+superseded by Phase 6 Sprint 6.4, which removed Python's Dhall reader and host-context writer.
 
 #### Deliverables
 
-- The Python bootstrapper reads `hostbootstrap.dhall`, builds `./.build/<project>`, and idempotently
-  writes `./.build/project-binary-context-config.dhall` before exec.
-- The host context carries project/binary identity, host-orchestrator context kind, initial resource
+- The old Python bootstrapper read `hostbootstrap.dhall`, built `./.build/<project>`, and idempotently
+  wrote `./.build/project-binary-context-config.dhall` before exec.
+- The old host context carried project/binary identity, host-orchestrator context kind, initial resource
   envelope, and the child-context rules needed by the project binary.
-- `hostbootstrap.dhall` remains the only Python-facing Dhall file.
+- That handoff is no longer supported; Python now derives the project name from the Cabal file and writes
+  no Dhall.
 
 #### Validation
 
-- Python tests for idempotent creation, unchanged reruns, malformed static bootstrap input, and correct
-  host-context path.
-- End-to-end bootstrap test proving the execed binary starts from the host context rather than a normal
-  runtime read of `hostbootstrap.dhall`.
+- Historical Python tests covered idempotent creation, unchanged reruns, malformed static bootstrap input,
+  and correct host-context path.
+- Current Python tests prove the bootstrapper writes no `.dhall` artifact under `./.build`.
 
 #### Remaining Work
 
-None. The Python bootstrapper now writes `./.build/project-binary-context-config.dhall` idempotently
-after the host-native binary build. Validation: `poetry run python -m hostbootstrap.test_all -q` passes
-(140 tests), and `cabal test all` passes (145 tests).
+None for the old separate-context handoff. Phase 6 Sprint 6.4 removed the Python writer; Sprint 15.5
+completed the Haskell runtime filename migration to project-local `<project>.dhall`. Validation:
+`poetry run python -m hostbootstrap.test_all -q` passes (113 tests), `poetry run python -m
+hostbootstrap.check_code` passes, and `cabal test all` passes.
 
 ### Sprint 15.3: Nested context creation surfaces [Done]
 
@@ -132,12 +137,12 @@ command gating.
 
 #### Remaining Work
 
-None. `HostBootstrap.Context` provides host/VM/container/service context constructors and a standalone
-container bootstrap context. The core CLI exposes `context create vm|container|service OUTPUT` and the
-top-level Dockerfile shortcut `--create-container-config OUTPUT`; the demo Dockerfile runs the shortcut
-before `check-code`. Validation: `cabal test all` passes (151 tests), and a direct
-`cabal run hostbootstrap -- --create-container-config <tmp>/project-binary-context-config.dhall` smoke
-test writes a non-empty file.
+None for the old separate-context command surface. `HostBootstrap.Context` provides
+host/VM/container/service context constructors and a standalone container bootstrap context. Sprint 15.5
+removed the temporary Dockerfile shortcut and replaced it with
+`config init --role vm-project-container --output /usr/local/bin/<project>.dhall`. Validation:
+`cabal test all` passed for the original command surface, and Sprint 15.5's validation covers the current
+project-local replacement.
 
 ### Sprint 15.4: Remove normal runtime static-base reads [Done]
 
@@ -168,32 +173,95 @@ Complete the migration so `hostbootstrap.dhall` is not a normal binary runtime i
 
 #### Remaining Work
 
-None. Normal core commands (`ensure`, `config schema/render`, `cluster`, `test`, and `check-code`) now
-load and validate the sibling context before dispatch; `config show FILE`, context creation, and the
-Dockerfile shortcut remain the explicit inspection/bootstrap exceptions. `cluster up/down/delete/status`
-no longer accepts a `hostbootstrap.dhall` path and instead derives project, source root, and resources
-from the active context. The demo project verbs declare their command classes through the same gate.
+None. Normal core commands (`ensure`, `cluster`, `test`, and `check-code`) now load and validate the
+sibling context before dispatch; `config init`, `config schema`, `config show FILE`, `config path`, and
+static `config render` remain the explicit inspection/bootstrap exceptions. `cluster up/down/delete/status`
+derives project, source root, and resources from the active context. The demo project verbs declare their
+command classes through the same gate.
 
 Validation: `cabal test all` passes (152 tests), `poetry run python -m hostbootstrap.test_all -q` passes
 (140 tests), `poetry run python -m hostbootstrap.check_code` passes, `git diff --check` passes, the
-Dockerfile `--create-container-config` smoke writes a non-empty context file, and a normal `check-code`
-CLI smoke exits 1 when the sibling context is absent.
+normal `check-code` CLI smoke exits 1 when the sibling context is absent.
+
+### Sprint 15.5: Fold context into `<project>.dhall` [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Container.hs`, `demo/docker/Dockerfile`,
+`demo/chart/templates/configmap.yaml`, `demo/chart/templates/deployment.yaml`,
+`demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`,
+`core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/ContainerSpec.hs`
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
+`documents/engineering/derived_dockerfile.md`, `documents/operations/demo_runbook.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Replace `project-binary-context-config.dhall` with the project-local `<project>.dhall` file as the single
+runtime config authority for each binary copy.
+
+#### Deliverables
+
+- Sibling-file discovery looks for `<project>.dhall`, where `<project>` is derived from the running
+  binary/Cabal identity.
+- The context loader reads the runtime-context section inside that config and enforces the same
+  command/capability gate as before.
+- `--create-container-config` is removed; Dockerfiles use
+  `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`.
+- Daemon/service startup logs include project, binary, context kind, role name, config path, config hash,
+  source root, and resource envelope, with secrets excluded.
+- Config changes during a process lifetime do not mutate the active process; normal commands read once,
+  daemons read once and require restart unless a future explicit reload command is added.
+
+#### Validation
+
+- Unit tests cover sibling `<project>.dhall` discovery, missing/malformed file failures, wrong-project
+  failures, role/capability mismatches, and no-side-effect command gating.
+- Dockerfile ordering installs the baked `/usr/local/bin/<project>.dhall` default before `check-code`;
+  record a Docker build smoke here when that image build is run.
+- Daemon logging tests verify startup metadata includes the config hash and excludes secret values.
+- Python tests already prove no host context file is written by the bootstrapper; Sprint 15.5 keeps that
+  invariant while changing the Haskell runtime filename.
+- Current validation: `cabal test all` from `core/` passes (159 tests); `cabal build all` from `demo/`
+  passes; `helm template hostbootstrap-demo demo/chart` renders only the service-role
+  `hostbootstrap-demo.dhall` mount; `cabal run hostbootstrap-demo -- config init --role host-orchestrator
+  --source-root /home/matt/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB
+  --storage 80GiB --ha-replicas 1 --force` creates the host config;
+  `cabal run hostbootstrap-demo -- config init --role vm-project-container --output
+  <tmp>/hostbootstrap-demo.dhall --source-root /workspace/demo --dockerfile docker/Dockerfile --cpu 6
+  --memory 10GiB --storage 80GiB --ha-replicas 1 --force` writes a non-empty
+  container-role config with `VMProjectContainer` and `roleName = "vm-project-container"`; and
+  `cabal run hostbootstrap-demo -- deploy --dry-run` renders the five-step single lift sequence through
+  the new gate.
+
+#### Remaining Work
+
+None.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
-- `documents/architecture/binary_context_config.md` - canonical context contract and command-gating rules.
-- `documents/architecture/python_haskell_boundary.md` - Python creates only the host-level context.
-- `documents/architecture/build_and_run_model.md` - host-native build followed by host-context creation.
+- `documents/architecture/binary_context_config.md` - canonical local-config context contract and
+  command-gating rules.
+- `documents/architecture/python_haskell_boundary.md` - Python does not read or write Dhall.
+- `documents/architecture/build_and_run_model.md` - host-native build followed by project-binary config
+  initialization when needed.
 - `documents/architecture/composition_methodology.md` - self-reference lift plus explicit local context.
 
 **Engineering docs to create/update:**
-- `documents/engineering/dhall_topology.md` - static bootstrap, runtime context, and generated Dhall roles.
-- `documents/engineering/schema.md` - static-base file is Python/bootstrap-only.
-- `documents/engineering/resource_budgeting.md` - budget flows through context envelopes.
-- `documents/engineering/derived_dockerfile.md` - `--create-container-config` before normal commands.
+- `documents/engineering/dhall_topology.md` - local runtime config, generated child configs, and generated
+  Dhall roles.
+- `documents/engineering/schema.md` - project-local `<project>.dhall` shape.
+- `documents/engineering/resource_budgeting.md` - budget flows through local config envelopes and child
+  projections.
+- `documents/engineering/derived_dockerfile.md` - `config init --role ... --output /usr/local/bin/<project>.dhall`
+  before normal commands.
 - `documents/engineering/derived_project_standards.md` - derived projects materialize runtime contexts.
-- `documents/operations/demo_runbook.md` - host, VM, VM-container, and cluster-service contexts.
+- `documents/operations/demo_runbook.md` - host, VM, VM-container, and cluster-service
+  `hostbootstrap-demo.dhall` configs.
 
 **Cross-references to add:**
 - `README.md`, `documents/README.md`, `DEVELOPMENT_PLAN/README.md`, `00-overview.md`,

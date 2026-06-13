@@ -156,8 +156,8 @@ documents are easier to skim than one combined one.
   substrate detection, cluster-lifecycle semantics, the command tree projects extend) changes,
   update the relevant `documents/architecture/*.md` and `documents/engineering/*.md` files and the
   affected phase document in the same change
-- when the static-base `hostbootstrap.dhall` schema changes, update
-  `documents/engineering/schema.md` and the affected phase document in the same change
+- when the project-local `<project>.dhall` schema changes, update `documents/engineering/schema.md` and
+  the affected phase document in the same change
 - when the base image contents or warm store change, update `documents/engineering/base_image.md`,
   `documents/engineering/warm_store.md`, and the affected phase document in the same change
 - when the Python-bootstrapper / Haskell-core ownership boundary changes, update

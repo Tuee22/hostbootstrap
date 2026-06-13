@@ -15,11 +15,10 @@ source.
 
 ## The derived project is one binary that extends the core
 
-A derived project ships **exactly one binary** named after `project` in the static bootstrap
-[`hostbootstrap.dhall`](schema.md). The Python bootstrapper reads that static file to build the first
-host-native binary. Once the binary exists, normal command dispatch is governed by the sibling runtime
-context file, [`project-binary-context-config.dhall`](../architecture/binary_context_config.md), not by
-re-reading `hostbootstrap.dhall`.
+A derived project ships **exactly one binary** named after its Cabal file. For example,
+`hostbootstrap-demo.cabal` produces project/binary name `hostbootstrap-demo`. The Python bootstrapper uses
+that Cabal-derived name only to build `exe:<project>` host-native. Once the binary exists, normal command
+dispatch is governed by the sibling runtime config file, [`<project>.dhall`](schema.md).
 
 That binary extends `hostbootstrap-core`'s optparse command tree rather than re-implementing core verbs:
 
@@ -33,13 +32,13 @@ main = runHostBootstrapCLI "app" appProjectCommands emptySuite
 
 `runHostBootstrapCLI progName projectCommands testSuite` composes the project's own subcommands onto the
 core tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
-`config render`, `test`). Context creation/loading/gating surrounds that tree: all normal commands fail
-fast when `project-binary-context-config.dhall` is missing or the command is not valid for the declared
-context. The bare `hostbootstrap` binary is the same tree with no project commands, built
+`config render`, `test`). Bootstrap/inspection config surfaces (`config init`, `config path`,
+`config schema`, `config show FILE`, and static `config render`) run without an active local config.
+Config loading/gating surrounds normal commands: they fail fast when `<project>.dhall` is missing or the
+command is not valid for the declared context. The bare `hostbootstrap` binary is the same tree with no project commands, built
 the same way (host-native, like every project binary), not baked into the base image. There is no
-execution-model, lifecycle, or mount declaration in `hostbootstrap.dhall` — those concepts are removed;
-the binary-context config, the binary's own subcommands, and its generated project/test Dhall carry
-whatever runtime shape the project needs.
+Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount, Dockerfile, resource, and
+deploy settings live in the binary-owned config and generated child configs.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)`, so
@@ -107,9 +106,9 @@ tree in Haskell.
    `source-repository-package` (or local) dependency; its transitive closure is already warm in the
    store. Without the freeze import, the resolver picks different transitive versions than the warm
    store and rebuilds. See [warm_store.md](warm_store.md#required-import-the-freeze-fragments).
-3. **Build the binary, materialize the container context, run `<project> check-code`, and add a
-   tini-wrapped `ENTRYPOINT`.** Context materialization is explicit:
-   `RUN <project> --create-container-config /usr/local/bin/project-binary-context-config.dhall` runs
+3. **Build the binary, materialize the container config, run `<project> check-code`, and add a
+   tini-wrapped `ENTRYPOINT`.** Container config materialization is explicit:
+   `RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall` runs
    after the binary is installed and before any normal command. The check then runs under the declared
    container context and before any expensive backend work; the container is built on every substrate as
    the mandatory code-check gate. See [code_check_doctrine.md](code_check_doctrine.md#derived-images)
@@ -161,7 +160,7 @@ COPY . /workspace/app
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" /usr/local/bin/app
 
-RUN app --create-container-config /usr/local/bin/project-binary-context-config.dhall
+RUN app config init --role vm-project-container --output /usr/local/bin/app.dhall
 
 RUN app check-code
 
@@ -199,17 +198,16 @@ This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon ap
 No freeze is committed in the project — the layered warm-store freezes are imported from the
 base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
 
-The `--create-container-config` line is the context bootstrap hook. It is the only binary entry point in
-the Dockerfile that may run before the sibling context file exists; later commands such as `check-code`
-load that context and refuse commands not valid for a container build/check context.
+The `config init --role vm-project-container` line is the container-config bootstrap hook. It is the only
+binary entry point in the Dockerfile that may run before the sibling config file exists; later commands
+such as `check-code` load that config and refuse commands not valid for a container build/check context.
 
 ## See also
 
-* [base_image.md](base_image.md) — what the base image ships, including the static-base `hostbootstrap`
-  binary and the warm core closure
+* [base_image.md](base_image.md) — what the base image ships, including the warm core closure
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate
 * [linking_and_optimization.md](linking_and_optimization.md) — linking and optimisation defaults
 * [harbor.md](harbor.md) — pushing the project image (out of scope for hostbootstrap itself)
-* [binary_context_config](../architecture/binary_context_config.md) — the runtime sibling context file
+* [binary_context_config](../architecture/binary_context_config.md) — the runtime sibling config file
   every normal binary command reads
