@@ -17,10 +17,11 @@ project builds its own binary **host-native** (the project container the binary 
 accelerated by the warm Cabal store; Sprint 6.1). The Python CLI is reduced to the `doctor` / `build` /
 `run` / `base` surface — the three-execution-model machinery and the `--force-target` dispatch are removed and
 the Python suite passes at 100% coverage (Sprint 6.2). The bootstrapper has **converged** on the thin
-pre-binary boundary (§ M, § N): `bootstrap.py` is now the four-step path — assert minimums → ensure the
-host build toolchain → build the binary **host-native on every substrate** → exec — with Docker-ensure,
-the project-container build, the VM sizing, and the cordon all removed (they are the project binary's
-job; Sprint 6.3). This phase's deliverables (the warm-store base image, the thin pre-binary bootstrapper)
+pre-binary boundary (§ M, § N): `bootstrap.py` is now the five-step path — assert minimums → ensure the
+host build toolchain → build the binary **host-native on every substrate** → write the host-level binary
+context → exec — with Docker-ensure, the project-container build, the VM sizing, and the cordon all
+removed (they are the project binary's job; Sprint 6.3 plus the Phase-15 context handoff). This phase's
+deliverables (the warm-store base image, the thin pre-binary bootstrapper)
 are complete, so it is closed; the **layering** of the warm-store freeze into `core.freeze` /
 `daemon.freeze` is a net-new deliverable owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
@@ -129,9 +130,10 @@ None. The thin-pre-binary-boundary convergence is Sprint 6.3.
 
 #### Objective
 
-Reduce `bootstrap.py` to the four-step pre-binary path so the Python layer does only what must run
-before any project binary exists (§ M, § N): assert minimums → ensure the host build toolchain → build
-the binary **host-native on every substrate** → exec it.
+Reduce `bootstrap.py` to the pre-binary path so the Python layer does only what must run before any
+project binary exists (§ M, § N): assert minimums → ensure the host build toolchain → build the binary
+**host-native on every substrate** → exec it. Phase 15 later inserts the host-context write between
+build and exec without expanding Python into Docker, VM, or cluster lifecycle work.
 
 #### Deliverables
 

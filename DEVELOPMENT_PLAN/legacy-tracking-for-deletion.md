@@ -62,10 +62,10 @@ at 100% coverage after their removal.
   (`colima_start_command`), the project-container build (`container_build_spec` + `docker_ops.build`),
   the Colima VM sizing, and the Linux build-in-container-and-copy-out
   (`copy_out_create_command`/`copy_out_cp_command`/`copy_out_rm_command`/`_copy_binary_out`).
-  **Removed.** `bootstrap.py` is now the four-step pre-binary path (assert minimums → ensure the host
-  build toolchain → build the binary **host-native on every substrate** → exec). Ensuring Docker,
-  building the container, and the applied cordon are the project binary's job (§ M, § N). Owning phase:
-  phase-6 (Sprint 6.3).
+  **Removed.** `bootstrap.py` is now the pre-binary path (assert minimums → ensure the host build
+  toolchain → build the binary **host-native on every substrate** → write the host-level binary context
+  → exec). Ensuring Docker, building the container, and the applied cordon are the project binary's job
+  (§ M, § N, § X). Owning phase: phase-6 (Sprint 6.3), with the context-write handoff added by Phase 15.
 - **The duplicate Python budget-interpretation logic** (`_gib` and the Python-side Colima sizing in
   `colima_start_command`) — a second quantity interpreter that mishandled the `"8Gi"` form. **Removed**
   with the overreach above (phase-6, Sprint 6.3); the Python bootstrapper no longer sizes a VM at all.

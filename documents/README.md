@@ -22,6 +22,9 @@ material lives here. Conventions are defined in
   one-operation-one-representation rule (the test harness is a context-agnostic lift target, so a
   consumer lifts the whole test workflow rather than re-expressing it as a parallel chain), and the
   deploy ≡ business-logic unification (one algebra for deployment and runtime business logic).
+- [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
+  place" binary-context contract: every normal project-binary command reads a sibling
+  `project-binary-context-config.dhall` and refuses commands that do not match its declared context.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
@@ -29,8 +32,9 @@ material lives here. Conventions are defined in
   the project container.
 - [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
   library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively.
-- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the two-kinds / three-tiers /
-  three-vocabulary Dhall model and the reflect-from-decoders vs hand-written-assert nuance.
+- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the static bootstrap, binary
+  context, and generated Dhall roles, plus the three-vocabulary layering and the reflect-from-decoders vs
+  hand-written-assert nuance.
 - [architecture/run_models.md](architecture/run_models.md) — the four run-models (`OneShot`,
   `HostNative`, `HostDaemon`, `Cluster`) and the collapsed key that selects one, never declared in Dhall.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,

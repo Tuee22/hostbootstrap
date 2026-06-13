@@ -11,7 +11,8 @@
 `hostbootstrap` is the reusable host-management layer for the project family. It is a Haskell
 `hostbootstrap-core` library plus a thin Python bootstrapper that together replace per-project
 bootstrap shells and redundant multi-language Dockerfiles with one shared toolchain pulled from
-Docker Hub and one declarative, typed `hostbootstrap.dhall` per project.
+Docker Hub, one static bootstrap input (`hostbootstrap.dhall`), and an active explicit per-binary
+context config contract that lets each project binary know where it is running in the composed topology.
 
 The deep technical material lives under [`documents/`](documents/README.md); the honest, phased
 implementation status lives under [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). This README is
@@ -23,14 +24,15 @@ the orientation layer and points at those canonical homes rather than duplicatin
 
 - **`hostbootstrap-core` (Haskell)** owns host-tool resolution, the `ensure` reconcilers
   (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`, each fail-fast on the wrong host), substrate
-  detection, the static-base-Dhall decoder, cluster-lifecycle semantics with kind resource cordoning, and
-  the `optparse-applicative` command tree that project binaries extend through
-  `runHostBootstrapCLI progName projectCommands`. See
+  detection, the binary-context contract and command gate, cluster-lifecycle semantics with kind resource
+  cordoning, and the `optparse-applicative` command tree that project binaries extend through
+  `runHostBootstrapCLI progName projectCommands testSuite`. See
   [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md).
 - **The Python bootstrapper** is thin: it does only the **minimum to build the project binary** —
   assert the fail-fast host minimums, ensure the host toolchain prerequisites needed to **build** the
-  binary, build it **host-native** into `./.build/`, and exec it. Those host minimums are the **only
-  hard fail-fast surface** in the system. Once the binary runs it is **never blocked by an
+  binary, build it **host-native** into `./.build/`, write the host-level
+  `project-binary-context-config.dhall`, and exec it. Those host minimums are the **only hard
+  fail-fast surface** in the system. Once the binary runs it is **never blocked by an
   absent-but-installable dependency** — the `ensure` suite installs whatever it needs (Docker, incus,
   the cluster tooling, …); the binary, not the bootstrapper, owns Docker, the project container, the
   cordon, the VM, the cluster, the webservice, and teardown. The ownership boundary is described in
@@ -40,21 +42,24 @@ the orientation layer and points at those canonical homes rather than duplicatin
 steps, and the **self-reference lift** that crosses an execution-context boundary by re-invoking the
 binary's *own* subcommand in a nested context (`incus exec <vm> -- <pb> …` for a VM,
 `docker run --rm <image> …` for the project container, whose `ENTRYPOINT` is the binary). Each nested
-call runs the same command tree, so a step runs "locally", unaware it was lifted — which is why
-`helm`/`kind` resolve on the container `$PATH` rather than the host. The same algebra expresses both
-deployment and runtime business logic (stateless roles over durable external stores). See
+call runs the same command tree. Phase 15 makes that nested process explicit rather than blind: before
+normal dispatch it reads the sibling `project-binary-context-config.dhall` that tells it which segment of
+the global composition it occupies. That context gates commands, so a cluster service cannot run
+host-orchestrator verbs and a daemon command cannot start unless the context declares a daemon/service
+role. The same algebra expresses both deployment and runtime business logic (stateless roles over durable
+external stores). See
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Current state.** The thin, host-native bootstrapper described in this README is **implemented**:
-> `hostbootstrap/bootstrap.py` is the four-step pre-binary path (assert minimums → ensure the host
-> build toolchain → build the binary host-native on every substrate → exec), with no Docker-ensure,
-> container build, VM sizing, or copy-out. The host-management library — the `ensure` install-and-verify
-> suite, the applied budget cordon, the standardized harness, and the incus host-provider — is
-> implemented and unit-tested, and the **self-reference lift** (`HostBootstrap.Lift`) and the composition
-> methodology have landed. Phases 5, 10, 11, 13, and 14 are `Active`: the remaining work is real-run-gated
-> — the demo wiring the lift end-to-end, **real per-case test seams** (the current `demoSeams` are a
-> hollow placeholder that assert only cluster existence), and the new `deploy --dry-run` / `role` verbs —
-> tracked in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
+> **Current state.** The thin, host-native bootstrapper and Phases 0-15 are implemented and validated as
+> recorded in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md): the self-reference lift, the
+> single-representation demo deploy, the real `demo deploy` run, and the binary-context command gate are
+> complete. Normal cluster lifecycle commands use the active context instead of a `hostbootstrap.dhall`
+> argument; `config show FILE` remains the static-base inspection path.
+>
+> The thin, host-native bootstrapper described in this README is **implemented**:
+> `hostbootstrap/bootstrap.py` asserts minimums, ensures the host build toolchain, builds the binary
+> host-native on every substrate, writes `./.build/project-binary-context-config.dhall`, and execs, with
+> no Docker-ensure, container build, VM sizing, or copy-out.
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -74,7 +79,9 @@ fail-fast sequence:
 3. **Build the project binary host-native** into `./.build/<project>`. The build is the same on every
    substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
    general host such as Apple silicon.
-4. **Exec the binary**, forwarding the requested command.
+4. **Create the host binary context** at `./.build/project-binary-context-config.dhall`, the first
+   "know your place" context file in the chain.
+5. **Exec the binary**, forwarding the requested command.
 
 Ensuring Docker, building the project container, applying the resource cordon, the cluster lifecycle,
 the incus VM, the webservice, and teardown are **not** the bootstrapper's job — the execed binary owns
@@ -99,18 +106,23 @@ dependencies into the frozen Cabal store so every project's host-native binary b
 store. The project **container** the binary later builds (`FROM` the base) hits the same store. See
 [`documents/architecture/build_and_run_model.md`](documents/architecture/build_and_run_model.md).
 
-## Configuration: Three-Tier Dhall
+## Configuration: Static Bootstrap Plus Binary Context
 
-Configuration is typed Dhall in three tiers:
+Configuration is typed Dhall with a strict bootstrap/runtime split:
 
-- **Tier 1 — the static-base `hostbootstrap.dhall`**, read by the Python bootstrapper. It declares only
+- **Static bootstrap input — `hostbootstrap.dhall`**, read only by the Python bootstrapper. It declares
   the project name, its Dockerfile, and a resource budget.
-- **Tier 2 — the rich project-level Dhall** (roles, cluster bootstrap), generated by the project
-  binary, which also emits its own schema.
-- **Tier 3 — the per-case test Dhall**, generated by the project binary for each test case.
+- **Runtime binary context — `project-binary-context-config.dhall`**, created for the host binary during
+  bootstrap and at nested boundaries through binary-owned context creation surfaces. Every normal binary
+  command reads this first and fails fast when it is absent or incompatible with the command.
+- **Rich project-level Dhall** (roles, cluster bootstrap), generated by the project binary, which also
+  emits its own schema.
+- **Per-case test Dhall**, generated by the project binary for each test case.
 
-Python reads only the static-base tier; the project binary owns the richer tiers. See
-[`documents/engineering/dhall_topology.md`](documents/engineering/dhall_topology.md).
+Python reads only the static bootstrap input; the project binary owns context creation, context
+validation, and the richer generated tiers. See
+[`documents/engineering/dhall_topology.md`](documents/engineering/dhall_topology.md) and
+[`documents/architecture/binary_context_config.md`](documents/architecture/binary_context_config.md).
 
 The static-base `hostbootstrap.dhall` at a project root looks like this:
 
@@ -125,10 +137,9 @@ The static-base `hostbootstrap.dhall` at a project root looks like this:
 }
 ```
 
-The `project` value is also the command name. The `resources` budget is the ceiling the **project
-binary** enforces once running — sizing the per-project Colima VM on Apple, capping the kind nodes on
-Linux. The Python bootstrapper reads the static-base config only to learn the `project` name it builds
-and execs host-native; it does not size any VM or interpret the budget. See
+The `project` value is also the command name. The `resources` budget is the bootstrap ceiling that the
+Python layer copies into the host-level binary context; after that, project binaries read the context
+config next to themselves, not `hostbootstrap.dhall`. See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
@@ -154,7 +165,10 @@ verbs on top):
 |---|---|
 | `<binary> ensure <tool>` | Reconcile a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); fail-fast on the wrong host |
 | `<binary> config show <FILE>` | Decode a static-base `hostbootstrap.dhall` and print its fields |
-| `<binary> cluster up\|down\|delete <FILE>` | Drive the kind/Helm cluster lifecycle within the cordoned budget, preserving host `.data` |
+| `<binary> config schema\|render` | Emit binary-owned Dhall schema/config artifacts after context validation |
+| `<binary> context create vm\|container\|service OUTPUT` / `--create-container-config OUTPUT` | Create a `project-binary-context-config.dhall` for a nested binary context |
+| `<binary> cluster up\|down\|delete\|status` | Drive the kind/Helm cluster lifecycle from the active context's project, source root, and resource envelope, preserving host `.data` |
+| `<binary> test CASE` / `<binary> check-code` | Run the inherited test and code-check surfaces after context validation |
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a
 project binary. See

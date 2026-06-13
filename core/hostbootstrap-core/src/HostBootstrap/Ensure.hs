@@ -15,6 +15,7 @@ module HostBootstrap.Ensure
     runReconciler,
     runEnsure,
     ensureCommand,
+    ensureCommandWith,
     toolPresent,
     runTool,
     InstallStep (..),
@@ -89,7 +90,13 @@ runEnsure r = do
 -- | The generic @ensure@ command group, built from a list of reconcilers. The
 -- caller (the core command tree) supplies the concrete reconcilers.
 ensureCommand :: [Reconciler] -> Mod CommandFields (IO ())
-ensureCommand reconcilers =
+ensureCommand = ensureCommandWith id
+
+-- | Like 'ensureCommand', with a caller-supplied action wrapper. Core uses this
+-- to run the binary-context gate before dispatching a reconciler while tests and
+-- library callers can keep the plain command surface.
+ensureCommandWith :: (IO () -> IO ()) -> [Reconciler] -> Mod CommandFields (IO ())
+ensureCommandWith wrap reconcilers =
   command
     "ensure"
     ( info
@@ -100,7 +107,7 @@ ensureCommand reconcilers =
     toSub r =
       command
         (reconcilerName r)
-        (info (pure (runEnsure r)) (progDesc (reconcilerSummary r)))
+        (info (pure (wrap (runEnsure r))) (progDesc (reconcilerSummary r)))
 
 -- | A single install step: a resolved host tool run with arguments. The step is
 -- a pure, inspectable value so the substrate-branched install plan can be

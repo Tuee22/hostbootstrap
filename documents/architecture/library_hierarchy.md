@@ -55,7 +55,7 @@ The command tree merges by appending the project delta to the lower commands and
 the generic entrypoint:
 
 ```haskell
-runHostBootstrapCLI progName (lower ++ delta)
+runHostBootstrapCLI progName (lower ++ delta) testSuite
 ```
 
 The core verbs (`ensure …`, `cluster …`, `config …`) behave identically whether invoked through the
@@ -79,7 +79,7 @@ let C = ./Core.dhall
 
 A higher vocabulary layer (`Daemon.dhall` at L1, `App.dhall` at L2) embeds `C` and extends it; it
 never re-declares the L0 types. See [dhall_generation](dhall_generation.md) for the
-two-kinds/three-tiers/three-vocabulary model.
+static/context/generated Dhall model and the three-vocabulary layering.
 
 - **WRONG**: `Daemon.dhall` copies the `Budget` record definition so it can "add a field". This is
   wrong because the copy drifts from `Core.dhall` `Budget` and from the Haskell decoder that reflects

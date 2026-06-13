@@ -99,6 +99,7 @@ DEVELOPMENT_PLAN/
 ├── phase-12-layered-warm-store.md
 ├── phase-13-hostbootstrap-demo.md
 ├── phase-14-composition-methodology.md
+├── phase-15-binary-context-config.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -112,6 +113,7 @@ file, `README.md`, `00-overview.md`, and `system-components.md` in the same chan
 - `hostbootstrap-core` Haskell module surfaces (`HostBootstrap.*`)
 - the `ensure` reconcilers and their host applicability
 - the static-base `hostbootstrap.dhall` schema
+- the runtime binary-context config contract
 - the thin Python bootstrapper surface
 - the base image contents and warm Cabal store
 - the optparse command tree that consuming project binaries extend
@@ -221,7 +223,9 @@ GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the m
 
 The Python bootstrapper does only the **minimum to build the project binary**: assert the fail-fast host
 minimums and ensure the host toolchain prerequisites needed to **build** the binary, then build the
-project binary **host-native** and exec it. Those **fail-fast host minimums are the only hard
+project binary **host-native**, idempotently write the host-level
+`project-binary-context-config.dhall` from the static bootstrap input (§ X), and exec it. Those
+**fail-fast host minimums are the only hard
 prerequisites in the entire system** — the irreducible host floor the wrapper cannot itself install (OS
 version, passwordless sudo, Xcode CLT, Homebrew as the toolchain root); **every other host dependency the
 binary needs is installed by the `ensure` suite (§ L) when the binary runs, so the binary is never
@@ -242,7 +246,8 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 
 - The Python bootstrapper ensures the host build toolchain (Homebrew → `ghcup` → GHC/Cabal on Apple; the
   equivalent on Linux) — the prerequisites to build the binary — then builds `./.build/<binary>`
-  host-native and execs it. A `./.build/<binary>` is always present on the host.
+  host-native, writes `./.build/project-binary-context-config.dhall`, and execs it. A
+  `./.build/<binary>` is always present on the host.
 - The project **container** is a separate artifact the **project binary** builds (via Docker, `FROM` the
   base image) once it is running — the workload image and the mandatory code-check quality gate. The
   Python layer neither ensures Docker nor builds the container (§ M).
@@ -258,40 +263,46 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 ### O. Resource Budget and Cordoning
 
 The static-base `hostbootstrap.dhall` declares a per-project resource budget (`cpu`, `memory`,
-`storage`) — the one ceiling the project may not exceed. It is enforced with defense in depth: a
-Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before
-bring-up, and the applied wall at runtime — a sized Colima VM (Apple), a sized incus VM (§ U), the
-applied `docker update` kind-node cap (Linux), or `docker run` caps (one-shot). All VM/node sizing is
-emitted by **one** canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the
-**project binary** (the per-project Colima/incus VM via `ensure docker`; the kind-node cap via
-`cluster up`); the Python bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second
-budget interpreter. Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` /
-a quota'd hostPath on Linux), since `docker update` has no storage flag. The budget flows from the static
-tier into both the spinup cordon and the binary-generated configs.
+`storage`) — the one ceiling the project may not exceed. The Python bootstrapper reads that value only to
+seed the host-level binary-context config; normal project-binary commands consume the active context's
+resource envelope (§ X). It is enforced with defense in depth: a Dhall-time `assert`
+(`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before bring-up, and the applied
+wall at runtime — a sized Colima VM (Apple), a sized incus VM (§ U), the applied `docker update`
+kind-node cap (Linux), or `docker run` caps (one-shot). All VM/node sizing is emitted by **one**
+canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the **project binary**
+(the per-project Colima/incus VM via `ensure docker`; the kind-node cap via `cluster up`); the Python
+bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second budget interpreter.
+Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a quota'd hostPath
+on Linux), since `docker update` has no storage flag. The budget flows from the static tier into the
+binary-context config, then into both the spinup cordon and the binary-generated configs.
 
 ### P. optparse Command-Tree Extension Contract
 
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus a generic
-entrypoint (`runHostBootstrapCLI progName projectCommands`). A project binary extends the core tree
-with its own subcommands rather than re-implementing core verbs. This CLI tree is the first of the four
-parallel extension streams the library hierarchy composes additively (§ T). The bare `hostbootstrap`
-binary (`hostbootstrap-core`'s own executable) is the core tree with no project commands; it is built
-like any project binary, not baked into the base image.
+entrypoint (`runHostBootstrapCLI progName projectCommands testSuite`). A project binary extends the core
+tree with its own subcommands and supplies its test suite rather than re-implementing core verbs. This
+CLI tree is the first of the four parallel extension streams the library hierarchy composes additively
+(§ T). The bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) is the core tree with no
+project commands and `emptySuite`; it is built like any project binary, not baked into the base image.
 
 ### Q. Configuration via Dhall
 
-Configuration is typed Dhall in two kinds across three tiers:
+Configuration is typed Dhall in distinct roles:
 
-- the **static-base** `hostbootstrap.dhall` (project, dockerfile, resource budget), identical in shape
-  across projects, **read pre-binary by the Python bootstrapper via a pinned `dhall-to-json`** (Python
-  has no project binary to call in-process yet; `dhall_tool.py` is retained for exactly this);
+- the **static bootstrap** `hostbootstrap.dhall` (project, dockerfile, resource budget), identical in
+  shape across projects, **read pre-binary only by the Python bootstrapper via a pinned
+  `dhall-to-json`** (Python has no project binary to call in-process yet; `dhall_tool.py` is retained for
+  exactly this);
+- the **binary context** `project-binary-context-config.dhall`, created during bootstrap and at nested
+  boundaries, read by every project binary before normal command dispatch (§ X);
 - the **rich project/deploy** Dhall and the **per-case test** Dhall, both **generated by the project
   binary** (`config render`) from a reusable Dhall vocabulary, each carrying the budget assertion.
 
 The project binary also **emits its own schema** (`config schema`), reflected from its decoder types so
-the schema cannot drift. `hostbootstrap-core` owns the static-base decoder (which also backs the
-in-process `config show` after the binary exists) and the generation substrate; the rich schemas are the
-binary's own. An anti-drift check keeps `Type.dhall` and the Python-side `package.dhall` the same shape.
+the schema cannot drift. `hostbootstrap-core` owns the static-base decoder for bootstrap support and the
+explicit `config show FILE` inspection path; normal runtime command dispatch reads the sibling
+binary-context file instead. The rich schemas are the binary's own. An anti-drift check keeps
+`Type.dhall` and the Python-side `package.dhall` the same shape.
 
 ### R. Quality Gate Contract
 
@@ -317,7 +328,7 @@ harness, however, are `hostbootstrap`-**owned** contracts that downstream refact
 The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
 `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes L0 directly. Each level adds only its
 delta to **four parallel streams**, one additive merge idiom each: the optparse **CLI tree**
-(`runHostBootstrapCLI progName (lower ++ delta)`, appended, never shadowed); the **Dhall vocabulary**
+(`runHostBootstrapCLI progName (lower ++ delta) testSuite`, appended, never shadowed); the **Dhall vocabulary**
 (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen** `ConfigArtifact` registry
 (concatenated across levels); and the **test-harness** `Seams`. A project integrates in one of two modes:
 freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
@@ -333,9 +344,12 @@ context — the self-reference lift (`HostBootstrap.Lift`). Contexts compose as 
 outermost-first; the empty stack is the local host. `incus` is the VM layer (a target linux host is the
 local host or an incus VM, reached by one `incus exec`); a container is the `docker run --rm` layer
 (whose `ENTRYPOINT` is the binary); the stack nests — host → VM → container folds to
-`incus exec <vm> -- docker run --rm <image> <subcmd>`. Each nested call runs the same command tree, so a
-step runs "locally", unaware it was lifted, and the reconcilers stay context-agnostic
-(`HostConfig -> IO ()`). The argv fold is pure (unit-tested) and honors § K: only the outermost host
+`incus exec <vm> -- docker run --rm <image> <subcmd>`. Before a nested call crosses a boundary, the
+caller creates the callee's `project-binary-context-config.dhall` (§ X), so the callee can explicitly
+reason about its place even though it runs the same command tree. Each nested call runs the same command
+tree, so a step runs "locally", and the reconcilers stay context-agnostic (`HostConfig -> IO ()`) while
+dispatch is guarded by the local binary context. The argv fold is pure (unit-tested) and honors § K: only
+the outermost host
 dispatch names a tool the resolver maps to an absolute path; every nested tool is the target's own bare
 `$PATH` name. The two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the
 subcommand-level lift generalizes it to the n-level stack (`Local | InVM | InContainer`). `incus` is
@@ -369,3 +383,36 @@ VM**, reached with no second "bring up a cluster" path. Re-expressing cluster br
 duplicates the harness and double-creates clusters when it lifts a harness case. There is one
 representation, and the harness is it. Cross-references: § T (the harness and the four-stream extension)
 and § U (the self-reference lift the deploy sequence is built from).
+
+### X. Binary Context Configuration And Command Gating
+
+Every project binary must know where it is in the global composition chain through a sibling runtime
+context file:
+
+```text
+project-binary-context-config.dhall
+```
+
+`hostbootstrap.dhall` is a **static bootstrap input** and is read only by the Python wrapper. The wrapper
+uses it to build the host-native binary and idempotently create the host-level
+`./.build/project-binary-context-config.dhall`. After that, each nested project binary receives or creates
+its own context before it runs:
+
+- a VM bootstrap creates a VM-local context before launching the project binary inside the VM;
+- a project Dockerfile installs the binary, then runs
+  `--create-container-config /usr/local/bin/project-binary-context-config.dhall` before any normal command;
+- a Kubernetes workload receives its context from the controller that owns identity and durable placement;
+  for durable services, that controller is a `StatefulSet`.
+
+The context shape is project-extensible, but it must carry enough typed information for local command
+gating: project/binary identity, context kind, parent chain, local capabilities, allowed command classes,
+resource envelope, and child-context creation rules. The creation entrypoint is the only binary entrypoint
+allowed to run without an existing sibling context. All normal commands fail fast with exit code 1 when
+the context file is missing, fails to decode, names a different project/binary, claims unverifiable local
+capabilities, or does not permit the requested command. A daemon/service command must refuse to start
+unless the context declares a daemon/service role; host-orchestrator commands must refuse to run inside a
+cluster-service pod.
+
+Phase 15 implements this contract in the shared substrate: Python creates the host-level context,
+project/container creation surfaces materialize nested contexts, and normal command dispatch uses the
+sibling context as its runtime authority.

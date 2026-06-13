@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)
+**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), [binary context](../architecture/binary_context_config.md)
 
 > **Purpose**: Walk an operator through the `hostbootstrap-demo` pristine-host bootstrap run end to end — the single lift sequence, which harness case proves which feature, and the demo-only three-build illustration.
 
@@ -27,6 +27,8 @@
   [composition_methodology](../architecture/composition_methodology.md) for the canonical statement.
 - The same three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the run
   is a demo-only **three-build** illustration on top of the standard single host-native build.
+- The demo makes its runtime contexts explicit through sibling `project-binary-context-config.dhall`
+  files: host, VM, container on the VM, and cluster service.
 
 ## Current status
 
@@ -60,9 +62,11 @@ pre-binary to learn the project it builds and execs:
 }
 ```
 
-The `resources` block is the demo's one budget ceiling. It feeds both the VM
-sizing cordon and the kind-node cap (see [applied cordon](../engineering/applied_cordon.md)
-and [incus](../engineering/incus.md)).
+The `resources` block is the demo's one budget ceiling. The Python bootstrapper copies it into the
+host-level `project-binary-context-config.dhall`; nested context creation surfaces carry the relevant
+envelope to the VM, container, and service contexts. It feeds both the VM sizing cordon and the kind-node
+cap (see [applied cordon](../engineering/applied_cordon.md),
+[incus](../engineering/incus.md), and [binary context](../architecture/binary_context_config.md)).
 
 The demo demonstrates the four-stream additive extension without shadowing any
 core verb:
@@ -79,6 +83,22 @@ See [harness workflow](../architecture/harness_workflow.md) for the per-case
 **one** test engine and the deploy's single lift target: the consumer lifts the whole `test all`
 workflow into the VM-container rather than re-expressing cluster bring-up / web-serve / e2e as a
 separate chain (see [the single lift sequence](#the-single-lift-sequence) below).
+
+## Runtime contexts
+
+The demo binary runs in four different places, and each place is explicit with a sibling
+`project-binary-context-config.dhall`:
+
+| Place | Context responsibility |
+|---|---|
+| Host | metal orchestrator: `ensure incus`, `vm up`, guarded `vm down` |
+| VM | fresh Linux host: rebuild the host-native binary and build the project container |
+| Container on the VM | lifted `test all`: per-case kind clusters, web build, and e2e |
+| Cluster service | chart-launched webservice pod: serve only the service role |
+
+The same command tree exists in each copy of the binary. The context file is what makes the binary
+refuse commands that do not belong to that place, such as a service pod trying to run host-orchestrator
+verbs or a daemon command starting outside a daemon/service context.
 
 ## Lifecycle ownership
 

@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified ContainerSpec
+import qualified ContextSpec
 import qualified CordonSpec
 import qualified DhallGenSpec
 import qualified DocValidatorSpec
@@ -27,6 +28,7 @@ main = do
         SchemaSpec.tests,
         DhallGenSpec.tests,
         CordonSpec.tests,
+        ContextSpec.tests,
         LifecycleSpec.tests,
         HarnessSpec.tests,
         IncusSpec.tests,

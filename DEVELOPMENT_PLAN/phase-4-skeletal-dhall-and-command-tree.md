@@ -61,8 +61,8 @@ decoder that backs `config show`. (The pre-binary read is done by the Python boo
 - The static-base schema: `{ project : Text, dockerfile : Text, resources : { cpu : Natural, memory :
   Text, storage : Text } }`, identical in shape across projects.
 - `HostBootstrap.Config.Schema` decoding the static-base config via the Haskell `dhall` library.
-- The resource budget exposed as the single field both the Python layer and the project binary
-  consume.
+- The resource budget exposed as the single static field that the Python layer reads pre-binary; Phase 15
+  carries it into the runtime binary-context config consumed by normal project-binary commands.
 
 #### Validation
 
@@ -87,8 +87,8 @@ remain live until the Python layer is rewritten in phase-6; see
 #### Objective
 
 Land `HostBootstrap.Command` — the core optparse command tree composing `ensure <tool>` and the
-static-base `config` verbs — and confirm `runHostBootstrapCLI progName projectCommands` extends it with
-project-specific subcommands.
+static-base `config` verbs — and confirm `runHostBootstrapCLI progName projectCommands testSuite`
+extends it with project-specific subcommands and the inherited test hook.
 
 #### Command Surface
 

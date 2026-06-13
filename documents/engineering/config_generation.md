@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)
+**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](../architecture/binary_context_config.md)
 
 > **Purpose**: Describe the `ConfigArtifact` registry, the `config schema` and `config render` verbs that emit and materialize it, and the render → decode → re-render round-trip guarantee.
 
@@ -17,7 +17,9 @@
   `schemaUnion` of the in-scope registry (guarded by a committed snapshot); `config render
   [--artifact NAME]` materializes the renders.
 - `deployConfigText` renders a deploy config carrying `assert : C.fitsWithin budget pods === True`, so
-  an over-budget deploy fails to type-check. A render → decode → re-render round-trip is byte-stable.
+  an over-budget deploy fails to type-check. In normal binary execution, the budget value comes from the
+  active binary-context config rather than a normal-command read of `hostbootstrap.dhall`.
+- A render → decode → re-render round-trip is byte-stable.
 
 ## The `ConfigArtifact` Registry
 
@@ -85,7 +87,8 @@ in-scope artifact; `--artifact NAME` filters to the named one. Each render is th
 artifact — the `ToDhall` embedding of its canonical value.
 
 The rich deploy tier is rendered by `deployConfigText coreImport budget pods`, which composes a budget
-and a concurrent pod set into a config carrying the budget assertion:
+and a concurrent pod set into a config carrying the budget assertion. The budget is seeded from the
+static bootstrap input, then carried by `project-binary-context-config.dhall` in normal binary execution:
 
 ```dhall
 let C = <coreImport>
@@ -118,5 +121,6 @@ test proves this. The round-trip is the practical guarantee that the generated t
 projection of the binary's types — the render and the schema both flow from one source, so there is no
 seam where they can disagree. The standards-level statement of the model lives in
 [derived_project_standards](derived_project_standards.md) and
-[development_plan_standards § P, Q, T](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md);
-the Dhall tier topology is in [dhall_topology](dhall_topology.md).
+[development_plan_standards § P, Q, T, X](../../DEVELOPMENT_PLAN/development_plan_standards.md); the
+Dhall tier topology is in [dhall_topology](dhall_topology.md), and the runtime context authority is in
+[binary_context_config](../architecture/binary_context_config.md).

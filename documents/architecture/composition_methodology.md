@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
+**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [binary_context_config](binary_context_config.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
 
 > **Purpose**: Define the foundational composition model of `hostbootstrap-core` — a project binary
 > composes **operations**, crosses execution-context boundaries by **invoking itself** (the
@@ -16,7 +16,8 @@
 - The **self-reference lift** is the operation that crosses an execution-context boundary: the binary
   re-invokes its *own* subcommand in a nested context — `incus exec <vm> -- <pb> <subcmd>` for a VM,
   `docker run --rm <image> <subcmd>` for a container (whose `ENTRYPOINT` is the binary). Each nested
-  call runs the same command tree, so a step runs "locally", unaware it was lifted. See
+  call runs the same command tree and reads the sibling `project-binary-context-config.dhall` runtime
+  check so the binary can validate where it is in the global chain. See
   [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 - The same algebra expresses **deployment** (the bootstrap topology) and **runtime business logic** (the
   runtime topology): both are declarative topologies over durable external stores, executed by stateless
@@ -68,27 +69,49 @@ binary crosses a boundary by invoking *itself* in the nested context — there i
 
 The argv fold is pure (so it is unit-tested): only the outermost host dispatch names a tool the resolver
 maps to an absolute path; every nested tool is the target's own bare `$PATH` name (see
-[development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md)). A `VM`-then-`Container`
-nesting folds to `incus exec <vm> -- docker run --rm <image> <subcmd>`. This generalizes the
-[`incus`](../engineering/incus.md) host-provider axis from the two-case `HostTarget = Local | InVM` to an
-n-level lift.
+[development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md)). A
+`VM`-then-`Container` nesting folds to `incus exec <vm> -- docker run --rm <image> <subcmd>`. This
+generalizes the [`incus`](../engineering/incus.md) host-provider axis from the two-case
+`HostTarget = Local | InVM` to an n-level lift.
+
+Every normal nested invocation reads `project-binary-context-config.dhall` next to the binary before
+command dispatch. The command tree is still the same everywhere, but a copy of the binary can explicitly
+reason about whether it is the host orchestrator, the VM binary, the project container on the VM, or a
+service pod.
 
 - **WRONG**: a project threads an explicit "execution context" parameter through every reconciler and
   cluster step so they can run "in the VM". This is wrong because it duplicates dispatch logic in every
   operation and couples each step to the context machinery — the very thing the command tree already
   composes for free.
 - **RIGHT**: the project sequences ordinary steps and crosses a boundary by lifting a subcommand
-  (`liftSubcommand cfg self (inContainer ctr localContext) ["cluster","up","hostbootstrap.dhall"]`, where
-  `ctr` is the project-container `ContainerLift`); inside the container the step runs as if local,
-  resolving `helm`/`kind` on the container `$PATH`.
+  (`liftSubcommand cfg self (inContainer ctr localContext) ["test","all"]`, where `ctr` is the
+  project-container `ContainerLift`); inside the container the binary reads its sibling context file,
+  verifies that the test workflow belongs in that container context, and then runs as local, resolving
+  `helm`/`kind` on the container `$PATH`.
 
-The kube tools (`kubectl`/`helm`/`kind`) are baked into the base image and the cluster lifecycle that
-drives them runs in the in-container path (see
+The kube tools (`kubectl`/`helm`/`kind`) are baked into the base image and used only by contexts that
+declare the relevant cluster lifecycle or test-harness role (see
 [development_plan_standards § L](../../DEVELOPMENT_PLAN/development_plan_standards.md) for the baked-in
-kube tools and [§ U](../../DEVELOPMENT_PLAN/development_plan_standards.md) for the lift); they are not host
+kube tools, [§ U](../../DEVELOPMENT_PLAN/development_plan_standards.md) for the lift, and
+[§ X](../../DEVELOPMENT_PLAN/development_plan_standards.md) for binary contexts); they are not host
 tools. A failed lifted step is loud, never swallowed — the
 [cluster lifecycle](../engineering/cluster_lifecycle.md) `cluster up` fails closed so a lifting parent
 process sees a non-zero exit.
+
+## Binary Context: Knowing Your Place
+
+The lift explains how a command crosses a context boundary; the binary-context config explains how the
+callee decides whether the command belongs there.
+
+Every normal command reads `project-binary-context-config.dhall` from next to the executable before
+dispatch. The context names the binary's position in the chain, such as host orchestrator, VM binary,
+project container on the VM, or cluster service. A command whose semantics do not match that context
+fails fast with exit code 1. For example, a service pod may serve the web role but must refuse `vm up`,
+and a daemon command must refuse to start unless the context declares a daemon/service role.
+
+The context contract is the canonical way to make the pure global composition visible locally without
+threading a `LiftContext` through every reconciler. See
+[binary_context_config](binary_context_config.md).
 
 ## Deploy ≡ Business-Logic Unification
 

@@ -72,7 +72,7 @@ scheme, not a host the bootstrapper reaches today).
 * **No baked `hostbootstrap` binary** — the image bakes no `hostbootstrap` executable. A baked binary
   is a Linux ELF and cannot run on Apple silicon, so it could not be copied out to every host.
   Instead every project builds its own binary **host-native** on every substrate, extending the core
-  tree via `runHostBootstrapCLI progName projectCommands`; see
+  tree via `runHostBootstrapCLI progName projectCommands testSuite`; see
   [derived_project_standards.md](derived_project_standards.md). The bare `hostbootstrap` binary
   (`hostbootstrap-core`'s own executable, no project commands) is built the same way, not pre-baked.
 * **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency

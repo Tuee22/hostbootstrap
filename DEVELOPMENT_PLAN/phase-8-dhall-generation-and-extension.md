@@ -166,7 +166,7 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 - The contract is stated for all four streams in
   [`documents/architecture/library_hierarchy.md`](../documents/architecture/library_hierarchy.md): CLI
-  tree (`runHostBootstrapCLI progName (lower ++ delta)`, append-only), Dhall vocabulary
+  tree (`runHostBootstrapCLI progName (lower ++ delta) testSuite`, append-only), Dhall vocabulary
   (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (registry concatenation), test harness
   (`Seams`). All four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the
   `Core.dhall` vocabulary, the `ConfigArtifact` registry concatenation, and the `Seams` record + the L0
@@ -190,8 +190,8 @@ None.
 **Architecture docs to create/update:**
 - `documents/architecture/library_hierarchy.md` - the three additive library levels and the four-stream
   extension contract.
-- `documents/architecture/dhall_generation.md` - the two-kinds / three-tiers / three-vocabulary model and
-  the reflect-from-decoders vs hand-written-assert nuance.
+- `documents/architecture/dhall_generation.md` - the static/context/generated Dhall roles, the
+  three-vocabulary model, and the reflect-from-decoders vs hand-written-assert nuance.
 
 **Engineering docs to create/update:**
 - `documents/engineering/config_generation.md` - the `ConfigArtifact` registry, `config schema`/`render`,
@@ -199,5 +199,5 @@ None.
 
 **Cross-references to add:**
 - `system-components.md` adds the `HostBootstrap.Dhall.Gen` and `config schema`/`render` rows.
-- `documents/engineering/schema.md` and `documents/engineering/dhall_topology.md` point the static-base
-  tier at the binary-generated rich tiers.
+- `documents/engineering/schema.md` and `documents/engineering/dhall_topology.md` distinguish the static
+  bootstrap input, the runtime binary-context config, and the binary-generated rich tiers.

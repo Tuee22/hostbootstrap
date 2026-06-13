@@ -23,7 +23,7 @@ later phases (2–5, now `Done`) that own each module's host-management logic.
 Create `hostbootstrap-core` as a Cabal package: a `library` stanza for the `HostBootstrap.*` module
 surface and a bare `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
-`runHostBootstrapCLI progName projectCommands` over a buildable command tree (scaffolded empty in this
+`runHostBootstrapCLI progName projectCommands testSuite` over a buildable command tree (scaffolded empty in this
 phase and filled in by Phases 2–5). No host logic lands here; Phase 1 produces a structural shell that
 compiles and runs `--help`.
 

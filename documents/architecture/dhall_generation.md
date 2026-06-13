@@ -2,15 +2,19 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)
+**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](binary_context_config.md)
 
-> **Purpose**: Define the two-kinds / three-tiers / three-vocabulary model of `hostbootstrap` Dhall configuration and the load-bearing nuance that vocabulary types are reflected from the decoders while the budget functions are hand-written and assert-controlled.
+> **Purpose**: Define the generated Dhall configuration model, where it sits alongside the static
+> bootstrap input and binary-context config, and the load-bearing nuance that vocabulary types are
+> reflected from the decoders while the budget functions are hand-written and assert-controlled.
 
 ## TL;DR
 
-- Configuration is typed Dhall in **two kinds** across **three tiers**: the static-base
-  `hostbootstrap.dhall` read pre-binary by the Python bootstrapper, and the binary-generated rich
-  project/deploy and per-case test tiers.
+- Configuration is typed Dhall in distinct roles: the static bootstrap `hostbootstrap.dhall` read
+  pre-binary by the Python bootstrapper; the runtime `project-binary-context-config.dhall` each binary
+  reads before normal dispatch; and the binary-generated rich project/deploy plus per-case test tiers.
+- The binary-context tier is the runtime authority for normal project-binary commands; the static-base
+  file remains Python/bootstrap input plus the explicit `config show FILE` inspection path.
 - The binary-generated tiers are composed from **three vocabulary layers** — `Core.dhall` (L0),
   `Daemon.dhall` (L1), `App.dhall` (L2) — each embedding the one below (`let C = ./Core.dhall`).
 - The vocabulary **types** (`Budget`, `PodResources`, `KindNode`, `Mount`) are **reflected from the
@@ -19,32 +23,32 @@
   drift-controlled by evaluation tests, not reflection. Every generated config carries
   `assert : C.fitsWithin budget pods === True`, so an over-budget config fails to type-check.
 
-## Two Kinds Of Dhall
+## Configuration Roles
 
-| Kind | File | Produced by | Read by |
+| Role | File | Produced by | Read by |
 |------|------|-------------|---------|
-| Static-base | `hostbootstrap.dhall` | Hand-authored per project, identical shape across projects | The thin Python bootstrapper, pre-binary, via `dhall-to-json`; decoded in-process by `HostBootstrap.Config.Schema` once the binary exists |
+| Static bootstrap | `hostbootstrap.dhall` | Hand-authored per project, identical shape across projects | The thin Python bootstrapper, pre-binary, via `dhall-to-json` |
+| Binary context | `project-binary-context-config.dhall` | Created during bootstrap or before a nested boundary | The project binary before normal command dispatch |
 | Binary-generated | rich project/deploy + per-case test Dhall | The project binary (`config render`), from the reusable vocabulary | The project binary / test harness |
 
-The static-base kind is the one Python-facing contract: small, uniform, and decoded by
-`HostBootstrap.Config.Schema`. Everything richer is the binary-generated kind. See
-[dhall_topology](../engineering/dhall_topology.md) and [schema](../engineering/schema.md) for the
-static-base shape and decoder.
+The static bootstrap role is the one Python-facing contract: small, uniform, and decoded before any
+binary exists. The binary context is the runtime authority for where the already-built binary is running
+and which commands it may accept. Everything richer is binary-generated. See
+[dhall_topology](../engineering/dhall_topology.md), [schema](../engineering/schema.md), and
+[binary_context_config](binary_context_config.md).
 
-## Three Tiers
+## Generated Tiers
 
-The two kinds span three tiers:
+The binary-generated role has two tiers:
 
-1. **Static-base tier** — `hostbootstrap.dhall` (`project`, `dockerfile`, `resources`). Read
-   pre-binary by Python; the only tier the bootstrapper understands.
-2. **Rich project/deploy tier** — the runtime/deploy config the binary renders from the vocabulary,
+1. **Rich project/deploy tier** — the runtime/deploy config the binary renders from the vocabulary,
    carrying the budget assertion.
-3. **Per-case test tier** — one typed record per test case, rendered by the binary under
+2. **Per-case test tier** — one typed record per test case, rendered by the binary under
    `./.test_data/<case>/`.
 
-Tiers 2 and 3 are artifacts the binary emits; `hostbootstrap-core` does not hand-author them. The
-binary also emits its own schema for the generated tiers (`config schema`), so the schema flows from
-the binary's types rather than being maintained by hand.
+These are artifacts the binary emits; `hostbootstrap-core` does not hand-author project-specific
+instances. The binary also emits its own schema for the generated tiers (`config schema`), so the schema
+flows from the binary's types rather than being maintained by hand.
 
 ## Three Vocabulary Layers
 

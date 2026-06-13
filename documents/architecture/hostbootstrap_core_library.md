@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [composition_methodology](composition_methodology.md), [python_haskell_boundary](python_haskell_boundary.md), [build_and_run_model](build_and_run_model.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [dhall_topology](../engineering/dhall_topology.md)
+**Referenced by**: [documents-index](../README.md), [composition_methodology](composition_methodology.md), [binary_context_config](binary_context_config.md), [python_haskell_boundary](python_haskell_boundary.md), [build_and_run_model](build_and_run_model.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [dhall_topology](../engineering/dhall_topology.md)
 
 > **Purpose**: Describe the `hostbootstrap-core` Haskell library — its module surface and the
 > command-tree extension contract project binaries use to build on top of it.
@@ -10,10 +10,10 @@
 ## TL;DR
 
 - `hostbootstrap-core` is the Haskell library that owns all host-management logic: host-tool
-  resolution, substrate detection, `ensure` reconcilers, the static-base-Dhall decoder, and
-  cluster-lifecycle semantics.
+  resolution, substrate detection, `ensure` reconcilers, cluster-lifecycle semantics, and the
+  binary-context validation and command-gating substrate.
 - It exposes its subcommands as a composable `optparse-applicative` value plus a generic entrypoint,
-  `runHostBootstrapCLI progName projectCommands`.
+  `runHostBootstrapCLI progName projectCommands testSuite`.
 - Project binaries import the library through a pinned `source-repository-package` git dependency and
   extend the core command tree with their own subcommands.
 - The bare `hostbootstrap` binary is the core tree with no project commands; it is built like any
@@ -34,6 +34,7 @@ consumers depend on; it is the canonical inventory tracked in
 | `HostBootstrap.Ensure` | The `Reconciler` value type and the generic `ensure <tool>` subcommand dispatcher. |
 | `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Cuda`, `Homebrew`, `Ghc`, `Tart`); each is an idempotent value with a host-applicability predicate and a reconcile action. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | `HostBootstrap.Config.Schema` | Decoder for the static-base `hostbootstrap.dhall` (`project`, `dockerfile`, `resources {cpu,memory,storage}`). Core owns only this decoder; rich schemas are project artifacts. See [dhall_topology](../engineering/dhall_topology.md). |
+| `HostBootstrap.Context` | Binary-context substrate: decode/render `project-binary-context-config.dhall`, discover the sibling path, construct host/VM/container/service contexts, validate project/binary/capability/command requirements, and provide the command-gating API used by normal dispatch. See [binary_context_config](binary_context_config.md). |
 | `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (per-project Colima VM on Apple, kind node limits on Linux). See [resource_budgeting](../engineering/resource_budgeting.md). |
 | `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/`InVM`/`InContainer`) by invoking the binary again there. The pure argv fold is unit-tested; the IO seam reuses tool resolution. See [composition_methodology](composition_methodology.md). |
@@ -63,13 +64,15 @@ configuration. See [prerequisites](../engineering/prerequisites.md).
 generic entrypoint:
 
 ```haskell
-runHostBootstrapCLI :: String -> [Mod CommandFields (IO ())] -> IO ()
+runHostBootstrapCLI :: String -> [Mod CommandFields (IO ())] -> TestSuite -> IO ()
 ```
 
 - `progName` is the program name used in help and diagnostics.
 - `projectCommands` is the list of project-specific `command "..."` entries.
+- `testSuite` is the project case matrix/seams threaded into the inherited `test` verb.
 - The function merges `projectCommands` with the core subcommand value (`ensure …`, `cluster …`,
-  `config …`) and runs the resulting parser.
+  `config …`) and runs the resulting parser. Normal core commands load the sibling binary-context file
+  before dispatch and refuse commands that do not match the declared context.
 
 A project binary extends the core tree rather than re-implementing core verbs. Its `Main.hs`
 composes its own commands and hands them to the entrypoint:
@@ -84,7 +87,7 @@ projectCommands =
   ]
 
 main :: IO ()
-main = runHostBootstrapCLI "daemon-substrate" projectCommands
+main = runHostBootstrapCLI "daemon-substrate" projectCommands daemonSuite
 ```
 
 The bare `hostbootstrap` binary is the same entrypoint with no project commands (built like any
@@ -92,12 +95,19 @@ project binary, not baked into the base image):
 
 ```haskell
 main :: IO ()
-main = runHostBootstrapCLI "hostbootstrap" []
+main = runHostBootstrapCLI "hostbootstrap" [] emptySuite
 ```
 
 This guarantees that `ensure …`, `cluster …`, and `config …` behave identically whether invoked
 through the bare binary or through any project binary; a project only adds verbs, it never
 shadows or rewrites the core ones.
+
+The command tree includes context-creation surfaces: `context create vm|container|service OUTPUT`, plus
+the top-level bootstrap shortcut `--create-container-config OUTPUT` for Dockerfile use. The Dockerfile
+shortcut and standalone container creation are the bootstrap paths allowed before a sibling context file
+exists; VM and service creation derive from an active parent context. Normal commands fail fast when
+`project-binary-context-config.dhall` is missing or incompatible. Project-specific commands use the same
+`HostBootstrap.Context` gate to declare their command class.
 
 ## Consumption
 

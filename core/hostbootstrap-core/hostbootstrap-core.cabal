@@ -42,6 +42,7 @@ library
       HostBootstrap.Lift
       HostBootstrap.RoleLifecycle
       HostBootstrap.Container
+      HostBootstrap.Context
       HostBootstrap.Config.Schema
       HostBootstrap.Config.Vocab
       HostBootstrap.Dhall.Gen
@@ -81,6 +82,7 @@ test-suite hostbootstrap-core-test
       SchemaSpec
       DhallGenSpec
       CordonSpec
+      ContextSpec
       LifecycleSpec
       HarnessSpec
       IncusSpec

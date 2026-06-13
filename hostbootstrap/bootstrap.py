@@ -10,7 +10,9 @@ The Python layer does only what must run *before any project binary exists*
 3. build the project binary **host-native** at ``./.build/<project>`` on every
    substrate (a Linux ELF cannot exec on Apple silicon, so there is no
    build-in-container-and-copy-out path);
-4. ``exec`` the binary, handing control to ``hostbootstrap-core``'s command tree
+4. write the host-level ``project-binary-context-config.dhall`` next to the
+   built binary;
+5. ``exec`` the binary, handing control to ``hostbootstrap-core``'s command tree
    extended by the project.
 
 Ensuring Docker, building the project container (``FROM`` the base image), and
@@ -26,6 +28,7 @@ cover``.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -47,6 +50,7 @@ GHC_VERSION: str = "9.12.4"
 
 # The host-native build output directory; ./.build/<project> is always present.
 _BUILD_DIR: str = ".build"
+_CONTEXT_FILE_NAME: str = "project-binary-context-config.dhall"
 
 # The host-native cabal package store, kept repo-local (under the already
 # git-ignored ./.build/) so `git clean -fxd` resets the full build state — the
@@ -54,6 +58,41 @@ _BUILD_DIR: str = ".build"
 # user-global cabal store at ~/.local/state/cabal/store. This is the host build's
 # store only; the in-container build uses the warm store at /opt/cache/cabal.
 _STORE_DIR: str = f"{_BUILD_DIR}/cabal-store"
+
+_CONTEXT_KINDS: tuple[str, ...] = (
+    "HostOrchestrator",
+    "VMOrchestrator",
+    "VMProjectContainer",
+    "ClusterService",
+    "Daemon",
+    "OneShotJob",
+    "TestHarness",
+)
+
+_CAPABILITIES: tuple[str, ...] = (
+    "HostTools",
+    "IncusProvider",
+    "DockerSocket",
+    "ContainerRuntime",
+    "KubernetesAPI",
+    "KindNetwork",
+    "DurableStore",
+    "ServicePort",
+)
+
+_COMMAND_CLASSES: tuple[str, ...] = (
+    "EnsureCommand",
+    "ConfigInspectionCommand",
+    "ConfigGenerationCommand",
+    "ContextCreationCommand",
+    "ClusterLifecycleCommand",
+    "TestWorkflowCommand",
+    "CheckCodeCommand",
+    "HostOrchestratorCommand",
+    "DaemonCommand",
+    "ServiceCommand",
+    "ProjectCommand",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +196,94 @@ def binary_path(spec: StaticBaseSpec, project_root: Path) -> Path:
     return project_root / _BUILD_DIR / spec.project
 
 
+def binary_context_path(spec: StaticBaseSpec, project_root: Path) -> Path:
+    """The host-level sibling context path for ``./.build/<project>``."""
+    return binary_path(spec, project_root).parent / _CONTEXT_FILE_NAME
+
+
 def exec_argv(spec: StaticBaseSpec, project_root: Path, args: tuple[str, ...]) -> tuple[str, ...]:
     """The argv handed to ``os.execv``: the built binary plus trailing args."""
     return (str(binary_path(spec, project_root)), *args)
+
+
+def _dhall_text(value: str) -> str:
+    """Render a Python string as a Dhall ``Text`` literal."""
+    return json.dumps(value)
+
+
+def _dhall_union(constructors: tuple[str, ...], value: str) -> str:
+    if value not in constructors:
+        raise ValueError(f"{value!r} is not in the Dhall union {constructors!r}")
+    return f"< {' | '.join(constructors)} >.{value}"
+
+
+def _dhall_union_list(constructors: tuple[str, ...], values: tuple[str, ...]) -> str:
+    return "[ " + ", ".join(_dhall_union(constructors, value) for value in values) + " ]"
+
+
+def _empty_parent_chain() -> str:
+    return "[] : List { frameKind : < " + " | ".join(_CONTEXT_KINDS) + " >, frameBinary : Text }"
+
+
+def host_context_dhall(spec: StaticBaseSpec, *, project_root: Path) -> str:
+    """Render the host-orchestrator binary context as Dhall.
+
+    This is the first runtime context: it is created by the Python bootstrapper
+    after the host-native binary exists, then read by the project binary before
+    normal command dispatch once Phase 15 wiring is complete.
+    """
+    allowed_commands = (
+        "EnsureCommand",
+        "ConfigInspectionCommand",
+        "ConfigGenerationCommand",
+        "ContextCreationCommand",
+        "ClusterLifecycleCommand",
+        "TestWorkflowCommand",
+        "CheckCodeCommand",
+        "HostOrchestratorCommand",
+        "ProjectCommand",
+    )
+    child_kinds = (
+        "VMOrchestrator",
+        "VMProjectContainer",
+        "ClusterService",
+        "Daemon",
+        "OneShotJob",
+        "TestHarness",
+    )
+    return "\n".join(
+        [
+            "{ project = " + _dhall_text(spec.project),
+            ", binary = " + _dhall_text(spec.project),
+            ", sourceRoot = " + _dhall_text(str(project_root)),
+            ", contextKind = " + _dhall_union(_CONTEXT_KINDS, "HostOrchestrator"),
+            ", parentChain = " + _empty_parent_chain(),
+            ", capabilities = " + _dhall_union_list(_CAPABILITIES, ("HostTools", "IncusProvider")),
+            ", allowedCommandClasses = " + _dhall_union_list(_COMMAND_CLASSES, allowed_commands),
+            ", resourceEnvelope = "
+            + "{ cpu = "
+            + str(spec.resources.cpu)
+            + ", memory = "
+            + _dhall_text(spec.resources.memory)
+            + ", storage = "
+            + _dhall_text(spec.resources.storage)
+            + " }",
+            ", childContextKinds = " + _dhall_union_list(_CONTEXT_KINDS, child_kinds),
+            "}",
+            "",
+        ]
+    )
+
+
+def write_host_context(spec: StaticBaseSpec, *, project_root: Path) -> Path:
+    """Idempotently write the first sibling binary context next to the host binary."""
+    path = binary_context_path(spec, project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = host_context_dhall(spec, project_root=project_root)
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return path
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +353,9 @@ async def build_binary(spec: StaticBaseSpec, *, project_root: Path) -> Path:
 
     # 3. build the project binary host-native on every substrate.
     await _build_native(spec, project_root=project_root)
+
+    # 4. create the first "know your place" runtime context.
+    write_host_context(spec, project_root=project_root)
 
     return binary_path(spec, project_root)
 

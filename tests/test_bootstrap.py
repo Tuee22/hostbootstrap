@@ -93,12 +93,44 @@ def test_native_listbin_command() -> None:
 def test_binary_path_and_exec_argv() -> None:
     spec = _spec(Path("/proj"))
     assert bootstrap.binary_path(spec, Path("/proj")) == Path("/proj/.build/demo")
+    assert bootstrap.binary_context_path(spec, Path("/proj")) == Path(
+        "/proj/.build/project-binary-context-config.dhall"
+    )
     assert bootstrap.exec_argv(spec, Path("/proj"), ("play", "--seed", "7")) == (
         "/proj/.build/demo",
         "play",
         "--seed",
         "7",
     )
+
+
+def test_host_context_dhall_renders_host_orchestrator_context(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
+    rendered = bootstrap.host_context_dhall(spec, project_root=tmp_path)
+
+    assert 'project = "demo"' in rendered
+    assert 'binary = "demo"' in rendered
+    assert f'sourceRoot = "{tmp_path}"' in rendered
+    assert ">.HostOrchestrator" in rendered
+    assert ">.HostTools" in rendered
+    assert ">.IncusProvider" in rendered
+    assert ">.HostOrchestratorCommand" in rendered
+    assert "resourceEnvelope = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }" in rendered
+
+
+def test_write_host_context_is_idempotent_for_unchanged_content(tmp_path: Path) -> None:
+    spec = _spec(tmp_path)
+    path = bootstrap.write_host_context(spec, project_root=tmp_path)
+    first = path.read_text(encoding="utf-8")
+
+    path.chmod(0o444)
+    try:
+        second_path = bootstrap.write_host_context(spec, project_root=tmp_path)
+    finally:
+        path.chmod(0o644)
+
+    assert second_path == path
+    assert path.read_text(encoding="utf-8") == first
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +182,7 @@ async def test_bootstrap_linux_builds_host_native(
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
+    assert bootstrap.binary_context_path(spec, tmp_path).is_file()
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
 
@@ -176,6 +209,7 @@ async def test_build_binary_builds_without_exec(
     ]
     assert (tmp_path / ".build").is_dir()
     assert binary == bootstrap.binary_path(spec, tmp_path)
+    assert bootstrap.binary_context_path(spec, tmp_path).is_file()
     assert execed == []
 
 

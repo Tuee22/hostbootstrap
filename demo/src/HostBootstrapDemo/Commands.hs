@@ -38,8 +38,9 @@ import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (incusSizingArgs)
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterDelete, clusterUp, resolvePlan)
-import HostBootstrap.Config.Schema (Resources (..), StaticBase (..), decodeStaticBaseFile)
+import HostBootstrap.Config.Schema (Resources (..))
 import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, coreArtifacts, schemaUnion)
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.Incus as Incus
@@ -54,7 +55,7 @@ import qualified HostBootstrapDemo.Role as Role
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Options.Applicative
-import System.Directory (doesFileExist, getCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
 import System.Exit (ExitCode (..), die)
 import System.Process (readProcessWithExitCode)
 
@@ -77,6 +78,19 @@ demoCases =
 -- | The demo project name (used to resolve per-case cluster plans).
 demoProject :: String
 demoProject = "hostbootstrap-demo"
+
+demoContext :: Context.CommandClass -> [Context.Capability] -> (Context.BinaryContext -> IO a) -> IO a
+demoContext cls caps =
+  Context.withSiblingContext (T.pack demoProject) cls caps
+
+demoAction :: Context.CommandClass -> [Context.Capability] -> IO a -> IO a
+demoAction cls caps action =
+  demoContext cls caps (const action)
+
+resourcesFromContext :: Context.BinaryContext -> Resources
+resourcesFromContext ctx =
+  let envelope = Context.resourceEnvelope ctx
+   in Resources (Context.cpu envelope) (Context.memory envelope) (Context.storage envelope)
 
 -- | The per-case cluster budget — a slice small enough to fit inside the
 -- budget-sized VM's spare capacity (the full project budget is the VM wall).
@@ -294,7 +308,7 @@ incusCmd =
 -- UEFI firmware incus VMs require — and restart the daemon so it re-detects
 -- QEMU. Idempotent: a satisfied host is a verified no-op.
 ensureIncus :: IO ()
-ensureIncus = do
+ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
   runEnsure Incus.reconciler
   cfg <- metalConfig
   putStrLn "incus ensure: ensuring the VM capability (qemu-system-x86 + ovmf)"
@@ -349,15 +363,14 @@ vmCmd =
         "pristine-bootstrap"
         (info (pure runVmBootstrap) (progDesc "apt/pipx/ghcup -> hostbootstrap run (build #2 host-native) -> ensure docker + docker build (build #3 project image), in the VM"))
 
--- | @demo vm up@: read the static-base budget, derive the incus VM sizing from
--- the one canonical parser ('incusSizingArgs'), and launch the VM cordoned to it
+-- | @demo vm up@: read the active context envelope, derive the incus VM sizing
+-- from the one canonical parser ('incusSizingArgs'), and launch the VM cordoned to it
 -- (cordon #1). The sizing list (@limits.cpu=…@, @limits.memory=…@, @root,size=…@)
 -- is formatted into @incus launch@ flags: each @limits.*@ becomes a @-c@ config
 -- flag and @root,size=…@ a @-d@ device override.
 runVmUp :: IO ()
-runVmUp = do
-  staticBase <- decodeStaticBaseFile "hostbootstrap.dhall"
-  sizing <- either die pure (incusSizingArgs (resources staticBase))
+runVmUp = demoContext Context.HostOrchestratorCommand [Context.IncusProvider] $ \ctx -> do
+  sizing <- either die pure (incusSizingArgs (resourcesFromContext ctx))
   cfg <- metalConfig
   let argv = createVMArgs demoVM (concatMap toLaunchFlag sizing)
   putStrLn ("vm up: launching " ++ vmName demoVM ++ " cordoned to the budget " ++ show sizing)
@@ -391,7 +404,7 @@ waitVMAgent cfg vm n = do
 -- and builds the demo binary **host-native** in the VM (**build #2**) before
 -- exec'ing it (here with @config schema@, so the built binary proves itself).
 runVmBootstrap :: IO ()
-runVmBootstrap = do
+runVmBootstrap = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
   cfg <- metalConfig
   stageSource cfg
   let inVM label script = do
@@ -470,7 +483,7 @@ stageSource cfg = do
 
 -- | @demo vm down@: destroy the demo VM behind the name-prefix delete-guard.
 runVmDown :: IO ()
-runVmDown = do
+runVmDown = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
   cfg <- metalConfig
   case destroyVMArgs demoGuardPrefix demoVM of
     Left err -> die err
@@ -508,37 +521,37 @@ harborEndpoint = "localhost:30500"
 -- via its Helm chart (HTTP NodePort, the demo's in-cluster registry). Runs where
 -- Docker + kind + Helm are present (inside the VM / project container).
 runHarborInstall :: IO ()
-runHarborInstall = do
+runHarborInstall = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
   cfg <- metalConfig
-  root <- getCurrentDirectory
-  staticBase <- decodeStaticBaseFile "hostbootstrap.dhall"
-  let plan = resolvePlan demoProject root Production
-  putStrLn "harbor install: cluster up (cordon #2) then Helm-install Harbor"
-  clusterUp cfg plan (resources staticBase)
-  runOrDie cfg Helm ["repo", "add", "harbor", "https://helm.goharbor.io"]
-  runOrDie cfg Helm ["repo", "update"]
-  runOrDie
-    cfg
-    Helm
-    [ "upgrade",
-      "--install",
-      "harbor",
-      "harbor/harbor",
-      "--set",
-      "expose.type=nodePort",
-      "--set",
-      "expose.tls.enabled=false",
-      "--set",
-      "expose.nodePort.ports.http.nodePort=30500",
-      "--set",
-      "externalURL=http://" ++ harborEndpoint
-    ]
-  putStrLn ("harbor install: Harbor reachable at http://" ++ harborEndpoint)
+  let root = T.unpack (Context.sourceRoot ctx)
+      plan = resolvePlan demoProject root Production
+  withCurrentDirectory root $ do
+    putStrLn "harbor install: cluster up (cordon #2) then Helm-install Harbor"
+    clusterUp cfg plan (resourcesFromContext ctx)
+    runOrDie cfg Helm ["repo", "add", "harbor", "https://helm.goharbor.io"]
+    runOrDie cfg Helm ["repo", "update"]
+    runOrDie
+      cfg
+      Helm
+      [ "upgrade",
+        "--install",
+        "harbor",
+        "harbor/harbor",
+        "--set",
+        "expose.type=nodePort",
+        "--set",
+        "expose.tls.enabled=false",
+        "--set",
+        "expose.nodePort.ports.http.nodePort=30500",
+        "--set",
+        "externalURL=http://" ++ harborEndpoint
+      ]
+    putStrLn ("harbor install: Harbor reachable at http://" ++ harborEndpoint)
 
 -- | @demo harbor push@: tag the project image to the in-cluster registry and push
 -- it (the arch-explicit tag is then pullable from inside the cluster).
 runHarborPush :: String -> IO ()
-runHarborPush image = do
+runHarborPush image = demoAction Context.ProjectCommand [] $ do
   cfg <- metalConfig
   let ref = harborEndpoint ++ "/library/hostbootstrap-demo:demo"
   putStrLn ("harbor push: " ++ image ++ " -> " ++ ref)
@@ -558,15 +571,15 @@ webCmd =
     webServe =
       command
         "serve"
-        (info (pure (serveWeb 8080)) (progDesc "serve the warp/wai webservice on the incus host (the Playwright baseURL)"))
+        (info (pure (demoAction Context.ServiceCommand [] (serveWeb 8080))) (progDesc "serve the warp/wai webservice on the incus host (the Playwright baseURL)"))
     webBridge =
       command
         "bridge"
-        (info (pure (writeBridge "web/src/Generated")) (progDesc "generate the PureScript types from the API via purescript-bridge"))
+        (info (pure (demoAction Context.ConfigGenerationCommand [] (writeBridge "web/src/Generated"))) (progDesc "generate the PureScript types from the API via purescript-bridge"))
     webSchema =
       command
         "schema"
-        (info (pure printSchema) (progDesc "print the L0 + demo schema union (the schema-gen extension stream)"))
+        (info (pure (demoAction Context.ConfigGenerationCommand [] printSchema)) (progDesc "print the L0 + demo schema union (the schema-gen extension stream)"))
     printSchema = putStrLn (T.unpack (schemaUnion (coreArtifacts ++ demoArtifacts)))
 
 -- | @demo deploy [--dry-run]@: the demo's deploy chain (F1). The chain is a pure
@@ -577,10 +590,12 @@ deployCmd =
   command
     "deploy"
     ( info
-        (Chain.runDeploy demoVM demoDeployImage <$> dryRunFlag)
+        (runDeploy <$> dryRunFlag)
         (progDesc "Run the demo deploy chain (operations lifted across contexts); --dry-run prints the plan")
     )
   where
+    runDeploy dryRun =
+      demoAction Context.HostOrchestratorCommand [Context.IncusProvider] (Chain.runDeploy demoVM demoDeployImage dryRun)
     dryRunFlag =
       switch (long "dry-run" <> help "print the planned operation/context sequence without running it")
 
@@ -611,11 +626,11 @@ roleCmd =
     serveSub =
       command
         "serve"
-        (info (pure Role.roleServe) (progDesc "drain the request topic: dispatch budget-eval requests to the engine"))
+        (info (pure (demoAction Context.ServiceCommand [] Role.roleServe)) (progDesc "drain the request topic: dispatch budget-eval requests to the engine"))
     submitSub =
       command
         "submit"
-        (info (Role.roleSubmit <$> budgetArg) (progDesc "enqueue a budget-eval request (CPU MEMORY STORAGE)"))
+        (info (demoAction Context.ProjectCommand [] . Role.roleSubmit <$> budgetArg) (progDesc "enqueue a budget-eval request (CPU MEMORY STORAGE)"))
     budgetArg =
       Budget
         <$> argument auto (metavar "CPU")

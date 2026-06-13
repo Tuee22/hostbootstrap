@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md), [derived_project_standards](derived_project_standards.md)
+**Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md), [binary_context_config](../architecture/binary_context_config.md), [derived_project_standards](derived_project_standards.md)
 
 > **Purpose**: A step-by-step guide for a new consumer — define project verbs, compose a chain of
 > operations across contexts with the self-reference lift, supply the test seams, and declare the
@@ -14,19 +14,26 @@
   of operations from the generic primitives, and supplies its case matrix and budget. The foundational
   model is [composition_methodology](../architecture/composition_methodology.md); the reusable shapes are
   [composition_patterns](composition_patterns.md).
+- Every normal command is context-gated. A project binary reads a sibling
+  `project-binary-context-config.dhall` before dispatch so it can fail fast when asked to perform work
+  outside its declared place in the chain.
 - Crossing an execution-context boundary is a self-reference lift — `liftSubcommand` re-invokes the
   binary's own subcommand in the nested context — not a bespoke remote-exec path.
 
 ## Steps
 
-1. **Declare the static-base config.** A `hostbootstrap.dhall` at the project root names the project, its
-   Dockerfile, and the one resource budget (the ceiling every cordon enforces). See
+1. **Declare the static bootstrap config.** A `hostbootstrap.dhall` at the project root names the project,
+   its Dockerfile, and the one resource budget. It is read by the Python bootstrapper only. See
    [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
-2. **Define verbs as composable optparse values.** Hand the project's `command "…"` entries to
-   `runHostBootstrapCLI progName projectCommands suite`; the core verbs (`ensure`/`config`/`cluster`/
+2. **Define the binary context creation logic.** The host-level context is created by the Python
+   bootstrapper from `hostbootstrap.dhall`; nested contexts are created by the project binary before it
+   crosses a boundary. The project container creates its own context in the Dockerfile with
+   `--create-container-config`. See [binary_context_config](../architecture/binary_context_config.md).
+3. **Define verbs as composable optparse values.** Hand the project's `command "…"` entries to
+   `runHostBootstrapCLI progName projectCommands testSuite`; the core verbs (`ensure`/`config`/`cluster`/
    `test`/`check-code`) pass through unchanged. Append, never shadow (the CLI stream of the four-stream
    contract; see [library_hierarchy](../architecture/library_hierarchy.md)).
-3. **Compose the chain.** A deploy verb is ordinary `IO` sequencing of operations. Cross a boundary by
+4. **Compose the chain.** A deploy verb is ordinary `IO` sequencing of operations. Cross a boundary by
    lifting a subcommand into a context built from `localContext` with `inVM` / `inContainer`. One operation
    has one representation, so the deploy's single lifted **compute** step lifts the *whole* test workflow —
    `test all` — into the project container in the VM (`inContainer img (inVM vm localContext)`); the cluster,
@@ -45,10 +52,10 @@
    redundant second representation (it double-creates clusters when it lifts a harness case). See
    `HostBootstrap.Lift` in [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-test-workflow-is-a-lifted-operation).
-4. **Supply the test seams.** Provide a `Seams`/`Case` matrix (the fourth stream); the inherited `test`
+5. **Supply the test seams.** Provide a `Seams`/`Case` matrix (the fourth stream); the inherited `test`
    verb drives `runMatrix`. A case sets up its isolated environment, asserts the real workload, and tears
    down (guaranteed). See [testing](testing.md) and [harness_workflow](../architecture/harness_workflow.md).
-5. **Register schema artifacts (optional).** Concatenate the project's `ConfigArtifact`s onto
+6. **Register schema artifacts (optional).** Concatenate the project's `ConfigArtifact`s onto
    `coreArtifacts` and embed `Core.dhall` for any new vocabulary (the schema-gen and Dhall streams). See
    [config_generation](config_generation.md).
 

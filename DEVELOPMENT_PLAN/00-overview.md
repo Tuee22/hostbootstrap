@@ -15,18 +15,21 @@ The inversion is well advanced. `hostbootstrap` is the Haskell `hostbootstrap-co
 host-tool resolution, substrate detection, the `ensure` reconcilers, the static-base Dhall decoder,
 cluster lifecycle and cordoning, and the composable optparse command tree project binaries extend.
 The Python CLI is reduced to `doctor` / `build` / `run` / `base`: it asserts the fail-fast host minimums,
-ensures a host toolchain, builds the project binary, and execs it — and still builds and publishes the
-`basecontainer-<flavor>-<arch>` base images. The three-execution-model machinery is gone; the residual
-Dhall read (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`) decodes only the
-static-base config tier.
+ensures a host toolchain, builds the project binary, writes the first binary context, and execs it — and
+still builds and publishes the `basecontainer-<flavor>-<arch>` base images. The three-execution-model
+machinery is gone; the residual Dhall read (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`)
+decodes only the static-base config tier. Phase 15 makes the next boundary explicit: the Python wrapper
+idempotently creates the host-level `project-binary-context-config.dhall`, and normal project-binary
+commands read a sibling context file instead of treating `hostbootstrap.dhall` as a runtime input.
 
 The Python layer has **converged** on the thin pre-binary boundary that § M / § N define: `bootstrap.py`
-is the four-step path — assert the fail-fast minimums, ensure the host build toolchain, build the project
+is the five-step path — assert the fail-fast minimums, ensure the host build toolchain, build the project
 binary **host-native on every substrate** (Linux included; there is no build-in-container-and-copy-out
-path), and `exec` it. Ensuring Docker, building the project container, sizing the VM, and the cordon are
-all the **project binary's** job once it is running, not the Python layer's. The inversion-side Python
-work is therefore complete; the net-new layered warm store (§ V) was carved out to
-[Phase 12](phase-12-layered-warm-store.md), now `Done`. The narrative below records how each phase
+path), write the host-level context, and `exec` it. Phase 15 added that context write without
+expanding Python beyond the pre-binary bridge. Ensuring Docker, building the project container, sizing
+the VM, and the cordon are all the **project binary's** job once it is running, not the Python layer's.
+The inversion-side Python work is therefore complete; the net-new layered warm store (§ V) was carved
+out to [Phase 12](phase-12-layered-warm-store.md), now `Done`. The narrative below records how each phase
 delivered this shape.
 
 ## Where the repository is going
@@ -54,7 +57,7 @@ doc-coverage obligation, without reverting any code phase.
 Stand up the `hostbootstrap-core` Cabal package: a `library` stanza for the `HostBootstrap.*` module
 surface and a bare executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
-`runHostBootstrapCLI progName projectCommands` over an empty-but-buildable command tree. No host
+`runHostBootstrapCLI progName projectCommands testSuite` over an empty-but-buildable command tree. No host
 logic lands yet; this is the structural shell every later phase fills in. This phase is `Done`:
 `cabal build all` and `cabal test` pass against the warm store and `hostbootstrap --help` exits 0.
 
@@ -106,7 +109,7 @@ the pre-binary bootstrapper: assert fail-fast host minimums, ensure the host too
 build the binary, build the project binary host-native, and exec it — leaving Docker, the project
 container, and cordoning to the project binary. This phase is `Done`: the warm store carries the
 closure (no baked binary), the Python CLI is reduced to `doctor` / `build` / `run` / `base`, and the bootstrapper
-has **converged** on the thin pre-binary boundary (the four-step path above, building host-native on
+has **converged** on the thin pre-binary boundary (the five-step path above, building host-native on
 every substrate with no Docker-ensure, container build, VM sizing, or copy-out). The **layering** of the
 warm-store freeze into `core.freeze`/`daemon.freeze` is a net-new deliverable owned by Phase 12, not this
 phase.
@@ -123,7 +126,7 @@ is that repository's own work.
 
 ## Where the architecture extends the plan
 
-The global family architecture adds six net-new phases on top of the inversion buildout. Each owns a
+The global family architecture adds seven net-new phases on top of the inversion buildout. Each owns a
 named slice of the architecture; see [system-components.md](system-components.md) and each phase doc.
 
 ### Phase 8 — Dhall generation and the four-stream extension
@@ -224,6 +227,17 @@ collapsed the demo to the single lift sequence and live-validated it (kind on th
 on metal). The concrete bus/store/role primitives are
 **L1 (`daemon-substrate`)** work, out of scope here.
 
+### Phase 15 — Binary context config and command gating
+
+Make the self-reference lift explicit at runtime by giving each copy of a project binary a sibling
+`project-binary-context-config.dhall`. `hostbootstrap.dhall` becomes bootstrap-only: the Python wrapper
+reads it, builds the host-native binary, writes the host-level context, and execs. Each nested boundary
+gets its own context: VM bootstraps create VM-local context, Dockerfiles use `--create-container-config`
+after installing the binary, and Kubernetes service pods receive context from their owning controller
+(`StatefulSet` for durable services). Normal commands fail fast with exit code 1 when the context is
+missing or not commensurate with the command; daemon/service commands require daemon/service context, and
+host-orchestrator commands cannot run inside cluster-service pods. This phase is `Done`.
+
 ## Dependency edges
 
 ```text
@@ -237,6 +251,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-12 (Blocked by 6, 8)                                                               │
   phase-13 (Blocked by 8, 9, 10, 11, 12)  ← the demo exercises all of them ───────────────┘
   phase-14 (builds on 11; the composition methodology the demo's chain exercises via 13)
+  phase-15 (builds on 6, 8, 11, 13, 14; makes each lifted/runtime context explicit)
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The
