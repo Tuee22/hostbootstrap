@@ -20,8 +20,8 @@
 -- surface from @hostbootstrap-core@: @incus ensure@ installs+verifies incus and
 -- its VM capability, @vm up@ launches a budget-cordoned VM (cordon #1), and
 -- @vm down@ tears it down behind the name-prefix delete-guard. The metal-side
--- verbs resolve and run @incus@ directly, so they run as a user that can reach
--- the incus socket (run via @sudo@, or as a member of the @incus-admin@ group).
+-- verbs resolve and run @incus@ directly, so core's linux @ensure incus@ also
+-- grants the invoking user @incus-admin@ membership for future login sessions.
 module HostBootstrapDemo.Commands
   ( demoCommands,
     demoArtifacts,
@@ -303,10 +303,11 @@ incusCmd =
         )
 
 -- | @demo incus ensure@: run the core @ensure incus@ reconciler (install+verify
--- incus and @incus admin init@), then ensure the VM capability the reconciler
--- does not cover on Linux — the @qemu-system-x86@ machine emulator and @ovmf@
--- UEFI firmware incus VMs require — and restart the daemon so it re-detects
--- QEMU. Idempotent: a satisfied host is a verified no-op.
+-- incus, @sudo incus admin init@, and linux @incus-admin@ membership), then
+-- ensure the VM capability the reconciler does not cover on Linux — the
+-- @qemu-system-x86@ machine emulator and @ovmf@ UEFI firmware incus VMs require
+-- — and restart the daemon so it re-detects QEMU. Idempotent: a satisfied host
+-- is a verified no-op.
 ensureIncus :: IO ()
 ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
   runEnsure Incus.reconciler

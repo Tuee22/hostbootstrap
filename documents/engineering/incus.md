@@ -60,8 +60,13 @@ It follows the standard probe-first, idempotent install-and-verify contract:
 
 - **probe** the host `incus`; if already satisfied, no-op;
 - **install** per substrate — `brew install incus` on apple-silicon; `apt-get install -y incus`
-  followed by `incus admin init --minimal` on linux;
-- **re-verify** with the same probe and fail fast if still missing.
+  followed by `sudo incus admin init --minimal` on linux;
+- **re-verify** with the same probe and fail fast if still missing;
+- **grant socket access** on linux by adding the invoking non-root user to the `incus-admin`
+  group, so future login sessions can talk to `/var/lib/incus/unix.socket`.
+
+When the group grant is newly added, the current shell may still lack the supplementary group until
+the operator starts a fresh login session or runs `newgrp incus-admin`.
 
 ## `HostTarget` and `runInTarget`
 
