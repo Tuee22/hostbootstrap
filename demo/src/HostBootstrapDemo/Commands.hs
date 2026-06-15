@@ -17,11 +17,12 @@
 --     pair is threaded into @test@ via @runHostBootstrapCLI@ in @app/Main.hs@).
 --
 -- The orchestration verbs (@incus@/@vm@) drive the real incus host-provider
--- surface from @hostbootstrap-core@: @incus ensure@ installs+verifies incus and
--- its VM capability, @vm up@ launches a budget-cordoned VM (cordon #1), and
--- @vm down@ tears it down behind the name-prefix delete-guard. The metal-side
--- verbs resolve and run @incus@ directly, so core's linux @ensure incus@ also
--- grants the invoking user @incus-admin@ membership for future login sessions.
+-- surface from @hostbootstrap-core@: @incus ensure@ installs+verifies a usable
+-- provider (Colima-backed on Apple, native daemon on Linux), @vm up@ launches a
+-- budget-cordoned VM (cordon #1), and @vm down@ tears it down behind the
+-- name-prefix delete-guard. The metal-side verbs resolve and run @incus@
+-- directly, so core's linux @ensure incus@ also grants the invoking user
+-- @incus-admin@ membership for future login sessions.
 module HostBootstrapDemo.Commands
   ( demoCommands,
     demoArtifacts,
@@ -45,11 +46,11 @@ import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, coreArtifacts, schem
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.Incus as Incus
 import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCaseProfile)
-import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
+import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs)
 import HostBootstrap.Lift (ContainerLift (..))
-import HostBootstrap.Substrate (detect)
+import HostBootstrap.Substrate (detect, isAppleSilicon, isLinux)
 import qualified HostBootstrapDemo.Chain as Chain
 import qualified HostBootstrapDemo.Role as Role
 import HostBootstrapDemo.Web.Bridge (writeBridge)
@@ -299,19 +300,30 @@ incusCmd =
         "ensure"
         ( info
             (pure ensureIncus)
-            (progDesc "install-and-verify incus and its VM capability (core `ensure incus` + qemu)")
+            (progDesc "install-and-verify incus and its VM capability")
         )
 
 -- | @demo incus ensure@: run the core @ensure incus@ reconciler (install+verify
--- incus, @sudo incus admin init@, and linux @incus-admin@ membership), then
--- ensure the VM capability the reconciler does not cover on Linux — the
--- @qemu-system-x86@ machine emulator and @ovmf@ UEFI firmware incus VMs require
--- — and restart the daemon so it re-detects QEMU. Idempotent: a satisfied host
--- is a verified no-op.
+-- a usable provider: Colima-backed on Apple, native daemon plus @incus-admin@
+-- membership on Linux). On Linux, also ensure the VM capability the core
+-- reconciler does not cover — the @qemu-system-x86@ machine emulator and
+-- @ovmf@ UEFI firmware incus VMs require — and restart the daemon so it
+-- re-detects QEMU. Idempotent: a satisfied host is a verified no-op.
 ensureIncus :: IO ()
 ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
   runEnsure Incus.reconciler
   cfg <- metalConfig
+  case (isLinux (hcSubstrate cfg), isAppleSilicon (hcSubstrate cfg)) of
+    (True, _) -> ensureLinuxIncusVMCapability cfg
+    (_, True) ->
+      putStrLn $
+        "incus ensure: Colima Incus profile `"
+          ++ Incus.appleIncusProfile
+          ++ "` present; Incus VMs on Apple require nested virtualization support"
+    _ -> die "incus ensure: unsupported substrate after core ensure"
+
+ensureLinuxIncusVMCapability :: HostConfig -> IO ()
+ensureLinuxIncusVMCapability cfg = do
   putStrLn "incus ensure: ensuring the VM capability (qemu-system-x86 + ovmf)"
   runOrDie cfg Sudo ["apt-get", "install", "-y", "qemu-system-x86", "ovmf"]
   runOrDie cfg Sudo ["systemctl", "restart", "incus"]

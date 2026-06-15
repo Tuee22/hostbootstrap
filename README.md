@@ -230,7 +230,7 @@ clusters when it lifts a harness case). The single canonical chain `demo deploy`
 
 | Step | Context | Role |
 |---|---|---|
-| ensure incus | `local` | reconciler on metal |
+| ensure incus | `local` | reconciler on metal: Colima-backed on Apple, native daemon on Linux |
 | `vm up` | `local` | the cordon — the VM is the isolation wall |
 | `vm pristine-bootstrap` | `local → VM` | host-native build **in** the VM, then the project-image build, **in** the VM |
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step |

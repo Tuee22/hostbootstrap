@@ -17,7 +17,8 @@
 - `HostTool` gained the `Incus` constructor (`toolCommandName Incus = "incus"`), so the host `incus`
   resolves to an absolute-path `AbsExe` like every other tool — never a bare `$PATH` invocation.
 - `ensure incus` is the first cross-substrate reconciler: `appliesTo = isAppleSilicon || isLinux`.
-  Install-and-verify, probe-first and idempotent.
+  Install-and-verify, probe-first and idempotent. On Apple silicon it provisions the macOS client plus
+  a named Colima profile running the Incus runtime; on Linux it provisions the native daemon.
 - `HostTarget = Local | InVM IncusVM`. `runInTarget` runs the resolved tool directly for `Local` and
   dispatches through one host `incus exec <name> -- <tool> <args>` for `InVM`, with no per-call
   branching at the call sites.
@@ -40,6 +41,13 @@ per-call branching — is in [build and run model](../architecture/build_and_run
 `incus` is not standardized for all workflows. The worked demo uses it to encapsulate a fresh linux
 host; outside that, the local host is the default target. It is fully supported either way.
 
+On macOS, `incus` is a client; the Incus daemon runs on Linux. The supported Apple-silicon local
+provider is therefore Colima's Incus runtime, started as the named profile `incus`
+(`colima start incus --runtime incus`). A plain `brew install incus` followed by `incus list` is not a
+usable provider: the client has no daemon until the Colima profile exists or a remote Linux server is
+configured. Apple Incus VMs also depend on Apple's nested-virtualization support, so older Apple
+silicon that cannot run nested VMs needs a remote Linux provider for VM lifecycle work.
+
 The two-case `HostTarget = Local | InVM` described here is the **tool-level** lift (run one resolved tool
 in a target). It is generalized by the **subcommand-level self-reference lift** (`HostBootstrap.Lift`),
 which composes contexts as an n-level stack (`Local | InVM | InContainer`): a binary crosses any boundary
@@ -53,17 +61,23 @@ by invoking its *own* subcommand in the nested context, so `incus exec` is the V
 `ensure incus` (`HostBootstrap.Ensure.Incus`) is the **first cross-substrate reconciler**: its
 applicability predicate is `appliesTo = isAppleSilicon || isLinux`, true on both Apple silicon and
 Linux. Every other reconciler in [ensure reconcilers](ensure_reconcilers.md) applies to a single
-substrate family; `ensure incus` is the first that spans them, because installing the incus
-host-provider is meaningful on every host that can run a VM.
+substrate family; `ensure incus` is the first that spans them, because the supported provider can be
+Colima-backed on Apple or native on Linux.
 
 It follows the standard probe-first, idempotent install-and-verify contract:
 
-- **probe** the host `incus`; if already satisfied, no-op;
-- **install** per substrate — `brew install incus` on apple-silicon; `apt-get install -y incus`
-  followed by `sudo incus admin init --minimal` on linux;
+- **probe** the provider; if already satisfied, no-op. On Apple this checks the `incus` Colima profile
+  and `incus list`; on Linux the resolved client is the provider probe after daemon initialization;
+- **install** per substrate — on Apple, `brew install incus`, `brew install colima`, then
+  `colima start incus --runtime incus`; on Linux, `apt-get install -y incus` followed by
+  `sudo incus admin init --minimal`;
 - **re-verify** with the same probe and fail fast if still missing;
 - **grant socket access** on linux by adding the invoking non-root user to the `incus-admin`
   group, so future login sessions can talk to `/var/lib/incus/unix.socket`.
+
+The Homebrew steps intentionally use plain `brew install <formula>` commands. Homebrew treats an
+already-installed formula as a successful no-op, so the install plan stays declarative and idempotent
+without shell-level `brew list || brew install` wrappers.
 
 When the group grant is newly added, the current shell may still lack the supplementary group until
 the operator starts a fresh login session or runs `newgrp incus-admin`.

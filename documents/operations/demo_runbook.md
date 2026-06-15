@@ -115,7 +115,8 @@ hostbootstrap owns the lifecycle of **every** resource in the demo; the **only**
 are the basic host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `sudo`). Everything
 else is installed, orchestrated, and torn back down by hostbootstrap:
 
-- **(a)** the metal-orchestrator binary installs **incus on the host** (`brew`/`apt`, via core `ensure incus`);
+- **(a)** the metal-orchestrator binary installs and verifies the **incus host-provider** (Colima-backed
+  on Apple, native daemon on Linux, via core `ensure incus`);
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
 - **(d)** the deploy lifts the **whole test workflow** into the project container in the VM
@@ -156,8 +157,10 @@ lifted compute step (it folds to `incus exec <vm> -- docker run --rm <image> tes
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step — folds to `incus exec <vm> -- docker run --rm <image> test all` |
 | `vm down` | `local` | guarded teardown (`.data` preserved) |
 
-a. `demo incus ensure` — drives core `ensure incus` (install-and-verify the
-   host-provider on the metal host). See [incus](../engineering/incus.md).
+a. `demo incus ensure` — drives core `ensure incus` (install-and-verify the host-provider on the
+   metal host). On Apple this means `brew install incus`, `brew install colima`, and
+   `colima start incus --runtime incus`; on Linux it means native daemon initialization plus
+   `incus-admin` access. See [incus](../engineering/incus.md).
 
 b. `demo vm up` — launch a budget-sized pristine `ubuntu/24.04` VM. This is
    **cordon #1**: the VM is the wall, sized `limits.cpu=6 / limits.memory=10GiB /

@@ -53,7 +53,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Container` | 13 | yes | the project-container build (build #3): pure `dockerBuildArgs`/`projectImageTag` + `buildProjectContainer` (`docker build` `FROM` the base, tagged `<project>:local`) |
 | `HostBootstrap.RoleLifecycle` | 14 | yes | the role-lifecycle skeleton: the `RolePhase` enum + pure `rolePhases` ordering + `RoleSpec`/`runRole` (acquire→serve→drain, drain via `finally`) — the `HostDaemon` substrate L1 builds roles on |
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
-| `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (cross-substrate) |
+| `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -80,7 +80,7 @@ with a one-line diagnostic and a non-zero exit. See
 | `ensure homebrew` | `HostBootstrap.Ensure.Homebrew` | 3 | `apple-silicon` | fail fast, non-zero |
 | `ensure ghc` | `HostBootstrap.Ensure.Ghc` | 3 | `apple-silicon` (host-native build path) | fail fast, non-zero |
 | `ensure tart` | `HostBootstrap.Ensure.Tart` | 3 | `apple-silicon` (build-only) | fail fast, non-zero |
-| `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify) | fail fast, non-zero |
+| `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify; Colima-backed on Apple, native daemon on Linux) | fail fast, non-zero |
 
 ## Project-local `<project>.dhall` schema
 
@@ -156,12 +156,13 @@ not by the Python layer.
 ## Resource budget and cordoning
 
 The **project binary** verifies the active `<project>.dhall` resource envelope and applies the cordon: on
-Apple by sizing a dedicated per-project Colima/incus VM (via `ensure docker`), on Linux by applying kind
-node resource limits (via `cluster up`); the Python bootstrapper does not cordon. `cluster up` runs the
-`verifyBudget` spare-capacity preflight and applies the Linux `docker update` kind-node cordon after
-`kind create`, before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The
-cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction selects
-fixed names / `.data` paths for production and per-case isolated paths for the test profile. See
+Apple Docker workloads run behind the dedicated per-project Colima VM (`ensure docker` / `ensure colima`);
+Incus host-provider workflows use `incusSizingArgs` at the VM wall; on Linux, `cluster up` applies kind
+node resource limits. The Python bootstrapper does not cordon. `cluster up` runs the `verifyBudget`
+spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
+before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The cluster lifecycle
+never deletes host `.data`. The production-vs-test cluster profile distinction selects fixed names /
+`.data` paths for production and per-case isolated paths for the test profile. See
 `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).
 
 ## Base image and warm Cabal store

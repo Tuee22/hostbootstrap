@@ -59,10 +59,11 @@ present (install-and-verify, not check-only). The shared driver `installAndVerif
    still missing.
 
 Tools are re-resolved after each step, so a freshly installed tool (for example `ghcup` just laid
-down by `brew`) is discoverable by the next step. The install plan is a **pure** function of the
-substrate — Homebrew formulae on `apple-silicon`; `apt-get`/`ghcup`/the NVIDIA container toolkit on
-Linux — so it is unit-tested without invoking the package manager; the IO driver is exercised during
-real bootstrap runs.
+down by `brew`) is discoverable by the next step. Homebrew formula steps are written as plain
+`brew install <formula>` commands; Homebrew's installed-formula no-op behavior is the idempotent
+path. The install plan is a **pure** function of the substrate — Homebrew formulae on
+`apple-silicon`; `apt-get`/`ghcup`/the NVIDIA container toolkit on Linux — so it is unit-tested
+without invoking the package manager; the IO driver is exercised during real bootstrap runs.
 
 | Reconciler | Probe | Install plan (per substrate) |
 |------------|-------|------------------------------|
@@ -72,7 +73,7 @@ real bootstrap runs.
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
 | `tart` | `tart` resolved | Apple: `brew install cirruslabs/cli/tart`. |
-| `incus` | host `incus` resolved | Apple: `brew install incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
+| `incus` | Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
 
 ## Reconciler Inventory
 
@@ -84,7 +85,7 @@ real bootstrap runs.
 | `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so `ensure homebrew` verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
-| `ensure incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. The incus host-provider is meaningful on every host that can run a VM, so this reconciler does not fail fast on either family. See [incus](incus.md). |
+| `ensure incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
 `ensure incus` is the **first cross-substrate reconciler** — its applicability predicate spans both
 apple-silicon and linux (`appliesTo = isAppleSilicon || isLinux`), where every other reconciler above

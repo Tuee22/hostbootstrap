@@ -126,8 +126,13 @@ installPlanCases =
             InstallStep Sudo ["systemctl", "restart", "docker"]
           ]
       assertBool "cuda Left on linux-cpu" (isLeft (Cuda.installSteps cpu)),
-    testCase "incus: brew on apple, apt + sudo admin init on linux (cross-substrate)" $ do
-      EIncus.installSteps apple @?= Right [InstallStep Brew ["install", "incus"]]
+    testCase "incus: Colima-backed provider on apple, native daemon on linux" $ do
+      EIncus.installSteps apple
+        @?= Right
+          [ InstallStep Brew ["install", "incus"],
+            InstallStep Brew ["install", "colima"],
+            InstallStep Colima ["start", EIncus.appleIncusProfile, "--runtime", "incus"]
+          ]
       let linux =
             Right
               [ InstallStep Sudo ["apt-get", "install", "-y", "incus"],

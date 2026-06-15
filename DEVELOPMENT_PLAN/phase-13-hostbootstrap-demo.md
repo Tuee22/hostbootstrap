@@ -114,9 +114,10 @@ demo's noun-first project verbs.
 
 - The demo groups its project verbs under nouns (`incus`/`vm`/`harbor`/`web`), distinct from the
   inherited verb-first core verbs (`ensure`/`config`/`cluster`/`test`/`check-code`): `demo incus ensure`
-  consumes core's `ensure incus` (install-and-verify) **and** ensures the Linux VM capability the core
-  reconciler does not cover — `qemu-system-x86` + `ovmf` plus a daemon restart so incus re-detects QEMU;
-  `demo vm up` derives the VM sizing from the one canonical parser (`incusSizingArgs`) and launches a
+  consumes core's `ensure incus` (install-and-verify: Colima-backed on Apple, native daemon on Linux)
+  and, on Linux only, ensures the VM capability the core reconciler does not cover —
+  `qemu-system-x86` + `ovmf` plus a daemon restart so incus re-detects QEMU; `demo vm up` derives the
+  VM sizing from the one canonical parser (`incusSizingArgs`) and launches a
   budget-sized pristine `ubuntu/24.04` VM (**cordon #1**: the VM is the wall), formatting the sizing into
   `incus launch` flags (`-c limits.*`, `-d root,size=…`); `demo vm down` destroys it behind the
   name-prefix delete-guard (`destroyVMArgs "hostbootstrap-demo"`).
@@ -167,9 +168,10 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 #### Remaining Work
 
 None. The pristine path (`pipx install --force /root/hostbootstrap`) is live-validated end to end on a
-real host: `vm up` (cordon #1) -> cold in-VM build -> `config schema` -> guarded `vm down`. The first-run
-prerequisites are ensured by the demo verbs and the bootstrapper: `qemu-system-x86`/`ovmf`, the
-`incusbr0`<->Docker forwarding rule, pinned GHC 9.12.4, and `zlib1g-dev`.
+real host: `vm up` (cordon #1) -> cold in-VM build -> `config schema` -> guarded `vm down`. On Linux,
+the first-run prerequisites are ensured by the demo verbs and the bootstrapper:
+`qemu-system-x86`/`ovmf`, the `incusbr0`<->Docker forwarding rule, pinned GHC 9.12.4, and
+`zlib1g-dev`; on Apple, core `ensure incus` provides the Colima-backed Incus runtime.
 
 ### Sprint 13.4: kind + Harbor on the VM and image push [Done]
 

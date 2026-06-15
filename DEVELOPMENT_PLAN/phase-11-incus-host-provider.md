@@ -13,10 +13,11 @@
 **Status**: Done
 
 `incus` is the host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
-like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler;
-`HostBootstrap.HostTarget` parameterizes linux-host operations by `HostTarget = Local | InVM IncusVM`;
-`HostBootstrap.Incus` carries the VM lifecycle argv and `classifyDockerReadiness`; and
-`incusSizingArgs` uses the canonical quantity parser to cordon the VM at the wall
+like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler
+(Colima-backed Incus runtime on Apple, native daemon on Linux); `HostBootstrap.HostTarget`
+parameterizes linux-host operations by `HostTarget = Local | InVM IncusVM`; `HostBootstrap.Incus`
+carries the VM lifecycle argv and `classifyDockerReadiness`; and `incusSizingArgs` uses the canonical
+quantity parser to cordon the VM at the wall
 (`limits.cpu`/`limits.memory`/`root,size`). `incus` is not a substrate and not a fifth run-model; it is a
 supported host-provider layer.
 
@@ -48,9 +49,10 @@ the reconciler list so the host `incus` resolves to an `AbsExe` across apple-sil
 #### Reconciler Contract
 
 - `ensure incus` `appliesTo = isAppleSilicon || isLinux` (the first cross-substrate reconciler).
-- Install-and-verify: `brew install incus` on apple-silicon (precondition `ensure homebrew`);
-  `sudo apt-get install -y incus` + `sudo incus admin init --minimal` on ubuntu-24.04; on linux it also
-  adds the invoking non-root user to `incus-admin` so future sessions can reach the daemon socket.
+- Install-and-verify: on apple-silicon, `brew install incus`, `brew install colima`, and
+  `colima start incus --runtime incus` (precondition `ensure homebrew`); on ubuntu-24.04,
+  `sudo apt-get install -y incus` + `sudo incus admin init --minimal`; on linux it also adds the
+  invoking non-root user to `incus-admin` so future sessions can reach the daemon socket.
   Probe-first/idempotent; fail-fast on a genuinely unsupported host.
 
 #### Deliverables

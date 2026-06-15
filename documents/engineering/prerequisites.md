@@ -63,6 +63,7 @@ host (a misuse), never on mere absence:
 |---|---|---|
 | Docker reachability | `ensure docker` | all substrates |
 | Per-project Colima VM | `ensure colima` | Apple silicon |
+| Incus host-provider | `ensure incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
 | NVIDIA driver + container toolkit | `ensure cuda` | `linux-gpu` |
 | Homebrew packages | `ensure homebrew` | Apple silicon |
 | Host GHC toolchain | `ensure ghc` | Apple silicon (native host build) |

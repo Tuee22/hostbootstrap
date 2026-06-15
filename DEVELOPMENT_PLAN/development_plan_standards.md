@@ -209,8 +209,8 @@ host minimums (§ M) — the irreducible host floor that cannot be auto-installe
 inside the `ensure` suite is a reconciler run on the **wrong host** (an applicability misuse, e.g.
 `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
 an absent dependency; the two must never be conflated. `ensure incus` is the first reconciler applicable
-on **both** apple-silicon and linux — it installs the host-provider that encapsulates a fresh linux host
-(§ U). The
+on **both** apple-silicon and linux — on Apple it starts the Colima-backed Incus provider, and on Linux
+it initializes the native daemon that encapsulates a fresh linux host (§ U). The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
@@ -354,7 +354,7 @@ the outermost host
 dispatch names a tool the resolver maps to an absolute path; every nested tool is the target's own bare
 `$PATH` name. The two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the
 subcommand-level lift generalizes it to the n-level stack (`Local | InVM | InContainer`). `incus` is
-installed by `ensure incus` (§ L) and each layer is budget-cordoned by the one canonical parser (§ O).
+provisioned by `ensure incus` (§ L) and each layer is budget-cordoned by the one canonical parser (§ O).
 L0 owns only the generic lift; the *specific* chain (the worked demo's host → VM → container) is project
 logic. `incus` is **not** standardized for all workflows — the demo uses it to encapsulate a fresh linux
 host — but it is fully supported. See
