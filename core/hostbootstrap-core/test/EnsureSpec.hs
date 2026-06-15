@@ -126,11 +126,21 @@ installPlanCases =
             InstallStep Sudo ["systemctl", "restart", "docker"]
           ]
       assertBool "cuda Left on linux-cpu" (isLeft (Cuda.installSteps cpu)),
-    testCase "incus: brew on apple, apt + admin init on linux (cross-substrate)" $ do
+    testCase "incus: brew on apple, apt + sudo admin init on linux (cross-substrate)" $ do
       EIncus.installSteps apple @?= Right [InstallStep Brew ["install", "incus"]]
-      let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "incus"], InstallStep Incus ["admin", "init", "--minimal"]]
+      let linux =
+            Right
+              [ InstallStep Sudo ["apt-get", "install", "-y", "incus"],
+                InstallStep Sudo ["incus", "admin", "init", "--minimal"]
+              ]
       EIncus.installSteps cpu @?= linux
-      EIncus.installSteps gpu @?= linux
+      EIncus.installSteps gpu @?= linux,
+    testCase "incus: linux admin user prefers the invoking sudo user and skips root" $ do
+      EIncus.targetIncusAdminUser [("SUDO_USER", "matt"), ("USER", "root")] @?= Just "matt"
+      EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("LOGNAME", "matt"), ("USER", "root")]
+        @?= Just "matt"
+      EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
+      EIncus.targetIncusAdminUser [("USER", "")] @?= Nothing
   ]
 
 isRight :: Either a b -> Bool

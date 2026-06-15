@@ -72,7 +72,7 @@ real bootstrap runs.
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
 | `tart` | `tart` resolved | Apple: `brew install cirruslabs/cli/tart`. |
-| `incus` | host `incus` resolved | Apple: `brew install incus`. Linux: `apt-get install -y incus` + `incus admin init --minimal`. |
+| `incus` | host `incus` resolved | Apple: `brew install incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
 
 ## Reconciler Inventory
 
