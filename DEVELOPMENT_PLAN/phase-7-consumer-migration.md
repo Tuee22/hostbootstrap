@@ -1,29 +1,23 @@
-# Phase 7: Consumer Migration
+# Phase 7: Consumer Adoption
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md)
 
-> **Purpose**: Outline the migration of consumer projects onto `hostbootstrap-core` — first
-> [`daemon-substrate`](https://github.com/Tuee22/daemon-substrate) and
-> [`mcts`](https://github.com/Tuee22/mcts), with
-> [`infernix`](https://github.com/Tuee22/infernix) and [`jitML`](https://github.com/Tuee22/jitML)
-> as future work — each shipping one optparse binary that extends the core.
+> **Purpose**: Define how consumer projects adopt `hostbootstrap-core`: each consumer ships one
+> optparse binary that extends the core command tree instead of re-implementing core verbs.
 
 ## Phase Status
 
 **Status**: Done
 
 `hostbootstrap-core` is a consumable Cabal package and
-`documents/engineering/derived_project_standards.md` documents the consume-as-library pattern. This phase
-reopened against the **three-level library hierarchy** contract: `hostbootstrap-core` (L0) ◄
-`daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2), with `mcts` consuming L0 directly; each level extends
-the four parallel streams (CLI tree, Dhall vocabulary, schema-gen registry, harness seams). The worked
-consumer is **`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)),
-which supersedes the retired `hostbootstrap-example` binary. The three-level hierarchy and the two
-integration modes are documented (Sprint 7.3), and the worked-example references are re-pointed from the
-retired `example/Main.hs` to `demo/` (Phase 13, Sprint 13.7), so this phase is closed. The bulk of each
-consumer migration remains the consuming repository's own work.
+`documents/engineering/derived_project_standards.md` documents the consume-as-library pattern. The
+supported hierarchy is `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2),
+with `mcts` and `hostbootstrap-demo` consuming L0 directly; each level extends the four parallel streams
+(CLI tree, Dhall vocabulary, schema-gen registry, harness seams). The worked consumer is
+**`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)). Consumer
+repository adoption is tracked in each consumer's own repository. This phase is `Done`.
 
 The three-level hierarchy and the **two integration modes** — (1) freeze-import + the base-image
 `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`), and (2) `source-repository-package` +
@@ -61,39 +55,37 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
   container's `FROM` base image + `check-code` gate, and the `runHostBootstrapCLI` extension pattern.
 - `daemon-substrate` (see https://github.com/Tuee22/daemon-substrate) and `mcts` (see
   https://github.com/Tuee22/mcts) each ship one binary extending the core; the consumer-side
-  migration work is tracked in those repositories' own plans.
+  adoption work is tracked in those repositories' own plans.
 
 #### Validation
 
 - `hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`,
   `check-code`) plus its own appended verbs (`incus`/`vm`/`harbor`/`web`) — the consumer extension
-  contract, verified on the worked `demo/` binary (superseding the retired `hostbootstrap-example`).
+  contract, verified on the worked `demo/` binary.
 - The consumer container building `FROM` the base image and passing its `check-code` gate is
   consumer-side work, exercised in each consumer repository.
 
 #### Remaining Work
 
 None on the `hostbootstrap` side. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in
-those repositories' own plans. The worked-consumer evidence is the `demo/` binary; the thin
-`hostbootstrap-example` binary it superseded was retired in Phase 13 (Sprint 13.7).
+those repositories' own plans. The worked-consumer evidence is the `demo/` binary.
 
-### Sprint 7.2: infernix and jitML future migration (outline) [Done]
+### Sprint 7.2: L2 consumer adoption outline [Done]
 
 **Status**: Done
 **Docs to update**: `documents/engineering/derived_project_standards.md`
 
 #### Objective
 
-Record the future-consumer outline so the contract stays honest while the migration is deferred.
+Record the L2 consumer adoption contract without adding `hostbootstrap`-side implementation work.
 
 #### Deliverables
 
-- An outline noting that `infernix` (see https://github.com/Tuee22/infernix) is the source of the
-  lifted host trio and migrates to consuming it back from `hostbootstrap-core`, and that `jitML` (see
-  https://github.com/Tuee22/jitML) keeps Swift/Metal (Tart build-only) while reusing the CUDA and
-  cluster logic.
-- No `hostbootstrap`-side code obligation beyond keeping the core surface stable; the migration is
-  future consumer work.
+- `infernix` (see https://github.com/Tuee22/infernix) consumes host-management surfaces from
+  `hostbootstrap-core`.
+- `jitML` (see https://github.com/Tuee22/jitML) keeps Swift/Metal as Tart build-only work while reusing
+  CUDA and cluster logic from the shared hierarchy.
+- No `hostbootstrap`-side code obligation beyond keeping the core surface stable.
 
 #### Validation
 
@@ -101,9 +93,7 @@ Record the future-consumer outline so the contract stays honest while the migrat
 
 #### Remaining Work
 
-None on the `hostbootstrap` side. `infernix` migrating to consume the host trio back from
-`hostbootstrap-core`, and `jitML` reusing the CUDA/cluster logic while keeping Swift/Metal (Tart
-build-only), are future consumer-repository work.
+None on the `hostbootstrap` side. L2 adoption details are consumer-repository work.
 
 ### Sprint 7.3: Three-level hierarchy and the two integration modes [Done]
 
@@ -124,7 +114,7 @@ parallel streams (see [development_plan_standards.md § P, § T](development_pla
   and the four-stream merge-idiom table) and a *two integration modes* section: (1) freeze-import + the
   base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`); (2)
   `source-repository-package` + `runHostBootstrapCLI` extension (`daemon-substrate` and its apps, and
-  the `demo/` consumer). It also notes that the thin `example/Main.hs` is superseded by `demo/`.
+  the `demo/` consumer).
 
 #### Validation
 
@@ -133,9 +123,7 @@ parallel streams (see [development_plan_standards.md § P, § T](development_pla
 
 #### Remaining Work
 
-None. The example→`demo/` reference re-point and the `hostbootstrap-example` retirement landed in
-[phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md) (Sprint 13.7); `example/Main.hs` is
-retired (see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+None.
 
 ## Documentation Requirements
 
@@ -146,4 +134,4 @@ retired (see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md))
 
 **Cross-references to add:**
 - `system-components.md` notes `hostbootstrap-core` as a consumable dependency.
-- Each consumer repository's own `DEVELOPMENT_PLAN/` carries the consumer-side migration phases.
+- Each consumer repository's own `DEVELOPMENT_PLAN/` carries consumer-side adoption work.

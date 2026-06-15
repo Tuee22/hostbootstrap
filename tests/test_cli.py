@@ -26,18 +26,18 @@ def _project() -> bootstrap.ProjectBuildSpec:
 # ---------------------------------------------------------------------------
 
 
-def test_help_lists_thin_commands_and_omits_removed() -> None:
+def test_help_lists_only_thin_commands() -> None:
     result = CliRunner().invoke(cli.main, ["--help"])
     assert result.exit_code == 0
     for command in ("doctor", "build", "run", "base"):
         assert command in result.output
-    for gone in ("up", "cluster", "daemon", "push"):
-        assert gone not in result.output
+    for unsupported in ("up", "cluster", "daemon", "push"):
+        assert unsupported not in result.output
 
 
-@pytest.mark.parametrize("removed", ["up", "cluster", "daemon", "push"])
-def test_removed_commands_are_gone(removed: str) -> None:
-    result = CliRunner().invoke(cli.main, [removed])
+@pytest.mark.parametrize("unsupported", ["up", "cluster", "daemon", "push"])
+def test_non_bootstrap_commands_are_not_python_commands(unsupported: str) -> None:
+    result = CliRunner().invoke(cli.main, [unsupported])
     assert result.exit_code != 0
     assert "No such command" in result.output
 

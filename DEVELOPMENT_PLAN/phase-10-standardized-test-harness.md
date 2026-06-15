@@ -12,7 +12,7 @@
 
 **Status**: Done
 
-`HostBootstrap.Harness` is **landed**: `runMatrix :: Seams env -> [Case] -> IO Report` drives the case
+`HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
 `./.test_data/<case>/`), running the body, and tearing down in a guaranteed `finally` (a body exception
 is recorded as `Fail`, not leaked). Never-touch-production is mechanical: `guardTestDelete` refuses any
@@ -22,15 +22,10 @@ indivisible (GPU) cases each get the full budget at concurrency 1. `selectRunMod
 run-models (`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) from the collapsed selection key — never
 declared in Dhall. The L0 `OneShot` model ships both the pure `oneShotRunArgs` argv and the real
 `oneShotSeams` IO seam (wired through the resolved Docker tool like `cluster up`). The `test` and
-`check-code` verbs are on the core tree, inherited by every binary. The L0 engine, the pure cores, and
-the verbs are implemented and unit-tested; the live container/cluster run is exercised in real runs (the
-demo, [Phase 13](phase-13-hostbootstrap-demo.md)), the same standard the cluster lifecycle (Phase 5)
-follows. Sprints 10.1–10.6 are closed; the phase is **reopened** for Sprint 10.7.
-
-**Reopened (Sprint 10.7).** `runMatrix` now isolates a throwing `seamSetup` to its own case — it
-`try`-wraps setup and records a `Fail` rather than crashing the whole matrix — and the real per-case seams
-that replace the hollow `demoSeams` land in the [demo](phase-13-hostbootstrap-demo.md). The
-`seamSetup`-in-`try` isolation is landed and unit-tested; the demo's real per-case seams are landed (phase-13) and exercised in the demo's live run.
+`check-code` verbs are on the core tree, inherited by every binary. `runMatrix` isolates a throwing
+`seamSetup` to its own case by recording a `Fail` rather than crashing the matrix. The L0 engine, pure
+cores, command verbs, and setup-isolation behavior are implemented and unit-tested; the worked demo
+exercises the container/cluster path in real runs. This phase is `Done`.
 
 ## Phase Objective
 
@@ -192,8 +187,7 @@ None.
 #### Objective
 
 Make the inherited `test` verb run a project's **own** case matrix, so project tests live under
-`test` rather than a per-noun subcommand. Before this, `testCommand` hardcoded an empty matrix and a
-project's cases could only be bound to a separately-named command (the demo's former `vm test`).
+`test` rather than a per-noun subcommand.
 
 #### Command Surface
 
@@ -210,8 +204,7 @@ project's cases could only be bound to a separately-named command (the demo's fo
 - `coreCommands`/`testCommand`/`runHostBootstrapCLI` thread the `TestSuite`; `testCommand` parses a
   required `CASE` argument and fails fast on an unknown id.
 - The bare `hostbootstrap` binary passes `emptySuite`; the demo binds `demoSeams`/`demoCases` through
-  `demo/app/Main.hs`. The demo's `vm test` subcommand is removed (recorded in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+  `demo/app/Main.hs`.
 
 #### Validation
 
@@ -233,17 +226,15 @@ None.
 
 #### Objective
 
-Isolate a throwing `seamSetup` to its own case (not the whole matrix), and replace the hollow demo seams
-with real per-case assertions that exercise the deployed workload.
+Isolate a throwing `seamSetup` to its own case (not the whole matrix), and use real per-case assertions
+in the worked demo.
 
 #### Deliverables
 
 - `runMatrix` `try`-wraps `seamSetup`: a setup exception fails that one case (there is nothing to tear
   down, since setup did not complete) instead of crashing the run.
-- The hollow `demoSeams` (one shared body asserting only that the kind cluster exists) is replaced by real
-  per-case seams that lift the cluster/deploy/e2e steps into the project container and assert the
-  workload — recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), owned by
-  phase-13.
+- The worked demo supplies per-case seams that lift the cluster/deploy/e2e steps into the project
+  container and assert the workload.
 
 #### Validation
 
@@ -252,8 +243,8 @@ with real per-case assertions that exercise the deployed workload.
 
 #### Remaining Work
 
-None. The harness `seamSetup`-in-`try` isolation is landed and unit-tested; the demo's real per-case
-seams are landed (phase-13) and exercised in the demo's live run.
+None. The harness `seamSetup`-in-`try` isolation is unit-tested; the demo's per-case seams are exercised
+in the demo's live run.
 
 ## Documentation Requirements
 

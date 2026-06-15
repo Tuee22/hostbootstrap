@@ -10,37 +10,19 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: the inversion buildout (Phases 1–7) is implemented — the `HostBootstrap.*` modules below exist,
-> the Python CLI is the thin `doctor` / `build` / `run` / `base` pre-binary bootstrapper (converged on the
-> §M/§N boundary), and `hostbootstrap-core` is consumable via `runHostBootstrapCLI`. The
-> **global-architecture deltas** are implemented and unit-tested — Dhall generation (Phase 8),
-> the applied cordon (Phase 9), the standardized harness (Phase 10), and the incus host-provider
-> (Phase 11) are all landed; the layered warm store (Phase 12) and the worked demo (Phase 13) are
-> implemented and **exercised in real runs** (incus VMs, the pristine 3-build bootstrap, the harness
-> cluster lifecycle, the web/Playwright stack). Phase 4's project-local schema work, Phase 6's Python
-> Dhall removal, Phase 8's config generation, Phase 13's demo migration, and Phase 15's command-gate
-> migration are closed. The **single-representation
-> doctrine** ([development_plan_standards.md § W](development_plan_standards.md) — one operation, one
-> representation; the standardized test harness is the one representation, **lifted** into the project
-> container in the VM via `incus exec <vm> -- docker run --rm <image> test all`, with no parallel deploy
-> chain alongside it) is **implemented and live-validated**: Phase-13 Sprint 13.12 collapsed the demo deploy
-> to the single lift sequence, and the literal `demo deploy` apply runs `3/3` with the kind cluster on the
-> **VM's** Docker (poller-confirmed in the VM, none on metal), guarded teardown, no leftovers. The earlier
-> metal-host in-container runs were a dev shortcut, superseded by the in-VM lift. The operator-scale
-> real runs (multi-arch published base tags, the full Harbor deployment, the multi-GB image push) follow
-> the § Validation Policy standard. The rows below carry their owning phase and an
-> Implemented column. The target runtime authority is a sibling `<project>.dhall` for host, VM,
-> ad-hoc-container, and service/daemon copies of a binary, with the role and command permissions inside
-> the file content. The
-> Python surfaces removed along the way are recorded in
-> [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). This repository does not use
-> `.github/` workflows or GitHub Actions as a validation surface; see [README.md](README.md) for
-> per-phase status.
+> Note: Phases 0-15 are `Done`. The rows below name the supported component surfaces, their owning
+> phases, and whether the repository implements them. Runtime authority is a sibling `<project>.dhall`
+> for each host, VM, container, and service/daemon copy of a binary, with role and command permissions
+> inside the file content. The Python CLI is the thin `doctor` / `build` / `run` / `base`
+> pre-binary bootstrapper, and `hostbootstrap-core` is the reusable library consumed through
+> `runHostBootstrapCLI`. The single-representation rule is part of the supported architecture: the
+> standardized test harness is the one test/deploy workflow representation and may be lifted as a whole
+> into a nested context such as `incus exec <vm> -- docker run --rm <image> test all`.
 
 ## hostbootstrap-core Haskell module surface
 
-The library lives under the `HostBootstrap.*` namespace. The module names below are the target
-surface; the column records whether the module exists yet.
+The library lives under the `HostBootstrap.*` namespace. The module names below are the supported
+surface; the column records whether the module exists in this repository.
 
 | Module | Phase | Implemented | Purpose |
 |--------|-------|-------------|---------|
@@ -102,7 +84,7 @@ with a one-line diagnostic and a non-zero exit. See
 
 ## Project-local `<project>.dhall` schema
 
-The target user-editable runtime config is a sibling `<project>.dhall`, where `<project>` is derived from
+The user-editable runtime config is a sibling `<project>.dhall`, where `<project>` is derived from
 the Cabal file name (`hostbootstrap-demo.cabal` -> `hostbootstrap-demo`). Python does not read this file;
 it only triggers the binary's idempotent `config init --if-missing` after the build so a default always
 exists. The built project binary creates the file through `<project> config init`, prints its schema/help,
@@ -115,10 +97,6 @@ and reads it before normal command dispatch.
 | Runtime context | project binary | context kind, role name, allowed command classes, local capabilities, parent chain |
 | Resource envelope | project binary | host/VM/container/service budget limits and child projection defaults |
 | Deploy knobs | project binary | HA replicas, service sizing, generated child-config inputs |
-
-The old demo static-base file, Haskell `StaticBase` compatibility API, separate standalone context filename,
-and Dockerfile shortcut are removed. Those deletions are recorded in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Runtime context inside local config
 
@@ -179,8 +157,7 @@ not by the Python layer.
 
 The **project binary** verifies the active `<project>.dhall` resource envelope and applies the cordon: on
 Apple by sizing a dedicated per-project Colima/incus VM (via `ensure docker`), on Linux by applying kind
-node resource limits (via `cluster up`); the Python bootstrapper does not cordon (it no longer sizes any
-VM — Phase 6, Sprint 6.3). The applied cordon is **landed** (Phase 9): `cluster up` runs the
+node resource limits (via `cluster up`); the Python bootstrapper does not cordon. `cluster up` runs the
 `verifyBudget` spare-capacity preflight and applies the Linux `docker update` kind-node cordon after
 `kind create`, before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The
 cluster lifecycle never deletes host `.data`. The production-vs-test cluster profile distinction selects
@@ -219,7 +196,7 @@ See
 |-----------------|-------|--------|
 | `ensure <tool>` (incl. `incus`) | 3, 11 | the `ensure` reconcilers |
 | `config init` (incl. idempotent `--if-missing`) / `config path` | 8, 15 | `HostBootstrap.Config.Schema` + `HostBootstrap.Context` |
-| `context create vm\|container\|service` | 15.3, 15.4 | target child `<project>.dhall` projections |
+| `context create vm\|container\|service` | 15.3, 15.4 | child `<project>.dhall` projections |
 | `config show` | 4, 15 | explicit inspection of a local config file |
 | `config schema` / `config render` | 8 | `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry |
 | `cluster up/down/delete/status` | 5 | `HostBootstrap.Cluster.Lifecycle` |
@@ -228,7 +205,7 @@ See
 
 ## hostbootstrap-demo (worked consumer)
 
-`hostbootstrap-demo` (Phase 13) is the self-contained worked consumer under `demo/` (target
+`hostbootstrap-demo` (Phase 13) is the self-contained worked consumer under `demo/` (runtime config
 `hostbootstrap-demo.dhall`, Haskell source `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`,
 build path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) via `runHostBootstrapCLI` and
 demonstrates the four-stream extension — the CLI append (`incus`/`vm`/`harbor`/`web` noun verbs alongside
@@ -239,8 +216,7 @@ container on the VM, and cluster-service/daemon pod. Its verbs drive the live su
 the host-provider axis, the
 applied budget cordons, an idiomatic in-Dockerfile `check-code` gate (`demo/docker/Dockerfile`), a
 `purescript-bridge`/`spago` webservice and SPA, and Playwright e2e — centered on a from-zero
-pristine-host bootstrap inside an incus VM. It supersedes the retired
-`core/hostbootstrap-core/example/Main.hs`.
+pristine-host bootstrap inside an incus VM.
 
 ## Update rule
 

@@ -12,19 +12,12 @@
 
 **Status**: Done
 
-Phase 0's governance is closed and holds. The **foundational** deliverables — the unified
-metadata-block standard across the governed `documents/` suite, this `DEVELOPMENT_PLAN/` tree in the
-canonical layout, and the mechanical documentation validator (`HostBootstrap.DocValidator`) running
-through the canonical code-check — landed first and gate the code phases (see
-[development_plan_standards.md § A](development_plan_standards.md)). The expanded doc-coverage
-obligations that reopened Phase 0 are also closed: the family doc-floor and taxonomy gate (Sprint 0.4)
-and the **doctrine-clarity sweep** (Sprint 0.5) — making two load-bearing doctrines read unmistakably
-across the governed suite (the Python wrapper does only the minimum to **build** the binary, and the
-project binary is **never blocked by an un-installed dependency**, the purpose of the `ensure` suite,
-with the Python host minimums as the **only** hard fail-fast surface) and reconciling the
-`system-components.md` inventory to the now-`Done` Phases 6 and 9. All five sprints are `Done` with no
-remaining work, so this phase is closed. Per § A it may **reopen** to `Active` if a future architecture
-contract adds a new doc-coverage obligation, without reverting any already-implemented code phase.
+Phase 0's governance is complete and active as the documentation floor for the repository. It defines the
+unified metadata-block standard, the canonical `DEVELOPMENT_PLAN/` tree, and the mechanical
+documentation validator (`HostBootstrap.DocValidator`) that runs through the canonical code-check. It also
+defines the family doc-floor and taxonomy gate and keeps the governed suite clear on two load-bearing
+doctrines: Python does only the minimum to **build** the binary, and the project binary is **never blocked
+by an un-installed dependency** because the `ensure` suite is install-and-verify. This phase is `Done`.
 
 ## Phase Objective
 
@@ -32,8 +25,8 @@ Bring `hostbootstrap`'s governance onto the same shape its consumers use: metada
 governed doc, the canonical `documents/` taxonomy with `languages/` declared as a documented extra
 category, governed root-document blocks on `README.md` / `AGENTS.md` / `CLAUDE.md`, the
 `DEVELOPMENT_PLAN/` phase/sprint format with honest completion tracking, and a mechanical validator
-that enforces the structure. The governed `documents/` and `README.md` are rewritten present-tense to
-the target Haskell-core + thin-Python architecture; honest current-vs-target status lives here and in
+that enforces the structure. Governed `documents/` and `README.md` use present-tense current-state
+language; cleanup obligations and obsolete surface names live in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprints
@@ -79,8 +72,8 @@ None.
 
 Create the canonical `DEVELOPMENT_PLAN/` layout per
 [development_plan_standards.md § E](development_plan_standards.md): the orientation `README.md`, the
-`00-overview.md` narrative, the `system-components.md` inventory, the phase files (Phase 0 `Active`,
-Phases 1–7 `Blocked`), and the `legacy-tracking-for-deletion.md` ledger.
+`00-overview.md` narrative, the `system-components.md` inventory, the phase files, and the
+`legacy-tracking-for-deletion.md` ledger.
 
 #### Deliverables
 
@@ -93,8 +86,7 @@ Phases 1–7 `Blocked`), and the `legacy-tracking-for-deletion.md` ledger.
 
 The `HostBootstrap.DocValidator` gate checks that every phase file retains its
 `## Documentation Requirements` section and that all phase-plan links resolve; the layout matches the
-canonical folder model. The honesty check holds: no `documents/` or `README.md` claims a target
-capability is `Done`.
+canonical folder model.
 
 #### Remaining Work
 
@@ -143,10 +135,9 @@ None.
 
 #### Objective
 
-Extend the mechanical validator into the reusable family doc-floor the global-architecture contract
-reopened Phase 0 for: mechanical `snake_case` file-naming under `documents/`, a taxonomy check that
-rejects any top-level category outside the declared set, and exported per-check functions so the same
-floor can be reused across the project family.
+Extend the mechanical validator into the reusable family doc-floor: mechanical `snake_case` file-naming
+under `documents/`, a taxonomy check that rejects any top-level category outside the declared set, and
+exported per-check functions so the same floor can be reused across the project family.
 
 #### Deliverables
 
@@ -197,9 +188,8 @@ dependency).
   the TL;DR + ownership matrix and adds the binary-owned lifecycle rows (incus VM, webservice, e2e,
   teardown).
 - `README.md` and the `DEVELOPMENT_PLAN/README.md` Validation Policy state both doctrines and the
-  two-gate model; `system-components.md` no longer claims the bootstrapper is un-converged or the cordon
-  un-applied (reconciled to Phases 6/9 `Done`); the demo runbook shows the full hostbootstrap-owned
-  a→f lifecycle including teardown.
+  two-gate model; `system-components.md` carries current component ownership; the demo runbook shows the
+  full hostbootstrap-owned lifecycle including teardown.
 
 #### Validation
 

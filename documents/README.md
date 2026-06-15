@@ -43,7 +43,7 @@ material lives here. Conventions are defined in
 ## Engineering
 
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
-  replaces the old static-base `hostbootstrap.dhall` input.
+  every project binary reads beside itself.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model and the
   rule that rich schemas are binary-generated artifacts.
 - [engineering/config_generation.md](engineering/config_generation.md) — the `ConfigArtifact`

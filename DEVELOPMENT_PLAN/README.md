@@ -13,42 +13,25 @@
 ([`daemon-substrate`](https://github.com/Tuee22/daemon-substrate),
 [`mcts`](https://github.com/Tuee22/mcts), and the future consumers
 [`infernix`](https://github.com/Tuee22/infernix) and [`jitML`](https://github.com/Tuee22/jitML)).
-The target architecture is a Haskell `hostbootstrap-core` library plus a thin Python bootstrapper:
-the library owns host-tool resolution, the `ensure` reconcilers, substrate detection,
-cluster-lifecycle and resource cordoning, and the optparse command tree projects extend; the Python
-layer shrinks to the pre-binary bootstrap. See [00-overview.md](00-overview.md) for the cross-phase
-narrative and [system-components.md](system-components.md) for the component inventory.
+The repository is a Haskell `hostbootstrap-core` library (under `core/`) plus a thin Python
+bootstrapper (rooted at the repository root). The library owns host-tool resolution, substrate
+detection, install-and-verify `ensure` reconcilers, cluster lifecycle and resource cordoning,
+binary-owned Dhall generation, runtime context command gating, the standardized test harness, the
+self-reference lift, and the optparse command tree projects extend. The Python layer owns only the
+pre-binary bootstrap: assert irreducible host minimums, ensure the host build toolchain, build the
+project binary host-native, trigger the binary's idempotent `config init --if-missing`, and exec it.
 
-The repository runs the Haskell `hostbootstrap-core` library (under `core/`) plus the thin Python
-bootstrapper (rooted at the repository root). The phases below describe the ordered buildout. The host-management
-surface is implemented and the Python layer is the thin pre-binary bootstrapper; the global-architecture
-deltas have landed — the binary-generated `config schema`/`config render` and `config init` / child
-projection helpers (Phase 8), the applied
-budget cordon (Phase 9), the standardized test harness (Phase 10), and the incus host-provider
-(Phase 11) are all implemented and unit-tested; the layered warm store (Phase 12) is implemented with its
-two-freeze split validated on the host `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container; and the
-worked demo (Phase 13) has been **exercised in a real run** on a bare-metal host — incus VMs, the pristine
-3-build bootstrap, the harness cluster lifecycle with cleanup, the `warp`/`wai` + `purescript-bridge`/
-Halogen web stack, and Playwright e2e (3/3). Phases 0–15 are `Done`: the project-local
-`<project>.dhall` migration is implemented for the shared command gate and the demo runtime contexts. The
-**single-representation
-doctrine** (§ W — one operation, one representation: the standardized test harness is the one
-representation, **lifted** into the project container in the VM via
-`incus exec <vm> -- docker run --rm <image> test all`, with **no** parallel deploy chain alongside it) is
-**implemented and live-validated**: the demo deploy collapsed to one explicit lift sequence (Phase-13
-Sprint 13.12), and the literal `demo deploy` apply ran `ensure incus -> vm up -> pristine[#2+#3] -> lifted
-test all (3/3) -> vm down` clean — the kind cluster comes up on the **VM's** Docker (poller-confirmed in
-the VM, **none** on metal). The earlier metal-host in-container runs were a dev shortcut, superseded by the
-in-VM lift; the e2e spec is delivered through a context-agnostic named volume.
-Each project binary reads a sibling `<project>.dhall`: host, VM, container, and service copies keep
-separate local configs with the same filename rule, while the role and capability set live inside the file
-content.
-The operator-scale real runs (the multi-arch published base tags, the full 8-pod Harbor deployment, the
-multi-GB image push) **remain operator steps**, run per the same § Validation Policy standard. The Phase-0
-governance, including the doctrine-clarity sweep, has **closed** (per § A it may reopen only when a future
-architecture contract adds a new doc-coverage obligation). See [00-overview.md](00-overview.md) for the
-cross-phase narrative. Consumer-side migration of individual projects is tracked in those projects' own
-repositories (see Phase 7).
+Phases 0-15 are `Done`. Each project binary reads a sibling `<project>.dhall`; host, VM, container,
+and service copies use the same filename rule while the role and capability set live inside the file
+content. The worked demo is the reference consumer: `demo deploy` is one explicit lift sequence whose
+only lifted compute step is the standardized `test all` workflow inside the project container in the
+incus VM (`incus exec <vm> -- docker run --rm <image> test all`). That keeps the kind cluster on the
+VM's Docker and avoids a second deploy representation beside the harness.
+
+Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
+and pushing the multi-GB project image are release/demo operations, not open phase work. See
+[00-overview.md](00-overview.md) for phase responsibilities and [system-components.md](system-components.md)
+for the component inventory.
 
 ## Phases
 
@@ -61,7 +44,7 @@ repositories (see Phase 7).
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
 | 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
-| 7 | [Consumer migration](phase-7-consumer-migration.md) | Done |
+| 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the four-stream extension](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
@@ -78,15 +61,15 @@ repositories (see Phase 7).
 - [00-overview.md](00-overview.md) tells the cross-phase narrative and names the dependency edges.
 - [system-components.md](system-components.md) is the authoritative inventory of host-management
   components.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is the cleanup ledger for the
-  pure-Python surfaces the inversion removes.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is the cleanup ledger for obsolete
+  compatibility surfaces.
 
 ## Validation Policy
 
 This repository does not use `.github/` workflows or GitHub Actions as a validation surface. The
 supported gate is the project's canonical code-check, run on every base and derived image build (see
 [development_plan_standards.md § R](development_plan_standards.md)). The mechanical documentation
-validator (`HostBootstrap.DocValidator`) has **landed** and runs through the canonical code-check
+validator (`HostBootstrap.DocValidator`) runs through the canonical code-check
 (`cabal test`); manual review covers only the editorial tier.
 
 Two validation surfaces gate the plan, and a phase's two halves are validated by different ones:

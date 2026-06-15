@@ -15,9 +15,8 @@
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and
 `HostBootstrap.Substrate` are implemented and unit-tested. Host-tool resolution goes through the
 closed `HostTool` enumeration to absolute paths (the `AbsExe` newtype makes a bare command name
-unrepresentable), and substrate detection has a pure classification core. The pure-Python
-`substrate.py` / `prereqs.py` remain the live implementation until Phase 6 reclaims the residual
-pre-binary subset; see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+unrepresentable), and substrate detection has a pure classification core. The Python bootstrapper keeps
+only the residual pre-binary host minimum checks required before a project binary exists.
 
 ## Phase Objective
 
@@ -77,8 +76,7 @@ None.
 #### Objective
 
 Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootstrap.Substrate`
-(substrate detection), porting the logic currently in `hostbootstrap/prereqs.py` and
-`hostbootstrap/substrate.py` into Haskell.
+(substrate detection).
 
 #### Deliverables
 
@@ -95,9 +93,7 @@ Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootst
 
 #### Remaining Work
 
-None for the Haskell surface. The pure-Python `prereqs.py` / `substrate.py` remain the live
-implementation until phase-6 reclaims the residual fail-fast subset into the thin bootstrapper; see
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+None.
 
 ## Documentation Requirements
 
@@ -111,5 +107,4 @@ implementation until phase-6 reclaims the residual fail-fast subset into the thi
 
 **Cross-references to add:**
 - `system-components.md` marks the `HostBootstrap.HostTool` / `HostConfig` / `HostPrereqs` /
-  `Substrate` rows present once they land; `legacy-tracking-for-deletion.md` keeps the
-  `prereqs.py` / `substrate.py` removal owning-phase aligned.
+  `Substrate` rows present.

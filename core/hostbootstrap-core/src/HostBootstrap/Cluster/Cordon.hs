@@ -4,9 +4,9 @@
 -- | Resource-budget verification and cordoning.
 --
 -- @hostbootstrap@ verifies the host has the spare budget declared in the
--- static-base config's @resources@ and cordons it to the project: on Apple by
--- sizing a dedicated per-project Colima VM, on Linux by applying a @docker
--- update@ cap to the kind control-plane node (see
+-- active project-local config's @resources@ and cordons it to the project: on
+-- Apple by sizing a dedicated per-project Colima VM, on Linux by applying a
+-- @docker update@ cap to the kind control-plane node (see
 -- @development_plan_standards.md § O@). There is **one** canonical quantity
 -- parser ('parseQuantity') feeding every argument builder, so the one declared
 -- budget number is interpreted identically everywhere. The parsing, budget
@@ -68,8 +68,7 @@ data Overflow = Overflow
 -- | Parse a Kubernetes-style quantity to bytes. Accepts binary suffixes
 -- (@Ki@, @Mi@, @Gi@, @Ti@, optionally followed by @B@) and decimal suffixes
 -- (@K@, @M@, @G@, @T@); a bare number is bytes. The one canonical quantity
--- grammar (the old Python @_gib@ mishandled the bare @"8Gi"@ form; this does
--- not). Pure.
+-- grammar. Pure.
 parseQuantity :: T.Text -> Either String Integer
 parseQuantity raw =
   let t = T.strip raw
@@ -110,7 +109,7 @@ multiplier unit = case unit of
     k n = 1024 ^ (n :: Integer)
     d n = 1000 ^ (n :: Integer)
 
--- | Resolve a static-base @resources@ block into a canonical byte budget.
+-- | Resolve a project-local @resources@ block into a canonical byte budget.
 budgetFromResources :: Resources -> Either String ResourceBudget
 budgetFromResources r = do
   mem <- parseQuantity (memory r)
@@ -161,7 +160,7 @@ fitsBudget b pods
     wantMem = foldl' (\acc p -> acc + p.replicas * p.memoryLimit) 0 pods
 
 -- | The complete @colima start@ argv that sizes a per-project VM to the budget
--- (the canonical arg-builder; the Python bootstrapper no longer builds this).
+-- (the canonical arg-builder; the Python bootstrapper does not size VMs).
 -- Memory and disk are rounded up to whole GiB (Colima's unit); CPU is the whole
 -- core count. Storage is cordoned here via @--disk@.
 colimaSizingArgs :: String -> Resources -> Either String [String]

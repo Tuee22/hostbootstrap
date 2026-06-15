@@ -9,8 +9,8 @@
 
 `hostbootstrap` is the reusable host-management layer for the project family
 ([`daemon-substrate`](https://github.com/Tuee22/daemon-substrate),
-[`mcts`](https://github.com/Tuee22/mcts), and the future consumers
-[`infernix`](https://github.com/Tuee22/infernix) and [`jitML`](https://github.com/Tuee22/jitML)).
+[`mcts`](https://github.com/Tuee22/mcts), [`infernix`](https://github.com/Tuee22/infernix), and
+[`jitML`](https://github.com/Tuee22/jitML)).
 It provides a Haskell `hostbootstrap-core` library plus a thin Python bootstrapper. This file is
 canonical for `hostbootstrap`'s own plan; each consuming project keeps its own plan standards.
 
@@ -18,18 +18,15 @@ canonical for `hostbootstrap`'s own plan; each consuming project keeps its own p
 
 ### A. Continuous Execution-Ordered Narrative
 
-The plan reads as one ordered buildout from the current pure-Python CLI to the target
-Haskell-core library plus thin Python bootstrapper consumed by every project binary.
+The plan reads as one ordered, dependency-aware description of the current Haskell-core library plus
+thin Python bootstrapper consumed by project binaries.
 
 - Each phase is written after the previous phase in dependency order.
-- When later implementation lands before an earlier phase's closure obligation, the later phase
-  names the open dependency explicitly instead of pretending the prerequisite is closed.
+- When a later phase depends on an earlier phase's closure obligation, the later phase names that
+  dependency explicitly instead of duplicating the earlier phase's ownership.
 - Phase 0 is always documentation and governance. Its **foundational** deliverables — the metadata
-  standard, this plan tree, and the landed documentation validator — must close before any code-writing
-  phase is marked `Active` or `Done`. Once that foundation has closed, Phase 0 may **reopen** to `Active`
-  for an expanded doc-coverage obligation (e.g. a new architecture contract) without forcing the
-  already-implemented code phases back to `Blocked`; the foundational closure, not Phase 0's momentary
-  status, is what gates them.
+  standard, this plan tree, and the documentation validator — gate every code-writing phase. Follow-on
+  documentation obligations are tracked explicitly without changing the status of unrelated code phases.
 - Newly discovered gaps are handled by adding explicit follow-on work, not by leaving stale
   completion claims in older documents.
 
@@ -70,9 +67,9 @@ Rules:
 
 ### D. Declarative Current-State Language
 
-Plan documents describe the intended supported architecture in present-tense declarative language.
-Cleanup history belongs in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), not
-in phase narrative.
+Plan documents describe the supported architecture in present-tense declarative language. Cleanup
+obligations and obsolete surface names belong in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), not in phase narrative.
 
 ### E. One Canonical Folder Model
 
@@ -172,15 +169,15 @@ Before Phase 0 closes, paths under `documents/` may not exist yet; they still ap
 
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is the authoritative cleanup
 ledger for obsolete Python modules, the shelled `dhall-to-json` path, the three-execution-model
-schema, and any stale compatibility surface. Each item names its location, why it is slated for
-removal, and the owning phase or sprint. When cleanup lands, move the item from pending to
-completed.
+schema, and any stale compatibility surface. `Pending` lists existing cleanup obligations, `Retained
+Current Surfaces` distinguishes intentional current code from cleanup work, and `Removed Surfaces`
+names obsolete surfaces that must stay absent.
 
 ### J. README and Documents Harmony
 
 The plan and the governed `documents/` suite must agree on current-state implementation status.
-The root `README.md` is the finished-shape orientation document and may describe the target shape
-even when not fully implemented, but it must not claim a capability is `Done`.
+The root `README.md` is the finished-shape orientation document. It must not claim a capability is
+implemented unless the plan marks the owning phase `Done`.
 
 - `00-overview.md`, all phase files, and `system-components.md` use the same phase names and
   current-state claims.
@@ -315,7 +312,7 @@ Static quality is a first-class requirement. The Haskell formatter is `ormolu`/`
 or derived, gates on the project's canonical `check-code` — for a derived image, a single in-Dockerfile
 `RUN <project> check-code` stage whose body is project-defined. The standardized test harness's
 `<project> test` report card is the project-level validation gate. The mechanical documentation
-validator (`HostBootstrap.DocValidator`) is **landed** and runs through the code-check. The plan
+validator (`HostBootstrap.DocValidator`) runs through the code-check. The plan
 distinguishes mechanically enforced gates from editor-only guidance.
 
 ### S. Imported Practices and Explicit Non-Adoption

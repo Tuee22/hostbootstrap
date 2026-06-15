@@ -20,14 +20,9 @@
   ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
 
-> **Current status.** The host-native, no-copy-out model is implemented. Python no longer writes any Dhall
-> file after the build; the built binary creates or validates its sibling `<project>.dhall`. Ensuring
-> Docker, building the project container, and the cordon are owned by the execed binary, not the
-> bootstrapper. The original convergence
-> to the host-native model is recorded in
-> [DEVELOPMENT_PLAN Phase 6](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md);
-> the project-local config handoff is recorded in
-> [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
+> **Current status.** The host-native, no-copy-out model is implemented. Python does not write Dhall after
+> the build; the built binary creates or validates its sibling `<project>.dhall`. Ensuring Docker, building
+> the project container, and applying the cordon are owned by the execed binary, not the bootstrapper.
 
 ## Why the binary is built host-native
 

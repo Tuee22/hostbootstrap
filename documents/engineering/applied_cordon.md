@@ -27,22 +27,19 @@ builder calls `parseQuantity`, the one declared budget number is interpreted ide
 spinup and in every generated config.
 
 The Python bootstrapper builds no sizing argv. `colimaSizingArgs project resources` emits the complete
-`colima start --profile <project> --cpu N --memory <GiB> --disk <GiB>` argv, and the Python layer
-consumes that output verbatim. Haskell owns the complete argv; the Python bootstrapper no longer sizes
-any VM. See [build and run model](../architecture/build_and_run_model.md) for where the bootstrapper
-hands sizing to the project binary, and [resource budgeting](resource_budgeting.md) for the budget
-field itself.
+`colima start --profile <project> --cpu N --memory <GiB> --disk <GiB>` argv. Haskell owns the complete
+argv; the Python bootstrapper does not size VMs. See
+[build and run model](../architecture/build_and_run_model.md) for where the project binary owns sizing,
+and [resource budgeting](resource_budgeting.md) for the budget field itself.
 
 ### Why One Parser
 
-- **WRONG**: the Python layer keeps its own quantity helper (the removed `_gib`) and builds the
-  `colima` argv itself. This is wrong because two interpreters of one number diverge — the Python
-  helper mishandled the bare `"8Gi"` form, so the VM the Python layer sized and the budget the Haskell
-  core verified disagreed, and the declared ceiling was not the enforced ceiling.
+- **WRONG**: the Python layer keeps its own quantity helper and builds the `colima` argv itself. This is
+  wrong because two interpreters of one number can diverge, so the VM sizing and the Haskell-verified
+  budget may disagree and the declared ceiling may not be the enforced ceiling.
 - **RIGHT**: one canonical `parseQuantity` decodes every quantity, and one arg-builder family
   (`colimaSizingArgs`, `kindNodeCordonArgs`) emits the complete argv. The Python bootstrapper builds no
-  argv; it consumes the Haskell-emitted output verbatim. The one declared number is the one enforced
-  ceiling.
+  sizing argv. The one declared number is the one enforced ceiling.
 
 ## The Three Rings
 

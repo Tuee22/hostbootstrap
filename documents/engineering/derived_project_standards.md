@@ -35,10 +35,10 @@ core tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-co
 `config render`, `test`). Bootstrap/inspection config surfaces (`config init`, `config path`,
 `config schema`, `config show FILE`, and static `config render`) run without an active local config.
 Config loading/gating surrounds normal commands: they fail fast when `<project>.dhall` is missing or the
-command is not valid for the declared context. The bare `hostbootstrap` binary is the same tree with no project commands, built
-the same way (host-native, like every project binary), not baked into the base image. There is no
-Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount, Dockerfile, resource, and
-deploy settings live in the binary-owned config and generated child configs.
+command is not valid for the declared context. The bare `hostbootstrap` binary is the same tree with no
+project commands, built the same way (host-native, like every project binary), not baked into the base
+image. There is no Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount,
+Dockerfile, resource, and deploy settings live in the binary-owned config and generated child configs.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
 `runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)`, so

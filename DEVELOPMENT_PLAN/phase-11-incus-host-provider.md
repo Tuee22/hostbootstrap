@@ -12,31 +12,19 @@
 
 **Status**: Done
 
-`incus` is **landed** as the host-provider axis. `HostTool` gained the `Incus` constructor (resolved to
-an `AbsExe` like every tool); `HostBootstrap.Ensure.Incus` is the first cross-substrate reconciler
-(`appliesTo = isAppleSilicon || isLinux`, install-and-verify via `brew`/`apt` + `sudo incus admin init
---minimal`, plus linux `incus-admin` membership for the invoking user); `HostBootstrap.HostTarget`
-parameterizes every linux-host operation by `HostTarget = Local | InVM IncusVM` (`runInTarget` dispatches
-one `incus exec`); `HostBootstrap.Incus` carries the VM lifecycle argv
-(`launch`/`exec`/`restart`/name-guarded `delete`) and the pure
-`classifyDockerReadiness`; and `incusSizingArgs` (one canonical parser) cordons the VM at the wall
-(`limits.cpu`/`limits.memory`/`root,size`). It is not a substrate and not a fifth run-model; it is not
-standardized for all workflows — the demo uses it to encapsulate a fresh linux host — but it is
-first-class (see [development_plan_standards.md § U](development_plan_standards.md)). The pure cores, the
-argv builders, and the dispatch are implemented and unit-tested; the live in-VM run is exercised in real
-runs (the [demo](phase-13-hostbootstrap-demo.md)), the same standard the cluster lifecycle (Phase 5)
-follows, so this phase is closed. GPU passthrough (`linux-gpu` inside an incus VM, CUDA/nvkind) and
-apple-silicon nested-virt are documented **future follow-ons**, outside this phase's scope.
+`incus` is the host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
+like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler;
+`HostBootstrap.HostTarget` parameterizes linux-host operations by `HostTarget = Local | InVM IncusVM`;
+`HostBootstrap.Incus` carries the VM lifecycle argv and `classifyDockerReadiness`; and
+`incusSizingArgs` uses the canonical quantity parser to cordon the VM at the wall
+(`limits.cpu`/`limits.memory`/`root,size`). `incus` is not a substrate and not a fifth run-model; it is a
+supported host-provider layer.
 
-**Reopened (Sprint 11.5).** Sprints 11.1–11.4 remain `Done`; the phase is reopened to add the
-**self-reference lift** (`HostBootstrap.Lift`), which generalizes the two-case `HostTarget = Local | InVM`
-(retained as the tool-level lift) to an n-level context stack (`Local | InVM | InContainer`) so a binary
-crosses any boundary by invoking its own subcommand in the nested context (see
-[development_plan_standards.md § U](development_plan_standards.md) and
-[composition_methodology](../documents/architecture/composition_methodology.md)). Sprints 11.1–11.5 are
-closed: the lift primitive and its `LiftSpec` tests are landed and the demo composes it (the `deploy`
-chain and the lifted cluster seams); the live in-container run is exercised in the
-[demo](phase-13-hostbootstrap-demo.md), the same standard the original phase closed under.
+`HostBootstrap.Lift` is the subcommand-level self-reference lift. It generalizes the two-case
+`HostTarget = Local | InVM` tool-level lift to an n-level context stack (`Local`, `InVM`, `InContainer`)
+so a binary crosses any boundary by invoking its own subcommand in the nested context. The pure cores,
+argv builders, dispatch, and lift fold are unit-tested, and the worked demo exercises the in-VM and
+in-container path in real runs. This phase is `Done`.
 
 ## Phase Objective
 
@@ -154,9 +142,9 @@ Cordon the VM to the budget and run the full deployment surface inside it.
 
 #### Remaining Work
 
-None for this sprint's scope (`incusSizingArgs` + the `InVM`-target deployment path are implemented and
-unit-tested; the live in-VM run is exercised in real runs). GPU passthrough (`linux-gpu` inside an incus
-VM, CUDA/nvkind) and apple-silicon nested-virt are documented **future follow-ons**, outside this phase.
+None. `incusSizingArgs` and the `InVM` target path are implemented and unit-tested. GPU passthrough
+(`linux-gpu` inside an incus VM, CUDA/nvkind) and apple-silicon nested virtualization are outside this
+phase.
 
 ### Sprint 11.5: The self-reference lift (`HostBootstrap.Lift`) [Done]
 
@@ -189,9 +177,7 @@ subcommand in the nested context (`incus exec` for a VM, `docker run --rm` for a
 
 #### Remaining Work
 
-None. The lift primitive and its `LiftSpec` tests are landed and the demo composes it; the live
-in-container run is exercised in the [demo](phase-13-hostbootstrap-demo.md), the standard this phase
-closes under.
+None. The lift primitive and its `LiftSpec` tests are implemented, and the demo composes it.
 
 ## Documentation Requirements
 

@@ -20,16 +20,13 @@ predicates and **install-and-verify** reconcile actions — each exposes a pure,
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
 toolkit on linux), unit-tested without invoking the package manager. They are wired into the command
 tree (on this `linux-gpu` host `ensure colima` fails fast while `ensure docker`/`ensure cuda`/`ensure
-incus` install-and-verify). The install-action half of the contract has landed (Sprint 3.3), and
-`ensure incus` — the first reconciler applicable on apple-silicon **and** linux — was added in
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md), so this phase is closed (see
+incus` install-and-verify). `ensure incus` is owned by
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). This phase is `Done` (see
 [development_plan_standards.md § L](development_plan_standards.md)).
 
 The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
 drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
 GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-stream merge.
-
-The substrate-branched **install** actions (Sprint 3.3) and `ensure incus` (Phase 11) have **landed**.
 
 ## Phase Objective
 
@@ -164,4 +161,4 @@ None.
 
 **Cross-references to add:**
 - `system-components.md` keeps the ensure-reconciler table aligned with the implemented subcommands.
-- `legacy-tracking-for-deletion.md` keeps `prereqs.py`'s reconciler-replaced portions on the ledger.
+- `legacy-tracking-for-deletion.md` records obsolete compatibility surfaces.

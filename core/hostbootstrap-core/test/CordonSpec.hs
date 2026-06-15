@@ -85,7 +85,7 @@ sizingCases =
   [ testCase "colima sizing emits the full profiled argv" $
       colimaSizingArgs "demo" demoResources
         @?= Right ["start", "--profile", "demo", "--cpu", "4", "--memory", "8", "--disk", "20"],
-    testCase "colima handles the bare 8Gi form (old Python _gib mishandled it)" $
+    testCase "colima handles the bare 8Gi form" $
       colimaSizingArgs "demo" (Resources {cpu = 2, memory = "8Gi", storage = "20Gi"})
         @?= Right ["start", "--profile", "demo", "--cpu", "2", "--memory", "8", "--disk", "20"],
     testCase "applied Linux cordon targets the control-plane with budget caps" $

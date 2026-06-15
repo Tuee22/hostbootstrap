@@ -39,10 +39,9 @@ only in the repo — otherwise the consumer's container build cannot resolve the
 
 The base-image **flavor** follows the detected substrate, and the **arch** follows the host.
 Substrate detection is the shared concept and lives in `hostbootstrap-core`. The flavor mapping
-itself — the `Flavor` enum and the substrate-to-flavor rule — currently lives only in the Python
-bootstrapper (`base_image.substrate_to_flavor`); core has no `Flavor` type today. Moving flavor
-mapping into `hostbootstrap-core` is the target, not present fact: until then, the Python
-bootstrapper picks the flavor it needs for the build it is about to run.
+itself — the `Flavor` enum and the substrate-to-flavor rule — lives in the Python bootstrapper
+(`base_image.substrate_to_flavor`); core has no `Flavor` type. The Python bootstrapper picks the
+flavor it needs for the build it is about to run.
 
 | detected substrate | base flavor |
 |---|---|
@@ -60,9 +59,8 @@ bootstrapper picks the flavor it needs for the build it is about to run.
 
 There is no force-target override: substrate is detected, never declared (see [schema.md](schema.md)).
 
-The pre-binary Python Dhall reader has been removed. Python derives the project name from the Cabal file
-and does not evaluate Dhall, so Linux/arm64 support no longer depends on a Python-provisioned Dhall
-binary.
+Python derives the project name from the Cabal file and does not evaluate Dhall, so Linux/arm64 support
+does not depend on a Python-provisioned Dhall binary.
 
 ## What ships in the image
 

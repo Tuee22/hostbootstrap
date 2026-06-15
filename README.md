@@ -247,8 +247,7 @@ canonically in
 > **Status — live-validated.** `demo deploy` as the single lift sequence above is implemented and validated
 > on a real host: the literal `demo deploy` apply runs `ensure incus -> vm up -> pristine[#2+#3] -> lifted
 > test all (3/3) -> vm down` clean, with the kind cluster on the **VM's Docker** (poller-confirmed in the
-> VM, none on metal). The earlier metal-host in-container runs were a dev shortcut, superseded by the in-VM
-> lift. See [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md) (Phase 13 Sprint 13.12). The two entry points
+> VM, none on metal). See [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md) (Phase 13 Sprint 13.12). The two entry points
 > below are the parts you run directly.
 
 ### Spin it up
@@ -297,7 +296,7 @@ The demo carries two test layers:
   case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
   `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The harness is the **one**
   representation of this work and the lift target — it invokes `clusterUp` as `HostConfig -> IO ()`
-  "locally", with no `LiftContext` of its own. In the target shape the harness is reached **only** as the
+  "locally", with no `LiftContext` of its own. In the supported shape the harness is reached **only** as the
   single lifted compute step of `demo deploy` (`incus exec <vm> -- docker run --rm <image> test all`), so
   `clusterUp` runs on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
   (`pristine-bootstrap` a live cluster, `e2e-tabs` a Playwright container against the in-cluster
@@ -330,8 +329,8 @@ in the runbook for which case proves which slice of the surface.
 ## Repository Map
 
 This map reflects the implemented shape: the Haskell `hostbootstrap-core` library and the bare-binary
-`app/` alongside the thin Python bootstrapper. The completed migration and future phase work are tracked
-in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
+`app/` alongside the thin Python bootstrapper. Current phase status is tracked in
+[`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md).
 
 ```text
 .

@@ -13,24 +13,17 @@
 
 **Status**: Done
 
-The composition **methodology** is documented and the foundational primitive (the self-reference lift,
-`HostBootstrap.Lift`) is landed in [Phase 11](phase-11-incus-host-provider.md) (Sprint 11.5). This phase
-owns the broader framing: the operation taxonomy, the deploy ≡ business-logic unification, the foundational
-principles, and the L0 role-lifecycle skeleton on which L1 builds the concrete business-logic primitives
-(roles, topologies, policies). Sprint 14.1 (the methodology + cookbook docs and the § U doctrine rewrite)
-is `Done`; Sprint 14.2 (the L0 role-lifecycle skeleton `HostBootstrap.RoleLifecycle`, consumed by the
-demo's F2 role) is `Done` — the operation *interface* is the documented taxonomy, not a Haskell typeclass
-(reconcilers stay `HostConfig -> IO ()`, no threaded context). The concrete bus/store/role primitives are
-**L1 (`daemon-substrate`)** work, out of scope here; this phase ships only the L0 substrate and the
-methodology. The phase reopened to fold in the single-representation doctrine (§ W) — the test workflow
-is a **lifted operation**, not a parallel representation — captured in Sprint 14.3 below, and now realized.
+The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
+11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
+principles, and the L0 role-lifecycle skeleton on which L1 builds concrete business-logic primitives
+(roles, topologies, policies). The operation *interface* is the documented taxonomy, not a Haskell
+typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded lift context.
 
-The **single-representation doctrine** (one operation, one representation; the standardized test harness is
-the one representation, lifted into the VM-container; no parallel deploy chain alongside it — § W) is
-documented in Sprint 14.3 and **realized in the worked instance**: Phase 13 **Sprint 13.12** collapsed the
-demo to the single lift sequence and is **live-validated** (the lifted `test all` brings kind up on the
-VM's Docker, `3/3`, none on metal; the literal `demo deploy` apply ran clean end to end). See
-[phase-13 Sprint 13.12](phase-13-hostbootstrap-demo.md).
+The single-representation doctrine is part of the methodology: one operation has one representation. The
+standardized test harness is the one representation of the test/deploy workflow; consumers lift the whole
+`test all` workflow into the nested context instead of building a second cluster/deploy/e2e chain beside
+it. The worked demo follows this shape with `test all` lifted into the project container in the incus VM.
+This phase is `Done`.
 
 ## Phase Objective
 
@@ -140,19 +133,16 @@ duplicates the harness and double-creates clusters); there is one representation
 
 #### Remaining Work
 
-None. The **worked-instance adoption** landed in Phase 13 **Sprint 13.12**: the demo deploy collapsed to
-the single lift sequence (only lifted compute step `test all` in `inContainer img (inVM vm localContext)`,
-the redundant `Chain.hs` ops removed) and is **live-validated** — the lifted `test all` brings the kind
-cluster up on the **VM's** Docker (`3/3`, poller-confirmed in the VM, **none** on metal), and the literal
-`demo deploy` apply ran clean end to end. See [phase-13 Sprint 13.12](phase-13-hostbootstrap-demo.md).
+None. The worked demo uses the single lift sequence with `test all` as the only lifted compute step in
+`inContainer img (inVM vm localContext)`.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/composition_methodology.md` - the operation algebra, the self-reference lift,
-  and the deploy ≡ business-logic unification (created, Sprint 14.1); **extended (Sprint 14.3)** with the
-  single-representation doctrine — the standardized test harness is the one representation, lifted into the
-  VM-container, with no parallel deploy chain alongside it (cross-references standards § W, § T, § U).
+  and the deploy ≡ business-logic unification, including the single-representation doctrine — the
+  standardized test harness is the one representation, lifted into the VM-container, with no parallel
+  deploy chain alongside it (cross-references standards § W, § T, § U).
 
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the shape cookbook (created).

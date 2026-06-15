@@ -17,7 +17,7 @@
 - Every merge is additive: lower levels are appended/embedded/concatenated, never shadowed or
   redefined. A level only contributes verbs, vocabulary, artifacts, and seams; it never rewrites the
   level below.
-- All four streams are landed in `hostbootstrap-core`: the CLI, vocabulary, and schema-gen streams, and
+- All four streams are implemented in `hostbootstrap-core`: the CLI, vocabulary, and schema-gen streams, and
   the test-harness `Seams` stream (the standardized test harness,
   [Phase 10](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)).
 

@@ -15,17 +15,16 @@
 The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
 `HostBootstrap.*` module surface, the bare `hostbootstrap` executable, and the generic
 `runHostBootstrapCLI` entrypoint over a buildable command tree. `cabal build all` and `cabal test`
-pass, and `hostbootstrap --help` exits 0. The module surface this phase scaffolded was filled in by the
-later phases (2–5, now `Done`) that own each module's host-management logic.
+pass, and `hostbootstrap --help` exits 0. Later phases own the host-management logic exposed through this
+package boundary.
 
 ## Phase Objective
 
 Create `hostbootstrap-core` as a Cabal package: a `library` stanza for the `HostBootstrap.*` module
 surface and a bare `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
 `optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
-`runHostBootstrapCLI progName projectCommands testSuite` over a buildable command tree (scaffolded empty in this
-phase and filled in by Phases 2–5). No host logic lands here; Phase 1 produces a structural shell that
-compiles and runs `--help`.
+`runHostBootstrapCLI progName projectCommands testSuite` over a buildable command tree. Phase 1 owns the
+structural package shell; later phases own the concrete host-management behavior.
 
 ## Sprints
 
@@ -47,7 +46,7 @@ stanza, pinned to the base-image GHC toolchain.
 - `core/cabal.project` pinning the GHC version that matches the base image, plus any required
   `allow-newer` carve-out.
 - `optparse-applicative` and `dhall` declared as library dependencies.
-- `cabal build all` succeeds with placeholder modules.
+- `cabal build all` succeeds with the package and module boundary in place.
 
 #### Validation
 
@@ -78,28 +77,24 @@ onward has named modules to fill in and the command-tree extension contract has 
   command tree.
 - `HostBootstrap.*` module declarations for the surfaces named in
   [system-components.md](system-components.md) (host tools, prereqs, substrate, ensure, config,
-  cluster), scaffolded here and filled in by Phases 2–5.
+  cluster).
 - The bare `hostbootstrap` executable calls `runHostBootstrapCLI "hostbootstrap" []` and prints
   `--help`.
 
 #### Command Surface
 
 - `hostbootstrap --help` lists the (initially empty) core command groups.
-- A project binary will later call `runHostBootstrapCLI "<project>" projectCommands` to extend the
+- A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to extend the
   tree (see [development_plan_standards.md § P](development_plan_standards.md)).
 
 #### Validation
 
-- `cabal build all` succeeds; the library compiles every declared `HostBootstrap.*` module (the net-new
-  § T/§ U/§ V modules — `Dhall.Gen`, `Harness`, `HostTarget`, `Incus`, `Ensure.Incus` — are added in
-  later phases).
-- `hostbootstrap --help` exits 0 and prints the core command tree (scaffolded empty in this phase; the
-  `ensure`/`config`/`cluster`/`test`/`check-code` verbs are added by Phases 2–5).
+- `cabal build all` succeeds; the library compiles every declared `HostBootstrap.*` module.
+- `hostbootstrap --help` exits 0 and prints the core command tree.
 
 #### Remaining Work
 
-None. The placeholder modules (`HostTool`, `HostConfig`, `HostPrereqs`, `Substrate`, `Ensure.*`,
-`Config.Schema`, `Cluster.*`) are filled in by Phases 2–5.
+None.
 
 ## Documentation Requirements
 
@@ -112,4 +107,4 @@ None. The placeholder modules (`HostTool`, `HostConfig`, `HostPrereqs`, `Substra
   dependencies, and the library/executable stanza layout.
 
 **Cross-references to add:**
-- `system-components.md` marks the Phase 1 module rows present once they land.
+- `system-components.md` marks the Phase 1 module rows present.

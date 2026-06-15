@@ -12,19 +12,19 @@
 
 **Status**: Done
 
-The existing binary-generated rich tiers are landed: `HostBootstrap.Config.Vocab` mirrors the reusable
+The binary-generated rich tiers are implemented: `HostBootstrap.Config.Vocab` mirrors the reusable
 `Core.dhall` vocabulary; `HostBootstrap.Dhall.Gen` carries the `ConfigArtifact` registry whose
 `schemaText` is reflected from the decoder type (so it cannot drift) and whose `renderText` is the
 `ToDhall` embedding; `config schema` prints the in-scope schema union (guarded by a committed snapshot)
 and `config render` materializes static registry examples. The hand-written `Core.dhall` `fitsWithin`/`split` are
 evaluation-tested, and a deploy config carries the `fitsWithin` assert so an over-budget render fails to
-type-check. The **four-stream extension contract** is complete: the CLI-tree, Dhall-vocabulary, and
-schema-gen-registry streams are implemented in L0, the fourth (test-harness `Seams`) landed in
-[Phase 10](phase-10-standardized-test-harness.md), and the `hostbootstrap-demo` consumer
+type-check. The **four-stream extension contract** is complete: the CLI-tree, Dhall-vocabulary,
+schema-gen-registry, and test-harness `Seams` streams are implemented, and the `hostbootstrap-demo`
+consumer
 ([Phase 13](phase-13-hostbootstrap-demo.md)) exercises all four end-to-end (`--help` CLI append,
-`web schema` registry concat, `test all` harness). Sprint 8.6 is also closed: `config init` generates
-role-specific project-local configs without an existing context, `config schema` includes the reflected
-`ProjectConfig` type, and pure projection helpers derive narrower child configs from a parent config.
+`web schema` registry concat, `test all` harness). `config init` generates role-specific project-local
+configs without an existing context, `config schema` includes the reflected `ProjectConfig` type, and pure
+projection helpers derive narrower child configs from a parent config. This phase is `Done`.
 
 ## Remaining Work
 

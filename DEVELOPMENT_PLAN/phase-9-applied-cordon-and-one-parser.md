@@ -5,8 +5,8 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md), [phase-8-dhall-generation-and-extension.md](phase-8-dhall-generation-and-extension.md)
 
 > **Purpose**: Make the declared resource budget a genuinely enforced ceiling — wire the applied Linux
-> kind-node cordon, run the spare-capacity and fits-within checks before bring-up, and collapse the dual
-> budget interpreters into one canonical quantity parser shared across Python and Haskell.
+> kind-node cordon, run the spare-capacity and fits-within checks before bring-up, and use one canonical
+> quantity parser for every budget-derived argument builder.
 
 ## Phase Status
 
@@ -15,10 +15,10 @@
 The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
 builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
 `docker update` cap; `incusSizingArgs` emits the VM `limits.cpu`/`limits.memory`/`root,size`), so the
-bare `"8Gi"` form is interpreted identically everywhere (the removed Python `_gib` mishandled it).
+bare `"8Gi"` form is interpreted identically everywhere.
 `clusterUp` runs the `verifyBudget` spare-capacity preflight, then applies the Linux kind-node cordon
 (`docker update --cpus/--memory/--memory-swap <cluster>-control-plane`) after `kind create` and before
-Helm, fail-closed; the print-only `reportCordon` is gone. The pure `fitsBudget` proves a concurrent pod
+Helm, fail-closed. The pure `fitsBudget` proves a concurrent pod
 set fits, and storage is cordoned per substrate (Colima `--disk`, incus `root,size`) while omitted from
 the `docker update` argv. All argv builders and the wiring are implemented and unit-tested (live
 `docker`/`incus` execution is exercised in real runs) (see
@@ -40,22 +40,19 @@ all fed by a single canonical quantity parser and argument builder.
 
 #### Objective
 
-Replace the two divergent budget interpreters with one grammar; the Python layer builds host VM argv only
-from the Haskell-emitted output.
+Use one grammar and one set of Haskell argument builders for every budget-derived cordon.
 
 #### Deliverables
 
-- A single quantity parser/arg-builder in `Cluster.Cordon` emitting the complete `colima`/`incus` argv
-  (including the `--profile` / `limits` the Python copy currently owns).
-- The Python bootstrapper consumes that argv verbatim; the duplicate Python budget logic (`_gib`) is
-  removed.
+- A single quantity parser/arg-builder in `Cluster.Cordon` emitting the complete `colima`, Linux
+  kind-node, and `incus` argv.
+- The Python bootstrapper does not build sizing argv.
 
 #### Validation
 
 - `CordonSpec` asserts the full profiled `colima start` argv and the `docker update` cordon argv from
-  the one `parseQuantity`, including a `"8Gi"` fixture (which the removed Python `_gib` mishandled).
-  `cabal test` passes. The Python layer no longer builds any sizing argv (removed in phase-6,
-  Sprint 6.3), so there is no Python interpreter to dedup against.
+  the one `parseQuantity`, including a `"8Gi"` fixture. `cabal test` passes. The Python layer does not
+  build any sizing argv.
 
 #### Remaining Work
 
@@ -69,14 +66,14 @@ None.
 
 #### Objective
 
-Actually apply the cordon on Linux instead of printing it.
+Apply the cordon on Linux.
 
 #### Deliverables
 
 - `cluster up` runs `docker update --cpus --memory --memory-swap <clusterName>-control-plane` after
   `kind create` and before Helm, fail-closed; `<clusterName>` is the resolved `ClusterPlan` name, so each
   per-case test cluster is cordoned. `--memory-swap == --memory` so an over-budget cluster self-limits.
-- The print-only `reportCordon` path in `Command.hs` is removed.
+- The cordon application is fail-closed.
 
 #### Validation
 
@@ -136,9 +133,9 @@ Enforce the storage dimension where each substrate allows it.
 #### Remaining Work
 
 None. The incus VM storage cordon (`incusSizingArgs` — `limits.cpu`/`limits.memory`/`root,size`, where
-incus cordons storage at the VM wall) landed with
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (Sprint 11.4). The bare-Linux quota'd
-hostPath + image GC is a deployment convention documented in
+incus cordons storage at the VM wall) is owned by
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). The bare-Linux quota'd hostPath +
+image GC is a deployment convention documented in
 [applied_cordon](../documents/engineering/applied_cordon.md), not a `hostbootstrap-core` arg-builder.
 
 ## Documentation Requirements

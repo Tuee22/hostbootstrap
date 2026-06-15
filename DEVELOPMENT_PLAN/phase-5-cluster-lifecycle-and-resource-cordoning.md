@@ -17,29 +17,11 @@
 `HostBootstrap.Cluster.Lifecycle` provides `cluster up` / `down` / `delete` / `status` with the
 never-delete-`.data` invariant (per-case test data is under `./.test_data/<case>/`) and the
 production-versus-test profile distinction. The pure cores (`parseQuantity`, `verifyBudget`,
-`resolvePlan`, `teardown`, `statusReport`) are unit-tested. The applied cordon and the wired
-`verifyBudget` preflight **landed** (delivered in
-[phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md)): `cluster up` runs
-the spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
-before Helm, fail-closed. The incus storage cordon landed in
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). All reopened items are closed (see
-[development_plan_standards.md § O](development_plan_standards.md)).
-
-All reopened items have **landed**: the read-only `cluster status` verb (Sprint 5.3); the applied Linux
-`docker update` kind-node cordon, the wired `verifyBudget` preflight, the pure `fitsBudget`, and the one
-canonical `parseQuantity`/arg-builder (all in
-[phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md); the dual Python
-budget interpreter was already removed in Phase 6); and the incus VM storage cordon (`incusSizingArgs`,
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). Live `docker`/`kind`/`incus`
-execution is exercised in real runs.
-
-**Reopened (Sprint 5.4).** Sprints 5.1–5.3 remain `Done`; the phase is reopened to make `cluster up`
-**fail-closed on its helm/kind steps** — `requireStep` replaces the swallowed `reportStep`, so a failed
-`kind create` / `helm upgrade --install` aborts loudly (matching the already-fail-closed cordon) instead
-of returning a success a lifting parent process would read as ok. The kube tools are container tools
-(§ L), so the lifecycle runs in the in-container path reached by the self-reference lift (phase-11). The
-fail-closed `cluster up` is landed; the live in-container run is exercised in the
-[demo](phase-13-hostbootstrap-demo.md).
+`resolvePlan`, `teardown`, `statusReport`) are unit-tested. `cluster up` runs the spare-capacity preflight
+and applies the Linux `docker update` kind-node cordon after `kind create` and before Helm, fail-closed.
+The incus VM storage cordon is provided by [Phase 11](phase-11-incus-host-provider.md). The kube tools are
+container tools (§ L), so lifecycle operations run in the active context reached by the self-reference
+lift when the workflow is lifted. This phase is `Done`.
 
 ## Phase Objective
 
@@ -69,8 +51,8 @@ to the project.
 - Apple cordoning: **derive** the sizing for a dedicated per-project Colima VM from the budget.
 - Linux cordoning: **derive** kind node resource limits from the budget.
 
-The pure cordon **derives** the args; **applying** them — the Colima/incus VM sizing and the
-`docker update` kind-node cap — is wired in Phase 9 (see this phase's Remaining Work).
+The pure cordon derives the args; applying them happens through the project binary's lifecycle and host
+provider flows.
 
 #### Validation
 
@@ -80,8 +62,7 @@ The pure cordon **derives** the args; **applying** them — the Colima/incus VM 
 
 #### Remaining Work
 
-None for the pure cordon logic. Live host-capacity probing on each substrate is exercised during
-Phase 6 bootstrapping.
+None.
 
 ### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Done]
 
@@ -165,9 +146,9 @@ kube tools are baked into the base image, not host tools — § L).
 
 #### Deliverables
 
-- `requireStep` replaces the swallowed `reportStep` for `kind create cluster` and
-  `helm upgrade --install`: a non-zero exit or an unresolved tool `die`s, so a broken deploy is loud and a
-  lifting parent process sees a non-zero exit. (`reportStep` is retained for best-effort teardown.)
+- `cluster up` uses `requireStep` for `kind create cluster` and `helm upgrade --install`: a non-zero exit
+  or an unresolved tool `die`s, so a broken deploy is loud and a lifting parent process sees a non-zero
+  exit. `reportStep` is retained only for best-effort teardown.
 - The lifecycle is invoked in the project container via the self-reference lift (`HostBootstrap.Lift`,
   phase-11), so `helm`/`kind` resolve on the container `$PATH` rather than the host.
 
@@ -178,8 +159,7 @@ kube tools are baked into the base image, not host tools — § L).
 
 #### Remaining Work
 
-None. The fail-closed `cluster up` is landed; the live in-container run is exercised in the
-[demo](phase-13-hostbootstrap-demo.md).
+None. The live in-container run is exercised in the [demo](phase-13-hostbootstrap-demo.md).
 
 ## Documentation Requirements
 

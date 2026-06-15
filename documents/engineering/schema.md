@@ -4,15 +4,15 @@
 **Supersedes**: static-base `hostbootstrap.dhall`; the three-execution-model / substrate-keyed / lifecycle `hostbootstrap.dhall` schema (Container/HostBinary/HostDaemon, Cluster/NoCluster, Mounts, force-target)
 **Referenced by**: [../README.md](../README.md), [prerequisites.md](prerequisites.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [dhall_topology.md](dhall_topology.md)
 
-> **Purpose**: Define the target project-local Dhall configuration file each project binary reads from
-> beside itself, superseding the old Python-read `hostbootstrap.dhall`.
+> **Purpose**: Define the project-local Dhall configuration file each project binary reads from beside
+> itself.
 
 ## TL;DR
 
 - The runtime configuration file is the executable's sibling `<project>.dhall`, for example
   `./.build/hostbootstrap-demo.dhall` beside `./.build/hostbootstrap-demo`.
-- The old Python-owned `hostbootstrap.dhall` input is removed. The Python bootstrapper derives the project
-  name from the Cabal file name, builds the project binary, and never reads or writes Dhall.
+- The Python bootstrapper derives the project name from the Cabal file name, builds the project binary,
+  and never reads or writes Dhall.
 - The project binary owns the schema, default rendering, validation, downstream projection, and help text
   for the local config.
 - Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
@@ -23,9 +23,9 @@
 
 ## Current Status
 
-The Python bootstrapper no longer reads or writes Dhall. The Haskell schema has a project-local config
-shape, `config init` can generate role-specific defaults, pure projection helpers derive narrower child
-configs, and normal command gating reads the context authority embedded in the sibling `<project>.dhall`.
+The Python bootstrapper does not read or write Dhall. The Haskell schema has a project-local config shape,
+`config init` can generate role-specific defaults, pure projection helpers derive narrower child configs,
+and normal command gating reads the context authority embedded in the sibling `<project>.dhall`.
 See
 [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
 [phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).

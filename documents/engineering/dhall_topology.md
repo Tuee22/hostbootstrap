@@ -4,13 +4,12 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [schema](schema.md), [resource_budgeting](resource_budgeting.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [binary_context_config](../architecture/binary_context_config.md)
 
-> **Purpose**: Define the target Dhall configuration topology: binary-local project config, generated
-> child configs, and binary-generated rich/test artifacts.
+> **Purpose**: Define the Dhall configuration topology: binary-local project config, generated child
+> configs, and binary-generated rich/test artifacts.
 
 ## TL;DR
 
-- The old Python-owned `hostbootstrap.dhall` input is removed. Python derives the project name from the
-  Cabal file and does not read or write Dhall.
+- Python derives the project name from the Cabal file and does not read or write Dhall.
 - The canonical local runtime config is the executable's sibling `<project>.dhall`.
 - Every normal command reads that sibling file before dispatch and fails fast when it is missing or does
   not authorize the command.
@@ -21,7 +20,7 @@
 
 ## Current Status
 
-Python no longer participates in Dhall. The project binary owns default local config generation, pure child
+Python does not participate in Dhall. The project binary owns default local config generation, pure child
 projection helpers, and normal command gating through the sibling `<project>.dhall`. The runtime context
 authority lives inside that local config alongside project-owned settings.
 
