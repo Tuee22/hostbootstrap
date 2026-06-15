@@ -195,7 +195,29 @@ tests =
           cfgResources @?= Schema.Resources 6 "10GiB" "80GiB"
           cfgDeploy @?= Schema.DeployConfig 3
           contextKind cfgContext @?= VMProjectContainer
-          sourceRoot cfgContext @?= "/workspace/demo"
+          sourceRoot cfgContext @?= "/workspace/demo",
+      testCase "config init --if-missing writes when absent and is a no-op when present" $
+        withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
+          let path = dir </> "demo.dhall"
+              initArgs root =
+                [ "config",
+                  "init",
+                  "--output",
+                  path,
+                  "--if-missing",
+                  "--source-root",
+                  root
+                ]
+          -- Absent: --if-missing writes the default config.
+          withArgs (initArgs "/workspace/demo") (runHostBootstrapCLI "demo" [] emptySuite)
+          before <- TIO.readFile path
+          Schema.ProjectConfig _ _ ctx0 _ <- Schema.decodeProjectConfigFile path
+          sourceRoot ctx0 @?= "/workspace/demo"
+          -- Present: --if-missing is a no-op even with a different source-root, so the
+          -- user-owned file is left byte-for-byte untouched.
+          withArgs (initArgs "/somewhere/else") (runHostBootstrapCLI "demo" [] emptySuite)
+          after <- TIO.readFile path
+          after @?= before
     ]
 
 withContextFile :: String -> (FilePath -> IO a) -> IO a

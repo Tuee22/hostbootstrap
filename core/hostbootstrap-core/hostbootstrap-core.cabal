@@ -46,6 +46,7 @@ library
       HostBootstrap.Config.Schema
       HostBootstrap.Config.Vocab
       HostBootstrap.Dhall.Gen
+      HostBootstrap.Dhall.Hoist
       HostBootstrap.Cluster.Lifecycle
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Harness

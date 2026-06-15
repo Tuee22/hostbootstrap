@@ -212,8 +212,11 @@ child `<project>.dhall` used across VM, ad-hoc container, and service/daemon bou
 
 #### Deliverables
 
-- `<project> config init [--role ROLE] [--output FILE]` emits a default config for the selected local
-  role without requiring an existing config.
+- `<project> config init [--role ROLE] [--output FILE] [--force] [--if-missing]` emits a default config for
+  the selected local role without requiring an existing config; `--if-missing` is the idempotent
+  no-op-if-present mode the Python bootstrapper triggers post-build. The rendered Dhall hoists the repeated
+  `ContextKind`/`Capability`/`CommandClass` unions into top-level `let` bindings (`HostBootstrap.Dhall.Hoist`,
+  shared with context rendering) so the output stays compact and standalone.
 - Help and schema output explain the fields users are expected to edit and the fields managed by parent
   projection.
 - Parent-to-child projection helpers project the child-needed values from the active parent config:

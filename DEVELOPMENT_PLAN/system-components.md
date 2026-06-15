@@ -64,6 +64,7 @@ surface; the column records whether the module exists yet.
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
+| `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
 | `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11 | yes | the self-reference compositional lift: `LiftContext` (`Local`/`InVM`/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`); the subcommand-level superset of `HostTarget` |
@@ -102,9 +103,10 @@ with a one-line diagnostic and a non-zero exit. See
 ## Project-local `<project>.dhall` schema
 
 The target user-editable runtime config is a sibling `<project>.dhall`, where `<project>` is derived from
-the Cabal file name (`hostbootstrap-demo.cabal` -> `hostbootstrap-demo`). Python does not read this file.
-The built project binary creates it through `<project> config init`, prints its schema/help, and reads it
-before normal command dispatch.
+the Cabal file name (`hostbootstrap-demo.cabal` -> `hostbootstrap-demo`). Python does not read this file;
+it only triggers the binary's idempotent `config init --if-missing` after the build so a default always
+exists. The built project binary creates the file through `<project> config init`, prints its schema/help,
+and reads it before normal command dispatch.
 
 | Field family | Read by | Purpose |
 |--------------|---------|---------|
@@ -145,13 +147,16 @@ The Python bootstrapper's surface is only what must run before any project binar
 | 1 | assert the fail-fast host minimums |
 | 2 | ensure the host toolchain prerequisites needed to **build** the binary (Homebrew → `ghcup` → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux) |
 | 3 | derive the project name from the Cabal file and build the project binary **host-native** (every substrate) |
-| 4 | exec the binary |
+| 4 | trigger the binary's idempotent `config init --if-missing` so a default `./.build/<project>.dhall` always exists (the binary writes the Dhall) |
+| 5 | exec the binary |
 
-The bootstrapper does **not** read or write Dhall, ensure Docker, build the project container, size a VM,
+The bootstrapper does **not** read or write Dhall itself (step 4 only *triggers* the binary's own config
+surface), ensure Docker, build the project container, size a VM,
 or copy a binary out of a container — those are the project binary's job once it is running (§ M, § N).
 All other host-management logic lives in `hostbootstrap-core`; new host logic defaults to the project
 binary (Haskell), and a Python addition must be justified by the pre-binary bootstrapping constraint. The
-current `hostbootstrap/bootstrap.py` derives the project name from the Cabal file and writes no Dhall.
+current `hostbootstrap/bootstrap.py` derives the project name from the Cabal file, triggers the binary's
+`config init --if-missing`, and writes no Dhall itself.
 
 ## Host-native binary build
 
@@ -213,7 +218,7 @@ See
 | Core verb group | Phase | Source |
 |-----------------|-------|--------|
 | `ensure <tool>` (incl. `incus`) | 3, 11 | the `ensure` reconcilers |
-| `config init` / `config path` | 8, 15 | `HostBootstrap.Config.Schema` + `HostBootstrap.Context` |
+| `config init` (incl. idempotent `--if-missing`) / `config path` | 8, 15 | `HostBootstrap.Config.Schema` + `HostBootstrap.Context` |
 | `context create vm\|container\|service` | 15.3, 15.4 | target child `<project>.dhall` projections |
 | `config show` | 4, 15 | explicit inspection of a local config file |
 | `config schema` / `config render` | 8 | `HostBootstrap.Dhall.Gen` + the `ConfigArtifact` registry |

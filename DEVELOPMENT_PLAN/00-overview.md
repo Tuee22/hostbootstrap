@@ -100,9 +100,10 @@ Warm the `hostbootstrap-core` dependencies into the frozen Cabal store. The base
 `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it could not be copied out to
 every host; instead every project builds its own binary **host-native**, and the project container the
 binary later builds (`FROM` the base image) is accelerated by the warm store. This phase is `Done`: Python
-derives the project name from the Cabal file, builds the host-native binary, and execs it without reading
-or writing Dhall. Docker, the project container, config initialization, VM sizing, and cordoning stay with
-the project binary. The
+derives the project name from the Cabal file, builds the host-native binary, triggers the binary's
+idempotent `config init --if-missing` (so a default `./.build/<project>.dhall` always exists), and execs
+it — without Python itself reading or writing Dhall. Docker, the project container, config writing/decoding,
+VM sizing, and cordoning stay with the project binary. The
 `core.freeze`/`daemon.freeze` layering remains Phase 12 and is still `Done`.
 
 ### Phase 7 — consumer migration

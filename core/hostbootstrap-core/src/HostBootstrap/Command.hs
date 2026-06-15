@@ -160,10 +160,11 @@ configCommand progName =
                 <*> storageOpt
                 <*> optional haReplicasOpt
                 <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
+                <*> switch (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
             )
             (progDesc "Write a default project-local <project>.dhall without requiring an existing config")
         )
-    initAction moutput roleName mroot cfgDockerfile mcpu cfgMemory cfgStorage mha force = do
+    initAction moutput roleName mroot cfgDockerfile mcpu cfgMemory cfgStorage mha force ifMissing = do
       role <- either die pure (parseConfigRole roleName)
       root <- maybe getCurrentDirectory pure mroot
       output <- maybe defaultProjectConfigPath pure moutput
@@ -184,9 +185,12 @@ configCommand progName =
               cfgDeploy
               role
       exists <- doesFileExist output
-      when (exists && not force) $
-        die ("config init: " ++ output ++ " already exists (pass --force to overwrite)")
-      writeProjectConfigFile output cfg
+      if exists && ifMissing && not force
+        then putStrLn ("config init: " ++ output ++ " already present")
+        else do
+          when (exists && not force) $
+            die ("config init: " ++ output ++ " already exists (pass --force to overwrite)")
+          writeProjectConfigFile output cfg
     defaultProjectConfigPath = do
       exe <- getExecutablePath
       pure (takeDirectory exe </> progName ++ ".dhall")

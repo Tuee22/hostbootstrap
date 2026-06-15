@@ -44,7 +44,8 @@ reason. Every substrate now builds the binary **host-native**, for the host it w
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
 requires the sibling `./.build/<project>.dhall`, created by the built binary's config initialization
-surface rather than by Python.
+surface rather than by Python — which the bootstrapper triggers idempotently (`config init --if-missing`)
+right after the build, so the default is normally already present.
 
 ## Why `./.build/` Is Always Present
 

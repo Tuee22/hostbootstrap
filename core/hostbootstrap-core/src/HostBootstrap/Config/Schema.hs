@@ -52,10 +52,11 @@ import qualified Data.Text.IO as TIO
 import Dhall (FromDhall, auto, inputFile)
 import qualified Dhall
 import qualified Dhall.Core
-import Dhall.Marshal.Encode (Encoder (declared, embed))
+import Dhall.Marshal.Encode (Encoder (declared))
 import GHC.Generics (Generic)
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
+import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
@@ -105,9 +106,11 @@ decodeProjectConfigFile = inputFile auto
 writeProjectConfigFile :: FilePath -> ProjectConfig -> IO ()
 writeProjectConfigFile path cfg = TIO.writeFile path (renderProjectConfig cfg <> "\n")
 
--- | Render a project-local config to Dhall source text.
+-- | Render a project-local config to Dhall source text. The repeated vocabulary
+-- unions are hoisted into top-level @let@ bindings (shared with 'Context.renderContext'
+-- via 'Context.vocabUnions') so the generated config stays compact and standalone.
 renderProjectConfig :: ProjectConfig -> Text
-renderProjectConfig cfg = Dhall.Core.pretty (embed (Dhall.inject :: Encoder ProjectConfig) cfg)
+renderProjectConfig = Hoist.renderHoisted Context.vocabUnions
 
 -- | The reflected Dhall type accepted by the project-local config decoder.
 projectConfigSchemaText :: Text
@@ -385,7 +388,7 @@ loadSiblingProjectConfig projectName cls caps = do
     then
       failProjectConfig
         path
-        ("missing " ++ path ++ "; run `" ++ T.unpack projectName ++ " config init --output " ++ path ++ "`")
+        ("missing " ++ path ++ "; run `" ++ T.unpack projectName ++ " config init`")
     else do
       rawResult <- try (TIO.readFile path) :: IO (Either SomeException Text)
       raw <- case rawResult of

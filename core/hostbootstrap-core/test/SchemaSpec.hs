@@ -86,6 +86,16 @@ tests =
       testCase "rendered project-local config decodes back" $ do
         decoded <- decodeProjectConfigText (renderProjectConfig expected)
         decoded @?= expected,
+      testCase "rendered config hoists each vocabulary union into a single let" $ do
+        let rendered = renderProjectConfig (defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator)
+        -- Each union is declared once at the top, not inlined at every use site.
+        T.count "let ContextKind =" rendered @?= 1
+        T.count "let Capability =" rendered @?= 1
+        T.count "let CommandClass =" rendered @?= 1
+        T.count "< HostOrchestrator" rendered @?= 1
+        assertBool
+          "use sites reference the hoisted binding"
+          ("ContextKind.HostOrchestrator" `T.isInfixOf` rendered),
       testCase "a malformed config fails with a typed error" $ do
         result <- try (decodeProjectConfigText "{ dockerfile = \"x\" }") :: IO (Either SomeException ProjectConfig)
         case result of

@@ -18,9 +18,12 @@
   `schemaUnion` of the in-scope registry plus the reflected project-local `ProjectConfig` schema
   (guarded by a committed snapshot); `config render [--artifact NAME]` materializes static example
   renders from that registry.
-- `config init [--role ROLE] [--output FILE]` writes a default project-local `<project>.dhall` without
-  requiring an existing config. Parent projection helpers derive narrower child configs for VM,
-  container, service, daemon, one-shot, and test-harness roles.
+- `config init [--role ROLE] [--output FILE] [--force] [--if-missing]` writes a default project-local
+  `<project>.dhall` without requiring an existing config. By default it refuses to overwrite an existing
+  file; `--force` overwrites, and `--if-missing` is a no-op when the file already exists (the idempotent
+  mode the Python bootstrapper triggers post-build so a default config always exists). Parent projection
+  helpers derive narrower child configs for VM, container, service, daemon, one-shot, and test-harness
+  roles.
 - `deployConfigText` renders a deploy config carrying `assert : C.fitsWithin budget pods === True`, so
   an over-budget deploy fails to type-check. Runtime deploy/child config projection is done by gated
   parent commands from the active `<project>.dhall`; the ungated `config render` command is for static
@@ -72,7 +75,11 @@ It writes the project-local `ProjectConfig` shape: Dockerfile path, editable res
 knobs, and runtime context authority. The role defaults to `host-orchestrator`; other supported roles are
 `vm-orchestrator`, `vm-project-container`, `cluster-service`, `daemon`, `one-shot-job`, and
 `test-harness`. Resource and deploy defaults can be overridden with `--cpu`, `--memory`, `--storage`,
-`--dockerfile`, `--source-root`, and `--ha-replicas`.
+`--dockerfile`, `--source-root`, and `--ha-replicas`. `--if-missing` makes the write idempotent (a no-op
+when the target already exists, so a user-edited config is never clobbered); `--force` overwrites. The
+rendered Dhall hoists the repeated `ContextKind`/`Capability`/`CommandClass` unions into top-level `let`
+bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and standalone — no imports, decodable
+in-process.
 
 The same pure generation code also projects child configs from a parent config. A child projection keeps
 the project settings it needs, carries the parent's resource envelope and deploy knobs, appends the parent

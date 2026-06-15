@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Runtime binary-context configuration.
 --
@@ -41,6 +42,7 @@ module HostBootstrap.Context
     requireContextFile,
     withValidatedContext,
     contextErrorMessage,
+    vocabUnions,
   )
 where
 
@@ -51,9 +53,9 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Dhall (FromDhall, ToDhall, auto, inputFile)
 import qualified Dhall
-import qualified Dhall.Core
-import Dhall.Marshal.Encode (Encoder (embed))
 import GHC.Generics (Generic)
+import HostBootstrap.Dhall.Hoist (NamedUnion)
+import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -364,9 +366,20 @@ readContextFile path = do
         Left err -> Left (ContextDecodeFailed path (show err))
         Right ctx -> Right ctx
 
--- | Render a context to Dhall source text.
+-- | The vocabulary unions hoisted into top-level @let@ bindings when rendering a
+-- context or the project config that embeds it. Shared so both renderers
+-- de-duplicate the same unions (see "HostBootstrap.Dhall.Hoist").
+vocabUnions :: [NamedUnion]
+vocabUnions =
+  [ Hoist.unionOf @ContextKind "ContextKind",
+    Hoist.unionOf @Capability "Capability",
+    Hoist.unionOf @CommandClass "CommandClass"
+  ]
+
+-- | Render a context to Dhall source text, hoisting the repeated vocabulary
+-- unions into top-level @let@ bindings.
 renderContext :: BinaryContext -> Text
-renderContext ctx = Dhall.Core.pretty (embed (Dhall.inject :: Encoder BinaryContext) ctx)
+renderContext = Hoist.renderHoisted vocabUnions
 
 -- | Write a context file.
 writeContextFile :: FilePath -> BinaryContext -> IO ()

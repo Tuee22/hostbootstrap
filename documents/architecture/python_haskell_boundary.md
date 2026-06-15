@@ -43,6 +43,7 @@
 | Derive project name | Python | The project name comes from the Cabal file name, for example `hostbootstrap-demo.cabal` -> `hostbootstrap-demo`; this is the only project metadata Python needs before the binary exists. |
 | Build the project binary **host-native** | Python | A Linux ELF cannot exec on a general host, so the binary is built for the host it runs on into `./.build/<project>`; see [build_and_run_model](build_and_run_model.md). |
 | Create or edit the local `<project>.dhall` | Project binary / user | The built binary exposes config initialization, schema, inspection, and upgrade surfaces; Python does not read or write Dhall. See [binary_context_config](binary_context_config.md). |
+| Ensure a default `<project>.dhall` exists after the build | Python *triggers*, project binary *writes* | Python runs the just-built binary's idempotent `config init --if-missing` so a default `./.build/<project>.dhall` is always present; the binary owns and writes the Dhall, Python never reads or writes it. |
 | Exec the binary | Python | Hands control to the project binary, which owns everything afterward — Docker, the project container, the cordon, and the cluster. |
 | Ensure Docker + build the project container | `hostbootstrap-core` (the execed binary) | **Not** pre-binary work; the binary does it via `ensure docker` and its container build, gating on `check-code`. See [build_and_run_model](build_and_run_model.md). |
 | Host-tool resolution (`HostTool` to absolute paths) | `hostbootstrap-core` | Typed, closed enumeration; no `$PATH` resolution. |
@@ -70,10 +71,14 @@ binary exists*:
    (a quiet, offline `ghcup whereis …` / `ghcup --version`) and installed only when absent, so an
    already-provisioned host makes no network call and prints nothing on the common path.
 4. Build the project binary host-native into `./.build/<project>`.
-5. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
+5. Trigger the binary's idempotent `config init --if-missing` so a default `./.build/<project>.dhall`
+   always exists. The binary writes the Dhall; Python does not. The mode is a no-op when a config (for
+   example a user-edited one) is already present, so it never clobbers existing settings.
+6. Exec the binary, handing control to `hostbootstrap-core`'s command tree extended by the project.
    The binary then ensures Docker, builds the project container, applies the cordon, and drives the
    cluster — everything a built binary can reasonably do. If the requested command needs config and
-   `./.build/<project>.dhall` is absent, the binary fails fast and points the user to `config init`.
+   `./.build/<project>.dhall` is absent (for example it was deleted), the binary still fails fast and
+   points the user to `config init`.
 
 ## The Default-to-Haskell Rule
 

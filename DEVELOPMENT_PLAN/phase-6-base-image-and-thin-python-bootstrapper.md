@@ -170,7 +170,8 @@ None.
 #### Objective
 
 Make Python a pure pre-binary bridge: derive the project name from the Cabal file, build the host-native
-binary, and exec it without decoding or writing Dhall.
+binary, trigger the binary's idempotent `config init --if-missing` so a default `<project>.dhall` always
+exists, and exec it — all without Python itself decoding or writing Dhall (the binary owns that surface).
 
 #### Deliverables
 
@@ -178,7 +179,8 @@ binary, and exec it without decoding or writing Dhall.
   make the project name ambiguous.
 - Removal of Python's static-base Dhall reader from the bootstrap path.
 - Removal of Python's host-context writer; initial config creation is a project-binary command
-  (`<project> config init`) and normal missing-config errors are emitted by the project binary.
+  (`<project> config init`), which Python triggers post-build via the idempotent `--if-missing` mode so a
+  default config always exists, and normal missing-config errors are emitted by the project binary.
 
 #### Validation
 

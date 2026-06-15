@@ -223,8 +223,11 @@ GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the m
 
 The Python bootstrapper does only the **minimum to build the project binary**: derive the project name from
 the Cabal file, assert the fail-fast host minimums and ensure the host toolchain prerequisites needed to
-**build** the binary, then build the project binary **host-native** and exec it. It does not read or write
-Dhall. Those
+**build** the binary, then build the project binary **host-native**, trigger the binary's own idempotent
+`config init --if-missing` so a default sibling `<project>.dhall` always exists, and exec it. Python itself
+does not read or write Dhall — the triggered `config init` surface belongs to the binary, which owns the
+Dhall; the trigger is the one Python step that runs **after** the binary exists and adds no Dhall logic to
+Python, so a usable default config is always present without the user running `config init` by hand. Those
 **fail-fast host minimums are the only hard
 prerequisites in the entire system** — the irreducible host floor the wrapper cannot itself install (OS
 version, passwordless sudo, Xcode CLT, Homebrew as the toolchain root); **every other host dependency the
@@ -246,8 +249,9 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 
 - The Python bootstrapper ensures the host build toolchain (Homebrew → `ghcup` → GHC/Cabal on Apple; the
   equivalent on Linux) — the prerequisites to build the binary — then builds `./.build/<binary>`
-  host-native and execs it. A
-  `./.build/<binary>` is always present on the host.
+  host-native, triggers the binary's idempotent `config init --if-missing` (the binary writes the Dhall,
+  Python does not), and execs it. A
+  `./.build/<binary>` and a default `./.build/<binary>.dhall` are always present on the host.
 - The project **container** is a separate artifact the **project binary** builds (via Docker, `FROM` the
   base image) once it is running — the workload image and the mandatory code-check quality gate. The
   Python layer neither ensures Docker nor builds the container (§ M).
@@ -300,7 +304,9 @@ Configuration is typed Dhall in distinct roles:
 
 The project binary also **emits its own schema** (`config schema`) and default config (`config init`),
 reflected from its decoder types where possible so the schema cannot drift. Python derives the project
-name from the Cabal file and has no Dhall-facing configuration role.
+name from the Cabal file and has no Dhall-facing configuration role beyond triggering the binary's
+idempotent `config init --if-missing` after the build so a default config always exists; it never reads or
+writes Dhall itself.
 
 ### R. Quality Gate Contract
 
@@ -391,10 +397,11 @@ config file:
 <project>.dhall
 ```
 
-Python derives `<project>` from the Cabal file, builds the host-native binary, and execs it. The built
-binary owns `config init` / schema / help surfaces for creating the first host-level
-`./.build/<project>.dhall`. After that, each nested project binary receives or creates its own local config
-before it runs:
+Python derives `<project>` from the Cabal file, builds the host-native binary, triggers its idempotent
+`config init --if-missing`, and execs it. The built binary owns `config init` / schema / help surfaces for
+creating the first host-level `./.build/<project>.dhall`; the post-build trigger merely ensures that
+default is present (the binary writes it, Python does not). After that, each nested project binary receives
+or creates its own local config before it runs:
 
 - a VM bootstrap creates a VM-local context before launching the project binary inside the VM;
 - a project Dockerfile installs the binary, then runs
