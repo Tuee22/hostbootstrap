@@ -46,7 +46,7 @@ enumCases =
       assertBool "docker/colima/cuda/ghc/homebrew/tart resolvable as constructors" $
         all
           (`elem` allHostTools)
-          [Docker, Colima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Tart, Sudo, XcodeSelect]
+          [Docker, Colima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Sysctl, Tart, Sudo, XcodeSelect]
   ]
 
 resolutionCases :: [TestTree]

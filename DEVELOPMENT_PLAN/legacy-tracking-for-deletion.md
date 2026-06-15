@@ -71,6 +71,12 @@ a plan update creates a new current owner for it.
   per-case seams (`assertClusterLive`, `assertWebBundle`, `assertE2E`) behind the standardized harness.
 - **Demo `vm test` subcommand** — the inherited core `test` verb runs the project matrix through the
   `TestSuite` hook.
+- **Non-substrate-aware off-Linux capacity fallbacks in
+  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`** — `readCores`'s unconditional
+  single-core default and `readAvailableMemory`'s unconditional petabyte default when `/proc` was absent
+  are removed. Replacement: substrate-aware `resolveHostCapacity` reads resolved `sysctl`
+  `hw.ncpu` / `hw.memsize` on Apple silicon and retains `/proc/cpuinfo` plus `/proc/meminfo`
+  `MemAvailable` on Linux.
 
 ## Rules
 

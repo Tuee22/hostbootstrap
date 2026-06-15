@@ -100,8 +100,8 @@ statusReport plan live =
 -- un-cordoned node.
 clusterUp :: HostConfig -> ClusterPlan -> Resources -> IO ()
 clusterUp cfg plan resources = do
-  cap <- resolveHostCapacity
-  case preflightBudget resources cap of
+  resolvedCapacity <- resolveHostCapacity cfg
+  case resolvedCapacity >>= preflightBudget resources of
     Left err -> die err
     Right () -> pure ()
   existing <- runTool cfg Kind ["get", "clusters"]

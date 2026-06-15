@@ -63,11 +63,28 @@ locally. If the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast 
 naming the shortfall and exits non-zero rather than over-committing the host.
 
 `verifyBudget` is the pure core of this check; `preflightBudget resources hostCapacity` derives the
-budget and runs `verifyBudget` against resolved spare host capacity. `resolveHostCapacity` reads CPU
-cores and `MemAvailable` from `/proc` on Linux and returns a permissive default off Linux, where the
-Colima VM wall is the real cordon. The preflight runs inside `clusterUp` before any substrate is
-touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
+budget and runs `verifyBudget` against resolved spare host capacity. `resolveHostCapacity` resolves
+capacity **per substrate**, so the preflight is a real gate on every supported host rather than a no-op
+off Linux:
+
+| Substrate | CPU cores | Memory | Storage |
+|-----------|-----------|--------|---------|
+| `apple-silicon` | `sysctl -n hw.ncpu` (logical cores) | `sysctl -n hw.memsize` (total physical RAM) | reported generously |
+| `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` processor count | `/proc/meminfo` `MemAvailable` | reported generously |
+
+Storage is reported generously because the applied storage cordon (Colima `--disk`, incus `root,size`,
+a quota'd hostPath) is the real storage wall, not the preflight. On Apple, `sysctl` is invoked through
+the resolved `HostTool Sysctl`, preserving the host-tool absolute-path rule. The preflight runs inside
+`clusterUp` before any substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
 [cluster_lifecycle](cluster_lifecycle.md) for where it runs.
+
+## Current Status
+
+The substrate-aware spare-capacity resolution above is implemented and validated in
+[phase 9, sprint 9.5](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md). The retired
+off-Linux fallbacks are recorded in
+[legacy-tracking-for-deletion](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). Every ring in
+this document is implemented and validated.
 
 ## Cordoning per Substrate
 

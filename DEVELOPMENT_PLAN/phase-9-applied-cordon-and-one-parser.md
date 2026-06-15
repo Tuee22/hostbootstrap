@@ -20,9 +20,11 @@ bare `"8Gi"` form is interpreted identically everywhere.
 (`docker update --cpus/--memory/--memory-swap <cluster>-control-plane`) after `kind create` and before
 Helm, fail-closed. The pure `fitsBudget` proves a concurrent pod
 set fits, and storage is cordoned per substrate (Colima `--disk`, incus `root,size`) while omitted from
-the `docker update` argv. All argv builders and the wiring are implemented and unit-tested (live
-`docker`/`incus` execution is exercised in real runs) (see
-[development_plan_standards.md § O](development_plan_standards.md)).
+the `docker update` argv. `resolveHostCapacity` is substrate-aware: Apple silicon reads `sysctl`
+`hw.ncpu`/`hw.memsize` through the resolved `HostTool Sysctl`, while Linux reads `/proc/cpuinfo` and
+`/proc/meminfo` `MemAvailable`. All argv builders, the wiring, the pure source mapping, and the live
+Apple `sysctl` read are implemented and validated (live `docker`/`incus` execution is exercised in real
+runs) (see [development_plan_standards.md § O](development_plan_standards.md)).
 
 ## Phase Objective
 
@@ -138,6 +140,38 @@ incus cordons storage at the VM wall) is owned by
 image GC is a deployment convention documented in
 [applied_cordon](../documents/engineering/applied_cordon.md), not a `hostbootstrap-core` arg-builder.
 
+### Sprint 9.5: Substrate-aware spare-capacity resolution [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`, `core/hostbootstrap-core/test/HostToolSpec.hs`
+**Docs to update**: `documents/engineering/resource_budgeting.md`, `documents/engineering/applied_cordon.md`, `system-components.md`
+
+#### Objective
+
+Resolve spare host capacity per substrate so the bring-up preflight is a real gate on Apple silicon and
+Linux.
+
+#### Deliverables
+
+- On `apple-silicon`, `resolveHostCapacity` reads `sysctl -n hw.ncpu` (logical cores) and
+  `sysctl -n hw.memsize` (total physical RAM) through the resolved `HostTool Sysctl`.
+- On `linux-cpu` / `linux-gpu`, the existing `/proc/cpuinfo` processor count and `/proc/meminfo`
+  `MemAvailable` reads are retained.
+- Storage stays reported generously (the applied storage cordon is the real wall).
+- The non-substrate-aware off-Linux fallbacks — `readCores`'s unconditional single-core default and
+  `readAvailableMemory`'s unconditional petabyte default — are removed and recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+#### Validation
+
+- `CordonSpec` covers the pure substrate-to-source mapping (Apple → `sysctl` keys, Linux → `/proc`), a
+  fixture proving an N-core Apple capacity satisfies an N-core budget, and a live Apple-silicon `sysctl`
+  capacity read. `HostToolSpec` covers the `Sysctl` constructor. `cabal test all` passes.
+
+#### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -148,5 +182,6 @@ image GC is a deployment convention documented in
 
 **Cross-references to add:**
 - `system-components.md` updates the `HostBootstrap.Cluster.Cordon` row (`fitsBudget` + applied cordon +
-  one parser).
+  one parser + substrate-aware `resolveHostCapacity`).
 - `README.md` describes the budget-as-ceiling enforcement.
+- `legacy-tracking-for-deletion.md` records the removed off-Linux capacity fallbacks.

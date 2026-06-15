@@ -68,10 +68,12 @@ Two pure functions gate bring-up before any substrate is touched:
 - `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` proves the concurrent pod
   set fits the budget.
 
-`resolveHostCapacity :: IO HostCapacity` reads CPU cores and `MemAvailable` from `/proc` on Linux. Off
-Linux it returns a permissive default, because there the per-project Colima VM wall is the real cordon.
-The IO surface in `clusterUp` resolves capacity and runs `preflightBudget` as a fail-fast preflight;
-the pure cores are unit-tested. See [cluster lifecycle](cluster_lifecycle.md).
+`resolveHostCapacity cfg` resolves spare capacity **per substrate**: on `apple-silicon` it reads
+`hw.ncpu` and `hw.memsize` via the resolved `HostTool Sysctl`; on `linux-cpu` / `linux-gpu` it reads the
+`/proc/cpuinfo` processor count and `/proc/meminfo` `MemAvailable`. Storage is reported generously (the
+applied storage cordon is the real wall). The IO surface in `clusterUp` resolves capacity and runs
+`preflightBudget` as a fail-fast preflight; the pure source mapping and live Apple `sysctl` read are
+unit-tested. See [cluster lifecycle](cluster_lifecycle.md).
 
 ### Runtime Ring
 
@@ -100,6 +102,14 @@ Each substrate cordons storage where it can:
 | Bare Linux | A quota'd hostPath plus image garbage collection |
 
 The incus builder is a later phase and is named here in prose only.
+
+## Current Status
+
+The per-substrate `resolveHostCapacity` described in the bring-up ring is implemented and validated in
+[phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md) (sprint 9.5). The retired
+off-Linux fallbacks are recorded in
+[legacy-tracking-for-deletion](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The one canonical
+parser, all three rings, and the per-substrate storage cordon are implemented and validated.
 
 ## See Also
 

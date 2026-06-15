@@ -90,7 +90,9 @@ embed, schema-registry concat, and harness seams. It is `Done`.
 
 Phase 9 owns the enforced budget ceiling: one canonical `parseQuantity`, shared argument builders,
 `verifyBudget` and `fitsBudget`, and the Linux `docker update` kind-node cordon applied by `cluster up`
-after `kind create` and before Helm. It is `Done`; the incus VM storage cordon is part of Phase 11.
+after `kind create` and before Helm. `resolveHostCapacity` is substrate-aware: Apple silicon reads
+`sysctl` `hw.ncpu`/`hw.memsize` through the resolved `HostTool Sysctl`, while Linux reads `/proc`.
+It is `Done`; the incus VM storage cordon is part of Phase 11.
 
 ### Phase 10 — Standardized test harness and run-models
 

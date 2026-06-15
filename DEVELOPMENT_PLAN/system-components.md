@@ -42,7 +42,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/service constructors, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
-| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, and the applied `docker update` kind-node cordon |
+| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware spare-capacity resolution — resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux), and the applied `docker update` kind-node cordon |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
@@ -63,6 +63,8 @@ surface; the column records whether the module exists in this repository.
 External tools resolve through a closed `HostTool` enumeration to absolute paths
 (`HostBootstrap.HostTool`, Phase 2). No library or project code calls `proc "<bare-command-name>"`
 that resolves through `$PATH`; every invocation reads an absolute path from typed host configuration.
+`Sysctl` is part of this closed enum for Apple-silicon host-capacity reads; it is a host tool, not an
+`ensure` reconciler.
 See [development_plan_standards.md § K](development_plan_standards.md).
 
 ## Ensure reconcilers and host applicability
@@ -160,7 +162,9 @@ Apple Docker workloads run behind the dedicated per-project Colima VM (`ensure d
 Incus host-provider workflows use `incusSizingArgs` at the VM wall; on Linux, `cluster up` applies kind
 node resource limits. The Python bootstrapper does not cordon. `cluster up` runs the `verifyBudget`
 spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
-before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The cluster lifecycle
+before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
+spare host capacity per substrate (resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on
+Linux). The cluster lifecycle
 never deletes host `.data`. The production-vs-test cluster profile distinction selects fixed names /
 `.data` paths for production and per-case isolated paths for the test profile. See
 `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).

@@ -32,6 +32,7 @@ data HostTool
   | Helm
   | Kind
   | NvidiaSmi
+  | Sysctl
   | Tart
   | Sudo
   | XcodeSelect
@@ -54,6 +55,7 @@ toolCommandName Kubectl = "kubectl"
 toolCommandName Helm = "helm"
 toolCommandName Kind = "kind"
 toolCommandName NvidiaSmi = "nvidia-smi"
+toolCommandName Sysctl = "sysctl"
 toolCommandName Tart = "tart"
 toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"

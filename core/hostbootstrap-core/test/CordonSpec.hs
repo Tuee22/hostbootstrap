@@ -3,9 +3,15 @@
 module CordonSpec (tests) where
 
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as Map
 import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Config.Schema (Resources (..))
 import qualified HostBootstrap.Config.Vocab as V
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (Sysctl), mkAbsExe)
+import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import System.Directory (findExecutable)
+import qualified System.Info as Info
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -25,6 +31,7 @@ tests =
     [ testGroup "parseQuantity" quantityCases,
       testGroup "budget" budgetCases,
       testGroup "verifyBudget" verifyCases,
+      testGroup "host capacity source" capacitySourceCases,
       testGroup "fitsBudget" fitsCases,
       testGroup "sizing + applied cordon" sizingCases
     ]
@@ -63,6 +70,45 @@ verifyCases =
   ]
   where
     budget = ResourceBudget 4 (8 * gib) (20 * gib)
+
+capacitySourceCases :: [TestTree]
+capacitySourceCases =
+  [ testCase "apple-silicon reads CPU and memory from sysctl" $
+      capacityReadPlan (Substrate AppleSilicon Arm64)
+        @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize"),
+    testCase "linux-cpu reads CPU and memory from procfs" $
+      capacityReadPlan (Substrate LinuxCpu Amd64)
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
+    testCase "linux-gpu reads CPU and memory from procfs" $
+      capacityReadPlan (Substrate LinuxGpu Amd64)
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
+    testCase "apple sysctl core count can satisfy a matching N-core budget" $
+      preflightBudget
+        (Resources {cpu = 10, memory = "8GiB", storage = "20GiB"})
+        (HostCapacity 10 (16 * gib) petabyte)
+        @?= Right (),
+    testCase "live apple-silicon sysctl read resolves positive capacity" $ do
+      if Info.os == "darwin" && Info.arch `elem` ["aarch64", "arm64"]
+        then do
+          sysctl <- findExecutable "sysctl"
+          case sysctl >>= either (const Nothing) Just . mkAbsExe of
+            Nothing -> assertBool "expected sysctl to resolve to an absolute path" False
+            Just exe -> do
+              result <-
+                resolveHostCapacity
+                  HostConfig
+                    { hcSubstrate = Substrate AppleSilicon Arm64,
+                      hcToolPaths = Map.singleton Sysctl exe
+                    }
+              case result of
+                Right capacity ->
+                  assertBool "expected positive CPU and memory capacity" $
+                    spareCpu capacity > 0 && spareMemoryBytes capacity > 0
+                Left err -> assertBool ("expected sysctl capacity read to succeed, got: " ++ err) False
+        else pure ()
+  ]
+  where
+    petabyte = 1024 ^ (5 :: Integer)
 
 fitsCases :: [TestTree]
 fitsCases =

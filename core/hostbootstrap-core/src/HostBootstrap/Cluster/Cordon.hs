@@ -16,6 +16,9 @@
 module HostBootstrap.Cluster.Cordon
   ( ResourceBudget (..),
     HostCapacity (..),
+    CapacityReadSource (..),
+    CapacityReadPlan (..),
+    capacityReadPlan,
     Overflow (..),
     parseQuantity,
     budgetFromResources,
@@ -30,14 +33,20 @@ module HostBootstrap.Cluster.Cordon
   )
 where
 
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Data.Char (isDigit)
+import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import HostBootstrap.Config.Schema (Resources (..))
 import qualified HostBootstrap.Config.Vocab as Vocab
+import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
+import HostBootstrap.HostTool (HostTool (Sysctl), absExePath)
+import HostBootstrap.Substrate (Substrate, SubstrateName (..), renderSubstrateName, substrateName)
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
+import System.Exit (ExitCode (..))
+import System.Process (readProcessWithExitCode)
 
 -- | A resolved resource budget in canonical units: whole CPU cores, and memory
 -- / storage in bytes.
@@ -53,6 +62,21 @@ data HostCapacity = HostCapacity
   { spareCpu :: Natural,
     spareMemoryBytes :: Integer,
     spareStorageBytes :: Integer
+  }
+  deriving (Eq, Show)
+
+-- | The concrete source used to read a capacity dimension.
+data CapacityReadSource
+  = ProcCpuinfo
+  | ProcMemAvailable
+  | SysctlKey String
+  deriving (Eq, Show)
+
+-- | The substrate-specific host-capacity read plan. Pure so the source mapping
+-- stays unit-tested without executing host tools.
+data CapacityReadPlan = CapacityReadPlan
+  { cpuCapacitySource :: CapacityReadSource,
+    memoryCapacitySource :: CapacityReadSource
   }
   deriving (Eq, Show)
 
@@ -211,58 +235,117 @@ incusSizingArgs r = do
       "root,size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GiB"
     ]
 
--- | Resolve spare host capacity for the preflight: CPU cores and available
--- memory from @/proc@ on Linux; a permissive default when @/proc@ is absent
--- (e.g. macOS, where the Colima VM wall is the real cordon). Storage is reported
--- generously so it does not false-fail the preflight — the applied storage
--- cordon (Colima @--disk@ / incus @root,size@ / hostPath quota) is the real
--- storage wall. Exercised live during bring-up.
-resolveHostCapacity :: IO HostCapacity
-resolveHostCapacity = do
-  cores <- readCores
-  mem <- readAvailableMemory
-  pure (HostCapacity cores mem (petabyte))
+-- | Select the host-capacity read sources for a detected substrate.
+capacityReadPlan :: Substrate -> CapacityReadPlan
+capacityReadPlan sub = case substrateName sub of
+  AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize")
+  LinuxCpu -> linuxReadPlan
+  LinuxGpu -> linuxReadPlan
   where
-    petabyte = 1024 ^ (5 :: Integer)
+    linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable
 
--- | Count CPU cores from @/proc/cpuinfo@; default to 1 if unreadable.
-readCores :: IO Natural
-readCores = do
+-- | Resolve spare host capacity for the preflight. CPU and memory come from the
+-- substrate-specific sources selected by 'capacityReadPlan': @sysctl@ on
+-- apple-silicon and @/proc@ on linux. Storage is reported generously so it does
+-- not false-fail the preflight — the applied storage cordon (Colima @--disk@ /
+-- incus @root,size@ / hostPath quota) is the real storage wall. Exercised live
+-- during bring-up.
+resolveHostCapacity :: HostConfig -> IO (Either String HostCapacity)
+resolveHostCapacity cfg = do
+  let plan = capacityReadPlan (hcSubstrate cfg)
+  cores <- readCores cfg (cpuCapacitySource plan)
+  mem <- readAvailableMemory cfg (memoryCapacitySource plan)
+  pure $ do
+    c <- cores
+    m <- mem
+    pure (HostCapacity c m petabyte)
+
+petabyte :: Integer
+petabyte = 1024 ^ (5 :: Integer)
+
+-- | Count CPU cores from the substrate-selected source.
+readCores :: HostConfig -> CapacityReadSource -> IO (Either String Natural)
+readCores _ ProcCpuinfo = do
   exists <- doesFileExist "/proc/cpuinfo"
   if not exists
-    then pure 1
+    then pure (Left "host capacity: /proc/cpuinfo is not available")
     else do
       result <- try (readFile "/proc/cpuinfo") :: IO (Either SomeException String)
       pure $ case result of
         Right contents ->
-          let n = length (filter ("processor" `isPrefixOf'`) (lines contents))
-           in if n > 0 then fromIntegral n else 1
-        Left _ -> 1
+          let n = length (filter ("processor" `isPrefixOf`) (lines contents))
+           in if n > 0
+                then Right (fromIntegral n)
+                else Left "host capacity: no processors found in /proc/cpuinfo"
+        Left e -> Left ("host capacity: failed to read /proc/cpuinfo: " ++ displayException e)
+readCores cfg (SysctlKey key) = fmap (fmap fromInteger) (readSysctlPositiveInteger cfg key)
+readCores _ source =
+  pure (Left ("host capacity: unsupported CPU source " ++ show source))
 
--- | Read @MemAvailable@ (kB) from @/proc/meminfo@ as bytes; default generously
--- if unreadable so memory does not false-fail off-Linux.
-readAvailableMemory :: IO Integer
-readAvailableMemory = do
+-- | Read available memory from the substrate-selected source, in bytes.
+readAvailableMemory :: HostConfig -> CapacityReadSource -> IO (Either String Integer)
+readAvailableMemory _ ProcMemAvailable = do
   exists <- doesFileExist "/proc/meminfo"
   if not exists
-    then pure (1024 ^ (5 :: Integer))
+    then pure (Left "host capacity: /proc/meminfo is not available")
     else do
       result <- try (readFile "/proc/meminfo") :: IO (Either SomeException String)
       pure $ case result of
         Right contents -> case findMemAvailable (lines contents) of
-          Just kb -> kb * 1024
-          Nothing -> 1024 ^ (5 :: Integer)
-        Left _ -> 1024 ^ (5 :: Integer)
+          Just kb -> Right (kb * 1024)
+          Nothing -> Left "host capacity: MemAvailable not found in /proc/meminfo"
+        Left e -> Left ("host capacity: failed to read /proc/meminfo: " ++ displayException e)
+readAvailableMemory cfg (SysctlKey key) = readSysctlPositiveInteger cfg key
+readAvailableMemory _ source =
+  pure (Left ("host capacity: unsupported memory source " ++ show source))
+
+readSysctlPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
+readSysctlPositiveInteger cfg key = do
+  value <- readSysctl cfg key
+  pure $ do
+    raw <- value
+    n <- parsePositiveInteger ("sysctl " ++ key) raw
+    if n > 0
+      then Right n
+      else Left ("host capacity: sysctl " ++ key ++ " returned non-positive value " ++ show n)
+
+readSysctl :: HostConfig -> String -> IO (Either String String)
+readSysctl cfg key = case resolveMaybe cfg Sysctl of
+  Nothing ->
+    pure $
+      Left
+        ( "host capacity: sysctl is not resolved for "
+            ++ renderSubstrateName (substrateName (hcSubstrate cfg))
+        )
+  Just exe -> do
+    result <-
+      try (readProcessWithExitCode (absExePath exe) ["-n", key] "") ::
+        IO (Either SomeException (ExitCode, String, String))
+    pure $ case result of
+      Right (ExitSuccess, out, _) -> Right (T.unpack (T.strip (T.pack out)))
+      Right (ExitFailure n, _, err) ->
+        Left
+          ( "host capacity: sysctl "
+              ++ key
+              ++ " failed (exit "
+              ++ show n
+              ++ "): "
+              ++ T.unpack (T.strip (T.pack err))
+          )
+      Left e ->
+        Left ("host capacity: failed to run sysctl " ++ key ++ ": " ++ displayException e)
+
+parsePositiveInteger :: String -> String -> Either String Integer
+parsePositiveInteger label raw = case reads raw of
+  [(n, "")] -> Right n
+  _ -> Left ("host capacity: " ++ label ++ " returned non-integer value " ++ show raw)
 
 findMemAvailable :: [String] -> Maybe Integer
-findMemAvailable ls = case [w | l <- ls, "MemAvailable:" `isPrefixOf'` l, w <- take 1 (drop 1 (words l))] of
+findMemAvailable ls = case [w | l <- ls, "MemAvailable:" `isPrefixOf` l, w <- take 1 (drop 1 (words l))] of
   (kb : _) -> case reads kb of
     [(n, "")] -> Just n
     _ -> Nothing
   [] -> Nothing
-
-isPrefixOf' :: String -> String -> Bool
-isPrefixOf' p s = take (length p) s == p
 
 -- | Bytes to whole gibibytes, rounded up.
 gibibytes :: Integer -> Integer

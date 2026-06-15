@@ -141,7 +141,9 @@ context fields carrying the role and command authority:
 ```
 
 The project value is also the command name. The `resources` budget is the host-level ceiling that the
-project binary projects into child configs and enforces through cordons. See
+project binary projects into child configs and enforces through cordons. Before bring-up the binary
+verifies that budget against spare host capacity resolved per substrate — resolved `sysctl` on Apple
+silicon, `/proc` on Linux. See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
