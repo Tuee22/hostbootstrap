@@ -67,8 +67,8 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 
 #### Remaining Work
 
-None on the `hostbootstrap` side. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in
-those repositories' own plans. The worked-consumer evidence is the `demo/` binary.
+None. Consumer-side wiring (`daemon-substrate`, `mcts`) is tracked in those repositories' own plans.
+The worked-consumer evidence is the `demo/` binary.
 
 ### Sprint 7.2: L2 consumer adoption outline [Done]
 
@@ -93,7 +93,7 @@ Record the L2 consumer adoption contract without adding `hostbootstrap`-side imp
 
 #### Remaining Work
 
-None on the `hostbootstrap` side. L2 adoption details are consumer-repository work.
+None. L2 adoption details are consumer-repository work.
 
 ### Sprint 7.3: Three-level hierarchy and the two integration modes [Done]
 

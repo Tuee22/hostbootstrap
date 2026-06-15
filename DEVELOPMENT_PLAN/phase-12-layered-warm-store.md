@@ -131,7 +131,7 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 
 #### Remaining Work
 
-None — `purescript-bridge` is in the `core.freeze` manifest.
+None. `purescript-bridge` is in the `core.freeze` manifest.
 
 ## Documentation Requirements
 

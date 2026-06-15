@@ -18,6 +18,8 @@
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - A missing *minimum* aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
   (A reconciler's only fail-fast is a wrong-host misuse, never mere absence.)
+- Bootstrapper freshness is not a host minimum. Normal commands do not check whether the pipx-installed
+  wrapper is at the latest commit; self-update is explicit and documented in [self_update.md](self_update.md).
 
 ## Why The Split
 
@@ -71,6 +73,13 @@ host (a misuse), never on mere absence:
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
 predicate and reconcile action.
+
+## Bootstrapper Freshness Is Not A Minimum
+
+The pipx-installed Python wrapper may be updated explicitly, but being behind the default branch is not
+an irreducible host floor. `doctor`, `build`, `run`, and `base` must not contact GitHub to discover
+freshness, must not mutate the pipx installation, and must not fail because a newer commit exists.
+See [self_update.md](self_update.md).
 
 ## Typed Checks In hostbootstrap-core
 

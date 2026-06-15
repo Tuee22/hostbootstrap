@@ -53,6 +53,16 @@ a plan update creates a new current owner for it.
   minimums, ensures the host build toolchain, builds the project binary host-native, initializes config
   if missing, and execs the binary. Docker ensure, container builds, VM sizing, and cluster operations
   belong to the project binary.
+- **Legacy pipx `#egg=hostbootstrap` install/update specs** — downstream install and update guidance
+  uses the direct VCS requirement form
+  `hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main`. Reintroducing `#egg`
+  fragments is a regression unless a future packaging plan makes them necessary again.
+- **`pipx upgrade hostbootstrap` as the canonical update path** — the project currently has no
+  versioned Python release channel, so self-update is a forced pipx reinstall from the canonical VCS
+  source, not a version-based upgrade.
+- **Automatic latest-version gating in normal Python commands** — `doctor`, `build`, `run`, and `base`
+  do not auto-update, auto-check GitHub freshness, or fail merely because a newer wrapper commit exists.
+  The update path is explicit.
 - **Duplicate Python budget interpretation** (`_gib` and Python-side Colima sizing) — the canonical
   quantity parser and VM/container arg builders live in `HostBootstrap.Cluster.Cordon`.
 - **`hostbootstrap/models/*`** (`container.py`, `host_binary.py`, `host_daemon.py`, `__init__.py`) —

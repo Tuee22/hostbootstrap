@@ -67,8 +67,8 @@ Export the reusable Dhall vocabulary every project composes from, plus the budge
 
 #### Remaining Work
 
-The `Daemon.dhall` and `App.dhall` vocabulary layers are downstream (consumer repositories), not in
-scope here.
+None. The `Daemon.dhall` and `App.dhall` vocabulary layers are downstream consumer-repository work, not
+`hostbootstrap` phase work.
 
 ### Sprint 8.2: `HostBootstrap.Dhall.Gen` and the `ConfigArtifact` registry [Done]
 

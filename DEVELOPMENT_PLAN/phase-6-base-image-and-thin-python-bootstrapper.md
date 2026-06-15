@@ -14,13 +14,17 @@
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native**. The project container the binary builds later is
-accelerated by the warm Cabal store. The Python CLI exposes only the `doctor` / `build` / `run` / `base`
-surface, and `bootstrap.py` follows the thin pre-binary boundary (§ M, § N): derive the project from the
+accelerated by the warm Cabal store. The Python CLI exposes `doctor` / `build` / `run` / `update` /
+`base`, and `bootstrap.py` follows the thin pre-binary boundary (§ M, § N): derive the project from the
 single Cabal file, assert host minimums, ensure the host build toolchain, build the binary host-native on
 every substrate, trigger the binary's idempotent `config init --if-missing`, and exec. Docker, the
 project-container build, VM sizing, cordoning, and Dhall read/write are project-binary responsibilities.
 The `core.freeze` / `daemon.freeze` layering is owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
+
+Sprint 6.5 adds the explicit `hostbootstrap update` command that reinstalls the pipx-managed Python
+bootstrapper from the canonical VCS source. That command is not automatic and does not become a
+latest-version gate for `doctor`, `build`, `run`, or `base`.
 
 ## Remaining Work
 
@@ -37,6 +41,9 @@ project name from the Cabal file, assert the fail-fast host minimums, ensure the
 prerequisites to **build** the binary, build the project binary host-native, and exec it. Ensuring Docker,
 building the project container, initializing/editing Dhall config, and cordoning are left to the project
 binary, once it is running.
+
+The Python layer also owns the bootstrapper's own explicit pipx self-update command. That command updates
+the wrapper itself, not any project resource, and therefore stays outside the Haskell `ensure` suite.
 
 ## Sprints
 
@@ -178,6 +185,50 @@ hostbootstrap.test_all -q` passes with 113 tests. The tests cover Cabal-file pro
 zero/multiple-Cabal diagnostics, host-native build/exec argv, and the absence of Python-written Dhall
 artifacts.
 
+### Sprint 6.5: Explicit pipx self-update [Done]
+
+**Status**: Done
+**Implementation**: `hostbootstrap/cli.py`, `hostbootstrap/self_update.py`,
+`tests/test_cli.py`, `tests/test_self_update.py`
+**Docs to update**: `documents/engineering/self_update.md`,
+`documents/architecture/python_haskell_boundary.md`, `documents/architecture/build_and_run_model.md`,
+`documents/engineering/prerequisites.md`, `documents/languages/python.md`, `README.md`,
+`system-components.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Add an explicit `hostbootstrap update` command for the pipx-installed Python bootstrapper without
+turning wrapper freshness into a hidden precondition for normal commands.
+
+#### Deliverables
+
+- `hostbootstrap update` runs a forced pipx reinstall from the canonical direct VCS requirement:
+  `hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main`.
+- The command is Python-owned because it replaces the pipx-installed wrapper itself; it is not a
+  Haskell `ensure` reconciler and contains no Docker, Dhall, VM, cluster, resource, or cordon logic.
+- Optional operator controls may include `--ref`, `--spec`, and explicit `--check`.
+- `--check`, if implemented, reads installed direct URL metadata and compares it to the requested remote
+  ref only when the user invokes the check. Non-VCS/local installs report unknown freshness cleanly.
+- `doctor`, `build`, `run`, `base build`, and `base build-and-push` do not self-update, do not check
+  GitHub freshness, and do not fail merely because a newer commit exists.
+
+#### Validation
+
+- Unit tests cover the generated pipx argv without mutating the user's pipx environment.
+- Failure tests cover missing `pipx`, failed subprocesses, and local/non-VCS installs for freshness
+  checks.
+- CLI smoke tests prove `hostbootstrap --help` lists `update` after implementation and still lists only
+  the intended thin Python surface.
+- `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+  pass.
+
+#### Remaining Work
+
+None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetry run python -m
+hostbootstrap.test_all -q` passes with 139 tests. The tests cover generated pipx argv, Click wiring,
+subprocess failures, direct URL metadata parsing, unknown local/non-VCS freshness, and read-only remote
+commit comparison seams.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -189,6 +240,10 @@ artifacts.
 **Engineering docs to create/update:**
 - `documents/engineering/base_image.md` - the warm store and the no-baked-binary rationale.
 - `documents/engineering/warm_store.md` - the warmed `hostbootstrap-core` deps.
+- `documents/engineering/self_update.md` - the explicit pipx self-update doctrine and no hidden
+  latest-version gate.
+- `documents/engineering/prerequisites.md` - wrapper freshness is not a host minimum.
+- `documents/languages/python.md` - pipx install/update command forms.
 
 **Cross-references to add:**
 - `system-components.md` updates the base-image and thin-bootstrapper sections.

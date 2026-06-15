@@ -36,6 +36,9 @@ the orientation layer and points at those canonical homes rather than duplicatin
   the cluster tooling, …); the binary, not the bootstrapper, owns Docker, the project container, the
   cordon, the VM, the cluster, the webservice, and teardown. The ownership boundary is described in
   [`documents/architecture/python_haskell_boundary.md`](documents/architecture/python_haskell_boundary.md).
+  The self-update command is the bootstrapper's own pipx distribution surface; it is explicit, never
+  automatic, and documented in
+  [`documents/engineering/self_update.md`](documents/engineering/self_update.md).
 
 `hostbootstrap-core` composes host management as **operations** — `ensure` reconcilers, cluster/deploy
 steps, and the **self-reference lift** that crosses an execution-context boundary by re-invoking the
@@ -59,7 +62,8 @@ external stores). See
 > The host-native build half is implemented: `hostbootstrap/bootstrap.py` derives the project name from
 > the Cabal file, asserts minimums, ensures the host build toolchain, builds the binary host-native on
 > every substrate, and execs, with no Dhall read/write, Docker-ensure, container build, VM sizing, or
-> copy-out.
+> copy-out. The explicit `hostbootstrap update` command is implemented as the pipx self-update surface
+> and is never run automatically by normal commands.
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -159,8 +163,12 @@ The Python bootstrapper (installed with `pipx install …`):
 | `hostbootstrap doctor` | Detect the host and assert the fail-fast host minimums for the detected substrate |
 | `hostbootstrap build` | Run the bootstrap — build the project binary host-native into `./.build/`; no exec |
 | `hostbootstrap run [args...]` | Build idempotently, then exec the project binary with `args` |
+| `hostbootstrap update` | Explicitly update the pipx-installed Python bootstrapper |
 | `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push |
 | `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s) |
+
+Self-update is never run automatically by `doctor`, `build`, `run`, or `base`, and those commands must
+not fail just because the wrapper is not at the latest commit.
 
 The `hostbootstrap-core` command tree (exposed by every built binary; project binaries add their own
 verbs on top):
@@ -197,7 +205,13 @@ pipx ensurepath
 Then install `hostbootstrap` as an isolated host CLI app:
 
 ```bash
-pipx install "git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"
+pipx install "hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main"
+```
+
+Update the pipx app explicitly with:
+
+```bash
+hostbootstrap update
 ```
 
 For local development against a checkout:

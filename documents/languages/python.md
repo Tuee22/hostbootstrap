@@ -39,9 +39,16 @@ project's runtime environment.
 
 The hostbootstrap repo uses Poetry with an **in-project** `.venv`
 (`poetry.toml` sets `virtualenvs.in-project = true`) — *for repo
-development only*. Downstream installs use `pipx install
-"git+https://github.com/tuee22/hostbootstrap.git#egg=hostbootstrap"`, or
-`pipx install --force /path/to/hostbootstrap` for a local checkout.
+development only*. Downstream installs use
+`pipx install "hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main"`, or
+`pipx install --force /path/to/hostbootstrap` for a local checkout. Update the pipx app with:
+
+```bash
+hostbootstrap update
+```
+
+The update path is explicit. Normal `doctor`, `build`, `run`, and `base` invocations do not check or
+mutate the pipx install; see [../engineering/self_update.md](../engineering/self_update.md).
 
 The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
 `hostbootstrap/` package, `stubs/`, and `tests/` all live there alongside

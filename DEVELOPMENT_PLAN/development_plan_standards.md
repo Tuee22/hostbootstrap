@@ -112,6 +112,7 @@ file, `README.md`, `00-overview.md`, and `system-components.md` in the same chan
 - the project-local `<project>.dhall` schema
 - the runtime binary-context fields inside that local config
 - the thin Python bootstrapper surface
+- the explicit pipx self-update surface for the Python bootstrapper
 - the base image contents and warm Cabal store
 - the optparse command tree that consuming project binaries extend
 
@@ -237,6 +238,14 @@ Linux container cannot exec on a general host such as Apple silicon, which is wh
 host-native and the Python layer must ensure the host build toolchain first. All other host-management
 logic lives in `hostbootstrap-core`; new host logic defaults to the project binary (Haskell), and a
 Python addition must be justified by the pre-binary bootstrapping constraint.
+
+The Python layer also owns its own explicit pipx self-update path, because that command replaces the
+pipx-installed bootstrapper before or outside any project binary. This is distribution lifecycle, not
+host-management logic: it is not an `ensure` reconciler and it must not contain Docker, Dhall, VM,
+cluster, resource, or cordon behavior. With no versioned Python release channel, the canonical update
+primitive is a forced pipx reinstall from the direct VCS requirement for the default branch. Self-update
+is operator-invoked only; `doctor`, `build`, `run`, and `base` must not auto-update, auto-check GitHub
+freshness, or fail merely because the wrapper is not at the latest commit.
 
 ### N. Host-Native Binary Build
 

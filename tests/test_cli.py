@@ -8,7 +8,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from hostbootstrap import bootstrap, cli, docker_ops, process
+from hostbootstrap import bootstrap, cli, docker_ops, process, self_update
 from hostbootstrap.substrate import Substrate, SubstrateName
 
 LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
@@ -29,10 +29,15 @@ def _project() -> bootstrap.ProjectBuildSpec:
 def test_help_lists_only_thin_commands() -> None:
     result = CliRunner().invoke(cli.main, ["--help"])
     assert result.exit_code == 0
-    for command in ("doctor", "build", "run", "base"):
-        assert command in result.output
+    commands = {
+        line.strip().split()[0]
+        for line in result.output.splitlines()
+        if line.startswith("  ") and line.strip()
+    }
+    for command in ("doctor", "build", "run", "base", "update"):
+        assert command in commands
     for unsupported in ("up", "cluster", "daemon", "push"):
-        assert unsupported not in result.output
+        assert unsupported not in commands
 
 
 @pytest.mark.parametrize("unsupported", ["up", "cluster", "daemon", "push"])
@@ -48,6 +53,107 @@ def test_run_has_no_force_target_or_pull_option() -> None:
     # The pre-binary bootstrapper neither builds the container nor pulls the base.
     assert "--force-target" not in result.output
     assert "--no-pull" not in result.output
+
+
+def test_update_help_is_explicit_self_update_surface() -> None:
+    result = CliRunner().invoke(cli.main, ["update", "--help"])
+    assert result.exit_code == 0
+    assert "--ref" in result.output
+    assert "--spec" in result.output
+    assert "--check" in result.output
+
+
+def test_update_invokes_self_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _run_update(*, ref: str, spec: str | None) -> str:
+        captured["ref"] = ref
+        captured["spec"] = spec
+        return spec or self_update.direct_vcs_spec(ref)
+
+    monkeypatch.setattr(cli.self_update, "run_update", _run_update)
+
+    result = CliRunner().invoke(cli.main, ["update", "--ref", "feature"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"ref": "feature", "spec": None}
+    assert "updated hostbootstrap from" in result.output
+    assert "@feature" in result.output
+
+
+def test_update_accepts_explicit_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _run_update(*, ref: str, spec: str | None) -> str:
+        captured["ref"] = ref
+        captured["spec"] = spec
+        return spec or self_update.direct_vcs_spec(ref)
+
+    monkeypatch.setattr(cli.self_update, "run_update", _run_update)
+
+    result = CliRunner().invoke(cli.main, ["update", "--spec", "/work/hostbootstrap"])
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"ref": self_update.DEFAULT_REF, "spec": "/work/hostbootstrap"}
+    assert "updated hostbootstrap from /work/hostbootstrap" in result.output
+
+
+def test_update_rejects_conflicting_options() -> None:
+    result = CliRunner().invoke(cli.main, ["update", "--spec", "/work", "--ref", "feature"])
+    assert result.exit_code != 0
+    assert "cannot be combined" in result.output
+
+    check_result = CliRunner().invoke(cli.main, ["update", "--check", "--spec", "/work"])
+    assert check_result.exit_code != 0
+    assert "cannot be combined" in check_result.output
+
+
+def test_update_wraps_self_update_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(*, ref: str, spec: str | None) -> str:
+        raise self_update.SelfUpdateError("pipx failed")
+
+    monkeypatch.setattr(cli.self_update, "run_update", _raise)
+
+    result = CliRunner().invoke(cli.main, ["update"])
+
+    assert result.exit_code != 0
+    assert "pipx failed" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_update_check_reports_up_to_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _check_status(*, ref: str) -> self_update.CheckStatus:
+        assert ref == "main"
+        return self_update.CheckStatus(
+            installed_commit="a" * 40,
+            remote_commit="a" * 40,
+            requested_revision="main",
+        )
+
+    monkeypatch.setattr(cli.self_update, "check_status", _check_status)
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 0
+    assert "up to date" in result.output
+
+
+def test_update_check_reports_available_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _check_status(*, ref: str) -> self_update.CheckStatus:
+        return self_update.CheckStatus(
+            installed_commit="a" * 40,
+            remote_commit="b" * 40,
+            requested_revision="main",
+        )
+
+    monkeypatch.setattr(cli.self_update, "check_status", _check_status)
+
+    result = CliRunner().invoke(cli.main, ["update", "--check"])
+
+    assert result.exit_code == 1
+    assert "update available" in result.output
+    assert "aaaaaaaaaaaa" in result.output
+    assert "bbbbbbbbbbbb" in result.output
 
 
 def test_default_project_root_is_current_directory() -> None:

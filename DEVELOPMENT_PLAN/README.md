@@ -17,9 +17,10 @@ The repository is a Haskell `hostbootstrap-core` library (under `core/`) plus a 
 bootstrapper (rooted at the repository root). The library owns host-tool resolution, substrate
 detection, install-and-verify `ensure` reconcilers, cluster lifecycle and resource cordoning,
 binary-owned Dhall generation, runtime context command gating, the standardized test harness, the
-self-reference lift, and the optparse command tree projects extend. The Python layer owns only the
+self-reference lift, and the optparse command tree projects extend. The Python layer owns the
 pre-binary bootstrap: assert irreducible host minimums, ensure the host build toolchain, build the
-project binary host-native, trigger the binary's idempotent `config init --if-missing`, and exec it.
+project binary host-native, trigger the binary's idempotent `config init --if-missing`, and exec it. It
+also owns the explicit pipx self-update command for the bootstrapper itself.
 
 Phases 0-15 are `Done`. Each project binary reads a sibling `<project>.dhall`; host, VM, container,
 and service copies use the same filename rule while the role and capability set live inside the file

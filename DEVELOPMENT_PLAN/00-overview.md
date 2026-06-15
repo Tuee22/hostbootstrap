@@ -15,11 +15,13 @@ detection, install-and-verify `ensure` reconcilers, cluster lifecycle and cordon
 schema machinery, the binary-context command gate, the standardized harness, the self-reference lift, and
 the composable optparse command tree project binaries extend.
 
-The Python CLI exposes `doctor` / `build` / `run` / `base`. Its runtime boundary is the pre-binary
-bootstrap: derive the project name from the Cabal file, assert irreducible host minimums, ensure the host
-toolchain, build the project binary host-native, trigger the binary's idempotent
+The Python CLI exposes `doctor` / `build` / `run` / `update` / `base`. Its runtime boundary is the
+pre-binary bootstrap: derive the project name from the Cabal file, assert irreducible host minimums,
+ensure the host toolchain, build the project binary host-native, trigger the binary's idempotent
 `config init --if-missing`, and exec it. Python does not read or write Dhall, ensure Docker, build the
-project container, size a VM, apply resource cordons, or run cluster lifecycle operations.
+project container, size a VM, apply resource cordons, or run cluster lifecycle operations. `update` is
+an explicit pipx self-update command for the bootstrapper itself; normal commands do not auto-update,
+auto-check GitHub freshness, or fail because a newer wrapper commit exists.
 
 Every normal project-binary command reads a sibling `<project>.dhall` before dispatch. The config carries
 project identity, resource budget, Docker/build inputs, runtime context, command authority, and child
@@ -70,7 +72,8 @@ the active execution context. It is `Done`.
 Phase 6 owns the no-baked-binary base-image rule and the thin Python bootstrapper. Every project builds
 its binary host-native; the base image warms dependencies for project-container builds. Python derives the
 project name from the Cabal file, builds the binary, triggers `config init --if-missing`, and execs it
-without reading or writing Dhall. It is `Done`.
+without reading or writing Dhall. It also owns the explicit `hostbootstrap update` command for the
+pipx-installed wrapper itself. It is `Done`.
 
 ### Phase 7 — consumer adoption
 
@@ -164,3 +167,5 @@ edges are recorded in the phase documents when a phase is not yet complete.
 - A separate "release" phase. The library is consumed by sibling path with deps served from the
   base-image warm store; there is no
   Hackage release ceremony.
+- A separate self-update phase. `hostbootstrap update` belongs to Phase 6 because it is part of the
+  thin Python bootstrapper surface.

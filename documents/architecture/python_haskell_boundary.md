@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [build_and_run_model](build_and_run_model.md), [binary_context_config](binary_context_config.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [resource_budgeting](../engineering/resource_budgeting.md)
+**Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [build_and_run_model](build_and_run_model.md), [binary_context_config](binary_context_config.md), [ensure_reconcilers](../engineering/ensure_reconcilers.md), [resource_budgeting](../engineering/resource_budgeting.md), [self_update](../engineering/self_update.md)
 
 > **Purpose**: Define exactly what the thin Python bootstrapper owns versus what
 > `hostbootstrap-core` owns, and the rule that new host logic defaults to Haskell.
@@ -25,6 +25,9 @@
   bootstrapping constraint: the host build toolchain must exist before the binary can be built
   host-native. Ensuring Docker and building the project container are **not** pre-binary work — the
   execed binary owns them.
+- The bootstrapper may own an explicit self-update command for its own pipx installation. That command
+  is distribution lifecycle, not host-management logic; it is never automatic and never a hidden
+  latest-version gate for `doctor`, `build`, `run`, or `base`.
 
 > **Current status.** Python now derives `<project>` from the Cabal file, builds
 > `./.build/<project>` host-native on every substrate, and execs without reading or writing Dhall. The
@@ -32,7 +35,9 @@
 > projection, and normal command gating through the sibling project config. See
 > [DEVELOPMENT_PLAN Phase 8](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md),
 > [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), and
-> [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
+> [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md). The explicit
+> `hostbootstrap update` command is implemented in Phase 6.5 and documented in
+> [self_update](../engineering/self_update.md).
 
 ## Ownership Matrix
 
@@ -45,6 +50,7 @@
 | Create or edit the local `<project>.dhall` | Project binary / user | The built binary exposes config initialization, schema, inspection, and upgrade surfaces; Python does not read or write Dhall. See [binary_context_config](binary_context_config.md). |
 | Ensure a default `<project>.dhall` exists after the build | Python *triggers*, project binary *writes* | Python runs the just-built binary's idempotent `config init --if-missing` so a default `./.build/<project>.dhall` is always present; the binary owns and writes the Dhall, Python never reads or writes it. |
 | Exec the binary | Python | Hands control to the project binary, which owns everything afterward — Docker, the project container, the cordon, and the cluster. |
+| Bootstrapper self-update | Python | Updates the pipx-installed wrapper itself through an explicit operator command; it is not an `ensure` reconciler and must not run automatically. See [self_update](../engineering/self_update.md). |
 | Ensure Docker + build the project container | `hostbootstrap-core` (the execed binary) | **Not** pre-binary work; the binary does it via `ensure docker` and its container build, gating on `check-code`. See [build_and_run_model](build_and_run_model.md). |
 | Host-tool resolution (`HostTool` to absolute paths) | `hostbootstrap-core` | Typed, closed enumeration; no `$PATH` resolution. |
 | `ensure` reconcilers (docker/colima/cuda/homebrew/ghc/tart) | `hostbootstrap-core` | Idempotent reconcilers with host-applicability predicates. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
@@ -95,3 +101,8 @@ the canonical example being that the host build toolchain must be present before
 built host-native. Ensuring Docker and building the project container are **not** pre-binary work;
 the execed binary owns them. When that boundary changes, update this document and the affected phase
 plan in the same change.
+
+The explicit `hostbootstrap update` surface is the narrow exception that proves the boundary: it does
+not manage a project resource and does not belong in the project binary, because it replaces the
+pipx-installed Python wrapper itself. It still follows the thin-layer rule: no Docker, Dhall, VM,
+cluster, or cordon logic, and no automatic latest-version check in normal commands.

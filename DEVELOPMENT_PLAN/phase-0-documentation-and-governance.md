@@ -172,11 +172,11 @@ None.
 #### Objective
 
 Make two load-bearing doctrines read unmistakably across every governed doc, and reconcile the
-inventory to the now-`Done` Phases 6 and 9: (1) the Python wrapper does only the **minimum to build the
-project binary**; (2) the project binary is **never blocked by a dependency that simply isn't
-installed** — the purpose of the `ensure` suite (install-and-verify) — with the Python host minimums as
-the **only** hard fail-fast surface (a reconciler's only fail-fast is a wrong-host misuse, not an absent
-dependency).
+inventory to the implemented Phase 6 bootstrapper work and Phase 9 cordon work: (1) the Python wrapper
+does only the **minimum to build the project binary**; (2) the project binary is **never blocked by a
+dependency that simply isn't installed** — the purpose of the `ensure` suite (install-and-verify) —
+with the Python host minimums as the **only** hard fail-fast surface (a reconciler's only fail-fast is a
+wrong-host misuse, not an absent dependency).
 
 #### Deliverables
 

@@ -14,8 +14,9 @@
 > phases, and whether the repository implements them. Runtime authority is a sibling `<project>.dhall`
 > for each host, VM, container, and service/daemon copy of a binary, with role and command permissions
 > inside the file content. The Python CLI is the thin `doctor` / `build` / `run` / `base`
-> pre-binary bootstrapper, and `hostbootstrap-core` is the reusable library consumed through
-> `runHostBootstrapCLI`. The single-representation rule is part of the supported architecture: the
+> pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and `hostbootstrap-core`
+> is the reusable library consumed through `runHostBootstrapCLI`. The
+> single-representation rule is part of the supported architecture: the
 > standardized test harness is the one test/deploy workflow representation and may be lifted as a whole
 > into a nested context such as `incus exec <vm> -- docker run --rm <image> test all`.
 
@@ -138,6 +139,17 @@ binary (Haskell), and a Python addition must be justified by the pre-binary boot
 current `hostbootstrap/bootstrap.py` derives the project name from the Cabal file, triggers the binary's
 `config init --if-missing`, and writes no Dhall itself.
 
+The Python CLI command surface is:
+
+| Command | Phase | Implemented | Purpose |
+|---------|-------|-------------|---------|
+| `hostbootstrap doctor` | 6 | yes | detect the host and assert the fail-fast host minimums |
+| `hostbootstrap build` | 6 | yes | build the project binary host-native into `./.build/` without execing it |
+| `hostbootstrap run` | 6 | yes | build idempotently, then exec the project binary |
+| `hostbootstrap base build` | 6 | yes | cold-rebuild base image tags locally |
+| `hostbootstrap base build-and-push` | 6 | yes | cold-rebuild and publish base image tags when the operator explicitly requests it |
+| `hostbootstrap update` | 6.5 | yes | explicit pipx self-update of the Python bootstrapper; no automatic latest-version gate |
+
 ## Host-native binary build
 
 Every project's binary is built **host-native** on every substrate — not built in a container and copied
@@ -228,7 +240,7 @@ pristine-host bootstrap inside an incus VM.
 When the host-management architecture changes (a new `HostBootstrap.*` module, a new `ensure`
 reconciler — including a host-provider like `incus`, a project-local-config field, a runtime-context
 field or command-gating rule, a base-image or warm-store change — including a freeze-fragment split, a
-new core command-tree verb, a new run-model, or the worked-consumer demo), update this inventory in the
-same change. Per
+new core command-tree verb, a new Python bootstrapper command such as `update`, a new run-model, or the
+worked-consumer demo), update this inventory in the same change. Per
 [development_plan_standards.md § F](development_plan_standards.md), this file is the single source of
 truth for the host-management component set.

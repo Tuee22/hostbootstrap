@@ -19,6 +19,9 @@
 - Building the **project container** is the execed binary's job, not the bootstrapper's — the binary
   ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
 - Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
+- Build/run commands do not self-update the Python wrapper or fail because it is not at the latest
+  commit. Bootstrapper self-update is an explicit pipx operation; see
+  [self_update](../engineering/self_update.md).
 
 > **Current status.** The host-native, no-copy-out model is implemented. Python does not write Dhall after
 > the build; the built binary creates or validates its sibling `<project>.dhall`. Ensuring Docker, building
@@ -56,6 +59,14 @@ on an unchanged rerun, prints just `Up to date` — it does not re-package each 
 sdist tarball, re-resolve the plan, or copy the exe on every invocation the way `cabal install` does,
 so a warm `hostbootstrap run` is quiet while a genuine cold build still shows live compile progress.
 This mirrors the in-container build, which already uses `cabal build` + `list-bin`.
+
+## No Automatic Wrapper Freshness Check
+
+The build/run model must stay offline-capable after installation. `hostbootstrap build` and
+`hostbootstrap run` do not contact GitHub, compare the installed bootstrapper to the default branch, or
+mutate the pipx environment before building the project binary. Updating the wrapper is an explicit
+operator action documented in [self_update](../engineering/self_update.md), not a precondition for a
+normal build/run.
 
 ## Where the host build cache lives
 

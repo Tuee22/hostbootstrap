@@ -67,6 +67,8 @@ material lives here. Conventions are defined in
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
   semantics.
 - [engineering/prerequisites.md](engineering/prerequisites.md) — the Python fail-fast host minimums.
+- [engineering/self_update.md](engineering/self_update.md) — the explicit pipx self-update doctrine
+  for the Python bootstrapper and the no-hidden-latest-gate rule.
 - [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the `test`
   verb, and the project test suites.
 - [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.

@@ -6,9 +6,10 @@ host minimums; ``build`` runs the pre-binary bootstrapper (assert minimums →
 ensure the host build toolchain → build the binary host-native) without exec'ing;
 ``run`` does the same and then execs the binary with the forwarded args; ``base
 build`` / ``base build-and-push`` produce the ``basecontainer-<flavor>-<arch>``
-tags. Ensuring Docker, building the project container, and cordoning are the
-project binary's job; all richer host-management logic lives in
-``hostbootstrap-core`` and runs through the execed project binary.
+tags; ``update`` explicitly updates the pipx-installed wrapper. Ensuring Docker,
+building the project container, and cordoning are the project binary's job; all
+richer host-management logic lives in ``hostbootstrap-core`` and runs through the
+execed project binary.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Final
 import click
 import httpx
 
-from . import base_image, bootstrap, docker_ops, prereqs, process, substrate
+from . import base_image, bootstrap, docker_ops, prereqs, process, self_update, substrate
 from .base_image import Flavor
 from .substrate import Substrate
 
@@ -207,6 +208,48 @@ def run(project_root: Path, args: tuple[str, ...]) -> None:
             args=args,
         )
     )
+
+
+@main.command("update")
+@click.option(
+    "--ref",
+    "ref",
+    default=self_update.DEFAULT_REF,
+    show_default=True,
+    help="Git ref in the canonical hostbootstrap repository.",
+)
+@click.option(
+    "--spec",
+    "spec",
+    default=None,
+    help="Explicit pip requirement spec to install instead of the canonical repository ref.",
+)
+@click.option(
+    "--check",
+    "check_only",
+    is_flag=True,
+    help="Check the installed VCS commit against the remote ref without updating.",
+)
+def update_cli(ref: str, spec: str | None, check_only: bool) -> None:
+    """Explicitly update the pipx-installed Python bootstrapper."""
+    if spec is not None and ref != self_update.DEFAULT_REF:
+        raise click.ClickException("`--spec` cannot be combined with `--ref`.")
+    if check_only and spec is not None:
+        raise click.ClickException("`--check` cannot be combined with `--spec`.")
+    try:
+        if check_only:
+            status = self_update.check_status(ref=ref)
+            installed = status.installed_commit[:12]
+            remote = status.remote_commit[:12]
+            if status.up_to_date:
+                click.echo(f"hostbootstrap up to date ({installed})")
+                return
+            click.echo(f"hostbootstrap update available: installed {installed}, remote {remote}")
+            sys.exit(1)
+        install_spec = self_update.run_update(ref=ref, spec=spec)
+    except self_update.SelfUpdateError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"updated hostbootstrap from {install_spec}")
 
 
 # ---------------------------------------------------------------------------

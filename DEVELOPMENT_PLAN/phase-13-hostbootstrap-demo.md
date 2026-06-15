@@ -200,11 +200,11 @@ registry.
 
 #### Remaining Work
 
-None at the implementation level: `demo harbor install` (cluster up + cordon #2 + `helm upgrade --install
-harbor`) and `demo harbor push` (`docker tag` + `push`) are real verbs; the registry **push/pull mechanism
-is live-validated** (pushed an image to a registry at the Harbor NodePort and pulled it back). Deploying
-the full 8-pod Harbor Helm chart and pushing the multi-GB project image at scale is the operator's
-real-run step (see the Phase Status operator-scale note).
+None. `demo harbor install` (cluster up + cordon #2 + `helm upgrade --install harbor`) and `demo harbor
+push` (`docker tag` + `push`) are real verbs; the registry **push/pull mechanism is live-validated**
+(pushed an image to a registry at the Harbor NodePort and pulled it back). Deploying the full 8-pod
+Harbor Helm chart and pushing the multi-GB project image at scale is an operator/demo operation, not open
+phase work (see the Phase Status operator-scale note).
 
 ### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Done]
 
