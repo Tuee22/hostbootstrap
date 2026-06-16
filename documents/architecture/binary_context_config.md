@@ -248,10 +248,20 @@ The worked demo has four runtime contexts:
 The same command tree exists in each copy of the binary. Each copy reads a different local `<project>.dhall`
 and therefore accepts a different subset of commands.
 
+## Secrets Are Never In The Context
+
+The context is generated, mounted, copied between frames, and read for inspection (`config show`), so it
+must carry no secret. Docker Hub credentials in particular are **never** a context field: they are an
+effect-only runtime capability forwarded ephemerally down the lift (`stdin` / a forwarded environment
+name), never represented in Dhall and never persisted. See
+[registry credentials](../engineering/registry_credentials.md).
+
 ## See Also
 
 - [composition_methodology](composition_methodology.md) - the self-reference lift and the
   one-operation-one-representation rule.
+- [registry_credentials](../engineering/registry_credentials.md) - why Docker Hub credentials are
+  forwarded ephemerally and never placed in the context Dhall.
 - [python_haskell_boundary](python_haskell_boundary.md) - Python's pre-binary boundary.
 - [dhall_topology](../engineering/dhall_topology.md) - where the binary context fields fit in the Dhall
   configuration model.

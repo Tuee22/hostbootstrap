@@ -49,7 +49,7 @@ import HostBootstrap.Config.Schema (ProjectConfig (..), Resources (..), projectC
 import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
-import HostBootstrap.Ensure (runEnsure, runTool)
+import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin)
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCaseProfile)
@@ -59,6 +59,7 @@ import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArg
 import HostBootstrap.Lift (ContainerLift (..))
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as LimaVM
+import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
 import HostBootstrap.Substrate (detect, isAppleSilicon, isLinux, renderArch, substrateArch)
 import qualified HostBootstrapDemo.Chain as Chain
 import qualified HostBootstrapDemo.Role as Role
@@ -314,17 +315,28 @@ vmRepoRoot :: FilePath
 vmRepoRoot = "/tmp/hostbootstrap"
 
 runInDemoVM :: HostConfig -> DemoVMProvider -> String -> IO ()
-runInDemoVM cfg provider script =
+runInDemoVM cfg provider script = runInDemoVMStdin cfg provider script ""
+
+{- | Like 'runInDemoVM', but pipe @stdin@ to the in-VM @bash -lc@ — the channel a
+forwarded Docker Hub credential travels on (never @argv@). Used to authenticate
+the in-VM base-image pull of build #3 (see 'HostBootstrap.Registry').
+-}
+runInDemoVMStdin :: HostConfig -> DemoVMProvider -> String -> String -> IO ()
+runInDemoVMStdin cfg provider script input =
     case provider of
-        AppleLimaVM vm -> runOrDie cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script])
-        LinuxIncusVM vm -> runOrDie cfg Incus (execVMArgs vm ["bash", "-lc", script])
+        AppleLimaVM vm -> runOrDieStdin cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script]) input
+        LinuxIncusVM vm -> runOrDieStdin cfg Incus (execVMArgs vm ["bash", "-lc", script]) input
 
 {- | Run a resolved host tool, streaming its stdout and dying with the captured
 stderr on a non-zero exit.
 -}
 runOrDie :: HostConfig -> HostTool -> [String] -> IO ()
-runOrDie cfg tool args = do
-    result <- runTool cfg tool args
+runOrDie cfg tool args = runOrDieStdin cfg tool args ""
+
+-- | Like 'runOrDie', but feed @stdin@ to the process.
+runOrDieStdin :: HostConfig -> HostTool -> [String] -> String -> IO ()
+runOrDieStdin cfg tool args input = do
+    result <- runToolWithStdin cfg tool args input
     case result of
         Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
         Right (ExitFailure n, out, err) ->
@@ -546,6 +558,10 @@ runVmBootstrap :: IO ()
 runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- metalConfig
     provider <- demoVMProvider cfg
+    -- Discovered on the metal host (the only place the credential lives); forwarded
+    -- into the VM only over stdin for the build #3 base-image pull. 'Nothing' when
+    -- the host is not logged in, in which case the pull stays anonymous.
+    mAuth <- discoverHostRegistryAuth
     stageSource cfg provider (T.unpack (Context.sourceRoot ctx))
     writeAndCopyVMConfig cfg provider parentCfg ctx
     let inVM label script = do
@@ -566,9 +582,20 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     inVM
         "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
         ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo ensure docker")
-    inVM
-        "build #3 — the project container FROM the pulled base (repo-root context, L0-direct)"
-        ("cd " ++ shellQuote vmRepoRoot ++ " && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE=" ++ demoBaseImage cfg ++ " -t hostbootstrap-demo:local .")
+    let buildImageScript =
+            "cd "
+                ++ shellQuote vmRepoRoot
+                ++ " && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE="
+                ++ demoBaseImage cfg
+                ++ " -t hostbootstrap-demo:local ."
+    case mAuth of
+        Just auth -> do
+            putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
+            runInDemoVMStdin cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
+        Nothing ->
+            inVM
+                "build #3 — the project container FROM the pulled base (repo-root context, L0-direct; anonymous pull)"
+                buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
 writeAndCopyVMConfig :: HostConfig -> DemoVMProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
@@ -798,7 +825,10 @@ deployCmd =
 
 {- | The project container the deploy chain lifts into: the demo image, with the
 host Docker socket mounted (so kind nodes are siblings on the VM daemon) and
-host networking.
+host networking. It also forwards the Docker Hub credential by /name/ only
+(@-e HOSTBOOTSTRAP_REGISTRY_AUTH@) — never the value, which the lift pipes in
+over stdin — so the in-container kind/curl pulls authenticate; with no host
+login the variable is unset and pulls stay anonymous (see "HostBootstrap.Registry").
 -}
 demoDeployImage :: ContainerLift
 demoDeployImage =
@@ -809,7 +839,13 @@ demoDeployImage =
             , Mount (T.pack Chain.vmRuntimeContainerConfigPath) "/usr/local/bin/hostbootstrap-demo.dhall" True
             , Mount "/run/hostbootstrap" "/run/hostbootstrap" True
             ]
-        , clExtraArgs = ["--network=host", "-e", "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ Chain.containerRuntimeFrameId]
+        , clExtraArgs =
+            [ "--network=host"
+            , "-e"
+            , "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ Chain.containerRuntimeFrameId
+            , "-e"
+            , registryAuthEnvVar
+            ]
         , clRemoveAfter = True
         }
 

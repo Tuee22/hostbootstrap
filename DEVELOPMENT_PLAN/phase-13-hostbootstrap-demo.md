@@ -250,7 +250,7 @@ None. The Halogen SPA (`demo/web/`) compiles with `spago build` against the brid
 and bundles with `esbuild`; build #3 runs that web build in-container. The container `cabal.project`
 gap the live run surfaced is resolved: `demo/docker/container.cabal.project` imports the base warm-store
 freeze and references `hostbootstrap-core`, and the Dockerfile builds from the **repo-root context** (so
-the L0-direct demo reaches the core source). Validated by a real `docker build` + the Playwright e2e (3/3).
+the L0-direct demo reaches the core source). Validated by a real `docker build` + the Playwright e2e (9/9: 3 specs × chromium/firefox/webkit).
 
 ### Sprint 13.6: Harness cluster lifecycle + Playwright (in-cluster, via NodePort) [Done]
 
@@ -284,7 +284,7 @@ already-built project image on the kind network against the in-cluster service v
   backs the always-cleans-up property. The per-case bodies are **real assertions**. **`demo test e2e-tabs`
   is live-validated end to end on a real host:** `cluster up` (chart deployed) → `kind load` the project
   image → NodePort readiness → the project image runs `playwright test` from `/workspace/demo/playwright`
-  against the in-cluster service via its NodePort, all 3 specs green (tabs render, the Budget tab shows
+  against the in-cluster service via its NodePort, all specs green on every engine (9 runs: 3 specs × chromium/firefox/webkit; tabs render, the Budget tab shows
   `fits: true`, `GET /api/budget` returns `fits:true`) → clean teardown (`1/1 passed`, no leftover cluster,
   source tree untouched).
 
@@ -378,7 +378,7 @@ Define per-case seams that assert the deployed workload, including Playwright in
   teardown on a real host.
 - **Live (real host):** `demo test e2e-tabs` is green end to end (`1/1 passed`): `cluster up` (chart
   deployed) → `kind load` the project image → NodePort readiness → the project image runs
-  `playwright test` against the in-cluster NodePort (3 specs green) → clean teardown.
+  `playwright test` against the in-cluster NodePort (9 runs: 3 specs × chromium/firefox/webkit, all green) → clean teardown.
 - **Live (in-container, the production path):** `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
   --network host hostbootstrap-demo:local test web-build` is green (`1/1 passed`): the harness runs **inside
   the project container** — kind-in-container via the mounted socket → cordon → `helm upgrade --install: ok`
@@ -588,7 +588,7 @@ running in the topology frame the Dhall declares.
 The topology-strict split is implemented and covered by `ContextSpec` and `SchemaSpec`:
 `ImageBuildContainer` permits build-time `check-code`/config generation only, `context create container`
 is parent-derived, and `VMProjectContainer` requires a VM-orchestrator ancestor. Current validation:
-`cabal test all` from `core/` passes (190 tests); `cabal build all` from `demo/` passes; and
+`cabal test all` from `core/` passes (199 tests); `cabal build all` from `demo/` passes; and
 `cabal run hostbootstrap-demo -- deploy --dry-run` renders the six-step chain with the VM-local
 `context create container` step and the runtime config/witness mounts on the lifted `docker run`.
 
@@ -597,14 +597,17 @@ is parent-derived, and `VMProjectContainer` requires a VM-orchestrator ancestor.
 None. The full real Apple Silicon Lima lifecycle is validated end to end (2026-06-16): `deploy` ran
 `vm ensure` → `vm up` (the 6 CPU / 10 GiB / 80 GiB Lima VM — cordon #1, sized
 `--cpus 6 --memory 10 --disk 80`) → `vm pristine-bootstrap` (build #2 host-native in the VM, base
-`basecontainer-cpu-arm64` pulled, build #3 the `hostbootstrap-demo:local` project image with the
+`basecontainer-cpu-arm64` pulled (authenticated via the forwarded host Docker Hub credential — never in
+Dhall, never persisted, never in `argv`), build #3 the `hostbootstrap-demo:local` project image with the
 in-Dockerfile `check-code` gate of `fourmolu`/`hlint`/`cabal -Werror`) → `context create container` (the
 VM-local runtime config) → the single lifted compute step
-`limactl shell hostbootstrap-demo-vm -- docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v …runtime-container.dhall:/usr/local/bin/hostbootstrap-demo.dhall:ro -v /run/hostbootstrap:ro --network=host -e HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2 hostbootstrap-demo:local test all`,
+`limactl shell hostbootstrap-demo-vm -- docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v …runtime-container.dhall:/usr/local/bin/hostbootstrap-demo.dhall:ro -v /run/hostbootstrap:ro --network=host -e HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2 -e HOSTBOOTSTRAP_REGISTRY_AUTH hostbootstrap-demo:local test all`,
 where the harness brought up the per-case kind clusters on the **VM's** Docker (cordon #2 applied:
-`docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 hostbootstrap-demo-test-e2e-tabs-control-plane`)
-and reported `test report: 3/3 passed` (`pristine-bootstrap`, `web-build`, and `e2e-tabs` with the
-Playwright run green) → guarded `vm down` (`.data` preserved). `DEMO_DEPLOY_EXIT=0`, no leftover VM.
+`docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 hostbootstrap-demo-test-e2e-tabs-control-plane`;
+the in-container `kind`/e2e pulls authenticated through the same forwarded credential, consumed into an
+ephemeral `DOCKER_CONFIG`) and reported `test report: 3/3 passed` (`pristine-bootstrap`, `web-build`, and
+`e2e-tabs` — the e2e Playwright run is green across chromium, firefox, and webkit: 9 runs, 3 specs × 3
+engines) → guarded `vm down` (`.data` preserved). `DEMO_DEPLOY_EXIT=0`, no leftover VM.
 
 ## Documentation Requirements
 

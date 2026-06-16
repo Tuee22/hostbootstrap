@@ -101,6 +101,20 @@ tools. A failed lifted step is loud, never swallowed — the
 [cluster lifecycle](../engineering/cluster_lifecycle.md) `cluster up` fails closed so a lifting parent
 process sees a non-zero exit.
 
+### Forwarding credentials across the lift
+
+A nested context that pulls an image from Docker Hub (a VM `docker build`, a container's `kind`/`docker
+run`) hits the unauthenticated rate limit. Because every binary at every level has global knowledge of
+its place, the **host** binary — the only frame that holds the host's Docker Hub login — forwards that
+credential down the lift so the nested pull authenticates. The credential is an effect-only,
+non-serialisable capability (`HostBootstrap.Registry`): it is **never** in a `<project>.dhall` (it has no
+Dhall codec), never written to a persisted file, and never in `argv`. It travels only on ephemeral
+channels — piped on `stdin` into a transient `DOCKER_CONFIG` removed on exit, or carried into a container
+as an environment **name** the in-container binary consumes once and scrubs. With no host login it is
+absent and pulls run anonymously. This keeps the lift's "knowing your place" idiom intact for credentials
+without ever representing them as topology state. See
+[registry credentials](../engineering/registry_credentials.md).
+
 ## Context-Aware Topology
 
 The lift stack is not enough by itself. A command can fold to the right argv and still be illegal if the

@@ -53,7 +53,11 @@ can fail fast when it is not actually running where the Dhall says it is. That c
 commands, so a cluster service cannot run host-orchestrator verbs, a daemon command cannot start unless
 the context declares a daemon/service role, and a kind-cluster workflow cannot be represented as valid
 when it is running outside the VM/container frame that minted it. The same algebra expresses both
-deployment and runtime business logic (stateless roles over durable external stores). See
+deployment and runtime business logic (stateless roles over durable external stores). When a nested
+context needs to pull from Docker Hub, the host binary forwards its Docker Hub login down the lift to
+authenticate the pull — an effect-only capability that is never in Dhall, never persisted, and never in
+`argv` (see
+[`documents/engineering/registry_credentials.md`](documents/engineering/registry_credentials.md)). See
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
 > **Current state.** The host-native bootstrapper, self-reference lift, single-representation demo deploy,

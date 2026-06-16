@@ -18,6 +18,7 @@ module HostBootstrap.Ensure
     ensureCommandWith,
     toolPresent,
     runTool,
+    runToolWithStdin,
     InstallStep (..),
     installAndVerify,
   )
@@ -176,10 +177,18 @@ toolPresent cfg t = isJust (resolveMaybe cfg t)
 -- tool is not resolved or the exec fails; the reconcile actions use this rather
 -- than a @$PATH@-resolved bare name.
 runTool :: HostConfig -> HostTool -> [String] -> IO (Either String (ExitCode, String, String))
-runTool cfg t args = case resolveMaybe cfg t of
+runTool cfg t args = runToolWithStdin cfg t args ""
+
+-- | Like 'runTool', but feed @stdin@ to the process. Used to forward a secret
+-- (a Docker Hub credential) on @stdin@ rather than in @argv@, so it never appears
+-- in a process listing. The @stdin@ string is the only channel the secret
+-- travels on, and it is consumed by the wrapped command (see
+-- 'HostBootstrap.Registry.dockerAuthStdinWrapper').
+runToolWithStdin :: HostConfig -> HostTool -> [String] -> String -> IO (Either String (ExitCode, String, String))
+runToolWithStdin cfg t args input = case resolveMaybe cfg t of
   Nothing -> pure (Left (toolCommandName t ++ " not found on this host"))
   Just exe -> do
-    result <- try (readProcessWithExitCode (absExePath exe) args "")
+    result <- try (readProcessWithExitCode (absExePath exe) args input)
     pure $ case (result :: Either SomeException (ExitCode, String, String)) of
       Right ok -> Right ok
       Left err -> Left ("could not exec " ++ absExePath exe ++ ": " ++ show err)

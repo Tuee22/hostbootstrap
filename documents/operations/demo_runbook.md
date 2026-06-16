@@ -186,7 +186,11 @@ c. `demo vm pristine-bootstrap` (the headline) — inside the from-zero VM:
    prerequisites, builds the demo binary **host-native** (**build #2**) and execs it; the
    execed binary then ensures Docker (rebooting the VM if the group/daemon change requires it)
    and builds the demo container (**build #3**, gated by the in-Dockerfile `check-code` step).
-   Both builds happen **in the VM**. See
+   Both builds happen **in the VM**. When the metal host is logged in to Docker Hub, the orchestrator
+   forwards that login over `stdin` so build #3's base-image pull (and the lifted `test all` kind/e2e
+   pulls) authenticate instead of hitting the unauthenticated rate limit; the credential is never written
+   into the VM or container and never appears in Dhall or `argv` (see
+   [registry credentials](../engineering/registry_credentials.md)). See
    [build and run model](../architecture/build_and_run_model.md) and
    [derived Dockerfile](../engineering/derived_dockerfile.md).
 

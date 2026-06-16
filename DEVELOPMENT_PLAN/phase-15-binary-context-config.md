@@ -261,7 +261,7 @@ can fail fast when the process is not running in the declared frame.
 
 #### Validation
 
-Current validation: `cabal test all` from `core/` passes (190 tests); `cabal build all` from `demo/`
+Current validation: `cabal test all` from `core/` passes (199 tests); `cabal build all` from `demo/`
 passes; `cabal run hostbootstrap-demo -- deploy --dry-run` renders the VM-local
 `context create container` step and mounts the generated runtime config plus `/run/hostbootstrap` witness
 directory into the lifted `docker run`; `ContextSpec` covers topology ancestor rejection, direct
@@ -271,7 +271,7 @@ host-to-runtime-container projection rejection.
 #### Remaining Work
 
 None. The full core, Python, and demo lifecycle validation re-ran clean after the documentation/status
-updates landed (2026-06-16): `cabal test all` from `core/` passes (190 tests, `DocValidatorSpec`
+updates landed (2026-06-16): `cabal test all` from `core/` passes (199 tests, `DocValidatorSpec`
 included), `poetry run python -m hostbootstrap.test_all` passes (139 tests) with
 `poetry run python -m hostbootstrap.check_code` green, and the real Apple Silicon Lima `deploy` reported
 `test report: 3/3 passed` including the `e2e-tabs` Playwright case with the topology-aware runtime

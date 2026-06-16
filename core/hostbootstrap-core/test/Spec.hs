@@ -13,6 +13,7 @@ import qualified IncusSpec
 import qualified LimaSpec
 import qualified LifecycleSpec
 import qualified LiftSpec
+import qualified RegistrySpec
 import qualified RoleLifecycleSpec
 import qualified SchemaSpec
 import qualified SubstrateSpec
@@ -37,6 +38,7 @@ main = do
             , IncusSpec.tests
             , LimaSpec.tests
             , LiftSpec.tests
+            , RegistrySpec.tests
             , RoleLifecycleSpec.tests
             , ContainerSpec.tests
             , docTests

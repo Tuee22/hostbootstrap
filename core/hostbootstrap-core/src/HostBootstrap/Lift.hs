@@ -39,6 +39,7 @@ module HostBootstrap.Lift
     foldLift,
     containerRunArgs,
     liftSubcommand,
+    liftSubcommandWithAuth,
     runSelf,
   )
 where
@@ -48,12 +49,13 @@ import Control.Exception.Safe (try)
 import qualified Data.Text as T
 import HostBootstrap.Config.Vocab (Mount)
 import qualified HostBootstrap.Config.Vocab as Vocab
-import HostBootstrap.Ensure (runTool)
+import HostBootstrap.Ensure (runTool, runToolWithStdin)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima), toolCommandName)
 import HostBootstrap.Incus (IncusVM, execVMArgs)
 import HostBootstrap.Lima (LimaVM)
 import qualified HostBootstrap.Lima as Lima
+import HostBootstrap.Registry (RegistryAuth, registryAuthEnvVar, registryConfigPayload)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
 import System.Process (readProcessWithExitCode)
@@ -183,3 +185,54 @@ runSelf exe args = do
   pure $ case (result :: Either SomeException (ExitCode, String, String)) of
     Right ok -> Right ok
     Left err -> Left ("could not exec " ++ exe ++ ": " ++ show err)
+
+-- | Like 'liftSubcommand', but forward a Docker Hub credential into the nested
+-- context so any image pull it performs authenticates (avoiding Docker Hub's
+-- unauthenticated rate limit). The credential is forwarded only over ephemeral
+-- channels and is never in @argv@, never written to a persisted file, and never
+-- in Dhall:
+--
+--   * the minimal @config.json@ payload is piped on @stdin@ to the VM shell,
+--     which imports it into the 'registryAuthEnvVar' environment variable
+--     (@export VAR=\"$(cat)\"@ — the value never appears in a process listing);
+--   * the @docker run@ then carries @-e \<registryAuthEnvVar\>@ (the /name/ only),
+--     so Docker forwards the value into the container's environment;
+--   * the in-container binary's @withForwardedRegistryAuth@ consumes it once into
+--     a transient @DOCKER_CONFIG@ and never persists it.
+--
+-- This is the supported forwarding shape — a container reached through a VM
+-- (@inContainer img (inVM\/inLimaVM vm localContext)@), the worked demo's deploy
+-- frame. With 'Nothing' (no host login) or any other context shape it is exactly
+-- 'liftSubcommand', so pulls degrade gracefully to anonymous.
+liftSubcommandWithAuth ::
+  HostConfig ->
+  Maybe RegistryAuth ->
+  SelfRef ->
+  LiftContext ->
+  [String] ->
+  IO (Either String (ExitCode, String, String))
+liftSubcommandWithAuth cfg Nothing self ctx sub = liftSubcommand cfg self ctx sub
+liftSubcommandWithAuth cfg (Just auth) self ctx sub =
+  case liftLayers ctx of
+    [ViaLimaVM vm, ViaContainer c] -> forward Lima (Lima.shellVMArgs vm) c
+    [ViaVM vm, ViaContainer c] -> forward Incus (execVMArgs vm) c
+    _ -> liftSubcommand cfg self ctx sub
+  where
+    forward tool vmShell c =
+      let inner = toolCommandName Docker : containerRunArgs c sub
+          script =
+            "export "
+              ++ registryAuthEnvVar
+              ++ "=\"$(cat)\"; exec "
+              ++ shellQuoteArgs inner
+          args = vmShell ["bash", "-lc", script]
+       in runToolWithStdin cfg tool args (T.unpack (registryConfigPayload auth))
+
+-- | Single-quote each argument and join with spaces, so an argv can be embedded
+-- verbatim in a @bash -lc@ script without re-splitting or glob expansion. Pure.
+shellQuoteArgs :: [String] -> String
+shellQuoteArgs = unwords . map quote
+  where
+    quote s = "'" ++ concatMap escape s ++ "'"
+    escape '\'' = "'\\''"
+    escape ch = [ch]

@@ -32,10 +32,11 @@ import HostBootstrap.Lift (
     inContainer,
     inLimaVM,
     inVM,
-    liftSubcommand,
+    liftSubcommandWithAuth,
     localContext,
  )
 import HostBootstrap.Lima (LimaVM)
+import HostBootstrap.Registry (RegistryAuth, discoverHostRegistryAuth)
 import HostBootstrap.Substrate (detect, isAppleSilicon)
 import System.Exit (ExitCode (ExitSuccess), die)
 
@@ -105,6 +106,13 @@ runDeploy incusVM limaVM img dryRun = do
     detected <- detect
     cfg <- either die buildHostConfig detected
     self <- currentSelfRef inVMSelfPath
+    -- Discovered on the metal host (the only place it lives) and forwarded only
+    -- into the lifted @test all@ container, so its in-container kind/curl pulls
+    -- authenticate. It is never in the dry-run plan, never in argv, and never in
+    -- Dhall; 'liftSubcommandWithAuth' pipes it over stdin (see
+    -- "HostBootstrap.Registry"). 'Nothing' when the host is not logged in, so
+    -- pulls degrade to anonymous.
+    mAuth <- discoverHostRegistryAuth
     let vmContext =
             if isAppleSilicon (hcSubstrate cfg)
                 then inLimaVM limaVM localContext
@@ -112,16 +120,16 @@ runDeploy incusVM limaVM img dryRun = do
         ops = demoDeployChain vmContext (inContainer img vmContext)
     if dryRun
         then putStr (renderPlan self ops)
-        else mapM_ (applyOp cfg self) ops
+        else mapM_ (applyOp cfg mAuth self) ops
   where
     -- The in-VM binary path (where the VM bootstrap lays the host-native build
     -- down). Used only by a bare @inVM@ op; the canonical chain's one lifted step
     -- is container-terminal, so this is currently unreferenced.
     inVMSelfPath = "/tmp/hostbootstrap/demo/.build/hostbootstrap-demo"
-    applyOp :: HostConfig -> SelfRef -> Op -> IO ()
-    applyOp cfg self op = do
+    applyOp :: HostConfig -> Maybe RegistryAuth -> SelfRef -> Op -> IO ()
+    applyOp cfg mAuth self op = do
         putStrLn ("deploy: " ++ opLabel op)
-        result <- liftSubcommand cfg self (opContext op) (opArgv op)
+        result <- liftSubcommandWithAuth cfg mAuth self (opContext op) (opArgv op)
         case result of
             Right (ExitSuccess, out, _) -> putStr out
             Right (_, _, err) -> die ("deploy: " ++ opLabel op ++ " failed: " ++ err)

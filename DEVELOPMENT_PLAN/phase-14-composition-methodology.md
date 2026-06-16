@@ -175,7 +175,7 @@ without making illegal states representable.
   `test all` is lifted as one project-container workflow and reports `3/3 passed`, including e2e.
 
 Current validation: the frame/witness topology shape is implemented in Phase 15; `cabal test all` from
-`core/` passes (190 tests); `cabal build all` from `demo/` passes; and `cabal run hostbootstrap-demo --
+`core/` passes (199 tests); `cabal build all` from `demo/` passes; and `cabal run hostbootstrap-demo --
 deploy --dry-run` renders the six-step chain where the only lifted compute step remains `test all` and
 the preceding VM-local step materializes the runtime config.
 
@@ -186,6 +186,45 @@ VM (2026-06-16): the only lifted compute step is `test all`, folded to
 `limactl shell hostbootstrap-demo-vm -- docker run --rm … hostbootstrap-demo:local test all`, with the
 per-case kind clusters coming up on the VM's Docker and `test report: 3/3 passed` including the `e2e-tabs`
 Playwright case (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`).
+
+### Sprint 14.5: Credential forwarding across the lift [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Registry.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs` (`liftSubcommandWithAuth`), `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`runToolWithStdin`), `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`, `demo/app/Main.hs`, `core/hostbootstrap-core/test/RegistrySpec.hs`
+**Docs to update**: `documents/engineering/registry_credentials.md`, `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Generalize the lift so a project binary forwards the host's Docker Hub login into nested contexts to
+authenticate image pulls (avoiding the unauthenticated rate limit), modelled so the credential is never
+represented in Dhall, never persisted in the VM/cluster, and never placed in `argv`.
+
+#### Deliverables
+
+- `HostBootstrap.Registry`: the opaque, non-serialisable `RegistryAuth` (no Dhall codec, redacted `Show`),
+  host-only discovery (`discoverHostRegistryAuth`, Docker-Hub-only projection), the `stdin` →
+  ephemeral-`DOCKER_CONFIG` wrapper (`dockerAuthStdinWrapper`), and the in-container consume-once bracket
+  (`withForwardedRegistryAuth`).
+- `liftSubcommandWithAuth` (`HostBootstrap.Lift`) forwards the credential into a container-through-a-VM
+  frame over `stdin` plus `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only); `runToolWithStdin` is the
+  stdin-capable tool runner.
+- The demo wires it: build #3's base pull is authenticated, the lifted `test all` forwards into the
+  container so its `kind`/e2e pulls authenticate, and the in-container binary consumes the forwarded
+  credential once into an ephemeral `DOCKER_CONFIG`. Anonymous fallback when the host is not logged in.
+
+#### Validation
+
+`cabal test all` from `core/` passes (199 tests) with `RegistrySpec` covering the Docker-Hub-only
+projection, the redacted `Show`, the `Nothing` anonymous fallback, and that the `stdin` wrapper embeds no
+secret; `cabal build all` from `demo/` passes; `fourmolu --mode check` on the demo `app`/`src` is clean.
+The authenticated full Apple Silicon Lima lifecycle (2026-06-16) pulled the base image and the
+in-container `kind`/e2e images with **no** unauthenticated rate-limit error and reported
+`test report: 3/3 passed`, including the multi-browser `e2e-tabs` (9 Playwright runs: 3 specs ×
+chromium/firefox/webkit). The credential never appeared in Dhall, a persisted file, or `argv`.
+
+#### Remaining Work
+
+None.
 
 ## Documentation Requirements
 
@@ -198,6 +237,9 @@ Playwright case (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`).
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the shape cookbook (created).
 - `documents/engineering/authoring_project_binaries.md` - the authoring how-to (created).
+- `documents/engineering/registry_credentials.md` - forwarding the host Docker Hub login down the lift to
+  authenticate nested pulls, modelled (`HostBootstrap.Registry`) so the credential is never in Dhall,
+  never persisted, and never in `argv` (created).
 
 **Cross-references to add:**
 - `documents/README.md` indexes the three new docs; `system-components.md` carries the
