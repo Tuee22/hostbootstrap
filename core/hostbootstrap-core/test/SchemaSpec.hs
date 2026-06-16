@@ -25,7 +25,9 @@ import HostBootstrap.Context
     CommandClass (..),
     ContextFrame (..),
     ContextKind (..),
+    ProviderKind (..),
     ResourceEnvelope (..),
+    TopologyFrame (..),
     commandAllowed,
   )
 import HostBootstrap.DocValidator (findRepoRoot)
@@ -35,25 +37,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 validConfig :: String
-validConfig =
-  unlines
-    [ "{ dockerfile = \"docker/demo.Dockerfile\"",
-      ", resources = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }",
-      ", context =",
-      "    { project = \"demo\"",
-      "    , binary = \"demo\"",
-      "    , sourceRoot = \"/workspace/demo\"",
-      "    , contextKind = < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >.HostOrchestrator",
-      "    , roleName = \"host-orchestrator\"",
-      "    , parentChain = [] : List { frameKind : < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >, frameBinary : Text }",
-      "    , capabilities = [ < HostTools | IncusProvider | DockerSocket | ContainerRuntime | KubernetesAPI | KindNetwork | DurableStore | ServicePort >.HostTools, < HostTools | IncusProvider | DockerSocket | ContainerRuntime | KubernetesAPI | KindNetwork | DurableStore | ServicePort >.IncusProvider ]",
-      "    , allowedCommandClasses = [ < EnsureCommand | ConfigInspectionCommand | ConfigGenerationCommand | ContextCreationCommand | ClusterLifecycleCommand | TestWorkflowCommand | CheckCodeCommand | HostOrchestratorCommand | DaemonCommand | ServiceCommand | ProjectCommand >.EnsureCommand, < EnsureCommand | ConfigInspectionCommand | ConfigGenerationCommand | ContextCreationCommand | ClusterLifecycleCommand | TestWorkflowCommand | CheckCodeCommand | HostOrchestratorCommand | DaemonCommand | ServiceCommand | ProjectCommand >.ConfigInspectionCommand, < EnsureCommand | ConfigInspectionCommand | ConfigGenerationCommand | ContextCreationCommand | ClusterLifecycleCommand | TestWorkflowCommand | CheckCodeCommand | HostOrchestratorCommand | DaemonCommand | ServiceCommand | ProjectCommand >.ProjectCommand ]",
-      "    , resourceEnvelope = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }",
-      "    , childContextKinds = [ < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >.VMOrchestrator, < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >.VMProjectContainer ]",
-      "    }",
-      ", deploy = { haReplicas = 2 }",
-      "}"
-    ]
+validConfig = T.unpack (renderProjectConfig expected)
 
 expected :: ProjectConfig
 expected =
@@ -68,10 +52,25 @@ expected =
             contextKind = HostOrchestrator,
             roleName = "host-orchestrator",
             parentChain = [],
+            topologyFrames =
+              [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
+              ],
+            currentFrame = "host-orchestrator-0",
+            runtimeWitnesses = [],
             capabilities = [HostTools, IncusProvider],
-            allowedCommandClasses = [EnsureCommand, ConfigInspectionCommand, ProjectCommand],
+            allowedCommandClasses =
+              [ EnsureCommand,
+                ConfigInspectionCommand,
+                ConfigGenerationCommand,
+                ContextCreationCommand,
+                ClusterLifecycleCommand,
+                TestWorkflowCommand,
+                CheckCodeCommand,
+                HostOrchestratorCommand,
+                ProjectCommand
+              ],
             resourceEnvelope = ResourceEnvelope 4 "8GiB" "20GiB",
-            childContextKinds = [VMOrchestrator, VMProjectContainer]
+            childContextKinds = [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
           },
       deploy = DeployConfig {haReplicas = 2}
     }
@@ -90,6 +89,8 @@ tests =
         let rendered = renderProjectConfig (defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator)
         -- Each union is declared once at the top, not inlined at every use site.
         T.count "let ContextKind =" rendered @?= 1
+        T.count "let ProviderKind =" rendered @?= 1
+        T.count "let WitnessKind =" rendered @?= 1
         T.count "let Capability =" rendered @?= 1
         T.count "let CommandClass =" rendered @?= 1
         T.count "< HostOrchestrator" rendered @?= 1
@@ -114,8 +115,9 @@ tests =
       testCase "parses canonical role names and aliases" $ do
         parseConfigRole "host" @?= Right HostOrchestrator
         parseConfigRole "vm-project-container" @?= Right VMProjectContainer
+        parseConfigRole "image-build-container" @?= Right ImageBuildContainer
         parseConfigRole "one_shot" @?= Right OneShotJob
-        parseConfigRole "unknown" @?= Left "unknown config role unknown (expected one of: host-orchestrator, vm-orchestrator, vm-project-container, cluster-service, daemon, one-shot-job, test-harness)",
+        parseConfigRole "unknown" @?= Left "unknown config role unknown (expected one of: host-orchestrator, vm-orchestrator, vm-project-container, image-build-container, cluster-service, daemon, one-shot-job, test-harness)",
       testCase "default role configs decode and re-render stably" $ do
         mapM_
           ( \role -> do
@@ -124,7 +126,7 @@ tests =
               decoded @?= cfg
               contextKind (context cfg) @?= role
           )
-          [HostOrchestrator, VMOrchestrator, VMProjectContainer, ClusterService, Daemon],
+          [HostOrchestrator, VMOrchestrator, VMProjectContainer, ImageBuildContainer, ClusterService, Daemon, OneShotJob, TestHarness],
       testCase "child projections preserve project settings and narrow authority" $ do
         let host = defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator
         vm <- expectRight (deriveProjectConfigForKind VMOrchestrator host "/vm/demo")
@@ -134,16 +136,27 @@ tests =
         resources vm @?= resources host
         contextKind (context vm) @?= VMOrchestrator
         parentChain (context vm) @?= [ContextFrame HostOrchestrator "demo"]
+        topologyFrames (context vm)
+          @?= [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator",
+                TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" IncusVMProvider VMOrchestrator "vm-orchestrator"
+              ]
         contextKind (context service) @?= ClusterService
         parentChain (context service)
           @?= [ContextFrame HostOrchestrator "demo", ContextFrame VMOrchestrator "demo"],
+      testCase "child projection rejects direct host-to-runtime-container configs" $ do
+        let host = defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator
+        deriveProjectConfigForKind VMProjectContainer host "/workspace/demo"
+          @?= Left "project config: child context VMProjectContainer is not allowed in HostOrchestrator",
       testCase "generated roles cannot authorize illegal command families" $ do
         let host = defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator
             container = defaultProjectConfig "demo" "/workspace/demo" VMProjectContainer
+            imageBuild = defaultProjectConfig "demo" "/workspace/demo" ImageBuildContainer
             service = defaultProjectConfig "demo" "/workspace/demo" ClusterService
             daemon = defaultProjectConfig "demo" "/workspace/demo" Daemon
         commandAllowed (context host) HostOrchestratorCommand @?= True
         commandAllowed (context container) HostOrchestratorCommand @?= False
+        commandAllowed (context imageBuild) CheckCodeCommand @?= True
+        commandAllowed (context imageBuild) TestWorkflowCommand @?= False
         commandAllowed (context service) ServiceCommand @?= True
         commandAllowed (context host) ServiceCommand @?= False
         commandAllowed (context container) ServiceCommand @?= False
@@ -162,24 +175,7 @@ tests =
     ]
   where
     badTypeConfig =
-      unlines
-        [ "{ dockerfile = \"docker/demo.Dockerfile\"",
-          ", resources = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }",
-          ", context =",
-          "    { project = \"demo\"",
-          "    , binary = \"demo\"",
-          "    , sourceRoot = \"/workspace/demo\"",
-          "    , contextKind = < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >.HostOrchestrator",
-          "    , roleName = \"host-orchestrator\"",
-          "    , parentChain = [] : List { frameKind : < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >, frameBinary : Text }",
-          "    , capabilities = [] : List < HostTools | IncusProvider | DockerSocket | ContainerRuntime | KubernetesAPI | KindNetwork | DurableStore | ServicePort >",
-          "    , allowedCommandClasses = [] : List < EnsureCommand | ConfigInspectionCommand | ConfigGenerationCommand | ContextCreationCommand | ClusterLifecycleCommand | TestWorkflowCommand | CheckCodeCommand | HostOrchestratorCommand | DaemonCommand | ServiceCommand | ProjectCommand >",
-          "    , resourceEnvelope = { cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }",
-          "    , childContextKinds = [] : List < HostOrchestrator | VMOrchestrator | VMProjectContainer | ClusterService | Daemon | OneShotJob | TestHarness >",
-          "    }",
-          ", deploy = { haReplicas = \"two\" }",
-          "}"
-        ]
+      T.unpack (T.replace "haReplicas = 2" "haReplicas = \"two\"" (renderProjectConfig expected))
 
 decodeFixture :: IO ()
 decodeFixture = do

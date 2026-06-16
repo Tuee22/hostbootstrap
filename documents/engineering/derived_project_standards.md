@@ -112,12 +112,13 @@ tree in Haskell.
    `source-repository-package` (or local) dependency; its transitive closure is already warm in the
    store. Without the freeze import, the resolver picks different transitive versions than the warm
    store and rebuilds. See [warm_store.md](warm_store.md#required-import-the-freeze-fragments).
-3. **Build the binary, materialize the container config, run `<project> check-code`, and add a
-   tini-wrapped `ENTRYPOINT`.** Container config materialization is explicit:
-   `RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall` runs
-   after the binary is installed and before any normal command. The check then runs under the declared
-   container context and before any expensive backend work; the container is built on every substrate as
-   the mandatory code-check gate. See [code_check_doctrine.md](code_check_doctrine.md#derived-images)
+3. **Build the binary, materialize the image-build config, run `<project> check-code`, and add a
+   tini-wrapped `ENTRYPOINT`.** Image-build config materialization is explicit:
+   `RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`
+   runs after the binary is installed and before any normal command. The check then runs under the narrow
+   image-build context and before any expensive backend work; the container is built on every substrate
+   as the mandatory code-check gate. Runtime launchers mount or materialize a parent-generated runtime
+   `<project>.dhall` at the same path. See [code_check_doctrine.md](code_check_doctrine.md#derived-images)
    and [binary_context_config](../architecture/binary_context_config.md).
 4. **Link executables statically; build libraries with `shared: True`.** Do not pass
    `--enable-executable-dynamic` or `--enable-executable-static`. See
@@ -166,7 +167,7 @@ COPY . /workspace/app
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" /usr/local/bin/app
 
-RUN app config init --role vm-project-container --output /usr/local/bin/app.dhall
+RUN app config init --role image-build-container --output /usr/local/bin/app.dhall
 
 RUN app check-code
 
@@ -204,9 +205,11 @@ This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon ap
 No freeze is committed in the project — the layered warm-store freezes are imported from the
 base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
 
-The `config init --role vm-project-container` line is the container-config bootstrap hook. It is the only
-binary entry point in the Dockerfile that may run before the sibling config file exists; later commands
-such as `check-code` load that config and refuse commands not valid for a container build/check context.
+The `config init --role image-build-container` line is the container-image bootstrap hook. It is the only
+binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
+commands such as `check-code` load that config and refuse commands not valid for image build/check
+context. Runtime commands such as `test all`, services, and daemons receive a parent-generated config
+mounted at `/usr/local/bin/<project>.dhall`.
 
 ## See also
 

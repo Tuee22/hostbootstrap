@@ -75,18 +75,19 @@ reflect-from-decoders versus hand-written-assert split is described in
 
 It writes the project-local `ProjectConfig` shape: Dockerfile path, editable resource budget, deploy
 knobs, and runtime context authority. The role defaults to `host-orchestrator`; other supported roles are
-`vm-orchestrator`, `vm-project-container`, `cluster-service`, `daemon`, `one-shot-job`, and
+`vm-orchestrator`, `vm-project-container`, `image-build-container`, `cluster-service`, `daemon`,
+`one-shot-job`, and
 `test-harness`. Resource and deploy defaults can be overridden with `--cpu`, `--memory`, `--storage`,
 `--dockerfile`, `--source-root`, and `--ha-replicas`. `--if-missing` makes the write idempotent (a no-op
 when the target already exists, so a user-edited config is never clobbered); `--force` overwrites. The
-rendered Dhall hoists the repeated `ContextKind`/`Capability`/`CommandClass` unions into top-level `let`
-bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and standalone — no imports, decodable
-in-process.
+rendered Dhall hoists the repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`
+unions into top-level `let` bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and
+standalone — no imports, decodable in-process.
 
 The same pure generation code also projects child configs from a parent config. A child projection keeps
 the project settings it needs, carries the parent's resource envelope and deploy knobs, appends the parent
-frame, and narrows capabilities and allowed command classes so a container/service config cannot represent
-host-only authority.
+frame/topology, and narrows capabilities and allowed command classes so a container/service config cannot
+represent host-only authority.
 
 ## `config schema`
 

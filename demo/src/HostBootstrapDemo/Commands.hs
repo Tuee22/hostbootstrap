@@ -45,7 +45,7 @@ import HostBootstrap.Cluster.Cordon (
     limaSizingArgs,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterDelete, clusterUp, resolvePlan)
-import HostBootstrap.Config.Schema (Resources (..), withSiblingProjectConfigContext)
+import HostBootstrap.Config.Schema (ProjectConfig (..), Resources (..), projectConfigFromContext, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
@@ -65,8 +65,9 @@ import qualified HostBootstrapDemo.Role as Role
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Options.Applicative
-import System.Directory (doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Exit (ExitCode (..), die)
+import System.FilePath ((</>))
 import System.IO (hPutStr, stderr)
 import System.Process (readProcessWithExitCode)
 
@@ -116,9 +117,13 @@ demoCases =
 demoProject :: String
 demoProject = "hostbootstrap-demo"
 
+demoConfigContext :: Context.CommandClass -> [Context.Capability] -> (ProjectConfig -> Context.BinaryContext -> IO a) -> IO a
+demoConfigContext =
+    withSiblingProjectConfigContext (T.pack demoProject)
+
 demoContext :: Context.CommandClass -> [Context.Capability] -> (Context.BinaryContext -> IO a) -> IO a
 demoContext cls caps =
-    withSiblingProjectConfigContext (T.pack demoProject) cls caps . const
+    demoConfigContext cls caps . const
 
 demoAction :: Context.CommandClass -> [Context.Capability] -> IO a -> IO a
 demoAction cls caps body =
@@ -454,11 +459,11 @@ runVmUp :: IO ()
 runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
     cfg <- metalConfig
     provider <- demoVMProvider cfg
-    let resources = resourcesFromContext ctx
-    either die pure (requireDemoLifecycleResources resources)
+    let lifecycleResources = resourcesFromContext ctx
+    either die pure (requireDemoLifecycleResources lifecycleResources)
     case provider of
         AppleLimaVM vm -> do
-            sizing <- either die pure (limaSizingArgs resources)
+            sizing <- either die pure (limaSizingArgs lifecycleResources)
             let argv = LimaVM.startVMArgs vm (sizing ++ ["--vm-type", "vz"])
             putStrLn ("vm up: launching Lima instance " ++ limaName vm ++ " cordoned to the budget " ++ show sizing)
             runOrDie cfg Lima argv
@@ -466,7 +471,7 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
             waitLimaVM cfg vm 60
             putStrLn ("vm up: launched " ++ limaName vm)
         LinuxIncusVM vm -> do
-            sizing <- either die pure (incusSizingArgs resources)
+            sizing <- either die pure (incusSizingArgs lifecycleResources)
             let argv = createVMArgs vm (concatMap toLaunchFlag sizing)
             putStrLn ("vm up: launching " ++ vmName vm ++ " cordoned to the budget " ++ show sizing)
             runOrDie cfg Incus argv
@@ -538,10 +543,11 @@ and builds the demo binary **host-native** in the VM (**build #2**) before
 exec'ing it (here with @config schema@, so the built binary proves itself).
 -}
 runVmBootstrap :: IO ()
-runVmBootstrap = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
+runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- metalConfig
     provider <- demoVMProvider cfg
     stageSource cfg provider (T.unpack (Context.sourceRoot ctx))
+    writeAndCopyVMConfig cfg provider parentCfg ctx
     let inVM label script = do
             putStrLn ("pristine-bootstrap: " ++ label)
             runInDemoVM cfg provider script
@@ -558,15 +564,41 @@ runVmBootstrap = demoContext Context.HostOrchestratorCommand [Context.HostTools]
         "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
         (". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && hostbootstrap run -- config schema")
     inVM
-        "generate the VM-local project config"
-        ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo config init --role vm-orchestrator --output .build/hostbootstrap-demo.dhall --source-root " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force")
-    inVM
         "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
         ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo ensure docker")
     inVM
         "build #3 — the project container FROM the pulled base (repo-root context, L0-direct)"
         ("cd " ++ shellQuote vmRepoRoot ++ " && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE=" ++ demoBaseImage cfg ++ " -t hostbootstrap-demo:local .")
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
+
+writeAndCopyVMConfig :: HostConfig -> DemoVMProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
+writeAndCopyVMConfig cfg provider parentCfg ctx = do
+    let hostRoot = T.unpack (Context.sourceRoot ctx)
+        localPath = hostRoot </> ".build" </> "hostbootstrap-demo.vm.dhall"
+        remotePath = vmRepoRoot </> "demo" </> ".build" </> "hostbootstrap-demo.dhall"
+        providerKind =
+            case provider of
+                AppleLimaVM _ -> Context.LimaVMProvider
+                LinuxIncusVM _ -> Context.IncusVMProvider
+        vmCfg =
+            projectConfigFromContext
+                (dockerfile parentCfg)
+                (deploy parentCfg)
+                (Context.deriveVMContextWithProvider providerKind ctx (T.pack (vmRepoRoot </> "demo")))
+    createDirectoryIfMissing True (hostRoot </> ".build")
+    writeProjectConfigFile localPath vmCfg
+    runInDemoVM
+        cfg
+        provider
+        ( "mkdir -p "
+            ++ shellQuote (vmRepoRoot </> "demo" </> ".build")
+            ++ " && sudo mkdir -p /run/hostbootstrap"
+            ++ " && printf %s "
+            ++ shellQuote (demoVMName provider)
+            ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
+        )
+    copyFileToDemoVM cfg provider localPath remotePath
+    putStrLn ("pristine-bootstrap: copied parent-derived VM config to " ++ demoVMName provider ++ ":" ++ remotePath)
 
 {- | The published base tag the demo's project container builds @FROM@ — cpu /
 the detected VM architecture. The base is pulled inside the VM by build #3.
@@ -575,12 +607,12 @@ demoBaseImage :: HostConfig -> String
 demoBaseImage cfg =
     "docker.io/tuee22/hostbootstrap:basecontainer-cpu-" ++ renderArch (substrateArch (hcSubstrate cfg))
 
-{- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
+{- | Stage the project working tree into the VM at @/tmp/hostbootstrap@ — the
 source @pipx install@ and the in-VM @hostbootstrap run@ build from. The host
 working tree (uncommitted changes included) is tarred minus build/VCS
 artifacts, pushed as a single file (@pushFileArgs@), and extracted in the VM.
 Without this step the from-zero bootstrap has nothing to install — the runbook
-documents the source as "staged at @/root/hostbootstrap@", and this is where
+documents the source as "staged at @/tmp/hostbootstrap@", and this is where
 that staging happens.
 -}
 stageSource :: HostConfig -> DemoVMProvider -> FilePath -> IO ()
@@ -621,6 +653,12 @@ stageSource cfg provider sourceRoot = do
             runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
             runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
     removeFile tarball
+
+copyFileToDemoVM :: HostConfig -> DemoVMProvider -> FilePath -> FilePath -> IO ()
+copyFileToDemoVM cfg provider localPath remotePath =
+    case provider of
+        LinuxIncusVM vm -> runOrDie cfg Incus (pushFileArgs vm localPath remotePath)
+        AppleLimaVM vm -> runOrDie cfg Lima (LimaVM.copyToVMArgs vm localPath remotePath)
 
 isSuffixOfPath :: FilePath -> FilePath -> Bool
 isSuffixOfPath suffix path =
@@ -766,8 +804,12 @@ demoDeployImage :: ContainerLift
 demoDeployImage =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
-        , clMounts = [Mount "/var/run/docker.sock" "/var/run/docker.sock" False]
-        , clExtraArgs = ["--network=host"]
+        , clMounts =
+            [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
+            , Mount (T.pack Chain.vmRuntimeContainerConfigPath) "/usr/local/bin/hostbootstrap-demo.dhall" True
+            , Mount "/run/hostbootstrap" "/run/hostbootstrap" True
+            ]
+        , clExtraArgs = ["--network=host", "-e", "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ Chain.containerRuntimeFrameId]
         , clRemoveAfter = True
         }
 

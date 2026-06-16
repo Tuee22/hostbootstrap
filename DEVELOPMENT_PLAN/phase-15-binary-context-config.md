@@ -22,17 +22,14 @@ and demo project verbs gate through the sibling project config, context creation
 host/VM/container/service placement configs, and normal cluster lifecycle commands use the active context
 as their runtime authority.
 
-This phase is reopened because the current context is still too flat. It can authorize a role and command
-class, but it does not yet encode and verify the complete execution topology: provider-backed frames,
-the current frame, parent links, and runtime witnesses. That makes illegal states too easy to represent,
-for example a VM-project-container `test all` running directly on the host Docker daemon.
+This phase remains Active until the topology-aware path is validated by the full real demo lifecycle. The
+schema and gate now encode provider-backed frames, the current frame, parent links, and runtime
+witnesses, and the demo image/runtime split is implemented.
 
 ## Remaining Work
 
-- Add topology frames, current-frame identity, and runtime witnesses to the project-local context schema.
-- Split Dockerfile-baked image-build authority from parent-mounted runtime authority.
-- Fail before side effects when a command's declared topology cannot be witnessed locally.
-- Add negative tests proving a VM-scoped kind/test workflow cannot create a kind cluster on host Docker.
+- Run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
+  mounts.
 
 ## Phase Objective
 
@@ -44,9 +41,10 @@ Introduce the runtime binary-context contract:
 - The built project binary creates defaults through `config init` and emits schema/help for editing.
 - Each nested boundary receives or creates its own role-specific local config before the nested binary
   runs.
-- Dockerfiles use `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`
-  after installing the binary and before `check-code`; runtime containers receive parent-generated
-  configs for their actual topology frame.
+- The Dockerfile path uses
+  `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall` after
+  installing the binary and before `check-code`; runtime containers receive parent-generated configs for
+  actual topology frames.
 - Kubernetes service pods receive a service/daemon local config from their owning controller; durable
   services use a `StatefulSet`.
 - Missing, undecodable, wrong-project, wrong-capability, or wrong-command contexts fail fast with exit
@@ -129,7 +127,7 @@ boundary without weakening normal command gating.
 
 - `context create vm|container|service OUTPUT` derives child `<project>.dhall` files from the active
   parent config.
-- Dockerfiles call `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`
+- Dockerfiles call `config init --role image-build-container --output /usr/local/bin/<project>.dhall`
   after installing the binary and before `check-code`.
 - VM-context creation happens before invoking the binary inside a managed VM.
 - Kubernetes service-context generation/mounting guidance covers StatefulSets and other controllers.
@@ -143,9 +141,8 @@ boundary without weakening normal command gating.
 
 #### Remaining Work
 
-None. `HostBootstrap.Context` provides host/VM/container/service context constructors and a standalone
-container bootstrap context. Dockerfiles use
-`config init --role vm-project-container --output /usr/local/bin/<project>.dhall`.
+None. `HostBootstrap.Context` provides host/VM/runtime-container/image-build/service context constructors
+and Dockerfiles use `config init --role image-build-container --output /usr/local/bin/<project>.dhall`.
 
 ### Sprint 15.4: Normal runtime config reads [Done]
 
@@ -209,7 +206,8 @@ Use the project-local `<project>.dhall` file as the single runtime config author
   binary/Cabal identity.
 - The context loader reads the runtime-context section inside that config and enforces the
   command/capability gate.
-- Dockerfiles use `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`.
+- Dockerfiles use `config init --role image-build-container --output /usr/local/bin/<project>.dhall` for
+  build-time authority.
 - Daemon/service startup logs include project, binary, context kind, role name, config path, config hash,
   source root, and resource envelope, with secrets excluded.
 - Config changes during a process lifetime do not mutate the active process; normal commands read once,
@@ -228,12 +226,11 @@ Use the project-local `<project>.dhall` file as the single runtime config author
   `hostbootstrap-demo.dhall` mount; `cabal run hostbootstrap-demo -- config init --role host-orchestrator
   --source-root /home/matt/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB
   --storage 80GiB --ha-replicas 1 --force` creates the host config;
-  `cabal run hostbootstrap-demo -- config init --role vm-project-container --output
+  `cabal run hostbootstrap-demo -- config init --role image-build-container --output
   <tmp>/hostbootstrap-demo.dhall --source-root /workspace/demo --dockerfile docker/Dockerfile --cpu 6
-  --memory 10GiB --storage 80GiB --ha-replicas 1 --force` writes a non-empty
-  container-role config with `VMProjectContainer` and `roleName = "vm-project-container"`; and
-  `cabal run hostbootstrap-demo -- deploy --dry-run` renders the five-step single lift sequence through
-  the new gate.
+  --memory 10GiB --storage 80GiB --ha-replicas 1 --force` writes a non-empty image-build config with
+  `ImageBuildContainer`; and `cabal run hostbootstrap-demo -- deploy --dry-run` renders the single lift
+  sequence through the gate.
 
 #### Remaining Work
 
@@ -263,15 +260,16 @@ can fail fast when the process is not running in the declared frame.
 
 #### Validation
 
-- Current validation: `cabal build all` from `core/` and `demo/` passes after the provider-aware lift
-  changes.
+Current validation: `cabal test all` from `core/` passes (190 tests); `cabal build all` from `demo/`
+passes; `cabal run hostbootstrap-demo -- deploy --dry-run` renders the VM-local
+`context create container` step and mounts the generated runtime config plus `/run/hostbootstrap` witness
+directory into the lifted `docker run`; `ContextSpec` covers topology ancestor rejection, direct
+image-build `test all` rejection, and runtime witness checking; `SchemaSpec` covers direct
+host-to-runtime-container projection rejection.
 
 #### Remaining Work
 
-- Implement schema/render/decode updates and command-gate witness checks.
-- Add positive tests for valid host, VM, runtime-container, and service contexts.
-- Add negative tests for direct host/container fallback with a VM-project-container config.
-- Re-run the full core, Python, and demo lifecycle validation after the code lands.
+- Re-run the full core, Python, and demo lifecycle validation after the documentation/status updates land.
 
 ## Documentation Requirements
 

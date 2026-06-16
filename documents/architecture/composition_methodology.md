@@ -105,37 +105,47 @@ process sees a non-zero exit.
 
 The lift stack is not enough by itself. A command can fold to the right argv and still be illegal if the
 callee's local config does not assert the same execution topology the process is actually occupying. The
-project-local Dhall therefore needs to describe the complete topology as pure data, not just a flat
-role name:
+local Dhall describes that topology as pure data, not just a role name:
 
 ```dhall
-{ topology =
-  { frames =
-    [ { id = "host"
-      , parent = None Text
-      , provider = ProviderKind.LocalHost
-      , contextKind = ContextKind.HostOrchestrator
-      , capabilities = [ Capability.HostTools ]
-      , witnesses = [ ... ]
+{ context =
+  { topologyFrames =
+    [ { topologyFrameId = "host-orchestrator-0"
+      , topologyParentId = ""
+      , topologyProvider = ProviderKind.HostProvider
+      , topologyKind = ContextKind.HostOrchestrator
+      , topologyRoleName = "host-orchestrator"
       }
-    , { id = "vm"
-      , parent = Some "host"
-      , provider = ProviderKind.LimaVM
-      , contextKind = ContextKind.VMOrchestrator
-      , capabilities = [ Capability.DockerSocket ]
-      , witnesses = [ RuntimeWitness.ProviderProfile ProviderKind.LimaVM "hostbootstrap-demo-vm" ]
+    , { topologyFrameId = "vm-orchestrator-1"
+      , topologyParentId = "host-orchestrator-0"
+      , topologyProvider = ProviderKind.LimaVMProvider
+      , topologyKind = ContextKind.VMOrchestrator
+      , topologyRoleName = "vm-orchestrator"
       }
-    , { id = "vm-project-container"
-      , parent = Some "vm"
-      , provider = ProviderKind.DockerContainer
-      , contextKind = ContextKind.VMProjectContainer
-      , capabilities = [ Capability.ContainerRuntime, Capability.KindNetwork ]
-      , witnesses = [ ... ]
+    , { topologyFrameId = "vm-project-container-2"
+      , topologyParentId = "vm-orchestrator-1"
+      , topologyProvider = ProviderKind.DockerContainerProvider
+      , topologyKind = ContextKind.VMProjectContainer
+      , topologyRoleName = "vm-project-container"
       }
     ]
-  , currentFrame = "vm-project-container"
+  , currentFrame = "vm-project-container-2"
+  , runtimeWitnesses =
+    [ { witnessKind = WitnessKind.WitnessUnixSocket
+      , witnessName = "/var/run/docker.sock"
+      , witnessValue = ""
+      }
+    , { witnessKind = WitnessKind.WitnessFileExists
+      , witnessName = "/run/hostbootstrap/vm-provider"
+      , witnessValue = ""
+      }
+    , { witnessKind = WitnessKind.WitnessEnvEquals
+      , witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
+      , witnessValue = "vm-project-container-2"
+      }
+    ]
+  , ...
   }
-, context = ...
 }
 ```
 
@@ -143,14 +153,14 @@ This is deliberately a list of frames plus parent references rather than a close
 represent arbitrary lifted chains — host binary -> VM -> Kubernetes cluster -> a Pulumi role that creates
 an EKS cluster -> workloads in that EKS cluster — without L0 knowing every provider-specific payload. A
 project or higher library layer extends the provider vocabulary and witness vocabulary; the core gate
-still checks common invariants: the `currentFrame` exists, its ancestors exist, requested commands are
-allowed by the current frame, required capabilities are locally verifiable, and runtime witnesses match
-the process environment.
+checks common invariants: the `currentFrame` exists, its ancestors exist, requested commands are allowed
+by the current frame, required capabilities are declared, and runtime witnesses match the process
+environment.
 
 The practical rule is strict: parent code may mint a child context only for a child frame in the topology,
 and a child process must fail before side effects when its local witnesses do not prove it is in that
 frame. A host-side `docker run <image> test all` must therefore be rejected when the config says
-`currentFrame = "vm-project-container"` under a VM parent. The test workflow may still be run locally for
+`currentFrame = "vm-project-container-2"` under a VM parent. The test workflow may still be run locally for
 development, but that requires a local test-harness frame in the Dhall, not accidental reuse of the VM
 container frame.
 
@@ -225,6 +235,7 @@ The single canonical demo chain — the `demo deploy` sequence — is exactly th
 | `vm ensure` | `localContext` | reconcile the platform VM provider: Lima on Apple Silicon, native Incus on Linux |
 | `vm up` | `localContext` | cordon #1 (the VM is the wall) |
 | `vm pristine-bootstrap` | `localContext` → VM | build #2 (host-native) + build #3 (project image), in the VM |
+| `context create container` | `inVM vm localContext` | materialize the VM-project-container runtime config for the lifted container |
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step; folds through the selected VM provider, then `docker run --rm <image> test all` |
 | `vm down` | `localContext` | guarded teardown (`.data` preserved) |
 
@@ -234,15 +245,12 @@ This is the same self-reference lift as everywhere else — the harness is just 
 
 ## Current Status
 
-The single-representation doctrine is the supported demo shape. The current lift implementation has the
-provider-backed folds for Incus and Colima, and the Apple Silicon `demo deploy --dry-run` path folds to
-`limactl shell hostbootstrap-demo-vm -- docker run --rm ... test all`. Earlier real runs validated
-the Incus/Linux shape with the kind cluster on the VM's Docker. The context-aware topology described
-above is active hardening work in DEVELOPMENT_PLAN
-[Phase 14](../../DEVELOPMENT_PLAN/phase-14-composition-methodology.md) and
-[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md): the existing flat role/capability
-gate is not yet the full frame/witness contract, so direct-host fallbacks must be treated as development
-smokes, not authoritative deploy validation.
+The single-representation doctrine is the supported demo shape. The lift implementation has
+provider-backed folds for Incus and Lima, and the binary-context gate is topology-aware: runtime configs
+carry provider-backed frames, a current frame, and locally checked witnesses. The Apple Silicon demo path
+previously passed the full real lifecycle with the flat gate; the topology-aware path is validated by
+core tests and the dry-run plan, and the development plan records the required full lifecycle rerun before
+closing the open phases.
 
 ## Foundational Principles
 

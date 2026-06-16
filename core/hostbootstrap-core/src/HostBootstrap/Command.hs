@@ -335,8 +335,8 @@ contextCommand progName =
         command
             "container"
             ( info
-                (createContainer <$> outputArg <*> optional sourceRootOpt <*> optional cpuOpt <*> optional memoryOpt <*> optional storageOpt)
-                (progDesc "Create a project-container project config")
+                (createDerived Context.VMProjectContainer <$> outputArg <*> optional sourceRootOpt)
+                (progDesc "Create a parent-derived project-container project config")
             )
     serviceCmd =
         command
@@ -353,25 +353,6 @@ contextCommand progName =
                 (progDesc "Print the canonical project-local config filename")
             )
 
-    createContainer out mroot mcpu mmemory mstorage = do
-        root <- maybe getCurrentDirectory pure mroot
-        let cfgResources =
-                Resources
-                    { cpu = fromMaybe (cpu defaultResources) mcpu
-                    , memory = maybe (memory defaultResources) T.pack mmemory
-                    , storage = maybe (storage defaultResources) T.pack mstorage
-                    }
-            cfg =
-                projectConfigForRole
-                    (T.pack progName)
-                    (T.pack progName)
-                    (T.pack root)
-                    (T.pack "docker/Dockerfile")
-                    cfgResources
-                    defaultDeployConfig
-                    Context.VMProjectContainer
-        writeProjectConfigFile out cfg
-
     createDerived kind out mroot = do
         root <- maybe getCurrentDirectory pure mroot
         withSiblingProjectConfigContext (T.pack progName) Context.ContextCreationCommand [] $ \parentCfg _ -> do
@@ -385,12 +366,6 @@ contextCommand progName =
             )
     sourceRootOpt =
         strOption (long "source-root" <> metavar "DIR" <> help "source root recorded in the context")
-    cpuOpt =
-        option auto (long "cpu" <> metavar "N" <> help "CPU envelope for the created context")
-    memoryOpt =
-        strOption (long "memory" <> metavar "TEXT" <> help "memory envelope for the created context")
-    storageOpt =
-        strOption (long "storage" <> metavar "TEXT" <> help "storage envelope for the created context")
 
 -- | The @cluster@ command group: kind/Helm lifecycle within the cordoned budget.
 clusterCommand :: String -> Mod CommandFields (IO ())

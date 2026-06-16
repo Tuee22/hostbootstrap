@@ -23,6 +23,7 @@
         < HostOrchestrator
         | VMOrchestrator
         | VMProjectContainer
+        | ImageBuildContainer
         | ClusterService
         | Daemon
         | OneShotJob
@@ -35,12 +36,49 @@
               < HostOrchestrator
               | VMOrchestrator
               | VMProjectContainer
+              | ImageBuildContainer
               | ClusterService
               | Daemon
               | OneShotJob
               | TestHarness
               >
           , frameBinary : Text
+          }
+    , topologyFrames :
+        List
+          { topologyFrameId : Text
+          , topologyParentId : Text
+          , topologyProvider :
+              < HostProvider
+              | IncusVMProvider
+              | LimaVMProvider
+              | DockerContainerProvider
+              | KubernetesProvider
+              | ExternalProvider
+              >
+          , topologyKind :
+              < HostOrchestrator
+              | VMOrchestrator
+              | VMProjectContainer
+              | ImageBuildContainer
+              | ClusterService
+              | Daemon
+              | OneShotJob
+              | TestHarness
+              >
+          , topologyRoleName : Text
+          }
+    , currentFrame : Text
+    , runtimeWitnesses :
+        List
+          { witnessKind :
+              < WitnessFileExists
+              | WitnessUnixSocket
+              | WitnessEnvEquals
+              | WitnessExecutable
+              >
+          , witnessName : Text
+          , witnessValue : Text
           }
     , capabilities :
         List
@@ -73,6 +111,7 @@
           < HostOrchestrator
           | VMOrchestrator
           | VMProjectContainer
+          | ImageBuildContainer
           | ClusterService
           | Daemon
           | OneShotJob

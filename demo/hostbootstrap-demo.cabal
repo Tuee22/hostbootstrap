@@ -40,6 +40,7 @@ executable hostbootstrap-demo
     , aeson
     , bytestring
     , directory
+    , filepath
     , hostbootstrap-core
     , http-types
     , optparse-applicative

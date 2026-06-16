@@ -29,9 +29,9 @@ RUN cp docker/container.cabal.project cabal.project
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" /usr/local/bin/hostbootstrap-demo
 
-# The target project-local config hook is allowed before normal command gating.
+# The bootstrap-only image-build config is allowed before normal command gating.
 RUN hostbootstrap-demo config init \
-    --role vm-project-container \
+    --role image-build-container \
     --output /usr/local/bin/hostbootstrap-demo.dhall \
     --source-root /workspace/demo \
     --dockerfile docker/Dockerfile \

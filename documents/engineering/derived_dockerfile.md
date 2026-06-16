@@ -13,7 +13,7 @@
   [build and run model](../architecture/build_and_run_model.md) is referenced from
   the runbook; here the binary is the builder).
 - The reference container is `FROM ${BASE_IMAGE}` → build + install the project
-  binary (reusing the warm store) → create the container's sibling
+  binary (reusing the warm store) → create the image-build sibling
   `<project>.dhall` → `RUN <project> check-code` → web build (`<project> web bridge` →
   `spago build` → `esbuild`) → tini ENTRYPOINT.
 - The in-Dockerfile `check-code` step is a **build-time gate**: an image with
@@ -25,9 +25,10 @@
 ## The reference shape
 
 The derived Dockerfile (the worked example is `demo/docker/Dockerfile`) inherits the warm-store base
-image, builds and installs the project binary
-(reusing the warm store), creates the in-container binary context, runs the code-check gate, then builds
-the web bundle, with tini as PID 1. Its skeleton:
+image, builds and installs the project binary (reusing the warm store), creates the image-build binary
+context, runs the code-check gate, then builds the web bundle, with tini as PID 1. Runtime launchers mount
+a parent-generated runtime config over the baked file when the container is used for `test all`, services,
+or daemon roles. Its skeleton:
 
 ```dockerfile
 # check=skip=InvalidDefaultArgInFrom
@@ -42,8 +43,8 @@ COPY . /workspace/<project>
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin ... exe:<project>)" /usr/local/bin/<project>
 
-# 2. Create the in-container config next to /usr/local/bin/<project>.
-RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall
+# 2. Create the image-build config next to /usr/local/bin/<project>.
+RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall
 
 # 3. The mandatory code-check gate.
 RUN <project> check-code
@@ -77,10 +78,10 @@ demo's `purescript-bridge` dependency lives in that warm store's `core.freeze`.
 
 After the binary is installed, the Dockerfile first runs the bootstrap-only config initialization
 entrypoint, for example
-`RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall`. That
-Dhall file is stored next to the binary and tells subsequent image-build commands that they are running
-in the project-container context. The initialization entrypoint is the only command allowed to run before
-the sibling config exists; normal commands fail fast without it. See
+`RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`. That
+Dhall file is stored next to the binary and tells subsequent image-build commands that they have
+build-time authority only. The initialization entrypoint is the only command allowed to run before the
+sibling config exists; normal commands fail fast without it. See
 [binary context](../architecture/binary_context_config.md).
 
 Then the Dockerfile runs `RUN <project> check-code`. This
@@ -121,7 +122,7 @@ The ordering is load-bearing and every derived project preserves it:
 |---|---|---|
 | 1 | `FROM ${BASE_IMAGE}` + `COPY` | Inherit the warm-store base; bring the source in. |
 | 2 | Build + install the binary | The web build and the gate both need the installed binary. |
-| 3 | `RUN <project> config init --role vm-project-container ...` | Store the container's sibling config before any normal command dispatch. |
+| 3 | `RUN <project> config init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
 | 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
 | 5 | `web bridge` → `spago build` → `esbuild` | Types must exist before `spago`; the bundle is the last artifact. |
 | 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |

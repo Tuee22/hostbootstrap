@@ -47,9 +47,9 @@ uses a Lima VM (`limactl shell <instance> -- …`) started without Lima-managed 
 VM (`incus exec <vm> -- …`). The project-container hop is `docker run --rm <image> …`, whose
 `ENTRYPOINT` is the binary. Each nested call runs the same command tree. That nested process is explicit
 rather than blind: before normal dispatch, the binary reads the sibling `<project>.dhall` that tells it
-which segment of the global composition it occupies. The target model is a context-aware topology in the
-Dhall value — an ordered set of execution frames plus the current frame and runtime witnesses — so a copy
-of the binary can fail fast when it is not actually running where the Dhall says it is. That context gates
+which segment of the global composition it occupies. The Dhall value is topology-aware — it carries
+provider-backed execution frames plus the current frame and runtime witnesses — so a copy of the binary
+can fail fast when it is not actually running where the Dhall says it is. That context gates
 commands, so a cluster service cannot run host-orchestrator verbs, a daemon command cannot start unless
 the context declares a daemon/service role, and a kind-cluster workflow cannot be represented as valid
 when it is running outside the VM/container frame that minted it. The same algebra expresses both
@@ -60,11 +60,10 @@ deployment and runtime business logic (stateless roles over durable external sto
 > and project-local binary-context command gate are implemented as recorded in
 > [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). Python now derives the project name from the Cabal
 > file and writes no Dhall. Normal command gating reads the context section inside the sibling
-> `<project>.dhall`; `config init` and parent child-projection commands generate the host, VM, container,
-> and service/daemon local configs. Phases 13, 14, and 15 remain open to harden the context topology:
-> the demo lift chooses validated Lima on Apple Silicon and Incus on Linux, but the Dhall/context
-> contract is being tightened so the complete arbitrary topology and its runtime witnesses are encoded and
-> enforced instead of relying on permissive flat roles.
+> `<project>.dhall`; `config init` and parent child-projection commands generate the host, VM, runtime
+> container, and service/daemon local configs. Dockerfiles bake only `image-build-container` authority;
+> lifted runtime containers receive parent-mounted configs with topology frames and witnesses. Phases 13,
+> 14, and 15 remain open until the topology-aware path is validated by a full real demo lifecycle.
 >
 > The host-native build half is implemented: `hostbootstrap/bootstrap.py` derives the project name from
 > the Cabal file, asserts minimums, ensures the host build toolchain, builds the binary host-native on
@@ -258,6 +257,7 @@ clusters when it lifts a harness case). The single canonical chain `demo deploy`
 | `vm ensure` | `local` | reconciler on metal: Lima VM provider on Apple Silicon, native Incus provider on Linux |
 | `vm up` | `local` | the cordon — the VM is the isolation wall |
 | `vm pristine-bootstrap` | `local → VM` | host-native build **in** the VM, then the project-image build, **in** the VM |
+| `context create container` | `VM` | parent-generate the VM-project-container runtime config |
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step |
 | `vm down` | `local` | guarded teardown (host `.data` preserved) |
 
@@ -273,9 +273,10 @@ canonically in
 > **Status.** The single lift sequence remains the supported demo shape. Its Apple Silicon dry-run now
 > folds through Lima VM execution rather than an Incus VM. The Lima VM is still a pristine Linux host:
 > Docker is installed and verified inside the guest by the project binary, not supplied by Lima's
-> containerd setup. Real Lima lifecycle validation passes; the stricter Dhall topology/witness gate is open work in
-> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). The earlier Incus real-run remains a historical Linux
-> validation point, not proof that Apple Silicon can run the Incus VM path.
+> containerd setup. The topology-aware gate is implemented and covered by core tests and dry-run
+> validation; the open development-plan closure item is the full real lifecycle rerun with the stricter
+> runtime config mounts. The earlier Incus real-run remains a historical Linux validation point, not proof
+> that Apple Silicon can run the Incus VM path.
 
 ### Spin it up
 
@@ -332,13 +333,14 @@ The demo carries two test layers:
   (`pristine-bootstrap` a live cluster, `e2e-tabs` the project image's base-provided Playwright runtime
   against the in-cluster webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
   when run via `demo deploy`; direct host invocation is a development smoke, not the authoritative deploy
-  context. The context-topology hardening now being tracked will make illegal direct-host representations
-  fail before cluster creation. The cases bind to the inherited `test` verb (the harness extension stream).
-  These seams need Docker + kind, so the supported end-to-end path is the lifted step of `demo deploy`:
+  context. Illegal direct-host VM-container representations fail before cluster creation because the
+  topology lacks the VM ancestor and runtime witnesses. The cases bind to the inherited `test` verb (the
+  harness extension stream). These seams need Docker + kind, so the supported end-to-end path is the
+  lifted step of `demo deploy`:
 
   ```bash
   cd demo
-  hostbootstrap run -- test all        # or: cabal run hostbootstrap-demo -- test all
+  hostbootstrap run -- deploy
   ```
 
 - **Playwright e2e** — [`demo/playwright/`](demo/playwright/) is source/config only. The supported

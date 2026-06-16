@@ -15,7 +15,7 @@
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the generic `ensure <tool>` dispatcher, and the shared
 `installAndVerify` probe-first install-and-verify driver. The reconciler set (`docker`, `colima`,
-`cuda`, `homebrew`, `ghc`, `tart`, plus later `lima` and the cross-substrate `incus`) carries its applicability
+`lima`, `cuda`, `homebrew`, `ghc`, `tart`, and the cross-substrate `incus`) carries its applicability
 predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
 toolkit on linux), unit-tested without invoking the package manager. They are wired into the command
@@ -33,8 +33,8 @@ GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-st
 Implement the substrate-and-ensure-reconciler contract (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
 idempotent value carrying a host-applicability predicate and a reconcile action, exposed as an
-optparse subcommand: `ensure docker`, `ensure colima`, `ensure cuda`, `ensure homebrew`,
-`ensure ghc`, `ensure tart`, with later provider additions following the same contract. A reconciler
+optparse subcommand: `ensure docker`, `ensure colima`, `ensure lima`, `ensure cuda`, `ensure homebrew`,
+`ensure ghc`, `ensure tart`, and `ensure incus`. A reconciler
 invoked on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
 
 ## Sprints

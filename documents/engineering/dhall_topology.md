@@ -24,10 +24,9 @@ Python does not participate in Dhall. The project binary owns default local conf
 projection helpers, and normal command gating through the sibling `<project>.dhall`. The runtime context
 authority lives inside that local config alongside project-owned settings.
 
-The topology hardening tracked in Phase 15 extends that authority from a flat role/capability record to
-an explicit execution topology: provider-backed frames, a `currentFrame`, and locally verifiable runtime
-witnesses. Until that hardening closes, docs and tests must not treat a baked project-container config as
-authority to run VM-scoped workflows on whatever Docker daemon happens to be reachable.
+The context authority is topology-aware: it carries provider-backed frames, a `currentFrame`, and locally
+verifiable runtime witnesses. A baked image-build config is not authority to run VM-scoped workflows on
+whatever Docker daemon happens to be reachable.
 
 ## The Configuration Set
 
@@ -44,8 +43,9 @@ authority to run VM-scoped workflows on whatever Docker daemon happens to be rea
 
 - user/project settings, such as Dockerfile path, resource budget, deploy knobs, HA replicas, ports, and
   feature flags;
-- runtime context authority, such as topology frames, current frame, context kind, role name,
-  capabilities, allowed command classes, resource envelope, runtime witnesses, and child-context rules.
+- current runtime context authority: parent chain, topology frames, current frame, runtime witnesses,
+  context kind, role name, capabilities, allowed command classes, resource envelope, and child-context
+  rules.
 
 The role is data inside the file, not a filename suffix. This keeps lookup deterministic while still
 letting host, VM, ad-hoc container, daemon, and service copies use different local contents.

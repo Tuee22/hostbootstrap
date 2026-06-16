@@ -30,9 +30,9 @@ See
 [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
 [phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
 
-Phase 15 is active again for topology hardening. The current schema has the flat context fields shown
-below; the target schema adds an execution topology, `currentFrame`, and runtime witnesses so illegal
-states such as "VM project container command running on the host Docker daemon" fail before side effects.
+The schema is topology-aware. Runtime context includes an execution topology, `currentFrame`, and runtime
+witnesses so illegal states such as "VM project container command running on the host Docker daemon" fail
+before side effects.
 
 ## File Location
 
@@ -74,7 +74,7 @@ has two conceptual sections:
 | Section | Owner | Purpose |
 |---|---|---|
 | Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags |
-| Runtime context | `hostbootstrap-core` / project binary | local authority: identity, topology frames, current frame, context kind, role name, runtime witnesses, capabilities, allowed command classes, resource envelope, child-context rules |
+| Runtime context | `hostbootstrap-core` / project binary | current local authority: identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, resource envelope, child-context rules |
 
 A host-level config has the same top-level shape as the generated `ProjectConfig` schema:
 
@@ -82,12 +82,28 @@ A host-level config has the same top-level shape as the generated `ProjectConfig
 let ContextKind =
       < HostOrchestrator
       | VMOrchestrator
-      | ImageBuildContainer
       | VMProjectContainer
+      | ImageBuildContainer
       | ClusterService
       | Daemon
       | OneShotJob
       | TestHarness
+      >
+
+let ProviderKind =
+      < HostProvider
+      | IncusVMProvider
+      | LimaVMProvider
+      | DockerContainerProvider
+      | KubernetesProvider
+      | ExternalProvider
+      >
+
+let WitnessKind =
+      < WitnessFileExists
+      | WitnessUnixSocket
+      | WitnessEnvEquals
+      | WitnessExecutable
       >
 
 let Capability = < HostTools | IncusProvider | DockerSocket | ContainerRuntime | KubernetesAPI | KindNetwork | DurableStore | ServicePort >
@@ -112,13 +128,24 @@ in  { dockerfile = "docker/Dockerfile"
       { project = "hostbootstrap-demo"
       , binary = "hostbootstrap-demo"
       , sourceRoot = "/home/matt/hostbootstrap/demo"
-      , topology =
-        { frames = [] : List { id : Text, parent : Optional Text, provider : Text }
-        , currentFrame = "host"
-        }
       , contextKind = ContextKind.HostOrchestrator
       , roleName = "host-orchestrator"
       , parentChain = [] : List { frameKind : ContextKind, frameBinary : Text }
+      , topologyFrames =
+        [ { topologyFrameId = "host-orchestrator-0"
+          , topologyParentId = ""
+          , topologyProvider = ProviderKind.HostProvider
+          , topologyKind = ContextKind.HostOrchestrator
+          , topologyRoleName = "host-orchestrator"
+          }
+        ]
+      , currentFrame = "host-orchestrator-0"
+      , runtimeWitnesses =
+          [] : List
+                 { witnessKind : WitnessKind
+                 , witnessName : Text
+                 , witnessValue : Text
+                 }
       , capabilities = [ Capability.HostTools, Capability.IncusProvider ]
       , allowedCommandClasses =
         [ CommandClass.EnsureCommand
@@ -134,7 +161,6 @@ in  { dockerfile = "docker/Dockerfile"
       , resourceEnvelope = { cpu = 6, memory = "10GiB", storage = "80GiB" }
       , childContextKinds =
         [ ContextKind.VMOrchestrator
-        , ContextKind.VMProjectContainer
         , ContextKind.ClusterService
         , ContextKind.Daemon
         , ContextKind.OneShotJob
@@ -147,8 +173,7 @@ in  { dockerfile = "docker/Dockerfile"
 
 The exact generated value is owned by the binary. Use `<project> config init` for a valid default and
 `<project> config schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
-schema in project docs. The `topology` fragment above is illustrative until the Phase 15 topology
-hardening lands in the reflected schema.
+schema in project docs.
 
 ## Default Generation
 
@@ -163,13 +188,13 @@ The generated file is a valid default; `config init --help` names the editable o
 reflected `ProjectConfig` type. Normal commands do not silently create a missing config. They fail fast
 and tell the user how to run the initialization command.
 
-The Dockerfile creates a narrow image-build container config after installing the binary:
+The Dockerfile creates a build-time image config after installing the binary:
 
 ```dockerfile
 RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall
 ```
 
-Runtime, service, or daemon deployments override that baked build-time config by mounting or materializing
+Runtime, service, or daemon deployments override the baked build-time config by mounting or materializing
 a role-specific file at the same canonical path. A lifted `test all` container must receive a
 parent-generated VM-project-container config with topology witnesses; it must not rely on the image-build
 default.

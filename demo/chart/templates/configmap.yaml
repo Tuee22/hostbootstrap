@@ -8,10 +8,27 @@ data:
           < HostOrchestrator
           | VMOrchestrator
           | VMProjectContainer
+          | ImageBuildContainer
           | ClusterService
           | Daemon
           | OneShotJob
           | TestHarness
+          >
+
+    let ProviderKind =
+          < HostProvider
+          | IncusVMProvider
+          | LimaVMProvider
+          | DockerContainerProvider
+          | KubernetesProvider
+          | ExternalProvider
+          >
+
+    let WitnessKind =
+          < WitnessFileExists
+          | WitnessUnixSocket
+          | WitnessEnvEquals
+          | WitnessExecutable
           >
 
     let Capability =
@@ -48,7 +65,49 @@ data:
             , contextKind = ContextKind.ClusterService
             , roleName = "cluster-service"
             , parentChain =
-                [] : List { frameKind : ContextKind, frameBinary : Text }
+                [ { frameKind = ContextKind.HostOrchestrator
+                  , frameBinary = "hostbootstrap-demo"
+                  }
+                , { frameKind = ContextKind.VMOrchestrator
+                  , frameBinary = "hostbootstrap-demo"
+                  }
+                , { frameKind = ContextKind.VMProjectContainer
+                  , frameBinary = "hostbootstrap-demo"
+                  }
+                ]
+            , topologyFrames =
+                [ { topologyFrameId = "host-orchestrator-0"
+                  , topologyParentId = ""
+                  , topologyProvider = ProviderKind.HostProvider
+                  , topologyKind = ContextKind.HostOrchestrator
+                  , topologyRoleName = "host-orchestrator"
+                  }
+                , { topologyFrameId = "vm-orchestrator-1"
+                  , topologyParentId = "host-orchestrator-0"
+                  , topologyProvider = ProviderKind.LimaVMProvider
+                  , topologyKind = ContextKind.VMOrchestrator
+                  , topologyRoleName = "vm-orchestrator"
+                  }
+                , { topologyFrameId = "vm-project-container-2"
+                  , topologyParentId = "vm-orchestrator-1"
+                  , topologyProvider = ProviderKind.DockerContainerProvider
+                  , topologyKind = ContextKind.VMProjectContainer
+                  , topologyRoleName = "vm-project-container"
+                  }
+                , { topologyFrameId = "cluster-service-3"
+                  , topologyParentId = "vm-project-container-2"
+                  , topologyProvider = ProviderKind.KubernetesProvider
+                  , topologyKind = ContextKind.ClusterService
+                  , topologyRoleName = "cluster-service"
+                  }
+                ]
+            , currentFrame = "cluster-service-3"
+            , runtimeWitnesses =
+                [ { witnessKind = WitnessKind.WitnessEnvEquals
+                  , witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
+                  , witnessValue = "cluster-service-3"
+                  }
+                ]
             , capabilities =
                 [ Capability.KubernetesAPI
                 , Capability.DurableStore

@@ -25,18 +25,14 @@ standardized test harness is the one representation of the test/deploy workflow;
 it. The worked demo follows this shape with `test all` lifted into the project container in the managed
 VM.
 
-This phase is reopened to make the composition chain context-aware for arbitrary provider-backed topology
-depth. The old narrative was too Incus-specific and too flat: it did not require the Dhall to express the
-complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
-execution context.
+This phase remains Active until the topology-aware composition path is validated by the full real demo
+lifecycle. The methodology and implementation now require Dhall to express the complete topology, current
+frame, and runtime witnesses needed for a binary to fail fast outside its legal execution context.
 
 ## Remaining Work
 
-- Finalize the frame/witness topology shape in the architecture docs and Phase 15 schema work.
-- Validate that the lift fold and binary-context gate agree on provider-backed frames for Colima, Incus,
-  Docker containers, and cluster/service contexts.
-- Add tests that prove a VM-scoped lifted workflow cannot be represented as valid on the host Docker
-  daemon.
+- Run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
+  mounts.
 
 ## Phase Objective
 
@@ -175,11 +171,18 @@ without making illegal states representable.
 
 - Documentation validator passes on the updated architecture docs.
 - Core tests cover provider-backed lift folds.
+- The full Apple Silicon Lima demo lifecycle validates the single-representation lift in a real VM:
+  `test all` is lifted as one project-container workflow and reports `3/3 passed`, including e2e.
+
+Current validation: the frame/witness topology shape is implemented in Phase 15; `cabal test all` from
+`core/` passes (190 tests); `cabal build all` from `demo/` passes; and `cabal run hostbootstrap-demo --
+deploy --dry-run` renders the six-step chain where the only lifted compute step remains `test all` and
+the preceding VM-local step materializes the runtime config.
 
 #### Remaining Work
 
-- Implement the topology/witness schema and gate in Phase 15.
-- Add negative tests for invalid direct-host execution of VM-scoped workflows.
+- Re-run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
+  mounts.
 
 ## Documentation Requirements
 

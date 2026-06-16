@@ -10,12 +10,12 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-12 are `Done`; Phases 13, 14, and 15 are `Active` for topology-aware binary context
-> hardening. The rows below name the supported component
+> Note: Phases 0-12 are `Done`; Phases 13, 14, and 15 are `Active` until the topology-aware binary
+> context path is validated by the full real demo lifecycle. The rows below name the supported component
 > surfaces, their owning phases, and whether the repository implements them. Runtime authority is a
 > sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
-> and command permissions inside the file content; the active hardening adds provider-backed topology
-> frames, a current frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` /
+> and command permissions inside the file content, including provider-backed topology frames, a current
+> frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` /
 > `base` pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and
 > `hostbootstrap-core` is the reusable library consumed through `runHostBootstrapCLI progName
 > projectSpec`. The single-representation rule is part of the supported architecture: the standardized
@@ -43,14 +43,14 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure.Tart` | 3 | yes | `ensure tart` reconciler |
 | `HostBootstrap.Ensure.Lima` | 11.6 | yes | `ensure lima` reconciler for the Apple Silicon Lima VM provider |
 | `HostBootstrap.Config.Schema` | 4, 8, 15 | yes | project-local `<project>.dhall` schema/default/projection substrate; sibling project-config discovery and command-gate loading |
-| `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | partial | runtime context type embedded inside `<project>.dhall`: host/VM/container/service constructors, validation, exit-code-1 failure helpers, and role/capability/command authority; topology frames/current-frame/runtime-witness hardening is Active |
+| `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service constructors, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
 | `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware spare-capacity resolution — resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux), and the applied `docker update` kind-node cordon |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
-| `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
+| `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
 | `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb through `ProjectSpec`; `emptySuite` is bare-only) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`); the subcommand-level superset of `HostTarget` |
@@ -102,7 +102,7 @@ and reads it before normal command dispatch.
 |--------------|---------|---------|
 | Project identity | project binary | derived project name, source root, binary name, and config version |
 | Build inputs | project binary | Dockerfile path, container resources, image/tag defaults, build roots |
-| Runtime context | project binary | topology frames/current frame/runtime witnesses, context kind, role name, allowed command classes, local capabilities |
+| Runtime context | project binary | parent chain, topology frames, current frame, runtime witnesses, context kind, role name, allowed command classes, local capabilities |
 | Resource envelope | project binary | host/VM/container/service budget limits and child projection defaults |
 | Deploy knobs | project binary | HA replicas, service sizing, generated child-config inputs |
 
@@ -114,7 +114,8 @@ The runtime authority is:
 |----------|------------|---------|---------|
 | `./.build/<project>.dhall` | `<project> config init` or user-supplied config | host binary | host-orchestrator identity, capabilities, budget envelope, Dockerfile/build inputs, and child-config rules |
 | VM-local `<project>.dhall` | parent project binary before VM exec/bootstrap | VM binary | fresh-host context and allowed VM-local work |
-| `/usr/local/bin/<project>.dhall` | project Dockerfile via `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall` | image-build container binary | build/code-quality context before `check-code`; runtime containers receive a parent-mounted frame-specific config |
+| `/usr/local/bin/<project>.dhall` baked in image | project Dockerfiles via `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall` | project container binary during image build | build/code-quality and config-generation authority only |
+| `/usr/local/bin/<project>.dhall` mounted at runtime | parent project binary before `docker run` | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test all`, with topology witnesses |
 | service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for

@@ -10,20 +10,7 @@
 
 ## Pending
 
-- **Dockerfile-baked `vm-project-container` runtime authority** — the demo Dockerfile still bakes a
-  runtime-capable container context at `/usr/local/bin/hostbootstrap-demo.dhall`. That is too permissive:
-  image build/code-quality checks and lifted runtime workflows need distinct contexts. Owning phase:
-  phase-15, sprint 15.6; phase-13, sprint 13.14. Replacement: `image-build-container` as the baked
-  default, with parent-mounted runtime configs for lifted `test all`.
-- **Flat binary context without execution topology witnesses** — `HostBootstrap.Context` currently gates
-  by project/binary/context kind/capability/command class, but it does not yet encode provider-backed
-  frames, current-frame identity, parent links, and local runtime witnesses. Owning phase: phase-15,
-  sprint 15.6. Replacement: topology-aware `<project>.dhall` context.
-- **Direct host/container fallback for VM-scoped kind workflows** — development runs can still invoke
-  `test all` directly against the reachable Docker daemon. That must fail when the Dhall declares a VM
-  project-container frame that is not witnessed locally. Owning phase: phase-13, sprint 13.14; phase-15,
-  sprint 15.6. Replacement: explicit local test-harness context for local smokes, or parent-generated
-  VM/container context for deploy.
+None.
 
 ## Retained Current Surfaces
 
@@ -43,6 +30,15 @@ a plan update creates a new current owner for it.
 - **Redundant demo deploy-chain representation** — the demo has one canonical deploy lift sequence in
   `demo/src/HostBootstrapDemo/Chain.hs`; it does not maintain a second standalone deploy path beside
   `HostBootstrap.Harness`.
+- **Dockerfile-baked `vm-project-container` runtime authority** — Dockerfiles now bake
+  `image-build-container` authority only. Runtime workflows receive parent-mounted configs for the exact
+  frame they run in.
+- **Flat binary context without execution topology witnesses** — `HostBootstrap.Context` now encodes
+  provider-backed frames, current-frame identity, parent links, and local runtime witnesses inside
+  `<project>.dhall`.
+- **Direct host/container fallback for VM-scoped kind workflows** — VM-project-container workflows require
+  a VM-orchestrator ancestor and runtime witnesses before dispatch. Local smokes require an explicit local
+  test-harness context.
 - **Static-base Dhall fixtures** (`core/hostbootstrap-core/dhall/Type.dhall` and
   `core/hostbootstrap-core/dhall/example.dhall`) — the current schema is project-local
   `<project>.dhall`, decoded through `ProjectConfig`.
@@ -57,8 +53,9 @@ a plan update creates a new current owner for it.
   sibling `<project>.dhall` command gate.
 - **`project-binary-context-config.dhall` artifact name** — host, VM, container, daemon, and service
   copies use the sibling `<project>.dhall` filename rule, with role/capability context inside the file.
-- **`--create-container-config` Dockerfile shortcut** — container images create role-specific config
-  through `<project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall`.
+- **`--create-container-config` Dockerfile shortcut** — container images create image-build config through
+  `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime
+  contexts are parent-generated and mounted or materialized at launch.
 - **`demo/hostbootstrap.dhall`** — the demo uses `hostbootstrap-demo.dhall` at each execution context.
 - **`core/hostbootstrap-core/example/Main.hs` and the `hostbootstrap-example` executable** — the
   worked consumer is `demo/`.

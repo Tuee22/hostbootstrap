@@ -29,6 +29,13 @@ sampleContext =
             [ ContextFrame{frameKind = HostOrchestrator, frameBinary = "demo"}
             , ContextFrame{frameKind = VMOrchestrator, frameBinary = "demo"}
             ]
+        , topologyFrames =
+            [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
+            , TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" LimaVMProvider VMOrchestrator "vm-orchestrator"
+            , TopologyFrame "vm-project-container-2" "vm-orchestrator-1" DockerContainerProvider VMProjectContainer "vm-project-container"
+            ]
+        , currentFrame = "vm-project-container-2"
+        , runtimeWitnesses = []
         , capabilities = [DockerSocket, ContainerRuntime, KindNetwork]
         , allowedCommandClasses = [TestWorkflowCommand, CheckCodeCommand, ConfigGenerationCommand]
         , resourceEnvelope = ResourceEnvelope{cpu = 4, memory = "8GiB", storage = "20GiB"}
@@ -90,20 +97,28 @@ tests =
             contextKind host @?= HostOrchestrator
             roleName host @?= "host-orchestrator"
             capabilities host @?= [HostTools, IncusProvider]
-            childContextKinds host @?= [VMOrchestrator, VMProjectContainer, ClusterService, Daemon, OneShotJob, TestHarness]
-        , testCase "deriveContainerContext appends the parent frame and carries the envelope" $ do
+            childContextKinds host @?= [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
+        , testCase "deriveContainerContext appends the VM frame and carries the envelope" $ do
             let host =
                     hostOrchestratorContext
                         "demo"
                         "demo"
                         "/workspace/demo"
                         (ResourceEnvelope 4 "8GiB" "20GiB")
-                ctr = deriveContainerContext host "/workspace/demo"
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                ctr = deriveContainerContext vm "/workspace/demo"
             contextKind ctr @?= VMProjectContainer
             roleName ctr @?= "vm-project-container"
-            parentChain ctr @?= [ContextFrame HostOrchestrator "demo"]
+            parentChain ctr @?= [ContextFrame HostOrchestrator "demo", ContextFrame VMOrchestrator "demo"]
+            currentFrame ctr @?= "vm-project-container-2"
+            topologyFrames ctr
+                @?= [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
+                    , TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" LimaVMProvider VMOrchestrator "vm-orchestrator"
+                    , TopologyFrame "vm-project-container-2" "vm-orchestrator-1" DockerContainerProvider VMProjectContainer "vm-project-container"
+                    ]
             resourceEnvelope ctr @?= resourceEnvelope host
             commandAllowed ctr CheckCodeCommand @?= True
+            validateContext testRequirement ctr @?= Right ctr
         , testCase "deriveVMContext and deriveServiceContext preserve identity and enforce narrower roles" $ do
             let host =
                     hostOrchestratorContext
@@ -123,10 +138,42 @@ tests =
             commandAllowed svc HostOrchestratorCommand @?= False
         , testCase "standaloneContainerContext is the Dockerfile bootstrap context" $ do
             let ctr = standaloneContainerContext "demo" "demo" "/workspace/demo" defaultResourceEnvelope
-            contextKind ctr @?= VMProjectContainer
-            roleName ctr @?= "vm-project-container"
+            contextKind ctr @?= ImageBuildContainer
+            roleName ctr @?= "image-build-container"
             parentChain ctr @?= []
             commandAllowed ctr CheckCodeCommand @?= True
+            commandAllowed ctr TestWorkflowCommand @?= False
+        , testCase "image-build context rejects direct test workflow execution" $ do
+            let img = imageBuildContainerContext "demo" "demo" "/workspace/demo" defaultResourceEnvelope
+            validateContext testRequirement img
+                @?= Left (ContextCommandNotAllowed TestWorkflowCommand ImageBuildContainer)
+        , testCase "standalone VM-project-container config cannot authorize a VM-scoped workflow" $ do
+            let ctr =
+                    contextForKind
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                        VMProjectContainer
+            validateContext testRequirement ctr
+                @?= Left (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
+        , testCase "validateRuntimeContext checks declared file witnesses before dispatch" $
+            withSystemTempDirectory "hostbootstrap-witness" $ \dir -> do
+                let path = dir </> "marker"
+                    okWitness = RuntimeWitness WitnessFileExists (T.pack path) ""
+                    missingPath = dir </> "missing"
+                    missingWitness = RuntimeWitness WitnessFileExists (T.pack missingPath) ""
+                    host =
+                        hostOrchestratorContext
+                            "demo"
+                            "demo"
+                            "/workspace/demo"
+                            (ResourceEnvelope 4 "8GiB" "20GiB")
+                    req = contextRequirement "demo" CheckCodeCommand []
+                TIO.writeFile path "ok"
+                validateRuntimeContext req host{runtimeWitnesses = [okWitness]} >>= (@?= Right host{runtimeWitnesses = [okWitness]})
+                validateRuntimeContext req host{runtimeWitnesses = [missingWitness]}
+                    >>= (@?= Left (ContextRuntimeWitnessFailed missingWitness ("missing file " ++ missingPath)))
         , testCase "writeContextFile writes Dhall that decodes back" $
             withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
                 let path = dir </> "context.dhall"
@@ -171,7 +218,7 @@ tests =
                     [ "config"
                     , "init"
                     , "--role"
-                    , "vm-project-container"
+                    , "image-build-container"
                     , "--output"
                     , path
                     , "--source-root"
@@ -193,7 +240,7 @@ tests =
                 cfgDockerfile @?= "demo/docker/Dockerfile"
                 cfgResources @?= Schema.Resources 6 "10GiB" "80GiB"
                 cfgDeploy @?= Schema.DeployConfig 3
-                contextKind cfgContext @?= VMProjectContainer
+                contextKind cfgContext @?= ImageBuildContainer
                 sourceRoot cfgContext @?= "/workspace/demo"
         , testCase "config init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do

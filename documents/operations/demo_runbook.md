@@ -22,23 +22,23 @@
   `apt install pipx` → `pipx install` the
   local hostbootstrap → `hostbootstrap run`.
 - The demo is **one lift sequence**, not two parallel representations: the deploy folds to
-  `vm ensure` → `vm up` → `vm pristine-bootstrap` → the **whole test workflow lifted into the
-  VM-container** (`limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon,
-  `incus exec <vm> -- docker run --rm <image> test all` on Linux) → `vm down`. The standardized
+  `vm ensure` → `vm up` → `vm pristine-bootstrap` → `context create container` in the VM → the **whole
+  test workflow lifted into the VM-container** (`limactl shell <instance> -- docker run --rm <image>
+  test all` on Apple Silicon, `incus exec <vm> -- docker run --rm <image> test all` on Linux) →
+  `vm down`. The standardized
   test harness is the one test engine; there is no separate cluster-up / web-serve / e2e chain alongside
   it. This is the demo's flow (the doctrine below), **live-validated**; see
   [composition_methodology](../architecture/composition_methodology.md) for the canonical statement.
 - The same three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the run
   is a demo-only **three-build** illustration on top of the standard single host-native build.
-- The demo's config model uses sibling `hostbootstrap-demo.dhall` files: host, VM, container on the
-  VM, and cluster service each get local contents for their role.
+- The demo's config model uses sibling `hostbootstrap-demo.dhall` files: host, VM, image-build container,
+  runtime container on the VM, and cluster service each get local contents for their role.
 
 ## Current status
 
 This runbook describes the supported end-to-end flow: one lift sequence whose final compute step lifts
 the whole test workflow into the project container in the VM, where the per-case kind cluster comes up on
-the **VM's** Docker. The Apple Silicon path is active work and uses Lima; the earlier Linux/Incus real run
-validated the same single-lift shape with the kind cluster on the VM Docker. The host-native in-VM build
+the **VM's** Docker. Apple Silicon uses Lima; native Linux uses Incus. The host-native in-VM build
 (`vm pristine-bootstrap`, build #2) and the project-container build (build #3) run in the VM. The
 cluster/deploy/e2e steps are composed to run through the **self-reference lift** (the project container,
 reached through the selected VM provider and then `docker run --rm`; see
@@ -73,9 +73,11 @@ gating reads the context section inside the active sibling `hostbootstrap-demo.d
 
 The `resources` block is the demo's one budget ceiling. The project binary reads it from the active
 `hostbootstrap-demo.dhall`; nested config creation surfaces carry the relevant envelope to the VM,
-container, and service contexts. The Dockerfile bakes `/usr/local/bin/hostbootstrap-demo.dhall`, and the
-chart mounts a service-role file at the same path for webservice pods. It feeds both the VM sizing cordon
-and the kind-node cap (see [applied cordon](../engineering/applied_cordon.md),
+runtime container, and service contexts. The Dockerfile bakes an image-build
+`/usr/local/bin/hostbootstrap-demo.dhall`; the deploy chain mounts a VM-parent-generated
+VM-project-container config over that path for `test all`; and the chart mounts a service-role file at
+the same path for webservice pods. It feeds both the VM sizing cordon and the kind-node cap (see
+[applied cordon](../engineering/applied_cordon.md),
 [incus](../engineering/incus.md), and [binary context](../architecture/binary_context_config.md)).
 `vm up` rejects smaller budgets before launching the VM; the full demo lifecycle needs this 6 CPU / 10 GiB
 memory / 80 GiB storage envelope to hold the base image pull, project image build, and kind image load.
@@ -105,6 +107,7 @@ The demo binary runs in four different places, and each place is explicit with a
 |---|---|
 | Host | metal orchestrator: `vm ensure`, `vm up`, guarded `vm down` |
 | VM | fresh Linux host: rebuild the host-native binary and build the project container |
+| Image build container | Dockerfile-time `check-code` and config/code generation only |
 | Container on the VM | lifted `test all`: per-case kind clusters, web build, and e2e |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 
@@ -151,13 +154,16 @@ statement and the lift algebra live in
 
 The `demo deploy` chain drives a pristine `ubuntu/24.04` VM from zero to a running, e2e-tested
 `hostbootstrap-demo`, then tears it back down. It is the following sequence; only the `test all` step is a
-lifted compute step (it folds through the selected VM provider, then `docker run --rm <image> test all`):
+lifted compute step (it folds through the selected VM provider, then `docker run --rm <image> test all`).
+The preceding `context create container` step is boundary materialization: it creates the exact runtime
+config that the lifted container mounts:
 
 | Step | Context | What it does |
 |---|---|---|
 | `vm ensure` | `local` | reconciler on metal: install-and-verify the VM provider (Lima on Apple Silicon, Incus on Linux) |
 | `vm up` | `local` | **cordon #1** — launch the budget-sized pristine VM (the VM is the wall) |
 | `vm pristine-bootstrap` | `local → VM` | the headline: in the from-zero VM, build #2 (host-native binary) + build #3 (project container), both **IN the VM** |
+| `context create container` | `VM` | parent-generate the VM-project-container runtime config with topology witnesses |
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step — folds through the selected VM provider, then `docker run --rm <image> test all` |
 | `vm down` | `local` | guarded teardown (`.data` preserved) |
 
@@ -184,10 +190,14 @@ c. `demo vm pristine-bootstrap` (the headline) — inside the from-zero VM:
    [build and run model](../architecture/build_and_run_model.md) and
    [derived Dockerfile](../engineering/derived_dockerfile.md).
 
-d. `demo deploy` lifts the **whole test workflow** into the VM-container — the single lifted compute
-   step, reached by `limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon or
-   `incus exec <vm> -- docker run --rm <image> test all` on Linux. Inside that lifted context the harness
-   runs `cluster up` "locally" = on the **VM's** Docker (the mounted socket), so the per-case kind cluster
+d. `demo deploy` first runs `context create container` in the VM to materialize
+   `/tmp/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall`, then lifts the **whole
+   test workflow** into the VM-container — the single lifted compute step, reached by `limactl shell
+   <instance> -- docker run --rm ... test all` on Apple Silicon or `incus exec <vm> -- docker run --rm
+   ... test all` on Linux. The `docker run` mounts the VM Docker socket, `/run/hostbootstrap` witness
+   directory, and the generated runtime config over `/usr/local/bin/hostbootstrap-demo.dhall`, with
+   `HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2`. Inside that lifted context the harness runs
+   `cluster up` "locally" = on the **VM's** Docker (the mounted socket), so the per-case kind cluster
    lives **in the VM**, reached with no second "bring up a cluster" path. The harness then:
    deploys the `warp`/`wai` webservice **into the per-case kind cluster** via `demo/chart` (the pod runs
    `demo web serve`), exposed on a NodePort; and, for `e2e-tabs`, starts the already-built

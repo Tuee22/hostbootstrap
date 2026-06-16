@@ -130,6 +130,7 @@ configRoleNames =
   [ "host-orchestrator",
     "vm-orchestrator",
     "vm-project-container",
+    "image-build-container",
     "cluster-service",
     "daemon",
     "one-shot-job",
@@ -165,6 +166,8 @@ parseConfigRole raw =
     "container" -> Right Context.VMProjectContainer
     "ad-hoc-container" -> Right Context.VMProjectContainer
     "vm-project-container" -> Right Context.VMProjectContainer
+    "image-build" -> Right Context.ImageBuildContainer
+    "image-build-container" -> Right Context.ImageBuildContainer
     "service" -> Right Context.ClusterService
     "cluster-service" -> Right Context.ClusterService
     "daemon" -> Right Context.Daemon
@@ -257,6 +260,8 @@ deriveProjectConfigForKind kind parent root
           projected (Context.deriveVMContext parentContext root)
         Context.VMProjectContainer ->
           projected (Context.deriveContainerContext parentContext root)
+        Context.ImageBuildContainer ->
+          Left "project config: image-build-container is not a child context"
         Context.ClusterService ->
           projected (Context.deriveServiceContext parentContext root)
         Context.Daemon ->
@@ -400,8 +405,9 @@ loadSiblingProjectConfig projectName cls caps = do
         Right value -> pure value
       case validateProjectConfigForProject projectName cfg of
         Left err -> failProjectConfig path err
-        Right validCfg ->
-          case Context.validateContext (Context.contextRequirement projectName cls caps) (context validCfg) of
+        Right validCfg -> do
+          validated <- Context.validateRuntimeContext (Context.contextRequirement projectName cls caps) (context validCfg)
+          case validated of
             Left err -> do
               hPutStrLn stderr (Context.contextErrorMessage err)
               exitWith (ExitFailure 1)

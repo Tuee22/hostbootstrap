@@ -15,6 +15,8 @@
   filename.
 - A normal command fails fast with exit code 1 when the config is missing or the requested command is not
   commensurate with the declared context.
+- The context is topology-aware: the Dhall carries provider-backed frames, a `currentFrame`, and
+  locally checked `runtimeWitnesses`.
 - Python does not create the host context in the target model. The built binary has ungated config
   initialization/inspection commands and owns default generation.
 - Parent binaries generate narrower child configs at VM, container, daemon, and service boundaries.
@@ -26,11 +28,11 @@ project-local sibling `<project>.dhall`. Python does not create runtime config. 
 ungated default generation, schema/help, validation, child-config projection, and the normal command gate
 that reads the context authority embedded in the local config.
 
-Phase 15 is reopened to harden that flat context into a topology-aware contract. The current gate checks
-project/binary identity, context kind, command class, capabilities, and resource envelope. The target gate
-also checks the declared execution topology, the current frame, parent/ancestor relationships, and local
-runtime witnesses so a command fails before side effects when the process is not actually running in the
-frame its Dhall declares.
+The current gate checks project/binary identity, context kind, command class, capabilities, the declared
+execution topology, the current frame, parent/ancestor relationships, and local runtime witnesses. A
+command fails before side effects when the process is not actually running in the frame its Dhall
+declares. Dockerfiles bake the narrow `image-build-container` role; runtime containers receive
+parent-generated `vm-project-container` configs mounted over the baked file.
 
 ## The Contract
 
@@ -66,7 +68,7 @@ The context portion of the local config carries these concepts:
 |---|---|
 | Project identity | project name, binary name, and source root |
 | Execution topology | a list of provider-backed frames, their parent links, and the current frame id |
-| Context kind | host orchestrator, VM orchestrator, image-build container, VM project container, cluster service, daemon, one-shot job, or test harness |
+| Context kind | host orchestrator, VM orchestrator, VM project container, image-build container, cluster service, daemon, one-shot job, or test harness |
 | Role name | optional project-specific role label such as `webservice`, `worker`, or `host` |
 | Runtime witnesses | locally checkable facts proving the process is in the declared frame, such as provider profile, mounted socket, service account, config hash, or executable path |
 | Local capabilities | tools and services this context may use, such as Docker socket, kind network, Kubernetes API, or durable store |
@@ -79,8 +81,8 @@ or treat missing config as implicit authority.
 
 ## Topology Shape
 
-The topology is a pure Dhall value carried inside the same local config. It is intentionally data, not a
-runtime callback. A representative shape is:
+The topology is pure Dhall data carried inside the same local config. It is intentionally data, not a
+runtime callback. The reflected schema carries these fields on the context record:
 
 ```dhall
 let ContextKind =
@@ -95,42 +97,44 @@ let ContextKind =
       >
 
 let ProviderKind =
-      < LocalHost
-      | LimaVM
-      | IncusVM
-      | DockerContainer
-      | KubernetesCluster
-      | KubernetesPod
-      | ExternalControlPlane
-      | CloudStack
+      < HostProvider
+      | IncusVMProvider
+      | LimaVMProvider
+      | DockerContainerProvider
+      | KubernetesProvider
+      | ExternalProvider
       >
+
+let WitnessKind =
+      < WitnessFileExists
+      | WitnessUnixSocket
+      | WitnessEnvEquals
+      | WitnessExecutable
+      >
+
+let TopologyFrame =
+      { topologyFrameId : Text
+      , topologyParentId : Text
+      , topologyProvider : ProviderKind
+      , topologyKind : ContextKind
+      , topologyRoleName : Text
+      }
 
 let RuntimeWitness =
-      < ExecutablePath : Text
-      | FileSha256 : { path : Text, sha256 : Text }
-      | UnixSocket : { path : Text }
-      | EnvEquals : { name : Text, value : Text }
-      | ProviderProfile : { provider : ProviderKind, name : Text }
-      | KubernetesServiceAccount : { namespace : Text, serviceAccount : Text }
-      >
+      { witnessKind : WitnessKind
+      , witnessName : Text
+      , witnessValue : Text
+      }
 
-let Frame =
-      { id : Text
-      , parent : Optional Text
-      , provider : ProviderKind
-      , contextKind : ContextKind
-      , roleName : Text
+in  { context =
+      { topologyFrames : List TopologyFrame
+      , currentFrame : Text
+      , runtimeWitnesses : List RuntimeWitness
       , capabilities : List Capability
       , allowedCommandClasses : List CommandClass
       , resourceEnvelope : { cpu : Natural, memory : Text, storage : Text }
-      , witnesses : List RuntimeWitness
+      , ...
       }
-
-in  { topology =
-      { frames : List Frame
-      , currentFrame : Text
-      }
-    , context = ...
     }
 ```
 
@@ -163,10 +167,11 @@ Context files are created at the boundary where the next binary becomes meaningf
    and `config show FILE`. A user can generate the first host config with `config init` and then edit the
    user-owned settings.
 3. A host or VM binary creates a VM-local or container-local `<project>.dhall` before launching the nested
-   binary. The child config names the child frame in the same topology and includes witnesses the child can
+   binary. The child config names the child frame in the topology and includes witnesses the child can
    verify locally.
-4. The project Dockerfile bakes a narrow image-build container config at `/usr/local/bin/<project>.dhall`
-   after installing the binary and before `check-code`.
+4. The project Dockerfile bakes an `image-build-container` config at `/usr/local/bin/<project>.dhall`
+   after installing the binary and before `check-code`. Runtime parents mount a narrower runtime config at
+   the same path when launching a container for `test all`, service, daemon, or other runtime work.
 5. A service or daemon receives a role-specific config from the controller or launcher that owns identity
    and durable placement. For stateful Kubernetes services, that is usually a `StatefulSet`.
 
@@ -185,7 +190,8 @@ code 1 when:
 - the Dhall does not decode against the binary's config/context schema;
 - the config names a different project or binary;
 - the requested command is not valid for the context kind or role;
-- the config claims capabilities the binary cannot verify locally.
+- the context does not declare the capabilities the requested command requires;
+- required local runtime witnesses cannot be verified.
 
 Examples:
 
@@ -199,9 +205,9 @@ command tree, but it refuses work that does not belong to its declared place.
 
 ## Docker Defaults And Service Overrides
 
-A Docker image should contain a safe default image-build config so build-time commands such as
+The Docker image contains a safe default image-build config so build-time commands such as
 `check-code`, static code generation, and web asset compilation can run during the Dockerfile. That baked
-config is narrow: `ImageBuildContainer` or equivalent, with only build/code-quality capabilities.
+config is narrow: `ImageBuildContainer`, with only build/code-quality and config-generation authority.
 
 A lifted runtime workflow such as `test all` must not receive authority merely because the image has a
 baked default file. The parent VM or host binary must mount or materialize a runtime child

@@ -202,8 +202,8 @@ Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) is owned by `hos
 **The purpose of the `ensure` suite is that the project binary is never blocked by a host dependency
 that simply isn't installed.** Each host dependency is an idempotent `ensure` reconciler — a
 host-applicability predicate plus a reconcile action — exposed as an optparse subcommand
-(`ensure docker`, `ensure colima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`, `ensure tart`,
-`ensure incus`). A reconcile action **installs** the dependency if absent and is a verified no-op if
+(`ensure docker`, `ensure colima`, `ensure lima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`,
+`ensure tart`, `ensure incus`). A reconcile action **installs** the dependency if absent and is a verified no-op if
 present (install-and-verify, not check-only), so an absent-but-installable dependency is **installed,
 never a hard stop**. The **only** hard fail-fast surface in the entire system is the Python wrapper's
 host minimums (§ M) — the irreducible host floor that cannot be auto-installed. The *one* fail-fast
@@ -414,31 +414,31 @@ default is present (the binary writes it, Python does not). After that, each nes
 or creates its own local config before it runs:
 
 - a VM bootstrap creates a VM-local context before launching the project binary inside the VM;
-- a project Dockerfile installs the binary, then runs
+- the project Dockerfile installs the binary, then runs
   `config init --role image-build-container --output /usr/local/bin/<project>.dhall` before any normal
-  command, granting only build/code-quality authority;
-- a runtime container receives a parent-generated config for the exact VM/container frame it is launched
-  into, replacing the image-build default at the same canonical path;
+  command;
+- runtime container launches mount or materialize a parent-generated runtime config for the exact
+  VM/container frame the container is launched into;
 - a Kubernetes workload receives its context from the controller that owns identity and durable placement;
   for durable services, that controller is a `StatefulSet`.
 
-The context shape is project-extensible, but it must carry enough typed information for local command
-gating: project/binary identity, an execution topology, the current frame, runtime witnesses, context kind,
-local capabilities, allowed command classes, resource envelope, and child-context creation rules. The
-topology is a pure frame graph with parent links, not an implicit permission in the command line; it can
-represent arbitrary chains such as host -> VM -> container -> cluster -> service pod, or host -> VM ->
+The current context shape is project-extensible and carries enough typed information for the local command
+gate: project/binary identity, context kind, local capabilities, allowed command classes, parent chain,
+topology frames, current frame, runtime witnesses, resource envelope, and child-context creation rules.
+The topology is a pure frame graph with parent links, not an implicit permission in the command line; it
+can represent arbitrary chains such as host -> VM -> container -> cluster -> service pod, or host -> VM ->
 Pulumi role -> EKS cluster -> workload. A process must fail before side effects when its local witnesses
 do not prove it is in the declared current frame. Bootstrap/inspection entrypoints are the only binary
 entrypoints allowed to run without an existing sibling context: help/version, `config init`,
 `config schema`, `config show FILE`, `config path`, and static `config render`. All normal commands fail
 fast with exit code 1 when the context file is missing, fails to decode, names a different
-project/binary, claims unverifiable local capabilities, or does not permit the requested command. A
+project/binary, does not declare the required capabilities, or does not permit the requested command. A
+Phase 15 context also fails when required local witnesses cannot be verified. A
 daemon/service command must refuse to start unless the context declares a daemon/service role;
 host-orchestrator commands must refuse to run inside a cluster-service pod; and a VM-scoped kind/test
 workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
 test-harness frame.
 
-Phase 15 implements the flat version of this contract in the shared substrate and is reopened to complete
-the topology/witness hardening: the built project binary creates the host-level default with `config init`,
-parent/container creation surfaces materialize nested configs, and normal command dispatch uses the
-sibling project config as its runtime authority.
+Phase 15 implements this contract in the shared substrate: the built project binary creates the host-level
+default with `config init`, parent/container creation surfaces materialize nested configs, and normal
+command dispatch uses the sibling project config as its runtime authority.

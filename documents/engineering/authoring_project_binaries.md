@@ -27,9 +27,9 @@
    an ungated `config init`-style command. Python derives the project name from the Cabal file and does
    not read Dhall. See [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
 2. **Define child config projection.** Nested contexts are created by the project binary before it crosses
-   a boundary. The project container creates its safe ad-hoc config in the Dockerfile with
-   `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`; service and daemon
-   launchers override that file with role-specific projections. See
+   a boundary. The project container bakes only its image-build config in the Dockerfile with
+   `config init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime, service,
+   and daemon launchers override that file with parent-generated role-specific projections. See
    [binary_context_config](../architecture/binary_context_config.md).
 3. **Define verbs as named project commands.** Hand the project's `projectCommand "…"` entries, non-empty
    `TestSuite`, `check-code` action, and `ConfigArtifact` delta to
@@ -75,6 +75,7 @@ has one representation, and the test harness *is* that representation — so the
 vm ensure               local                                   -- reconcile selected VM provider
 vm up                   local                                   -- cordon #1 (the VM is the wall)
 vm pristine-bootstrap   local -> VM                             -- build #2 (host-native) + build #3 (project image), in the VM
+context create container inVM vm localContext                   -- materialize the VM-project-container runtime config
 test all                inContainer img (inVM vm localContext)  -- the ONLY lifted compute step; folds through the VM provider, then docker run --rm <image> test all
 vm down                 local                                   -- guarded teardown (.data preserved)
 ```

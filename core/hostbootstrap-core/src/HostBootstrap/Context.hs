@@ -17,18 +17,24 @@ module HostBootstrap.Context
     ContextFrame (..),
     ContextKind (..),
     ContextRequirement (..),
+    ProviderKind (..),
     ResourceEnvelope (..),
+    RuntimeWitness (..),
+    TopologyFrame (..),
+    WitnessKind (..),
     BinaryContextError (..),
     defaultResourceEnvelope,
     defaultRoleName,
     contextForKind,
     hostOrchestratorContext,
+    deriveVMContextWithProvider,
     deriveVMContext,
     deriveContainerContext,
     deriveServiceContext,
     deriveDaemonContext,
     deriveOneShotContext,
     deriveTestHarnessContext,
+    imageBuildContainerContext,
     standaloneContainerContext,
     contextRequirement,
     decodeContextText,
@@ -37,6 +43,7 @@ module HostBootstrap.Context
     renderContext,
     writeContextFile,
     validateContext,
+    validateRuntimeContext,
     commandAllowed,
     readAndValidateContextFile,
     requireContextFile,
@@ -57,9 +64,11 @@ import GHC.Generics (Generic)
 import HostBootstrap.Dhall.Hoist (NamedUnion)
 import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric.Natural (Natural)
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, findExecutable)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
+import System.Posix.Files (FileStatus, getFileStatus, isSocket)
 
 -- | A build-time placeholder for bootstrap-only config initialization surfaces
 -- that run before a parent context is available. Normal derived contexts carry
@@ -72,10 +81,23 @@ data ContextKind
   = HostOrchestrator
   | VMOrchestrator
   | VMProjectContainer
+  | ImageBuildContainer
   | ClusterService
   | Daemon
   | OneShotJob
   | TestHarness
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | The provider/substrate that owns a topology frame. The graph is deliberately
+-- open-ended: later providers add constructors here without changing the core
+-- frame shape.
+data ProviderKind
+  = HostProvider
+  | IncusVMProvider
+  | LimaVMProvider
+  | DockerContainerProvider
+  | KubernetesProvider
+  | ExternalProvider
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | A local capability the context claims and command gates may require.
@@ -112,6 +134,32 @@ data ContextFrame = ContextFrame
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
+-- | One node in the declared execution topology.
+data TopologyFrame = TopologyFrame
+  { topologyFrameId :: Text,
+    topologyParentId :: Text,
+    topologyProvider :: ProviderKind,
+    topologyKind :: ContextKind,
+    topologyRoleName :: Text
+  }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | A locally-checkable runtime fact. Single-argument witness kinds use
+-- 'witnessName'; 'WitnessEnvEquals' also uses 'witnessValue'.
+data WitnessKind
+  = WitnessFileExists
+  | WitnessUnixSocket
+  | WitnessEnvEquals
+  | WitnessExecutable
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+data RuntimeWitness = RuntimeWitness
+  { witnessKind :: WitnessKind,
+    witnessName :: Text,
+    witnessValue :: Text
+  }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
 -- | The resource envelope this context is inside.
 data ResourceEnvelope = ResourceEnvelope
   { cpu :: Natural,
@@ -128,6 +176,9 @@ data BinaryContext = BinaryContext
     contextKind :: ContextKind,
     roleName :: Text,
     parentChain :: [ContextFrame],
+    topologyFrames :: [TopologyFrame],
+    currentFrame :: Text,
+    runtimeWitnesses :: [RuntimeWitness],
     capabilities :: [Capability],
     allowedCommandClasses :: [CommandClass],
     resourceEnvelope :: ResourceEnvelope,
@@ -139,6 +190,8 @@ data BinaryContext = BinaryContext
 -- child contexts use the same role-specific authority, plus a parent frame.
 contextForKind :: Text -> Text -> Text -> ResourceEnvelope -> ContextKind -> BinaryContext
 contextForKind projectName binaryName root envelope kind =
+  let frameId = generatedFrameId kind 0
+   in
   BinaryContext
     { project = projectName,
       binary = binaryName,
@@ -146,6 +199,17 @@ contextForKind projectName binaryName root envelope kind =
       contextKind = kind,
       roleName = defaultRoleName kind,
       parentChain = [],
+      topologyFrames =
+        [ TopologyFrame
+            { topologyFrameId = frameId,
+              topologyParentId = "",
+              topologyProvider = providerForKind kind,
+              topologyKind = kind,
+              topologyRoleName = defaultRoleName kind
+            }
+        ],
+      currentFrame = frameId,
+      runtimeWitnesses = runtimeWitnessesForKind kind frameId,
       capabilities = capabilitiesForKind kind,
       allowedCommandClasses = commandClassesForKind kind,
       resourceEnvelope = envelope,
@@ -159,11 +223,16 @@ hostOrchestratorContext projectName binaryName root envelope =
 
 -- | Derive a VM-local orchestrator context from its parent.
 deriveVMContext :: BinaryContext -> Text -> BinaryContext
-deriveVMContext parent root =
+deriveVMContext = deriveVMContextWithProvider IncusVMProvider
+
+-- | Derive a VM-local orchestrator context for a specific VM provider.
+deriveVMContextWithProvider :: ProviderKind -> BinaryContext -> Text -> BinaryContext
+deriveVMContextWithProvider provider parent root =
   childContext
     parent
     root
     VMOrchestrator
+    provider
     [HostTools, DockerSocket, ContainerRuntime]
     [EnsureCommand, ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
     [VMProjectContainer, ClusterService, Daemon, OneShotJob, TestHarness]
@@ -175,6 +244,7 @@ deriveContainerContext parent root =
     parent
     root
     VMProjectContainer
+    DockerContainerProvider
     [DockerSocket, ContainerRuntime, KindNetwork]
     [ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
     [ClusterService, OneShotJob, TestHarness]
@@ -186,6 +256,7 @@ deriveServiceContext parent root =
     parent
     root
     ClusterService
+    KubernetesProvider
     (capabilitiesForKind ClusterService)
     (commandClassesForKind ClusterService)
     (childKindsForKind ClusterService)
@@ -197,6 +268,7 @@ deriveDaemonContext parent root =
     parent
     root
     Daemon
+    (providerForKind Daemon)
     (capabilitiesForKind Daemon)
     (commandClassesForKind Daemon)
     (childKindsForKind Daemon)
@@ -208,6 +280,7 @@ deriveOneShotContext parent root =
     parent
     root
     OneShotJob
+    (providerForKind OneShotJob)
     (capabilitiesForKind OneShotJob)
     (commandClassesForKind OneShotJob)
     (childKindsForKind OneShotJob)
@@ -219,26 +292,35 @@ deriveTestHarnessContext parent root =
     parent
     root
     TestHarness
+    (providerForKind TestHarness)
     (capabilitiesForKind TestHarness)
     (commandClassesForKind TestHarness)
     (childKindsForKind TestHarness)
 
--- | Create a standalone project-container context for Dockerfile bootstrap
--- surfaces such as @config init --role vm-project-container@, which run before
--- normal command gating can require an existing sibling config.
+-- | Create the standalone image-build context used by Dockerfile bootstrap
+-- surfaces before a parent-derived runtime context exists.
+imageBuildContainerContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
+imageBuildContainerContext projectName binaryName root envelope =
+  contextForKind projectName binaryName root envelope ImageBuildContainer
+
+-- | Backward-compatible name for the Dockerfile bootstrap context. Runtime
+-- project containers must be parent-derived with 'deriveContainerContext'.
 standaloneContainerContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
-standaloneContainerContext projectName binaryName root envelope =
-  contextForKind projectName binaryName root envelope VMProjectContainer
+standaloneContainerContext = imageBuildContainerContext
 
 childContext ::
   BinaryContext ->
   Text ->
   ContextKind ->
+  ProviderKind ->
   [Capability] ->
   [CommandClass] ->
   [ContextKind] ->
   BinaryContext
-childContext parent root kind caps classes childKinds =
+childContext parent root kind provider caps classes childKinds =
+  let frameId = generatedFrameId kind (length (topologyFrames parent))
+      parentFrame = currentFrame parent
+   in
   BinaryContext
     { project = project parent,
       binary = binary parent,
@@ -246,6 +328,18 @@ childContext parent root kind caps classes childKinds =
       contextKind = kind,
       roleName = defaultRoleName kind,
       parentChain = parentChain parent ++ [ContextFrame (contextKind parent) (binary parent)],
+      topologyFrames =
+        topologyFrames parent
+          ++ [ TopologyFrame
+                { topologyFrameId = frameId,
+                  topologyParentId = parentFrame,
+                  topologyProvider = provider,
+                  topologyKind = kind,
+                  topologyRoleName = defaultRoleName kind
+                }
+             ],
+      currentFrame = frameId,
+      runtimeWitnesses = runtimeWitnessesForKind kind frameId,
       capabilities = caps,
       allowedCommandClasses = classes,
       resourceEnvelope = resourceEnvelope parent,
@@ -256,6 +350,7 @@ capabilitiesForKind :: ContextKind -> [Capability]
 capabilitiesForKind HostOrchestrator = [HostTools, IncusProvider]
 capabilitiesForKind VMOrchestrator = [HostTools, DockerSocket, ContainerRuntime]
 capabilitiesForKind VMProjectContainer = [DockerSocket, ContainerRuntime, KindNetwork]
+capabilitiesForKind ImageBuildContainer = []
 capabilitiesForKind ClusterService = [KubernetesAPI, DurableStore, ServicePort]
 capabilitiesForKind Daemon = [DurableStore, ServicePort]
 capabilitiesForKind OneShotJob = [ContainerRuntime]
@@ -277,6 +372,8 @@ commandClassesForKind VMOrchestrator =
   [EnsureCommand, ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
 commandClassesForKind VMProjectContainer =
   [ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
+commandClassesForKind ImageBuildContainer =
+  [ConfigInspectionCommand, ConfigGenerationCommand, CheckCodeCommand]
 commandClassesForKind ClusterService =
   [ConfigInspectionCommand, ServiceCommand]
 commandClassesForKind Daemon =
@@ -289,7 +386,6 @@ commandClassesForKind TestHarness =
 childKindsForKind :: ContextKind -> [ContextKind]
 childKindsForKind HostOrchestrator =
   [ VMOrchestrator,
-    VMProjectContainer,
     ClusterService,
     Daemon,
     OneShotJob,
@@ -299,6 +395,7 @@ childKindsForKind VMOrchestrator =
   [VMProjectContainer, ClusterService, Daemon, OneShotJob, TestHarness]
 childKindsForKind VMProjectContainer =
   [ClusterService, Daemon, OneShotJob, TestHarness]
+childKindsForKind ImageBuildContainer = []
 childKindsForKind ClusterService = []
 childKindsForKind Daemon = []
 childKindsForKind OneShotJob = []
@@ -309,10 +406,36 @@ defaultRoleName :: ContextKind -> Text
 defaultRoleName HostOrchestrator = "host-orchestrator"
 defaultRoleName VMOrchestrator = "vm-orchestrator"
 defaultRoleName VMProjectContainer = "vm-project-container"
+defaultRoleName ImageBuildContainer = "image-build-container"
 defaultRoleName ClusterService = "cluster-service"
 defaultRoleName Daemon = "daemon"
 defaultRoleName OneShotJob = "one-shot-job"
 defaultRoleName TestHarness = "test-harness"
+
+generatedFrameId :: ContextKind -> Int -> Text
+generatedFrameId kind n = defaultRoleName kind <> "-" <> T.pack (show n)
+
+providerForKind :: ContextKind -> ProviderKind
+providerForKind HostOrchestrator = HostProvider
+providerForKind VMOrchestrator = IncusVMProvider
+providerForKind VMProjectContainer = DockerContainerProvider
+providerForKind ImageBuildContainer = DockerContainerProvider
+providerForKind ClusterService = KubernetesProvider
+providerForKind Daemon = HostProvider
+providerForKind OneShotJob = DockerContainerProvider
+providerForKind TestHarness = DockerContainerProvider
+
+runtimeWitnessesForKind :: ContextKind -> Text -> [RuntimeWitness]
+runtimeWitnessesForKind VMOrchestrator _ =
+  [RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" ""]
+runtimeWitnessesForKind VMProjectContainer frameId =
+  [ RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" "",
+    RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" "",
+    RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId
+  ]
+runtimeWitnessesForKind ClusterService _ =
+  [RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""]
+runtimeWitnessesForKind _ _ = []
 
 -- | What a command expects from the active context.
 data ContextRequirement = ContextRequirement
@@ -340,8 +463,13 @@ data BinaryContextError
   | ContextDecodeFailed FilePath String
   | ContextProjectMismatch Text Text
   | ContextBinaryMismatch Text Text
+  | ContextCurrentFrameMissing Text
+  | ContextCurrentFrameKindMismatch Text ContextKind ContextKind
+  | ContextTopologyParentMissing Text Text
+  | ContextRequiredAncestorMissing ContextKind ContextKind
   | ContextCommandNotAllowed CommandClass ContextKind
   | ContextCapabilityMissing Capability
+  | ContextRuntimeWitnessFailed RuntimeWitness String
   deriving (Eq, Show)
 
 -- | Decode a context from Dhall source text. Throws a Dhall exception on
@@ -372,6 +500,8 @@ readContextFile path = do
 vocabUnions :: [NamedUnion]
 vocabUnions =
   [ Hoist.unionOf @ContextKind "ContextKind",
+    Hoist.unionOf @ProviderKind "ProviderKind",
+    Hoist.unionOf @WitnessKind "WitnessKind",
     Hoist.unionOf @Capability "Capability",
     Hoist.unionOf @CommandClass "CommandClass"
   ]
@@ -396,17 +526,103 @@ validateContext req ctx
       Left (ContextProjectMismatch (requiredProject req) (project ctx))
   | binary ctx /= requiredBinary req =
       Left (ContextBinaryMismatch (requiredBinary req) (binary ctx))
+  | Nothing <- currentTopologyFrame ctx =
+      Left (ContextCurrentFrameMissing (currentFrame ctx))
+  | Just frame <- currentTopologyFrame ctx,
+    topologyKind frame /= contextKind ctx =
+      Left (ContextCurrentFrameKindMismatch (currentFrame ctx) (contextKind ctx) (topologyKind frame))
+  | Left err <- ancestorKinds ctx =
+      Left err
   | not (commandAllowed ctx (requiredCommandClass req)) =
       Left (ContextCommandNotAllowed (requiredCommandClass req) (contextKind ctx))
   | Just missing <- find (`notElem` capabilities ctx) (requiredCapabilities req) =
       Left (ContextCapabilityMissing missing)
+  | Just required <- requiredAncestorKind ctx,
+    Right ancestors <- ancestorKinds ctx,
+    required `notElem` ancestors =
+      Left (ContextRequiredAncestorMissing (contextKind ctx) required)
   | otherwise = Right ctx
+
+currentTopologyFrame :: BinaryContext -> Maybe TopologyFrame
+currentTopologyFrame ctx =
+  find ((== currentFrame ctx) . topologyFrameId) (topologyFrames ctx)
+
+ancestorKinds :: BinaryContext -> Either BinaryContextError [ContextKind]
+ancestorKinds ctx =
+  case currentTopologyFrame ctx of
+    Nothing -> Left (ContextCurrentFrameMissing (currentFrame ctx))
+    Just frame -> go [] frame
+  where
+    go acc frame
+      | T.null (topologyParentId frame) = Right acc
+      | otherwise =
+          case find ((== topologyParentId frame) . topologyFrameId) (topologyFrames ctx) of
+            Nothing -> Left (ContextTopologyParentMissing (topologyFrameId frame) (topologyParentId frame))
+            Just parent -> go (topologyKind parent : acc) parent
+
+requiredAncestorKind :: BinaryContext -> Maybe ContextKind
+requiredAncestorKind ctx =
+  case contextKind ctx of
+    VMProjectContainer -> Just VMOrchestrator
+    _ -> Nothing
+
+-- | Validate both the pure context structure and the locally checkable runtime
+-- witnesses in the decoded context.
+validateRuntimeContext :: ContextRequirement -> BinaryContext -> IO (Either BinaryContextError BinaryContext)
+validateRuntimeContext req ctx =
+  case validateContext req ctx of
+    Left err -> pure (Left err)
+    Right ok -> do
+      witnessResults <- traverse checkRuntimeWitness (runtimeWitnesses ok)
+      pure $ case findLeft witnessResults of
+        Just err -> Left err
+        Nothing -> Right ok
+
+findLeft :: [Either a b] -> Maybe a
+findLeft [] = Nothing
+findLeft (Left x : _) = Just x
+findLeft (Right _ : xs) = findLeft xs
+
+checkRuntimeWitness :: RuntimeWitness -> IO (Either BinaryContextError ())
+checkRuntimeWitness witness =
+  case witnessKind witness of
+    WitnessFileExists -> do
+      exists <- doesFileExist name
+      pure $
+        if exists
+          then Right ()
+          else failed ("missing file " ++ name)
+    WitnessUnixSocket -> do
+      result <- try (getFileStatus name) :: IO (Either SomeException FileStatus)
+      pure $ case result of
+        Right status
+          | isSocket status -> Right ()
+        Right _ -> failed ("not a unix socket " ++ name)
+        Left err -> failed ("missing unix socket " ++ name ++ ": " ++ firstLine (show err))
+    WitnessEnvEquals -> do
+      actual <- lookupEnv name
+      pure $ case actual of
+        Just value
+          | value == T.unpack (witnessValue witness) -> Right ()
+        Just value -> failed ("environment " ++ name ++ " was " ++ show value)
+        Nothing -> failed ("environment " ++ name ++ " is unset")
+    WitnessExecutable -> do
+      found <- findExecutable name
+      pure $ case found of
+        Just _ -> Right ()
+        Nothing -> failed ("executable not found on PATH: " ++ name)
+  where
+    name = T.unpack (witnessName witness)
+    failed detail = Left (ContextRuntimeWitnessFailed witness detail)
+    firstLine = takeWhile (/= '\n')
 
 -- | Load and validate a context file.
 readAndValidateContextFile :: FilePath -> ContextRequirement -> IO (Either BinaryContextError BinaryContext)
 readAndValidateContextFile path req = do
   loaded <- readContextFile path
-  pure (loaded >>= validateContext req)
+  case loaded of
+    Left err -> pure (Left err)
+    Right ctx -> validateRuntimeContext req ctx
 
 -- | Load and validate a context file, exiting with status 1 on failure.
 requireContextFile :: FilePath -> ContextRequirement -> IO BinaryContext
@@ -438,10 +654,25 @@ contextErrorMessage err =
       "binary context: project mismatch (expected " ++ txt expected ++ ", got " ++ txt actual ++ ")"
     ContextBinaryMismatch expected actual ->
       "binary context: binary mismatch (expected " ++ txt expected ++ ", got " ++ txt actual ++ ")"
+    ContextCurrentFrameMissing frame ->
+      "binary context: current frame " ++ txt frame ++ " is not present in topologyFrames"
+    ContextCurrentFrameKindMismatch frame expected actual ->
+      "binary context: current frame "
+        ++ txt frame
+        ++ " has kind "
+        ++ show actual
+        ++ " but contextKind is "
+        ++ show expected
+    ContextTopologyParentMissing child parent ->
+      "binary context: topology frame " ++ txt child ++ " references missing parent " ++ txt parent
+    ContextRequiredAncestorMissing kind required ->
+      "binary context: " ++ show kind ++ " requires ancestor " ++ show required
     ContextCommandNotAllowed cls kind ->
       "binary context: command " ++ show cls ++ " is not allowed in " ++ show kind
     ContextCapabilityMissing cap ->
       "binary context: missing capability " ++ show cap
+    ContextRuntimeWitnessFailed witness detail ->
+      "binary context: runtime witness " ++ show (witnessKind witness) ++ " failed for " ++ txt (witnessName witness) ++ ": " ++ detail
   where
     txt = T.unpack
     firstLine = takeWhile (/= '\n')

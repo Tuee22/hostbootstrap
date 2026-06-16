@@ -12,8 +12,10 @@ runs (the Plan→Apply pattern).
 module HostBootstrapDemo.Chain (
     Op (..),
     demoDeployChain,
+    containerRuntimeFrameId,
     renderPlan,
     runDeploy,
+    vmRuntimeContainerConfigPath,
 )
 where
 
@@ -56,8 +58,8 @@ separate cluster\/Harbor\/web-serve\/e2e chain alongside it — that would be a
 redundant second representation of the same operation (see
 @composition_methodology.md@).
 -}
-demoDeployChain :: LiftContext -> [Op]
-demoDeployChain liftedTestContext =
+demoDeployChain :: LiftContext -> LiftContext -> [Op]
+demoDeployChain vmContext liftedTestContext =
     [ Op "ensure VM provider (metal)" localContext ["vm", "ensure"]
     , Op "vm up — cordon #1 (the VM is the wall)" localContext ["vm", "up"]
     , Op
@@ -65,11 +67,21 @@ demoDeployChain liftedTestContext =
         localContext
         ["vm", "pristine-bootstrap"]
     , Op
+        "runtime context — derive the VM project-container config in the VM"
+        vmContext
+        ["context", "create", "container", vmRuntimeContainerConfigPath, "--source-root", "/workspace/demo"]
+    , Op
         "test all — the whole test workflow lifted into the project container in the VM (kind on the VM's Docker)"
         liftedTestContext
         ["test", "all"]
     , Op "vm down — guarded teardown (.data preserved)" localContext ["vm", "down"]
     ]
+
+vmRuntimeContainerConfigPath :: FilePath
+vmRuntimeContainerConfigPath = "/tmp/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall"
+
+containerRuntimeFrameId :: String
+containerRuntimeFrameId = "vm-project-container-2"
 
 {- | Render the plan: for each step, the label and the exact host argv it folds to
 (via the pure 'foldLift'). Pure — this is the @--dry-run@ output and a faithful
@@ -97,7 +109,7 @@ runDeploy incusVM limaVM img dryRun = do
             if isAppleSilicon (hcSubstrate cfg)
                 then inLimaVM limaVM localContext
                 else inVM incusVM localContext
-        ops = demoDeployChain (inContainer img vmContext)
+        ops = demoDeployChain vmContext (inContainer img vmContext)
     if dryRun
         then putStr (renderPlan self ops)
         else mapM_ (applyOp cfg self) ops
@@ -105,7 +117,7 @@ runDeploy incusVM limaVM img dryRun = do
     -- The in-VM binary path (where the VM bootstrap lays the host-native build
     -- down). Used only by a bare @inVM@ op; the canonical chain's one lifted step
     -- is container-terminal, so this is currently unreferenced.
-    inVMSelfPath = "/root/hostbootstrap/demo/.build/hostbootstrap-demo"
+    inVMSelfPath = "/tmp/hostbootstrap/demo/.build/hostbootstrap-demo"
     applyOp :: HostConfig -> SelfRef -> Op -> IO ()
     applyOp cfg self op = do
         putStrLn ("deploy: " ++ opLabel op)
