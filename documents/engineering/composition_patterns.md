@@ -21,15 +21,15 @@
 ## Context Topologies
 
 Each topology is a lift stack (outermost-first); a binary crosses each boundary by invoking its own
-subcommand there (`incus exec` for a VM, `docker run --rm` for a container).
+subcommand there (the selected VM provider for a VM, `docker run --rm` for a container).
 
 1. **One-shot container lift** — `host → docker run --rm <project-container> <pb> <verb>`. Run a tool the
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container → deploy`.
    The worked [demo](../operations/demo_runbook.md); the no-copy-out rebuild-in-context case. Its deploy is
    a **single** lift sequence whose only lifted compute step lifts the *whole* test workflow into the
-   project container in the VM — `test all` in `inContainer img (inVM vm localContext)`, folding to
-   `incus exec <vm> -- docker run --rm <image> test all` — not a parallel chain of lifted cluster/web-serve/e2e
+   project container in the VM — `test all` in `inContainer img (inVM vm localContext)`, folding through
+   Lima on Apple Silicon or Incus on Linux and then `docker run --rm <image> test all` — not a parallel chain of lifted cluster/web-serve/e2e
    ops (see [single representation](#single-representation-applied-to-shape-2-pristine-host-vm-bootstrap)).
 3. **Host → managed cloud cluster** — build the container, then a container-lift uses a cloud CLI to
    provision a managed Kubernetes cluster against an external state backend, then a second container-lift
@@ -68,7 +68,7 @@ for shape 2:
   redundant second representation (it duplicates the harness and double-creates clusters when it lifts a
   harness case). There is one representation, and the harness is it.
 
-The single canonical chain (`demo deploy`) is `ensure incus` (local) → `vm up` (local, cordon #1) →
+The single canonical chain (`demo deploy`) is `vm ensure` (local) → `vm up` (local, cordon #1) →
 `vm pristine-bootstrap` (local → VM: build #2 host-native + build #3 project image) → `test all` (the only
 lifted compute step) → `vm down` (local, guarded teardown). Whether the worked demo realizes this yet is
 tracked in [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md).

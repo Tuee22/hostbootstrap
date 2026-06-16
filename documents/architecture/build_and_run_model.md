@@ -92,7 +92,8 @@ host-native binary is built and execed, the **binary** does that work, because i
 built binary reasonably can:
 
 - **Ensure Docker**: the binary's `ensure docker` reconciler provisions and verifies Docker (on Apple,
-  the per-project Colima VM sized to the resource budget). See
+  the per-project Colima VM sized to the resource budget; on Linux, the daemon plus invoking-user socket
+  access for future login sessions and the current session). See
   [resource_budgeting](../engineering/resource_budgeting.md).
 - **Build the project container** `FROM` the base image, gating on the project's canonical code-check
   (formatting, lint, type/compile checks). Building the container is the mechanism that enforces this
@@ -106,12 +107,12 @@ The two builds are distinct and owned by distinct layers: the bootstrapper's hos
 gate and any container-resident services). Neither is redundant — collapsing them would either skip
 the gate or ship an unrunnable binary.
 
-## The `HostTarget` Parameterization
+## The VM Provider Parameterization
 
-A linux-host operation runs against a typed **host target**: the local host or an incus VM. This is a
-host-provider axis orthogonal to substrate — the VM is still a `linux-cpu`/`linux-gpu` machine inside,
-and the host target is not a fifth run-model. It parameterizes the existing run-models rather than
-adding to them:
+A native Linux operation can run against a typed **host target**: the local host or an Incus VM. This is a
+host-provider axis orthogonal to substrate — the VM is still a `linux-cpu`/`linux-gpu` machine inside, and
+the host target is not a fifth run-model. It parameterizes the existing run-models rather than adding to
+them:
 
 ```
 data HostTarget = Local | InVM IncusVM
@@ -123,12 +124,13 @@ tool directly; `runInTarget cfg (InVM vm) t args` dispatches through one host
 `incus exec <name> -- <tool> <args>` into the VM (where the in-VM `<tool>` is the VM's own `$PATH`
 binary, since the VM is a separate machine). The run-models in [run_models](run_models.md) are
 unchanged; the host target sits underneath them, so the same machinery runs identically whether the
-linux host is local or encapsulated in an incus VM. See
+Linux host is local or encapsulated in an Incus VM. See
 [incus](../engineering/incus.md) for the host-provider axis, the `ensure incus` install, and the VM
 lifecycle.
 
 The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level self-reference lift**
 (`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
-binary crosses a boundary by invoking its *own* subcommand in the nested context (`incus exec` for a VM,
-`docker run --rm` for a container). See
+binary crosses a boundary by invoking its *own* subcommand in the nested context. The Apple Silicon demo
+uses the Lima VM provider (`limactl shell <instance> -- ...`); native Linux uses Incus
+(`incus exec <vm> -- ...`); containers use `docker run --rm`. See
 [composition_methodology](composition_methodology.md).

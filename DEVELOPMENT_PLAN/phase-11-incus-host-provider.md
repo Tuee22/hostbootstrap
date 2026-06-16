@@ -4,15 +4,15 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md), [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)
 
-> **Purpose**: Add `incus` as a first-class host-provider axis (a target linux host is either the local
-> host or an incus VM) so anything `hostbootstrap` deploys on an unvirtualized linux host it can deploy
-> inside an incus linux VM, with the same machinery and the same budget cordon.
+> **Purpose**: Add VM providers as first-class host-provider axes so anything `hostbootstrap` deploys on
+> an unvirtualized linux host it can deploy inside a managed Linux VM, with the same machinery and the
+> same budget cordon. Native Linux uses Incus; Apple Silicon uses a Lima VM for the worked demo.
 
 ## Phase Status
 
 **Status**: Done
 
-`incus` is the host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
+`incus` is the native Linux host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
 like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler
 (Colima-backed Incus runtime on Apple, native daemon on Linux); `HostBootstrap.HostTarget`
 parameterizes linux-host operations by `HostTarget = Local | InVM IncusVM`; `HostBootstrap.Incus`
@@ -22,10 +22,21 @@ quantity parser to cordon the VM at the wall
 supported host-provider layer.
 
 `HostBootstrap.Lift` is the subcommand-level self-reference lift. It generalizes the two-case
-`HostTarget = Local | InVM` tool-level lift to an n-level context stack (`Local`, `InVM`, `InContainer`)
+`HostTarget = Local | InVM` tool-level lift to an n-level context stack (`Local`, provider-backed `InVM`,
+`InContainer`)
 so a binary crosses any boundary by invoking its own subcommand in the nested context. The pure cores,
 argv builders, dispatch, and lift fold are unit-tested, and the worked demo exercises the in-VM and
-in-container path in real runs. This phase is `Done`.
+in-container path in real runs.
+
+This phase is reopened because Apple Silicon should not rely on an Incus VM inside the Colima Incus
+runtime for the demo VM. The supported Apple path is a Lima VM reached by `limactl shell
+hostbootstrap-demo-vm -- ...`, while native Linux keeps the Incus VM path. The pure Lima argv builder,
+`ensure lima`, and lift fold are implemented and validated through the full demo lifecycle.
+
+## Remaining Work
+
+None. Native Linux remains the Incus provider path; Apple Silicon uses Lima for the worked demo's
+pristine VM path.
 
 ## Phase Objective
 
@@ -158,7 +169,7 @@ phase.
 
 Generalize the host-provider axis from the two-case `HostTarget` (tool-level lift) to the n-level
 subcommand-level **self-reference lift**: a binary crosses a context boundary by re-invoking its own
-subcommand in the nested context (`incus exec` for a VM, `docker run --rm` for a container whose
+subcommand in the nested context (selected VM provider for a VM, `docker run --rm` for a container whose
 `ENTRYPOINT` is the binary).
 
 #### Deliverables
@@ -169,8 +180,8 @@ subcommand in the nested context (`incus exec` for a VM, `docker run --rm` for a
   (reusing `runTool`; a new `runSelf` for the binary itself). `HostTarget`/`runInTarget` are kept
   alongside as the narrower tool-level lift.
 - The argv fold honors § K (absolute tool only at the outermost host hop; bare `$PATH` names nested) and
-  the container `ENTRYPOINT`-is-the-binary contract; a `VM`-then-`Container` stack folds to
-  `incus exec <vm> -- docker run --rm <image> <subcmd>`.
+  the container `ENTRYPOINT`-is-the-binary contract; a `VM`-then-`Container` stack folds through the
+  selected VM provider, then `docker run --rm <image> <subcmd>`.
 
 #### Validation
 
@@ -181,6 +192,43 @@ subcommand in the nested context (`incus exec` for a VM, `docker run --rm` for a
 
 None. The lift primitive and its `LiftSpec` tests are implemented, and the demo composes it.
 
+### Sprint 11.6: Lima VM provider for Apple Silicon [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`
+**Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/incus.md`, `documents/engineering/lima.md`, `documents/operations/demo_runbook.md`, `system-components.md`
+
+#### Objective
+
+Make the VM provider selected by substrate: Lima on Apple Silicon, native Incus on Linux. The
+demo must not attempt to create an Incus VM on Apple Silicon.
+
+#### Deliverables
+
+- `HostBootstrap.Lima` with pure argv builders for `limactl start`, `limactl shell`, `limactl copy`,
+  `limactl list`, and guarded `limactl delete`. The start builder disables Lima-managed containerd
+  because Docker is reconciled by the project binary inside the pristine VM.
+- `HostBootstrap.Ensure.Lima` exposes `ensure lima` as the Apple-only install-and-verify reconciler.
+- `HostBootstrap.Lift` can fold a provider-backed VM layer through Lima as well as Incus.
+- `demo vm ensure`, `vm up`, `vm pristine-bootstrap`, `deploy`, and `vm down` select Lima on Apple
+  Silicon and Incus on Linux.
+- The demo dry-run prints the selected provider fold, e.g.
+  `limactl shell hostbootstrap-demo-vm -- docker run --rm ... test all` on Apple Silicon.
+
+#### Validation
+
+- `cabal build all` from `core/` passes.
+- `cabal build all` from `demo/` passes.
+- `hostbootstrap run --project-root demo deploy --dry-run` on Apple Silicon prints the Lima lift rather
+  than an Incus lift.
+- `hostbootstrap run --project-root demo deploy` on Apple Silicon passed end to end: it created the Lima
+  VM with the documented budget, ran the in-VM bootstrap and image build, lifted the project-container
+  `test all`, reported `test report: 3/3 passed` including `e2e-tabs`, and destroyed the VM.
+
+#### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -188,6 +236,7 @@ None. The lift primitive and its `LiftSpec` tests are implemented, and the demo 
   and `incus exec` dispatch, the reboot reconcile, and the `incusSizingArgs` budget cordon, with a
   WRONG/RIGHT pair (WRONG: bare `$PATH` `incus` / unguarded `incus delete`; RIGHT: resolved `AbsExe` /
   name-prefix-guarded destroy).
+- `documents/engineering/lima.md` - the Apple Silicon Lima VM provider used by the worked demo.
 
 **Architecture docs to create/update:**
 - `documents/architecture/build_and_run_model.md` - the `HostTarget` parameterization of the run-models.

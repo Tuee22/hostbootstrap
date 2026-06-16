@@ -86,8 +86,9 @@ fail-closed. `--memory-swap == --memory`, so an over-budget cluster self-limits 
 past its ceiling. `<clusterName>` is the resolved `ClusterPlan` name, so each per-case test cluster is
 cordoned too.
 
-On Apple, the per-project Colima VM (sized by `ensure docker` via `colimaSizingArgs`) is the cordon, so
-there is no kind-node cap — the VM boundary already holds the ceiling.
+On Apple, the pristine demo uses a Lima VM sized by `limaSizingArgs`; direct Docker workflows may use the
+per-project Colima VM sized by `colimaSizingArgs`. In both cases the VM boundary is the first cordon, so
+there is no host-side kind-node cap outside the VM.
 
 ## Per-Substrate Storage Cordon
 
@@ -97,7 +98,7 @@ Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |
 |-----------|----------------|
-| Apple | Colima `--disk` (the VM's sized disk) |
+| Apple | Lima or Colima `--disk` (the VM's sized disk) |
 | incus VM | `root,size` on the incus instance (the incus builder is Phase 11) |
 | Bare Linux | A quota'd hostPath plus image garbage collection |
 

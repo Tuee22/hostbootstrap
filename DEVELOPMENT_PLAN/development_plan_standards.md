@@ -192,9 +192,9 @@ implemented unless the plan marks the owning phase `Done`.
 External tools are resolved through a closed `HostTool` enumeration to absolute paths in
 `hostbootstrap-core`. No library or project code calls `proc "<bare-command-name>"` that resolves
 through `$PATH`; every invocation reads an absolute path from typed host configuration. The enum includes
-the host-provider tool `incus` (§ U); the in-VM tools it dispatches to are the VM's own `$PATH` binaries
-reached through the single resolved host `incus exec` (the VM is a separate machine — the doctrine governs
-host invocation).
+host-provider tools such as `colima` and `incus` (§ U); the in-VM tools they dispatch to are the VM's own
+`$PATH` binaries reached through a single resolved host provider command (the VM is a separate machine —
+the doctrine governs host invocation).
 
 ### L. Substrate and Ensure-Reconciler Contract
 
@@ -210,8 +210,9 @@ host minimums (§ M) — the irreducible host floor that cannot be auto-installe
 inside the `ensure` suite is a reconciler run on the **wrong host** (an applicability misuse, e.g.
 `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
 an absent dependency; the two must never be conflated. `ensure incus` is the first reconciler applicable
-on **both** apple-silicon and linux — on Apple it starts the Colima-backed Incus provider, and on Linux
-it initializes the native daemon that encapsulates a fresh linux host (§ U). The
+on **both** apple-silicon and linux — on Apple it prepares the Colima-backed Incus provider for explicit
+Incus workflows, and on Linux it initializes the native daemon that encapsulates a fresh linux host (§ U).
+The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
@@ -232,8 +233,8 @@ version, passwordless sudo, Xcode CLT, Homebrew as the toolchain root); **every 
 binary needs is installed by the `ensure` suite (§ L) when the binary runs, so the binary is never
 blocked by something merely absent.** The bootstrapper does **not** ensure Docker and does **not** build
 the project container — those are not pre-binary necessities; the project binary, once running, ensures
-Docker (provisioning the per-project Colima/incus VM on Apple), builds the project container, drives the
-cluster, and does everything else it reasonably can. There is **no copy-out**: a binary built inside a
+Docker, builds the project container, drives the VM provider, drives the cluster, and does everything
+else it reasonably can. There is **no copy-out**: a binary built inside a
 Linux container cannot exec on a general host such as Apple silicon, which is why the binary is built
 host-native and the Python layer must ensure the host build toolchain first. All other host-management
 logic lives in `hostbootstrap-core`; new host logic defaults to the project binary (Haskell), and a
@@ -263,12 +264,12 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
   Python layer neither ensures Docker nor builds the container (§ M).
 - Tart is build-only on Apple (Swift/Metal artifacts copied to `./.build/`); no built binary runs inside
   the Tart VM.
-- Inside an incus VM (§ U) the same host-native build applies — the VM is a fresh linux host: the
-  pipx-installed `hostbootstrap` ensures the toolchain, builds the binary host-native, and execs it; the
-  binary then ensures Docker and builds the container in the VM. The worked demo's pristine-host bootstrap
-  counts **3 builds** — a metal orchestrator build plus, inside the pristine VM, the host-native binary
-  build and the binary-driven project-container build — a demo-only illustration, not the standard
-  workflow.
+- Inside a managed Linux VM (§ U) the same host-native build applies — Lima on Apple Silicon,
+  native Incus on Linux. The VM is a fresh linux host: the pipx-installed `hostbootstrap` ensures the
+  toolchain, builds the binary host-native, and execs it; the binary then ensures Docker and builds the
+  container in the VM. The worked demo's pristine-host bootstrap counts **3 builds** — a metal
+  orchestrator build plus, inside the pristine VM, the host-native binary build and the binary-driven
+  project-container build — a demo-only illustration, not the standard workflow.
 
 ### O. Resource Budget and Cordoning
 
@@ -277,11 +278,11 @@ the one ceiling the project may not exceed. The project binary reads that value 
 projects narrower resource envelopes into child configs (§ X). It is enforced with defense in depth: a
 Dhall-time `assert`
 (`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before bring-up, and the applied
-wall at runtime — a sized Colima VM (Apple), a sized incus VM (§ U), the applied `docker update`
-kind-node cap (Linux), or `docker run` caps (one-shot). All VM/node sizing is emitted by **one**
-canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the **project binary**
-(the per-project Colima/incus VM via `ensure docker`; the kind-node cap via `cluster up`); the Python
-bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second budget interpreter.
+wall at runtime — a sized Lima VM on Apple Silicon, a sized Incus VM on Linux (§ U), the applied
+`docker update` kind-node cap, or `docker run` caps (one-shot). All VM/node sizing is emitted by **one**
+canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the **project binary**;
+the Python bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second budget
+interpreter.
 Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a quota'd hostPath
 on Linux), since `docker update` has no storage flag. The budget flows from the local host config into
 child config projections, then into both the spinup cordon and the binary-generated configs.
@@ -355,23 +356,20 @@ modes: freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal de
 ### U. Host-Provider Axis And The Self-Reference Lift
 
 A project binary crosses an execution-context boundary by invoking its **own** subcommand in the nested
-context — the self-reference lift (`HostBootstrap.Lift`). Contexts compose as a stack of layers,
-outermost-first; the empty stack is the local host. `incus` is the VM layer (a target linux host is the
-local host or an incus VM, reached by one `incus exec`); a container is the `docker run --rm` layer
-(whose `ENTRYPOINT` is the binary); the stack nests — host → VM → container folds to
-`incus exec <vm> -- docker run --rm <image> <subcmd>`. Before a nested call crosses a boundary, the
-caller creates the callee's `<project>.dhall` (§ X), so the callee can explicitly
-reason about its place even though it runs the same command tree. Each nested call runs the same command
-tree, so a step runs "locally", and the reconcilers stay context-agnostic (`HostConfig -> IO ()`) while
-dispatch is guarded by the local binary context. The argv fold is pure (unit-tested) and honors § K: only
-the outermost host
-dispatch names a tool the resolver maps to an absolute path; every nested tool is the target's own bare
-`$PATH` name. The two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the
-subcommand-level lift generalizes it to the n-level stack (`Local | InVM | InContainer`). `incus` is
-provisioned by `ensure incus` (§ L) and each layer is budget-cordoned by the one canonical parser (§ O).
-L0 owns only the generic lift; the *specific* chain (the worked demo's host → VM → container) is project
-logic. `incus` is **not** standardized for all workflows — the demo uses it to encapsulate a fresh linux
-host — but it is fully supported. See
+context — the self-reference lift (`HostBootstrap.Lift`). Contexts compose as provider-backed frames,
+outermost-first; the empty stack is the local host. The VM layer is provider-specific: Apple Silicon uses
+Lima (`limactl shell <instance> -- ...`) for the demo VM, while native Linux uses Incus
+(`incus exec <vm> -- ...`). A container is the `docker run --rm` layer whose `ENTRYPOINT` is the binary.
+The stack nests — host → VM → container folds to the selected VM provider command followed by
+`docker run --rm <image> <subcmd>`. Before a nested call crosses a boundary, the caller creates the
+callee's `<project>.dhall` (§ X), so the callee can explicitly reason about its place even though it runs
+the same command tree. Each nested call runs the same command tree, so a step runs "locally", and the
+reconcilers stay context-agnostic (`HostConfig -> IO ()`) while dispatch is guarded by the local binary
+context. The argv fold is pure (unit-tested) and honors § K: only the outermost host dispatch names a
+tool the resolver maps to an absolute path; every nested tool is the target's own bare `$PATH` name. The
+two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the subcommand-level lift
+generalizes it to an n-level frame stack. L0 owns only the generic lift; the *specific* chain (the worked
+demo's host → VM → container) is project logic. See
 [composition_methodology](../documents/architecture/composition_methodology.md).
 
 ### V. Layered Warm Store
@@ -390,12 +388,13 @@ environment, runs the case body, and tears it down, invoking its reconcilers (e.
 `HostConfig -> IO ()` **locally**, unaware of any enclosing context. The harness is therefore a **lift
 target**, not a lift-aware component: there is **no** `LiftContext` inside it, and that is correct (per the
 self-reference-lift rule, § U). A consumer composes its deploy as a **single** explicit lift sequence
-(§ U) whose final compute step **lifts the whole test workflow** into the project container in the VM — it
-folds to `incus exec <vm> -- docker run --rm <image> test all`. Inside that lifted context the harness
-runs `clusterUp` "locally" on the VM's Docker (the mounted socket), so the kind cluster lives **in the
-VM**, reached with no second "bring up a cluster" path. Re-expressing cluster bring-up / Harbor / web-serve
-/ e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation**: it
-duplicates the harness and double-creates clusters when it lifts a harness case. There is one
+(§ U) whose final compute step **lifts the whole test workflow** into the project container in the VM. It
+folds through the selected VM provider (`limactl shell ... --` on Apple Silicon,
+`incus exec ... --` on Linux), then `docker run --rm <image> test all`. Inside that lifted context the
+harness runs `clusterUp` "locally" on the VM's Docker (the mounted socket), so the kind cluster lives
+**in the VM**, reached with no second "bring up a cluster" path. Re-expressing cluster bring-up / Harbor /
+web-serve / e2e as a **separate** chain of lifted ops alongside the harness is a **redundant
+representation**: it duplicates the harness and double-creates clusters when it lifts a harness case. There is one
 representation, and the harness is it. Cross-references: § T (the harness and the four-stream extension)
 and § U (the self-reference lift the deploy sequence is built from).
 
@@ -416,21 +415,30 @@ or creates its own local config before it runs:
 
 - a VM bootstrap creates a VM-local context before launching the project binary inside the VM;
 - a project Dockerfile installs the binary, then runs
-  `config init --role vm-project-container --output /usr/local/bin/<project>.dhall` before any normal
-  command;
+  `config init --role image-build-container --output /usr/local/bin/<project>.dhall` before any normal
+  command, granting only build/code-quality authority;
+- a runtime container receives a parent-generated config for the exact VM/container frame it is launched
+  into, replacing the image-build default at the same canonical path;
 - a Kubernetes workload receives its context from the controller that owns identity and durable placement;
   for durable services, that controller is a `StatefulSet`.
 
 The context shape is project-extensible, but it must carry enough typed information for local command
-gating: project/binary identity, context kind, parent chain, local capabilities, allowed command classes,
-resource envelope, and child-context creation rules. Bootstrap/inspection entrypoints are the only binary
+gating: project/binary identity, an execution topology, the current frame, runtime witnesses, context kind,
+local capabilities, allowed command classes, resource envelope, and child-context creation rules. The
+topology is a pure frame graph with parent links, not an implicit permission in the command line; it can
+represent arbitrary chains such as host -> VM -> container -> cluster -> service pod, or host -> VM ->
+Pulumi role -> EKS cluster -> workload. A process must fail before side effects when its local witnesses
+do not prove it is in the declared current frame. Bootstrap/inspection entrypoints are the only binary
 entrypoints allowed to run without an existing sibling context: help/version, `config init`,
 `config schema`, `config show FILE`, `config path`, and static `config render`. All normal commands fail
 fast with exit code 1 when the context file is missing, fails to decode, names a different
 project/binary, claims unverifiable local capabilities, or does not permit the requested command. A
 daemon/service command must refuse to start unless the context declares a daemon/service role;
-host-orchestrator commands must refuse to run inside a cluster-service pod.
+host-orchestrator commands must refuse to run inside a cluster-service pod; and a VM-scoped kind/test
+workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
+test-harness frame.
 
-Phase 15 implements this contract in the shared substrate: the built project binary creates the host-level
-default with `config init`, parent/container creation surfaces materialize nested configs, and normal
-command dispatch uses the sibling project config as its runtime authority.
+Phase 15 implements the flat version of this contract in the shared substrate and is reopened to complete
+the topology/witness hardening: the built project binary creates the host-level default with `config init`,
+parent/container creation surfaces materialize nested configs, and normal command dispatch uses the
+sibling project config as its runtime authority.

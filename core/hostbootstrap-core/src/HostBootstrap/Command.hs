@@ -53,6 +53,7 @@ import qualified HostBootstrap.Ensure.Docker as Docker
 import qualified HostBootstrap.Ensure.Ghc as Ghc
 import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as Incus
+import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Tart as Tart
 import HostBootstrap.Harness (TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
@@ -74,6 +75,7 @@ allReconcilers =
     , Homebrew.reconciler
     , Ghc.reconciler
     , Tart.reconciler
+    , Lima.reconciler
     , Incus.reconciler
     ]
 

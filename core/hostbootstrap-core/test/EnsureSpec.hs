@@ -15,6 +15,7 @@ import qualified HostBootstrap.Ensure.Docker as Docker
 import qualified HostBootstrap.Ensure.Ghc as Ghc
 import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as EIncus
+import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Tart as Tart
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (..))
@@ -45,9 +46,9 @@ tests =
 
 applicabilityCases :: [TestTree]
 applicabilityCases =
-  [ testCase "the seven reconcilers are present (incl. cross-substrate incus)" $
+  [ testCase "the eight reconcilers are present (incl. cross-substrate incus)" $
       map reconcilerName allReconcilers
-        @?= ["docker", "colima", "cuda", "homebrew", "ghc", "tart", "incus"],
+        @?= ["docker", "colima", "cuda", "homebrew", "ghc", "tart", "lima", "incus"],
     testCase "docker applies to every substrate" $
       map (appliesTo (findR "docker")) [apple, cpu, gpu] @?= [True, True, True],
     testCase "incus applies to apple AND linux (the first cross-substrate reconciler)" $
@@ -61,7 +62,9 @@ applicabilityCases =
     testCase "ghc applies to apple-silicon only" $
       map (appliesTo (findR "ghc")) [apple, cpu, gpu] @?= [True, False, False],
     testCase "tart applies to apple-silicon only" $
-      map (appliesTo (findR "tart")) [apple, cpu, gpu] @?= [True, False, False]
+      map (appliesTo (findR "tart")) [apple, cpu, gpu] @?= [True, False, False],
+    testCase "lima applies to apple-silicon only" $
+      map (appliesTo (findR "lima")) [apple, cpu, gpu] @?= [True, False, False]
   ]
 
 decideCases :: [TestTree]
@@ -108,16 +111,24 @@ installPlanCases =
       assertBool "colima Left on linux-cpu" (isLeft (Colima.installSteps cpu)),
     testCase "tart: brew install cirruslabs/cli/tart on apple" $
       Tart.installSteps apple @?= Right [InstallStep Brew ["install", "cirruslabs/cli/tart"]],
+    testCase "lima: brew install lima on apple" $
+      Lima.installSteps apple @?= Right [InstallStep Brew ["install", "lima"]],
     testCase "ghc: brew ghcup then ghcup install ghc on apple" $
       Ghc.installSteps apple
         @?= Right [InstallStep Brew ["install", "ghcup"], InstallStep Ghcup ["install", "ghc"]],
     testCase "homebrew: no resolved-tool plan (toolchain root)" $
       assertBool "homebrew Left on apple" (isLeft (Homebrew.installSteps apple)),
     testCase "docker: apt install on linux, defer to colima on apple" $ do
-      let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "docker.io"], InstallStep Sudo ["systemctl", "enable", "--now", "docker"]]
+      let linux = Right [InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "acl"], InstallStep Sudo ["systemctl", "enable", "--now", "docker"]]
       Docker.installSteps cpu @?= linux
       Docker.installSteps gpu @?= linux
       assertBool "docker Left on apple" (isLeft (Docker.installSteps apple)),
+    testCase "docker: linux socket user prefers the invoking sudo user and skips root" $ do
+      Docker.targetDockerUser [("SUDO_USER", "matt"), ("USER", "root")] @?= Just "matt"
+      Docker.targetDockerUser [("SUDO_USER", "root"), ("LOGNAME", "matt"), ("USER", "root")]
+        @?= Just "matt"
+      Docker.targetDockerUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
+      Docker.targetDockerUser [("USER", "")] @?= Nothing,
     testCase "cuda: container toolkit on linux-gpu, Left elsewhere" $ do
       Cuda.installSteps gpu
         @?= Right

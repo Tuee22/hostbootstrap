@@ -17,7 +17,7 @@ module HostBootstrapDemo.Chain (
 )
 where
 
-import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
+import HostBootstrap.HostConfig (HostConfig, buildHostConfig, hcSubstrate)
 import HostBootstrap.HostTool (toolCommandName)
 import HostBootstrap.Incus (IncusVM)
 import HostBootstrap.Lift (
@@ -28,11 +28,13 @@ import HostBootstrap.Lift (
     currentSelfRef,
     foldLift,
     inContainer,
+    inLimaVM,
     inVM,
     liftSubcommand,
     localContext,
  )
-import HostBootstrap.Substrate (detect)
+import HostBootstrap.Lima (LimaVM)
+import HostBootstrap.Substrate (detect, isAppleSilicon)
 import System.Exit (ExitCode (ExitSuccess), die)
 
 {- | One step of the deploy chain: a human label, the context it runs in (the
@@ -47,16 +49,16 @@ data Op = Op
 {- | The demo's deploy chain as a pure value: a SINGLE explicit lift sequence
 (§ W). The only lifted compute step is @test all@ — the whole test workflow
 lifted into the project container in the VM (@inContainer img (inVM vm
-localContext)@ folds to @incus exec \<vm\> -- docker run --rm \<image\> test
-all@). Inside that one lifted context the harness brings up the per-case kind
+localContext)@ folds through the selected VM provider, then @docker run --rm
+\<image\> test all@). Inside that one lifted context the harness brings up the per-case kind
 cluster on the VM's Docker, deploys the chart, and runs e2e. There is NO
 separate cluster\/Harbor\/web-serve\/e2e chain alongside it — that would be a
 redundant second representation of the same operation (see
 @composition_methodology.md@).
 -}
-demoDeployChain :: IncusVM -> ContainerLift -> [Op]
-demoDeployChain vm img =
-    [ Op "ensure incus (metal)" localContext ["incus", "ensure"]
+demoDeployChain :: LiftContext -> [Op]
+demoDeployChain liftedTestContext =
+    [ Op "ensure VM provider (metal)" localContext ["vm", "ensure"]
     , Op "vm up — cordon #1 (the VM is the wall)" localContext ["vm", "up"]
     , Op
         "pristine-bootstrap — build #2 (host-native) + build #3 (project image), in the VM"
@@ -64,7 +66,7 @@ demoDeployChain vm img =
         ["vm", "pristine-bootstrap"]
     , Op
         "test all — the whole test workflow lifted into the project container in the VM (kind on the VM's Docker)"
-        (inContainer img (inVM vm localContext))
+        liftedTestContext
         ["test", "all"]
     , Op "vm down — guarded teardown (.data preserved)" localContext ["vm", "down"]
     ]
@@ -86,12 +88,16 @@ renderPlan self ops = unlines (concat (zipWith line [1 :: Int ..] ops))
 {- | The interpreter: with @--dry-run@ print the pure plan; otherwise lift each
 step through 'liftSubcommand', failing closed on the first non-zero step.
 -}
-runDeploy :: IncusVM -> ContainerLift -> Bool -> IO ()
-runDeploy vm img dryRun = do
+runDeploy :: IncusVM -> LimaVM -> ContainerLift -> Bool -> IO ()
+runDeploy incusVM limaVM img dryRun = do
     detected <- detect
     cfg <- either die buildHostConfig detected
     self <- currentSelfRef inVMSelfPath
-    let ops = demoDeployChain vm img
+    let vmContext =
+            if isAppleSilicon (hcSubstrate cfg)
+                then inLimaVM limaVM localContext
+                else inVM incusVM localContext
+        ops = demoDeployChain (inContainer img vmContext)
     if dryRun
         then putStr (renderPlan self ops)
         else mapM_ (applyOp cfg self) ops

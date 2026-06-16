@@ -4,8 +4,9 @@
 -- This is the one foundational composition primitive (see
 -- @development_plan_standards.md § U@). A deployment is ordinary @IO@ sequencing
 -- of @ensure@/deploy steps; crossing a context boundary is the binary
--- re-invoking its own subcommand in the nested context — @incus exec \<vm\> --
--- \<pb\> \<subcmd\>@ for a VM, @docker run --rm \<image\> \<subcmd\>@ for a
+-- re-invoking its own subcommand in the nested context — @limactl shell \<vm\> --
+-- \<pb\> \<subcmd\>@ or @incus exec \<vm\> -- \<pb\> \<subcmd\>@ for a VM,
+-- @docker run --rm \<image\> \<subcmd\>@ for a
 -- container (whose @ENTRYPOINT@ /is/ the binary). A nested call runs the same
 -- @optparse-applicative@ command tree, so each step runs "locally" in whatever
 -- context it was placed in, unaware it was lifted.
@@ -25,6 +26,7 @@ module HostBootstrap.Lift
     LiftContext (..),
     localContext,
     inVM,
+    inLimaVM,
     inContainer,
 
     -- * Self-reference
@@ -48,8 +50,10 @@ import HostBootstrap.Config.Vocab (Mount)
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Incus), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima), toolCommandName)
 import HostBootstrap.Incus (IncusVM, execVMArgs)
+import HostBootstrap.Lima (LimaVM)
+import qualified HostBootstrap.Lima as Lima
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
 import System.Process (readProcessWithExitCode)
@@ -66,9 +70,8 @@ data ContainerLift = ContainerLift
   }
   deriving (Eq, Show)
 
--- | One context-boundary layer: a named incus VM (reached via @incus exec@) or a
--- container (reached via @docker run@).
-data LiftLayer = ViaVM IncusVM | ViaContainer ContainerLift
+-- | One context-boundary layer: a VM provider or a container.
+data LiftLayer = ViaVM IncusVM | ViaLimaVM LimaVM | ViaContainer ContainerLift
   deriving (Eq, Show)
 
 -- | A stack of context layers, outermost-first. The empty stack is the local
@@ -83,6 +86,10 @@ localContext = LiftContext []
 -- | Nest a VM as the new innermost layer.
 inVM :: IncusVM -> LiftContext -> LiftContext
 inVM vm (LiftContext ls) = LiftContext (ls ++ [ViaVM vm])
+
+-- | Nest a Lima VM as the new innermost layer.
+inLimaVM :: LimaVM -> LiftContext -> LiftContext
+inLimaVM vm (LiftContext ls) = LiftContext (ls ++ [ViaLimaVM vm])
 
 -- | Nest a container as the new innermost layer (a container is terminal).
 inContainer :: ContainerLift -> LiftContext -> LiftContext
@@ -146,11 +153,13 @@ foldLift self (LiftContext layers) sub = build layers
   where
     build [] = DispatchLocal (localSelfPath self) sub
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
+    build (ViaLimaVM vm : rest) = DispatchTool Lima (Lima.shellVMArgs vm (insideVM rest))
     build (ViaContainer c : _) = DispatchTool Docker (containerRunArgs c sub)
 
     -- The argv to run inside a VM, given the remaining inner layers.
     insideVM [] = inVMSelfPath self : sub
     insideVM (ViaVM vm : rest) = toolCommandName Incus : execVMArgs vm (insideVM rest)
+    insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : Lima.shellVMArgs vm (insideVM rest)
     insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c sub
 
 -- | Run a subcommand of this binary in a context: fold to a 'LiftDispatch', then

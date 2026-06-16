@@ -46,7 +46,7 @@
    self <- currentSelfRef inVMBinaryPath
    let projectCtr = ContainerLift { clImage = "project:local", clMounts = [], clExtraArgs = [], clRemoveAfter = True }
    -- lift the WHOLE test workflow (helm/kind on the container $PATH, the kind cluster on the VM's Docker);
-   -- folds to: incus exec <vm> -- docker run --rm <image> test all
+   -- folds through the selected VM provider, then: docker run --rm <image> test all
    liftSubcommand cfg self (inContainer projectCtr (inVM vmName localContext)) ["test", "all"]
    ```
 
@@ -72,10 +72,10 @@ has one representation, and the test harness *is* that representation — so the
 [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-test-workflow-is-a-lifted-operation)):
 
 ```text
-ensure incus            local                                   -- reconciler on metal
+vm ensure               local                                   -- reconcile selected VM provider
 vm up                   local                                   -- cordon #1 (the VM is the wall)
 vm pristine-bootstrap   local -> VM                             -- build #2 (host-native) + build #3 (project image), in the VM
-test all                inContainer img (inVM vm localContext)  -- the ONLY lifted compute step; folds to: incus exec <vm> -- docker run --rm <image> test all
+test all                inContainer img (inVM vm localContext)  -- the ONLY lifted compute step; folds through the VM provider, then docker run --rm <image> test all
 vm down                 local                                   -- guarded teardown (.data preserved)
 ```
 

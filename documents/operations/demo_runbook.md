@@ -17,12 +17,14 @@
   `hostbootstrap-demo --help` shows the inherited core verbs (`ensure`,
   `config`, `cluster`, `test`, `check-code`) plus the demo's noun-first verbs
   (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) — no core verb is re-implemented.
-- The headline is a from-zero pristine-host bootstrap performed **inside an incus
-  VM** (the metal host is not pristine): `apt install pipx` → `pipx install` the
+- The headline is a from-zero pristine-host bootstrap performed **inside a managed Linux
+  VM** (Lima on Apple Silicon, Incus on native Linux; the metal host is not pristine):
+  `apt install pipx` → `pipx install` the
   local hostbootstrap → `hostbootstrap run`.
 - The demo is **one lift sequence**, not two parallel representations: the deploy folds to
-  `ensure incus` → `vm up` → `vm pristine-bootstrap` → the **whole test workflow lifted into the
-  VM-container** (`incus exec <vm> -- docker run --rm <image> test all`) → `vm down`. The standardized
+  `vm ensure` → `vm up` → `vm pristine-bootstrap` → the **whole test workflow lifted into the
+  VM-container** (`limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon,
+  `incus exec <vm> -- docker run --rm <image> test all` on Linux) → `vm down`. The standardized
   test harness is the one test engine; there is no separate cluster-up / web-serve / e2e chain alongside
   it. This is the demo's flow (the doctrine below), **live-validated**; see
   [composition_methodology](../architecture/composition_methodology.md) for the canonical statement.
@@ -33,15 +35,13 @@
 
 ## Current status
 
-This runbook describes the end-to-end flow, **live-validated**: one lift sequence whose final compute step
-lifts the whole test workflow into the project container in the VM (`incus exec <vm> -- docker run --rm
-<image> test all`), where the per-case kind cluster comes up on the **VM's** Docker. DEVELOPMENT_PLAN
-[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) Sprint 13.12 is `Done`: the literal `demo
-deploy` apply runs `ensure incus -> vm up -> pristine[#2+#3] -> lifted test all (3/3) -> vm down` clean,
-with the kind cluster on the **VM's** Docker (poller-confirmed in the VM, none on metal). The host-native
-in-VM build (`vm pristine-bootstrap`, build #2) and the project-container build (build #3) run in the VM.
-The cluster/deploy/e2e steps are composed to run through the **self-reference lift** (the project container,
-reached `incus exec … docker run --rm`; see
+This runbook describes the supported end-to-end flow: one lift sequence whose final compute step lifts
+the whole test workflow into the project container in the VM, where the per-case kind cluster comes up on
+the **VM's** Docker. The Apple Silicon path is active work and uses Lima; the earlier Linux/Incus real run
+validated the same single-lift shape with the kind cluster on the VM Docker. The host-native in-VM build
+(`vm pristine-bootstrap`, build #2) and the project-container build (build #3) run in the VM. The
+cluster/deploy/e2e steps are composed to run through the **self-reference lift** (the project container,
+reached through the selected VM provider and then `docker run --rm`; see
 [composition_methodology](../architecture/composition_methodology.md)). The harness's per-case `demoSeams`
 each assert their slice — `pristine-bootstrap` the live cluster, `web-build` the bundle, `e2e-tabs` a
 Playwright run. `cluster up` deploys the demo's webservice **into the per-case kind cluster** via
@@ -77,6 +77,8 @@ container, and service contexts. The Dockerfile bakes `/usr/local/bin/hostbootst
 chart mounts a service-role file at the same path for webservice pods. It feeds both the VM sizing cordon
 and the kind-node cap (see [applied cordon](../engineering/applied_cordon.md),
 [incus](../engineering/incus.md), and [binary context](../architecture/binary_context_config.md)).
+`vm up` rejects smaller budgets before launching the VM; the full demo lifecycle needs this 6 CPU / 10 GiB
+memory / 80 GiB storage envelope to hold the base image pull, project image build, and kind image load.
 
 The demo demonstrates the four-stream additive extension without shadowing any
 core verb:
@@ -101,7 +103,7 @@ The demo binary runs in four different places, and each place is explicit with a
 
 | Place | Context responsibility |
 |---|---|
-| Host | metal orchestrator: `ensure incus`, `vm up`, guarded `vm down` |
+| Host | metal orchestrator: `vm ensure`, `vm up`, guarded `vm down` |
 | VM | fresh Linux host: rebuild the host-native binary and build the project container |
 | Container on the VM | lifted `test all`: per-case kind clusters, web build, and e2e |
 | Cluster service | chart-launched webservice pod: serve only the service role |
@@ -116,12 +118,13 @@ hostbootstrap owns the lifecycle of **every** resource in the demo; the **only**
 are the basic host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `sudo`). Everything
 else is installed, orchestrated, and torn back down by hostbootstrap:
 
-- **(a)** the metal-orchestrator binary installs and verifies the **incus host-provider** (Colima-backed
-  on Apple, native daemon on Linux, via core `ensure incus`);
+- **(a)** the metal-orchestrator binary installs and verifies the **VM provider** (Lima on Apple Silicon,
+  native Incus on Linux);
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM** (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
 - **(d)** the deploy lifts the **whole test workflow** into the project container in the VM
-  (`incus exec <vm> -- docker run --rm <image> test all`); inside that lifted context the harness brings up
+  (`limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon,
+  `incus exec <vm> -- docker run --rm <image> test all` on Linux); inside that lifted context the harness brings up
   the per-case kind cluster **on the VM's Docker** (the mounted socket) and deploys the webservice into it;
 - **(e)** **Playwright in a container on the kind network reaches the in-cluster webservice via its NodePort and runs the e2e tests** — still inside that one lifted workflow;
 - **(f)** hostbootstrap **spins everything back down**, preserving host `.data`.
@@ -148,24 +151,27 @@ statement and the lift algebra live in
 
 The `demo deploy` chain drives a pristine `ubuntu/24.04` VM from zero to a running, e2e-tested
 `hostbootstrap-demo`, then tears it back down. It is the following sequence; only the `test all` step is a
-lifted compute step (it folds to `incus exec <vm> -- docker run --rm <image> test all`):
+lifted compute step (it folds through the selected VM provider, then `docker run --rm <image> test all`):
 
 | Step | Context | What it does |
 |---|---|---|
-| `ensure incus` | `local` | reconciler on metal: install-and-verify the host-provider (see [incus](../engineering/incus.md)) |
+| `vm ensure` | `local` | reconciler on metal: install-and-verify the VM provider (Lima on Apple Silicon, Incus on Linux) |
 | `vm up` | `local` | **cordon #1** — launch the budget-sized pristine VM (the VM is the wall) |
 | `vm pristine-bootstrap` | `local → VM` | the headline: in the from-zero VM, build #2 (host-native binary) + build #3 (project container), both **IN the VM** |
-| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step — folds to `incus exec <vm> -- docker run --rm <image> test all` |
+| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step — folds through the selected VM provider, then `docker run --rm <image> test all` |
 | `vm down` | `local` | guarded teardown (`.data` preserved) |
 
-a. `demo incus ensure` — drives core `ensure incus` (install-and-verify the host-provider on the
-   metal host). On Apple this means `brew install incus`, `brew install colima`, and
-   `colima start incus --runtime incus`; on Linux it means native daemon initialization plus
-   `incus-admin` access. See [incus](../engineering/incus.md).
+a. `demo vm ensure` — installs and verifies the VM provider on the metal host. On Apple Silicon this
+   means `ensure lima` (`brew install lima` when absent); on Linux it means native Incus daemon
+   initialization plus `incus-admin` access. The explicit `demo incus ensure` verb remains available for
+   Incus workflows. See [incus](../engineering/incus.md).
 
 b. `demo vm up` — launch a budget-sized pristine `ubuntu/24.04` VM. This is
    **cordon #1**: the VM is the wall, sized `limits.cpu=6 / limits.memory=10GiB /
-   root=80GiB` from the local config budget. See
+   root=80GiB` from the local config budget. Budgets below this documented full-lifecycle floor fail
+   before VM launch instead of failing later during Docker layer extraction. On Apple Silicon the Lima
+   instance starts with Lima-managed containerd disabled because the project binary installs and verifies
+   Docker inside the guest. See
    [applied cordon](../engineering/applied_cordon.md).
 
 c. `demo vm pristine-bootstrap` (the headline) — inside the from-zero VM:
@@ -179,7 +185,8 @@ c. `demo vm pristine-bootstrap` (the headline) — inside the from-zero VM:
    [derived Dockerfile](../engineering/derived_dockerfile.md).
 
 d. `demo deploy` lifts the **whole test workflow** into the VM-container — the single lifted compute
-   step, `incus exec <vm> -- docker run --rm <image> test all`. Inside that lifted context the harness
+   step, reached by `limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon or
+   `incus exec <vm> -- docker run --rm <image> test all` on Linux. Inside that lifted context the harness
    runs `cluster up` "locally" = on the **VM's** Docker (the mounted socket), so the per-case kind cluster
    lives **in the VM**, reached with no second "bring up a cluster" path. The harness then:
    deploys the `warp`/`wai` webservice **into the per-case kind cluster** via `demo/chart` (the pod runs
@@ -208,7 +215,7 @@ kind cluster comes up wherever the harness is lifted to — for `demo deploy`, o
 
 | Harness case | Feature demonstrated |
 |---|---|
-| `pristine-bootstrap` | The from-zero first-run flow (steps a–c): `ensure incus`, the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure with reboot, and the project-container build (#3). |
+| `pristine-bootstrap` | The from-zero first-run flow (steps a–c): `vm ensure`, the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure with reboot, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
 | `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. |
 
@@ -220,7 +227,7 @@ demo deliberately layers a **three-build** illustration on top of that standard
 build so an operator can watch a pristine host come up from zero:
 
 - **Build #1 — the metal orchestrator.** `hostbootstrap-demo` is built on the
-  metal host via the usual workflow. This is the binary that runs `demo incus
+  metal host via the usual workflow. This is the binary that runs `demo vm
   ensure` / `demo vm up` / `demo vm pristine-bootstrap`.
 - **Build #2 — the in-VM host-native binary.** Inside the pristine VM,
   `hostbootstrap run` builds `hostbootstrap-demo` host-native (step c). This is the

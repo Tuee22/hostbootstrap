@@ -43,10 +43,10 @@ enumCases =
       assertBool "names are bare commands" $
         all (\t -> let n = toolCommandName t in not (null n) && '/' `notElem` n) allHostTools,
     testCase "the closed set covers the documented tools" $
-      assertBool "docker/colima/cuda/ghc/homebrew/tart resolvable as constructors" $
+      assertBool "docker/colima/lima/cuda/ghc/homebrew/tart resolvable as constructors" $
         all
           (`elem` allHostTools)
-          [Docker, Colima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Sysctl, Tart, Sudo, XcodeSelect]
+          [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Sysctl, Tart, Sudo, XcodeSelect]
   ]
 
 resolutionCases :: [TestTree]

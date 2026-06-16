@@ -26,6 +26,12 @@ project-local sibling `<project>.dhall`. Python does not create runtime config. 
 ungated default generation, schema/help, validation, child-config projection, and the normal command gate
 that reads the context authority embedded in the local config.
 
+Phase 15 is reopened to harden that flat context into a topology-aware contract. The current gate checks
+project/binary identity, context kind, command class, capabilities, and resource envelope. The target gate
+also checks the declared execution topology, the current frame, parent/ancestor relationships, and local
+runtime witnesses so a command fails before side effects when the process is not actually running in the
+frame its Dhall declares.
+
 ## The Contract
 
 The project binary is not a blind command receiver. It is the local interpreter of a pure, typed global
@@ -59,9 +65,10 @@ The context portion of the local config carries these concepts:
 | Field family | Purpose |
 |---|---|
 | Project identity | project name, binary name, and source root |
-| Context kind | host orchestrator, VM orchestrator, VM project container, cluster service, daemon, one-shot job, or test harness |
+| Execution topology | a list of provider-backed frames, their parent links, and the current frame id |
+| Context kind | host orchestrator, VM orchestrator, image-build container, VM project container, cluster service, daemon, one-shot job, or test harness |
 | Role name | optional project-specific role label such as `webservice`, `worker`, or `host` |
-| Parent chain | the pure lift/composition stack that led here, including host -> VM -> container -> cluster when applicable |
+| Runtime witnesses | locally checkable facts proving the process is in the declared frame, such as provider profile, mounted socket, service account, config hash, or executable path |
 | Local capabilities | tools and services this context may use, such as Docker socket, kind network, Kubernetes API, or durable store |
 | Allowed command classes | which command families are valid in this context |
 | Resource envelope | the budget slice or cordon this context is inside |
@@ -69,6 +76,82 @@ The context portion of the local config carries these concepts:
 
 Project-specific logic may extend the value, but it must not make a child reach back to the parent's config
 or treat missing config as implicit authority.
+
+## Topology Shape
+
+The topology is a pure Dhall value carried inside the same local config. It is intentionally data, not a
+runtime callback. A representative shape is:
+
+```dhall
+let ContextKind =
+      < HostOrchestrator
+      | VMOrchestrator
+      | ImageBuildContainer
+      | VMProjectContainer
+      | ClusterService
+      | Daemon
+      | OneShotJob
+      | TestHarness
+      >
+
+let ProviderKind =
+      < LocalHost
+      | LimaVM
+      | IncusVM
+      | DockerContainer
+      | KubernetesCluster
+      | KubernetesPod
+      | ExternalControlPlane
+      | CloudStack
+      >
+
+let RuntimeWitness =
+      < ExecutablePath : Text
+      | FileSha256 : { path : Text, sha256 : Text }
+      | UnixSocket : { path : Text }
+      | EnvEquals : { name : Text, value : Text }
+      | ProviderProfile : { provider : ProviderKind, name : Text }
+      | KubernetesServiceAccount : { namespace : Text, serviceAccount : Text }
+      >
+
+let Frame =
+      { id : Text
+      , parent : Optional Text
+      , provider : ProviderKind
+      , contextKind : ContextKind
+      , roleName : Text
+      , capabilities : List Capability
+      , allowedCommandClasses : List CommandClass
+      , resourceEnvelope : { cpu : Natural, memory : Text, storage : Text }
+      , witnesses : List RuntimeWitness
+      }
+
+in  { topology =
+      { frames : List Frame
+      , currentFrame : Text
+      }
+    , context = ...
+    }
+```
+
+A list of frames plus parent references is open enough for arbitrary composition depth without a closed
+recursive type. It can express:
+
+```text
+host binary -> Lima VM -> Docker project container -> kind cluster -> service pod
+host binary -> Incus VM -> Docker project container -> Pulumi role -> EKS cluster -> workload pod
+```
+
+`hostbootstrap-core` owns the common invariants: `currentFrame` must exist, parent references must resolve,
+the current frame must authorize the command class and required capabilities, child creation can only mint
+a descendant allowed by the topology, and each declared witness must be locally checked by the binary or a
+provider-specific verifier. Higher layers extend `ProviderKind`, role-specific payloads, and witness
+constructors when they introduce new providers.
+
+The practical consequence is that illegal state becomes unrepresentable at the config boundary. A kind
+test workflow that says it is the VM project container must carry a VM parent frame and a Docker/container
+witness. If someone runs `docker run <image> test all` directly on the host with that VM-container config,
+the process is missing the VM ancestry witness and must fail before creating a kind cluster.
 
 ## Creation Flow
 
@@ -80,9 +163,10 @@ Context files are created at the boundary where the next binary becomes meaningf
    and `config show FILE`. A user can generate the first host config with `config init` and then edit the
    user-owned settings.
 3. A host or VM binary creates a VM-local or container-local `<project>.dhall` before launching the nested
-   binary.
-4. The project Dockerfile bakes a narrow ad-hoc container config at `/usr/local/bin/<project>.dhall` after
-   installing the binary and before `check-code`.
+   binary. The child config names the child frame in the same topology and includes witnesses the child can
+   verify locally.
+4. The project Dockerfile bakes a narrow image-build container config at `/usr/local/bin/<project>.dhall`
+   after installing the binary and before `check-code`.
 5. A service or daemon receives a role-specific config from the controller or launcher that owns identity
    and durable placement. For stateful Kubernetes services, that is usually a `StatefulSet`.
 
@@ -115,13 +199,19 @@ command tree, but it refuses work that does not belong to its declared place.
 
 ## Docker Defaults And Service Overrides
 
-A Docker image should normally contain a safe default ad-hoc container config so commands such as
-`docker run --rm <image> test all` can work without a mounted file. That baked config should be narrow:
-`VMProjectContainer` or equivalent, with only container/test/build capabilities.
+A Docker image should contain a safe default image-build config so build-time commands such as
+`check-code`, static code generation, and web asset compilation can run during the Dockerfile. That baked
+config is narrow: `ImageBuildContainer` or equivalent, with only build/code-quality capabilities.
 
-A long-running service or daemon should not rely on the baked ad-hoc config. Its controller or launcher
-must mount or materialize a role-specific file at the same canonical path. The same image can therefore
-serve both ad-hoc and service contexts while each container instance reads exactly one local file.
+A lifted runtime workflow such as `test all` must not receive authority merely because the image has a
+baked default file. The parent VM or host binary must mount or materialize a runtime child
+`<project>.dhall` at the same canonical path before launching the container. That runtime config declares
+the VM/project-container frame and witnesses the VM/container ancestry. Direct host fallback without that
+runtime context must fail fast instead of silently creating a kind cluster on the wrong Docker daemon.
+
+A long-running service or daemon follows the same rule. Its controller or launcher must mount or
+materialize a role-specific file at the canonical path. The same image can therefore serve image-build,
+ad-hoc runtime, and service contexts while each container instance reads exactly one local file.
 
 ## Config Snapshot And Daemons
 
@@ -144,8 +234,8 @@ The worked demo has four runtime contexts:
 
 | Context | Role |
 |---|---|
-| Host | metal-side orchestrator: ensure incus, size and launch the VM, destroy it behind the guard |
-| VM | fresh Linux host: re-establish the host-native binary and build the project container |
+| Host | metal-side orchestrator: select the VM provider, size and launch the VM, destroy it behind the guard |
+| VM | fresh Linux host: Lima VM on Apple Silicon, Incus VM on native Linux; re-establish the host-native binary and build the project container |
 | Container on the VM | lifted test workflow: run `test all`, bring up per-case kind clusters, run e2e |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 

@@ -27,6 +27,9 @@ Every normal project-binary command reads a sibling `<project>.dhall` before dis
 project identity, resource budget, Docker/build inputs, runtime context, command authority, and child
 projection defaults. Bootstrap/inspection commands (`help`, `version`, `config init`, `config schema`,
 `config show`, `config path`, and static `config render`) are the explicit ungated exceptions.
+The context model is being hardened from flat role/capability fields into a topology-aware contract:
+provider-backed execution frames, a current frame, runtime witnesses, and command predicates that fail
+before side effects when the binary is not actually running in the declared frame.
 
 ## Phase Responsibilities
 
@@ -108,7 +111,9 @@ case-local setup failure handling. The four run-models are `OneShot`, `HostNativ
 
 Phase 11 owns the incus host-provider axis and self-reference lift. `HostTarget = Local | InVM` handles
 tool-level dispatch; `HostBootstrap.Lift` handles subcommand-level context stacks (`Local`, `InVM`,
-`InContainer`) by invoking the binary's own subcommand in the nested context. It is `Done`.
+`InContainer`) by invoking the binary's own subcommand in the nested context. It is `Active` again to add
+the Lima VM provider used by the Apple Silicon demo path and to keep the provider-aware lift
+validated across core and demo.
 
 ### Phase 12 — Layered warm store
 
@@ -119,24 +124,29 @@ and never committed. It is `Done`.
 ### Phase 13 — hostbootstrap-demo worked app
 
 A self-contained worked consumer under `demo/` demonstrates the main surfaces: pristine-host bootstrap
-inside an incus VM, project-container build, harness cluster lifecycle, web/SPA generation, Playwright
-e2e from the base-provided browser runtime in the project image, and the single-representation deploy
-chain. The demo uses sibling `hostbootstrap-demo.dhall` configs for host, VM, container, and
-service/daemon contexts. It is `Done`.
+inside a managed Linux VM, project-container build, harness cluster lifecycle, web/SPA generation,
+Playwright e2e from the base-provided browser runtime in the project image, and the single-representation
+deploy chain. The demo uses Lima for the VM provider on Apple Silicon and native Incus on Linux.
+It uses sibling `hostbootstrap-demo.dhall` configs for host, VM, container, and service/daemon contexts.
+It is `Active` until the stricter context-topology runtime gate is validated end to end. The real Apple
+Silicon Lima lifecycle is validated.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
 Phase 14 owns the composition methodology: operations as the composable unit, self-reference lift as the
 context-crossing primitive, deploy and runtime business logic as the same algebra, the L0
 `HostBootstrap.RoleLifecycle` skeleton, and the single-representation doctrine. The standardized test
-harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Done`.
+harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Active` to
+specify and validate arbitrary provider-backed topology frames instead of a fixed Incus-oriented lift
+story.
 
 ### Phase 15 — Binary context config and command gating
 
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, or
-not authorized for the requested command. It is `Done`.
+not authorized for the requested command. It is `Active` to complete topology/witness hardening so illegal
+states such as a VM-scoped kind cluster created on the host Docker daemon cannot be represented as valid.
 
 ## Dependency edges
 

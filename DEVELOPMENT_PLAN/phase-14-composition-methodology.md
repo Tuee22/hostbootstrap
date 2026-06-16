@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -22,8 +22,21 @@ typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded li
 The single-representation doctrine is part of the methodology: one operation has one representation. The
 standardized test harness is the one representation of the test/deploy workflow; consumers lift the whole
 `test all` workflow into the nested context instead of building a second cluster/deploy/e2e chain beside
-it. The worked demo follows this shape with `test all` lifted into the project container in the incus VM.
-This phase is `Done`.
+it. The worked demo follows this shape with `test all` lifted into the project container in the managed
+VM.
+
+This phase is reopened to make the composition chain context-aware for arbitrary provider-backed topology
+depth. The old narrative was too Incus-specific and too flat: it did not require the Dhall to express the
+complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
+execution context.
+
+## Remaining Work
+
+- Finalize the frame/witness topology shape in the architecture docs and Phase 15 schema work.
+- Validate that the lift fold and binary-context gate agree on provider-backed frames for Colima, Incus,
+  Docker containers, and cluster/service contexts.
+- Add tests that prove a VM-scoped lifted workflow cannot be represented as valid on the host Docker
+  daemon.
 
 ## Phase Objective
 
@@ -114,8 +127,8 @@ case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`) as `Ho
 component (no `LiftContext` inside it — per the self-reference-lift rule, § U), and that is correct. A
 consumer composes its deploy as a **single** explicit lift sequence (§ U) whose final compute step
 **lifts the whole test workflow** into the project container in the VM — folding to
-`incus exec <vm> -- docker run --rm <image> test all` — so the harness runs `clusterUp` "locally" on the
-VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / Harbor / web-serve
+the selected VM provider followed by `docker run --rm <image> test all` — so the harness runs `clusterUp`
+"locally" on the VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / Harbor / web-serve
 / e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation** (it
 duplicates the harness and double-creates clusters); there is one representation, and the harness is it.
 
@@ -135,6 +148,38 @@ duplicates the harness and double-creates clusters); there is one representation
 
 None. The worked demo uses the single lift sequence with `test all` as the only lifted compute step in
 `inContainer img (inVM vm localContext)`.
+
+### Sprint 14.4: Context-aware arbitrary topology [Active]
+
+**Status**: Active
+**Implementation**: `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`
+**Docs to update**: `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `documents/engineering/dhall_topology.md`, `documents/engineering/composition_patterns.md`
+
+#### Objective
+
+Encode arbitrary lifted execution topology as pure data: a list of provider-backed frames, parent links,
+a current frame, and runtime witnesses. This must support arbitrary composition depth, such as host ->
+VM -> container -> cluster -> service pod, or host -> VM -> Pulumi role -> EKS cluster -> workload,
+without making illegal states representable.
+
+#### Deliverables
+
+- Document the frame graph shape and why it is open-ended rather than a fixed recursive Incus/container
+  stack.
+- Define how command gates combine context kind, command class, capabilities, current frame, ancestors,
+  and runtime witnesses.
+- Define the implementation obligation for provider-specific witnesses.
+- Align `HostBootstrap.Lift` terminology with provider-backed VM frames rather than Incus-only VM frames.
+
+#### Validation
+
+- Documentation validator passes on the updated architecture docs.
+- Core tests cover provider-backed lift folds.
+
+#### Remaining Work
+
+- Implement the topology/witness schema and gate in Phase 15.
+- Add negative tests for invalid direct-host execution of VM-scoped workflows.
 
 ## Documentation Requirements
 

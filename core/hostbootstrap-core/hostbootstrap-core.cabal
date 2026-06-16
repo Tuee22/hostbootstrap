@@ -37,7 +37,9 @@ library
       HostBootstrap.Ensure.Ghc
       HostBootstrap.Ensure.Tart
       HostBootstrap.Ensure.Incus
+      HostBootstrap.Ensure.Lima
       HostBootstrap.Incus
+      HostBootstrap.Lima
       HostBootstrap.HostTarget
       HostBootstrap.Lift
       HostBootstrap.RoleLifecycle
@@ -88,6 +90,7 @@ test-suite hostbootstrap-core-test
       LifecycleSpec
       HarnessSpec
       IncusSpec
+      LimaSpec
       LiftSpec
       RoleLifecycleSpec
       ContainerSpec

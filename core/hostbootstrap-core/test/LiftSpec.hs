@@ -3,8 +3,9 @@
 module LiftSpec (tests) where
 
 import qualified HostBootstrap.Config.Vocab as V
-import HostBootstrap.HostTool (HostTool (Docker, Incus))
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima))
 import HostBootstrap.Incus (IncusVM (..))
+import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Lift
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
@@ -20,6 +21,9 @@ tests =
 -- Fixtures.
 vm :: IncusVM
 vm = IncusVM "demo-vm" "images:ubuntu/24.04"
+
+limaVM :: LimaVM
+limaVM = LimaVM "demo-vm"
 
 sockMount :: V.Mount
 sockMount = V.Mount {V.source = "/var/run/docker.sock", V.target = "/var/run/docker.sock", V.readOnly = False}
@@ -47,6 +51,9 @@ foldCases =
     testCase "InVM dispatches incus exec with the in-VM binary path" $
       foldLift self (inVM vm localContext) sub
         @?= DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
+    testCase "InLimaVM dispatches limactl shell with the in-VM binary path" $
+      foldLift self (inLimaVM limaVM localContext) sub
+        @?= DispatchTool Lima ["shell", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
     testCase "InContainer dispatches docker run (ENTRYPOINT is the binary, no self token)" $
       foldLift self (inContainer container localContext) sub
         @?= DispatchTool
@@ -65,6 +72,23 @@ foldCases =
         @?= DispatchTool
           Incus
           [ "exec",
+            "demo-vm",
+            "--",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "--network=host",
+            "demo:local",
+            "cluster",
+            "up"
+          ],
+    testCase "Lima VM-then-container nests: limactl shell -- docker run --rm img sub" $
+      foldLift self (inContainer container (inLimaVM limaVM localContext)) sub
+        @?= DispatchTool
+          Lima
+          [ "shell",
             "demo-vm",
             "--",
             "docker",

@@ -60,7 +60,10 @@ material lives here. Conventions are defined in
 - [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
   one canonical parser, the three rings, and the per-substrate storage cordon.
 - [engineering/incus.md](engineering/incus.md) — the `incus` host-provider axis: the `HostTarget`
-  parameterization, `ensure incus`, the VM lifecycle and `incus exec` dispatch, and the sizing cordon.
+  parameterization, `ensure incus`, the VM lifecycle and `incus exec` dispatch, and the sizing cordon;
+  the worked demo uses Lima, not Incus, for the Apple Silicon pristine VM.
+- [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
+  Silicon for a real pristine Linux VM.
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm lifecycle
   semantics, the never-delete-`.data` invariant, and production-vs-test profiles.
 - [engineering/base_image.md](engineering/base_image.md) — the base image contents.

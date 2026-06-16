@@ -64,8 +64,8 @@ the guard — it supplies its case matrix, and a cluster project additionally su
 
 The seams call `clusterUp` (and the per-case deploy/e2e) **"locally"** — they hold no execution-context
 parameter and are unaware of any enclosing lift. A consumer that needs the cluster to come up elsewhere
-(say on a VM's Docker) lifts the **whole** `test all` workflow into that context (e.g. `incus exec <vm> --
-docker run --rm <image> test all`), so the seams run as if local and the cluster lands wherever the harness
+(say on a VM's Docker) lifts the **whole** `test all` workflow into that context (through the selected VM
+provider and then `docker run --rm <image> test all`), so the seams run as if local and the cluster lands wherever the harness
 was lifted to. This is why the harness is a lift target, not a lift-aware component, and why a separate
 chain of lifted cluster/deploy/e2e ops alongside it would be a redundant second representation. See
 [composition_methodology](composition_methodology.md).

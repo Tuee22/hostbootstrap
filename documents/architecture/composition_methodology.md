@@ -14,10 +14,11 @@
 - The foundational unit is a composable **operation**, not a fixed command. A project binary sequences
   operations; the `optparse-applicative` command tree makes composition a plain Haskell value.
 - The **self-reference lift** is the operation that crosses an execution-context boundary: the binary
-  re-invokes its *own* subcommand in a nested context — `incus exec <vm> -- <pb> <subcmd>` for a VM,
-  `docker run --rm <image> <subcmd>` for a container (whose `ENTRYPOINT` is the binary). Each nested
-  call runs the same command tree and reads the sibling `<project>.dhall` runtime
-  check so the binary can validate where it is in the global chain. See
+  re-invokes its *own* subcommand in a nested context. VM hops are provider-backed (`limactl shell
+  <instance> -- …` on Apple Silicon, `incus exec <vm> -- …` on native Linux); container hops are
+  `docker run --rm <image> <subcmd>` with the binary as `ENTRYPOINT`. Each nested call runs the same
+  command tree and reads the sibling `<project>.dhall` runtime check so the binary can validate where it
+  is in the global chain. See
   [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 - The same algebra expresses **deployment** (the bootstrap topology) and **runtime business logic** (the
   runtime topology): both are declarative topologies over durable external stores, executed by stateless
@@ -56,23 +57,25 @@ message-bus or cloud dependency.
 
 ## The Self-Reference Lift
 
-Execution contexts compose as a stack of layers, outermost-first; the empty stack is the local host. A
-binary crosses a boundary by invoking *itself* in the nested context — there is no separate
+Execution contexts compose as a stack of provider-backed layers, outermost-first; the empty stack is the
+local host. A binary crosses a boundary by invoking *itself* in the nested context — there is no separate
 "remote-exec" abstraction threaded through every step. The reconcilers stay context-agnostic
 (`HostConfig -> IO ()`); a step is lifted purely by *where* the self-invocation places it.
 
 | Context layer | Crossing | The binary in that context |
 |---|---|---|
 | `Local` | run directly | the running executable (`getExecutablePath`) |
-| `InVM` | `incus exec <vm> -- …` | the binary the VM bootstrap installed on the VM's `$PATH` |
+| `InVM` via Lima | `limactl shell <instance> -- …` | the binary the VM bootstrap installed on the Lima Linux VM's `$PATH` |
+| `InVM` via Incus | `incus exec <vm> -- …` | the binary the VM bootstrap installed on the Incus VM's `$PATH` |
 | `InContainer` | `docker run --rm <image> …` | the project container's `ENTRYPOINT` (the binary) |
 
 The argv fold is pure (so it is unit-tested): only the outermost host dispatch names a tool the resolver
 maps to an absolute path; every nested tool is the target's own bare `$PATH` name (see
 [development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md)). A
-`VM`-then-`Container` nesting folds to `incus exec <vm> -- docker run --rm <image> <subcmd>`. This
-generalizes the [`incus`](../engineering/incus.md) host-provider axis from the two-case
-`HostTarget = Local | InVM` to an n-level lift.
+`VM`-then-`Container` nesting folds to `limactl shell <instance> -- docker run --rm <image>
+<subcmd>` on Apple Silicon or `incus exec <vm> -- docker run --rm <image> <subcmd>` on native Linux.
+This generalizes VM providers from the two-case `HostTarget = Local | InVM` tool-level lift to an n-level
+subcommand lift.
 
 Every normal nested invocation reads `<project>.dhall` next to the binary before
 command dispatch. The command tree is still the same everywhere, but a copy of the binary can explicitly
@@ -98,16 +101,70 @@ tools. A failed lifted step is loud, never swallowed — the
 [cluster lifecycle](../engineering/cluster_lifecycle.md) `cluster up` fails closed so a lifting parent
 process sees a non-zero exit.
 
+## Context-Aware Topology
+
+The lift stack is not enough by itself. A command can fold to the right argv and still be illegal if the
+callee's local config does not assert the same execution topology the process is actually occupying. The
+project-local Dhall therefore needs to describe the complete topology as pure data, not just a flat
+role name:
+
+```dhall
+{ topology =
+  { frames =
+    [ { id = "host"
+      , parent = None Text
+      , provider = ProviderKind.LocalHost
+      , contextKind = ContextKind.HostOrchestrator
+      , capabilities = [ Capability.HostTools ]
+      , witnesses = [ ... ]
+      }
+    , { id = "vm"
+      , parent = Some "host"
+      , provider = ProviderKind.LimaVM
+      , contextKind = ContextKind.VMOrchestrator
+      , capabilities = [ Capability.DockerSocket ]
+      , witnesses = [ RuntimeWitness.ProviderProfile ProviderKind.LimaVM "hostbootstrap-demo-vm" ]
+      }
+    , { id = "vm-project-container"
+      , parent = Some "vm"
+      , provider = ProviderKind.DockerContainer
+      , contextKind = ContextKind.VMProjectContainer
+      , capabilities = [ Capability.ContainerRuntime, Capability.KindNetwork ]
+      , witnesses = [ ... ]
+      }
+    ]
+  , currentFrame = "vm-project-container"
+  }
+, context = ...
+}
+```
+
+This is deliberately a list of frames plus parent references rather than a closed recursive union. It can
+represent arbitrary lifted chains — host binary -> VM -> Kubernetes cluster -> a Pulumi role that creates
+an EKS cluster -> workloads in that EKS cluster — without L0 knowing every provider-specific payload. A
+project or higher library layer extends the provider vocabulary and witness vocabulary; the core gate
+still checks common invariants: the `currentFrame` exists, its ancestors exist, requested commands are
+allowed by the current frame, required capabilities are locally verifiable, and runtime witnesses match
+the process environment.
+
+The practical rule is strict: parent code may mint a child context only for a child frame in the topology,
+and a child process must fail before side effects when its local witnesses do not prove it is in that
+frame. A host-side `docker run <image> test all` must therefore be rejected when the config says
+`currentFrame = "vm-project-container"` under a VM parent. The test workflow may still be run locally for
+development, but that requires a local test-harness frame in the Dhall, not accidental reuse of the VM
+container frame.
+
 ## Binary Context: Knowing Your Place
 
 The lift explains how a command crosses a context boundary; the binary-context config explains how the
 callee decides whether the command belongs there.
 
-Every normal command reads `<project>.dhall` from next to the executable before
-dispatch. The context names the binary's position in the chain, such as host orchestrator, VM binary,
-project container on the VM, or cluster service. A command whose semantics do not match that context
-fails fast with exit code 1. For example, a service pod may serve the web role but must refuse `vm up`,
-and a daemon command must refuse to start unless the context declares a daemon/service role.
+Every normal command reads `<project>.dhall` from next to the executable before dispatch. The context
+names the binary's position in the topology, such as host orchestrator, VM binary, project container on
+the VM, or cluster service. A command whose semantics do not match that current frame fails fast with exit
+code 1. For example, a service pod may serve the web role but must refuse `vm up`, a daemon command must
+refuse to start unless the context declares a daemon/service role, and a kind-cluster test workflow must
+refuse to run when the VM/container ancestry the Dhall declares cannot be witnessed locally.
 
 The context contract is the canonical way to make the pure global composition visible locally without
 threading a `LiftContext` through every reconciler. See
@@ -146,7 +203,8 @@ exactly the context-agnostic reconciler the self-reference-lift rule requires).
 
 A consumer composes its deploy as a **single** explicit lift sequence whose final compute step **lifts the
 whole test workflow** into the project container in the VM: it folds to
-`incus exec <vm> -- docker run --rm <image> test all`. Inside that one lifted context the harness runs
+`limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon or
+`incus exec <vm> -- docker run --rm <image> test all` on native Linux. Inside that one lifted context the harness runs
 `clusterUp` "locally" = on the VM's Docker (the mounted socket), so the kind cluster lives **in the VM**,
 reached with **no** second "bring up a cluster" path.
 
@@ -157,16 +215,17 @@ reached with **no** second "bring up a cluster" path.
   harness is it.
 - **RIGHT**: the deploy is a single lift sequence whose only compute step is `test all` lifted into
   `inContainer img (inVM vm localContext)`; the in-cluster bring-up, deploy, and e2e are the harness's job
-  inside that one lifted context, not separate lifted steps.
+  inside that one lifted context, not separate lifted steps. The child Dhall names that frame explicitly,
+  and the binary verifies it before creating a kind cluster.
 
 The single canonical demo chain — the `demo deploy` sequence — is exactly this:
 
 | Step | Context | Role |
 |---|---|---|
-| `ensure incus` | `localContext` | reconciler on metal |
+| `vm ensure` | `localContext` | reconcile the platform VM provider: Lima on Apple Silicon, native Incus on Linux |
 | `vm up` | `localContext` | cordon #1 (the VM is the wall) |
 | `vm pristine-bootstrap` | `localContext` → VM | build #2 (host-native) + build #3 (project image), in the VM |
-| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step; folds to `incus exec <vm> -- docker run --rm <image> test all` |
+| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step; folds through the selected VM provider, then `docker run --rm <image> test all` |
 | `vm down` | `localContext` | guarded teardown (`.data` preserved) |
 
 The deploy crosses two cordons (the VM at `vm up`, the in-cluster cap inside the harness) and performs two
@@ -175,15 +234,15 @@ This is the same self-reference lift as everywhere else — the harness is just 
 
 ## Current Status
 
-The doctrine above is **realized** in the worked demo. The `demo deploy` chain is the single lift sequence
-whose only lifted compute step is `test all`, lifted into the project container in the VM, so the harness
-runs `clusterUp` "locally" on the VM's Docker and the kind cluster lives in the VM — there is no second,
-parallel representation. It is **live-validated** (DEVELOPMENT_PLAN
-[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) Sprint 13.12, and
-[Phase 14](../../DEVELOPMENT_PLAN/phase-14-composition-methodology.md) Sprint 14.3, both `Done`): the
-literal `demo deploy` apply runs `3/3` with the kind cluster on the VM's Docker (poller-confirmed in the
-VM, none on metal). The doctrine is canonical
-([development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+The single-representation doctrine is the supported demo shape. The current lift implementation has the
+provider-backed folds for Incus and Colima, and the Apple Silicon `demo deploy --dry-run` path folds to
+`limactl shell hostbootstrap-demo-vm -- docker run --rm ... test all`. Earlier real runs validated
+the Incus/Linux shape with the kind cluster on the VM's Docker. The context-aware topology described
+above is active hardening work in DEVELOPMENT_PLAN
+[Phase 14](../../DEVELOPMENT_PLAN/phase-14-composition-methodology.md) and
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md): the existing flat role/capability
+gate is not yet the full frame/witness contract, so direct-host fallbacks must be treated as development
+smokes, not authoritative deploy validation.
 
 ## Foundational Principles
 

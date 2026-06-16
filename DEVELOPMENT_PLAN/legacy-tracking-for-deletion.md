@@ -10,7 +10,20 @@
 
 ## Pending
 
-None.
+- **Dockerfile-baked `vm-project-container` runtime authority** — the demo Dockerfile still bakes a
+  runtime-capable container context at `/usr/local/bin/hostbootstrap-demo.dhall`. That is too permissive:
+  image build/code-quality checks and lifted runtime workflows need distinct contexts. Owning phase:
+  phase-15, sprint 15.6; phase-13, sprint 13.14. Replacement: `image-build-container` as the baked
+  default, with parent-mounted runtime configs for lifted `test all`.
+- **Flat binary context without execution topology witnesses** — `HostBootstrap.Context` currently gates
+  by project/binary/context kind/capability/command class, but it does not yet encode provider-backed
+  frames, current-frame identity, parent links, and local runtime witnesses. Owning phase: phase-15,
+  sprint 15.6. Replacement: topology-aware `<project>.dhall` context.
+- **Direct host/container fallback for VM-scoped kind workflows** — development runs can still invoke
+  `test all` directly against the reachable Docker daemon. That must fail when the Dhall declares a VM
+  project-container frame that is not witnessed locally. Owning phase: phase-13, sprint 13.14; phase-15,
+  sprint 15.6. Replacement: explicit local test-harness context for local smokes, or parent-generated
+  VM/container context for deploy.
 
 ## Retained Current Surfaces
 

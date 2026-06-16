@@ -38,7 +38,9 @@ The Python bootstrapper asserts, fail-fast:
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
 
-Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions and verifies it.
+Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions it, starts the daemon,
+grants the invoking user `docker` socket access for future login sessions, applies an immediate socket
+ACL when the current process has not observed refreshed groups yet, and verifies that access.
 GPU specifics (NVIDIA driver, container toolkit) are reconciled by `ensure cuda`, not asserted here.
 
 ## Apple Silicon Minimums
@@ -65,6 +67,7 @@ host (a misuse), never on mere absence:
 |---|---|---|
 | Docker reachability | `ensure docker` | all substrates |
 | Per-project Colima VM | `ensure colima` | Apple silicon |
+| Lima pristine demo VM provider | `ensure lima` | Apple silicon |
 | Incus host-provider | `ensure incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
 | NVIDIA driver + container toolkit | `ensure cuda` | `linux-gpu` |
 | Homebrew packages | `ensure homebrew` | Apple silicon |

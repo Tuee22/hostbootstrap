@@ -22,12 +22,15 @@ pre-binary bootstrap: assert irreducible host minimums, ensure the host build to
 project binary host-native, trigger the binary's idempotent `config init --if-missing`, and exec it. It
 also owns the explicit pipx self-update command for the bootstrapper itself.
 
-Phases 0-15 are `Done`. Each project binary reads a sibling `<project>.dhall`; host, VM, container,
-and service copies use the same filename rule while the role and capability set live inside the file
-content. The worked demo is the reference consumer: `demo deploy` is one explicit lift sequence whose
-only lifted compute step is the standardized `test all` workflow inside the project container in the
-incus VM (`incus exec <vm> -- docker run --rm <image> test all`). That keeps the kind cluster on the
-VM's Docker and avoids a second deploy representation beside the harness.
+Phases 0-12 are `Done`. Phases 13, 14, and 15 are `Active` because the binary-context contracts are
+being tightened: Apple Silicon uses a Lima VM for the demo, native Linux uses Incus, and the Dhall
+context model is being hardened from flat roles into an explicit execution topology with runtime
+witnesses. Each project binary still reads a sibling `<project>.dhall`;
+host, VM, container, and service copies use the same filename rule while authority lives inside the file
+content. The worked demo remains the reference consumer: `demo deploy` is one explicit lift sequence
+whose only lifted compute step is the standardized `test all` workflow inside the project container in
+the VM. That keeps the kind cluster on the VM's Docker and avoids a second deploy representation beside
+the harness.
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -49,11 +52,11 @@ for the component inventory.
 | 8 | [Dhall generation and the four-stream extension](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
-| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
-| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
+| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Active |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
 
 ## Governance
 

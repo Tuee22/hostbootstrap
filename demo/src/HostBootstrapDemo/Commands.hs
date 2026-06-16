@@ -16,13 +16,9 @@ additive extension streams:
     with 'demoSeams' (the app supplies only its case matrix; the @(Seams, Cases)@
     pair is threaded into @test@ via @runHostBootstrapCLI@ in @app/Main.hs@).
 
-The orchestration verbs (@incus@/@vm@) drive the real incus host-provider
-surface from @hostbootstrap-core@: @incus ensure@ installs+verifies a usable
-provider (Colima-backed on Apple, native daemon on Linux), @vm up@ launches a
-budget-cordoned VM (cordon #1), and @vm down@ tears it down behind the
-name-prefix delete-guard. The metal-side verbs resolve and run @incus@
-directly, so core's linux @ensure incus@ also grants the invoking user
-@incus-admin@ membership for future login sessions.
+The orchestration verbs (@incus@/@vm@) drive a fresh Linux host for the demo:
+on Apple Silicon @vm@ uses a Lima VM, while on Linux it uses native Incus.
+@incus ensure@ remains as an explicit Incus provider verb.
 -}
 module HostBootstrapDemo.Commands (
     demoCommands,
@@ -31,16 +27,23 @@ module HostBootstrapDemo.Commands (
     demoCases,
     demoSeams,
     demoVM,
+    demoLimaVM,
     demoGuardPrefix,
 )
 where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless)
-import Data.List (isPrefixOf)
+import Data.List (intercalate, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
 import HostBootstrap.CLI (ProjectCommand, projectCommand)
-import HostBootstrap.Cluster.Cordon (incusSizingArgs)
+import HostBootstrap.Cluster.Cordon (
+    ResourceBudget (..),
+    budgetFromResources,
+    gibibytes,
+    incusSizingArgs,
+    limaSizingArgs,
+ )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterDelete, clusterUp, resolvePlan)
 import HostBootstrap.Config.Schema (Resources (..), withSiblingProjectConfigContext)
 import HostBootstrap.Config.Vocab (Budget (..), Mount (..), PodResources (..))
@@ -48,18 +51,21 @@ import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.Incus as Incus
+import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCaseProfile)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs)
 import HostBootstrap.Lift (ContainerLift (..))
-import HostBootstrap.Substrate (detect, isAppleSilicon, isLinux)
+import HostBootstrap.Lima (LimaVM (..))
+import qualified HostBootstrap.Lima as LimaVM
+import HostBootstrap.Substrate (detect, isAppleSilicon, isLinux, renderArch, substrateArch)
 import qualified HostBootstrapDemo.Chain as Chain
 import qualified HostBootstrapDemo.Role as Role
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Options.Applicative
-import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Exit (ExitCode (..), die)
 import System.IO (hPutStr, stderr)
 import System.Process (readProcessWithExitCode)
@@ -128,6 +134,13 @@ budget-sized VM's spare capacity (the full project budget is the VM wall).
 -}
 caseResources :: Resources
 caseResources = Resources 2 "2GiB" "10GiB"
+
+{- | The full demo lifecycle pulls the large base image, builds the project
+image, and duplicates layers through kind. Smaller budgets fail late in
+Docker extraction, so reject them before launching the VM.
+-}
+demoFullLifecycleResources :: Resources
+demoFullLifecycleResources = Resources 6 "10GiB" "80GiB"
 
 {- | A case's live environment: the resolved host config and its isolated
 per-case cluster plan.
@@ -255,9 +268,11 @@ pristine @ubuntu/24.04@ image the from-zero bootstrap starts from.
 demoVM :: IncusVM
 demoVM = IncusVM "hostbootstrap-demo-vm" "images:ubuntu/24.04"
 
-{- | The name-prefix delete-guard for the demo's incus namespace; @vm down@ will
-only destroy a VM whose name starts with this (see
-'HostBootstrap.Incus.destroyVMArgs').
+demoLimaVM :: LimaVM
+demoLimaVM = LimaVM "hostbootstrap-demo-vm"
+
+{- | The name-prefix delete-guard for the demo's VM namespace; @vm down@ will
+only destroy a VM/profile whose name starts with this.
 -}
 demoGuardPrefix :: String
 demoGuardPrefix = "hostbootstrap-demo"
@@ -267,7 +282,7 @@ demoCommands :: [ProjectCommand]
 demoCommands = [incusCmd, vmCmd, harborCmd, webCmd, deployCmd, roleCmd]
 
 -- ---------------------------------------------------------------------------
--- Metal-host orchestration helpers (the demo resolves and runs incus directly)
+-- Metal-host orchestration helpers.
 -- ---------------------------------------------------------------------------
 
 -- | Detect the substrate and resolve the metal host's tool configuration.
@@ -275,6 +290,29 @@ metalConfig :: IO HostConfig
 metalConfig = do
     detected <- detect
     either die buildHostConfig detected
+
+data DemoVMProvider
+    = AppleLimaVM LimaVM
+    | LinuxIncusVM IncusVM
+
+demoVMProvider :: HostConfig -> IO DemoVMProvider
+demoVMProvider cfg
+    | isAppleSilicon (hcSubstrate cfg) = pure (AppleLimaVM demoLimaVM)
+    | isLinux (hcSubstrate cfg) = pure (LinuxIncusVM demoVM)
+    | otherwise = die "vm: unsupported substrate"
+
+demoVMName :: DemoVMProvider -> String
+demoVMName (AppleLimaVM vm) = limaName vm
+demoVMName (LinuxIncusVM vm) = vmName vm
+
+vmRepoRoot :: FilePath
+vmRepoRoot = "/tmp/hostbootstrap"
+
+runInDemoVM :: HostConfig -> DemoVMProvider -> String -> IO ()
+runInDemoVM cfg provider script =
+    case provider of
+        AppleLimaVM vm -> runOrDie cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script])
+        LinuxIncusVM vm -> runOrDie cfg Incus (execVMArgs vm ["bash", "-lc", script])
 
 {- | Run a resolved host tool, streaming its stdout and dying with the captured
 stderr on a non-zero exit.
@@ -322,7 +360,10 @@ reconciler does not cover — the @qemu-system-x86@ machine emulator and
 re-detects QEMU. Idempotent: a satisfied host is a verified no-op.
 -}
 ensureIncus :: IO ()
-ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
+ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] ensureIncusProvider
+
+ensureIncusProvider :: IO ()
+ensureIncusProvider = do
     runEnsure Incus.reconciler
     cfg <- metalConfig
     case (isLinux (hcSubstrate cfg), isAppleSilicon (hcSubstrate cfg)) of
@@ -372,10 +413,14 @@ vmCmd =
     projectCommand
         "vm"
         ( info
-            (hsubparser (vmUp <> vmDown <> vmBootstrap))
-            (progDesc "incus VM lifecycle and the pristine-host bootstrap")
+            (hsubparser (vmEnsure <> vmUp <> vmDown <> vmBootstrap))
+            (progDesc "fresh Linux VM lifecycle and the pristine-host bootstrap")
         )
   where
+    vmEnsure =
+        command
+            "ensure"
+            (info (pure runVmEnsure) (progDesc "install-and-verify the VM provider for this substrate"))
     vmUp =
         command
             "up"
@@ -389,26 +434,78 @@ vmCmd =
             "pristine-bootstrap"
             (info (pure runVmBootstrap) (progDesc "apt/pipx/ghcup -> hostbootstrap run (build #2 host-native) -> ensure docker + docker build (build #3 project image), in the VM"))
 
-{- | @demo vm up@: read the active context envelope, derive the incus VM sizing
-from the one canonical parser ('incusSizingArgs'), and launch the VM cordoned to it
-(cordon #1). The sizing list (@limits.cpu=…@, @limits.memory=…@, @root,size=…@)
-is formatted into @incus launch@ flags: each @limits.*@ becomes a @-c@ config
-flag and @root,size=…@ a @-d@ device override.
+{- | @demo vm ensure@: use a Lima VM on Apple Silicon and native
+Incus on Linux.
+-}
+runVmEnsure :: IO ()
+runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
+    cfg <- metalConfig
+    if isAppleSilicon (hcSubstrate cfg)
+        then do
+            runEnsure EnsureLima.reconciler
+            putStrLn "vm ensure: Apple Silicon uses a Lima VM (no Incus nested VM)"
+        else ensureIncusProvider
+
+{- | @demo vm up@: read the active context envelope, derive the VM sizing from
+the one canonical parser, and launch the VM cordoned to it (cordon #1). Apple
+Silicon starts a dedicated Lima VM; Linux launches an Incus VM.
 -}
 runVmUp :: IO ()
-runVmUp = demoContext Context.HostOrchestratorCommand [Context.IncusProvider] $ \ctx -> do
-    sizing <- either die pure (incusSizingArgs (resourcesFromContext ctx))
+runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
     cfg <- metalConfig
-    let argv = createVMArgs demoVM (concatMap toLaunchFlag sizing)
-    putStrLn ("vm up: launching " ++ vmName demoVM ++ " cordoned to the budget " ++ show sizing)
-    runOrDie cfg Incus argv
-    putStrLn ("vm up: waiting for the " ++ vmName demoVM ++ " guest agent to come up")
-    waitVMAgent cfg demoVM 60
-    putStrLn ("vm up: launched " ++ vmName demoVM)
+    provider <- demoVMProvider cfg
+    let resources = resourcesFromContext ctx
+    either die pure (requireDemoLifecycleResources resources)
+    case provider of
+        AppleLimaVM vm -> do
+            sizing <- either die pure (limaSizingArgs resources)
+            let argv = LimaVM.startVMArgs vm (sizing ++ ["--vm-type", "vz"])
+            putStrLn ("vm up: launching Lima instance " ++ limaName vm ++ " cordoned to the budget " ++ show sizing)
+            runOrDie cfg Lima argv
+            putStrLn ("vm up: waiting for " ++ limaName vm ++ " to answer")
+            waitLimaVM cfg vm 60
+            putStrLn ("vm up: launched " ++ limaName vm)
+        LinuxIncusVM vm -> do
+            sizing <- either die pure (incusSizingArgs resources)
+            let argv = createVMArgs vm (concatMap toLaunchFlag sizing)
+            putStrLn ("vm up: launching " ++ vmName vm ++ " cordoned to the budget " ++ show sizing)
+            runOrDie cfg Incus argv
+            putStrLn ("vm up: waiting for the " ++ vmName vm ++ " guest agent to come up")
+            waitVMAgent cfg vm 60
+            putStrLn ("vm up: launched " ++ vmName vm)
   where
     toLaunchFlag a
         | "root," `isPrefixOf` a = ["-d", a]
         | otherwise = ["-c", a]
+
+requireDemoLifecycleResources :: Resources -> Either String ()
+requireDemoLifecycleResources actualResources = do
+    actual <- budgetFromResources actualResources
+    required <- budgetFromResources demoFullLifecycleResources
+    let shortages =
+            concat
+                [ shortage "cpu" show show budgetCpu actual required
+                , shortage "memory" showGiB showGiB budgetMemoryBytes actual required
+                , shortage "storage" showGiB showGiB budgetStorageBytes actual required
+                ]
+    case shortages of
+        [] -> Right ()
+        _ ->
+            Left $
+                "demo vm up: resource budget too small for full demo lifecycle: "
+                    ++ intercalate ", " shortages
+                    ++ "; regenerate the host config with `hostbootstrap run --project-root demo -- config init --role host-orchestrator --output .build/hostbootstrap-demo.dhall --source-root demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force`"
+  where
+    shortage label renderActual renderRequired field actual required
+        | field actual < field required =
+            [ label
+                ++ " has "
+                ++ renderActual (field actual)
+                ++ ", needs at least "
+                ++ renderRequired (field required)
+            ]
+        | otherwise = []
+    showGiB bytes = show (gibibytes bytes) ++ "GiB"
 
 {- | Poll @incus exec <vm> -- true@ until the VM's guest agent answers — an incus
 VM accepts @incus exec@ only once its agent has started (a few seconds after
@@ -424,8 +521,16 @@ waitVMAgent cfg vm n = do
         Right (ExitSuccess, _, _) -> pure ()
         _ -> threadDelay 2000000 >> waitVMAgent cfg vm (n - 1)
 
+waitLimaVM :: HostConfig -> LimaVM -> Int -> IO ()
+waitLimaVM _ vm 0 = die ("vm up: " ++ limaName vm ++ " did not become ready")
+waitLimaVM cfg vm n = do
+    r <- runTool cfg Lima (LimaVM.shellVMArgs vm ["true"])
+    case r of
+        Right (ExitSuccess, _, _) -> pure ()
+        _ -> threadDelay 2000000 >> waitLimaVM cfg vm (n - 1)
+
 {- | @demo vm pristine-bootstrap@: the from-zero first-run flow inside the VM
-(the project source is staged at @/root/hostbootstrap@; see the runbook).
+(the project source is staged at @/tmp/hostbootstrap@; see the runbook).
 Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
 pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
 @hostbootstrap run@ — which asserts the host minimums, ensures the toolchain,
@@ -433,40 +538,42 @@ and builds the demo binary **host-native** in the VM (**build #2**) before
 exec'ing it (here with @config schema@, so the built binary proves itself).
 -}
 runVmBootstrap :: IO ()
-runVmBootstrap = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
+runVmBootstrap = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
     cfg <- metalConfig
-    stageSource cfg
+    provider <- demoVMProvider cfg
+    stageSource cfg provider (T.unpack (Context.sourceRoot ctx))
     let inVM label script = do
             putStrLn ("pristine-bootstrap: " ++ label)
-            runOrDie cfg Incus (execVMArgs demoVM ["bash", "-lc", script])
+            runInDemoVM cfg provider script
     inVM
         "apt install pipx + GHC build prerequisites"
-        "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq pipx python3-venv build-essential curl libgmp-dev libtinfo-dev libncurses-dev zlib1g-dev pkg-config git ca-certificates"
+        "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq pipx python3-venv build-essential curl libgmp-dev libtinfo-dev libncurses-dev zlib1g-dev pkg-config git ca-certificates"
     inVM
         "ensure the ghcup toolchain (GHC 9.12.4 + cabal) — the documented Linux host prerequisite"
         "test -x \"$HOME/.ghcup/bin/ghcup\" || { export BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_GHC_VERSION=9.12.4 BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1; curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh; }"
     inVM
         "pipx install the local hostbootstrap CLI"
-        "pipx install --force /root/hostbootstrap"
+        ("pipx install --force " ++ shellQuote vmRepoRoot)
     inVM
         "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
-        ". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd /root/hostbootstrap/demo && hostbootstrap run -- config schema"
+        (". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && hostbootstrap run -- config schema")
     inVM
         "generate the VM-local project config"
-        "cd /root/hostbootstrap/demo && .build/hostbootstrap-demo config init --role vm-orchestrator --output .build/hostbootstrap-demo.dhall --source-root /root/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force"
+        ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo config init --role vm-orchestrator --output .build/hostbootstrap-demo.dhall --source-root " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force")
     inVM
         "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
-        "cd /root/hostbootstrap/demo && .build/hostbootstrap-demo ensure docker"
+        ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo ensure docker")
     inVM
         "build #3 — the project container FROM the pulled base (repo-root context, L0-direct)"
-        ("cd /root/hostbootstrap && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE=" ++ demoBaseImage ++ " -t hostbootstrap-demo:local .")
+        ("cd " ++ shellQuote vmRepoRoot ++ " && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE=" ++ demoBaseImage cfg ++ " -t hostbootstrap-demo:local .")
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
 {- | The published base tag the demo's project container builds @FROM@ — cpu /
-amd64 (the demo is single-arch). The base is pulled inside the VM by build #3.
+the detected VM architecture. The base is pulled inside the VM by build #3.
 -}
-demoBaseImage :: String
-demoBaseImage = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
+demoBaseImage :: HostConfig -> String
+demoBaseImage cfg =
+    "docker.io/tuee22/hostbootstrap:basecontainer-cpu-" ++ renderArch (substrateArch (hcSubstrate cfg))
 
 {- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
 source @pipx install@ and the in-VM @hostbootstrap run@ build from. The host
@@ -476,12 +583,15 @@ Without this step the from-zero bootstrap has nothing to install — the runbook
 documents the source as "staged at @/root/hostbootstrap@", and this is where
 that staging happens.
 -}
-stageSource :: HostConfig -> IO ()
-stageSource cfg = do
+stageSource :: HostConfig -> DemoVMProvider -> FilePath -> IO ()
+stageSource cfg provider sourceRoot = do
     cwd <- getCurrentDirectory
-    let repoRoot = cwd ++ "/.." -- cwd is demo/; the repo root is its parent
-        tarball = "/tmp/hostbootstrap-src.tgz"
-    putStrLn ("pristine-bootstrap: staging the project source into " ++ vmName demoVM ++ ":/root/hostbootstrap")
+    let repoRoot =
+            if "demo" `isSuffixOfPath` sourceRoot
+                then sourceRoot ++ "/.."
+                else cwd ++ "/.."
+        tarball = repoRoot ++ "/.hostbootstrap-src.tgz"
+    putStrLn ("pristine-bootstrap: staging the project source into " ++ demoVMName provider ++ ":" ++ vmRepoRoot)
     (tc, _, terr) <-
         readProcessWithExitCode
             "tar"
@@ -503,28 +613,45 @@ stageSource cfg = do
     case tc of
         ExitFailure _ -> die ("pristine-bootstrap: source tar failed: " ++ terr)
         ExitSuccess -> pure ()
-    runOrDie cfg Incus (pushFileArgs demoVM tarball "/root/hostbootstrap-src.tgz")
-    runOrDie
-        cfg
-        Incus
-        ( execVMArgs
-            demoVM
-            [ "bash"
-            , "-lc"
-            , "rm -rf /root/hostbootstrap && mkdir -p /root/hostbootstrap && tar -xzf /root/hostbootstrap-src.tgz -C /root/hostbootstrap && rm -f /root/hostbootstrap-src.tgz"
-            ]
-        )
+    case provider of
+        LinuxIncusVM vm -> do
+            runOrDie cfg Incus (pushFileArgs vm tarball "/tmp/hostbootstrap-src.tgz")
+            runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
+        AppleLimaVM vm -> do
+            runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
+            runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
+    removeFile tarball
+
+isSuffixOfPath :: FilePath -> FilePath -> Bool
+isSuffixOfPath suffix path =
+    ("/" ++ suffix) `isSuffixOf` path || suffix == path
+
+shellQuote :: String -> String
+shellQuote s = "'" ++ concatMap quoteChar s ++ "'"
+  where
+    quoteChar '\'' = "'\\''"
+    quoteChar c = [c]
 
 -- | @demo vm down@: destroy the demo VM behind the name-prefix delete-guard.
 runVmDown :: IO ()
-runVmDown = demoAction Context.HostOrchestratorCommand [Context.IncusProvider] $ do
+runVmDown = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
     cfg <- metalConfig
-    case destroyVMArgs demoGuardPrefix demoVM of
-        Left err -> die err
-        Right argv -> do
-            putStrLn ("vm down: destroying " ++ vmName demoVM)
-            runOrDie cfg Incus argv
-            putStrLn ("vm down: destroyed " ++ vmName demoVM)
+    provider <- demoVMProvider cfg
+    case provider of
+        AppleLimaVM vm ->
+            case LimaVM.deleteVMArgs demoGuardPrefix vm of
+                Left err -> die err
+                Right argv -> do
+                    putStrLn ("vm down: destroying Lima instance " ++ limaName vm)
+                    runOrDie cfg Lima argv
+                    putStrLn ("vm down: destroyed " ++ limaName vm)
+        LinuxIncusVM vm ->
+            case destroyVMArgs demoGuardPrefix vm of
+                Left err -> die err
+                Right argv -> do
+                    putStrLn ("vm down: destroying " ++ vmName vm)
+                    runOrDie cfg Incus argv
+                    putStrLn ("vm down: destroyed " ++ vmName vm)
 
 harborCmd :: ProjectCommand
 harborCmd =
@@ -607,7 +734,7 @@ webCmd =
     webServe =
         command
             "serve"
-            (info (pure (demoAction Context.ServiceCommand [] (serveWeb 8080))) (progDesc "serve the warp/wai webservice on the incus host (the Playwright baseURL)"))
+            (info (pure (demoAction Context.ServiceCommand [] (serveWeb 8080))) (progDesc "serve the warp/wai webservice (the Playwright baseURL)"))
     webBridge =
         command
             "bridge"
@@ -627,7 +754,7 @@ deployCmd =
         )
   where
     runDeploy dryRun =
-        demoAction Context.HostOrchestratorCommand [Context.IncusProvider] (Chain.runDeploy demoVM demoDeployImage dryRun)
+        demoAction Context.HostOrchestratorCommand [Context.HostTools] (Chain.runDeploy demoVM demoLimaVM demoDeployImage dryRun)
     dryRunFlag =
         switch (long "dry-run" <> help "print the planned operation/context sequence without running it")
 

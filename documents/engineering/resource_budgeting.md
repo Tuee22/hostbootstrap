@@ -12,7 +12,8 @@
 - The host-level `<project>.dhall` `resources` field is the one ceiling: one declared `cpu` / `memory` /
   `storage` number per project. Child configs receive a generated resource envelope or slice.
 - The project binary verifies the active context has the spare budget available before proceeding, then
-  applies the cordon — a dedicated per-project Colima/incus VM, a kind-node cap, or a container cap.
+  applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on Linux, Colima for
+  direct Apple Docker workloads), a kind-node cap, or a container cap.
 - The ceiling is enforced by three rings (compile, bring-up, runtime). The applied detail lives in
   [applied_cordon](applied_cordon.md).
 - Downstream binaries do not read the host config directly; they consume the budget projection in their
@@ -35,7 +36,7 @@ The resource budget is a `resources` record in the host-level project config des
 
 The project binary reads this field from its active config, validates it, and passes the appropriate
 envelope to nested configs before crossing a VM, container, daemon, or cluster-service boundary. The
-Python bootstrapper does not read this field and does not size the Colima/incus VM — it builds no sizing
+Python bootstrapper does not read this field and does not size the Lima/Incus/Colima VM — it builds no sizing
 argv at all. See
 [python_haskell_boundary](../architecture/python_haskell_boundary.md) and
 [binary_context_config](../architecture/binary_context_config.md).
@@ -72,7 +73,7 @@ off Linux:
 | `apple-silicon` | `sysctl -n hw.ncpu` (logical cores) | `sysctl -n hw.memsize` (total physical RAM) | reported generously |
 | `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` processor count | `/proc/meminfo` `MemAvailable` | reported generously |
 
-Storage is reported generously because the applied storage cordon (Colima `--disk`, incus `root,size`,
+Storage is reported generously because the applied storage cordon (Lima/Colima `--disk`, incus `root,size`,
 a quota'd hostPath) is the real storage wall, not the preflight. On Apple, `sysctl` is invoked through
 the resolved `HostTool Sysctl`, preserving the host-tool absolute-path rule. The preflight runs inside
 `clusterUp` before any substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
@@ -94,12 +95,12 @@ bootstrapper.
 
 | Substrate | Cordoning mechanism |
 |-----------|---------------------|
-| `apple-silicon` | A dedicated per-project Colima VM sized to `cpu` / `memory` / `storage`. The VM boundary is the cordon: the project's Docker workload runs inside its own sized VM, isolated from the host and from other projects' VMs. The VM is sized by the project binary's `ensure docker` step, not by the Python bootstrapper. |
+| `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM remains the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
 | `linux-cpu` / `linux-gpu` | A kind-node cap applied during cluster bring-up: `docker update --cpus --memory --memory-swap` on the control-plane container, capping the cluster's consumption to the declared budget. |
 
-On Apple the cordon is the per-project Colima VM, sized by the project binary before the build; on
-Linux it is the kind-node cap applied during cluster bring-up, after `kind create` and before Helm,
-fail-closed. Storage is cordoned per substrate (Colima `--disk` on Apple, an incus `root,size` for an
+On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows may use the per-project
+Colima VM; on Linux it is the kind-node cap applied during cluster bring-up, after `kind create` and
+before Helm, fail-closed. Storage is cordoned per substrate (Lima/Colima `--disk` on Apple, an incus `root,size` for an
 incus VM, a quota'd hostPath plus image GC on bare Linux). The cluster-side enforcement is part of the
 lifecycle semantics in [cluster_lifecycle](cluster_lifecycle.md); the full applied detail — the argv,
 the storage drop from the `docker update` flags, and the self-limiting `--memory-swap == --memory` — is

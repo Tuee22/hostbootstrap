@@ -42,22 +42,29 @@ the orientation layer and points at those canonical homes rather than duplicatin
 
 `hostbootstrap-core` composes host management as **operations** — `ensure` reconcilers, cluster/deploy
 steps, and the **self-reference lift** that crosses an execution-context boundary by re-invoking the
-binary's *own* subcommand in a nested context (`incus exec <vm> -- <pb> …` for a VM,
-`docker run --rm <image> …` for the project container, whose `ENTRYPOINT` is the binary). Each nested
-call runs the same command tree. That nested process is explicit rather than blind: before
-normal dispatch, the binary reads the sibling `<project>.dhall` that tells it which segment of
-the global composition it occupies. That context gates commands, so a cluster service cannot run
-host-orchestrator verbs and a daemon command cannot start unless the context declares a daemon/service
-role. The same algebra expresses both deployment and runtime business logic (stateless roles over durable
-external stores). See
+binary's *own* subcommand in a nested context. The VM hop is provider-backed: on Apple Silicon the demo
+uses a Lima VM (`limactl shell <instance> -- …`) started without Lima-managed containerd, while native Linux uses an Incus
+VM (`incus exec <vm> -- …`). The project-container hop is `docker run --rm <image> …`, whose
+`ENTRYPOINT` is the binary. Each nested call runs the same command tree. That nested process is explicit
+rather than blind: before normal dispatch, the binary reads the sibling `<project>.dhall` that tells it
+which segment of the global composition it occupies. The target model is a context-aware topology in the
+Dhall value — an ordered set of execution frames plus the current frame and runtime witnesses — so a copy
+of the binary can fail fast when it is not actually running where the Dhall says it is. That context gates
+commands, so a cluster service cannot run host-orchestrator verbs, a daemon command cannot start unless
+the context declares a daemon/service role, and a kind-cluster workflow cannot be represented as valid
+when it is running outside the VM/container frame that minted it. The same algebra expresses both
+deployment and runtime business logic (stateless roles over durable external stores). See
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
 > **Current state.** The host-native bootstrapper, self-reference lift, single-representation demo deploy,
-> real `demo deploy` run, and project-local binary-context command gate are implemented and validated as recorded
-> in [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). Python now derives the project name from the Cabal
+> and project-local binary-context command gate are implemented as recorded in
+> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). Python now derives the project name from the Cabal
 > file and writes no Dhall. Normal command gating reads the context section inside the sibling
 > `<project>.dhall`; `config init` and parent child-projection commands generate the host, VM, container,
-> and service/daemon local configs.
+> and service/daemon local configs. Phases 13, 14, and 15 remain open to harden the context topology:
+> the demo lift chooses validated Lima on Apple Silicon and Incus on Linux, but the Dhall/context
+> contract is being tightened so the complete arbitrary topology and its runtime witnesses are encoded and
+> enforced instead of relying on permissive flat roles.
 >
 > The host-native build half is implemented: `hostbootstrap/bootstrap.py` derives the project name from
 > the Cabal file, asserts minimums, ensures the host build toolchain, builds the binary host-native on
@@ -87,8 +94,8 @@ fail-fast sequence:
    `./.build/<project>.dhall` is absent, the binary fails fast and points the user to its config
    initialization command.
 
-Ensuring Docker, building the project container, applying the resource cordon, the cluster lifecycle,
-the incus VM, the webservice, and teardown are **not** the bootstrapper's job — the execed binary owns
+Ensuring Docker, building the project container, applying the resource cordon, the VM provider, the
+cluster lifecycle, the webservice, and teardown are **not** the bootstrapper's job — the execed binary owns
 them. The binary is **never blocked by a dependency that simply isn't installed**: that is the whole
 purpose of the `ensure` suite (install-and-verify), and the host minimums in step 1 are the **only** hard
 fail-fast surface in the system. See
@@ -230,7 +237,9 @@ noun-first verbs (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) without
 end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
 registry (`coreArtifacts ++ demoArtifacts`), the test harness (`demoCases` driven by `runMatrix`), and
 the binary-owned local config. Its target `hostbootstrap-demo.dhall` budget is the demo's one ceiling —
-6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node cap.
+6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node cap. `vm up`
+fails fast below that full-lifecycle floor so the demo does not discover an undersized VM during Docker
+layer extraction.
 
 ### The single lift sequence
 
@@ -246,25 +255,27 @@ clusters when it lifts a harness case). The single canonical chain `demo deploy`
 
 | Step | Context | Role |
 |---|---|---|
-| ensure incus | `local` | reconciler on metal: Colima-backed on Apple, native daemon on Linux |
+| `vm ensure` | `local` | reconciler on metal: Lima VM provider on Apple Silicon, native Incus provider on Linux |
 | `vm up` | `local` | the cordon — the VM is the isolation wall |
 | `vm pristine-bootstrap` | `local → VM` | host-native build **in** the VM, then the project-image build, **in** the VM |
 | `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step |
 | `vm down` | `local` | guarded teardown (host `.data` preserved) |
 
 The one lifted compute step folds (per the [self-reference lift](documents/architecture/composition_methodology.md))
-to `incus exec <vm> -- docker run --rm <image> test all`. Inside that lifted context the harness runs
+to `limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon and
+`incus exec <vm> -- docker run --rm <image> test all` on native Linux. Inside that lifted context the harness runs
 `clusterUp` "locally" = on the **VM's Docker** (the mounted socket), so the kind cluster lives **in the
 VM**, reached with no second "bring up a cluster" path. The doctrine — one operation, one
 representation; the test workflow is a *lifted* operation, not a parallel representation — is stated
 canonically in
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Status — live-validated.** `demo deploy` as the single lift sequence above is implemented and validated
-> on a real host: the literal `demo deploy` apply runs `ensure incus -> vm up -> pristine[#2+#3] -> lifted
-> test all (3/3) -> vm down` clean, with the kind cluster on the **VM's Docker** (poller-confirmed in the
-> VM, none on metal). See [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md) (Phase 13 Sprint 13.12). The two entry points
-> below are the parts you run directly.
+> **Status.** The single lift sequence remains the supported demo shape. Its Apple Silicon dry-run now
+> folds through Lima VM execution rather than an Incus VM. The Lima VM is still a pristine Linux host:
+> Docker is installed and verified inside the guest by the project binary, not supplied by Lima's
+> containerd setup. Real Lima lifecycle validation passes; the stricter Dhall topology/witness gate is open work in
+> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). The earlier Incus real-run remains a historical Linux
+> validation point, not proof that Apple Silicon can run the Incus VM path.
 
 ### Spin it up
 
@@ -315,14 +326,15 @@ The demo carries two test layers:
   `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The harness is the **one**
   representation of this work and the lift target — it invokes `clusterUp` as `HostConfig -> IO ()`
   "locally", with no `LiftContext` of its own. In the supported shape the harness is reached **only** as the
-  single lifted compute step of `demo deploy` (`incus exec <vm> -- docker run --rm <image> test all`), so
-  `clusterUp` runs on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
+  single lifted compute step of `demo deploy` (`limactl shell <instance> -- docker run --rm <image> test all`
+  on Apple Silicon, `incus exec <vm> -- docker run --rm <image> test all` on Linux), so `clusterUp` runs
+  on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
   (`pristine-bootstrap` a live cluster, `e2e-tabs` the project image's base-provided Playwright runtime
   against the in-cluster webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
-  when run via `demo deploy` (live-validated, `3/3`); they can also be invoked directly on the metal host
-  for a quick local check. The cases bind to the inherited `test` verb (the harness extension stream). These seams need Docker + kind,
-  so they run inside the demo VM / project container — invoked directly for a local check, or as the
-  lifted step of `demo deploy` end-to-end:
+  when run via `demo deploy`; direct host invocation is a development smoke, not the authoritative deploy
+  context. The context-topology hardening now being tracked will make illegal direct-host representations
+  fail before cluster creation. The cases bind to the inherited `test` verb (the harness extension stream).
+  These seams need Docker + kind, so the supported end-to-end path is the lifted step of `demo deploy`:
 
   ```bash
   cd demo

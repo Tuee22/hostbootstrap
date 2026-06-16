@@ -5,7 +5,7 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-4-skeletal-dhall-and-command-tree.md](phase-4-skeletal-dhall-and-command-tree.md), [phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md)
 
 > **Purpose**: Land kind/Helm cluster-lifecycle semantics, resource-budget verification and
-> cordoning (per-project Colima VM on Apple, kind node limits on Linux), the never-delete-`.data`
+> cordoning (VM wall on Apple, kind node limits on Linux), the never-delete-`.data`
 > invariant, and the production-vs-test cluster profile.
 
 ## Phase Status
@@ -28,7 +28,7 @@ lift when the workflow is lifted. This phase is `Done`.
 Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
 [development_plan_standards.md § O](development_plan_standards.md)). `hostbootstrap` verifies the host
 has the spare budget declared in `resources` and cordons it — on Apple by sizing a dedicated
-per-project Colima VM, on Linux by applying kind node resource limits — drives kind/Helm cluster
+per-project VM wall on Apple, on Linux by applying kind node resource limits — drives kind/Helm cluster
 lifecycle, never deletes host `.data`, and distinguishes the production cluster profile (fixed name /
 `.data` path) from the test profile (per-case isolated paths).
 
@@ -48,7 +48,7 @@ to the project.
 #### Deliverables
 
 - Budget verification reading `resources {cpu, memory, storage}` and checking spare host capacity.
-- Apple cordoning: **derive** the sizing for a dedicated per-project Colima VM from the budget.
+- Apple cordoning: **derive** the sizing for the dedicated VM wall from the budget.
 - Linux cordoning: **derive** kind node resource limits from the budget.
 
 The pure cordon derives the args; applying them happens through the project binary's lifecycle and host

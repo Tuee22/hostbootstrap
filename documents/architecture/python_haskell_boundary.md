@@ -16,7 +16,7 @@
 - Once the binary runs it is **never blocked by an absent-but-installable dependency** — the `ensure`
   suite installs whatever it needs (install-and-verify; see
   [ensure_reconcilers](../engineering/ensure_reconcilers.md)). The binary also owns the **full
-  downstream resource lifecycle**: Docker, the project container, the cordon, the incus VM, the kind
+  downstream resource lifecycle**: Docker, the project container, the cordon, the VM provider, the kind
   cluster, the webservice, the Playwright e2e run, and **teardown**.
 - Everything else — host-tool resolution, `ensure` reconcilers, substrate detection,
   binary-context validation, nested context creation, cluster lifecycle, and the command tree — lives in
@@ -59,7 +59,7 @@
 | Dhall config initialization and downstream projection | Project binary | The project binary renders defaults, validates local config, and generates narrower child configs at VM/container/service boundaries. See [dhall_topology](../engineering/dhall_topology.md). |
 | Resource budgeting and cordoning | `hostbootstrap-core` | Verify spare resources; cordon via Colima sizing / kind limits. See [resource_budgeting](../engineering/resource_budgeting.md). |
 | Cluster lifecycle | `hostbootstrap-core` (the execed binary) | kind/Helm semantics, never-delete-`.data` invariant; the lifecycle runs where the context says it may run. In the demo deploy, the lifted operation is `test all`, and the harness calls `clusterUp` locally inside that context. See [cluster_lifecycle](../engineering/cluster_lifecycle.md), [composition_methodology](composition_methodology.md), and [binary_context_config](binary_context_config.md). |
-| incus VM lifecycle (create/exec/reboot/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: the binary spins, sizes, and tears down the VM via one `incus exec` dispatch. See [incus](../engineering/incus.md). |
+| VM lifecycle (create/exec/copy/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: Apple Silicon demo uses Lima; native Linux uses Incus. The binary spins, sizes, and tears down the VM through the selected provider. See [incus](../engineering/incus.md). |
 | Webservice + e2e (serve, Playwright) | `hostbootstrap-core` (the execed binary / its container) | The binary/container serve the webservice and run the Playwright e2e against it. |
 | Teardown / spin-down | `hostbootstrap-core` (the execed binary) | The binary owns spinning every resource back down, preserving host `.data`. |
 | The optparse command tree | `hostbootstrap-core` | `runHostBootstrapCLI progName projectSpec` is the entrypoint project binaries extend; `ProjectSpec` carries the project commands, non-empty test suite, code-check action, and artifacts. See [hostbootstrap_core_library](hostbootstrap_core_library.md). |

@@ -38,15 +38,17 @@ they do not collapse. `incus` is likewise not a fifth run-model: the four run-mo
 The parameterization detail — every linux-host operation runs against `Local` or `InVM` with no
 per-call branching — is in [build and run model](../architecture/build_and_run_model.md).
 
-`incus` is not standardized for all workflows. The worked demo uses it to encapsulate a fresh linux
-host; outside that, the local host is the default target. It is fully supported either way.
+`incus` is not standardized for all workflows. The worked demo uses native Incus to encapsulate a fresh
+Linux host on Linux. On Apple Silicon, the worked demo uses Lima for that pristine VM instead; `ensure
+incus` remains available for explicit Incus workflows and remote/provider experiments. Outside those
+flows, the local host is the default target.
 
 On macOS, `incus` is a client; the Incus daemon runs on Linux. The supported Apple-silicon local
 provider is therefore Colima's Incus runtime, started as the named profile `incus`
 (`colima start incus --runtime incus`). A plain `brew install incus` followed by `incus list` is not a
 usable provider: the client has no daemon until the Colima profile exists or a remote Linux server is
-configured. Apple Incus VMs also depend on Apple's nested-virtualization support, so older Apple
-silicon that cannot run nested VMs needs a remote Linux provider for VM lifecycle work.
+configured. Apple Incus VMs also depend on Apple's nested-virtualization support. The demo therefore does
+not use an Incus VM on Apple Silicon; it uses Lima to create the pristine Linux VM.
 
 The two-case `HostTarget = Local | InVM` described here is the **tool-level** lift (run one resolved tool
 in a target). It is generalized by the **subcommand-level self-reference lift** (`HostBootstrap.Lift`),

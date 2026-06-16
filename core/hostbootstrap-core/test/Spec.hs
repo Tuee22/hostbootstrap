@@ -10,6 +10,7 @@ import qualified EnsureSpec
 import qualified HarnessSpec
 import qualified HostToolSpec
 import qualified IncusSpec
+import qualified LimaSpec
 import qualified LifecycleSpec
 import qualified LiftSpec
 import qualified RoleLifecycleSpec
@@ -34,6 +35,7 @@ main = do
             , LifecycleSpec.tests
             , HarnessSpec.tests
             , IncusSpec.tests
+            , LimaSpec.tests
             , LiftSpec.tests
             , RoleLifecycleSpec.tests
             , ContainerSpec.tests

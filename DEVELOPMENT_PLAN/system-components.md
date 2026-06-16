@@ -10,15 +10,17 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-15 are `Done`. The rows below name the supported component surfaces, their owning
-> phases, and whether the repository implements them. Runtime authority is a sibling `<project>.dhall`
-> for each host, VM, container, and service/daemon copy of a binary, with role and command permissions
-> inside the file content. The Python CLI is the thin `doctor` / `build` / `run` / `base`
-> pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and `hostbootstrap-core`
-> is the reusable library consumed through `runHostBootstrapCLI progName projectSpec`. The
-> single-representation rule is part of the supported architecture: the
-> standardized test harness is the one test/deploy workflow representation and may be lifted as a whole
-> into a nested context such as `incus exec <vm> -- docker run --rm <image> test all`.
+> Note: Phases 0-12 are `Done`; Phases 13, 14, and 15 are `Active` for topology-aware binary context
+> hardening. The rows below name the supported component
+> surfaces, their owning phases, and whether the repository implements them. Runtime authority is a
+> sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
+> and command permissions inside the file content; the active hardening adds provider-backed topology
+> frames, a current frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` /
+> `base` pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and
+> `hostbootstrap-core` is the reusable library consumed through `runHostBootstrapCLI progName
+> projectSpec`. The single-representation rule is part of the supported architecture: the standardized
+> test harness is the one test/deploy workflow representation and may be lifted as a whole into a nested
+> VM/container context.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -39,8 +41,9 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure.Homebrew` | 3 | yes | `ensure homebrew` reconciler |
 | `HostBootstrap.Ensure.Ghc` | 3 | yes | `ensure ghc` reconciler |
 | `HostBootstrap.Ensure.Tart` | 3 | yes | `ensure tart` reconciler |
+| `HostBootstrap.Ensure.Lima` | 11.6 | yes | `ensure lima` reconciler for the Apple Silicon Lima VM provider |
 | `HostBootstrap.Config.Schema` | 4, 8, 15 | yes | project-local `<project>.dhall` schema/default/projection substrate; sibling project-config discovery and command-gate loading |
-| `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/service constructors, validation, exit-code-1 failure helpers, and role/capability/command authority |
+| `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | partial | runtime context type embedded inside `<project>.dhall`: host/VM/container/service constructors, validation, exit-code-1 failure helpers, and role/capability/command authority; topology frames/current-frame/runtime-witness hardening is Active |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
 | `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware spare-capacity resolution — resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux), and the applied `docker update` kind-node cordon |
@@ -50,10 +53,11 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
 | `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb through `ProjectSpec`; `emptySuite` is bare-only) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
-| `HostBootstrap.Lift` | 11 | yes | the self-reference compositional lift: `LiftContext` (`Local`/`InVM`/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`); the subcommand-level superset of `HostTarget` |
+| `HostBootstrap.Lift` | 11 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`); the subcommand-level superset of `HostTarget` |
 | `HostBootstrap.Container` | 13 | yes | the project-container build (build #3): pure `dockerBuildArgs`/`projectImageTag` + `buildProjectContainer` (`docker build` `FROM` the base, tagged `<project>:local`) |
 | `HostBootstrap.RoleLifecycle` | 14 | yes | the role-lifecycle skeleton: the `RolePhase` enum + pure `rolePhases` ordering + `RoleSpec`/`runRole` (acquire→serve→drain, drain via `finally`) — the `HostDaemon` substrate L1 builds roles on |
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
+| `HostBootstrap.Lima` | 11.6 | yes | Lima VM lifecycle argv for Apple Silicon demo execution (`start`, `shell`, `copy`, `list`, name-guarded `delete`) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
@@ -83,6 +87,7 @@ with a one-line diagnostic and a non-zero exit. See
 | `ensure homebrew` | `HostBootstrap.Ensure.Homebrew` | 3 | `apple-silicon` | fail fast, non-zero |
 | `ensure ghc` | `HostBootstrap.Ensure.Ghc` | 3 | `apple-silicon` (host-native build path) | fail fast, non-zero |
 | `ensure tart` | `HostBootstrap.Ensure.Tart` | 3 | `apple-silicon` (build-only) | fail fast, non-zero |
+| `ensure lima` | `HostBootstrap.Ensure.Lima` | 11.6 | `apple-silicon` (pristine demo VM provider) | fail fast, non-zero |
 | `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify; Colima-backed on Apple, native daemon on Linux) | fail fast, non-zero |
 
 ## Project-local `<project>.dhall` schema
@@ -97,7 +102,7 @@ and reads it before normal command dispatch.
 |--------------|---------|---------|
 | Project identity | project binary | derived project name, source root, binary name, and config version |
 | Build inputs | project binary | Dockerfile path, container resources, image/tag defaults, build roots |
-| Runtime context | project binary | context kind, role name, allowed command classes, local capabilities, parent chain |
+| Runtime context | project binary | topology frames/current frame/runtime witnesses, context kind, role name, allowed command classes, local capabilities |
 | Resource envelope | project binary | host/VM/container/service budget limits and child projection defaults |
 | Deploy knobs | project binary | HA replicas, service sizing, generated child-config inputs |
 
@@ -109,7 +114,7 @@ The runtime authority is:
 |----------|------------|---------|---------|
 | `./.build/<project>.dhall` | `<project> config init` or user-supplied config | host binary | host-orchestrator identity, capabilities, budget envelope, Dockerfile/build inputs, and child-config rules |
 | VM-local `<project>.dhall` | parent project binary before VM exec/bootstrap | VM binary | fresh-host context and allowed VM-local work |
-| `/usr/local/bin/<project>.dhall` | project Dockerfile via `<project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall` | ad-hoc container binary | container build/test context before `check-code` and lifted test workflows |
+| `/usr/local/bin/<project>.dhall` | project Dockerfile via `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall` | image-build container binary | build/code-quality context before `check-code`; runtime containers receive a parent-mounted frame-specific config |
 | service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for
@@ -170,8 +175,8 @@ not by the Python layer.
 ## Resource budget and cordoning
 
 The **project binary** verifies the active `<project>.dhall` resource envelope and applies the cordon: on
-Apple Docker workloads run behind the dedicated per-project Colima VM (`ensure docker` / `ensure colima`);
-Incus host-provider workflows use `incusSizingArgs` at the VM wall; on Linux, `cluster up` applies kind
+Apple demo VM workloads run behind a Lima VM; Incus host-provider workflows use `incusSizingArgs`
+at the VM wall on native Linux; `cluster up` applies kind
 node resource limits. The Python bootstrapper does not cordon. `cluster up` runs the `verifyBudget`
 spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
 before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
@@ -234,12 +239,11 @@ CLI append (`incus`/`vm`/`harbor`/`web` noun verbs alongside the inherited core 
 concat (`config schema` / `config render --artifact demoWeb` over `coreArtifacts ++ demoArtifacts`), and
 the harness (`hostbootstrap-demo test all` → `runMatrix` over the demo's case matrix, bound to the inherited `test`
 verb). The demo's four runtime contexts are explicit sibling `hostbootstrap-demo.dhall` files: host, VM,
-container on the VM, and cluster-service/daemon pod. Its verbs drive the live surface — `ensure incus`,
-the host-provider axis, the
-applied budget cordons, an idiomatic in-Dockerfile `check-code` gate (`demo/docker/Dockerfile`), a
-`purescript-bridge`/`spago` webservice and SPA, and Playwright e2e from the same project image that
-inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside an
-incus VM.
+container on the VM, and cluster-service/daemon pod. Its verbs drive the live surface — `vm ensure`, the
+provider-aware VM axis (Lima on Apple Silicon, Incus on Linux), applied budget cordons, an
+idiomatic in-Dockerfile `check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago`
+webservice and SPA, and Playwright e2e from the same project image that inherits the base-provided
+browser runtime — centered on a from-zero pristine-host bootstrap inside a managed Linux VM.
 
 ## Update rule
 

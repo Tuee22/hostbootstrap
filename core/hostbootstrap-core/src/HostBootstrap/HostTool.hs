@@ -25,6 +25,7 @@ import System.FilePath (isAbsolute)
 data HostTool
   = Docker
   | Colima
+  | Lima
   | Brew
   | Ghc
   | Ghcup
@@ -48,6 +49,7 @@ allHostTools = [minBound .. maxBound]
 toolCommandName :: HostTool -> String
 toolCommandName Docker = "docker"
 toolCommandName Colima = "colima"
+toolCommandName Lima = "limactl"
 toolCommandName Brew = "brew"
 toolCommandName Ghc = "ghc"
 toolCommandName Ghcup = "ghcup"

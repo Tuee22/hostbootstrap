@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 Phases 6, 8, 11, 13, and 14 provide the needed substrate: the thin Python bootstrapper, typed Dhall
 generation, the self-reference lift, the worked demo chain, and the composition methodology. This phase
@@ -22,9 +22,17 @@ and demo project verbs gate through the sibling project config, context creation
 host/VM/container/service placement configs, and normal cluster lifecycle commands use the active context
 as their runtime authority.
 
+This phase is reopened because the current context is still too flat. It can authorize a role and command
+class, but it does not yet encode and verify the complete execution topology: provider-backed frames,
+the current frame, parent links, and runtime witnesses. That makes illegal states too easy to represent,
+for example a VM-project-container `test all` running directly on the host Docker daemon.
+
 ## Remaining Work
 
-None.
+- Add topology frames, current-frame identity, and runtime witnesses to the project-local context schema.
+- Split Dockerfile-baked image-build authority from parent-mounted runtime authority.
+- Fail before side effects when a command's declared topology cannot be witnessed locally.
+- Add negative tests proving a VM-scoped kind/test workflow cannot create a kind cluster on host Docker.
 
 ## Phase Objective
 
@@ -36,12 +44,14 @@ Introduce the runtime binary-context contract:
 - The built project binary creates defaults through `config init` and emits schema/help for editing.
 - Each nested boundary receives or creates its own role-specific local config before the nested binary
   runs.
-- Dockerfiles use `<project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall`
-  after installing the binary and before `check-code`.
+- Dockerfiles use `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`
+  after installing the binary and before `check-code`; runtime containers receive parent-generated
+  configs for their actual topology frame.
 - Kubernetes service pods receive a service/daemon local config from their owning controller; durable
   services use a `StatefulSet`.
 - Missing, undecodable, wrong-project, wrong-capability, or wrong-command contexts fail fast with exit
   code 1.
+- Missing or unverifiable topology witnesses also fail fast before side effects.
 
 ## Sprints
 
@@ -121,7 +131,7 @@ boundary without weakening normal command gating.
   parent config.
 - Dockerfiles call `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`
   after installing the binary and before `check-code`.
-- VM-context creation happens before invoking the binary inside an incus VM.
+- VM-context creation happens before invoking the binary inside a managed VM.
 - Kubernetes service-context generation/mounting guidance covers StatefulSets and other controllers.
 
 #### Validation
@@ -228,6 +238,40 @@ Use the project-local `<project>.dhall` file as the single runtime config author
 #### Remaining Work
 
 None.
+
+### Sprint 15.6: Topology frames and runtime witnesses [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, `demo/docker/Dockerfile`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/binary_context_config.md`, `documents/engineering/dhall_topology.md`, `documents/engineering/schema.md`, `documents/operations/demo_runbook.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the Dhall context topology-aware so each binary has a complete picture of the composition chain and
+can fail fast when the process is not running in the declared frame.
+
+#### Deliverables
+
+- Add an execution topology to `<project>.dhall`: frames, parent references, provider kind, current frame,
+  capabilities, command classes, resource envelope, and runtime witnesses.
+- Keep the frame graph open-ended so higher layers can represent arbitrary chains such as host -> Lima VM
+  -> Docker container -> kind cluster -> pod or host -> VM -> Pulumi role -> EKS cluster -> workload.
+- Add local witness checks for implemented providers: host, Lima VM, Incus VM, Docker runtime container,
+  and Kubernetes service contexts.
+- Change Dockerfile defaults from VM-project-container authority to image-build authority.
+- Require parent-generated runtime configs for lifted `test all`.
+
+#### Validation
+
+- Current validation: `cabal build all` from `core/` and `demo/` passes after the provider-aware lift
+  changes.
+
+#### Remaining Work
+
+- Implement schema/render/decode updates and command-gate witness checks.
+- Add positive tests for valid host, VM, runtime-container, and service contexts.
+- Add negative tests for direct host/container fallback with a VM-project-container config.
+- Re-run the full core, Python, and demo lifecycle validation after the code lands.
 
 ## Documentation Requirements
 

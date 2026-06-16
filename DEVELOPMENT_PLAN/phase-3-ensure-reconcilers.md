@@ -14,8 +14,8 @@
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the generic `ensure <tool>` dispatcher, and the shared
-`installAndVerify` probe-first install-and-verify driver. The seven reconcilers (`docker`, `colima`,
-`cuda`, `homebrew`, `ghc`, `tart`, and the cross-substrate `incus`) carry their applicability
+`installAndVerify` probe-first install-and-verify driver. The reconciler set (`docker`, `colima`,
+`cuda`, `homebrew`, `ghc`, `tart`, plus later `lima` and the cross-substrate `incus`) carries its applicability
 predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
 toolkit on linux), unit-tested without invoking the package manager. They are wired into the command
@@ -34,8 +34,8 @@ Implement the substrate-and-ensure-reconciler contract (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
 idempotent value carrying a host-applicability predicate and a reconcile action, exposed as an
 optparse subcommand: `ensure docker`, `ensure colima`, `ensure cuda`, `ensure homebrew`,
-`ensure ghc`, `ensure tart`. A reconciler invoked on a host its predicate rejects fails fast with a
-one-line diagnostic and a non-zero exit.
+`ensure ghc`, `ensure tart`, with later provider additions following the same contract. A reconciler
+invoked on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
 
 ## Sprints
 
@@ -139,9 +139,11 @@ check-only; see [development_plan_standards.md § L](development_plan_standards.
 
 #### Deliverables
 
-- The six reconcile actions route through `installAndVerify` with their probe and pure `installSteps`
-  planner; `homebrew` (toolchain root) and Apple `docker` (deferred to `ensure colima`) return `Left`
-  with a fail-fast instruction by design.
+- The phase-3 reconcile actions route through `installAndVerify` with their probe and pure
+  `installSteps` planner; `homebrew` (toolchain root) and Apple `docker` (deferred to `ensure colima`)
+  return `Left` with a fail-fast instruction by design. Linux `ensure docker` also reconciles invoking
+  user membership in the `docker` group, applies an immediate socket ACL when needed, and verifies
+  future-session socket access.
 
 #### Validation
 
@@ -156,7 +158,7 @@ None.
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the six subcommands, and
+- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the concrete subcommands, and
   the fail-fast-on-wrong-host behavior.
 
 **Cross-references to add:**

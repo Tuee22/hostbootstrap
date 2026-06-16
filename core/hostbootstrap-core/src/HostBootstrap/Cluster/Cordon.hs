@@ -26,6 +26,7 @@ module HostBootstrap.Cluster.Cordon
     preflightBudget,
     fitsBudget,
     colimaSizingArgs,
+    limaSizingArgs,
     kindNodeCordonArgs,
     incusSizingArgs,
     resolveHostCapacity,
@@ -195,6 +196,19 @@ colimaSizingArgs project r = do
       "--profile",
       project,
       "--cpu",
+      show (budgetCpu b),
+      "--memory",
+      show (gibibytes (budgetMemoryBytes b)),
+      "--disk",
+      show (gibibytes (budgetStorageBytes b))
+    ]
+
+-- | The Lima VM sizing flags derived from the same canonical resource parser.
+limaSizingArgs :: Resources -> Either String [String]
+limaSizingArgs r = do
+  b <- budgetFromResources r
+  pure
+    [ "--cpus",
       show (budgetCpu b),
       "--memory",
       show (gibibytes (budgetMemoryBytes b)),

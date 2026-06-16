@@ -17,7 +17,7 @@
   irreducible host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
   (Docker, incus, the NVIDIA container toolkit, …) is installed by the `ensure` suite when the binary
   runs.
-- Each reconciler is an `optparse-applicative` subcommand (`ensure docker`, `ensure colima`, …) on the
+- Each reconciler is an `optparse-applicative` subcommand (`ensure docker`, `ensure colima`, `ensure lima`, …) on the
   `hostbootstrap-core` command tree. The *one* fail-fast inside the suite is a **wrong-host misuse**
   (e.g. `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is an operator
   error, **not** an absent dependency.
@@ -67,8 +67,9 @@ without invoking the package manager; the IO driver is exercised during real boo
 
 | Reconciler | Probe | Install plan (per substrate) |
 |------------|-------|------------------------------|
-| `docker` | `docker info` reachable | Linux: `apt-get install -y docker.io` + enable the daemon. Apple: defer to `ensure colima`. |
+| `docker` | `docker info` reachable; on Linux, future unprivileged login sessions for the invoking user can reach the socket | Linux: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when the current process has not observed refreshed groups yet. Apple: defer to `ensure colima`. |
 | `colima` | installed and `colima status` running | Apple: `brew install colima` + `colima start`. |
+| `lima` | `limactl` resolved | Apple: `brew install lima`. |
 | `cuda` | `nvidia-smi -L` reports a GPU and Docker has the `nvidia` runtime | linux-gpu: install `nvidia-container-toolkit`, `nvidia-ctk runtime configure`, restart Docker (the kernel driver is a precondition, not auto-installed). |
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
@@ -79,8 +80,9 @@ without invoking the package manager; the IO driver is exercised during real boo
 
 | Subcommand | Applies to | Fail-fast behavior on wrong host |
 |------------|------------|----------------------------------|
-| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` installs (Linux) or defers to the per-project Colima VM (Apple) and verifies the daemon is reachable). On Apple it also implies the per-project Colima VM exists. |
+| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` installs and grants socket access to the invoking user, including an immediate socket ACL for the current session when needed (Linux), or defers to the per-project Colima VM (Apple) and verifies the daemon is reachable). On Apple it also implies the per-project Colima VM exists. |
 | `ensure colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
+| `ensure lima` | `apple-silicon` | Errors on Linux: Lima is the macOS VM provider used by the demo pristine Linux VM; Linux uses native Incus for the demo VM. |
 | `ensure cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
 | `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so `ensure homebrew` verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |

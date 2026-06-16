@@ -30,6 +30,10 @@ See
 [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
 [phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
 
+Phase 15 is active again for topology hardening. The current schema has the flat context fields shown
+below; the target schema adds an execution topology, `currentFrame`, and runtime witnesses so illegal
+states such as "VM project container command running on the host Docker daemon" fail before side effects.
+
 ## File Location
 
 The lookup rule is intentionally singular:
@@ -70,7 +74,7 @@ has two conceptual sections:
 | Section | Owner | Purpose |
 |---|---|---|
 | Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags |
-| Runtime context | `hostbootstrap-core` / project binary | local authority: identity, context kind, role name, parent chain, capabilities, allowed command classes, resource envelope, child-context rules |
+| Runtime context | `hostbootstrap-core` / project binary | local authority: identity, topology frames, current frame, context kind, role name, runtime witnesses, capabilities, allowed command classes, resource envelope, child-context rules |
 
 A host-level config has the same top-level shape as the generated `ProjectConfig` schema:
 
@@ -78,6 +82,7 @@ A host-level config has the same top-level shape as the generated `ProjectConfig
 let ContextKind =
       < HostOrchestrator
       | VMOrchestrator
+      | ImageBuildContainer
       | VMProjectContainer
       | ClusterService
       | Daemon
@@ -107,6 +112,10 @@ in  { dockerfile = "docker/Dockerfile"
       { project = "hostbootstrap-demo"
       , binary = "hostbootstrap-demo"
       , sourceRoot = "/home/matt/hostbootstrap/demo"
+      , topology =
+        { frames = [] : List { id : Text, parent : Optional Text, provider : Text }
+        , currentFrame = "host"
+        }
       , contextKind = ContextKind.HostOrchestrator
       , roleName = "host-orchestrator"
       , parentChain = [] : List { frameKind : ContextKind, frameBinary : Text }
@@ -138,7 +147,8 @@ in  { dockerfile = "docker/Dockerfile"
 
 The exact generated value is owned by the binary. Use `<project> config init` for a valid default and
 `<project> config schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
-schema in project docs.
+schema in project docs. The `topology` fragment above is illustrative until the Phase 15 topology
+hardening lands in the reflected schema.
 
 ## Default Generation
 
@@ -153,14 +163,16 @@ The generated file is a valid default; `config init --help` names the editable o
 reflected `ProjectConfig` type. Normal commands do not silently create a missing config. They fail fast
 and tell the user how to run the initialization command.
 
-The Dockerfile creates a narrow ad-hoc container config after installing the binary:
+The Dockerfile creates a narrow image-build container config after installing the binary:
 
 ```dockerfile
-RUN <project> config init --role vm-project-container --output /usr/local/bin/<project>.dhall
+RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall
 ```
 
-Service or daemon deployments override that baked ad-hoc config by mounting or materializing a role-specific
-file at the same canonical path.
+Runtime, service, or daemon deployments override that baked build-time config by mounting or materializing
+a role-specific file at the same canonical path. A lifted `test all` container must receive a
+parent-generated VM-project-container config with topology witnesses; it must not rely on the image-build
+default.
 
 ## Downstream Projection
 
@@ -170,6 +182,10 @@ counts, chart values, storage sizes, and feature flags. The child must not read 
 The parent binary reads and validates its own config, computes a typed plan, and writes a narrower child
 `<project>.dhall` at the boundary where the child process becomes real. This is a projection, not a copy:
 the child receives only the settings and authority it needs for its role.
+
+For topology-aware configs, projection also means selecting the child frame and adding witnesses that the
+child can verify locally. The parent does not need to regenerate the entire topology on every command, but
+the child must have enough information to prove its current frame before normal dispatch.
 
 ## Mutation And Reload
 
