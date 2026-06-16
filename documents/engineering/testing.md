@@ -28,15 +28,16 @@
 Every `hostbootstrap` binary inherits a `test` verb from the core command tree. `<project> test all`
 drives `runMatrix :: Seams env -> [Case] -> IO Report` over the project's **whole** case matrix and
 prints the report card; `<project> test <case>` runs the single case with that id (an unknown id fails
-fast, listing the valid ids and `all`). A project supplies its `Case`s and `Seams` as a `TestSuite`
-threaded into the inherited `test` verb via `runHostBootstrapCLI` (its `app/Main.hs`), so the cases run
-under `test`, not a per-noun subcommand. The bare core binary ships an empty matrix
-(`emptySuite`), so `test all` prints `test report: 0/0 passed`. `all` is reserved by the verb, so a
-project may not name a case `all`.
+fast, listing the valid ids and `all`). A project supplies its `Case`s and `Seams` as a non-empty
+`TestSuite` through `ProjectSpec` in `runHostBootstrapCLI` (its `app/Main.hs`), so the cases run under
+`test`, not a per-noun subcommand. The bare core binary uses the separate `runBareHostBootstrapCLI`
+entrypoint with `emptySuite`, so only the bare binary can intentionally print `test report: 0/0 passed`.
+`all` is reserved by the verb, so a project may not name a case `all`.
 
 The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` →
 `seamTeardown`, with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never
-leaked), aggregates a `Report`, and renders it with `reportCard` / checks it with `allPassed`. The
+leaked), aggregates a `Report`, renders it with `reportCard`, and exits non-zero when `allPassed` is
+false. The
 driver, the isolated per-case profiles (cluster name `<project>-test-<case>`, data root
 `./.test_data/<case>/`), the mechanical never-touch-production guard (`guardTestDelete`), and
 budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. The default `defaultSeams`

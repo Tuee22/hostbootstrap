@@ -74,16 +74,17 @@ None.
 #### Objective
 
 Land `HostBootstrap.Command` — the core optparse command tree composing `ensure <tool>` and the
-project-local `config` verbs — and confirm `runHostBootstrapCLI progName projectCommands testSuite`
-extends it with project-specific subcommands and the inherited test hook.
+project-local `config` verbs — and confirm `runHostBootstrapCLI progName projectSpec` extends it with
+validated project-specific subcommands, the inherited test hook, the inherited `check-code` hook, and
+project config artifacts.
 
 #### Command Surface
 
 - `hostbootstrap ensure <tool>` — the Phase 3 reconcilers.
 - `hostbootstrap config show` — decode/inspect a project-local config file.
-- A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to add its own verbs;
-  the bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) passes no project
-  commands.
+- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to add its own verbs without
+  shadowing core verbs; the bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) uses
+  `runBareHostBootstrapCLI`.
 
 #### Deliverables
 

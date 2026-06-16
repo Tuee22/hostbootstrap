@@ -22,9 +22,10 @@ type-check. The **four-stream extension contract** is complete: the CLI-tree, Dh
 schema-gen-registry, and test-harness `Seams` streams are implemented, and the `hostbootstrap-demo`
 consumer
 ([Phase 13](phase-13-hostbootstrap-demo.md)) exercises all four end-to-end (`--help` CLI append,
-`web schema` registry concat, `test all` harness). `config init` generates role-specific project-local
-configs without an existing context, `config schema` includes the reflected `ProjectConfig` type, and pure
-projection helpers derive narrower child configs from a parent config. This phase is `Done`.
+`config schema` / `config render --artifact demoWeb` registry concat, `test all` harness). `config init`
+generates role-specific project-local configs without an existing context, `config schema` includes the
+reflected `ProjectConfig` type, and pure projection helpers derive narrower child configs from a parent
+config. This phase is `Done`.
 
 ## Remaining Work
 
@@ -174,20 +175,22 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 - The contract is stated for all four streams in
   [`documents/architecture/library_hierarchy.md`](../documents/architecture/library_hierarchy.md): CLI
-  tree (`runHostBootstrapCLI progName (lower ++ delta) testSuite`, append-only), Dhall vocabulary
-  (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (registry concatenation), test harness
-  (`Seams`). All four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the
-  `Core.dhall` vocabulary, the `ConfigArtifact` registry concatenation, and the `Seams` record + the L0
+  tree (`runHostBootstrapCLI progName projectSpec`, append named `ProjectCommand`s after validation),
+  Dhall vocabulary (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (`ConfigArtifact` registry
+  concatenation through `ProjectSpec`), and test harness (`Seams` through a non-empty `TestSuite`). All
+  four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the `Core.dhall`
+  vocabulary, the `ConfigArtifact` registry concatenation, and the `Seams` record + the L0
   `oneShotRunArgs` (Phase 10). The contract is worked end-to-end by the `hostbootstrap-demo` consumer
   (Phase 13).
 
 #### Validation
 
 - The `hostbootstrap-demo` binary exercises all four streams: `hostbootstrap-demo --help` shows the
-  inherited core verbs plus the appended demo verbs (CLI tree, no shadowing); `demo web schema` prints
-  `coreArtifacts ++ demoArtifacts` (schema-gen concatenation); `demo test all` drives `runMatrix` over the
-  demo's case matrix with `demoSeams` (the harness `Seams`, bound to the inherited `test` verb). `cabal test`
-  and the demo `--help`/verbs pass.
+  inherited core verbs plus the appended demo verbs (CLI tree, no shadowing); `hostbootstrap-demo config
+  schema` / `hostbootstrap-demo config render --artifact demoWeb` print the `coreArtifacts ++
+  demoArtifacts` registry (schema-gen concatenation); `hostbootstrap-demo test all` drives `runMatrix`
+  over the demo's case matrix with `demoSeams` (the harness `Seams`, bound to the inherited `test` verb).
+  `cabal test` and the demo `--help`/verbs pass.
 
 #### Remaining Work
 

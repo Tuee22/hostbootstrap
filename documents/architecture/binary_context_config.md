@@ -88,9 +88,9 @@ Context files are created at the boundary where the next binary becomes meaningf
 
 The initialization and inspection entrypoints are the only binary entrypoints allowed to run without an
 existing sibling config: help/version, `config path`, `config schema`, `config init`, `config show FILE`,
-and `config render`. `config render` prints static typed artifact examples from the in-scope registry; it
-does not project child runtime authority. All other normal commands load and validate the config before
-dispatch.
+and `config render`. `config render` prints static typed artifact examples from the in-scope registry,
+fails fast on an unknown `--artifact`, and does not project child runtime authority. All other normal
+commands load and validate the config before dispatch.
 
 ## Command Gating
 

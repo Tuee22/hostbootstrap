@@ -14,17 +14,18 @@
 
 The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
 `HostBootstrap.*` module surface, the bare `hostbootstrap` executable, and the generic
-`runHostBootstrapCLI` entrypoint over a buildable command tree. `cabal build all` and `cabal test`
-pass, and `hostbootstrap --help` exits 0. Later phases own the host-management logic exposed through this
-package boundary.
+`runHostBootstrapCLI` project entrypoint over a buildable command tree. `cabal build all` and `cabal
+test` pass, and `hostbootstrap --help` exits 0. Later phases own the host-management logic exposed
+through this package boundary.
 
 ## Phase Objective
 
 Create `hostbootstrap-core` as a Cabal package: a `library` stanza for the `HostBootstrap.*` module
 surface and a bare `hostbootstrap` executable. Pin GHC to the base-image toolchain, take
-`optparse-applicative` and `dhall` as dependencies, and expose the generic entrypoint
-`runHostBootstrapCLI progName projectCommands testSuite` over a buildable command tree. Phase 1 owns the
-structural package shell; later phases own the concrete host-management behavior.
+`optparse-applicative` and `dhall` as dependencies, and expose the project entrypoint
+`runHostBootstrapCLI progName projectSpec` over a buildable command tree plus
+`runBareHostBootstrapCLI` for the bare core executable. Phase 1 owns the structural package shell; later
+phases own the concrete host-management behavior.
 
 ## Sprints
 
@@ -72,20 +73,20 @@ onward has named modules to fill in and the command-tree extension contract has 
 
 #### Deliverables
 
-- `HostBootstrap.CLI` exporting `runHostBootstrapCLI :: String -> [Mod CommandFields a] -> IO ()`
-  (or the equivalent composable optparse value plus entrypoint), wired to a buildable but empty core
-  command tree.
+- `HostBootstrap.CLI` exporting the composable optparse entrypoint (`runHostBootstrapCLI`) and the bare
+  executable entrypoint (`runBareHostBootstrapCLI`), wired to a buildable core command tree.
 - `HostBootstrap.*` module declarations for the surfaces named in
   [system-components.md](system-components.md) (host tools, prereqs, substrate, ensure, config,
   cluster).
-- The bare `hostbootstrap` executable calls `runHostBootstrapCLI "hostbootstrap" []` and prints
+- The bare `hostbootstrap` executable calls `runBareHostBootstrapCLI "hostbootstrap"` and prints
   `--help`.
 
 #### Command Surface
 
 - `hostbootstrap --help` lists the (initially empty) core command groups.
-- A project binary calls `runHostBootstrapCLI "<project>" projectCommands` to extend the
-  tree (see [development_plan_standards.md § P](development_plan_standards.md)).
+- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to extend the tree through named
+  `ProjectCommand` values, a non-empty `TestSuite`, a `check-code` action, and any project
+  `ConfigArtifact`s (see [development_plan_standards.md § P](development_plan_standards.md)).
 
 #### Validation
 

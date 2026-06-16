@@ -67,7 +67,7 @@ does not depend on a Python-provisioned Dhall binary.
 * **No baked `hostbootstrap` binary** — the image bakes no `hostbootstrap` executable. A baked binary
   is a Linux ELF and cannot run on Apple silicon, so it could not be copied out to every host.
   Instead every project builds its own binary **host-native** on every substrate, extending the core
-  tree via `runHostBootstrapCLI progName projectCommands testSuite`; see
+  tree via `runHostBootstrapCLI progName projectSpec`; see
   [derived_project_standards.md](derived_project_standards.md). The bare `hostbootstrap` binary
   (`hostbootstrap-core`'s own executable, no project commands) is built the same way, not pre-baked.
 * **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency
@@ -94,7 +94,9 @@ does not depend on a Python-provisioned Dhall binary.
 * **nvkind** — built once in the final image (`CGO_ENABLED=1 go install …/nvkind@latest`) and copied
   to `/usr/local/bin/nvkind`.
 * **Node** — latest upstream Node, with npm, esbuild, TypeScript, Playwright (Chromium/Firefox/WebKit),
-  Spago, purs-tidy.
+  Spago, purs-tidy. Playwright is installed globally under the npm prefix
+  `/opt/build/node/global`; project-local specs that import `@playwright/test` without their own
+  `node_modules` run with `NODE_PATH=/opt/build/node/global/lib/node_modules`.
 * **PureScript** — latest `purs`.
 * **Python** — Ubuntu 24.04 default Python with Poetry as the only global package, plus the
   build-essentials toolchain.

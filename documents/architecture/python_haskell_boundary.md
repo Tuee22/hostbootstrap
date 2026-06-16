@@ -62,7 +62,7 @@
 | incus VM lifecycle (create/exec/reboot/destroy, name-guarded) | `hostbootstrap-core` (the execed binary) | The host-provider axis: the binary spins, sizes, and tears down the VM via one `incus exec` dispatch. See [incus](../engineering/incus.md). |
 | Webservice + e2e (serve, Playwright) | `hostbootstrap-core` (the execed binary / its container) | The binary/container serve the webservice and run the Playwright e2e against it. |
 | Teardown / spin-down | `hostbootstrap-core` (the execed binary) | The binary owns spinning every resource back down, preserving host `.data`. |
-| The optparse command tree | `hostbootstrap-core` | `runHostBootstrapCLI` is the entrypoint project binaries extend. See [hostbootstrap_core_library](hostbootstrap_core_library.md). |
+| The optparse command tree | `hostbootstrap-core` | `runHostBootstrapCLI progName projectSpec` is the entrypoint project binaries extend; `ProjectSpec` carries the project commands, non-empty test suite, code-check action, and artifacts. See [hostbootstrap_core_library](hostbootstrap_core_library.md). |
 
 ## The Bootstrap Sequence
 

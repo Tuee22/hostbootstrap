@@ -31,8 +31,9 @@
    `config init --role vm-project-container --output /usr/local/bin/<project>.dhall`; service and daemon
    launchers override that file with role-specific projections. See
    [binary_context_config](../architecture/binary_context_config.md).
-3. **Define verbs as composable optparse values.** Hand the project's `command "…"` entries to
-   `runHostBootstrapCLI progName projectCommands testSuite`; the core verbs (`ensure`/`config`/`cluster`/
+3. **Define verbs as named project commands.** Hand the project's `projectCommand "…"` entries, non-empty
+   `TestSuite`, `check-code` action, and `ConfigArtifact` delta to
+   `runHostBootstrapCLI progName projectSpec`; the core verbs (`ensure`/`config`/`cluster`/
    `test`/`check-code`) pass through unchanged. Append, never shadow (the CLI stream of the four-stream
    contract; see [library_hierarchy](../architecture/library_hierarchy.md)).
 4. **Compose the chain.** A deploy verb is ordinary `IO` sequencing of operations. Cross a boundary by

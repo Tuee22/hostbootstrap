@@ -12,8 +12,9 @@
   `hostbootstrap-core` directly, like `mcts`), integration mode 2
   (`source-repository-package` + `runHostBootstrapCLI`). See
   [run models](../architecture/run_models.md).
-- `demo/app/Main.hs` calls `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`,
-  so `hostbootstrap-demo --help` shows the inherited core verbs (`ensure`,
+- `demo/app/Main.hs` calls `runHostBootstrapCLI` with a `ProjectSpec`
+  (`demoCommands`, `demoCases`, `demoCheckCode`, `demoArtifacts`), so
+  `hostbootstrap-demo --help` shows the inherited core verbs (`ensure`,
   `config`, `cluster`, `test`, `check-code`) plus the demo's noun-first verbs
   (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) — no core verb is re-implemented.
 - The headline is a from-zero pristine-host bootstrap performed **inside an incus
@@ -82,10 +83,10 @@ core verb:
 
 | Stream | How the demo extends it | Observable verb |
 |---|---|---|
-| CLI tree | `demoCommands` appended via `runHostBootstrapCLI` (append, never shadow) | `hostbootstrap-demo --help` |
-| Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (the demo adds a `demoWeb` pod) | `demo web schema` prints `coreArtifacts ++ demoArtifacts` |
-| Test harness | `demoCases` driven by `runMatrix` with `demoSeams`, threaded into the inherited `test` verb (the app supplies only its case matrix) | `demo test all` (or `demo test <case>`) |
-| Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `demo web schema` / `config init` |
+| CLI tree | `demoCommands` appended via `ProjectSpec` (append, never shadow) | `hostbootstrap-demo --help` |
+| Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (the demo adds a `demoWeb` pod) | `config schema` and `config render --artifact demoWeb` print the inherited registry |
+| Test harness | `demoCases` driven by `runMatrix` with `demoSeams`, threaded into the inherited `test` verb (the app supplies only its case matrix) | `hostbootstrap-demo test all` (or `hostbootstrap-demo test <case>`) |
+| Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `config schema` / `config init` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case
 `runMatrix` loop and the seam-split the demo's `demoSeams` plugs into. The harness is the
@@ -182,11 +183,13 @@ d. `demo deploy` lifts the **whole test workflow** into the VM-container — the
    runs `cluster up` "locally" = on the **VM's** Docker (the mounted socket), so the per-case kind cluster
    lives **in the VM**, reached with no second "bring up a cluster" path. The harness then:
    deploys the `warp`/`wai` webservice **into the per-case kind cluster** via `demo/chart` (the pod runs
-   `demo web serve`), exposed on a NodePort; and, for `e2e-tabs`, lifts a Playwright container onto the kind
-   network and runs the e2e specs against the **in-cluster** service via its NodePort (the Overview / Budget
-   / Status tabs render and `/api/budget` returns the `fitsBudget` view). The spec is delivered into the
-   runner through a context-agnostic named volume (`deliverSpec`, `docker cp`), so the e2e lifts into any
-   context. See [harbor](../engineering/harbor.md) for the optional in-VM registry and
+   `demo web serve`), exposed on a NodePort; and, for `e2e-tabs`, starts the already-built
+   `hostbootstrap-demo:local` project image on the kind network and runs the base-provided Playwright
+   runtime against the **in-cluster** service via its NodePort (the Overview / Budget / Status tabs render
+   and `/api/budget` returns the `fitsBudget` view). The e2e runner uses the same project image that the
+   chart pod runs, so it stays native to the base image architecture and does not pull
+   `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx` during validation. See
+   [harbor](../engineering/harbor.md) for the optional in-VM registry and
    [cluster lifecycle](../engineering/cluster_lifecycle.md) for the fail-closed `cluster up`.
 
 e. `demo vm down` — **spin everything down**. Tearing the VM down (the name-guarded `destroy`) removes the
@@ -197,8 +200,8 @@ e. `demo vm down` — **spin everything down**. Tearing the VM down (the name-gu
 
 ## Feature-to-harness-case table
 
-`demo test all` drives `runMatrix` over the demo's case matrix (a single case runs
-with `demo test <case>`) — this is the one workflow the deploy lifts into the VM-container. Each
+`hostbootstrap-demo test all` drives `runMatrix` over the demo's case matrix (a single case runs
+with `hostbootstrap-demo test <case>`) — this is the one workflow the deploy lifts into the VM-container. Each
 `demoCases` case asserts a distinct slice of the surface via its real per-case seam; the per-case
 kind cluster comes up wherever the harness is lifted to — for `demo deploy`, on the **VM's** Docker
 (live-validated, see [Current status](#current-status)).
@@ -207,7 +210,7 @@ kind cluster comes up wherever the harness is lifted to — for `demo deploy`, o
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (steps a–c): `ensure incus`, the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure with reboot, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
-| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. |
 
 ## Three builds vs the standard host-native build
 

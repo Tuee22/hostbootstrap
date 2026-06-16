@@ -51,22 +51,23 @@ a delta, so the lower surface is preserved verbatim.
 
 ### Stream 1 — optparse CLI Tree
 
-The command tree merges by appending the project delta to the lower commands and handing the union to
-the generic entrypoint:
+The command tree merges by passing a validated project spec to the generic entrypoint:
 
 ```haskell
-runHostBootstrapCLI progName (lower ++ delta) testSuite
+runHostBootstrapCLI progName (projectSpec commands testSuite checkCode artifacts)
 ```
 
-The core verbs (`ensure …`, `cluster …`, `config …`) behave identically whether invoked through the
-bare `hostbootstrap` binary or through any project binary. See
-[hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature.
+The core verbs (`ensure …`, `cluster …`, `config …`, `test`, `check-code`) behave identically whether
+invoked through the bare `hostbootstrap` binary or through any project binary, except that project
+binaries must supply the non-empty test suite, `check-code` action, and artifact delta in `ProjectSpec`.
+See [hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. Project
+commands are named `ProjectCommand` values, so a project cannot silently shadow a core top-level verb.
 
 - **WRONG**: a project re-implements `config` or `cluster` with its own parser, intending to "extend"
   it. This is wrong because it shadows the core verb — the project's parser, not the core one, now
   handles the verb, so behavior diverges across binaries and the append-only guarantee is broken.
-- **RIGHT**: the project adds only new `command "…"` entries to the delta and lets the core verbs
-  pass through unchanged.
+- **RIGHT**: the project adds only new `projectCommand "…"` entries to the delta and lets the core verbs
+  pass through unchanged; a shadow attempt is rejected before command dispatch.
 
 ### Stream 2 — Dhall Vocabulary
 
@@ -93,7 +94,7 @@ The schema-generation stream merges by concatenating each level's `ConfigArtifac
 registers `coreArtifacts`; a project appends its own artifacts:
 
 ```haskell
-projectArtifacts = coreArtifacts ++ [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
+projectSpec projectCommands projectSuite projectCheckCode [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
 ```
 
 `config schema` then prints the transitive union of the in-scope schemas, and `config render`
@@ -109,9 +110,9 @@ gated commands that derive from the active local config. See [config_generation]
 
 ### Stream 4 — Test-Harness Seams
 
-The fourth stream is the standardized test harness, whose extension point is a `Seams` value each
-level contributes to additively, in the same append idiom as the other three. The harness is
-**implemented** — the standardized-test-harness phase
+The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
+its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` verb. The
+harness is **implemented** — the standardized-test-harness phase
 ([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) — completing the
 four-stream contract: every level extends the surface through exactly these four parallel, additive
 streams.

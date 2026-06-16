@@ -39,7 +39,7 @@ dependency set into the frozen Cabal store. Pinning both means a derived project
 | Stanza | Contents |
 |--------|----------|
 | `library` | the `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md) |
-| `executable hostbootstrap` | `app/Main.hs`, the bare binary: `runHostBootstrapCLI "hostbootstrap" []` |
+| `executable hostbootstrap` | `app/Main.hs`, the bare binary: `runBareHostBootstrapCLI "hostbootstrap"` |
 | `test-suite hostbootstrap-core-test` | the `tasty` suite, including the documentation validator gate |
 
 ## Dependency Surface

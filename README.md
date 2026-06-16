@@ -26,7 +26,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
   (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`, each fail-fast on the wrong host), substrate
   detection, the binary-context contract and command gate, cluster-lifecycle semantics with kind resource
   cordoning, and the `optparse-applicative` command tree that project binaries extend through
-  `runHostBootstrapCLI progName projectCommands testSuite`. See
+  `runHostBootstrapCLI progName projectSpec`. See
   [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md).
 - **The Python bootstrapper** is thin: it does only the **minimum to build the project binary** —
   assert the fail-fast host minimums, ensure the host toolchain prerequisites needed to **build** the
@@ -180,7 +180,7 @@ verbs on top):
 | `<binary> config render` | Emit static typed Dhall artifact examples from the in-scope registry; this is an inspection surface and does not require an active context |
 | `<binary> context create vm\|container\|service OUTPUT` | Create a child `<project>.dhall` for a nested binary context after validating the active context |
 | `<binary> cluster up\|down\|delete\|status` | Drive the kind/Helm cluster lifecycle from the active context's project, source root, and resource envelope, preserving host `.data` |
-| `<binary> test CASE` / `<binary> check-code` | Run the inherited test and code-check surfaces after context validation |
+| `<binary> test CASE` / `<binary> check-code` | Run the inherited test and code-check surfaces after context validation; failed cases/checks exit non-zero |
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a
 project binary. See
@@ -223,8 +223,8 @@ pipx install --force /path/to/hostbootstrap
 ## Demo App
 
 [`demo/`](demo/) is `hostbootstrap-demo`, the worked consumer of `hostbootstrap-core`. It consumes the
-core directly (L0-direct, like `mcts`) and extends the core command tree through
-`runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, so `hostbootstrap-demo --help` shows the
+core directly (L0-direct, like `mcts`) and extends the core command tree through a
+`ProjectSpec` (`demoCommands`, `demoCases`, `demoCheckCode`, `demoArtifacts`), so `hostbootstrap-demo --help` shows the
 inherited core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own
 noun-first verbs (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) without re-implementing any core verb. It is the
 end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
@@ -281,7 +281,8 @@ hostbootstrap run -- config init \
   --dockerfile docker/Dockerfile \
   --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1
 hostbootstrap run -- config show ./.build/hostbootstrap-demo.dhall
-hostbootstrap run -- web schema
+hostbootstrap run -- config schema
+hostbootstrap run -- config render --artifact demoWeb
 hostbootstrap run -- deploy --dry-run
 ```
 
@@ -307,16 +308,17 @@ cordon steps of that one sequence, documented in the runbook.
 
 The demo carries two test layers:
 
-- **Haskell harness** — `demo test all` drives `runMatrix` over the demo's case matrix
-  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with `demo test <case>`), each
+- **Haskell harness** — `hostbootstrap-demo test all` drives `runMatrix` over the demo's case matrix
+  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with
+  `hostbootstrap-demo test <case>`), each
   case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
   `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The harness is the **one**
   representation of this work and the lift target — it invokes `clusterUp` as `HostConfig -> IO ()`
   "locally", with no `LiftContext` of its own. In the supported shape the harness is reached **only** as the
   single lifted compute step of `demo deploy` (`incus exec <vm> -- docker run --rm <image> test all`), so
   `clusterUp` runs on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
-  (`pristine-bootstrap` a live cluster, `e2e-tabs` a Playwright container against the in-cluster
-  webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
+  (`pristine-bootstrap` a live cluster, `e2e-tabs` the project image's base-provided Playwright runtime
+  against the in-cluster webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
   when run via `demo deploy` (live-validated, `3/3`); they can also be invoked directly on the metal host
   for a quick local check. The cases bind to the inherited `test` verb (the harness extension stream). These seams need Docker + kind,
   so they run inside the demo VM / project container — invoked directly for a local check, or as the
@@ -327,17 +329,13 @@ The demo carries two test layers:
   hostbootstrap run -- test all        # or: cabal run hostbootstrap-demo -- test all
   ```
 
-- **Playwright e2e** — [`demo/playwright/`](demo/playwright/) drives the served surface (the SPA tabs
-  render and `/api/budget` returns the `fitsBudget` view). It targets the webservice the `demo/chart`
-  deployment publishes — the in-cluster NodePort in a real run, `http://localhost:8080` against a manual
-  `demo web serve` locally (override with `BASE_URL`):
-
-  ```bash
-  cd demo/playwright
-  npm install
-  npx playwright install --with-deps
-  npx playwright test                  # BASE_URL=http://host:8080 npx playwright test to retarget
-  ```
+- **Playwright e2e** — [`demo/playwright/`](demo/playwright/) is source/config only. The supported
+  runner is the already-built `hostbootstrap-demo:local` project image, which inherits the base image's
+  global Playwright install and browser cache (`/ms-playwright`). The `e2e-tabs` harness case starts that
+  same project image on the kind Docker network, sets `BASE_URL` to the in-cluster NodePort service, sets
+  `NODE_PATH` to the base image's global npm package directory so `@playwright/test` resolves, and runs
+  `playwright test`. It does not pull `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx`
+  during validation.
 
 See the [feature-to-harness-case table](documents/operations/demo_runbook.md#feature-to-harness-case-table)
 in the runbook for which case proves which slice of the surface.
@@ -361,7 +359,7 @@ This map reflects the implemented shape: the Haskell `hostbootstrap-core` librar
 │   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Cuda, Homebrew, Ghc, Tart
 │   │   │   ├── Config/Schema.hs      # project-local Dhall config schema/defaults
 │   │   │   ├── Cluster/              # Lifecycle.hs, Cordon.hs
-│   │   │   ├── Command.hs  CLI.hs    # core command tree + runHostBootstrapCLI
+│   │   │   ├── Command.hs  CLI.hs    # core command tree + ProjectSpec entrypoint
 │   │   │   └── DocValidator.hs
 │   │   ├── app/Main.hs               # bare hostbootstrap binary (core tree, no project commands)
 │   │   ├── dhall/                    # Core.dhall vocabulary + config schema artifacts

@@ -84,8 +84,9 @@ the sibling config exists; normal commands fail fast without it. See
 [binary context](../architecture/binary_context_config.md).
 
 Then the Dockerfile runs `RUN <project> check-code`. This
-is the inherited core `check-code` verb whose body is project-defined; the demo
-runs it as `hostbootstrap-demo check-code`. Because it is a `RUN` step, a non-zero
+is the inherited core `check-code` verb whose body is supplied through the project's `ProjectSpec`; the
+demo runs `fourmolu`, `hlint`, and `cabal build --ghc-options=-Werror` through
+`hostbootstrap-demo check-code`. Because it is a `RUN` step, a non-zero
 exit fails the image build: the image cannot exist with style or lint violations.
 This is the derived-project half of the rule in
 [code check doctrine](code_check_doctrine.md). The gate runs **before** the web
@@ -104,9 +105,12 @@ The web build follows the gate, in three ordered steps:
 3. `esbuild --bundle --minify` — bundle the compiled output into the served
    `public/app.js`.
 
-The Playwright e2e suite is not part of the image build; it runs from a container on
-the kind network against the in-cluster service via its NodePort during a demo run. See
-[playwright](../languages/playwright.md) and the
+The Playwright e2e suite is not part of the image build; it runs later from the
+already-built project image on the kind network against the in-cluster service via
+its NodePort during a demo run. Because that project image inherits the base
+image's global Playwright install and browser cache, validation does not pull a
+separate `mcr.microsoft.com/playwright:*` image and does not run `npm install` or
+`npx` at test time. See [playwright](../languages/playwright.md) and the
 [demo runbook](../operations/demo_runbook.md).
 
 ## Build-stage ordering

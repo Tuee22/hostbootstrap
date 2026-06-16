@@ -1,5 +1,6 @@
 module Main (main) where
 
+import qualified CLISpec
 import qualified ContainerSpec
 import qualified ContextSpec
 import qualified CordonSpec
@@ -18,22 +19,23 @@ import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
 main = do
-  docTests <- DocValidatorSpec.tests
-  defaultMain $
-    testGroup
-      "hostbootstrap-core"
-      [ SubstrateSpec.tests,
-        HostToolSpec.tests,
-        EnsureSpec.tests,
-        SchemaSpec.tests,
-        DhallGenSpec.tests,
-        CordonSpec.tests,
-        ContextSpec.tests,
-        LifecycleSpec.tests,
-        HarnessSpec.tests,
-        IncusSpec.tests,
-        LiftSpec.tests,
-        RoleLifecycleSpec.tests,
-        ContainerSpec.tests,
-        docTests
-      ]
+    docTests <- DocValidatorSpec.tests
+    defaultMain $
+        testGroup
+            "hostbootstrap-core"
+            [ CLISpec.tests
+            , SubstrateSpec.tests
+            , HostToolSpec.tests
+            , EnsureSpec.tests
+            , SchemaSpec.tests
+            , DhallGenSpec.tests
+            , CordonSpec.tests
+            , ContextSpec.tests
+            , LifecycleSpec.tests
+            , HarnessSpec.tests
+            , IncusSpec.tests
+            , LiftSpec.tests
+            , RoleLifecycleSpec.tests
+            , ContainerSpec.tests
+            , docTests
+            ]

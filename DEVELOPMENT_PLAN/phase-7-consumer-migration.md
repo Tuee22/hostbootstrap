@@ -28,10 +28,12 @@ The three-level hierarchy and the **two integration modes** — (1) freeze-impor
 ## Phase Objective
 
 Make `hostbootstrap-core` a consumable library. Each consumer ships one optparse-applicative binary
-that calls `runHostBootstrapCLI "<project>" projectCommands` to extend the core command tree rather
-than re-implementing core verbs (see [development_plan_standards.md § P](development_plan_standards.md)).
-The consumer's binary is built **host-native** into `./.build/`; the project **container** it later
-builds `FROM` the `hostbootstrap` base image gates on the project `check-code`.
+that calls `runHostBootstrapCLI "<project>" projectSpec` to extend the core command tree rather than
+re-implementing core verbs (see [development_plan_standards.md § P](development_plan_standards.md)).
+The `ProjectSpec` supplies named project commands, a non-empty test suite, the project `check-code`
+action, and the project config-artifact delta. The consumer's binary is built **host-native** into
+`./.build/`; the project **container** it later builds `FROM` the `hostbootstrap` base image gates on the
+project `check-code`.
 
 ## Sprints
 

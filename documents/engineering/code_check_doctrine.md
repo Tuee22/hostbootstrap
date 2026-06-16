@@ -113,13 +113,15 @@ construction. There is no separate "did the lint pass?" question to ask later.
 
 * **A `check-code` subcommand on the project binary.** `check-code` is a **core
   verb**: every binary inherits it from the `hostbootstrap-core` command tree, and
-  its **body is project-defined**. The verb is the single fail-fast image-build
-  gate; the project fills in the checks it should run (`fourmolu --mode check`,
-  `hlint`, custom file-level checks, doc-drift checks). The bare core binary has
-  no project checks, so its `check-code` passes with a message; a derived project
-  extends the body with its own checks. The base image still gates by invoking the
-  formatter and linter directly (see "Base image"), because the full
-  `hostbootstrap` source tree is not copied into the base image.
+  its **body comes from the project's `ProjectSpec`**. The verb is the single
+  fail-fast image-build gate; the project fills in the checks it should run
+  (`fourmolu --mode check`, `hlint`, custom file-level checks, doc-drift checks).
+  A derived project has no silent default check body: if it calls
+  `runHostBootstrapCLI`, it must supply the action. The bare core binary uses the
+  separate `runBareHostBootstrapCLI` entrypoint and is the only binary whose
+  `check-code` intentionally reports no project checks. The base image still
+  gates by invoking the formatter and linter directly (see "Base image"), because
+  the full `hostbootstrap` source tree is not copied into the base image.
 * **Multi-language projects.** A project's `check-code` body dispatches its
   per-language checks (the foreign-backend formatters/linters) in sequence and
   fails on any. The core verb supplies the inherited entrypoint and the fail-fast

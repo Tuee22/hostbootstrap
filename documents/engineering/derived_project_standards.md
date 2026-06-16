@@ -23,30 +23,36 @@ dispatch is governed by the sibling runtime config file, [`<project>.dhall`](sch
 That binary extends `hostbootstrap-core`'s optparse command tree rather than re-implementing core verbs:
 
 ```haskell
-import HostBootstrap.CLI (runHostBootstrapCLI)
-import HostBootstrap.Harness (emptySuite)
+import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI)
+import HostBootstrap.Harness (TestSuite (TestSuite))
 
 main :: IO ()
-main = runHostBootstrapCLI "app" appProjectCommands emptySuite
+main =
+  runHostBootstrapCLI
+    "app"
+    (projectSpec appProjectCommands (TestSuite appSeams appCases) appCheckCode appArtifacts)
 ```
 
-`runHostBootstrapCLI progName projectCommands testSuite` composes the project's own subcommands onto the
-core tree (`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
-`config render`, `test`). Bootstrap/inspection config surfaces (`config init`, `config path`,
-`config schema`, `config show FILE`, and static `config render`) run without an active local config.
-Config loading/gating surrounds normal commands: they fail fast when `<project>.dhall` is missing or the
-command is not valid for the declared context. The bare `hostbootstrap` binary is the same tree with no
-project commands, built the same way (host-native, like every project binary), not baked into the base
-image. There is no Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount,
+`runHostBootstrapCLI progName projectSpec` composes the project's own named subcommands onto the core tree
+(`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
+`config render`, `test`). The spec is fail-closed: project command names cannot shadow core commands, the
+test suite must be non-empty, the `check-code` action is required, duplicate case/artifact names are
+rejected, and project artifacts feed the inherited `config schema` / `config render` registry. The bare
+`hostbootstrap` binary uses `runBareHostBootstrapCLI`; it is the only intentional empty-command/empty-suite
+binary. Bootstrap/inspection config surfaces (`config init`, `config path`, `config schema`,
+`config show FILE`, and static `config render`) run without an active local config. Config loading/gating
+surrounds normal commands: they fail fast when `<project>.dhall` is missing or the command is not valid for
+the declared context. There is no Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount,
 Dockerfile, resource, and deploy settings live in the binary-owned config and generated child configs.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
-`runHostBootstrapCLI "hostbootstrap-demo" demoCommands (TestSuite demoSeams demoCases)`, so
+`runHostBootstrapCLI "hostbootstrap-demo" (projectSpec demoCommands ... demoCheckCode demoArtifacts)`, so
 `hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`)
-plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`) — the extension contract a consumer
-follows, with no core verb re-implemented. It also exercises the other extension streams: `demo web
-schema` prints the `coreArtifacts ++ demoArtifacts` schema union, and `demo test all` drives the harness
-(`demoSeams`/`demoCases`, bound to the inherited `test` verb) over the demo's case matrix.
+plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`) — the extension contract
+a consumer follows, with no core verb re-implemented. It also exercises the other extension streams:
+`config schema` / `config render --artifact demoWeb` print the `coreArtifacts ++ demoArtifacts` registry,
+and `hostbootstrap-demo test all` drives the harness (`demoSeams`/`demoCases`, bound to the inherited
+`test` verb) over the demo's case matrix.
 
 ## The three-level library hierarchy
 
@@ -63,7 +69,7 @@ Each level extends the same **four parallel streams**, one additive merge idiom 
 
 | Stream | Merge idiom | Rule |
 |--------|-------------|------|
-| optparse **CLI tree** | `runHostBootstrapCLI progName (lower ++ delta) testSuite` | append; never shadow a lower verb |
+| optparse **CLI tree** | `runHostBootstrapCLI progName projectSpec` | append named commands; never shadow a lower verb |
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
 | **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test` verb |
@@ -83,10 +89,10 @@ A project integrates with `hostbootstrap` in one of two modes:
    command tree in Haskell (e.g. `mcts`).
 2. **`source-repository-package` + `runHostBootstrapCLI` extension.** The project adds
    `hostbootstrap-core` (or `daemon-substrate` at L1) as a `source-repository-package` dependency and
-   ships one binary that calls `runHostBootstrapCLI progName projectCommands testSuite`, appending its
-   own verbs to the inherited tree and supplying its test suite (e.g. `daemon-substrate` and its apps,
-   and the worked `demo/` consumer). This is the mode the *Worked compliant Dockerfile shape* below
-   illustrates.
+   ships one binary that calls `runHostBootstrapCLI progName projectSpec`, appending its own verbs to the
+   inherited tree and supplying its non-empty test suite, code-check action, and schema artifacts (e.g.
+   `daemon-substrate` and its apps, and the worked `demo/` consumer). This is the mode the *Worked
+   compliant Dockerfile shape* below illustrates.
 
 Both modes build the binary **host-native** into `./.build/<project>` and gate the project container on
 `check-code`; they differ only in whether the project takes a Cabal dependency to extend the command

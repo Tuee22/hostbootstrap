@@ -288,12 +288,16 @@ child config projections, then into both the spinup cordon and the binary-genera
 
 ### P. optparse Command-Tree Extension Contract
 
-`hostbootstrap-core` exposes its subcommands as a composable optparse value plus a generic
-entrypoint (`runHostBootstrapCLI progName projectCommands testSuite`). A project binary extends the core
-tree with its own subcommands and supplies its test suite rather than re-implementing core verbs. This
-CLI tree is the first of the four parallel extension streams the library hierarchy composes additively
-(§ T). The bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) is the core tree with no
-project commands and `emptySuite`; it is built like any project binary, not baked into the base image.
+`hostbootstrap-core` exposes its subcommands as a composable optparse value plus a project entrypoint
+(`runHostBootstrapCLI progName projectSpec`). A project binary extends the core tree through named
+`ProjectCommand` values and a `ProjectSpec` that carries the non-empty test suite, project `check-code`
+action, and project `ConfigArtifact` delta. The entrypoint validates those extension points before parser
+construction: project commands cannot shadow core verbs, duplicate commands/cases/artifacts are rejected,
+the test suite must be non-empty, and `check-code` is supplied by construction rather than silently
+defaulted. This CLI tree is the first of the four parallel extension streams the library hierarchy
+composes additively (§ T). The bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) uses
+the separate `runBareHostBootstrapCLI` entrypoint; it is built like any project binary, not baked into the
+base image.
 
 ### Q. Configuration via Dhall
 
@@ -338,10 +342,11 @@ harness, however, are `hostbootstrap`-**owned** contracts that downstream refact
 The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
 `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes L0 directly. Each level adds only its
 delta to **four parallel streams**, one additive merge idiom each: the optparse **CLI tree**
-(`runHostBootstrapCLI progName (lower ++ delta) testSuite`, appended, never shadowed); the **Dhall vocabulary**
-(`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen** `ConfigArtifact` registry
-(concatenated across levels); and the **test-harness** `Seams`. A project integrates in one of two modes:
-freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
+(`runHostBootstrapCLI progName projectSpec`, with named `ProjectCommand` deltas appended after validation
+and never shadowed); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the
+**schema-gen** `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); and the
+**test-harness** `Seams` (threaded through a non-empty `TestSuite`). A project integrates in one of two
+modes: freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
 `source-repository-package` + the `runHostBootstrapCLI` extension. The system runs one of four
 **run-models** — `OneShot` (one-shot `docker run`), `HostNative` (host-native build + host exec),
 `HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected by

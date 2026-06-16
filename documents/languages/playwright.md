@@ -16,9 +16,20 @@ image.
 Browsers live at `/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`). Tests that
 expect that path automatically pick them up.
 
+The npm packages are installed globally under `/opt/build/node/global`. A
+project-local Playwright config or spec that imports `@playwright/test` without a
+local `node_modules` tree runs with
+`NODE_PATH=/opt/build/node/global/lib/node_modules` so Node resolves the
+base-provided package.
+
 `/root/.npm` is removed after install to keep the image lean.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
 this Playwright runtime: the webservice is deployed into the kind cluster (the pod
-runs `demo web serve`) and the container-side Playwright run targets the in-cluster
-service via its NodePort `baseURL` (the live e2e run is validated during the demo run).
+runs `demo web serve`) and the `e2e-tabs` case starts the already-built
+`hostbootstrap-demo:local` project image on the kind Docker network. That
+container sets `BASE_URL` to the in-cluster NodePort service, sets `NODE_PATH` as
+above, and runs `playwright test` from `/workspace/demo/playwright`.
+
+The supported demo e2e path does not pull `mcr.microsoft.com/playwright:*`, does
+not run `npm install`, and does not use `npx` during validation.

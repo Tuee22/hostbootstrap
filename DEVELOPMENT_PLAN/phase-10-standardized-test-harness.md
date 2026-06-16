@@ -22,7 +22,7 @@ indivisible (GPU) cases each get the full budget at concurrency 1. `selectRunMod
 run-models (`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) from the collapsed selection key — never
 declared in Dhall. The L0 `OneShot` model ships both the pure `oneShotRunArgs` argv and the real
 `oneShotSeams` IO seam (wired through the resolved Docker tool like `cluster up`). The `test` and
-`check-code` verbs are on the core tree, inherited by every binary. `runMatrix` isolates a throwing
+`check-code` verbs are on the core tree, inherited by every project binary. `runMatrix` isolates a throwing
 `seamSetup` to its own case by recording a `Fail` rather than crashing the matrix. The L0 engine, pure
 cores, command verbs, and setup-isolation behavior are implemented and unit-tested; the worked demo
 exercises the container/cluster path in real runs. This phase is `Done`.
@@ -149,26 +149,28 @@ None.
 
 #### Objective
 
-Put the `test` and `check-code` verbs on the core tree so every binary inherits them: `test` drives
-`runMatrix` and prints the report card, and `check-code` is the fail-fast image-build gate wrapping the
-project's own checks.
+Put the `test` and `check-code` verbs on the core tree so every project binary inherits them:
+`test` drives `runMatrix`, prints the report card, and exits non-zero when any selected case fails;
+`check-code` is the fail-fast image-build gate whose action is supplied through `ProjectSpec`.
 
 #### Command Surface
 
 - `<project> test <case|all>` — drive `runMatrix` over the named case (or the whole matrix with
-  `all`) and print the report card (the project matrix is threaded in via the `TestSuite` hook,
-  Sprint 10.6).
-- `<project> check-code` — the image-build gate; the body is project-defined.
+  `all`), print the report card, and fail the command when the report contains a failed case (the
+  project matrix is threaded in via the `TestSuite` hook, Sprint 10.6).
+- `<project> check-code` — the image-build gate; the body is project-defined and supplied through
+  `ProjectSpec`.
 
 #### Deliverables
 
-- Both verbs on the core tree, inherited by every binary; `check-code` wraps the project's own checks
-  fail-fast.
+- Both verbs on the core tree, inherited by every project binary; `test` turns a failed report into a
+  non-zero exit, and `check-code` runs the required project action fail-fast.
 
 #### Validation
 
-- `<project> test all` runs the matrix and `<project> test <case>` runs one case (an unknown case
-  exits non-zero); `<project> check-code` exits non-zero on a seeded failure.
+- `<project> test all` runs the matrix and exits non-zero on a seeded failed case; `<project> test
+  <case>` runs one case (an unknown case exits non-zero); `<project> check-code` runs the supplied hook
+  and exits non-zero on a seeded failure.
 
 #### Remaining Work
 
@@ -180,7 +182,7 @@ None.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`
 (`TestSuite`/`emptySuite`/`allCasesSelector`/`runSuiteSelection`),
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs` (`testCommand` parses the `CASE` argument),
-`core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`runHostBootstrapCLI` threads the suite)
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`runHostBootstrapCLI` threads the project spec)
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`,
 `documents/engineering/derived_project_standards.md`, `README.md`
 
@@ -199,20 +201,23 @@ Make the inherited `test` verb run a project's **own** case matrix, so project t
 
 - The `TestSuite` hook in `HostBootstrap.Harness`: an existential `TestSuite` over the per-project
   `Seams env` plus its `[Case]`, the reserved `allCasesSelector` (`"all"`, always available so a
-  project may not name a case `all`), `runSuiteSelection` (selector → chosen cases → `runMatrix`),
-  and `emptySuite` for the bare binary.
-- `coreCommands`/`testCommand`/`runHostBootstrapCLI` thread the `TestSuite`; `testCommand` parses a
-  required `CASE` argument and fails fast on an unknown id.
-- The bare `hostbootstrap` binary passes `emptySuite`; the demo binds `demoSeams`/`demoCases` through
-  `demo/app/Main.hs`.
+  project may not name a case `all`), `runSuiteSelection` (selector → chosen cases → `runMatrix`), and
+  `emptySuite` for the bare binary's explicit `runBareHostBootstrapCLI` path.
+- `ProjectSpec` carries the non-empty `TestSuite`; `coreCommands`/`testCommand`/`runHostBootstrapCLI`
+  thread it into the inherited verb, and `testCommand` parses a required `CASE` argument, fails fast on
+  an unknown id, and exits non-zero when the selected report has failures.
+- The bare `hostbootstrap` binary uses `runBareHostBootstrapCLI`; the demo binds `demoSeams`/`demoCases`
+  through `demo/app/Main.hs`.
 
 #### Validation
 
 - `cabal build` (core library, bare binary, demo) succeeds. `HarnessSpec` covers `runSuiteSelection`:
   `all` → whole matrix, a named id → that one case, an unknown id → `Left` listing the valid ids +
-  `all`, and `emptySuite all` → `test report: 0/0 passed`. Live CLI surface: `hostbootstrap test all`
-  → `0/0`; `hostbootstrap-demo --help` lists a top-level `test`; `hostbootstrap-demo vm --help` no
-  longer lists `test`; `hostbootstrap-demo test bogus` exits non-zero.
+  `all`, and `emptySuite all` → `test report: 0/0 passed` through the bare path. `CLISpec` covers
+  `ProjectSpec` rejecting an empty project suite, `test all` exiting non-zero on a seeded failed case,
+  and `check-code` running/failing through the supplied action. Live CLI surface:
+  `hostbootstrap-demo --help` lists a top-level `test`; `hostbootstrap-demo vm --help` no longer lists
+  `test`; `hostbootstrap-demo test bogus` exits non-zero.
 
 #### Remaining Work
 

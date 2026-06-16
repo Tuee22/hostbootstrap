@@ -14,10 +14,11 @@
 - `schemaText` is reflected from the Haskell type via the `ToDhall` encoder's `declared` field, so it
   equals the type the `FromDhall` decoder accepts and cannot drift; `renderText` is the `ToDhall`
   embedding of a concrete value.
-- `coreArtifacts` is the L0 registry (`budget`, `podResources`, `kindNode`). `config schema` prints
-  `schemaUnion` of the in-scope registry plus the reflected project-local `ProjectConfig` schema
-  (guarded by a committed snapshot); `config render [--artifact NAME]` materializes static example
-  renders from that registry.
+- `coreArtifacts` is the L0 registry (`budget`, `podResources`, `kindNode`). A project supplies its
+  artifact delta through `ProjectSpec`, and the inherited `config schema` prints `schemaUnion` of the
+  in-scope registry plus the reflected project-local `ProjectConfig` schema (guarded by a committed
+  snapshot for the L0 surface); `config render [--artifact NAME]` materializes static example renders from
+  that registry and fails fast when `NAME` is unknown.
 - `config init [--role ROLE] [--output FILE] [--force] [--if-missing]` writes a default project-local
   `<project>.dhall` without requiring an existing config. By default it refuses to overwrite an existing
   file; `--force` overwrites, and `--if-missing` is a no-op when the file already exists (the idempotent
@@ -58,8 +59,9 @@ data ConfigArtifact = ConfigArtifact
 | `podResources` | `HostBootstrap.Config.Vocab.PodResources` | `PodResources 1 1 1 1 2` |
 | `kindNode` | `HostBootstrap.Config.Vocab.KindNode` | `KindNode 4 8 20` |
 
-A project binary concatenates its own artifacts onto `coreArtifacts` — the schema-gen stream of the
-four-stream extension contract (see [library_hierarchy](../architecture/library_hierarchy.md)). The
+A project binary supplies its own artifacts in `ProjectSpec`; `HostBootstrap.Command` concatenates them
+onto `coreArtifacts` for the inherited `config schema` / `config render` surfaces — the schema-gen stream
+of the four-stream extension contract (see [library_hierarchy](../architecture/library_hierarchy.md)). The
 reflect-from-decoders versus hand-written-assert split is described in
 [dhall_generation](../architecture/dhall_generation.md).
 
@@ -119,9 +121,9 @@ config.
 ## `config render`
 
 `config render [--artifact NAME]` materializes the registry's static example renders. With no flag it
-renders every in-scope artifact; `--artifact NAME` filters to the named one. Each render is the
-`renderText` of the artifact — the `ToDhall` embedding of its canonical value. This is an
-inspection/bootstrap surface and does not require an active sibling `<project>.dhall`.
+renders every in-scope artifact; `--artifact NAME` renders exactly the named one and exits non-zero if the
+name is absent. Each render is the `renderText` of the artifact — the `ToDhall` embedding of its canonical
+value. This is an inspection/bootstrap surface and does not require an active sibling `<project>.dhall`.
 
 The rich deploy tier is rendered by `deployConfigText coreImport budget pods`, which composes a budget
 and a concurrent pod set into a config carrying the budget assertion. Runtime commands seed the budget

@@ -77,6 +77,7 @@ test-suite hostbootstrap-core-test
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
+      CLISpec
       SubstrateSpec
       HostToolSpec
       EnsureSpec
@@ -98,6 +99,7 @@ test-suite hostbootstrap-core-test
     , directory
     , filepath
     , hostbootstrap-core
+    , optparse-applicative
     , tasty
     , tasty-hunit
     , temporary

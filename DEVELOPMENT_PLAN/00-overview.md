@@ -39,8 +39,8 @@ has no remaining work.
 ### Phase 1 — hostbootstrap-core scaffolding
 
 Phase 1 owns the `hostbootstrap-core` Cabal package shape: the `HostBootstrap.*` library namespace, the
-bare executable, the GHC/tooling pin, and the generic `runHostBootstrapCLI progName projectCommands
-testSuite` entrypoint. It is `Done`.
+bare executable, the GHC/tooling pin, the `runHostBootstrapCLI progName projectSpec` project entrypoint,
+and the explicit `runBareHostBootstrapCLI` entrypoint for the bare core executable. It is `Done`.
 
 ### Phase 2 — host tools and config
 
@@ -120,8 +120,9 @@ and never committed. It is `Done`.
 
 A self-contained worked consumer under `demo/` demonstrates the main surfaces: pristine-host bootstrap
 inside an incus VM, project-container build, harness cluster lifecycle, web/SPA generation, Playwright
-e2e, and the single-representation deploy chain. The demo uses sibling `hostbootstrap-demo.dhall` configs
-for host, VM, container, and service/daemon contexts. It is `Done`.
+e2e from the base-provided browser runtime in the project image, and the single-representation deploy
+chain. The demo uses sibling `hostbootstrap-demo.dhall` configs for host, VM, container, and
+service/daemon contexts. It is `Done`.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 

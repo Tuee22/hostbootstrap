@@ -12,12 +12,13 @@
 - `hostbootstrap-core` is the Haskell library that owns all host-management logic: host-tool
   resolution, substrate detection, `ensure` reconcilers, cluster-lifecycle semantics, and the
   binary-context validation and command-gating substrate.
-- It exposes its subcommands as a composable `optparse-applicative` value plus a generic entrypoint,
-  `runHostBootstrapCLI progName projectCommands testSuite`.
+- It exposes its subcommands as a composable `optparse-applicative` value plus a generic project
+  entrypoint, `runHostBootstrapCLI progName projectSpec`.
 - Project binaries import the library through a pinned `source-repository-package` git dependency and
-  extend the core command tree with their own subcommands.
-- The bare `hostbootstrap` binary is the core tree with no project commands; it is built like any
-  project binary (host-native), not baked into the base image.
+  extend the core command tree with named project commands, a non-empty test suite, a code-check action,
+  and a schema artifact delta.
+- The bare `hostbootstrap` binary uses the separate `runBareHostBootstrapCLI`; it is the only binary with
+  no project commands/checks/artifacts and an empty test matrix.
 
 ## Current Status
 
@@ -47,7 +48,7 @@ consumers depend on; it is the canonical inventory tracked in
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/`InVM`/`InContainer`) by invoking the binary again there. The pure argv fold is unit-tested; the IO seam reuses tool resolution. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over a project's `Seams` (`seamSetup`/`seamRun`/`seamTeardown`), the per-case isolation, the delete-guard, and budget-slicing. The harness is **context-agnostic**: its seams invoke reconcilers (e.g. `cluster up`) "locally", so the harness is a **lift target**, not a lift-aware component — there is no `LiftContext` inside it (a consumer lifts the whole `test all` workflow, never re-expressing it as a parallel chain). See [harness workflow](harness_workflow.md). |
 | `HostBootstrap.Command` | The composable core command tree (`coreCommands`) merging the `ensure`, `config`, and `cluster` verbs. |
-| `HostBootstrap.CLI` | `runHostBootstrapCLI`, the generic entrypoint that merges `coreCommands` with project commands. |
+| `HostBootstrap.CLI` | `ProjectSpec`, `ProjectCommand`, `runHostBootstrapCLI`, and `runBareHostBootstrapCLI`; the entrypoint validates project extension points before merging them with `coreCommands`. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |
 
 ## Host-Tool Resolution And Substrate Ownership
@@ -68,53 +69,62 @@ configuration. See [prerequisites](../engineering/prerequisites.md).
 ## Command-Tree Extension Contract
 
 `HostBootstrap.CLI` exposes the core subcommands as a composable `optparse-applicative` value and a
-generic entrypoint:
+generic project entrypoint:
 
 ```haskell
-runHostBootstrapCLI :: String -> [Mod CommandFields (IO ())] -> TestSuite -> IO ()
+projectCommand :: String -> ParserInfo (IO ()) -> ProjectCommand
+projectSpec :: [ProjectCommand] -> TestSuite -> IO () -> [ConfigArtifact] -> ProjectSpec
+runHostBootstrapCLI :: String -> ProjectSpec -> IO ()
+runBareHostBootstrapCLI :: String -> IO ()
 ```
 
 - `progName` is the program name used in help and diagnostics.
-- `projectCommands` is the list of project-specific `command "..."` entries.
-- `testSuite` is the project case matrix/seams threaded into the inherited `test` verb.
-- The function merges `projectCommands` with the core subcommand value (`ensure …`, `cluster …`,
-  `config …`) and runs the resulting parser. Normal core commands load the sibling binary-context file
-  before dispatch and refuse commands that do not match the declared context.
+- `ProjectCommand` carries the top-level command name together with its parser, so the entrypoint can
+  reject duplicate project names and core-command shadowing before parsing.
+- `ProjectSpec` carries the project command delta, the non-empty `TestSuite` threaded into the inherited
+  `test` verb, the project-defined `check-code` action, and the project `ConfigArtifact` delta. It is the
+  functional-programming boundary: absence is represented by a different entrypoint (`runBareHostBootstrapCLI`),
+  not by a silent project default.
+- `runHostBootstrapCLI` validates the spec, merges it with the core subcommand value (`ensure …`,
+  `cluster …`, `config …`, `test`, `check-code`), and runs the resulting parser. Normal core commands load
+  the sibling binary-context file before dispatch and refuse commands that do not match the declared context.
 
 A project binary extends the core tree rather than re-implementing core verbs. Its `Main.hs`
 composes its own commands and hands them to the entrypoint:
 
 ```haskell
-import HostBootstrap.CLI (runHostBootstrapCLI)
+import HostBootstrap.CLI (projectCommand, projectSpec, runHostBootstrapCLI)
 
-projectCommands :: [Mod CommandFields (IO ())]
+projectCommands :: [ProjectCommand]
 projectCommands =
-  [ command "config" (info configParser (progDesc "Emit the project schema and render config"))
-  , command "test"   (info testParser   (progDesc "Run the project test harness"))
+  [ projectCommand "web" (info webParser (progDesc "Serve and build the web UI"))
   ]
 
 main :: IO ()
-main = runHostBootstrapCLI "daemon-substrate" projectCommands daemonSuite
+main =
+  runHostBootstrapCLI
+    "daemon-substrate"
+    (projectSpec projectCommands daemonSuite daemonCheckCode daemonArtifacts)
 ```
 
-The bare `hostbootstrap` binary is the same entrypoint with no project commands (built like any
-project binary, not baked into the base image):
+The bare `hostbootstrap` binary is explicit, not a project pretending to have empty hooks:
 
 ```haskell
 main :: IO ()
-main = runHostBootstrapCLI "hostbootstrap" [] emptySuite
+main = runBareHostBootstrapCLI "hostbootstrap"
 ```
 
 This guarantees that `ensure …`, `cluster …`, and `config …` behave identically whether invoked
 through the bare binary or through any project binary; a project only adds verbs, it never
-shadows or rewrites the core ones.
+shadows or rewrites the core ones. A shadow attempt is rejected before command dispatch.
 
 The command tree includes ungated config surfaces such as `config path`, `config schema`, `config init`,
 `config show FILE`, and `config render`. Those bootstrap/inspection commands are allowed before a
 sibling config exists; `config render` prints static typed registry examples, not child runtime
-authority. Normal commands and child-config creation during VM/container/service handoff fail fast when
-`<project>.dhall` is missing or incompatible. Project-specific commands use the same
-`HostBootstrap.Context` gate to declare their command class.
+authority, and `--artifact NAME` fails fast when `NAME` is not in the in-scope registry. Normal commands
+and child-config creation during VM/container/service handoff fail fast when `<project>.dhall` is missing
+or incompatible. Project-specific commands use the same `HostBootstrap.Context` gate to declare their
+command class. The inherited `test` verb prints the report and exits non-zero when any selected case fails.
 
 ## Consumption
 

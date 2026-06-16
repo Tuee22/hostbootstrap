@@ -12,9 +12,10 @@
 **Status**: Done
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
-`hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" demoCommands`, exercising the
+`hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
 four extension streams: CLI append, schema-registry concat, Dhall vocabulary use, and the `runMatrix`
-harness.
+harness. Its `ProjectSpec` supplies `demoCommands`, `demoCheckCode`, `demoArtifacts`, and the non-empty
+`TestSuite demoSeams demoCases`.
 
 The demo's supported deploy shape follows the single-representation doctrine (§ W). `demo deploy` is one
 explicit lift sequence whose only lifted compute step is `test all` inside the project container in the
@@ -38,7 +39,7 @@ The demo covers these supported surfaces:
   cordon.
 - `demo vm pristine-bootstrap` runs the first-run path inside a fresh Ubuntu VM and demonstrates the
   three builds: metal orchestrator, in-VM host-native binary, and in-VM project container.
-- `demo test all` runs the standardized harness over `pristine-bootstrap`, `web-build`, and `e2e-tabs`
+- `hostbootstrap-demo test all` runs the standardized harness over `pristine-bootstrap`, `web-build`, and `e2e-tabs`
   with guaranteed per-case teardown.
 - `demo web bridge`, `demo web serve`, and `demo/docker/Dockerfile` cover the `warp`/`wai` service,
   `purescript-bridge`, Halogen, `spago`, `esbuild`, and the in-Dockerfile `check-code` gate.
@@ -68,8 +69,9 @@ the **only fail-fast dependencies are the Python wrapper's host minimums**. The 
 (see [demo_runbook.md](../documents/operations/demo_runbook.md)): (a) the metal binary installs incus on
 the host via `brew`/`apt`; (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
 installs Docker and builds the project container; (d) the project container spins up the kind cluster and
-deploys the webservice; (e) Playwright (in a container on the VM) runs e2e against it; (f) hostbootstrap
-spins everything back down, preserving `.data`. Nothing in (a)–(f) is a host prerequisite beyond the
+deploys the webservice; (e) the project image's base-provided Playwright runtime runs e2e against it from
+a container on the VM; (f) hostbootstrap spins everything back down, preserving `.data`. Nothing in
+(a)–(f) is a host prerequisite beyond the
 Python minimums — every dependency is install-and-verify (the `ensure` suite, § L), so the binary is
 never blocked by an absent dependency.
 
@@ -88,8 +90,9 @@ Stand up the `demo/` tree and the metal orchestrator binary: the Cabal package e
 
 #### Deliverables
 
-- The `demo/` tree: the Cabal package extending `hostbootstrap-core` via `runHostBootstrapCLI`, the
-  appended `demoCommands`, and **Build #1** (the metal orchestrator) via the usual workflow.
+- The `demo/` tree: the Cabal package extending `hostbootstrap-core` via `runHostBootstrapCLI` and
+  `ProjectSpec`, the appended `demoCommands`, the required `demoCheckCode` image-build gate, and
+  **Build #1** (the metal orchestrator) via the usual workflow.
 
 #### Validation
 
@@ -251,30 +254,32 @@ the L0-direct demo reaches the core source). Validated by a real `docker build` 
 #### Objective
 
 Drive isolated per-case clusters through the standardized harness (each torn down on completion), deploy the
-webservice **into** the per-case kind cluster via `demo/chart`, and run the Playwright e2e suite from a
-container on the kind network against the in-cluster service via its **NodePort**.
+webservice **into** the per-case kind cluster via `demo/chart`, and run the Playwright e2e suite from the
+already-built project image on the kind network against the in-cluster service via its **NodePort**.
 
 #### Deliverables
 
 - `demoSeams`: each case's `seamSetup` brings up an isolated per-case kind cluster and `seamTeardown`
   **tears it down** (`clusterDelete`, preserving `.data`, guarded to the test-name prefix), guaranteed by
   `runMatrix`'s `finally`. The webservice is deployed into the per-case kind cluster via `demo/chart` (the
-  pod runs `web serve`); the Playwright runner runs from a container on the kind network against the
-  in-cluster service via its **NodePort** (the e2e target is the kind cluster).
+  pod runs `web serve`); the Playwright runner is the same `hostbootstrap-demo:local` project image on the
+  kind network, using the base image's global Playwright install and browser cache against the in-cluster
+  service via its **NodePort** (the e2e target is the kind cluster).
 - Per-case seams and harness-driven Playwright run against the in-cluster NodePort; `e2e-tabs` is
   live-validated.
 
 #### Validation
 
-- **Harness cluster lifecycle + cleanup done (live).** `demo test all` (rebuilt in-VM) ran all three
+- **Harness cluster lifecycle + cleanup done (live).** `hostbootstrap-demo test all` (rebuilt in-VM) ran all three
   cases; each did `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and
   after the run `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover
   clusters (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`)
   backs the always-cleans-up property. The per-case bodies are **real assertions**. **`demo test e2e-tabs`
   is live-validated end to end on a real host:** `cluster up` (chart deployed) → `kind load` the project
-  image → NodePort readiness → a Playwright container runs `demo/playwright` against the in-cluster service
-  via its NodePort, all 3 specs green (tabs render, the Budget tab shows `fits: true`, `GET /api/budget`
-  returns `fits:true`) → clean teardown (`1/1 passed`, no leftover cluster, source tree untouched).
+  image → NodePort readiness → the project image runs `playwright test` from `/workspace/demo/playwright`
+  against the in-cluster service via its NodePort, all 3 specs green (tabs render, the Budget tab shows
+  `fits: true`, `GET /api/budget` returns `fits:true`) → clean teardown (`1/1 passed`, no leftover cluster,
+  source tree untouched).
 
 #### Remaining Work
 
@@ -350,8 +355,9 @@ Define per-case seams that assert the deployed workload, including Playwright in
 - The demo ships `demo/chart` (a NodePort Service deploying the webservice **into** the per-case kind
   cluster); `cluster up` installs it (chart-conditional, fail-closed — Phase 5 Sprint 5.4). Per-case
   bodies: `pristine-bootstrap` asserts the live cluster; `web-build` asserts the `spago`/`esbuild` bundle;
-  `e2e-tabs` lifts a Playwright container onto the kind network and runs `demo/playwright/demo.spec.ts`
-  against the in-cluster service via its NodePort, passing iff the spec passes.
+  `e2e-tabs` starts the `hostbootstrap-demo:local` project image on the kind network and runs
+  `/workspace/demo/playwright` against the in-cluster service via its NodePort, passing iff the spec
+  passes.
 
 #### Validation
 
@@ -364,25 +370,24 @@ Define per-case seams that assert the deployed workload, including Playwright in
   leftover cluster), confirming the fail-closed `cluster up` + chart-conditional deploy + per-case seam +
   teardown on a real host.
 - **Live (real host):** `demo test e2e-tabs` is green end to end (`1/1 passed`): `cluster up` (chart
-  deployed) → `kind load` the project image → NodePort readiness → a Playwright container runs
-  `demo/playwright` against the in-cluster NodePort (3 specs green) → clean teardown.
+  deployed) → `kind load` the project image → NodePort readiness → the project image runs
+  `playwright test` against the in-cluster NodePort (3 specs green) → clean teardown.
 - **Live (in-container, the production path):** `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
   --network host hostbootstrap-demo:local test web-build` is green (`1/1 passed`): the harness runs **inside
   the project container** — kind-in-container via the mounted socket → cordon → `helm upgrade --install: ok`
   → `assertWebBundle` confirms the in-image `web/public/app.js` bundle → guarded teardown, no leftover
   cluster. This validates the lifted in-container execution (build #3 running its own harness) and
   `web-build`'s assertion against the bundle build #3 produces.
-- **Context-agnostic e2e spec delivery.** `assertE2E` now delivers `demo/playwright` through a named Docker
-  volume populated by `docker cp` (`deliverSpec`), which streams from the harness's own filesystem — so the
-  e2e lifts into **any** context (host or in-container) instead of silently depending on a host path the
-  daemon would resolve on the host. Re-validated live on the host (`demo test e2e-tabs`, `1/1 passed`, real
-  Playwright through the volume).
+- **Context-agnostic e2e runner.** `assertE2E` now uses the already-built project image as the Playwright
+  runner, so the specs and the base image's browser cache are available inside the same image whether the
+  harness is invoked on the host or lifted into the VM project container. The run does not pull
+  `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx` at validation time.
 
 #### Remaining Work
 
 None. The per-case seams (`assertClusterLive` / `assertWebBundle` / `assertE2E`, dispatched on the case id)
-are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e spec
-delivery is context-agnostic.
+are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e
+runner is context-agnostic because it uses the project image.
 
 ### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Done]
 

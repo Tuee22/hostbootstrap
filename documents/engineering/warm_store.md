@@ -48,8 +48,8 @@ to the daemon dependency closure.
 
 The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
 `optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
-extends `hostbootstrap-core` via `runHostBootstrapCLI` hits the warm store for the core's
-dependencies, not only its own. The `hostbootstrap-core` dependency set is part of `core.freeze`
+extends `hostbootstrap-core` via `runHostBootstrapCLI progName projectSpec` hits the warm store for the
+core's dependencies, not only its own. The `hostbootstrap-core` dependency set is part of `core.freeze`
 and is treated like any other warm-store dependency for cache-hit purposes.
 
 This page is the contract between the warm store and derived projects: follow
