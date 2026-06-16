@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 Phases 6, 8, 11, 13, and 14 provide the needed substrate: the thin Python bootstrapper, typed Dhall
 generation, the self-reference lift, the worked demo chain, and the composition methodology. This phase
@@ -22,14 +22,15 @@ and demo project verbs gate through the sibling project config, context creation
 host/VM/container/service placement configs, and normal cluster lifecycle commands use the active context
 as their runtime authority.
 
-This phase remains Active until the topology-aware path is validated by the full real demo lifecycle. The
-schema and gate now encode provider-backed frames, the current frame, parent links, and runtime
-witnesses, and the demo image/runtime split is implemented.
+The topology-aware path is validated by the full real demo lifecycle. The schema and gate encode
+provider-backed frames, the current frame, parent links, and runtime witnesses; the demo image/runtime
+split is implemented (Dockerfiles bake image-build authority only and the lifted runtime container mounts
+a parent-generated config plus the `/run/hostbootstrap` witness directory); and the real Apple Silicon
+Lima `deploy` exercised the stricter mounts end to end with `3/3 passed` including Playwright e2e.
 
 ## Remaining Work
 
-- Run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
-  mounts.
+None.
 
 ## Phase Objective
 
@@ -236,9 +237,9 @@ Use the project-local `<project>.dhall` file as the single runtime config author
 
 None.
 
-### Sprint 15.6: Topology frames and runtime witnesses [Active]
+### Sprint 15.6: Topology frames and runtime witnesses [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, `demo/docker/Dockerfile`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/binary_context_config.md`, `documents/engineering/dhall_topology.md`, `documents/engineering/schema.md`, `documents/operations/demo_runbook.md`, `legacy-tracking-for-deletion.md`
 
@@ -269,7 +270,12 @@ host-to-runtime-container projection rejection.
 
 #### Remaining Work
 
-- Re-run the full core, Python, and demo lifecycle validation after the documentation/status updates land.
+None. The full core, Python, and demo lifecycle validation re-ran clean after the documentation/status
+updates landed (2026-06-16): `cabal test all` from `core/` passes (190 tests, `DocValidatorSpec`
+included), `poetry run python -m hostbootstrap.test_all` passes (139 tests) with
+`poetry run python -m hostbootstrap.check_code` green, and the real Apple Silicon Lima `deploy` reported
+`test report: 3/3 passed` including the `e2e-tabs` Playwright case with the topology-aware runtime
+config/witness mounts (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`).
 
 ## Documentation Requirements
 

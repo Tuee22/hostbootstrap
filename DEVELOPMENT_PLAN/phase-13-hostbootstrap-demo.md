@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
@@ -48,17 +48,16 @@ The demo covers these supported surfaces:
   remain release/demo operations.
 - `demo role serve` and `demo role submit` exercise the L0 role-lifecycle skeleton.
 
-This phase is reopened because the Apple Silicon path must use Lima rather than an Incus VM, and
-because the demo exposed an overly permissive runtime context: a direct host/container fallback could run
-`test all` against the wrong Docker daemon. The dry-run Lima fold and real Apple Silicon Lima lifecycle
-are validated; strict topology-aware context enforcement remains open.
+The Apple Silicon path uses Lima (not an Incus VM), and the runtime context is topology-strict: a direct
+host/container fallback cannot run `test all` against the wrong Docker daemon, because a
+VM-project-container config requires a VM-orchestrator ancestor and runtime witnesses (the Dockerfile bakes
+image-build authority only; the lifted runtime container receives a parent-generated config mounted over
+`/usr/local/bin/hostbootstrap-demo.dhall`). The Lima fold, the topology-aware context enforcement, and the
+full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — are all validated.
 
 ## Remaining Work
 
-- Split the Dockerfile's baked config into image-build authority and require a parent-mounted runtime
-  context for lifted `test all`.
-- Validate that direct host/container fallback with a VM-project-container context fails before kind
-  cluster creation.
+None.
 
 ## Phase Objective
 
@@ -256,7 +255,7 @@ the L0-direct demo reaches the core source). Validated by a real `docker build` 
 ### Sprint 13.6: Harness cluster lifecycle + Playwright (in-cluster, via NodePort) [Done]
 
 **Status**: Done
-**Implementation**: the harness `Seams` (per-case kind cluster up + guaranteed teardown) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`); `demo/playwright/` (config + e2e spec)
+**Implementation**: the harness `Seams` (per-case kind cluster up + guaranteed teardown) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`); `demo/playwright/` (config + e2e specs across chromium, firefox, webkit)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/languages/playwright.md`
 
 #### Objective
@@ -271,7 +270,7 @@ already-built project image on the kind network against the in-cluster service v
   **tears it down** (`clusterDelete`, preserving `.data`, guarded to the test-name prefix), guaranteed by
   `runMatrix`'s `finally`. The webservice is deployed into the per-case kind cluster via `demo/chart` (the
   pod runs `web serve`); the Playwright runner is the same `hostbootstrap-demo:local` project image on the
-  kind network, using the base image's global Playwright install and browser cache against the in-cluster
+  kind network, using the base image's global Playwright install and browser cache (chromium, firefox, webkit) against the in-cluster
   service via its **NodePort** (the e2e target is the kind cluster).
 - Per-case seams and harness-driven Playwright run against the in-cluster NodePort; `e2e-tabs` is
   live-validated.
@@ -387,7 +386,7 @@ Define per-case seams that assert the deployed workload, including Playwright in
   cluster. This validates the lifted in-container execution (build #3 running its own harness) and
   `web-build`'s assertion against the bundle build #3 produces.
 - **Context-agnostic e2e runner.** `assertE2E` now uses the already-built project image as the Playwright
-  runner, so the specs and the base image's browser cache are available inside the same image whether the
+  runner with all three installed browser engines (chromium, firefox, webkit), so the specs and the base image's browser cache are available inside the same image whether the
   harness is invoked on the host or lifted into the VM project container. The run does not pull
   `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx` at validation time.
 
@@ -545,9 +544,9 @@ distinction lives inside the file content rather than the filename.
 
 None.
 
-### Sprint 13.14: Apple Lima VM path and topology-strict runtime configs [Active]
+### Sprint 13.14: Apple Lima VM path and topology-strict runtime configs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `demo/docker/Dockerfile`
 **Docs to update**: `README.md`, `documents/architecture/binary_context_config.md`, `documents/architecture/composition_methodology.md`, `documents/operations/demo_runbook.md`, `documents/engineering/lima.md`, `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`, `legacy-tracking-for-deletion.md`
 
@@ -595,8 +594,17 @@ is parent-derived, and `VMProjectContainer` requires a VM-orchestrator ancestor.
 
 #### Remaining Work
 
-- Run the full real demo lifecycle on Apple Silicon including the Playwright e2e suite after the Phase 14
-  and Phase 15 documentation/status updates land.
+None. The full real Apple Silicon Lima lifecycle is validated end to end (2026-06-16): `deploy` ran
+`vm ensure` → `vm up` (the 6 CPU / 10 GiB / 80 GiB Lima VM — cordon #1, sized
+`--cpus 6 --memory 10 --disk 80`) → `vm pristine-bootstrap` (build #2 host-native in the VM, base
+`basecontainer-cpu-arm64` pulled, build #3 the `hostbootstrap-demo:local` project image with the
+in-Dockerfile `check-code` gate of `fourmolu`/`hlint`/`cabal -Werror`) → `context create container` (the
+VM-local runtime config) → the single lifted compute step
+`limactl shell hostbootstrap-demo-vm -- docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v …runtime-container.dhall:/usr/local/bin/hostbootstrap-demo.dhall:ro -v /run/hostbootstrap:ro --network=host -e HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2 hostbootstrap-demo:local test all`,
+where the harness brought up the per-case kind clusters on the **VM's** Docker (cordon #2 applied:
+`docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 hostbootstrap-demo-test-e2e-tabs-control-plane`)
+and reported `test report: 3/3 passed` (`pristine-bootstrap`, `web-build`, and `e2e-tabs` with the
+Playwright run green) → guarded `vm down` (`.data` preserved). `DEMO_DEPLOY_EXIT=0`, no leftover VM.
 
 ## Documentation Requirements
 

@@ -46,8 +46,11 @@ def pipx_update_args(*, ref: str = DEFAULT_REF, spec: str | None = None) -> tupl
         "pipx",
         "install",
         "--force",
-        "--pip-args",
-        "--force-reinstall",
+        # The value must be glued onto the flag with `=`. pipx parses its CLI with
+        # argparse, which refuses to consume a following token that looks like an
+        # option (a leading `-`) as an option's value, so the split
+        # `--pip-args`, `--force-reinstall` form fails with "expected one argument".
+        "--pip-args=--force-reinstall",
         install_spec,
     )
 

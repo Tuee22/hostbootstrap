@@ -29,7 +29,10 @@ this Playwright runtime: the webservice is deployed into the kind cluster (the p
 runs `demo web serve`) and the `e2e-tabs` case starts the already-built
 `hostbootstrap-demo:local` project image on the kind Docker network. That
 container sets `BASE_URL` to the in-cluster NodePort service, sets `NODE_PATH` as
-above, and runs `playwright test` from `/workspace/demo/playwright`.
+above, and runs `playwright test` from `/workspace/demo/playwright`. Its
+`playwright.config.ts` declares one project per engine, so every spec runs on all
+three browsers the base image installs (Chromium, Firefox, WebKit) with no extra
+download at validation time.
 
 The supported demo e2e path does not pull `mcr.microsoft.com/playwright:*`, does
 not run `npm install`, and does not use `npx` during validation.

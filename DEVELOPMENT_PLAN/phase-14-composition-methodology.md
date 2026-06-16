@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -25,14 +25,14 @@ standardized test harness is the one representation of the test/deploy workflow;
 it. The worked demo follows this shape with `test all` lifted into the project container in the managed
 VM.
 
-This phase remains Active until the topology-aware composition path is validated by the full real demo
-lifecycle. The methodology and implementation now require Dhall to express the complete topology, current
-frame, and runtime witnesses needed for a binary to fail fast outside its legal execution context.
+The topology-aware composition path is validated by the full real demo lifecycle: Dhall expresses the
+complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
+execution context, and the worked demo lifts the whole `test all` workflow as the single representation
+into the project container in the managed Lima VM (`3/3 passed`, including Playwright e2e; see Sprint 14.4).
 
 ## Remaining Work
 
-- Run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
-  mounts.
+None.
 
 ## Phase Objective
 
@@ -145,9 +145,9 @@ duplicates the harness and double-creates clusters); there is one representation
 None. The worked demo uses the single lift sequence with `test all` as the only lifted compute step in
 `inContainer img (inVM vm localContext)`.
 
-### Sprint 14.4: Context-aware arbitrary topology [Active]
+### Sprint 14.4: Context-aware arbitrary topology [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `documents/engineering/dhall_topology.md`, `documents/engineering/composition_patterns.md`
 
@@ -181,8 +181,11 @@ the preceding VM-local step materializes the runtime config.
 
 #### Remaining Work
 
-- Re-run the full real demo lifecycle, including Playwright e2e, with the topology-aware runtime config
-  mounts.
+None. The full real Apple Silicon Lima demo lifecycle validates the single-representation lift in a real
+VM (2026-06-16): the only lifted compute step is `test all`, folded to
+`limactl shell hostbootstrap-demo-vm -- docker run --rm … hostbootstrap-demo:local test all`, with the
+per-case kind clusters coming up on the VM's Docker and `test report: 3/3 passed` including the `e2e-tabs`
+Playwright case (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`).
 
 ## Documentation Requirements
 

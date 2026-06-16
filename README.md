@@ -63,7 +63,8 @@ deployment and runtime business logic (stateless roles over durable external sto
 > `<project>.dhall`; `config init` and parent child-projection commands generate the host, VM, runtime
 > container, and service/daemon local configs. Dockerfiles bake only `image-build-container` authority;
 > lifted runtime containers receive parent-mounted configs with topology frames and witnesses. Phases 13,
-> 14, and 15 remain open until the topology-aware path is validated by a full real demo lifecycle.
+> 14, and 15 are validated end to end by a full real Apple Silicon Lima demo lifecycle (`3/3 passed`,
+> including the Playwright e2e case, with a guarded `vm down`).
 >
 > The host-native build half is implemented: `hostbootstrap/bootstrap.py` derives the project name from
 > the Cabal file, asserts minimums, ensures the host build toolchain, builds the binary host-native on
@@ -270,13 +271,13 @@ representation; the test workflow is a *lifted* operation, not a parallel repres
 canonically in
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Status.** The single lift sequence remains the supported demo shape. Its Apple Silicon dry-run now
-> folds through Lima VM execution rather than an Incus VM. The Lima VM is still a pristine Linux host:
-> Docker is installed and verified inside the guest by the project binary, not supplied by Lima's
-> containerd setup. The topology-aware gate is implemented and covered by core tests and dry-run
-> validation; the open development-plan closure item is the full real lifecycle rerun with the stricter
-> runtime config mounts. The earlier Incus real-run remains a historical Linux validation point, not proof
-> that Apple Silicon can run the Incus VM path.
+> **Status.** The single lift sequence is the supported demo shape. On Apple Silicon it folds through a
+> Lima VM rather than an Incus VM. The Lima VM is a pristine Linux host: Docker is installed and verified
+> inside the guest by the project binary, not supplied by Lima's containerd setup. The topology-aware gate
+> is implemented, covered by core tests, and validated by the full real Apple Silicon Lima lifecycle —
+> `demo deploy` brought up the cordon #1 VM, ran build #2 and build #3 in the VM, lifted `test all` with
+> the per-case kind clusters on the VM's Docker, reported `3/3 passed` including the Playwright e2e case,
+> and tore the VM down behind the guard. The Incus real-run remains a historical Linux validation point.
 
 ### Spin it up
 
@@ -349,7 +350,8 @@ The demo carries two test layers:
   same project image on the kind Docker network, sets `BASE_URL` to the in-cluster NodePort service, sets
   `NODE_PATH` to the base image's global npm package directory so `@playwright/test` resolves, and runs
   `playwright test`. It does not pull `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx`
-  during validation.
+  during validation. The suite runs every spec on all three engines the base image installs (Chromium,
+  Firefox, WebKit), so the `e2e-tabs` case is a `3 specs × 3 engines` matrix.
 
 See the [feature-to-harness-case table](documents/operations/demo_runbook.md#feature-to-harness-case-table)
 in the runbook for which case proves which slice of the surface.

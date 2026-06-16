@@ -10,8 +10,8 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-12 are `Done`; Phases 13, 14, and 15 are `Active` until the topology-aware binary
-> context path is validated by the full real demo lifecycle. The rows below name the supported component
+> Note: Phases 0-15 are `Done`; the topology-aware binary context path is validated by the full real demo
+> lifecycle (a real Apple Silicon Lima `deploy`, `3/3 passed` including Playwright e2e). The rows below name the supported component
 > surfaces, their owning phases, and whether the repository implements them. Runtime authority is a
 > sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
 > and command permissions inside the file content, including provider-backed topology frames, a current
@@ -200,7 +200,7 @@ later builds (`FROM` the base) is accelerated by the warm store.
 | GHC toolchain pinned to the core | matches `hostbootstrap-core`'s GHC pin |
 | `ormolu`/`fourmolu` + `hlint` | the static quality-gate formatters/linters (pinned) |
 | kube tools (`kubectl`, `helm`, `kind`) | cluster-lifecycle dependencies |
-| Node web tooling + Playwright | `spago`, `esbuild`, and globally installed Playwright browsers/packages used by derived project images and the demo e2e runner |
+| Node web tooling + Playwright | `spago`, `esbuild`, and globally installed Playwright browsers (chromium, firefox, webkit) and packages used by derived project images and the demo e2e runner |
 
 The base image continues to publish `basecontainer-<flavor>-<arch>` tags (CPU and CUDA flavors). See
 `documents/engineering/base_image.md` and `documents/engineering/warm_store.md`.
@@ -243,7 +243,7 @@ verb). The demo's four runtime contexts are explicit sibling `hostbootstrap-demo
 container on the VM, and cluster-service/daemon pod. Its verbs drive the live surface — `vm ensure`, the
 provider-aware VM axis (Lima on Apple Silicon, Incus on Linux), applied budget cordons, an
 idiomatic in-Dockerfile `check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago`
-webservice and SPA, and Playwright e2e from the same project image that inherits the base-provided
+webservice and SPA, and Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that inherits the base-provided
 browser runtime — centered on a from-zero pristine-host bootstrap inside a managed Linux VM.
 
 ## Update rule

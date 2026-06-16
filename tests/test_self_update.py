@@ -23,16 +23,14 @@ def test_direct_vcs_spec_and_pipx_update_args() -> None:
         "pipx",
         "install",
         "--force",
-        "--pip-args",
-        "--force-reinstall",
+        "--pip-args=--force-reinstall",
         "hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main",
     )
     assert self_update.pipx_update_args(spec="/work/hostbootstrap") == (
         "pipx",
         "install",
         "--force",
-        "--pip-args",
-        "--force-reinstall",
+        "--pip-args=--force-reinstall",
         "/work/hostbootstrap",
     )
 

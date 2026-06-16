@@ -124,28 +124,27 @@ and never committed. It is `Done`.
 
 A self-contained worked consumer under `demo/` demonstrates the main surfaces: pristine-host bootstrap
 inside a managed Linux VM, project-container build, harness cluster lifecycle, web/SPA generation,
-Playwright e2e from the base-provided browser runtime in the project image, and the single-representation
+Playwright e2e across all three browser engines (chromium, firefox, webkit) from the base-provided browser runtime in the project image, and the single-representation
 deploy chain. The demo uses Lima for the VM provider on Apple Silicon and native Incus on Linux.
 It uses sibling `hostbootstrap-demo.dhall` configs for host, VM, image-build container, runtime
-container, and service/daemon contexts. It is `Active` until the stricter topology-aware runtime gate is
-validated end to end by the full real demo lifecycle. The earlier real Apple Silicon Lima lifecycle is
-validated for the provider/lift path.
+container, and service/daemon contexts. It is `Done`: the stricter topology-aware runtime gate is
+validated end to end by the full real Apple Silicon Lima demo lifecycle (`3/3 passed`, including the
+Playwright e2e case, with a guarded `vm down`).
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
 Phase 14 owns the composition methodology: operations as the composable unit, self-reference lift as the
 context-crossing primitive, deploy and runtime business logic as the same algebra, the L0
 `HostBootstrap.RoleLifecycle` skeleton, and the single-representation doctrine. The standardized test
-harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Active`
-until the implemented arbitrary provider-backed topology contract is validated by the full real demo
-lifecycle.
+harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Done`: the
+implemented arbitrary provider-backed topology contract is validated by the full real demo lifecycle.
 
 ### Phase 15 — Binary context config and command gating
 
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, not
-authorized for the requested command, or missing required topology witnesses. It is `Active` until the
+authorized for the requested command, or missing required topology witnesses. It is `Done`: the
 topology/witness hardening is validated by the full real demo lifecycle.
 
 ## Dependency edges

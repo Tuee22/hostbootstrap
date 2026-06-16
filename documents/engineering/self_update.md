@@ -48,9 +48,13 @@ Python. See [python_haskell_boundary](../architecture/python_haskell_boundary.md
 
 ```bash
 pipx install --force \
-  --pip-args "--force-reinstall" \
+  --pip-args=--force-reinstall \
   "hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main"
 ```
+
+The `--pip-args` value is glued onto the flag with `=`. pipx parses its CLI with `argparse`, which
+refuses to consume a following token that looks like an option (a leading `-`) as that flag's value, so
+the split `--pip-args --force-reinstall` form fails with "expected one argument".
 
 The command may expose explicit operator options:
 
