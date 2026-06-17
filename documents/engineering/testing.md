@@ -5,59 +5,79 @@
 **Referenced by**: [../README.md](../README.md), [code_check_doctrine.md](code_check_doctrine.md), [../languages/haskell.md](../languages/haskell.md)
 
 > **Purpose**: Describe how hostbootstrap is tested across its Haskell `hostbootstrap-core` library
-> and its thin Python bootstrapper, and where the documentation validator fits.
+> and its thin Python bootstrapper, where the `test` surface sits relative to the project chain, and
+> where the documentation validator fits.
 
 ## TL;DR
 
 - Every project's tests run through one standardized engine — `runMatrix` over a `Seams` record — and
-  the inherited `test` verb prints its report card. The mechanics live once in
-  `HostBootstrap.Harness`; the app supplies only its case matrix. See
+  the `test` surface prints its report card. The mechanics live once in `HostBootstrap.Harness`; the
+  app supplies only its case matrix. See
   [../architecture/harness_workflow.md](../architecture/harness_workflow.md).
+- The `test` surface is two root-gated subcommands: `test init` writes the project's `test.dhall`, and
+  `test run <suite>|all` runs one named suite (or every suite via the reserved `all`).
 - `hostbootstrap-core` (Haskell) carries the bulk of the unit-test surface: host-tool resolution,
   substrate detection, the `ensure` reconcilers' pure decision logic, the project-local Dhall config
-  decoder/generator,
-  cluster-lifecycle semantics, the harness driver, and the documentation validator.
+  decoder/generator, cluster-lifecycle semantics, the harness driver, and the documentation validator.
 - The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
   bootstrapping steps it owns.
 - A mechanical documentation validator (`HostBootstrap.DocValidator`) is an implemented
   `hostbootstrap-core` quality-gate deliverable that runs through `cabal test`.
-- The default test run touches no network, no Docker daemon, no `sudo`, and no host service manager.
+- The default unit-test run touches no network, no Docker daemon, no `sudo`, and no host service
+  manager.
 
-## The Standardized Harness and the `test` Verb
+## The `test` Surface And `test.dhall`
 
-Every `hostbootstrap` binary inherits a `test` verb from the core command tree. `<project> test all`
-drives `runMatrix :: Seams env -> [Case] -> IO Report` over the project's **whole** case matrix and
-prints the report card; `<project> test <case>` runs the single case with that id (an unknown id fails
-fast, listing the valid ids and `all`). A project supplies its `Case`s and `Seams` as a non-empty
-`TestSuite` through `ProjectSpec` in `runHostBootstrapCLI` (its `app/Main.hs`), so the cases run under
-`test`, not a per-noun subcommand. The bare core binary uses the separate `runBareHostBootstrapCLI`
-entrypoint with `emptySuite`, so only the bare binary can intentionally print `test report: 0/0 passed`.
-`all` is reserved by the verb, so a project may not name a case `all`.
+The `test` surface is owned by the root frame — the host orchestrator. It is intentionally decoupled
+from the chain that `project up` interprets: a chain stands the stack up, and `test run all` validates
+that live stack from the root. The surface is two subcommands:
 
-The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` →
-`seamTeardown`, with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never
-leaked), aggregates a `Report`, renders it with `reportCard`, and exits non-zero when `allPassed` is
-false. The
+- `test init` requires an existing `<project>.dhall` (the root config the chain is a pure function of)
+  and writes the sibling `test.dhall`. `test.dhall` carries test-specific configuration — the suite
+  vocabulary, per-suite budgets, and any fixtures the matrix needs — separate from the deploy
+  parameters in `<project>.dhall`. It fails fast unless invoked on the root frame with a project
+  config present.
+- `test run <suite>` runs the single named suite over the standardized engine and prints its report
+  card; `test run all` runs every suite, with `all` reserved by the verb (a project may not name a
+  suite `all`). Both are root-only: they fail fast, listing the valid suite names and `all`, when
+  invoked off the root frame or without a `test.dhall`.
+
+Under the hood each suite drives `runMatrix :: Seams env -> [Case] -> IO Report` over that suite's
+case matrix. A project supplies its `Case`s and `Seams` as a non-empty `TestSuite` through
+`ProjectSpec` (in its `app/Main.hs`), so the cases run under `test run`, not a per-noun subcommand. The
+bare core binary ships no suites, so a bare `test run all` intentionally prints
+`test report: 0/0 passed`.
+
+The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` → `seamTeardown`,
+with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never leaked),
+aggregates a `Report`, renders it with `reportCard`, and exits non-zero when `allPassed` is false. The
 driver, the isolated per-case profiles (cluster name `<project>-test-<case>`, data root
 `./.test_data/<case>/`), the mechanical never-touch-production guard (`guardTestDelete`), and
 budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. The default `defaultSeams`
-realize the `OneShot` container run; a cluster project supplies kind/Helm seams instead. The full
+realize the `OneShot` container run; a cluster suite supplies kind/Helm seams instead. The full
 per-case loop, the seam-split, and budget-slicing are documented in
 [../architecture/harness_workflow.md](../architecture/harness_workflow.md); the four run-models the
 `Seams` realize are in [../architecture/run_models.md](../architecture/run_models.md).
 
-The harness runs through the **project binary**, against the runtime — distinct from the `check-code`
-verb, which is the fail-fast image-build gate over source shape (see
+The `test` surface runs through the **project binary**, against the runtime — distinct from the
+`check-code` verb, which is the fail-fast image-build gate over source shape (see
 [code_check_doctrine.md](code_check_doctrine.md)).
 
-The harness is the **context-agnostic test engine**: its seams invoke reconcilers (e.g. `cluster up`)
-"locally", carrying no execution-context parameter and unaware of any enclosing lift. It is therefore a
-**lift target**, lifted as a whole — a consumer that needs the per-case cluster to come up in a nested
-context lifts the entire `test all` workflow there (through the selected VM provider and then
-`docker run --rm <image> test all`), and the cluster lands on that context's Docker. The `test all` workflow is the **one** representation
-of the test path; re-expressing cluster bring-up / web-serve / e2e as a parallel chain of lifted ops
-alongside the harness would be a redundant second representation. See
-[../architecture/composition_methodology.md](../architecture/composition_methodology.md).
+## The Harness Is A Lift Target, Not A Parallel Chain
+
+The harness is the **context-agnostic test engine**: its seams invoke reconcilers (e.g. cluster
+bring-up) "locally", carrying no execution-context parameter and unaware of any enclosing frame. It is
+therefore a **lift target**, lifted as a whole. A suite that needs its per-case cluster to come up in a
+nested frame lifts the entire `test run` workflow there (through the selected VM provider and then
+`docker run --rm <image> test run all`), and the cluster lands on that frame's Docker.
+
+The `test run all` workflow is the **one** representation of the test path. Re-expressing cluster
+bring-up / web-serve / e2e as a parallel chain of lifted operations alongside the harness would be a
+redundant second representation — the chain `project up` interprets stands the stack up, and the test
+surface validates it; the two are not two parallel test chains. The canonical model — the lift chain as
+the project, the recursive interpreter, and why the harness is the single lift target — lives in
+[../architecture/composition_methodology.md](../architecture/composition_methodology.md); this document
+defers to it rather than re-deriving it.
 
 ## hostbootstrap-core (Haskell)
 
@@ -73,8 +93,9 @@ suite stays hermetic:
   its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
-- **Project-local Dhall config** — decoding/generating `<project>.dhall`, including project settings,
-  runtime context authority, and rejection of malformed values. See [schema.md](schema.md).
+- **Project-local Dhall config** — decoding/generating `<project>.dhall` and `test.dhall`, including
+  project settings, runtime context authority, the suite vocabulary, and rejection of malformed
+  values. See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
 - **Harness driver** — `HarnessSpec` asserts the per-case profile/path derivation, that teardown runs
@@ -113,8 +134,26 @@ mechanically rather than by manual review against the documentation standard.
 
 ## What runs by default
 
-The default test run is hermetic and fast: no network, no Docker daemon, no `sudo`, no host service
-manager. Tests that genuinely need a provisioned tool (a real `dhall` decode against fixtures, a
-running Docker daemon) are marked and skipped when the dependency is absent. hostbootstrap does not
+The default unit-test run is hermetic and fast: no network, no Docker daemon, no `sudo`, no host
+service manager. Tests that genuinely need a provisioned tool (a real `dhall` decode against fixtures,
+a running Docker daemon) are marked and skipped when the dependency is absent. hostbootstrap does not
 write launchd/systemd unit files and does not configure restart-after-reboot behavior, so there are
 no unit-file rendering tests or real service-manager integration tests.
+
+## Current Status
+
+The split between target command surface and what is implemented today follows the development plan;
+`DEVELOPMENT_PLAN/` remains the implementation-status authority.
+
+- **Implemented today.** The standardized harness (`runMatrix` + `Seams`, the per-case isolation, the
+  delete-guard, budget-slicing, and the report card) ships and runs through `cabal test`. The `ensure`,
+  config, `context create`, `cluster`, and `test` verbs are the flat top-level command tree the binary
+  carries now; today a project's whole matrix runs as a single `test all` verb, and the demo's
+  lifecycle is its `vm` / `deploy` verbs. The Python bootstrapper suite and the `HostBootstrap.DocValidator`
+  gate are both implemented and green.
+- **Target.** The `test init` / `test run <suite>|all` split, gated to the root frame and backed by a
+  sibling `test.dhall`, is the target surface — decoupled from the chain so `test run all` validates the
+  live stack that the recursive `project up` interpreter stands up. The recursive `project` command and
+  the `[Step]` chain it interprets are **not** yet implemented; this document describes them as the
+  target architecture, not as shipped behavior. The migration from the flat `test all` verb to the
+  root-gated `test init` / `test run` surface is tracked in the development plan.

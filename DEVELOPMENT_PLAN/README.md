@@ -22,15 +22,22 @@ pre-binary bootstrap: assert irreducible host minimums, ensure the host build to
 project binary host-native, trigger the binary's idempotent `config init --if-missing`, and exec it. It
 also owns the explicit pipx self-update command for the bootstrapper itself.
 
-Phases 0-15 are `Done`. The topology-aware path is validated by the full real demo lifecycle (a real
-Apple Silicon Lima `deploy` reporting `3/3 passed` including the Playwright e2e case): Apple Silicon uses
-a Lima VM for the demo, native Linux uses Incus, and the Dhall context model carries explicit execution
-topology with runtime witnesses. Each project binary
-reads a sibling `<project>.dhall`; host, VM, image-build container, runtime container, and service copies
-use the same filename rule while authority lives inside the file content. The worked demo remains the
-reference consumer: `demo deploy` is one explicit lift sequence whose only lifted compute step is the
-standardized `test all` workflow inside the project container in the VM. That keeps the kind cluster on
-the VM's Docker and avoids a second deploy representation beside the harness.
+Phases 0-15 built the host-management substrate, validated by the full real demo lifecycle (a real Apple
+Silicon Lima run reporting `3/3 passed` including the Playwright e2e case): Apple Silicon uses a Lima VM,
+native Linux uses Incus, and the Dhall context model carries explicit execution topology with runtime
+witnesses. Each project binary reads a sibling `<project>.dhall`; host, VM, image-build container, runtime
+container, and service copies use the same filename rule while authority lives inside the file content.
+
+Phases 4, 5, 10, 13, 14, and 15 are **reopened** (`Active`) and phases 16-17 are added to refactor the
+command topology to the **chain-is-the-project** model: a project's deploy is a pure
+`chain :: RootConfig -> [Step]` value interpreted **recursively** by one `project init|up|down|destroy`
+lifecycle command, a read-only `context` introspection command, and a `test init|run` surface decoupled
+from deploy (see [development_plan_standards.md § Y/§ Z](development_plan_standards.md) and
+[composition_methodology](../documents/architecture/composition_methodology.md)). Each frame transition is
+the same fractal bootstrap — provision the frame, build the pb in it, hand off `pb project up` — of which
+the Python bootstrapper is the metal-frame instance. The flat `cluster` / `config init` / `context create`
+verbs and the hand-written demo deploy chain are superseded
+([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -45,18 +52,20 @@ for the component inventory.
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
-| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
+| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
 | 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the four-stream extension](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
-| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
+| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
-| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
+| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Active |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
+| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Active |
+| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Blocked |
 
 ## Governance
 

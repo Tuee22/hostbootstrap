@@ -31,6 +31,12 @@ The context model is topology-aware: provider-backed execution frames, a current
 witnesses, and command predicates fail before side effects when the binary is not actually running in the
 declared frame.
 
+Phases 4, 5, 10, 13, 14, and 15 are reopened and phases 16-17 added to refactor the command topology to
+the **chain-is-the-project** model: the orchestration verbs collapse into a single recursive
+`project init|up|down|destroy` lifecycle that interprets a pure `chain :: RootConfig -> [Step]` value,
+`context` becomes a read-only introspection command, and `test init|run` is decoupled from deploy (see
+[development_plan_standards.md § Y/§ Z](development_plan_standards.md)).
+
 ## Phase Responsibilities
 
 ### Phase 0 — documentation and governance
@@ -62,13 +68,16 @@ Phase 11.
 
 Phase 4 owns the project-local `<project>.dhall` schema and the composable command tree. `ProjectConfig`
 validates project identity against the Cabal-derived name and carries Dockerfile inputs, resources, deploy
-knobs, runtime context, and child-projection defaults. It is `Done`.
+knobs, runtime context, and child-projection defaults. It is `Active`: reopened to collapse the flat
+`config init` / `cluster` / `context create` verbs into the recursive `project` lifecycle and the
+`[Step]` chain (phase-16).
 
 ### Phase 5 — cluster lifecycle and resource cordoning
 
 Phase 5 owns kind/Helm lifecycle semantics, the never-delete-`.data` invariant, production/test cluster
 profiles, and fail-closed `cluster up` behavior. The lifecycle consumes the resource cordon and runs in
-the active execution context. It is `Done`.
+the active execution context. It is `Active`: reopened to re-express cluster bring-up/teardown as chain
+steps under `project up` / `project down` / `project destroy`, adding stop-without-delete (phase-16).
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -105,7 +114,8 @@ It is `Done`; the incus VM storage cordon is part of Phase 11.
 Phase 10 owns the standardized test harness and run-model vocabulary. `runMatrix` drives a `Seams`
 record over isolated per-case profiles, budget slicing, the delete guard, guaranteed teardown, and
 case-local setup failure handling. The four run-models are `OneShot`, `HostNative`, `HostDaemon`, and
-`Cluster`; every binary inherits `test` and `check-code`. It is `Done`.
+`Cluster`; every binary inherits `test` and `check-code`. It is `Active`: reopened to split the surface
+into `test init` and root-gated `test run <suite>|all`, decoupled from deploy (phase-17).
 
 ### Phase 11 — incus first-class host-provider
 
@@ -127,25 +137,44 @@ inside a managed Linux VM, project-container build, harness cluster lifecycle, w
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the base-provided browser runtime in the project image, and the single-representation
 deploy chain. The demo uses Lima for the VM provider on Apple Silicon and native Incus on Linux.
 It uses sibling `hostbootstrap-demo.dhall` configs for host, VM, image-build container, runtime
-container, and service/daemon contexts. It is `Done`: the stricter topology-aware runtime gate is
-validated end to end by the full real Apple Silicon Lima demo lifecycle (`3/3 passed`, including the
-Playwright e2e case, with a guarded `vm down`).
+container, and service/daemon contexts. It is `Active`: the Phase-13 surface is built and validated end to end by the full real Apple Silicon Lima
+demo lifecycle (`3/3 passed`, including the Playwright e2e case), and it is reopened to migrate the
+hand-written `demoDeployChain` and the `vm`/`deploy` verbs to the core `[Step]` interpreter (phase-16).
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
 Phase 14 owns the composition methodology: operations as the composable unit, self-reference lift as the
 context-crossing primitive, deploy and runtime business logic as the same algebra, the L0
 `HostBootstrap.RoleLifecycle` skeleton, and the single-representation doctrine. The standardized test
-harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Done`: the
-implemented arbitrary provider-backed topology contract is validated by the full real demo lifecycle.
+harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Active`:
+the lift primitive is built and validated by the full real demo lifecycle, and it is reopened to
+generalize the lift into the recursive `project up` interpreter of the chain (the fractal bootstrap,
+phase-16).
 
 ### Phase 15 — Binary context config and command gating
 
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, not
-authorized for the requested command, or missing required topology witnesses. It is `Done`: the
-topology/witness hardening is validated by the full real demo lifecycle.
+authorized for the requested command, or missing required topology witnesses. It is `Active`: the gate is
+built and validated by the full real demo lifecycle, and it is reopened to make `context` a read-only
+introspection command and fold child-config creation into the `context-init` chain step (phase-16).
+
+### Phase 16 — Project lifecycle command and step-chain interpreter
+
+Phase 16 owns the `project init|up|down|destroy` lifecycle command and the `Step` algebra it interprets.
+A project's deploy is a pure `chain :: RootConfig -> [Step]` value; `project up` interprets it recursively
+(run the current frame's steps, then provision → build the pb → hand off `pb project up` into the next
+frame — the fractal bootstrap), is idempotent, and renders the pure chain under `--dry-run`. `project
+down` stops without deleting; `project destroy` deletes but preserves `.data`. It is `Active`: Sprint 16.1
+(the `Step` algebra, `HostBootstrap.Step`) is `Done` and unit-tested; the recursive interpreter, the
+`project` command, and the demo migration remain.
+
+### Phase 17 — Chain-driven test surface and context introspection
+
+Phase 17 owns the decoupled `test init` / `test run <suite>|all` surface (root-gated, `test.dhall`-driven,
+validating the live `project up` stack) and the read-only `context` command that renders the global lift
+composition with the current frame highlighted. It is `Blocked` by phases 16 and 10.
 
 ## Dependency edges
 
@@ -161,6 +190,8 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-13 (depends on 8, 9, 10, 11, 12)  ← the demo exercises all of them ───────────────┘
   phase-14 (builds on 11; the composition methodology the demo's chain exercises via 13)
   phase-15 (builds on 6, 8, 11, 13, 14; makes each lifted/runtime context explicit)
+  phase-16 (reopens/builds on 4, 5, 14, 15; the project lifecycle command + the [Step] interpreter)
+  phase-17 (builds on 16, 10; the decoupled test surface + the read-only context command)
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

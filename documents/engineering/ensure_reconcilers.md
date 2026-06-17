@@ -4,26 +4,33 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md)
 
-> **Purpose**: Define the `ensure` reconciler contract — idempotent host-dependency reconcilers
-> exposed as optparse subcommands that fail fast on the wrong host.
+> **Purpose**: Define the `ensure` reconciler contract — idempotent host-dependency reconcilers that
+> the lift chain invokes as `ensure-X` steps inside `project up`, install-and-verify, and fail fast on
+> the wrong host.
 
 ## TL;DR
 
-- **The `ensure` suite exists so the project binary is never blocked by a host dependency that simply
-  isn't installed.** Each host dependency is an idempotent `ensure` reconciler that **installs** it when
-  absent and is a verified no-op when present (install-and-verify) — an absent-but-installable
-  dependency is installed, not a hard stop.
-- The **only** hard fail-fast surface in the whole system is the Python wrapper's host minimums (the
+- **A reconciler exists so a frame is never blocked by a host dependency that simply isn't installed.**
+  Each host dependency is an idempotent reconciler that **installs** it when absent and is a verified
+  no-op when present (install-and-verify) — an absent-but-installable dependency is installed, not a
+  hard stop.
+- **Reconcilers run as `ensure-X` chain steps inside `project up`.** They are core-shipped step kinds
+  the lift chain (`chain :: RootConfig -> [Step]`) sequences alongside `deploy-VM`, `copy-source`,
+  `build-pb`, and the project's own steps. The chain is the project; a reconciler is one kind of step
+  in it. See [composition_methodology](../architecture/composition_methodology.md), the canonical home
+  of the model.
+- **Standalone `ensure <tool>` is a hidden debug surface, not part of the everyday command tree.** It
+  is retained so an operator can converge one dependency in isolation while diagnosing a host; normal
+  operation drives reconcilers only as chain steps.
+- **Provider reconcilers reach "usable", not merely "installed".** `ensure docker` and `ensure incus`
+  converge to a frame that has the substrate capability the next chain step needs (a reachable Docker
+  daemon / a VM-capable Incus) **and** working egress, so a `build-pb`, `build-image`, or `deploy-VM`
+  step that follows can actually run.
+- The **only** hard fail-fast in the whole system is the Python wrapper's host minimums (the
   irreducible host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
-  (Docker, incus, the NVIDIA container toolkit, …) is installed by the `ensure` suite when the binary
-  runs.
-- Each reconciler is an `optparse-applicative` subcommand (`ensure docker`, `ensure colima`, `ensure lima`, …) on the
-  `hostbootstrap-core` command tree. The *one* fail-fast inside the suite is a **wrong-host misuse**
-  (e.g. `ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is an operator
-  error, **not** an absent dependency.
-- `ensure` is **one operation kind** in the composable-operation algebra — the idempotent-converge kind;
-  the self-reference lift, cluster/deploy steps, and (at L1) roles are other kinds composed the same way.
-  See [composition_methodology](../architecture/composition_methodology.md).
+  (Docker, Incus, the NVIDIA container toolkit, …) is installed by a reconciler when its step runs. The
+  *one* fail-fast inside a reconciler is a **wrong-host misuse** (e.g. `ensure tart` on Linux) — an
+  operator error, not an absent dependency.
 
 ## Reconciler Contract
 
@@ -34,17 +41,40 @@ A reconciler is a value, not a free function, and carries two parts:
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
 
 Idempotence is required: running a reconciler when the host is already in the desired state is a
-successful no-op. The point of the suite is that a **missing** dependency is **never** a hard stop for
-the project binary — the reconcile action installs it (see *Install-and-Verify* below). Running a
-reconciler on a host where the applicability predicate is false is a fail-fast error, not a quiet skip —
-this surfaces operator mistakes (for example, asking for `ensure tart` on Linux) instead of hiding them.
-That wrong-host fail-fast is the **only** fail-fast the suite performs, and it is a misuse signal, not an
+successful no-op. A **missing** dependency is **never** a hard stop for the frame — the reconcile
+action installs it (see *Install-and-Verify* below). Running a reconciler on a host where the
+applicability predicate is false is a fail-fast error, not a quiet skip — this surfaces operator
+mistakes (for example, an `ensure-tart` step reached on Linux) instead of hiding them. That wrong-host
+fail-fast is the **only** fail-fast a reconciler performs, and it is a misuse signal, not an
 absent-dependency signal; the only other hard prerequisites in the system are the Python wrapper's host
 minimums (see [prerequisites](prerequisites.md)).
 
-Reconcilers live under `HostBootstrap.Ensure.*` and are surfaced on the command tree described in
-[hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md). Every external tool a
-reconciler drives is resolved through the closed `HostTool` enumeration to an absolute path.
+Reconcilers live under `HostBootstrap.Ensure.*`. Every external tool a reconciler drives is resolved
+through the closed `HostTool` enumeration to an absolute path. The reconcile action itself stays
+context-agnostic (`HostConfig -> IO ()`): a reconciler is converged "locally" in whatever frame its
+chain step runs, unaware of the enclosing lift — exactly the context-agnostic shape the self-reference
+lift requires (see [composition_methodology](../architecture/composition_methodology.md)).
+
+## Reconcilers As Chain Steps
+
+The lift chain is the project's identity. `project up` recursively interprets `chain rootCfg :: [Step]`
+from the current frame; an `ensure-X` step is the chain's request to converge dependency `X` in the
+frame it is reached in, before the steps that depend on it run. A descent's reconcilers therefore run
+in dependency order *inside* the frame: a metal frame converges its VM provider before `deploy-VM`; a
+VM frame converges GHC before `build-pb` and Docker before `build-image`.
+
+Because a reconciler is idempotent, re-running `project up` re-converges every `ensure-X` step as a
+verified no-op — reconcile-to-running is the lifecycle, not a one-shot install. The standalone
+`ensure <tool>` subcommand remains as a **hidden debug surface**: it converges exactly one dependency
+in the current frame so an operator can isolate a host problem, but it is not how the chain installs
+dependencies. Normal runs never call it; `project up` drives the `ensure-X` steps.
+
+- **WRONG**: a runbook tells an operator to converge a host by hand-running `ensure docker`,
+  `ensure incus`, … in sequence as the supported install path. This is wrong because it re-derives, by
+  hand, the dependency order the chain already encodes — the chain is the single representation, and
+  the standalone verb is a debug escape hatch, not the install procedure.
+- **RIGHT**: the operator runs `project up`; the chain reaches each `ensure-X` step in the right frame
+  in the right order. `ensure docker` by hand is reserved for diagnosing one stuck dependency.
 
 ## Install-and-Verify
 
@@ -65,37 +95,58 @@ path. The install plan is a **pure** function of the substrate — Homebrew form
 `apple-silicon`; `apt-get`/`ghcup`/the NVIDIA container toolkit on Linux — so it is unit-tested
 without invoking the package manager; the IO driver is exercised during real bootstrap runs.
 
-| Reconciler | Probe | Install plan (per substrate) |
-|------------|-------|------------------------------|
-| `docker` | `docker info` reachable; on Linux, future unprivileged login sessions for the invoking user can reach the socket | Linux: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when the current process has not observed refreshed groups yet. Apple: defer to `ensure colima`. |
+| Reconciler | Probe ("usable") | Install plan (per substrate) |
+|------------|------------------|------------------------------|
+| `docker` | `docker info` reachable **and** the invoking user can reach the socket (usable, not just installed) | Linux: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when the current process has not observed refreshed groups yet. Apple: defer to `ensure colima`. |
 | `colima` | installed and `colima status` running | Apple: `brew install colima` + `colima start`. |
 | `lima` | `limactl` resolved | Apple: `brew install lima`. |
 | `cuda` | `nvidia-smi -L` reports a GPU and Docker has the `nvidia` runtime | linux-gpu: install `nvidia-container-toolkit`, `nvidia-ctk runtime configure`, restart Docker (the kernel driver is a precondition, not auto-installed). |
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
 | `tart` | `tart` resolved | Apple: `brew install cirruslabs/cli/tart`. |
-| `incus` | Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
+| `incus` | VM-capable **and** reachable (usable): Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
+
+## Provider Reconcilers Reach "Usable"
+
+A provider reconciler is not done when the package is on disk — it is done when the next chain step can
+use the frame. "Usable" means substrate capability **plus** working egress:
+
+- **`ensure docker`** converges to a **reachable** Docker daemon the invoking user can drive — on
+  Linux this is the socket-group / immediate-ACL grant, on Apple the per-project Colima VM started and
+  verified — so the `build-image` step that follows can actually build. Installing the package without
+  the socket reachable would leave the frame unusable.
+- **`ensure incus`** converges to a **VM-capable, reachable** Incus — the daemon initialized on Linux,
+  or the Colima-backed Incus provider started on Apple — so the `deploy-VM` step that follows can
+  launch the pristine VM. See [incus](incus.md) and [lima](lima.md) for the provider details, and
+  [cluster_lifecycle](cluster_lifecycle.md) for the cluster steps that run once the VM frame is up.
+
+The provider frame's **egress** matters because the next steps pull base images and warm-store inputs
+over the network; a provider that is installed but cannot reach Docker Hub is not "usable" for a
+`build-image` or `deploy-kind` step. The Docker Hub credential the host frame holds is forwarded down
+the lift so authenticated pulls work in nested frames (see
+[composition_methodology](../architecture/composition_methodology.md)); the reconciler's job is to
+leave the substrate reachable, the lift's job is to carry the credential.
 
 ## Reconciler Inventory
 
-| Subcommand | Applies to | Fail-fast behavior on wrong host |
-|------------|------------|----------------------------------|
-| `ensure docker` | all substrates | n/a (Docker is required to build and run the project container; the execed binary's `ensure docker` installs and grants socket access to the invoking user, including an immediate socket ACL for the current session when needed (Linux), or defers to the per-project Colima VM (Apple) and verifies the daemon is reachable). On Apple it also implies the per-project Colima VM exists. |
-| `ensure colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
-| `ensure lima` | `apple-silicon` | Errors on Linux: Lima is the macOS VM provider used by the demo pristine Linux VM; Linux uses native Incus for the demo VM. |
-| `ensure cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
-| `ensure homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so `ensure homebrew` verifies its presence and fails fast with the install instruction when it is absent. |
-| `ensure ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
-| `ensure tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
-| `ensure incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
+| Reconciler step | Applies to | Fail-fast behavior on wrong host |
+|-----------------|------------|----------------------------------|
+| `ensure-docker` | all substrates | n/a (Docker is required to build and run the project container; the step installs Docker and grants the invoking user a usable, reachable daemon — an immediate socket ACL for the current session when needed (Linux), or the per-project Colima VM (Apple) — and verifies the daemon is reachable). On Apple it also implies the per-project Colima VM exists. |
+| `ensure-colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
+| `ensure-lima` | `apple-silicon` | Errors on Linux: Lima is the macOS VM provider used by the demo pristine Linux VM; Linux uses native Incus for the demo VM. |
+| `ensure-cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
+| `ensure-homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so the step verifies its presence and fails fast with the install instruction when it is absent. |
+| `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
+| `ensure-tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
+| `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
-`ensure incus` is the **first cross-substrate reconciler** — its applicability predicate spans both
+`ensure-incus` is the **first cross-substrate reconciler** — its applicability predicate spans both
 apple-silicon and linux (`appliesTo = isAppleSilicon || isLinux`), where every other reconciler above
 applies to a single substrate family.
 
-The `ensure colima` / `ensure ghc` / `ensure homebrew` chain on Apple silicon is exactly the
+The `ensure-colima` / `ensure-ghc` / `ensure-homebrew` reconcilers on Apple silicon are exactly the
 pre-binary host setup the thin Python bootstrapper drives before the build; see
-[python_haskell_boundary](../architecture/python_haskell_boundary.md). `ensure cuda` aligns with the
+[python_haskell_boundary](../architecture/python_haskell_boundary.md). `ensure-cuda` aligns with the
 GPU host requirements tracked in [prerequisites](prerequisites.md).
 
 ## Diagnostics
@@ -104,9 +155,34 @@ A wrong-host run emits a single diagnostic line naming the reconciler, the detec
 the substrate it requires, then exits non-zero. Reconcilers do not attempt partial work before
 failing the applicability check. The applicability decision is the pure `decide` function in
 `HostBootstrap.Ensure`; `runReconciler` is the IO wrapper that performs the stderr write and the
-non-zero exit, so the decision is testable without exiting the process.
+non-zero exit, so the decision is testable without exiting the process. When a reconciler runs as an
+`ensure-X` chain step, the same fail-fast surfaces as a non-zero step result and aborts `project up`;
+when run as the hidden standalone debug verb it surfaces directly to the operator.
 
-- **WRONG**: `ensure tart` on `linux-cpu` prints nothing and exits `0`. This is wrong because it
-  masks an operator error and lets a build proceed against an environment that cannot satisfy it.
-- **RIGHT**: `ensure tart` on `linux-cpu` prints `ensure tart: not applicable on linux-cpu (requires
-  apple-silicon)` and exits non-zero.
+- **WRONG**: a reconciler reached on a non-applicable substrate prints nothing and exits `0`. This is
+  wrong because it masks an operator error and lets a build proceed against an environment that cannot
+  satisfy it.
+- **RIGHT**: the reconciler prints `ensure tart: not applicable on linux-cpu (requires apple-silicon)`
+  and exits non-zero, whether it was reached as a chain step or as the standalone debug verb.
+
+## Current Status
+
+Honest split between what ships today and the target chain model:
+
+- **Implemented today (the flat verbs).** Reconcilers are real and exercised: `installAndVerify`, the
+  substrate-branched install plans, the `decide`/`runReconciler` split, and the install-and-verify +
+  wrong-host fail-fast contract are built and tested. They are surfaced **today** as flat
+  `optparse-applicative` subcommands (`ensure docker`, `ensure colima`, `ensure incus`, …) and are
+  invoked by the demo's existing `vm`/`deploy` verbs and by the Python bootstrapper's pre-binary host
+  setup. Provider reconcilers already converge `docker`/`incus` to a reachable, usable substrate.
+- **Target (the `ensure-X` chain steps).** The recursive `project up` interpreter and the
+  `chain :: RootConfig -> [Step]` representation that sequences `ensure-X` steps alongside the other
+  core and project step kinds are the **target** model; they are **not yet implemented**. Reframing
+  the flat `ensure <tool>` subcommands into core-shipped step kinds, and demoting standalone
+  `ensure <tool>` to a hidden debug surface, lands with that interpreter. Until then the reconcilers
+  keep their current flat-verb surface.
+
+The reconciler **contract** — install-and-verify, idempotence, wrong-host fail-fast, provider
+reconcilers reaching "usable" — is stable across both the current flat surface and the target chain
+surface; only the *invocation shape* (flat verb → `ensure-X` chain step) changes. The development plan
+tracks the interpreter and the step-kind refactor as open work.

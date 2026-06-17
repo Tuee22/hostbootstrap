@@ -10,7 +10,25 @@
 
 ## Pending
 
-None.
+These obsolete top-level surfaces are superseded by the recursive `project` lifecycle command and the
+`[Step]` chain (see [development_plan_standards.md § Y/§ Z](development_plan_standards.md) and
+[composition_methodology](../documents/architecture/composition_methodology.md)). Each remains in the
+code until its owning reopened phase lands, so each is listed here rather than in **Removed Surfaces**.
+
+- **Flat `cluster up|down|delete|status` top-level verb** (`HostBootstrap.Command`) — superseded by
+  cluster bring-up/teardown expressed as chain steps under `project up` / `project down` /
+  `project destroy`. Owning phase: phase-5, phase-16.
+- **`context create vm|container|service` mutation verb** (`HostBootstrap.Command` /
+  `HostBootstrap.Context`) — superseded by the internal `context-init` chain step; the `context` command
+  becomes read-only composition introspection. Owning phase: phase-15, phase-16.
+- **`config init` standalone top-level verb** — superseded by `project init`; `config schema|show|render`
+  fold under the read-only `context` command. Owning phase: phase-4, phase-16.
+- **Demo `deploy` / `vm` / `incus` / `harbor` / `web` / `role` orchestration verbs and the hand-written
+  `demoDeployChain`** (`demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`) —
+  superseded by the core `Step` interpreter plus the demo's contributed `chain :: RootConfig -> [Step]`
+  value and its workload step actions (the single-representation invariant under **Removed Surfaces** is
+  unchanged; only the hand-rolled metal-side orchestration IO moves into core step kinds). Owning phase:
+  phase-13, phase-16.
 
 ## Retained Current Surfaces
 

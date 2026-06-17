@@ -6,8 +6,8 @@
 
 > **Purpose**: Describe the `incus` host-provider axis — the typed `HostTarget` that parameterizes
 > every linux-host operation by `Local` or `InVM`, the `ensure incus` cross-substrate reconciler, the
-> VM lifecycle argv builders and `incus exec` dispatch, the reboot-to-ready reconcile, and the
-> `incusSizingArgs` budget cordon.
+> VM lifecycle expressed as `deploy-VM`/`down`/`destroy` chain steps (including stop-without-delete),
+> the reboot-to-ready reconcile, and the `incusSizingArgs` budget cordon.
 
 ## TL;DR
 
@@ -19,11 +19,14 @@
 - `ensure incus` is the first cross-substrate reconciler: `appliesTo = isAppleSilicon || isLinux`.
   Install-and-verify, probe-first and idempotent. On Apple silicon it provisions the macOS client plus
   a named Colima profile running the Incus runtime; on Linux it provisions the native daemon.
+- The incus VM is the native-Linux **VM frame** of the lift chain. Its lifecycle is expressed as core
+  chain steps — `deploy-VM` (bring up), `down` (stop without delete), `destroy` (stop then delete) —
+  interpreted by the recursive `project up`/`project down`/`project destroy` interpreter. The model
+  is owned by [composition_methodology](../architecture/composition_methodology.md); this doc defers
+  to it and describes the incus-specific step actions.
 - `HostTarget = Local | InVM IncusVM`. `runInTarget` runs the resolved tool directly for `Local` and
   dispatches through one host `incus exec <name> -- <tool> <args>` for `InVM`, with no per-call
   branching at the call sites.
-- The `HostBootstrap.Incus` lifecycle is pure argv builders plus an IO loop; `destroyVMArgs` is
-  name-prefix delete-guarded, reusing the harness `guardTestDelete` idiom.
 - `incusSizingArgs` sizes the VM from the one canonical `parseQuantity`; unlike `docker update`, incus
   cordons storage at the VM wall, so storage is included.
 
@@ -64,7 +67,9 @@ by invoking its *own* subcommand in the nested context, so `incus exec` is the V
 applicability predicate is `appliesTo = isAppleSilicon || isLinux`, true on both Apple silicon and
 Linux. Every other reconciler in [ensure reconcilers](ensure_reconcilers.md) applies to a single
 substrate family; `ensure incus` is the first that spans them, because the supported provider can be
-Colima-backed on Apple or native on Linux.
+Colima-backed on Apple or native on Linux. The reconciler is invoked as a chain step within `project
+up` (the VM frame's provider must reach "usable" — VM capability plus egress — before the chain can
+descend into it); the standalone `ensure incus` subcommand is retained only as a hidden debug surface.
 
 It follows the standard probe-first, idempotent install-and-verify contract:
 
@@ -102,23 +107,56 @@ is a separate machine, so the tool name crossing the `incus exec` boundary is re
 own `$PATH`. The host side of that single dispatch — the host `incus` — is still resolved to an
 absolute-path `AbsExe` through the `HostTool` enum.
 
-## VM Lifecycle
+## VM Lifecycle As Chain Steps
 
-`HostBootstrap.Incus` is pure argv builders plus the IO loop that runs them. The builders:
+The incus VM is the native-Linux VM frame of the chain (`chain :: RootConfig -> [Step]`, the single
+ordered representation; see [composition_methodology](../architecture/composition_methodology.md),
+the canonical home of the model). Its lifecycle is expressed as **core step kinds** the recursive
+interpreter runs, not as standalone verbs:
+
+| Chain step | Interpreter command | Incus action |
+|---|---|---|
+| `deploy-VM` | `project up` | bring the VM to *running* (idempotent), then hand off `pb project up` into the VM |
+| `down` | `project down` | **stop** the VM without deleting it (stop-without-delete) |
+| `destroy` | `project destroy` | stop the VM, then delete it and its compute (`.data` preserved) |
+
+`HostBootstrap.Incus` is the pure argv builders plus the IO loop that runs them; the lifecycle step
+actions drive those builders. The builders:
 
 | Builder | Emits |
 |---------|-------|
 | `createVMArgs` | `incus launch <image> <name> --vm [sizing]` |
 | `startVMArgs` | start the named VM |
-| `stopVMArgs` | stop the named VM |
+| `stopVMArgs` | stop the named VM (the `down` step's stop-without-delete) |
 | `execVMArgs` | `incus exec <name> -- <cmd>` |
 | `pushFileArgs` | `incus file push <src> <name><dst>` |
 | `rebootVMArgs` | `incus restart <name>` |
 | `destroyVMArgs prefix vm` | `incus delete <name> --force`, **guarded** by `prefix` |
 
-`destroyVMArgs` is **name-prefix delete-guarded**, reusing the harness `guardTestDelete` idiom (see
+### `deploy-VM`: idempotent bring-up and handoff
+
+`deploy-VM` under `project up` is **fail-closed** and **idempotent** (reconcile-to-running): an
+already-running VM is a no-op, an absent VM is launched and sized, and a stopped VM is started. Once
+the VM is up the interpreter descends into the VM frame and hands off `pb project up` — provision the
+frame, build/install the pb in it, then continue the chain inside. This is the fractal-bootstrap
+descent owned by [composition_methodology](../architecture/composition_methodology.md); the incus
+step contributes the native-Linux provisioning leaf.
+
+### `down`: stop without delete
+
+`down` under `project down` **stops** the VM and deletes nothing. It emits `stopVMArgs` only — no
+`destroyVMArgs` — so the VM, its disk, and `.data` all survive. A subsequent `deploy-VM` restarts the
+same VM in place. Stop-without-delete is the capability that distinguishes `project down` from
+`project destroy`.
+
+### `destroy`: stop then delete, guarded
+
+`destroy` under `project destroy` stops the VM and then deletes it through the prefix-guarded
+`destroyVMArgs prefix vm`, reusing the harness `guardTestDelete` idiom (see
 [harness workflow](../architecture/harness_workflow.md)): `incus delete <name> --force` is refused
-unless the VM name carries the guard prefix. A non-prefixed name yields no argv at all.
+unless the VM name carries the guard prefix. A non-prefixed name yields no argv at all. `.data` is
+preserved across teardown — the never-delete-`.data` invariant holds at the VM frame exactly as it
+does at the cluster frame (see [cluster lifecycle](cluster_lifecycle.md)).
 
 ### WRONG / RIGHT
 
@@ -165,13 +203,34 @@ boundary holds CPU, memory, and disk together. See [resource budgeting](resource
 the declared budget field and [applied cordon](applied_cordon.md) for the per-substrate storage
 cordon table.
 
+## Current Status
+
+The implemented surface is the **flat** topology: `ensure incus` is a real subcommand, and the incus
+VM lifecycle is driven today by the demo's flat `vm`/`deploy` verbs (`vm ensure`/`vm up`/`vm
+pristine-bootstrap`/`vm down`) wiring the `HostBootstrap.Incus` argv builders and `runInTarget`
+dispatch. The argv builders, `runInTarget`, the reboot-to-ready loop, and `incusSizingArgs` are all
+built and unit-tested.
+
+The **target** model in this doc — the `deploy-VM`/`down`/`destroy` chain steps interpreted by a
+recursive `project up`/`project down`/`project destroy` interpreter, with `down` as a first-class
+stop-without-delete capability and the VM frame as a fractal-bootstrap descent — is **not yet
+implemented**. The `project` command and the recursive `[Step]` interpreter do not exist today; the
+flat verbs above are what runs. The development plan tracks the migration from the flat verbs to the
+chain interpreter (phases reopened and planned per
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) and the cluster/command-tree
+phases). The `stopVMArgs`-only stop-without-delete builder already exists; surfacing it as a `down`
+chain step is target work.
+
 ## See Also
 
 - [ensure reconcilers](ensure_reconcilers.md) — the reconciler contract `ensure incus` follows.
 - [applied cordon](applied_cordon.md) — the one canonical parser and the storage cordon.
+- [cluster lifecycle](cluster_lifecycle.md) — the cluster-frame chain steps and the shared
+  never-delete-`.data` invariant.
 - [build and run model](../architecture/build_and_run_model.md) — the `HostTarget` parameterization.
 - [harness workflow](../architecture/harness_workflow.md) — the `guardTestDelete` delete-guard idiom.
-- [composition_methodology](../architecture/composition_methodology.md) — the n-level self-reference lift
-  that generalizes the two-case `HostTarget`.
+- [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the
+  chain-is-the-project model and the n-level self-reference lift that generalizes the two-case
+  `HostTarget`.
 - [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) — the development plan for this
   surface.

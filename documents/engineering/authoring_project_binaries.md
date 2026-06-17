@@ -4,100 +4,130 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md), [binary_context_config](../architecture/binary_context_config.md), [derived_project_standards](derived_project_standards.md)
 
-> **Purpose**: A step-by-step guide for a new consumer — define project verbs, compose a chain of
-> operations across contexts with the self-reference lift, supply the test seams, and declare the
-> budget — extending `hostbootstrap-core` without shadowing it.
+> **Purpose**: A step-by-step guide for a new consumer — author the project's `chain :: RootConfig ->
+> [Step]` (the lift chain that *is* the project), supply the step actions, test suite, artifacts, and
+> Dhall vocabulary, and declare the budget — extending `hostbootstrap-core` without authoring noun verbs.
 
 ## TL;DR
 
-- A project binary extends the core command tree (append, never shadow), composes its **specific chain**
-  of operations from the generic primitives, and supplies its case matrix and budget. The foundational
-  model is [composition_methodology](../architecture/composition_methodology.md); the reusable shapes are
+- **The chain is the project.** A consumer's primary contribution is a single ordered value,
+  `chain :: RootConfig -> [Step]`, plus the actions for any project-specific `Step` kinds it adds. The
+  core interprets that chain recursively under `project up`. The consumer does **not** author noun verbs
+  (`cluster`, `deploy`, `vm`, …); those dissolve into `Step`s. The foundational model is
+  [composition_methodology](../architecture/composition_methodology.md); the reusable shapes are
   [composition_patterns](composition_patterns.md).
-- Every normal command is context-gated. A project binary reads a sibling
-  `<project>.dhall` before dispatch so it can fail fast when asked to perform work
-  outside its declared place in the chain.
-- Crossing an execution-context boundary is a self-reference lift — `liftSubcommand` re-invokes the
-  binary's own subcommand in the nested context — not a bespoke remote-exec path.
+- **`.dhall` is parameters + context + witness, never shape.** The root `<project>.dhall` carries
+  parameters and the optional structural flags; the chain is a pure function of those parameters. Each
+  frame's binary verifies it is in the frame its sibling `.dhall` describes, or fails fast before side
+  effects.
+- **The `Step` algebra is the reuse unit.** Core ships host-management step kinds; the project
+  contributes its own step kinds into the same `[Step]`, and host and workload steps interleave freely.
+  This is the workload-extension seam.
 
 ## Steps
 
-1. **Define the project-local config schema and defaults.** The project binary owns `<project>.dhall`:
-   Dockerfile path, resource budget, deploy settings, context fields, help text, and default rendering via
-   an ungated `config init`-style command. Python derives the project name from the Cabal file and does
-   not read Dhall. See [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
-2. **Define child config projection.** Nested contexts are created by the project binary before it crosses
-   a boundary. The project container bakes only its image-build config in the Dockerfile with
-   `config init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime, service,
-   and daemon launchers override that file with parent-generated role-specific projections. See
-   [binary_context_config](../architecture/binary_context_config.md).
-3. **Define verbs as named project commands.** Hand the project's `projectCommand "…"` entries, non-empty
-   `TestSuite`, `check-code` action, and `ConfigArtifact` delta to
-   `runHostBootstrapCLI progName projectSpec`; the core verbs (`ensure`/`config`/`cluster`/
-   `test`/`check-code`) pass through unchanged. Append, never shadow (the CLI stream of the four-stream
-   contract; see [library_hierarchy](../architecture/library_hierarchy.md)).
-4. **Compose the chain.** A deploy verb is ordinary `IO` sequencing of operations. Cross a boundary by
-   lifting a subcommand into a context built from `localContext` with `inVM` / `inContainer`. One operation
-   has one representation, so the deploy's single lifted **compute** step lifts the *whole* test workflow —
-   `test all` — into the project container in the VM (`inContainer img (inVM vm localContext)`); the cluster,
-   the deploy, and the e2e are the harness's job inside that one lifted context, not separate lifted steps:
+1. **Define the root config schema and defaults.** The project binary owns `<project>.dhall`: the
+   resource budget, structural flags (e.g. skip-VM), Dockerfile path, and the parameters the chain reads.
+   `project init` writes the root `<project>.dhall` (a host-orchestrator config with no parent) with
+   optional `--cpu/--memory/--storage/--ha-replicas`. Python derives the project name from the Cabal file
+   and does not read Dhall. See [schema](schema.md) and [resource_budgeting](resource_budgeting.md).
+2. **Author the chain.** Provide `chain :: RootConfig -> [Step]` — the ordered lift sequence that is the
+   project's identity. A `Step` is a typed operation in the `Step` algebra; the chain is one
+   representation (single-representation §W holds), and `project up --dry-run` renders `chain rootCfg`.
+   Compose from the core's host-management step kinds (deploy-VM, ensure-`X`, copy-source, build-pb,
+   build-image, context-init, deploy-kind, deploy-chart, expose-port) and the project's own kinds; host
+   and workload steps interleave in one list. The core interprets the chain recursively and idempotently
+   (reconcile-to-running). See [composition_patterns](composition_patterns.md).
+3. **Define project step kinds and their actions.** A workload step the core does not ship (deploy-harbor,
+   launch-web, …) is a project-contributed `Step` kind plus its action. Hand these — together with the
+   chain, a non-empty `TestSuite`, the `check-code` action, and the `ConfigArtifact` delta — to the
+   core CLI entry so they merge into the recursive interpreter. The core command surface
+   (`project`/`context`/`test`/`check-code`) passes through unchanged; the project extends the chain and
+   the step vocabulary, never the noun verbs (the CLI stream of the four-stream contract, where stream 1
+   is the lift chain; see [library_hierarchy](../architecture/library_hierarchy.md)).
+4. **Let the interpreter cross boundaries.** Each descent is fractal bootstrap: provision the frame, build
+   or install the binary in it, then hand off `pb project up` into the next frame. The consumer does not
+   write a bespoke remote-exec path; the core lift folds the self-invocation (`limactl shell` / `incus
+   exec` / `docker run`). One operation has one representation, so the deploy's only lifted **compute**
+   step lifts the *whole* test workflow — `test run all` — into the project container in the VM; the
+   cluster, the deploy, and the e2e are the harness's job inside that one lifted frame, not separate
+   lifted steps. See [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
+   [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
+5. **Supply the test suite.** Provide a `Seams`/`Case` matrix (the fourth stream); `test run <suite>|all`
+   drives `runMatrix` from the root frame, gated on an existing `test.dhall`. A case sets up its isolated
+   environment, asserts the real workload, and tears down (guaranteed). `test run all` validates the live
+   `project up` stack and is decoupled from bring-up. See [testing](testing.md) and
+   [harness_workflow](../architecture/harness_workflow.md).
+6. **Register schema artifacts and Dhall vocabulary.** Concatenate the project's `ConfigArtifact`s onto
+   `coreArtifacts` and embed `Core.dhall` for any new step parameters, provider kinds, or witness kinds
+   the chain introduces (the schema-gen and Dhall streams). Context-init is a generated step: the child
+   `.dhall` for a nested frame is minted by a context-init `Step` during `project up`, not by a separate
+   mutation verb. See [config_generation](config_generation.md) and
+   [dhall_topology](dhall_topology.md).
 
-   ```haskell
-   self <- currentSelfRef inVMBinaryPath
-   let projectCtr = ContainerLift { clImage = "project:local", clMounts = [], clExtraArgs = [], clRemoveAfter = True }
-   -- lift the WHOLE test workflow (helm/kind on the container $PATH, the kind cluster on the VM's Docker);
-   -- folds through the selected VM provider, then: docker run --rm <image> test all
-   liftSubcommand cfg self (inContainer projectCtr (inVM vmName localContext)) ["test", "all"]
-   ```
+## A Worked Chain (the demo)
 
-   Inside the container the harness runs as if local; the binary is the container `ENTRYPOINT`. Re-expressing
-   cluster bring-up / web-serve / e2e as a *separate* chain of lifted ops alongside the harness is a
-   redundant second representation (it double-creates clusters when it lifts a harness case). See
-   `HostBootstrap.Lift` in [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md) and
-   [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-test-workflow-is-a-lifted-operation).
-5. **Supply the test seams.** Provide a `Seams`/`Case` matrix (the fourth stream); the inherited `test`
-   verb drives `runMatrix`. A case sets up its isolated environment, asserts the real workload, and tears
-   down (guaranteed). See [testing](testing.md) and [harness_workflow](../architecture/harness_workflow.md).
-6. **Register schema artifacts (optional).** Concatenate the project's `ConfigArtifact`s onto
-   `coreArtifacts` and embed `Core.dhall` for any new vocabulary (the schema-gen and Dhall streams). See
-   [config_generation](config_generation.md).
-
-## A Worked Chain (nesting two shapes)
-
-The demo nests *pristine-host VM bootstrap* (shape 2) over *one-shot container lift* (shape 1): bring up a
-budget-sized VM, re-establish the binary host-native inside it and build the project image (both in the
-VM), then lift the **whole test workflow** into that container as the single compute step. One operation
-has one representation, and the test harness *is* that representation — so the lone lifted step is
-`test all`, not a parallel chain of lifted cluster/web-serve/e2e ops (see
-[composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-test-workflow-is-a-lifted-operation)):
+The demo's `chain rootCfg` is the canonical example. It nests *pristine-host VM bootstrap* over *one-shot
+container lift*, and every host and workload step lives in one ordered `[Step]`:
 
 ```text
-vm ensure               local                                   -- reconcile selected VM provider
-vm up                   local                                   -- cordon #1 (the VM is the wall)
-vm pristine-bootstrap   local -> VM                             -- build #2 (host-native) + build #3 (project image), in the VM
-context create container inVM vm localContext                   -- materialize the VM-project-container runtime config
-test all                inContainer img (inVM vm localContext)  -- the ONLY lifted compute step; folds through the VM provider, then docker run --rm <image> test all
-vm down                 local                                   -- guarded teardown (.data preserved)
+deploy-VM            local                                   -- reconcile the platform provider (Lima/Apple, Incus/Linux) to a usable VM
+copy-source          local -> VM                             -- stage the source tree into the VM
+ensure ghc           local -> VM                             -- reconcile the toolchain inside the VM
+build-pb             local -> VM                             -- re-establish the binary host-native in the VM
+ensure docker        local -> VM                             -- reconcile docker inside the VM
+build-image          local -> VM                             -- build the project image in the VM
+context-init         inVM vm localContext                    -- mint the VM-project-container child .dhall
+test run all         inContainer img (inVM vm localContext)  -- the ONLY lifted compute step
 ```
 
-Inside that one lifted `test all`, the harness runs `clusterUp` "locally" on the VM's Docker, so the kind
-cluster, the deploy, and the e2e all happen there — reached with no second "bring up a cluster" lift.
+The lone lifted compute step is `test run all`: it folds through the selected VM provider to `docker run
+--rm <image> test run all`. Inside that one lifted frame the harness runs its reconcilers "locally" on the
+VM's Docker, so kind, harbor, and the webservice come up **in the VM** — reached with **no** second "bring
+up a cluster" path. The project's own step kinds (deploy-harbor, launch-web, expose NodePort to host) sit
+in the same list alongside the core host-management kinds; the interpreter runs them in order and is
+restartable from any frame.
+
+`project down` walks the same chain to stop services, clusters, and VMs (`incus`/`limactl` **stop**)
+without deleting; `project destroy` stops then deletes everything spun up. Teardown recurses in while the
+frame is still up, then stops/deletes on ascent (the VM last); it is best-effort and idempotent, and
+`.data` is always preserved.
 
 ## Sketches
 
-- **Managed cloud cluster** (shape 3): `build image → lift(InContainer): cloud-CLI create cluster (external
-  state backend) → lift(InContainer): helm deploy into it`. No VM; the cloud is the substrate.
-- **Local cluster via a host service manager** (shape 4): `ensure the cluster as a host service (rke2/k3s)
-  → deploy into it → optionally layer a cloud-validation stack via an in-cluster state store`.
+- **Managed cloud cluster**: a chain of `build-image → context-init → cloud-CLI create cluster (external
+  state backend) → deploy-chart`. No deploy-VM step; the cloud is the substrate, expressed as project step
+  kinds over the same `[Step]`.
+- **Local cluster via a host service manager**: `ensure the cluster as a host service (rke2/k3s) →
+  deploy-chart → optionally a cloud-validation step backed by an in-cluster state store`.
 
-Both are the same algebra — operations composed across a context topology — differing only in which
-shapes nest. The cordon is applied at every boundary (the one canonical parser); teardown preserves
-`.data`.
+Both are the same algebra — a `[Step]` chain interpreted recursively across a context topology — differing
+only in which steps the chain selects. Optional structural variation (skip the VM, straight to Docker) is
+a root-`.dhall` flag, so the chain stays a pure function of root parameters. The fail-fast frame check is
+applied at every boundary; teardown preserves `.data`.
+
+## Current Status
+
+- **Implemented today (flat verbs).** `hostbootstrap-core` exposes the flat command tree the demo uses:
+  `ensure`, `config` (`init`/`schema`/`show`/`render`), `context create`, `cluster`, and `test`. The demo
+  binary contributes hand-written noun verbs — `deploy`, `vm`, `incus`, `harbor`, `web`, `role` — and a
+  hand-written deploy chain (`demoDeployChain` in `demo/src/HostBootstrapDemo/Chain.hs`, dispatched from
+  `Commands.hs`). The single-representation doctrine already holds: today's `demo deploy` is one lift
+  sequence whose only lifted compute step is `test all` in the VM-project-container.
+- **Target (the `[Step]` chain).** This document describes the target model. The consumer's contribution
+  becomes `chain :: RootConfig -> [Step]` plus project step actions; the demo's noun verbs and
+  `demoDeployChain` collapse into a core `Step` interpreter that consumes the demo's contributed chain
+  value. The recursive `project` command (`init`/`up`/`down`/`destroy`), the read-only `context`
+  introspection (which absorbs `config show/schema/render`), and the `test init` / `test run <suite>|all`
+  split are **not yet implemented**; `ensure <tool>` is retained only as a hidden debug surface once the
+  chain interpreter lands. The development plan tracks the reopened and planned phases for this migration;
+  this guide does not claim the `project` command or its recursive interpreter exists.
 
 ## See also
 
-- [composition_methodology](../architecture/composition_methodology.md) — operations, the lift, and the
-  deploy ≡ business-logic unification.
-- [composition_patterns](composition_patterns.md) — the shape catalogue this guide composes.
-- [derived_project_standards](derived_project_standards.md) — the per-stream rules every derived project
-  follows.
+- [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the
+  chain-is-the-project model, the recursive `project up` interpreter, and fractal bootstrap.
+- [composition_patterns](composition_patterns.md) — the cookbook of `Step`-chain shapes this guide
+  composes.
+- [derived_project_standards](derived_project_standards.md) — the per-stream rules (stream 1 = the lift
+  chain) every derived project follows.

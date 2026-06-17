@@ -10,17 +10,20 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-15 are `Done`; the topology-aware binary context path is validated by the full real demo
-> lifecycle (a real Apple Silicon Lima `deploy`, `3/3 passed` including Playwright e2e). The rows below name the supported component
-> surfaces, their owning phases, and whether the repository implements them. Runtime authority is a
+> Note: Phases 0-15 built the host-management substrate (validated by the full real demo lifecycle — a
+> real Apple Silicon Lima run, `3/3 passed` including Playwright e2e). Phases 4/5/10/13/14/15 are reopened
+> (`Active`) and phases 16-17 added for the **chain-is-the-project** refactor (the recursive
+> `project init|up|down|destroy` lifecycle, the `[Step]` interpreter, the read-only `context` command, and
+> the decoupled `test init|run` surface). The rows below name the supported component surfaces, their
+> owning phases, and whether the repository implements them. Runtime authority is a
 > sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
 > and command permissions inside the file content, including provider-backed topology frames, a current
 > frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` /
 > `base` pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and
 > `hostbootstrap-core` is the reusable library consumed through `runHostBootstrapCLI progName
-> projectSpec`. The single-representation rule is part of the supported architecture: the standardized
-> test harness is the one test/deploy workflow representation and may be lifted as a whole into a nested
-> VM/container context.
+> projectSpec`. The single-representation rule is part of the supported architecture: a project's deploy is
+> its one pure `chain :: RootConfig -> [Step]` value interpreted recursively by `project up`, and the
+> standardized test harness remains the one test-workflow representation (a lift target).
 
 ## hostbootstrap-core Haskell module surface
 
@@ -60,6 +63,9 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Lima` | 11.6 | yes | Lima VM lifecycle argv for Apple Silicon demo execution (`start`, `shell`, `copy`, `list`, name-guarded `delete`) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
+| `HostBootstrap.Project` | 16 | no | target (§ Y): the `project init\|up\|down\|destroy` lifecycle command and the recursive `[Step]` chain interpreter (`--dry-run` renders the pure chain) |
+| `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, with the pure `renderChainPlan` dry-run render and `stepsForFrame`/`chainFrames` segmentation |
+| `HostBootstrap.Chain` | 16 | partial | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-gated |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -121,8 +127,9 @@ The runtime authority is:
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for
 another project, claims unavailable capabilities, or does not authorize the requested command. Help,
-version, `config init`, `config schema`, `config show`, `config path`, and static `config render` are the
-bootstrap/inspection exceptions. Daemons read one immutable config snapshot at startup, log the config
+version, `project init`, and the read-only `context` introspection command (which absorbs
+`config show` / `config schema` / `config path` / static `config render`) are the bootstrap/inspection
+exceptions (target § Z; today these are the flat `config` / `context create` verbs). Daemons read one immutable config snapshot at startup, log the config
 path and hash, and do not live-reload by default.
 
 ## Thin Python bootstrapper surface
@@ -220,16 +227,18 @@ binary rather than baked into the base image.
 See
 [development_plan_standards.md § P](development_plan_standards.md).
 
-| Core verb group | Phase | Source |
-|-----------------|-------|--------|
-| `ensure <tool>` (incl. `incus`) | 3, 11 | the `ensure` reconcilers |
-| `config init` (incl. idempotent `--if-missing`) / `config path` | 8, 15 | `HostBootstrap.Config.Schema` + `HostBootstrap.Context` |
-| `context create vm\|container\|service` | 15.3, 15.4 | child `<project>.dhall` projections |
-| `config show` | 4, 15 | explicit inspection of a local config file |
-| `config schema` / `config render` | 8 | `HostBootstrap.Dhall.Gen` + the `coreArtifacts ++ projectArtifacts` registry; unknown artifact names fail fast |
-| `cluster up/down/delete/status` | 5 | `HostBootstrap.Cluster.Lifecycle` |
-| `test <case\|all>` | 10 | `HostBootstrap.Harness` (`runSuiteSelection` / `runMatrix`); failed reports exit non-zero |
-| `check-code` | 10 | required project-defined body supplied through `ProjectSpec`, the image-build gate |
+| Core verb group (target) | Phase | Implemented | Source |
+|-----------------|-------|-------------|--------|
+| `project init\|up\|down\|destroy` | 16 | no (target) | the recursive `[Step]` chain interpreter (§ Y); subsumes `config init`, `cluster`, `context create` |
+| `context` (read-only introspection) | 15, 16 | partial | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
+| `test init\|run <suite\|all>` | 10, 17 | partial | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated, decoupled from deploy (§ Z) |
+| `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
+| `ensure <tool>` (hidden debug; incl. `incus`) | 3, 11 | yes | the `ensure` reconcilers, normally invoked as chain steps within `project up` |
+
+Until phases 16-17 land, the implemented surface is the flat verbs — `ensure`, `config
+init|path|schema|show|render`, `context create vm|container|service`, `cluster up|down|delete|status`,
+`test <case|all>`, `check-code` — recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) as superseded.
 
 ## hostbootstrap-demo (worked consumer)
 
@@ -237,7 +246,8 @@ See
 `hostbootstrap-demo.dhall`, Haskell source `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`,
 build path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) via
 `runHostBootstrapCLI "hostbootstrap-demo" projectSpec` and demonstrates the four-stream extension — the
-CLI append (`incus`/`vm`/`harbor`/`web` noun verbs alongside the inherited core verbs), the schema-gen
+CLI append (today `incus`/`vm`/`harbor`/`web` noun verbs alongside the inherited core verbs; under the
+refactor these become `[Step]` chain steps the core `project up` interprets — phase-13/16), the schema-gen
 concat (`config schema` / `config render --artifact demoWeb` over `coreArtifacts ++ demoArtifacts`), and
 the harness (`hostbootstrap-demo test all` → `runMatrix` over the demo's case matrix, bound to the inherited `test`
 verb). The demo's four runtime contexts are explicit sibling `hostbootstrap-demo.dhall` files: host, VM,

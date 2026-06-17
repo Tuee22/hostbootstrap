@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -20,10 +20,15 @@ principles, and the L0 role-lifecycle skeleton on which L1 builds concrete busin
 typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded lift context.
 
 The single-representation doctrine is part of the methodology: one operation has one representation. The
-standardized test harness is the one representation of the test/deploy workflow; consumers lift the whole
-`test all` workflow into the nested context instead of building a second cluster/deploy/e2e chain beside
-it. The worked demo follows this shape with `test all` lifted into the project container in the managed
-VM.
+methodology is being recast around the **"chain is the project"** model: a project's deploy is its **lift
+chain** — a pure `chain :: RootConfig -> [Step]` value that *is* the project's identity (§ W) — and that
+`[Step]` chain is the single representation. The foundational primitive (`HostBootstrap.Lift`) is built,
+and the worked demo lifts the whole `test all` workflow into the project container in the managed VM; but
+the methodology's canonical narrative still describes the lift as a hand-written deploy sequence with a
+single lifted compute step, **not** the recursive `project up` interpreter the brief now targets. The
+recast — chain-is-the-project, the recursive/fractal interpreter, Python as the metal-frame instance of
+the fractal bootstrap — is target, not built: the `project` command and the `[Step]`-chain interpreter do
+not yet exist in the code.
 
 The topology-aware composition path is validated by the full real demo lifecycle: Dhall expresses the
 complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
@@ -32,7 +37,29 @@ into the project container in the managed Lima VM (`3/3 passed`, including Playw
 
 ## Remaining Work
 
-None.
+The composition methodology is reopened to reflect the **"chain is the project"** model. The foundational
+self-reference lift (`HostBootstrap.Lift`) is built and validated, but the methodology's canonical
+documentation describes the lift as a hand-written single deploy sequence rather than as the recursive
+chain interpreter the target now requires. The remaining work:
+
+- **Generalize the self-reference lift into the recursive `project up` interpreter of the chain**
+  (chain-is-the-project; fractal bootstrap — each frame transition is provision -> build pb -> hand off
+  `pb project up`, with Python the metal-frame instance). New work — the `project` lifecycle command and
+  the `[Step]`-chain interpreter — is **owned by phase-16**; this phase owns recasting the methodology
+  documentation (`composition_methodology.md` as the canonical home of the model, plus
+  `composition_patterns.md`) to present the chain `[Step]` value as the single representation, `project up`
+  as its recursive/fractal interpreter, and the Python bootstrapper as the metal-frame instance of the
+  fractal-bootstrap pattern (provision -> build pb -> hand off).
+- The phase stays `Active` until the methodology docs describe the recursive interpreter and fractal
+  bootstrap as the target model with an honest `## Current Status` separating the built lift primitive from
+  the not-yet-implemented `project`/chain interpreter, and the affected sprints below close. The
+  `project`/chain interpreter itself is **not** claimed implemented here; that build is phase-16 work.
+
+The sprints that built still-valid substrate (the role-lifecycle skeleton, the arbitrary-topology frame
+graph, and credential forwarding across the lift) remain `Done`. The sprints whose contract the
+chain-is-the-project recast changes — the methodology/lift documentation (14.1) and the
+single-representation doctrine framed as a lifted `test all` deploy sequence (14.3) — are reopened to
+`Active`.
 
 ## Phase Objective
 
@@ -44,26 +71,30 @@ operations across contexts through the four-stream merge without L0 changes (see
 
 ## Sprints
 
-### Sprint 14.1: Composition methodology and cookbook docs [Done]
+### Sprint 14.1: Composition methodology and cookbook docs [Active]
 
-**Status**: Done
-**Implementation**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/authoring_project_binaries.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ U)
-**Docs to update**: `documents/README.md`, `README.md`
+**Status**: Active
+**Implementation**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/authoring_project_binaries.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ U, § W, § Y)
+**Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/authoring_project_binaries.md`, `documents/README.md`, `README.md`
 
 #### Objective
 
 Document the composable-operation algebra, the self-reference lift, the deploy ≡ business-logic
 unification, the foundational principles, and the L0/L1/L2 layering, and rewrite § U from the two-case
-`HostTarget` to the n-level lift.
+`HostTarget` to the n-level lift. **Recast** the methodology around the chain-is-the-project model: the
+self-reference lift becomes the recursive `project up` interpreter of a pure `chain :: RootConfig ->
+[Step]` value, with fractal bootstrap (provision -> build pb -> hand off `pb project up`) at every frame
+and the Python bootstrapper as the metal-frame instance.
 
 #### Deliverables
 
 - `composition_methodology.md` (architecture, authoritative): the operation taxonomy, the lift, the
-  deploy ≡ business-logic unification, the three foundational principles, and the layering.
+  deploy ≡ business-logic unification, the three foundational principles, and the layering. **(Built.)**
 - `composition_patterns.md` (engineering): the cookbook of context topologies, operation kinds, and
-  business-logic shapes.
-- `authoring_project_binaries.md` (engineering): the authoring how-to for a new consumer.
+  business-logic shapes. **(Built.)**
+- `authoring_project_binaries.md` (engineering): the authoring how-to for a new consumer. **(Built.)**
 - § U rewritten (`Local | InVM` → the n-level self-reference lift); the new docs indexed and backlinked.
+  **(Built.)**
 
 #### Validation
 
@@ -72,7 +103,23 @@ unification, the foundational principles, and the L0/L1/L2 layering, and rewrite
 
 #### Remaining Work
 
-None.
+The methodology docs describe the lift as the foundational context-crossing primitive, but they do **not**
+yet present it as the recursive `project up` chain interpreter. The chain-is-the-project recast is the
+open work:
+
+- Recast `composition_methodology.md` (the **canonical home** of the model) so the self-reference lift is
+  presented as the recursive `project up` interpreter of the pure `chain :: RootConfig -> [Step]` value;
+  state chain-is-the-project; document fractal bootstrap (each frame transition = provision -> build pb ->
+  hand off `pb project up`, with the Python bootstrapper as the metal-frame instance, § M); and frame the
+  single-representation doctrine (§ W) as the `[Step]` chain being THE representation.
+- Update `composition_patterns.md` to carry the chain/Step pattern + recursive interpreter as the
+  canonical cookbook; align `authoring_project_binaries.md` so a consumer authors its `chain :: RootConfig
+  -> [Step]` (plus step actions, test suite, artifacts, Dhall vocabulary) rather than noun verbs.
+- Add a `## Current Status` to the recast docs separating the **built** lift primitive
+  (`HostBootstrap.Lift`) from the **target** `project` lifecycle command and `[Step]`-chain interpreter
+  (phase-16, not yet implemented). Do **not** present `project` as implemented.
+- DocValidator must continue to pass (metadata block, TL;DR on the architecture doc, resolving relative
+  links, taxonomy). This is a docs-only recast; the interpreter build is phase-16.
 
 ### Sprint 14.2: The role-lifecycle skeleton [Done]
 
@@ -106,10 +153,10 @@ reconcilers stay `HostConfig -> IO ()` (no threaded context), per the compositio
 
 None.
 
-### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Done]
+### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Active]
 
-**Status**: Done
-**Implementation**: `documents/architecture/composition_methodology.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ W)
+**Status**: Active
+**Implementation**: `documents/architecture/composition_methodology.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ W, § Y, § Z)
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`
 
 #### Objective
@@ -142,8 +189,23 @@ duplicates the harness and double-creates clusters); there is one representation
 
 #### Remaining Work
 
-None. The worked demo uses the single lift sequence with `test all` as the only lifted compute step in
-`inContainer img (inVM vm localContext)`.
+The single-representation doctrine is documented, but it is framed around the deploy as a hand-written
+single lift sequence whose only lifted compute step is `test all` (`inContainer img (inVM vm
+localContext)`). The chain-is-the-project recast changes that contract:
+
+- Restate the single representation as the pure `chain :: RootConfig -> [Step]` value (§ W, § Y): `project
+  up` is its recursive interpreter and `--dry-run` renders the same value apply executes. There is no
+  second hand-written orchestration path beside the chain — the deploy sequence the demo carries today is
+  superseded by the `[Step]` chain the core interprets.
+- Decouple the test surface from deploy (§ Z): `project up` brings up a **persistent** stack; `test run
+  all` is a **separate**, root-gated operation that validates that running stack. The standardized harness
+  remains the one lift-target engine; document that `test run all` (not a lifted deploy chain) is how the
+  live `project up` stack is validated. Re-expressing deploy bring-up as a parallel chain of lifted ops
+  alongside the chain would be a redundant representation.
+- Update `composition_methodology.md` and `composition_patterns.md` accordingly, with a `## Current
+  Status` separating the built lift/harness from the target `project up` chain interpreter and the
+  decoupled `test run all` surface (phase-16/phase-17). Do **not** claim `project`/`test run` is
+  implemented. DocValidator must continue to pass.
 
 ### Sprint 14.4: Context-aware arbitrary topology [Done]
 

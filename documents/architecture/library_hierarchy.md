@@ -12,14 +12,17 @@
   `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2). `mcts` and `hostbootstrap-demo` consume L0
   directly.
 - Each level adds only its **delta** to four parallel streams, one additive merge idiom each: the
-  optparse **CLI tree**, the **Dhall vocabulary**, the **schema-gen** `ConfigArtifact` registry, and
-  the **test-harness** `Seams`.
+  **lift chain** (`chain :: RootConfig -> [Step]`, core + project steps), the **Dhall vocabulary**,
+  the **schema-gen** `ConfigArtifact` registry, and the **test-harness** `Seams`.
+- A project's primary CLI contribution is its lift **chain value**, not a set of new noun verbs:
+  the core ships host-management step kinds and the project contributes its own step kinds into the
+  same ordered `[Step]`.
 - Every merge is additive: lower levels are appended/embedded/concatenated, never shadowed or
-  redefined. A level only contributes verbs, vocabulary, artifacts, and seams; it never rewrites the
+  redefined. A level only contributes steps, vocabulary, artifacts, and seams; it never rewrites the
   level below.
-- All four streams are implemented in `hostbootstrap-core`: the CLI, vocabulary, and schema-gen streams, and
-  the test-harness `Seams` stream (the standardized test harness,
-  [Phase 10](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)).
+- The chain shape is the canonical model owned by
+  [composition_methodology](composition_methodology.md); this document defers to it for the chain and
+  the recursive `project up` interpreter and describes only how the four streams layer.
 
 ## The Three Library Levels
 
@@ -27,9 +30,9 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: `ensure`/`cluster`/`config` verbs, the `Core.dhall` vocabulary, the `coreArtifacts` registry, and the composable-operation algebra + the self-reference lift (see [composition_methodology](composition_methodology.md)). |
+| L0 | `hostbootstrap-core` | — | The host-management base: the `project`/`context`/`test`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). |
 | L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
-| L2 | `jitML`, `infernix` | L1 | App-level verbs, vocabulary, and artifacts on top of the daemon substrate. |
+| L2 | `jitML`, `infernix` | L1 | App-level step kinds, vocabulary, and artifacts on top of the daemon substrate. |
 
 `mcts` and `hostbootstrap-demo` consume L0 directly — they take the core surface without the daemon
 layer. The cross-repo levels are referenced by absolute URL, not relative link:
@@ -49,25 +52,39 @@ A level composes on the level below through exactly four parallel streams. Each 
 idiom, and every idiom is **additive**: it appends or embeds the lower level's contribution and adds
 a delta, so the lower surface is preserved verbatim.
 
-### Stream 1 — optparse CLI Tree
+### Stream 1 — The Lift Chain
 
-The command tree merges by passing a validated project spec to the generic entrypoint:
+The first stream is the project's lift **chain**: an ordered `[Step]` value
+(`chain :: RootConfig -> [Step]`) that the core's recursive `project up` interpreter walks frame by
+frame. A level merges by contributing its own step kinds into that single list; the core's
+host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
+deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
+interleave freely in one chain. This Step algebra is the reuse unit and the workload-extension seam.
+The chain is the canonical model — its shape, the recursive/fractal interpreter, and the
+fractal-bootstrap descent are owned by [composition_methodology](composition_methodology.md); this
+stream describes only the additive merge.
+
+The chain is threaded into the generic entrypoint through `ProjectSpec`:
 
 ```haskell
-runHostBootstrapCLI progName (projectSpec commands testSuite checkCode artifacts)
+runHostBootstrapCLI progName (projectSpec chain testSuite checkCode artifacts)
 ```
 
-The core verbs (`ensure …`, `cluster …`, `config …`, `test`, `check-code`) behave identically whether
-invoked through the bare `hostbootstrap` binary or through any project binary, except that project
-binaries must supply the non-empty test suite, `check-code` action, and artifact delta in `ProjectSpec`.
-See [hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. Project
-commands are named `ProjectCommand` values, so a project cannot silently shadow a core top-level verb.
+The core command surface (`project init|up|down|destroy`, `context`, `test init|run`, `check-code`)
+behaves identically whether invoked through the bare `hostbootstrap` binary or through any project
+binary, except that project binaries must supply their non-empty `chain`, test suite, `check-code`
+action, and artifact delta in `ProjectSpec`. See
+[hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project
+contributes named step kinds, so a project cannot silently shadow a core step kind or a core
+top-level verb.
 
-- **WRONG**: a project re-implements `config` or `cluster` with its own parser, intending to "extend"
-  it. This is wrong because it shadows the core verb — the project's parser, not the core one, now
-  handles the verb, so behavior diverges across binaries and the append-only guarantee is broken.
-- **RIGHT**: the project adds only new `projectCommand "…"` entries to the delta and lets the core verbs
-  pass through unchanged; a shadow attempt is rejected before command dispatch.
+- **WRONG**: a project re-implements VM bring-up or cluster deploy with its own top-level noun verb,
+  intending to "extend" the core. This is wrong because it shadows the core step kind with a parallel
+  verb — behavior then diverges across binaries and the append-only guarantee is broken; it also
+  reintroduces a second representation the single-representation doctrine forbids.
+- **RIGHT**: the project adds only new step kinds to its `chain` value and lets the core host-
+  management steps pass through unchanged; the interpreter walks the one merged list and a shadow
+  attempt is rejected before dispatch.
 
 ### Stream 2 — Dhall Vocabulary
 
@@ -94,15 +111,16 @@ The schema-generation stream merges by concatenating each level's `ConfigArtifac
 registers `coreArtifacts`; a project appends its own artifacts:
 
 ```haskell
-projectSpec projectCommands projectSuite projectCheckCode [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
+projectSpec projectChain projectSuite projectCheckCode [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
 ```
 
-`config schema` then prints the transitive union of the in-scope schemas, and `config render`
-materializes static example renders from the same registry. Runtime child/deploy projections are separate
-gated commands that derive from the active local config. See [config_generation](../engineering/config_generation.md).
+The read-only `context` surface then prints the transitive union of the in-scope schemas and
+materializes static example renders from the same registry. Runtime child projections are minted by
+the context-init step inside `project up`, deriving from the active local config. See
+[config_generation](../engineering/config_generation.md).
 
-- **WRONG**: a project builds a fresh registry that omits `coreArtifacts`, so `config schema` no
-  longer prints `budget`/`podResources`/`kindNode`. This is wrong because the core artifacts are part
+- **WRONG**: a project builds a fresh registry that omits `coreArtifacts`, so the rendered schema no
+  longer carries `budget`/`podResources`/`kindNode`. This is wrong because the core artifacts are part
   of the binary's accepted schema; dropping them makes the printed schema a lie about what the
   decoders accept.
 - **RIGHT**: the project concatenates its artifacts onto `coreArtifacts`, so the union always carries
@@ -111,18 +129,42 @@ gated commands that derive from the active local config. See [config_generation]
 ### Stream 4 — Test-Harness Seams
 
 The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
-its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` verb. The
-harness is **implemented** — the standardized-test-harness phase
+its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` surface.
+The harness is **implemented** — the standardized-test-harness phase
 ([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) — completing the
 four-stream contract: every level extends the surface through exactly these four parallel, additive
 streams.
 
 ## Why Four Parallel Streams
 
-Splitting extension into four single-idiom streams keeps the hierarchy DRY: each concern (commands,
-vocabulary, schema, tests) has one place a level may add to and a clear "append, never shadow" rule.
-A project that follows all four idioms inherits the entire lower surface for free and contributes only
-its delta. The per-stream rules every derived project follows are catalogued in
+Splitting extension into four single-idiom streams keeps the hierarchy DRY: each concern (the lift
+chain, vocabulary, schema, tests) has one place a level may add to and a clear "append, never shadow"
+rule. A project that follows all four idioms inherits the entire lower surface for free and contributes
+only its delta — most importantly its `chain` value, the steps that distinguish it. The per-stream
+rules every derived project follows are catalogued in
 [derived_project_standards](../engineering/derived_project_standards.md); the standards-level
 statement of the contract lives in
 [development_plan_standards § T](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
+## Current Status
+
+The reusable surface is implemented today as a set of **flat top-level verbs**, not yet as the chain
+stream and the recursive `project` interpreter this document describes as the target:
+
+- Stream 1 is implemented as flat verbs threaded through `ProjectSpec`: `ensure …`, `cluster …`,
+  `config …`, `test`, and `check-code`, plus the demo's `vm` and `deploy` verbs and a hand-written
+  demo deploy chain (`demo/src/HostBootstrapDemo/Chain.hs`). The target collapses these into a single
+  contributed `chain :: RootConfig -> [Step]` value walked by the recursive `project up`
+  interpreter; the `cluster`, `config init`, and `context create` mutation verbs become core step
+  kinds, and `ensure` is retained only as a hidden debug surface. The `project` command and its
+  recursive/fractal interpreter are **not implemented** — they are target architecture tracked in
+  `DEVELOPMENT_PLAN/`.
+- Streams 2, 3, and 4 are implemented as described: the `Core.dhall` vocabulary import-and-extend
+  idiom, the `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. The
+  target migration touches only how stream 3's renders/projections are surfaced (the read-only
+  `context` command and the context-init step) and how stream 4 is invoked (`test init` / `test run`),
+  not the additive merge idioms themselves.
+
+`DEVELOPMENT_PLAN/` owns the migration status and closure criteria for the flat-verb → project-chain
+move; reconcile any status claim here to it rather than treating this document as a parallel status
+authority.

@@ -5,22 +5,40 @@
 **Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [harbor.md](harbor.md), [linking_and_optimization.md](linking_and_optimization.md), [binary_context_config](../architecture/binary_context_config.md)
 
 > **Purpose**: State the rules a derived project follows to build the one binary that extends
-> `hostbootstrap-core`, materialize its explicit binary-context config, inherit the base image, gate on
+> `hostbootstrap-core`, contribute its lift **chain** and step actions, inherit the base image, gate on
 > `check-code`, and materialize the binary at `./.build/`.
 
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
 [`engineering/`](.), in the form of rules with one-line explanations and a link to the authoritative
-source.
+source. The model these rules instantiate — the chain-is-the-project, the recursive `project up`
+interpreter, fractal bootstrap — is defined once in
+[composition_methodology](../architecture/composition_methodology.md); this page defers to it and never
+re-derives it.
 
-## The derived project is one binary that extends the core
+## The derived project is one binary whose identity is its lift chain
 
 A derived project ships **exactly one binary** named after its Cabal file. For example,
 `hostbootstrap-demo.cabal` produces project/binary name `hostbootstrap-demo`. The Python bootstrapper uses
-that Cabal-derived name only to build `exe:<project>` host-native. Once the binary exists, normal command
-dispatch is governed by the sibling runtime config file, [`<project>.dhall`](schema.md).
+that Cabal-derived name only to build `exe:<project>` host-native. Once the binary exists, command dispatch
+is governed by the sibling runtime config file, [`<project>.dhall`](schema.md).
 
-That binary extends `hostbootstrap-core`'s optparse command tree rather than re-implementing core verbs:
+The binary's primary contribution is **not** a set of noun verbs — it is a value:
+
+```haskell
+chain :: RootConfig -> [Step]
+```
+
+an ordered list of `Step`s the core interprets. The shape of that list **is** the project's identity
+(single representation, see [composition_methodology § single representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
+host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
+context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
+(deploy-harbor, launch-web, …). `project up` recursively interprets `chain rootCfg` from the current frame
+and hands off `pb project up` into the next frame; `--dry-run` renders the chain without executing it. The
+`.dhall` carries **parameters + context + witness**, never the shape — each binary verifies it is in the
+frame its `.dhall` describes, or fails fast.
+
+The binary extends `hostbootstrap-core`'s command tree rather than re-implementing core verbs:
 
 ```haskell
 import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI)
@@ -30,29 +48,26 @@ main :: IO ()
 main =
   runHostBootstrapCLI
     "app"
-    (projectSpec appProjectCommands (TestSuite appSeams appCases) appCheckCode appArtifacts)
+    (projectSpec appChain (TestSuite appSeams appCases) appCheckCode appArtifacts)
 ```
 
-`runHostBootstrapCLI progName projectSpec` composes the project's own named subcommands onto the core tree
-(`ensure …`, substrate detection, cluster-lifecycle verbs, `check-code`, `config schema`,
-`config render`, `test`). The spec is fail-closed: project command names cannot shadow core commands, the
-test suite must be non-empty, the `check-code` action is required, duplicate case/artifact names are
-rejected, and project artifacts feed the inherited `config schema` / `config render` registry. The bare
-`hostbootstrap` binary uses `runBareHostBootstrapCLI`; it is the only intentional empty-command/empty-suite
-binary. Bootstrap/inspection config surfaces (`config init`, `config path`, `config schema`,
-`config show FILE`, and static `config render`) run without an active local config. Config loading/gating
-surrounds normal commands: they fail fast when `<project>.dhall` is missing or the command is not valid for
-the declared context. There is no Python-owned `hostbootstrap.dhall`; execution-model, lifecycle, role, mount,
-Dockerfile, resource, and deploy settings live in the binary-owned config and generated child configs.
+`runHostBootstrapCLI progName projectSpec` composes the project's chain, test suite, code-check action, and
+schema artifacts onto the inherited tree (`project init|up|down|destroy`, `context`, `test init|run`,
+`check-code`). The spec is fail-closed: the chain must type-check against `RootConfig`, the test suite must
+be non-empty, the `check-code` action is required, duplicate case/artifact names are rejected, and project
+artifacts feed the inherited `context` introspection registry. The bare `hostbootstrap` binary uses
+`runBareHostBootstrapCLI`; it is the only intentional empty-chain/empty-suite binary. `project init` runs
+without an active local config to write the root `<project>.dhall`; every other normal command loads that
+config and fails fast when it is missing or when the command is not valid for the declared frame. There is
+no Python-owned `hostbootstrap.dhall`; resource, context, and witness settings live in the binary-owned
+root config, and child configs are minted by the context-init step inside `project up`.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
-`runHostBootstrapCLI "hostbootstrap-demo" (projectSpec demoCommands ... demoCheckCode demoArtifacts)`, so
-`hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`)
-plus the demo's own noun-first verbs (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`) — the extension contract
-a consumer follows, with no core verb re-implemented. It also exercises the other extension streams:
-`config schema` / `config render --artifact demoWeb` print the `coreArtifacts ++ demoArtifacts` registry,
-and `hostbootstrap-demo test all` drives the harness (`demoSeams`/`demoCases`, bound to the inherited
-`test` verb) over the demo's case matrix.
+`runHostBootstrapCLI "hostbootstrap-demo" (projectSpec demoChain ... demoCheckCode demoArtifacts)`. Its
+`demoChain` contributes the demo's host→VM→container→cluster lift (deploy VM, copy source + ensure GHC,
+build pb in VM, ensure docker, build project image, deploy kind, deploy harbor, launch webservice, expose
+NodePort) as a single `[Step]` the core interprets; `context` visualizes that composition, and
+`test run all` validates the live stack from the root frame.
 
 ## The three-level library hierarchy
 
@@ -65,18 +80,20 @@ imports the level below it; nothing re-implements a lower level's verbs:
 | L1 | `daemon-substrate` | the daemon apps import it |
 | L2 | `{jitML, infernix}` | the leaf apps |
 
-Each level extends the same **four parallel streams**, one additive merge idiom each:
+Each level extends the same **four parallel streams**, one additive merge idiom each (canonical statement:
+[library_hierarchy](../architecture/library_hierarchy.md)):
 
 | Stream | Merge idiom | Rule |
 |--------|-------------|------|
-| optparse **CLI tree** | `runHostBootstrapCLI progName projectSpec` | append named commands; never shadow a lower verb |
+| **the lift chain** | append `Step`s into `chain :: RootConfig -> [Step]` | core ships host-management step kinds; a level appends its own step kinds; host and workload steps interleave, never shadow |
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
-| **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test` verb |
+| **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test run` verb |
 
-"L0-direct" (consuming L0 without going through L1) is independent of the integration mode below:
-`mcts` is L0-direct via mode 1; `hostbootstrap-demo` is L0-direct via mode 2; `daemon-substrate` is L1
-via mode 2.
+Stream 1 is the workload-extension seam: a project does not add noun verbs, it contributes step kinds into
+the same `[Step]` the core interprets. The other three streams are unchanged. "L0-direct" (consuming L0
+without going through L1) is independent of the integration mode below: `mcts` is L0-direct via mode 1;
+`hostbootstrap-demo` is L0-direct via mode 2; `daemon-substrate` is L1 via mode 2.
 
 ## Two integration modes
 
@@ -85,18 +102,18 @@ A project integrates with `hostbootstrap` in one of two modes:
 1. **Freeze-import + the base-image contract** (no Cabal dependency on `hostbootstrap-core`). The
    project imports only the warm-store freeze and consumes the base image's `LABEL`/`ENTRYPOINT`
    contract; it does not depend on the `hostbootstrap-core` library in its `cabal.project`. This suits
-   a project that wants the warm toolchain and the base-image binary contract without extending the
-   command tree in Haskell (e.g. `mcts`).
+   a project that wants the warm toolchain and the base-image binary contract without contributing a
+   chain in Haskell (e.g. `mcts`).
 2. **`source-repository-package` + `runHostBootstrapCLI` extension.** The project adds
    `hostbootstrap-core` (or `daemon-substrate` at L1) as a `source-repository-package` dependency and
-   ships one binary that calls `runHostBootstrapCLI progName projectSpec`, appending its own verbs to the
-   inherited tree and supplying its non-empty test suite, code-check action, and schema artifacts (e.g.
-   `daemon-substrate` and its apps, and the worked `demo/` consumer). This is the mode the *Worked
-   compliant Dockerfile shape* below illustrates.
+   ships one binary that calls `runHostBootstrapCLI progName projectSpec`, contributing its chain, step
+   actions, non-empty test suite, code-check action, and schema artifacts (e.g. `daemon-substrate` and its
+   apps, and the worked `demo/` consumer). This is the mode the *Worked compliant Dockerfile shape* below
+   illustrates.
 
 Both modes build the binary **host-native** into `./.build/<project>` and gate the project container on
-`check-code`; they differ only in whether the project takes a Cabal dependency to extend the command
-tree in Haskell.
+`check-code`; they differ only in whether the project takes a Cabal dependency to contribute a chain in
+Haskell.
 
 ## The rules
 
@@ -112,14 +129,15 @@ tree in Haskell.
    `source-repository-package` (or local) dependency; its transitive closure is already warm in the
    store. Without the freeze import, the resolver picks different transitive versions than the warm
    store and rebuilds. See [warm_store.md](warm_store.md#required-import-the-freeze-fragments).
-3. **Build the binary, materialize the image-build config, run `<project> check-code`, and add a
-   tini-wrapped `ENTRYPOINT`.** Image-build config materialization is explicit:
-   `RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`
-   runs after the binary is installed and before any normal command. The check then runs under the narrow
-   image-build context and before any expensive backend work; the container is built on every substrate
-   as the mandatory code-check gate. Runtime launchers mount or materialize a parent-generated runtime
-   `<project>.dhall` at the same path. See [code_check_doctrine.md](code_check_doctrine.md#derived-images)
-   and [binary_context_config](../architecture/binary_context_config.md).
+3. **Build the binary, materialize the image-build context, run `<project> check-code`, and add a
+   tini-wrapped `ENTRYPOINT`.** Image-build context materialization is explicit: the Dockerfile runs the
+   binary once to write its image-build-container `<project>.dhall` after the binary is installed and
+   before any normal command. The check then runs under the narrow image-build frame and before any
+   expensive backend work; the container is built on every substrate as the mandatory code-check gate. The
+   container frame skips the build step at runtime — `docker run img project up` enters the chain already
+   built. Runtime launchers receive a parent-generated runtime `<project>.dhall` minted by the context-init
+   step. See [code_check_doctrine.md](code_check_doctrine.md#derived-images) and
+   [binary_context_config](../architecture/binary_context_config.md).
 4. **Link executables statically; build libraries with `shared: True`.** Do not pass
    `--enable-executable-dynamic` or `--enable-executable-static`. See
    [linking_and_optimization.md](linking_and_optimization.md#recommended-policy).
@@ -133,7 +151,7 @@ tree in Haskell.
    See [warm_store.md](warm_store.md#how-to-verify-your-project-hits-the-cache).
 
 A project that follows all five rules has a Dockerfile that is small, a build that hits the cache,
-a binary that extends the core command tree, and an image that cannot exist with code-check
+a binary whose chain extends the core step algebra, and an image that cannot exist with code-check
 violations.
 
 ## Build and run: where the binary lives
@@ -144,7 +162,10 @@ substrate:
 - The Python bootstrapper ensures the host build toolchain (on Apple, Homebrew → `ghcup` →
   GHC/Cabal; the equivalent on Linux) and builds the binary host-native into `./.build/<project>`.
   A Linux ELF cannot exec on a general host such as Apple silicon, so the binary is always built for
-  the host it runs on — there is no build-in-container, copy-out path.
+  the host it runs on — there is no build-in-container, copy-out path. The Python bootstrapper is the
+  **metal-frame instance** of the fractal bootstrap (provision the frame → build/install the pb in it →
+  hand off `pb project up`); see
+  [python_haskell_boundary](../architecture/python_haskell_boundary.md).
 - Tart, when used on Apple, is build-only (Swift/Metal artifacts copied to `./.build/`) and never a
   runtime.
 
@@ -167,7 +188,7 @@ COPY . /workspace/app
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" /usr/local/bin/app
 
-RUN app config init --role image-build-container --output /usr/local/bin/app.dhall
+RUN app context init --role image-build-container --output /usr/local/bin/app.dhall
 
 RUN app check-code
 
@@ -205,18 +226,42 @@ This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon ap
 No freeze is committed in the project — the layered warm-store freezes are imported from the
 base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
 
-The `config init --role image-build-container` line is the container-image bootstrap hook. It is the only
+The `context init --role image-build-container` line is the container-image bootstrap hook. It is the only
 binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
-commands such as `check-code` load that config and refuse commands not valid for image build/check
-context. Runtime commands such as `test all`, services, and daemons receive a parent-generated config
-mounted at `/usr/local/bin/<project>.dhall`.
+commands such as `check-code` load that config and refuse commands not valid for the image-build frame. At
+runtime the parent's context-init step mounts or materializes the role-specific `<project>.dhall` at
+`/usr/local/bin/<project>.dhall`, and the container enters the chain with `docker run img project up`.
+
+## Current Status
+
+Today's binary surface is the **flat verb set**, not the `project` chain. This page describes the target
+model; the migration is in progress and the recursive `project` interpreter is **not yet implemented**.
+
+- **Implemented today**: the bare-tree verbs (`ensure <tool>`, substrate detection, `cluster up|down|delete`,
+  `config init|schema|show|render`, `test`) and, in the demo, the hand-written noun verbs
+  (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`). The demo's deploy is a hand-written
+  `demoDeployChain :: LiftContext -> LiftContext -> [Op]` value in `demo/src/HostBootstrapDemo/Chain.hs`,
+  sequenced by the demo's own `deploy` command in `Commands.hs` — a list of `Op` the demo executes, not a
+  core-interpreted `[Step]`. The image-build hook runs as `config init --role image-build-container`.
+- **Target**: `chain :: RootConfig -> [Step]` interpreted by the recursive `project up`/`down`/`destroy`
+  commands; `context` as read-only introspection (absorbing `config show|schema|render` and the mutating
+  `context create`/`config init`); `test init` / `test run <suite>|all` split; the demo's noun verbs and
+  hand-written chain dissolve into core step kinds plus the demo's contributed chain value and step actions.
+  `ensure <tool>` is retained only as a hidden debug surface, normally invoked as a chain step within
+  `project up`.
+
+`DEVELOPMENT_PLAN/` owns the phase status for this migration (the affected phases are reopened or planned);
+this page does not assert closure. Until the interpreter lands, follow the flat-verb shape above with the
+target as the direction of travel.
 
 ## See also
 
+* [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, the recursive `project up` interpreter, fractal bootstrap
+* [authoring_project_binaries](authoring_project_binaries.md) — how a consumer authors its `chain` and step actions
+* [library_hierarchy](../architecture/library_hierarchy.md) — the four-stream extension contract (stream 1 = the lift chain)
 * [base_image.md](base_image.md) — what the base image ships, including the warm core closure
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate
 * [linking_and_optimization.md](linking_and_optimization.md) — linking and optimisation defaults
 * [harbor.md](harbor.md) — pushing the project image (out of scope for hostbootstrap itself)
-* [binary_context_config](../architecture/binary_context_config.md) — the runtime sibling config file
-  every normal binary command reads
+* [binary_context_config](../architecture/binary_context_config.md) — the runtime sibling config file every normal command reads

@@ -5,34 +5,33 @@
 **Referenced by**: [documents-index](../README.md), [python_haskell_boundary](python_haskell_boundary.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [resource_budgeting](../engineering/resource_budgeting.md), [binary_context_config](binary_context_config.md)
 
 > **Purpose**: Define the build/run model — why every project binary is built **host-native** into
-> `./.build/`, and why building the project container is the binary's job, not the bootstrapper's.
+> `./.build/`, why building the project container is the binary's job, and how the four run-models are
+> selected within `project up`'s step interpretation, where deploy stands up a **persistent stack**.
 
 ## TL;DR
 
 - Every project produces one host binary at `./.build/<binary>`, built **host-native** on every
-  substrate — the same way everywhere.
-- A Linux ELF cannot exec on a general host such as Apple silicon, so there is **no**
-  build-in-container, copy-out path; the binary is always built for the host it will run on.
-- The Python bootstrapper derives the project name from the Cabal file, ensures the host **build
-  toolchain** (on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux), builds the binary
-  host-native, and execs it.
-- Building the **project container** is the execed binary's job, not the bootstrapper's — the binary
-  ensures Docker and builds the container `FROM` the base image, gating on the `check-code` code-check.
-- Tart is build-only on Apple (Swift/Metal artifacts); no built binary ever runs inside a Tart VM.
-- Build/run commands do not self-update the Python wrapper or fail because it is not at the latest
-  commit. Bootstrapper self-update is an explicit pipx operation; see
-  [self_update](../engineering/self_update.md).
-
-> **Current status.** The host-native, no-copy-out model is implemented. Python does not write Dhall after
-> the build; the built binary creates or validates its sibling `<project>.dhall`. Ensuring Docker, building
-> the project container, and applying the cordon are owned by the execed binary, not the bootstrapper.
+  substrate — the same way everywhere. A Linux ELF cannot exec on a general host such as Apple silicon,
+  so there is **no** build-in-container, copy-out path.
+- The Python bootstrapper is the **metal-frame** of the fractal bootstrap: it ensures the host build
+  toolchain, builds the binary host-native, and execs it. Building the **project container** is the
+  execed binary's job, gating on the `check-code` code-check.
+- The four run-models (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`) are **selected** from detected
+  facts and generated topology — never declared in Dhall. In the target model they are selected
+  **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, not by a
+  standalone `cluster` or `deploy` verb.
+- `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
+  leaving the VM, cluster, and services up. `project down` stops them; `project destroy` deletes them.
+  `.data` is preserved across both.
+- The build/run model is the canonical home for **host-native build mechanics**; the chain model itself
+  is owned by [composition_methodology](composition_methodology.md), which this doc defers to.
 
 ## Why the binary is built host-native
 
 A `hostbootstrap` binary is a native executable for one OS/arch. A binary built inside a Linux
 container is a Linux ELF; it cannot exec on a general host such as Apple silicon. Earlier designs
 built the binary in the project container and copied it out — that was abandoned for exactly this
-reason. Every substrate now builds the binary **host-native**, for the host it will run on:
+reason. Every substrate builds the binary **host-native**, for the host it will run on:
 
 | Substrate | Where the binary is built | Where it runs | Why |
 |-----------|---------------------------|---------------|-----|
@@ -41,9 +40,8 @@ reason. Every substrate now builds the binary **host-native**, for the host it w
 
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
-requires the sibling `./.build/<project>.dhall`, created by the built binary's config initialization
-surface rather than by Python — which the bootstrapper triggers idempotently (`config init --if-missing`)
-right after the build, so the default is normally already present.
+requires the sibling `./.build/<project>.dhall`: the root host-orchestrator config the built binary
+mints for itself (the target `project init` surface, see [Current Status](#current-status)).
 
 ## Why `./.build/` Is Always Present
 
@@ -57,16 +55,15 @@ The bootstrapper populates that path with a plain, incremental `cabal build exe:
 `cabal list-bin exe:<project>` and copies it to `./.build/<project>`. `cabal build` is incremental and,
 on an unchanged rerun, prints just `Up to date` — it does not re-package each local source into an
 sdist tarball, re-resolve the plan, or copy the exe on every invocation the way `cabal install` does,
-so a warm `hostbootstrap run` is quiet while a genuine cold build still shows live compile progress.
-This mirrors the in-container build, which already uses `cabal build` + `list-bin`.
+so a warm rerun is quiet while a genuine cold build still shows live compile progress. This mirrors the
+in-container build, which already uses `cabal build` + `list-bin`.
 
 ## No Automatic Wrapper Freshness Check
 
-The build/run model must stay offline-capable after installation. `hostbootstrap build` and
-`hostbootstrap run` do not contact GitHub, compare the installed bootstrapper to the default branch, or
-mutate the pipx environment before building the project binary. Updating the wrapper is an explicit
-operator action documented in [self_update](../engineering/self_update.md), not a precondition for a
-normal build/run.
+The build/run model stays offline-capable after installation. The bootstrapper does not contact GitHub,
+compare the installed wrapper to the default branch, or mutate the pipx environment before building the
+project binary. Updating the wrapper is an explicit operator action documented in
+[self_update](../engineering/self_update.md), not a precondition for a normal build or run.
 
 ## Where the host build cache lives
 
@@ -76,7 +73,7 @@ The host-native `cabal build` keeps its package store **repo-local** at `./.buil
 host build state — the compiled dependency closure included — so a cleaned tree rebuilds cold rather
 than silently reusing deps from a shared user store. This is the host build's store only; it is
 distinct from, and shares nothing with, the in-container warm store at `/opt/cache/cabal/` that the
-later project-container build reuses (see [warm_store.md](../engineering/warm_store.md)).
+later project-container build reuses (see [warm_store](../engineering/warm_store.md)).
 
 ## Tart Is Build-Only
 
@@ -91,21 +88,68 @@ The Python bootstrapper does **not** ensure Docker or build the project containe
 host-native binary is built and execed, the **binary** does that work, because it can do everything a
 built binary reasonably can:
 
-- **Ensure Docker**: the binary's `ensure docker` reconciler provisions and verifies Docker (on Apple,
-  the per-project Colima VM sized to the resource budget; on Linux, the daemon plus invoking-user socket
-  access for future login sessions and the current session). See
+- **Ensure Docker**: the binary's Docker reconciler provisions and verifies Docker (on Apple, the
+  per-project Colima VM sized to the resource budget; on Linux, the daemon plus invoking-user socket
+  access for the current session and future login sessions). In the target model this is an `ensure`
+  reconciler invoked as a **chain step** within `project up`. See
   [resource_budgeting](../engineering/resource_budgeting.md).
 - **Build the project container** `FROM` the base image, gating on the project's canonical code-check
   (formatting, lint, type/compile checks). Building the container is the mechanism that enforces this
-  gate. The Dockerfile first runs the binary's config initialization surface so the container's normal
-  commands read a sibling `/usr/local/bin/<project>.dhall`. See
+  gate. The Dockerfile first mints the container's sibling `/usr/local/bin/<project>.dhall` so the
+  container's normal commands read a context that names the container frame. See
   [code_check_doctrine](../engineering/code_check_doctrine.md) and
   [binary_context_config](binary_context_config.md).
 
 The two builds are distinct and owned by distinct layers: the bootstrapper's host-native binary build
 (the prerequisite to having any binary at all) and the binary's later container build (the code-check
 gate and any container-resident services). Neither is redundant — collapsing them would either skip
-the gate or ship an unrunnable binary.
+the gate or ship an unrunnable binary. This is the **fractal bootstrap**: provision a frame, build or
+install the binary in it, then hand off the binary's own subcommand into the next frame. The Python
+bootstrapper is the metal-frame instance of that pattern; the container frame skips the build and runs
+the binary the image already carries. See [composition_methodology](composition_methodology.md).
+
+## Run-Models Are Selected Within `project up`
+
+The four run-models — `OneShot`, `HostNative`, `HostDaemon`, `Cluster` — are **selected** from
+detected substrate and the generated topology, never declared in Dhall. The canonical definition lives
+in [run_models](run_models.md); this section states only *when* the selection happens in the target
+model.
+
+In the target model, `project up` recursively interprets the lift chain — an ordered `[Step]` produced
+by the project's `chain :: RootConfig -> [Step]` value. Each step that runs compute selects its
+run-model from the facts in force at that step, **inside the interpretation of the chain**:
+
+- a build-image or `OneShot`-shaped step resolves to `OneShot`/`HostNative`;
+- a long-running serving step resolves to `HostDaemon`;
+- a cluster step resolves to `Cluster`, realized by the kind/Helm
+  [cluster_lifecycle](../engineering/cluster_lifecycle.md).
+
+There is no standalone `cluster` or `deploy` verb that fixes a run-model up front; the model is a
+derived fact of the step being interpreted. The test harness remains the **context-agnostic** engine:
+the `Cluster` model runs wherever the harness is lifted to, so lifting `test all` into a VM-container
+stands the kind cluster up on that VM's Docker. The harness is lifted as a whole, never re-expressed as
+a parallel chain of lifted cluster ops — see
+[composition_methodology](composition_methodology.md) for the single-representation rule.
+
+## Deploy Is a Persistent Stack
+
+In the target model, deploy is what `project up` leaves running: a **persistent stack**, not a
+run-to-completion job. `project up` reconciles the chain to running and is idempotent — a rerun against
+a partially-up stack converges the remainder rather than rebuilding from zero. The VM, the cluster, and
+the workload services stay up after `project up` returns.
+
+The lifecycle verbs are split so the persistent stack has explicit stop and delete transitions:
+
+| Verb | Effect | `.data` |
+|------|--------|---------|
+| `project up` | Reconcile the chain to running; leave the persistent stack up. | preserved |
+| `project down` | Stop services / clusters / VMs (provider **stop**, e.g. `incus stop` / `limactl stop`); delete nothing. | preserved |
+| `project destroy` | Stop, then delete everything spun up. | preserved |
+
+`.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
+frame is still up, then stops or deletes on ascent (the VM stopped last); it is best-effort and
+idempotent, tolerating a partial stack. `test run all` validates the live stack from the root frame,
+decoupled from deploy — see [harness_workflow](harness_workflow.md).
 
 ## The VM Provider Parameterization
 
@@ -114,7 +158,7 @@ host-provider axis orthogonal to substrate — the VM is still a `linux-cpu`/`li
 the host target is not a fifth run-model. It parameterizes the existing run-models rather than adding to
 them:
 
-```
+```haskell
 data HostTarget = Local | InVM IncusVM
 ```
 
@@ -125,12 +169,51 @@ tool directly; `runInTarget cfg (InVM vm) t args` dispatches through one host
 binary, since the VM is a separate machine). The run-models in [run_models](run_models.md) are
 unchanged; the host target sits underneath them, so the same machinery runs identically whether the
 Linux host is local or encapsulated in an Incus VM. See
-[incus](../engineering/incus.md) for the host-provider axis, the `ensure incus` install, and the VM
-lifecycle.
+[incus](../engineering/incus.md) for the host-provider axis, the Incus install reconciler, and the VM
+lifecycle (including stop-without-delete for `project down`).
 
 The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level self-reference lift**
 (`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
 binary crosses a boundary by invoking its *own* subcommand in the nested context. The Apple Silicon demo
 uses the Lima VM provider (`limactl shell <instance> -- ...`); native Linux uses Incus
-(`incus exec <vm> -- ...`); containers use `docker run --rm`. See
-[composition_methodology](composition_methodology.md).
+(`incus exec <vm> -- ...`); containers use `docker run --rm`. In the target model, `project up` is the
+**recursive interpreter** of that lift: it runs the current frame's steps, then hands off
+`<binary> project up` into the next frame, where the child owns its segment and verifies it is in the
+frame its `.dhall` describes. See [composition_methodology](composition_methodology.md).
+
+## Current Status
+
+The host-native, no-copy-out build is the implemented mechanism and is **unchanged** by the target
+model: Python ensures the host toolchain, builds the binary into `./.build/`, and execs it; the binary
+ensures Docker and builds the project container `FROM` the base image, gating on `check-code`.
+
+The recursive `project` command and the `[Step]` chain interpreter described above are the **target**,
+not yet implemented. What runs today is the flat command surface and the demo's hand-written sequence:
+
+- **Built today (flat verbs):** the binary exposes flat surfaces — `ensure <tool>`, `config`
+  (`init`/`show`/`schema`/`render`), `context create <kind>`, `cluster up|down|delete|status`, and
+  `test`. The demo drives the lifecycle with its own `vm` and `deploy` verbs and a hand-written
+  deploy chain. Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are
+  implemented; the four run-models are real.
+- **Target (the `project` chain):** a single `chain :: RootConfig -> [Step]` value the core interprets,
+  driven by `project init|up|down|destroy`, a read-only `context` introspection command, and a
+  `test init` / `test run <suite>|all` split. The flat verbs dissolve into chain steps and step
+  actions: `cluster` bring-up/teardown, `context create`, `config init`, and the demo's `vm`/`deploy`
+  become steps under `project up`/`down`/`destroy`. `project down`'s stop-without-delete is a new
+  provider capability.
+
+`DEVELOPMENT_PLAN/` owns the migration status and the reopened phases. Nothing in this doc should be
+read as a claim that the `project` command or the recursive interpreter is already implemented.
+
+## See also
+
+- [composition_methodology](composition_methodology.md) — canonical home of the chain / `[Step]` model,
+  the recursive `project up` interpreter, the fractal bootstrap, and single representation.
+- [run_models](run_models.md) — the four run-models and the selection key that `project up` consumes per
+  step.
+- [python_haskell_boundary](python_haskell_boundary.md) — the metal-frame bootstrap that produces
+  `./.build/<binary>`.
+- [binary_context_config](binary_context_config.md) — how each frame's `<project>.dhall` lets the binary
+  verify its place before side effects.
+- [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the kind/Helm lifecycle the `Cluster`
+  run-model drives as a chain step.

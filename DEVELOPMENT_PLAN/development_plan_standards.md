@@ -97,6 +97,8 @@ DEVELOPMENT_PLAN/
 ├── phase-13-hostbootstrap-demo.md
 ├── phase-14-composition-methodology.md
 ├── phase-15-binary-context-config.md
+├── phase-16-project-lifecycle-command.md
+├── phase-17-chain-driven-test-and-context-introspection.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -216,7 +218,11 @@ The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
-(`daemon-substrate`) contributes via the four-stream merge (§ T).
+(`daemon-substrate`) contributes via the four-stream merge (§ T). The `ensure` reconcilers are normally
+invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs; the standalone
+`ensure <tool>` subcommand is retained only as a hidden debug surface. A provider reconciler reaches a
+**usable** provider, not merely an installed binary — on Linux `ensure incus` also ensures the VM
+capability (machine emulator + UEFI firmware) and the bridge egress a fresh VM needs to reach the network.
 
 ### M. Python-Thin / Haskell-Core Boundary
 
@@ -238,7 +244,11 @@ else it reasonably can. There is **no copy-out**: a binary built inside a
 Linux container cannot exec on a general host such as Apple silicon, which is why the binary is built
 host-native and the Python layer must ensure the host build toolchain first. All other host-management
 logic lives in `hostbootstrap-core`; new host logic defaults to the project binary (Haskell), and a
-Python addition must be justified by the pre-binary bootstrapping constraint.
+Python addition must be justified by the pre-binary bootstrapping constraint. The shape the Python layer
+runs — provision the host, build the pb host-native, hand off by exec — recurs at **every** frame the
+binary later crosses (§ U): the Python bootstrapper is the **metal-frame instance** of the fractal
+bootstrap, and each chain descent repeats provision → build the pb in the frame → hand off
+`pb project up`.
 
 The Python layer also owns its own explicit pipx self-update path, because that command replaces the
 pipx-installed bootstrapper before or outside any project binary. This is distribution lifecycle, not
@@ -290,9 +300,12 @@ child config projections, then into both the spinup cordon and the binary-genera
 ### P. optparse Command-Tree Extension Contract
 
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus a project entrypoint
-(`runHostBootstrapCLI progName projectSpec`). A project binary extends the core tree through named
-`ProjectCommand` values and a `ProjectSpec` that carries the non-empty test suite, project `check-code`
-action, and project `ConfigArtifact` delta. The entrypoint validates those extension points before parser
+(`runHostBootstrapCLI progName projectSpec`). The surfaced core tree is the recursive lifecycle command
+`project init|up|down|destroy`, the read-only `context` introspection command, `test init|run`, and
+`check-code` (§ Y, § Z). A project binary extends the core through a `ProjectSpec` whose primary member is
+its **lift chain** (`chain :: RootConfig -> [Step]`, § Y), alongside the non-empty test suite, project
+`check-code` action, and project `ConfigArtifact` delta; any residual named `ProjectCommand` deltas are
+still validated to never shadow a core verb. The entrypoint validates those extension points before parser
 construction: project commands cannot shadow core verbs, duplicate commands/cases/artifacts are rejected,
 the test suite must be non-empty, and `check-code` is supplied by construction rather than silently
 defaulted. This CLI tree is the first of the four parallel extension streams the library hierarchy
@@ -342,16 +355,17 @@ harness, however, are `hostbootstrap`-**owned** contracts that downstream refact
 
 The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
 `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes L0 directly. Each level adds only its
-delta to **four parallel streams**, one additive merge idiom each: the optparse **CLI tree**
-(`runHostBootstrapCLI progName projectSpec`, with named `ProjectCommand` deltas appended after validation
-and never shadowed); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the
+delta to **four parallel streams**, one additive merge idiom each: the **lift chain**
+(`chain :: RootConfig -> [Step]` — the level below's host-management step kinds with the project's own
+step kinds appended, interleaved and interpreted by the core `project` lifecycle, § Y); the **Dhall
+vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the
 **schema-gen** `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); and the
 **test-harness** `Seams` (threaded through a non-empty `TestSuite`). A project integrates in one of two
 modes: freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
 `source-repository-package` + the `runHostBootstrapCLI` extension. The system runs one of four
 **run-models** — `OneShot` (one-shot `docker run`), `HostNative` (host-native build + host exec),
-`HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected by
-`(verb × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
+`HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected within `project up`'s step interpretation by
+`(step × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
 
 ### U. Host-Provider Axis And The Self-Reference Lift
 
@@ -369,7 +383,11 @@ context. The argv fold is pure (unit-tested) and honors § K: only the outermost
 tool the resolver maps to an absolute path; every nested tool is the target's own bare `$PATH` name. The
 two-case `HostTarget = Local | InVM` is the tool-level lift, kept alongside; the subcommand-level lift
 generalizes it to an n-level frame stack. L0 owns only the generic lift; the *specific* chain (the worked
-demo's host → VM → container) is project logic. See
+demo's host → VM → container) is project logic. The chain is interpreted **recursively**: `project up`
+runs the current frame's steps, then hands off `pb project up` into the next frame, so each binary owns
+its own segment and the deploy is restartable from any frame (§ Y). Each frame transition repeats the same
+three beats — provision the frame, build/install the pb in it, hand off `pb project up` — of which the
+Python bootstrapper (§ M) is the metal-frame instance. See
 [composition_methodology](../documents/architecture/composition_methodology.md).
 
 ### V. Layered Warm Store
@@ -382,21 +400,19 @@ fragment(s), so cache-hit and version-pinning track the hierarchy.
 
 ### W. Single Representation And The Lifted Test Workflow
 
-An operation has exactly **one** representation. The standardized test harness (`HostBootstrap.Harness`:
-`runMatrix` + `Seams`) is the context-agnostic test engine — it brings up an isolated per-case
-environment, runs the case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`) as
-`HostConfig -> IO ()` **locally**, unaware of any enclosing context. The harness is therefore a **lift
-target**, not a lift-aware component: there is **no** `LiftContext` inside it, and that is correct (per the
-self-reference-lift rule, § U). A consumer composes its deploy as a **single** explicit lift sequence
-(§ U) whose final compute step **lifts the whole test workflow** into the project container in the VM. It
-folds through the selected VM provider (`limactl shell ... --` on Apple Silicon,
-`incus exec ... --` on Linux), then `docker run --rm <image> test all`. Inside that lifted context the
-harness runs `clusterUp` "locally" on the VM's Docker (the mounted socket), so the kind cluster lives
-**in the VM**, reached with no second "bring up a cluster" path. Re-expressing cluster bring-up / Harbor /
-web-serve / e2e as a **separate** chain of lifted ops alongside the harness is a **redundant
-representation**: it duplicates the harness and double-creates clusters when it lifts a harness case. There is one
-representation, and the harness is it. Cross-references: § T (the harness and the four-stream extension)
-and § U (the self-reference lift the deploy sequence is built from).
+An operation has exactly **one** representation. A project's deploy is its **lift chain** — a pure
+`chain :: RootConfig -> [Step]` value that *is* the project's identity; `project up` is its interpreter and
+`--dry-run` renders the same value apply executes (§ Y). There is no second hand-written orchestration path
+beside the chain. The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is the
+context-agnostic test engine — it brings up an isolated per-case environment, runs the case body, and
+tears it down, invoking its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` **locally**, unaware
+of any enclosing context. The harness is therefore a **lift target**, not a lift-aware component: there is
+**no** `LiftContext` inside it, and that is correct (per the self-reference-lift rule, § U). `project up`
+brings up a **persistent** stack; the test workflow is a **separate**, root-gated operation
+(`test run all`, § Z) that validates that running stack — re-expressing deploy bring-up as a parallel
+chain of lifted ops alongside the chain would be a redundant representation. Cross-references: § Y (the
+chain and its recursive interpreter), § Z (the decoupled test surface), and § U (the self-reference lift
+the chain is built from).
 
 ### X. Binary Context Configuration And Command Gating
 
@@ -429,8 +445,9 @@ The topology is a pure frame graph with parent links, not an implicit permission
 can represent arbitrary chains such as host -> VM -> container -> cluster -> service pod, or host -> VM ->
 Pulumi role -> EKS cluster -> workload. A process must fail before side effects when its local witnesses
 do not prove it is in the declared current frame. Bootstrap/inspection entrypoints are the only binary
-entrypoints allowed to run without an existing sibling context: help/version, `config init`,
-`config schema`, `config show FILE`, `config path`, and static `config render`. All normal commands fail
+entrypoints allowed to run without an existing sibling context: help/version, `project init`, and the
+read-only `context` introspection command (which absorbs the former `config schema` / `config show FILE` /
+`config path` / static `config render` surfaces). All normal commands fail
 fast with exit code 1 when the context file is missing, fails to decode, names a different
 project/binary, does not declare the required capabilities, or does not permit the requested command. A
 Phase 15 context also fails when required local witnesses cannot be verified. A
@@ -439,6 +456,54 @@ host-orchestrator commands must refuse to run inside a cluster-service pod; and 
 workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
 test-harness frame.
 
-Phase 15 implements this contract in the shared substrate: the built project binary creates the host-level
-default with `config init`, parent/container creation surfaces materialize nested configs, and normal
-command dispatch uses the sibling project config as its runtime authority.
+Phase 15 established this contract in the shared substrate: the built project binary creates the
+host-level default, parent/container creation surfaces materialize nested configs, and normal command
+dispatch uses the sibling project config as its runtime authority. The reopened work (§ Y) renames the
+host-level default surface to `project init`, folds child-config creation into the `context-init` chain
+step inside `project up`, and makes `context` a read-only introspection command.
+
+### Y. Project Lifecycle Command And The Step Chain
+
+A project's deploy is a pure value — its **lift chain**, `chain :: RootConfig -> [Step]` — interpreted by
+the core lifecycle command `project`. The chain shape is **code**: it is the project's identity and the one
+representation of its deployment (§ W). The sibling `<project>.dhall` carries **parameters + context +
+witness**, never the chain shape; a copy of the binary verifies it is in the frame its `<project>.dhall`
+describes, or fails fast (§ X). Optional structural variation (for example, deploy straight to Docker and
+skip the VM) is a flag in the **root** `<project>.dhall`, so the chain is a pure function of the root
+parameters.
+
+- `project init` — fail-fast unless run as a fresh host-level binary with no sibling `<project>.dhall`;
+  write the root config (host-orchestrator, no parent) with optional `--cpu` / `--memory` / `--storage` /
+  `--ha-replicas`. Python triggers this idempotently after the host-native build (§ M).
+- `project up` — interpret the chain **recursively** from the current frame: run the steps for this frame,
+  then for the next nested frame provision it, build/install the pb in it, and hand off `pb project up`
+  (the fractal bootstrap, § U). It is **idempotent** (reconcile-to-running); `--dry-run` renders the pure
+  chain without acting.
+- `project down` — stop services / clusters / VMs without deleting them (incus/Lima **stop**, not
+  destroy); recurse in while each frame is still up, then stop on ascent. Best-effort and idempotent so a
+  partial stack always tears down.
+- `project destroy` — `down`, then delete everything that was spun up. Durable host `.data` is **always
+  preserved** (the never-delete-`.data` invariant, § O).
+
+The **Step algebra** is the reuse unit: `hostbootstrap-core` ships the host-management step kinds
+(deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, deploy-kind, deploy-chart,
+expose-port), and a project contributes its own step kinds into the same `[Step]` (the lift-chain stream,
+§ T). Host and project steps interleave freely; a project's workload (a registry install, a web-serve, a
+role) is expressed as steps in the chain, not as separate top-level verbs.
+
+### Z. Chain-Driven Test Surface And Context Introspection
+
+The test surface mirrors `project` and is **decoupled** from deploy:
+
+- `test init` — runs only when a sibling `project` config already exists; writes the per-project
+  `test.dhall` (which may carry test-specific instructions).
+- `test run <suite>|all` — runs one or more test suites; `all` is always a suite. It is **root-only** and
+  fails fast when invoked without a `test.dhall` or from any non-root context. `project up` brings up a
+  persistent stack; `test run all` validates that running stack (the standardized harness remains the one
+  lift-target engine, § W).
+
+`context` is a **read-only** command: it introspects the sibling `<project>.dhall` and renders the global
+compositional sequence of lifts (`topologyFrames` / `parentChain`) with the current frame highlighted, so
+an operator can see the whole `metal → VM → container → cluster` chain and where this binary lands in it.
+It performs no mutation; child-config creation is the `context-init` chain step inside `project up` (§ Y),
+not a `context` subcommand.

@@ -4,32 +4,32 @@
 **Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](../architecture/binary_context_config.md)
 
-> **Purpose**: Describe the `ConfigArtifact` registry, `config init`, the `config schema` and
-> `config render` inspection verbs, and the render → decode → re-render round-trip guarantee.
+> **Purpose**: Describe the `ConfigArtifact` registry and the render → decode → re-render round-trip,
+> the root `<project>.dhall` written by `project init`, and the child `.dhall` minted by the
+> context-init step inside `project up` — the parameters/context/witness the chain consumes, never the
+> chain shape.
 
 ## TL;DR
 
+- The chain `chain :: RootConfig -> [Step]` is **code** — it is the project's identity and the single
+  representation of the lift sequence. The `.dhall` is **parameters + context + witness**, never the
+  chain shape. The canonical home of that model is
+  [composition_methodology](../architecture/composition_methodology.md); this doc defers to it and
+  covers only how the config text is generated.
 - `HostBootstrap.Dhall.Gen` defines `ConfigArtifact` — a named artifact carrying a reflected
-  `schemaText` and a rendered `renderText` — built by `artifactOf @a name value`.
-- `schemaText` is reflected from the Haskell type via the `ToDhall` encoder's `declared` field, so it
-  equals the type the `FromDhall` decoder accepts and cannot drift; `renderText` is the `ToDhall`
-  embedding of a concrete value.
+  `schemaText` and a rendered `renderText` — built by `artifactOf @a name value`. `schemaText` is
+  reflected from the Haskell type via the `ToDhall` encoder's `declared` field, so it equals the type
+  the `FromDhall` decoder accepts and cannot drift; `renderText` is the `ToDhall` embedding of a concrete
+  value.
 - `coreArtifacts` is the L0 registry (`budget`, `podResources`, `kindNode`). A project supplies its
-  artifact delta through `ProjectSpec`, and the inherited `config schema` prints `schemaUnion` of the
-  in-scope registry plus the reflected project-local `ProjectConfig` schema (guarded by a committed
-  snapshot for the L0 surface); `config render [--artifact NAME]` materializes static example renders from
-  that registry and fails fast when `NAME` is unknown.
-- `config init [--role ROLE] [--output FILE] [--force] [--if-missing]` writes a default project-local
-  `<project>.dhall` without requiring an existing config. By default it refuses to overwrite an existing
-  file; `--force` overwrites, and `--if-missing` is a no-op when the file already exists (the idempotent
-  mode the Python bootstrapper triggers post-build so a default config always exists). Parent projection
-  helpers derive narrower child configs for VM, container, service, daemon, one-shot, and test-harness
-  roles.
-- `deployConfigText` renders a deploy config carrying `assert : C.fitsWithin budget pods === True`, so
-  an over-budget deploy fails to type-check. Runtime deploy/child config projection is done by gated
-  parent commands from the active `<project>.dhall`; the ungated `config render` command is for static
-  registry examples.
-- A render → decode → re-render round-trip is byte-stable.
+  artifact delta through `ProjectSpec`; the read-only `context` command renders the in-scope registry's
+  schemas and static example renders plus the reflected project-local `ProjectConfig` schema.
+- `project init` writes the **root** `<project>.dhall` — the host-orchestrator config with no parent
+  frame, carrying resource budget and deploy knobs. The **context-init step** inside `project up` mints
+  each **child** `<project>.dhall` for the next frame just before the chain hands off into it: it narrows
+  the parent config to the child frame and appends that frame's topology and witnesses.
+- `deployConfigText` renders a config carrying `assert : C.fitsWithin budget pods === True`, so an
+  over-budget config fails to type-check. A render → decode → re-render round-trip is byte-stable.
 
 ## The `ConfigArtifact` Registry
 
@@ -60,39 +60,66 @@ data ConfigArtifact = ConfigArtifact
 | `kindNode` | `HostBootstrap.Config.Vocab.KindNode` | `KindNode 4 8 20` |
 
 A project binary supplies its own artifacts in `ProjectSpec`; `HostBootstrap.Command` concatenates them
-onto `coreArtifacts` for the inherited `config schema` / `config render` surfaces — the schema-gen stream
-of the four-stream extension contract (see [library_hierarchy](../architecture/library_hierarchy.md)). The
+onto `coreArtifacts` for the inherited inspection surface — the schema-gen stream of the four-stream
+extension contract (see [library_hierarchy](../architecture/library_hierarchy.md)). The
 reflect-from-decoders versus hand-written-assert split is described in
 [dhall_generation](../architecture/dhall_generation.md).
 
-## `config init`
+## `project init`: The Root `<project>.dhall`
 
-`config init` is the ungated local-config bootstrap surface:
+`project init` is the fail-fast bootstrap for the **root** config. It succeeds only for a fresh
+host-level binary with no sibling `<project>.dhall`, and writes the host-orchestrator config — the one
+frame with no parent:
 
 ```sh
-<project> config init --role host-orchestrator --output ./.build/<project>.dhall
+<project> project init --cpu 4 --memory 8 --storage 20 --ha-replicas 2
 ```
 
-It writes the project-local `ProjectConfig` shape: Dockerfile path, editable resource budget, deploy
-knobs, and runtime context authority. The role defaults to `host-orchestrator`; other supported roles are
-`vm-orchestrator`, `vm-project-container`, `image-build-container`, `cluster-service`, `daemon`,
-`one-shot-job`, and
-`test-harness`. Resource and deploy defaults can be overridden with `--cpu`, `--memory`, `--storage`,
-`--dockerfile`, `--source-root`, and `--ha-replicas`. `--if-missing` makes the write idempotent (a no-op
-when the target already exists, so a user-edited config is never clobbered); `--force` overwrites. The
-rendered Dhall hoists the repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`
-unions into top-level `let` bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and
-standalone — no imports, decodable in-process.
+The written `ProjectConfig` shape carries the Dockerfile path, the editable resource budget, the deploy
+knobs, and the root context authority (a single host-orchestrator frame). The rendered Dhall hoists the
+repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass` unions into top-level
+`let` bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and standalone — no imports,
+decodable in-process. Optional structural variation (for example, skip the VM and descend straight to
+Docker) is a flag on this root config, so `chain rootCfg` stays a pure function of the root parameters.
 
-The same pure generation code also projects child configs from a parent config. A child projection keeps
-the project settings it needs, carries the parent's resource envelope and deploy knobs, appends the parent
-frame/topology, and narrows capabilities and allowed command classes so a container/service config cannot
-represent host-only authority.
+The root config is the user's editable surface. The chain reads it once at the top frame; every deeper
+frame's config is **derived**, not hand-edited.
 
-## `config schema`
+## The Context-Init Step: Minting Child `<project>.dhall`
 
-`config schema` prints `schemaUnion` of the in-scope artifacts — the transitive union of the registry's
-schemas, each labelled by name — then appends the reflected project-local `ProjectConfig` schema:
+Descending into a nested frame requires a child config that proves the binary's new position. That child
+`.dhall` is minted by a **context-init step** the chain runs inside `project up`, just before it hands
+off `pb project up` into the next frame (the VM, then the project container). The same pure generation
+code that `project init` uses projects the child from the parent:
+
+- it keeps the project settings the child needs;
+- it carries the parent's resource envelope and deploy knobs;
+- it appends the child frame to `topologyFrames`, sets `currentFrame` to it, and records the witnesses
+  that prove the frame locally;
+- it narrows capabilities and allowed command classes so a container/service config cannot represent
+  host-only authority.
+
+The descending binary reads its sibling child `.dhall` before dispatch and verifies it is in the frame
+that config describes, or fails fast — the per-frame handoff check (see
+[binary_context_config](../architecture/binary_context_config.md) and
+[dhall_topology](dhall_topology.md)).
+
+- **WRONG**: a parent mints a child config for a frame that is not in the topology, or a child binary
+  trusts the config without witnessing its frame. This is wrong because the child could then run
+  host-only authority in a container, defeating the per-frame fail-fast that keeps the lift honest.
+- **RIGHT**: the context-init step mints a child only for a frame already in `topologyFrames`, and the
+  descending binary refuses to act before its local witnesses prove that `currentFrame`. See
+  [composition_methodology § Context-Aware Topology](../architecture/composition_methodology.md).
+
+## `context`: Read-Only Inspection
+
+`context` is read-only. It introspects the sibling `<project>.dhall`, renders the global lift
+composition (`topologyFrames`/`parentChain`) with the current frame highlighted, and prints the in-scope
+registry. It mutates nothing — minting child configs is the context-init step's job inside `project up`,
+not a user verb.
+
+The registry surface `context` prints is the transitive union of the in-scope artifacts' schemas, each
+labelled by name, with the reflected project-local `ProjectConfig` schema appended:
 
 ```text
 -- budget
@@ -113,23 +140,17 @@ schemas, each labelled by name — then appends the reflected project-local `Pro
 { dockerfile : Text, ... }
 ```
 
-The output is guarded by a committed snapshot at
+The L0 portion of that schema is guarded by a committed snapshot at
 `core/hostbootstrap-core/test/golden/config_schema.dhall`. A decoder-type change that is not
-re-snapshotted fails the golden diff, so the printed schema and the committed contract stay in
-lock-step. `config schema` is an inspection/bootstrap surface and does not require an existing sibling
-config.
+re-snapshotted fails the golden diff, so the printed schema and the committed contract stay in lock-step.
+The static example renders `context` materializes are each the `renderText` of an artifact — the
+`ToDhall` embedding of its canonical value.
 
-## `config render`
-
-`config render [--artifact NAME]` materializes the registry's static example renders. With no flag it
-renders every in-scope artifact; `--artifact NAME` renders exactly the named one and exits non-zero if the
-name is absent. Each render is the `renderText` of the artifact — the `ToDhall` embedding of its canonical
-value. This is an inspection/bootstrap surface and does not require an active sibling `<project>.dhall`.
+## The Budget Assertion
 
 The rich deploy tier is rendered by `deployConfigText coreImport budget pods`, which composes a budget
-and a concurrent pod set into a config carrying the budget assertion. Runtime commands seed the budget
-from the active host-level `<project>.dhall`, then carry it through generated child `<project>.dhall`
-projections after context validation:
+and a concurrent pod set into a config carrying the budget assertion. The context-init step seeds the
+budget from the root `<project>.dhall`, then carries it through each generated child projection:
 
 ```dhall
 let C = <coreImport>
@@ -141,27 +162,48 @@ in  { budget = budget
     }
 ```
 
-`coreImport` is the Dhall import text for `Core.dhall` — an absolute path in tests, a bundled path in
-a deployed binary. Because the assertion is part of the rendered config, Dhall checks it at evaluation
+`coreImport` is the Dhall import text for `Core.dhall` — an absolute path in tests, a bundled path in a
+deployed binary. Because the assertion is part of the rendered config, Dhall checks it at evaluation
 time:
 
-- **WRONG**: render a deploy config and rely on a separate runtime check to reject over-budget pod
-  sets. This is wrong because nothing stops the over-budget config from being evaluated and consumed
-  before that check runs — the budget is not enforced at the config's own boundary.
+- **WRONG**: render a deploy config and rely on a separate runtime check to reject over-budget pod sets.
+  This is wrong because nothing stops the over-budget config from being evaluated and consumed before
+  that check runs — the budget is not enforced at the config's own boundary.
 - **RIGHT**: embed `assert : C.fitsWithin budget pods === True` in the rendered config, so an
-  over-budget pod set makes the config itself fail to type-check at Dhall evaluation and never
-  produces a value. See [resource_budgeting](resource_budgeting.md) for the budget the assertion
-  guards.
+  over-budget pod set makes the config itself fail to type-check at Dhall evaluation and never produces a
+  value. See [resource_budgeting](resource_budgeting.md) for the budget the assertion guards.
 
 ## The Round-Trip Guarantee
 
-Because `schemaText` is reflected from the same type the decoder accepts and `renderText` is that
-type's `ToDhall` embedding, a generated config round-trips byte-stably: render a value, decode it back
-through `FromDhall`, and re-render the decoded value, and the two render texts are byte-identical. A
-test proves this. The round-trip is the practical guarantee that the generated tier is a faithful
-projection of the binary's types — the render and the schema both flow from one source, so there is no
-seam where they can disagree. The standards-level statement of the model lives in
+Because `schemaText` is reflected from the same type the decoder accepts and `renderText` is that type's
+`ToDhall` embedding, a generated config round-trips byte-stably: render a value, decode it back through
+`FromDhall`, and re-render the decoded value, and the two render texts are byte-identical. A test proves
+this. The round-trip is the practical guarantee that the generated tier is a faithful projection of the
+binary's types — the render and the schema both flow from one source, so there is no seam where they can
+disagree. The standards-level statement of the model lives in
 [derived_project_standards](derived_project_standards.md) and
 [development_plan_standards § P, Q, T, X](../../DEVELOPMENT_PLAN/development_plan_standards.md); the
 Dhall tier topology is in [dhall_topology](dhall_topology.md), and the runtime context authority is in
 [binary_context_config](../architecture/binary_context_config.md).
+
+## Current Status
+
+The generation substrate is implemented and exercised today: the `ConfigArtifact` registry,
+`reflectedSchema`, `deployConfigText` with the budget assertion, the parent-to-child projection helpers,
+the union hoisting, the committed schema snapshot, and the round-trip test all run through the canonical
+code-check.
+
+The surface that drives them is the **flat verb set** today: `config init [--role ROLE]` writes a local
+config for a selected role (host-orchestrator, vm-orchestrator, vm-project-container,
+image-build-container, cluster-service, daemon, one-shot-job, test-harness), with `--if-missing` for the
+idempotent post-build write the Python bootstrapper triggers; `config schema` and `config render` are the
+ungated inspection verbs; and child configs are minted by the demo's `context create <kind>` mutation
+verb. The implemented topology-aware gate already checks the per-frame witnesses.
+
+The **target** reshapes that surface without changing the generation code: `project init` writes only the
+root host-orchestrator config (fail-fast on an existing sibling); the parent-to-child projection runs as
+the **context-init step** inside the recursive `project up` interpreter rather than as a standalone
+`context create` verb; and `config schema`/`config render` fold into the read-only `context` command.
+The recursive `project up` interpreter and the `[Step]` chain that calls the context-init step are the
+target — they are not implemented yet. See the development plan
+([phase 8](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)) for the migration status.

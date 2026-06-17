@@ -12,29 +12,39 @@
 material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
+The model is **the lift chain is the project**. A project binary's identity is its
+`chain :: RootConfig -> [Step]` value; `project up` is a recursive interpreter that runs the current
+frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
+[architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc
+defers to it rather than re-deriving it. The current command surface and the target one are tracked
+in [Current Status](#current-status).
+
 ## Architecture
 
 - [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md) — the
-  `hostbootstrap-core` Haskell library: module surface and the optparse command-tree extension
-  contract project binaries build on.
-- [architecture/composition_methodology.md](architecture/composition_methodology.md) — the
-  composable-operation algebra, the self-reference lift across `Local | InVM | InContainer`, the
-  one-operation-one-representation rule (the test harness is a context-agnostic lift target, so a
-  consumer lifts the whole test workflow rather than re-expressing it as a parallel chain), and the
-  deploy ≡ business-logic unification (one algebra for deployment and runtime business logic).
+  `hostbootstrap-core` Haskell library: module surface, the `Step` algebra a project extends with its
+  chain, and the `project`/`context`/`test`/`check-code` command tree project binaries build on.
+- [architecture/composition_methodology.md](architecture/composition_methodology.md) — the **canonical
+  home of the chain-is-the-project model**: the `[Step]` chain as the single representation, `project up`
+  as the recursive/fractal interpreter of the self-reference lift across `Local | InVM | InContainer`,
+  fractal bootstrap (the Python bootstrapper is the metal-frame instance of provision → build-pb →
+  handoff), and the deploy ≡ business-logic unification (one algebra for deployment and runtime business
+  logic).
 - [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
-  place" binary-context contract: every normal project-binary command reads a sibling
-  `<project>.dhall` and refuses commands that do not match its declared context.
+  place" binary-context contract: a sibling `<project>.dhall` is parameters + context + witness, the
+  read-only `context` command introspects and visualizes the frame, and each frame fails fast on handoff
+  unless it matches its declared `.dhall`.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
   build/run model, Tart as build-only, `./.build/`, and why the binary (not the bootstrapper) builds
   the project container.
 - [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
-  library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively.
-- [architecture/dhall_generation.md](architecture/dhall_generation.md) — the local runtime config,
-  generated child configs, and generated Dhall roles, plus the three-vocabulary layering and the reflect-from-decoders vs
-  hand-written-assert nuance.
+  library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively,
+  where stream 1 is the lift chain (the ordered `[Step]` of core and project step kinds).
+- [architecture/dhall_generation.md](architecture/dhall_generation.md) — `.dhall` as parameters +
+  context + witness, the child config minted by the generated context-init step, and the generated Dhall
+  roles, plus the three-vocabulary layering and the reflect-from-decoders vs hand-written-assert nuance.
 - [architecture/run_models.md](architecture/run_models.md) — the four run-models (`OneShot`,
   `HostNative`, `HostDaemon`, `Cluster`) and the collapsed key that selects one, never declared in Dhall.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
@@ -44,28 +54,36 @@ material lives here. Conventions are defined in
 
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
-- [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model and the
-  rule that rich schemas are binary-generated artifacts.
+- [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model, the
+  topology frames that drive the recursive chain (each pb verifies its frame), and the rule that rich
+  schemas are binary-generated artifacts.
 - [engineering/config_generation.md](engineering/config_generation.md) — the `ConfigArtifact`
-  registry, the `config schema`/`config render` verbs, and the render round-trip guarantee.
+  registry, the render round-trip guarantee, and the child `.dhall` minted by the context-init step
+  inside `project up`; schema/render introspection folds under the read-only `context` command.
 - [engineering/composition_patterns.md](engineering/composition_patterns.md) — a cookbook of composition
-  shapes (context topologies, operation kinds, business-logic shapes) consumers compose their chain from.
+  shapes (the `[Step]` chain and its recursive interpreter, context topologies, operation kinds,
+  business-logic shapes) consumers compose their chain from.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
-  step-by-step guide to authoring a project binary on `hostbootstrap-core` (verbs, the lift chain, the
-  test seams, the budget).
+  step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
+  `chain :: RootConfig -> [Step]` (plus step actions, test suite, Dhall vocabulary, and budget) rather
+  than noun verbs.
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
-  contract and the fail-fast-on-wrong-host CLIs.
+  contract and the fail-fast-on-wrong-host CLIs; reconcilers run as chain steps within `project up`,
+  with standalone `ensure <tool>` retained as a hidden debug surface.
 - [engineering/resource_budgeting.md](engineering/resource_budgeting.md) — the resource budget,
   verify-spare-resources, and Colima/kind cordoning.
 - [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
   one canonical parser, the three rings, and the per-substrate storage cordon.
 - [engineering/incus.md](engineering/incus.md) — the `incus` host-provider axis: the `HostTarget`
-  parameterization, `ensure incus`, the VM lifecycle and `incus exec` dispatch, and the sizing cordon;
-  the worked demo uses Lima, not Incus, for the Apple Silicon pristine VM.
+  parameterization, `ensure incus`, and the VM lifecycle expressed as core chain steps (deploy-VM under
+  `project up`, stop-without-delete under `project down`, delete under `project destroy`) plus
+  `incus exec` dispatch and the sizing cordon; the worked demo uses Lima, not Incus, for the Apple
+  Silicon pristine VM.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
-  Silicon for a real pristine Linux VM.
-- [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm lifecycle
-  semantics, the never-delete-`.data` invariant, and production-vs-test profiles.
+  Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
+- [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
+  as chain steps under `project up`/`project down`/`project destroy` (including stop-without-delete), the
+  never-delete-`.data` invariant, and production-vs-test profiles.
 - [engineering/base_image.md](engineering/base_image.md) — the base image contents.
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
   semantics.
@@ -75,11 +93,11 @@ material lives here. Conventions are defined in
 - [engineering/registry_credentials.md](engineering/registry_credentials.md) — forwarding the host's
   Docker Hub login down the lift to authenticate nested pulls, modelled so the credential is never in
   Dhall, never persisted, and never in `argv`.
-- [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the `test`
-  verb, and the project test suites.
+- [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the
+  root-gated `test init` / `test run <suite>|all` surface (`test.dhall`), and the project test suites.
 - [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
-  every derived project follows.
+  every derived project follows, including the four-stream contract whose stream 1 is the lift chain.
 - [engineering/derived_dockerfile.md](engineering/derived_dockerfile.md) — the idiomatic derived
   project container: the in-Dockerfile `check-code` gate, the `purescript-bridge` → `spago` →
   `esbuild` web build, and the build-stage ordering.
@@ -97,8 +115,27 @@ material lives here. Conventions are defined in
 ## Operations
 
 - [operations/demo_runbook.md](operations/demo_runbook.md) — the `hostbootstrap-demo` runbook: the
-  a–j pristine-bootstrap flow, the feature-to-harness-case table, and the
+  `project up` / `project down` / `project destroy` lifecycle plus `test run all` and `context`
+  visualization, the feature-to-harness-case table, and the
   three-builds-vs-standard-host-native-build explanation.
+
+## Current Status
+
+The summaries above describe the **target** command surface — the recursive `project` lifecycle and the
+`[Step]` chain. That refactor is in progress: the affected `DEVELOPMENT_PLAN/` phases are reopened or
+planned, so it is not a Done-claim, and the recursive `project up` interpreter is not yet implemented.
+
+- **Implemented today (flat verbs):** the core binaries expose `ensure`, `config` (`init`/`schema`/
+  `show`/`render`), `context create`, `cluster`, and `test`; the demo exposes `vm` and `deploy` (the
+  hand-written `demoDeployChain`). These are the surfaces the code ships now.
+- **Target (the chain):** the recursive `project init|up|down|destroy` lifecycle, the read-only
+  `context` introspection command (absorbing `config show/schema/render`), and the
+  `test init` / `test run <suite>|all` split — all interpreting the project's
+  `chain :: RootConfig -> [Step]` value. The flat verbs dissolve into chain steps (cluster bring-up,
+  context-init, `ensure`, the demo's deploy stages) under this single representation.
+
+See [composition_methodology.md](architecture/composition_methodology.md) for the model and
+[`DEVELOPMENT_PLAN/`](../DEVELOPMENT_PLAN/) for the authoritative phase status.
 
 ## Languages
 

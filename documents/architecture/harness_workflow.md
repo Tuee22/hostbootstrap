@@ -2,11 +2,12 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
+**Referenced by**: [documents index](../README.md), [composition_methodology](composition_methodology.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
 
 > **Purpose**: Describe the one standardized test engine — the per-case `runMatrix` loop, the
 > seam-split between the L0 driver and project-supplied seams, the mechanical never-touch-production
-> guard, and budget-slicing.
+> guard, and budget-slicing — and the root-gated `test init` / `test run` surface that drives it
+> against the live `project up` stack.
 
 ## TL;DR
 
@@ -16,16 +17,18 @@
 - The seam-split is the whole point: the L0 driver (loop, isolation, delete-guard, budget-slicing,
   report) lives once in core; cluster projects supply kind/Helm `Seams`; the app supplies only its
   case matrix.
+- The test surface is a **separate, root-gated** command pair — `test init` writes `test.dhall`,
+  `test run <suite>|all` drives `runMatrix` — **decoupled** from the deploy chain. `test run all`
+  validates the live stack that `project up` brought up; it is not part of bringing the stack up.
 - Never-touch-production is mechanical: `guardTestDelete` refuses any cluster name without the
   project's test prefix, and the pure `teardown` partition keeps `.data` out of the removal set.
 - `sliceBudget` keeps the matrix within the project ceiling — divisible cases split by weight,
   indivisible cases run serially at the full budget.
-- The harness is **context-agnostic**: its seams invoke reconcilers (e.g. `clusterUp`) "locally", with no
-  `LiftContext` inside the engine. It is therefore a **lift target** — a consumer lifts the whole `test all`
-  workflow into a nested context (e.g. a VM-container), and the per-case cluster comes up wherever the
-  harness lands. The harness is the **one** representation of the test workflow; cluster bring-up / deploy /
-  e2e are not re-expressed as a parallel chain of lifted ops. See
-  [composition_methodology](composition_methodology.md).
+- The harness is **context-agnostic**: its seams invoke reconcilers (e.g. `clusterUp`) "locally",
+  with no `LiftContext` inside the engine. It is therefore a **lift target** — `test run all` lifts
+  the whole workflow into the project container in the VM, and the per-case cluster comes up wherever
+  the harness lands. The harness is the **one** representation of the test workflow. See
+  [composition_methodology](composition_methodology.md) for the canonical model.
 
 ## The Per-Case Loop
 
@@ -46,6 +49,27 @@ and `testCaseProfile c = TestCase (caseId c)` derives the profile: cluster name
 endangering production state or each other; see [cluster lifecycle](../engineering/cluster_lifecycle.md)
 for the production-versus-test profile distinction the harness drives.
 
+## The `test init` / `test run` Surface
+
+The test surface is a **separate command pair**, gated to the **root** (host-orchestrator) frame and
+to a project that already owns a `project.dhall`:
+
+- `test init` requires an existing `project.dhall` and writes a sibling `test.dhall`. That file may
+  carry test-specific configuration (matrix budget, suite parameters), but it never re-derives the
+  lift chain — the chain is the project's `[Step]` value, owned by `project up`.
+- `test run <suite>` runs the named suite; `test run all` is always a suite that runs the project's
+  **whole** case matrix. Both require `test.dhall`; an unknown suite fails fast, listing the valid
+  suite names and `all`.
+
+`all` is reserved by the verb, so a project may not name a suite `all`. A project supplies its `Case`s
+and `Seams` as a non-empty `TestSuite` so the cases run under `test run`, not a per-noun subcommand.
+
+The pair is **decoupled from deploy**. `project up` brings up a persistent stack (VM → project image →
+kind → harbor → webservice, exposed to the host); it does not run tests as part of standing the stack
+up. `test run all` then validates that **already-running** stack, root-gated and on demand. This is the
+inversion of the demo's older shape, where the lone lifted compute step *was* the test workflow: in the
+target model the stack is durable and the test surface is a separate validation pass over it.
+
 ## The Seam-Split
 
 The engine is split so the reusable driver is written once and projects supply only what is genuinely
@@ -55,7 +79,7 @@ project-specific:
 |-------|--------------|----------|
 | L0 driver | The `runMatrix` loop, per-case isolation, the delete-guard, budget-slicing, and report aggregation. | `HostBootstrap.Harness` (core) |
 | Project seams | The `Seams` record — `seamSetup` / `seamRun` / `seamTeardown` for the project's substrate. | The project (cluster projects supply kind/Helm seams) |
-| App matrix | The list of `Case`s to run. | The app |
+| App matrix | The list of `Case`s to run, packaged as a `TestSuite`. | The app |
 
 `Seams env = { seamSetup, seamRun, seamTeardown }`. The default L0 `defaultSeams` does a one-shot
 container run (the `OneShot` run-model from [run models](run_models.md)); a cluster project supplies
@@ -64,11 +88,11 @@ the guard — it supplies its case matrix, and a cluster project additionally su
 
 The seams call `clusterUp` (and the per-case deploy/e2e) **"locally"** — they hold no execution-context
 parameter and are unaware of any enclosing lift. A consumer that needs the cluster to come up elsewhere
-(say on a VM's Docker) lifts the **whole** `test all` workflow into that context (through the selected VM
-provider and then `docker run --rm <image> test all`), so the seams run as if local and the cluster lands wherever the harness
-was lifted to. This is why the harness is a lift target, not a lift-aware component, and why a separate
-chain of lifted cluster/deploy/e2e ops alongside it would be a redundant second representation. See
-[composition_methodology](composition_methodology.md).
+(say on a VM's Docker) runs `test run all` so the **whole** workflow lifts into that context (through
+the selected VM provider and then `docker run --rm <image> test run all`), and the seams run as if
+local so the cluster lands wherever the harness was lifted to. This is why the harness is a lift target,
+not a lift-aware component, and why a separate chain of lifted cluster/deploy/e2e ops alongside it would
+be a redundant second representation. See [composition_methodology](composition_methodology.md).
 
 ## Never-Touch-Production Is Mechanical
 
@@ -124,10 +148,29 @@ before the cases run. The budget itself, the canonical quantity parser, and the 
 documented in [resource budgeting](../engineering/resource_budgeting.md) and
 [applied cordon](../engineering/applied_cordon.md).
 
+## Current Status
+
+Implemented today is the flat `test` verb: `<project> test all` and `<project> test <case>` drive
+`runMatrix` over the project matrix, root-gating, the prefix delete-guard, the data-preserving
+teardown partition, and budget-slicing are all in place and exercised by the core test suite. In the
+demo, this `test all` step is lifted as the single compute step of the hand-written deploy chain.
+
+The target model is the root-gated **`test init` / `test run <suite>|all`** pair, backed by a sibling
+`test.dhall` and **decoupled** from a persistent `project up` stack that `test run all` validates after
+the fact. That surface — and the recursive `project up` interpreter whose stack it validates — is not
+yet implemented; only the flat `test` verb and the demo's lifted `test all` exist today. The
+`HostBootstrap.Harness` engine itself (the `runMatrix` loop, the seam-split, the guard, budget-slicing)
+is unchanged by the migration: it is the one engine in both the current and target surfaces. The
+[development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md) tracks the verb split
+and the deploy/test decoupling.
+
 ## See Also
 
+- [composition_methodology](composition_methodology.md) — the canonical home of the chain/lift model
+  the test workflow is a lifted operation of.
 - [run models](run_models.md) — the four models the `Seams` realize and how a model is selected.
-- [testing](../engineering/testing.md) — the `test` verb that drives `runMatrix` over the project matrix.
+- [testing](../engineering/testing.md) — the `test init` / `test run` surface that drives `runMatrix`
+  over the project matrix.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — the test-profile semantics and the
   `teardown` partition.
 - [resource budgeting](../engineering/resource_budgeting.md) — the budget `sliceBudget` divides.

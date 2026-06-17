@@ -40,41 +40,49 @@ the orientation layer and points at those canonical homes rather than duplicatin
   automatic, and documented in
   [`documents/engineering/self_update.md`](documents/engineering/self_update.md).
 
-`hostbootstrap-core` composes host management as **operations** — `ensure` reconcilers, cluster/deploy
-steps, and the **self-reference lift** that crosses an execution-context boundary by re-invoking the
-binary's *own* subcommand in a nested context. The VM hop is provider-backed: on Apple Silicon the demo
-uses a Lima VM (`limactl shell <instance> -- …`) started without Lima-managed containerd, while native Linux uses an Incus
-VM (`incus exec <vm> -- …`). The project-container hop is `docker run --rm <image> …`, whose
-`ENTRYPOINT` is the binary. Each nested call runs the same command tree. That nested process is explicit
-rather than blind: before normal dispatch, the binary reads the sibling `<project>.dhall` that tells it
-which segment of the global composition it occupies. The Dhall value is topology-aware — it carries
-provider-backed execution frames plus the current frame and runtime witnesses — so a copy of the binary
-can fail fast when it is not actually running where the Dhall says it is. That context gates
-commands, so a cluster service cannot run host-orchestrator verbs, a daemon command cannot start unless
-the context declares a daemon/service role, and a kind-cluster workflow cannot be represented as valid
-when it is running outside the VM/container frame that minted it. The same algebra expresses both
-deployment and runtime business logic (stateless roles over durable external stores). When a nested
+A project's deploy is **not a sequence of noun verbs** — it is a pure value. Each project contributes a
+`chain :: RootConfig -> [Step]` function, and that `[Step]` **is the project's identity**: the ordered
+list of host-management and workload steps that bring the project up. There is one representation of that
+work (single representation, §W). The single lifecycle command `<binary> project init|up|down|destroy`
+**interprets the chain recursively**. Each frame transition is the same **fractal bootstrap** — provision
+the frame, build the project binary (the "pb") in it, then hand off `pb project up` into that frame so the
+child pb owns its own segment of the chain. The Python bootstrapper is simply the **metal-frame instance**
+of that pattern (provision the host frame → build the pb host-native → hand off to the binary), with the
+VM and project-container frames descending the same way until recursion bottoms out at the container pb
+running kind/Helm leaves.
+
+The VM hop is provider-backed: on Apple Silicon the demo uses a Lima VM (`limactl shell <instance> -- …`)
+started without Lima-managed containerd, while native Linux uses an Incus VM (`incus exec <vm> -- …`). The
+project-container hop is `docker run --rm <image> …`, whose `ENTRYPOINT` is the binary. Each descent
+runs the same `project up` interpreter over the same chain.
+
+The sibling `<project>.dhall` carries **parameters + context + witness** — never the chain shape. It
+records the project's tuned parameters, which segment of the global composition this frame occupies, and
+the runtime witnesses for the current frame. Because the chain shape lives in code and only its parameters
+live in Dhall, a copy of the binary can **fail fast** when it is not actually running in the frame its
+`.dhall` describes — a cluster-frame binary cannot run host-orchestrator steps, and a kind-cluster workflow
+cannot be represented as valid outside the VM/container frame that minted it. The same algebra expresses
+both deployment and runtime business logic (stateless roles over durable external stores). When a nested
 context needs to pull from Docker Hub, the host binary forwards its Docker Hub login down the lift to
 authenticate the pull — an effect-only capability that is never in Dhall, never persisted, and never in
 `argv` (see
 [`documents/engineering/registry_credentials.md`](documents/engineering/registry_credentials.md)). See
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Current state.** The host-native bootstrapper, self-reference lift, single-representation demo deploy,
-> and project-local binary-context command gate are implemented as recorded in
-> [`DEVELOPMENT_PLAN/`](DEVELOPMENT_PLAN/README.md). Python now derives the project name from the Cabal
-> file and writes no Dhall. Normal command gating reads the context section inside the sibling
-> `<project>.dhall`; `config init` and parent child-projection commands generate the host, VM, runtime
-> container, and service/daemon local configs. Dockerfiles bake only `image-build-container` authority;
-> lifted runtime containers receive parent-mounted configs with topology frames and witnesses. Phases 13,
-> 14, and 15 are validated end to end by a full real Apple Silicon Lima demo lifecycle (`3/3 passed`,
-> including the Playwright e2e case, with a guarded `vm down`).
+> **Current state.** Phases 0–15 are built and validated end to end by a real Apple Silicon Lima run
+> (`3/3 passed`, including the Playwright e2e case), as recorded in
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md). The host-native bootstrapper, the
+> self-reference lift primitive, the single-representation demo deploy, and the project-local
+> binary-context command gate are implemented; Python derives the project name from the Cabal file and
+> writes no Dhall; lifted runtime containers receive parent-mounted configs with topology frames and
+> witnesses.
 >
-> The host-native build half is implemented: `hostbootstrap/bootstrap.py` derives the project name from
-> the Cabal file, asserts minimums, ensures the host build toolchain, builds the binary host-native on
-> every substrate, and execs, with no Dhall read/write, Docker-ensure, container build, VM sizing, or
-> copy-out. The explicit `hostbootstrap update` command is implemented as the pipx self-update surface
-> and is never run automatically by normal commands.
+> The "chain is the project" refactor — the recursive `project init|up|down|destroy` lifecycle command and
+> the `chain :: RootConfig -> [Step]` interpreter described above — is the **target architecture and is in
+> progress, not yet implemented**. Phases 4, 5, 10, 13, 14, and 15 are reopened (`Active`) and phases 16–17
+> are added to carry it (see
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)). Today's implemented command surface is the
+> flat verbs — `ensure`, `config`, `context create`, `cluster`, `test`, plus the demo's `vm`/`deploy`.
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -181,20 +189,26 @@ The Python bootstrapper (installed with `pipx install …`):
 Self-update is never run automatically by `doctor`, `build`, `run`, or `base`, and those commands must
 not fail just because the wrapper is not at the latest commit.
 
-The `hostbootstrap-core` command tree (exposed by every built binary; project binaries add their own
-verbs on top):
+The `hostbootstrap-core` command surface (exposed by every built binary; the project's primary CLI
+contribution is its chain value, not noun verbs):
 
 | Command | What it does |
 |---|---|
-| `<binary> ensure <tool>` | Reconcile a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); fail-fast on the wrong host |
-| `<binary> config init\|path\|schema\|show FILE` | Initialize, locate, inspect, and describe the binary-owned `<project>.dhall` config |
-| `<binary> config render` | Emit static typed Dhall artifact examples from the in-scope registry; this is an inspection surface and does not require an active context |
-| `<binary> context create vm\|container\|service OUTPUT` | Create a child `<project>.dhall` for a nested binary context after validating the active context |
-| `<binary> cluster up\|down\|delete\|status` | Drive the kind/Helm cluster lifecycle from the active context's project, source root, and resource envelope, preserving host `.data` |
-| `<binary> test CASE` / `<binary> check-code` | Run the inherited test and code-check surfaces after context validation; failed cases/checks exit non-zero |
+| `<binary> project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fail-fast unless a fresh host-level binary with no sibling `.dhall`; takes optional `--cpu/--memory/--storage/--ha-replicas` |
+| `<binary> project up` | Recursively interpret `chain rootCfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
+| `<binary> project down` | Stop the services/clusters/VMs the chain spun up (incus/limactl **stop**) without deleting anything |
+| `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
+| `<binary> context` | Read-only: introspect the sibling `.dhall` and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
+| `<binary> test init` | With an existing `project.dhall`, write `test.dhall` (may carry test-specific config) |
+| `<binary> test run <suite>\|all` | Root-gated, decoupled from deploy; run one suite or `all` (always a suite) against the live stack; fail-fast otherwise |
+| `<binary> check-code` | Run the inherited code-check surface; failed checks exit non-zero |
+| `<binary> ensure <tool>` | **Hidden debug** surface that reconciles a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); normally invoked as a chain step within `project up` |
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a
-project binary. See
+project binary. The above is the **target** surface; today's implemented surface is the flat verbs
+(`ensure`, `config`, `context create`, `cluster`, `test`, plus the demo's `vm`/`deploy`) — see
+[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md) and the "Current state" note in the
+Architecture section above. See
 [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
 for the command-tree extension contract.
 
@@ -234,118 +248,116 @@ pipx install --force /path/to/hostbootstrap
 ## Demo App
 
 [`demo/`](demo/) is `hostbootstrap-demo`, the worked consumer of `hostbootstrap-core`. It consumes the
-core directly (L0-direct, like `mcts`) and extends the core command tree through a
-`ProjectSpec` (`demoCommands`, `demoCases`, `demoCheckCode`, `demoArtifacts`), so `hostbootstrap-demo --help` shows the
-inherited core verbs (`ensure`, `config`, `cluster`, `test`, `check-code`) plus the demo's own
-noun-first verbs (`incus` / `vm` / `harbor` / `web` / `deploy` / `role`) without re-implementing any core verb. It is the
-end-to-end exercise of the four-stream additive extension contract: the CLI tree, the schema-gen
-registry (`coreArtifacts ++ demoArtifacts`), the test harness (`demoCases` driven by `runMatrix`), and
-the binary-owned local config. Its target `hostbootstrap-demo.dhall` budget is the demo's one ceiling —
-6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node cap. `vm up`
-fails fast below that full-lifecycle floor so the demo does not discover an undersized VM during Docker
-layer extraction.
+core directly (L0-direct, like `mcts`) and contributes its own `chain :: RootConfig -> [Step]` value plus
+the step actions, test suites, and Dhall vocabulary that go with it, so the **demo's deploy is its chain**
+— interpreted by the single `project up` lifecycle command rather than a tree of noun verbs. It is the
+end-to-end exercise of the four-stream additive extension contract: the lift chain (`[Step]` = core host
+steps + the demo's workload steps), the schema-gen registry (`coreArtifacts ++ demoArtifacts`), the test
+suites, and the binary-owned local config. Its target `hostbootstrap-demo.dhall` budget is the demo's one
+ceiling — 6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node
+cap. The deploy-VM step fails fast below that full-lifecycle floor so the demo does not discover an
+undersized VM during Docker layer extraction.
 
-### The single lift sequence
+### The demo chain
 
-The demo's end-to-end deploy is **one explicit lift sequence**, not a parallel chain that re-expresses
-cluster bring-up, Harbor, web-serve, and e2e alongside the harness. There is **one operation, one
-representation**: the standardized test harness (`HostBootstrap.Harness`: `runMatrix` + the per-case
-`Seams`) is the context-agnostic test engine that brings up an isolated per-case environment, runs the
-case body, and tears it down. It invokes its reconcilers (`clusterUp`, …) as `HostConfig -> IO ()`
-"locally", unaware of any enclosing context — so the harness is a **lift target**, not a lift-aware
-component, and carries no `LiftContext` of its own. Re-expressing the same work as a separate chain of
-lifted ops would be a **redundant representation** that duplicates the harness (and double-creates
-clusters when it lifts a harness case). The single canonical chain `demo deploy` is:
+The demo's end-to-end deploy is **one chain value**, not a parallel set of verbs that re-express cluster
+bring-up, Harbor, web-serve, and e2e. There is **one operation, one representation** (single
+representation, §W): the ordered `[Step]` chain is THE representation, and the standardized test harness
+stays the one test-engine / lift-target. The chain interleaves core host-management steps with the demo's
+contributed workload steps, and `project up` interprets it recursively:
 
-| Step | Context | Role |
-|---|---|---|
-| `vm ensure` | `local` | reconciler on metal: Lima VM provider on Apple Silicon, native Incus provider on Linux |
-| `vm up` | `local` | the cordon — the VM is the isolation wall |
-| `vm pristine-bootstrap` | `local → VM` | host-native build **in** the VM, then the project-image build, **in** the VM |
-| `context create container` | `VM` | parent-generate the VM-project-container runtime config |
-| `test all` | `inContainer img (inVM vm localContext)` | the **only** lifted compute step |
-| `vm down` | `local` | guarded teardown (host `.data` preserved) |
+| # | Step | Frame | Role |
+|---|---|---|---|
+| 1 | host-pb | host (metal) | provision the host frame, build the pb, hand off `pb project up` (the Python bootstrapper's metal-frame instance) |
+| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux — the cordon / isolation wall |
+| 3 | copy source + ensure GHC in VM | VM | stage the source into the VM and reconcile the GHC toolchain there |
+| 4 | build pb in VM | VM | build the project binary host-native **in** the VM |
+| 5 | ensure docker in VM | VM | reconcile Docker inside the guest (not supplied by Lima's containerd) |
+| 6 | build image | VM | build the project container image on the VM's Docker |
+| 7 | deploy kind | VM → container | bring up the kind cluster on the VM's Docker |
+| 8 | deploy harbor | container | the demo's workload step: stand up the in-cluster Harbor registry |
+| 9 | launch web | container | the demo's workload step: launch the webservice |
+| 10 | expose NodePort | container → host | the demo's workload step: expose the NodePort back to the host |
 
-The one lifted compute step folds (per the [self-reference lift](documents/architecture/composition_methodology.md))
-to `limactl shell <instance> -- docker run --rm <image> test all` on Apple Silicon and
-`incus exec <vm> -- docker run --rm <image> test all` on native Linux. Inside that lifted context the harness runs
-`clusterUp` "locally" = on the **VM's Docker** (the mounted socket), so the kind cluster lives **in the
-VM**, reached with no second "bring up a cluster" path. The doctrine — one operation, one
-representation; the test workflow is a *lifted* operation, not a parallel representation — is stated
-canonically in
+Steps 1–7 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image, deploy-kind);
+steps 8–10 are the demo's contributed step kinds (deploy-harbor, launch-web, expose-port) — host and
+workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
+transition through the [self-reference lift](documents/architecture/composition_methodology.md) so kind,
+Harbor, and the webservice run **in the VM** on the VM's Docker, reached with no second "bring up a
+cluster" path. The doctrine is stated canonically in
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Status.** The single lift sequence is the supported demo shape. On Apple Silicon it folds through a
-> Lima VM rather than an Incus VM. The Lima VM is a pristine Linux host: Docker is installed and verified
-> inside the guest by the project binary, not supplied by Lima's containerd setup. The topology-aware gate
-> is implemented, covered by core tests, and validated by the full real Apple Silicon Lima lifecycle —
-> `demo deploy` brought up the cordon #1 VM, ran build #2 and build #3 in the VM, lifted `test all` with
-> the per-case kind clusters on the VM's Docker, reported `3/3 passed` including the Playwright e2e case,
-> and tore the VM down behind the guard. The Incus real-run remains a historical Linux validation point.
+> **Status.** This `[Step]` chain interpreted by `project up` is the **target** demo shape and is not yet
+> implemented — today the demo runs the flat `deploy`/`vm` verbs against the hand-written deploy chain
+> (`demo/src/HostBootstrapDemo/Chain.hs`). That flat shape is validated by the full real Apple Silicon Lima
+> lifecycle — it brought up the cordon VM, ran the host-native build and the project-image build in the
+> VM, lifted `test all` with the per-case kind clusters on the VM's Docker, reported `3/3 passed` including
+> the Playwright e2e case, and tore the VM down behind the guard. The Incus real-run remains a historical
+> Linux validation point. The migration of that hand-written chain to a core-interpreted `[Step]` value is
+> tracked under the reopened phases and phases 16–17.
 
 ### Spin it up
 
 Build and exec the demo binary host-native through the Python bootstrapper, from the demo project root —
 the same workflow every consumer follows (assert host minimums → ensure the host toolchain → build into
-`./.build/` → exec):
+`./.build/` → exec). In the **target** shape the whole lifecycle is the recursive `project` command over
+the demo's chain:
 
 ```bash
 cd demo
-hostbootstrap run -- --help
-hostbootstrap run -- config init \
-  --output ./.build/hostbootstrap-demo.dhall \
-  --source-root "$PWD" \
-  --dockerfile docker/Dockerfile \
+hostbootstrap run -- project init \
   --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1
-hostbootstrap run -- config show ./.build/hostbootstrap-demo.dhall
-hostbootstrap run -- config schema
-hostbootstrap run -- config render --artifact demoWeb
-hostbootstrap run -- deploy --dry-run
+hostbootstrap run -- project up --dry-run   # renders chain rootCfg without running it
+hostbootstrap run -- project up             # interprets the chain recursively, brings up the stack
+hostbootstrap run -- context                # render the lift composition, current frame highlighted
+hostbootstrap run -- test run all           # root-gated suite against the live project up stack
+hostbootstrap run -- project destroy        # stop then delete; host .data preserved
 ```
 
-To build and run the binary directly against the local core (no bootstrapper), use Cabal with the
-demo's own workspace:
+That `project`/`context`/`test run` surface is the **target**; today the demo drives the flat verbs
+(`config init`, `config show/schema/render`, `deploy --dry-run`, `deploy`, `vm`) — see
+[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md). To build and run the binary directly against
+the local core (no bootstrapper), use Cabal with the demo's own workspace:
 
 ```bash
 cd demo
 cabal build                           # builds hostbootstrap-demo against ../core/hostbootstrap-core
-cabal run hostbootstrap-demo -- config schema
-cabal run hostbootstrap-demo -- config render --artifact budget
+cabal run hostbootstrap-demo -- context
 ```
 
 `demo web serve` is the service-role webserver command. It normally runs inside the chart-launched
 service context, whose mounted `hostbootstrap-demo.dhall` authorizes `ServiceCommand`; a host-orchestrator
-config should reject it. `demo web bridge` remains the host-side config-generation command for
-PureScript-bridge output. The integrated VM/cluster lifecycle is **not** a separate chain of verbs: it is
-the single `demo deploy` lift sequence above, whose one lifted compute step (`test all`) carries cluster
-bring-up, web-serve, and e2e **inside** the harness in the VM. The `incus`/`vm` verbs are the metal-side
-cordon steps of that one sequence, documented in the runbook.
+config should reject it. In the target model the integrated VM/cluster lifecycle is **not** a separate
+chain of verbs: it is the demo's contributed `[Step]` chain above, interpreted recursively by
+`project up`, whose frame transitions carry cluster bring-up, Harbor, web, and the NodePort **inside** the
+VM. The deploy-VM step is the metal-side cordon step of that one chain, documented in the runbook.
 
 ### Run its test suite
 
-The demo carries two test layers:
+The test surface is **decoupled from deploy** in the target model: `test run all` is root-gated and
+validates the live `project up` stack, rather than deploy carrying the harness as a lifted step. The demo
+carries two test layers:
 
-- **Haskell harness** — `hostbootstrap-demo test all` drives `runMatrix` over the demo's case matrix
-  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single case runs with
-  `hostbootstrap-demo test <case>`), each
-  case bringing up an isolated per-case kind cluster in `seamSetup` and tearing it down in
-  `seamTeardown` (guaranteed via `finally`, preserving host `.data`). The harness is the **one**
-  representation of this work and the lift target — it invokes `clusterUp` as `HostConfig -> IO ()`
-  "locally", with no `LiftContext` of its own. In the supported shape the harness is reached **only** as the
-  single lifted compute step of `demo deploy` (`limactl shell <instance> -- docker run --rm <image> test all`
-  on Apple Silicon, `incus exec <vm> -- docker run --rm <image> test all` on Linux), so `clusterUp` runs
-  on the VM's Docker and the kind cluster lives in the VM. The per-case bodies
-  (`pristine-bootstrap` a live cluster, `e2e-tabs` the project image's base-provided Playwright runtime
-  against the in-cluster webservice via its NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker
-  when run via `demo deploy`; direct host invocation is a development smoke, not the authoritative deploy
-  context. Illegal direct-host VM-container representations fail before cluster creation because the
-  topology lacks the VM ancestor and runtime witnesses. The cases bind to the inherited `test` verb (the
-  harness extension stream). These seams need Docker + kind, so the supported end-to-end path is the
-  lifted step of `demo deploy`:
+- **Haskell harness** — `hostbootstrap-demo test run all` drives the demo's case matrix
+  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single suite runs with
+  `hostbootstrap-demo test run <suite>`), each case bringing up an isolated per-case kind cluster in setup
+  and tearing it down in teardown (guaranteed via `finally`, preserving host `.data`). The harness remains
+  the **one** test-engine and lift target — it invokes `clusterUp` as `HostConfig -> IO ()` "locally", with
+  no `LiftContext` of its own. Run against the live stack, `clusterUp` runs on the VM's Docker and the
+  per-case kind cluster lives in the VM. The per-case bodies (`pristine-bootstrap` a live cluster,
+  `e2e-tabs` the project image's base-provided Playwright runtime against the in-cluster webservice via its
+  NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker; direct host
+  invocation is a development smoke, not the authoritative context. Illegal direct-host VM-container
+  representations fail before cluster creation because the topology lacks the VM ancestor and runtime
+  witnesses. `test run all` is the **target** surface (today the harness is reached as the lifted compute
+  step of the flat `deploy` verb — `limactl shell <instance> -- docker run --rm <image> test all` on Apple
+  Silicon, `incus exec <vm> -- docker run --rm <image> test all` on Linux); see
+  [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
 
   ```bash
   cd demo
-  hostbootstrap run -- deploy
+  hostbootstrap run -- project up        # bring up the stack (target; flat: deploy)
+  hostbootstrap run -- test run all      # validate the live stack (target; flat: test all via deploy)
   ```
 
 - **Playwright e2e** — [`demo/playwright/`](demo/playwright/) is source/config only. The supported

@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified CLISpec
+import qualified ChainSpec
 import qualified ContainerSpec
 import qualified ContextSpec
 import qualified CordonSpec
@@ -16,6 +17,7 @@ import qualified LiftSpec
 import qualified RegistrySpec
 import qualified RoleLifecycleSpec
 import qualified SchemaSpec
+import qualified StepSpec
 import qualified SubstrateSpec
 import Test.Tasty (defaultMain, testGroup)
 
@@ -38,6 +40,8 @@ main = do
             , IncusSpec.tests
             , LimaSpec.tests
             , LiftSpec.tests
+            , StepSpec.tests
+            , ChainSpec.tests
             , RegistrySpec.tests
             , RoleLifecycleSpec.tests
             , ContainerSpec.tests

@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
@@ -18,9 +18,21 @@ four extension streams: CLI append, schema-registry concat, Dhall vocabulary use
 harness. Its `ProjectSpec` supplies `demoCommands`, `demoCheckCode`, `demoArtifacts`, and the non-empty
 `TestSuite demoSeams demoCases`.
 
-The demo's supported deploy shape follows the single-representation doctrine (§ W). `demo deploy` is one
-explicit lift sequence whose only lifted compute step is `test all` inside the project container in the
-managed VM:
+This phase is reopened for the **"the chain is the project"** migration (§ Y, § T). The demo's worked
+shape is the proving ground for the chain-is-code model: a project's primary CLI contribution is its
+**lift chain** value (`chain :: RootConfig -> [Step]`, interpreted by the core `project` lifecycle), not
+the noun verbs the demo ships today. The single-representation invariant (§ W) is unchanged — what
+changes is the **representation**: the hand-written `demoDeployChain` and its small interpreter in
+`demo/src/HostBootstrapDemo/Chain.hs`, together with the demo's `vm`/`deploy`/`incus`/`harbor`/`web`/`role`
+noun verbs in `Commands.hs`, become a `chain :: RootConfig -> [Step]` value the **core** `Step`
+interpreter runs, plus the demo's contributed workload step actions. The target shape is described below
+as what is being built; the `project up`/`project down`/`project destroy` interpreter it depends on is
+owned by phase-16, so this phase tracks the demo's side of the migration as **remaining work**, not as a
+shipped capability.
+
+The demo's currently-shipped deploy shape follows the single-representation doctrine (§ W). `demo deploy`
+is one explicit lift sequence whose only lifted compute step is `test all` inside the project container in
+the managed VM:
 
 ```text
 vm ensure
@@ -53,11 +65,44 @@ host/container fallback cannot run `test all` against the wrong Docker daemon, b
 VM-project-container config requires a VM-orchestrator ancestor and runtime witnesses (the Dockerfile bakes
 image-build authority only; the lifted runtime container receives a parent-generated config mounted over
 `/usr/local/bin/hostbootstrap-demo.dhall`). The Lima fold, the topology-aware context enforcement, and the
-full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — are all validated.
+full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — are all validated for the
+current noun-verb shape.
+
+## Current Status
+
+The demo's noun-verb deploy shape (the `demo deploy` lift sequence above, the `vm`/`incus`/`harbor`/`web`/`role`
+verbs, the hand-written `demoDeployChain` and its interpreter in `Chain.hs`, the `runMatrix` harness, the
+four runtime `hostbootstrap-demo.dhall` configs, and both VM providers) is **implemented and validated**.
+What is **not yet built** is the migration of that shape onto the core `Step` interpreter: the demo does
+not yet contribute a `chain :: RootConfig -> [Step]` value, and there is no `project up`/`project down`/`project destroy`
+surface — the core `project` lifecycle command that interprets the chain is owned by phase-16, and the
+demo's migration onto it is the remaining work below. Do **not** read this phase as claiming the `project`
+command or the chain-as-`[Step]` representation is shipped.
 
 ## Remaining Work
 
-None.
+Migrate the hand-written `demoDeployChain` and the demo `vm`/`deploy`/`incus`/`harbor`/`web`/`role` verbs
+to the core `Step` interpreter: the demo contributes a `chain :: RootConfig -> [Step]` value plus its
+workload step actions; the single-representation invariant (§ W) is unchanged. Concretely:
+
+- Replace the hand-written `demoDeployChain` and its bespoke interpreter (`demo/src/HostBootstrapDemo/Chain.hs`)
+  with a `chain :: RootConfig -> [Step]` value the **core** `project` lifecycle interprets recursively
+  (§ Y). The current single lift sequence (`vm ensure` → `vm up` → `vm pristine-bootstrap` → lifted
+  `test all` → `vm down`) is re-expressed as ordered core step kinds (deploy-VM, `ensure-*`, copy-source,
+  build-pb, build-image, `context-init`, …) interleaved with the demo's contributed step kinds.
+- Express the demo's workload verbs as **step actions / step kinds** the demo contributes into the same
+  `[Step]` (the lift-chain extension stream, § T), not as standalone top-level nouns: `harbor install`/`push`
+  → registry-install steps; `web bridge`/`serve` → web-serve steps; `role serve`/`submit` → role steps;
+  the VM-lifecycle verbs (`vm`/`incus`) fold into the core deploy-VM/down/destroy step kinds.
+- The demo's deploy is then driven by `project up`/`project down`/`project destroy` (the core interpreter,
+  phase-16) over that chain value, with `--dry-run` rendering the same chain that apply executes — the one
+  representation (§ W). The interpreter and the `project` command surface are **new work owned by
+  phase-16**; this phase owns the demo's `chain`/step-action contribution and the retirement of the demo
+  noun verbs.
+- Honest tracking: the `project` command and the chain-as-`[Step]` interpreter are the **target** being
+  built, not implemented surfaces; the demo's current noun-verb chain stays the validated baseline until the
+  migration lands. The retired noun verbs and the `demoDeployChain` are recorded under
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending` (phase-13/16).
 
 ## Phase Objective
 
@@ -316,9 +361,9 @@ Make `demo/` the documented worked consumer.
 
 None.
 
-### Sprint 13.8: Wire the demo through the self-reference lift [Done]
+### Sprint 13.8: Wire the demo through the self-reference lift [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
 
@@ -344,8 +389,14 @@ the target context.
 
 #### Remaining Work
 
-None. The demo composes its chain on `liftSubcommand`; the integrated in-VM run uses the single lifted
-`test all` workflow, with kind on the VM's Docker.
+The self-reference lift (`HostBootstrap.Lift`) the demo composes its chain on stays valid and is reused by
+the migrated chain. What this sprint's contract changes under the new model: the demo's chain is no longer
+a hand-composed `liftSubcommand` fold wired behind the `demo deploy` noun verb — it becomes a
+`chain :: RootConfig -> [Step]` value the core `project` interpreter folds onto `liftSubcommand` at each
+frame transition (provision the frame → build/install the pb → hand off `pb project up`, § Y). Migrate the
+metal → VM → container composition from the demo's bespoke chain assembly to core step kinds so the lift
+fold is performed by the interpreter, not by demo orchestration code. The interpreter is **new work owned
+by phase-16**; this sprint owns rebasing the demo's lift composition onto the contributed `[Step]` chain.
 
 ### Sprint 13.9: Real per-case seams [Done]
 
@@ -396,9 +447,9 @@ None. The per-case seams (`assertClusterLive` / `assertWebBundle` / `assertE2E`,
 are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e
 runner is context-agnostic because it uses the project image.
 
-### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Done]
+### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`
 **Docs to update**: `documents/engineering/composition_patterns.md`
 
@@ -419,7 +470,15 @@ prints the planned operation/argv sequence without effect, while apply runs it v
 
 #### Remaining Work
 
-None. The apply path runs the chain via `liftSubcommand`, exercised in the demo's live run (Sprint 13.8).
+This sprint reified the demo deploy chain as a pure data value with a **demo-local** interpreter
+(`HostBootstrapDemo.Chain`) behind the `demo deploy [--dry-run]` noun verb. The new model moves that
+representation up into the core: the chain becomes a `chain :: RootConfig -> [Step]` value over **core**
+step kinds, and the interpreter that renders `--dry-run` and runs apply is the core `project` lifecycle
+command (`project up --dry-run` renders the same chain apply executes, § Y/§ W), not a demo-local
+`renderPlan`. Migrate the demo's pure chain value off the bespoke `Chain.hs` interpreter onto the core
+`Step` interpreter and retire `demo deploy` as a noun verb in favor of `project up`/`project down`/`project destroy`.
+The core interpreter and the `project --dry-run` rendering are **new work owned by phase-16**; the
+pure-function-of-the-chain-value property is preserved through the migration.
 
 ### Sprint 13.11: F2 — `demo role serve`/`submit` (role over toy bus + object store) [Done]
 
@@ -448,9 +507,9 @@ existing `fitsBudget` engine — the in-tree worked instance of the business-log
 
 None.
 
-### Sprint 13.12: Collapse the two cluster-deploy representations into one lift sequence [Done]
+### Sprint 13.12: Collapse the two cluster-deploy representations into one lift sequence [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
 
@@ -498,9 +557,18 @@ vm down                 local                                   -- guarded teard
 
 #### Remaining Work
 
-None. `Chain.hs` folds to the single canonical sequence; `runVmBootstrap` builds #3 in the VM; and
-`demo deploy` validates that kind runs on the VM's Docker with guarded teardown. The demo storage budget
-is 80 GiB so the in-VM `test all` holds the project image plus its `kind load` duplicate.
+The single-representation collapse this sprint achieved (one canonical lift sequence whose only lifted
+compute step is `test all`, harness unchanged as the one lift target) **stays the invariant** under the
+new model — the single-representation doctrine (§ W) is unchanged. What changes is the **carrier** of that
+single representation: the canonical sequence is no longer a hand-written `Chain.hs` value behind
+`demo deploy`, it is the `chain :: RootConfig -> [Step]` value the core `project` interpreter runs. Migrate
+the canonical sequence (`vm ensure` → `vm up` → `vm pristine-bootstrap` → lifted `test all` → `vm down`)
+to core step kinds (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, the
+lifted-`test`/run-leaf step, deploy-VM-down) plus the demo's contributed steps, so the one representation
+is the interpreted `[Step]` chain. `runVmBootstrap`'s build-#3-in-the-VM behavior is preserved as the
+build-pb/build-image steps in the chain. The core `Step` interpreter is **new work owned by phase-16**;
+this sprint owns re-expressing the collapsed sequence as the contributed chain value over those step
+kinds without reintroducing a second representation.
 
 ### Sprint 13.13: Migrate demo runtime configs [Done]
 
