@@ -22,6 +22,16 @@ Staging, committing, and pushing are reserved for the human user. An agent may e
 read-only Git commands (`git status`, `git diff`, `git log`, `git blame`), and propose commit
 messages or PR descriptions in chat — but it must not perform the staging or commit itself.
 
+## No manual log files
+
+Do not create manual log files anywhere in the working tree. When you need to capture the output of a
+long-running or background command, rely on the harness's own output capture (background-task output
+files, monitors) — never redirect or `tee` command output into a file under the repository (for
+example, do not `... > run.log`, `... >> deploy.log`, or `tee build.log`). Hand-made log files clutter
+the tree, risk being staged by accident, and duplicate output the harness already retains. If a run
+genuinely needs a persisted artifact, ask the user where it should live rather than dropping a log into
+the repo.
+
 ## Scope
 
 `hostbootstrap` is a dual-language repository: a Haskell `hostbootstrap-core` library plus a thin
