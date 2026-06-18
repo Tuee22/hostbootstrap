@@ -11,13 +11,11 @@
 
 ## TL;DR
 
-- Cluster bring-up and teardown are **chain steps**, not standalone verbs. The core ships
-  `deploy-kind`-class step kinds that the recursive `project up`/`project down`/`project destroy`
-  interpreter runs at the container frame, where the chain bottoms out into `kubectl`/`helm`/`kind`
-  leaves.
+- Cluster bring-up and teardown are **chain steps**. The core ships `deploy-kind`-class step kinds
+  that the recursive `project up`/`project down`/`project destroy` interpreter runs at the container
+  frame, where the chain bottoms out into `kubectl`/`helm`/`kind` leaves.
 - `project up` brings the cluster to *running* (idempotent, fail-closed). `project down` **stops**
-  the cluster without deleting it (new capability). `project destroy` stops, then deletes the
-  cluster and its compute.
+  the cluster without deleting it. `project destroy` stops, then deletes the cluster and its compute.
 - The lifecycle never deletes a cluster's `.data` directory: persistent state survives bring-up,
   stop, and teardown.
 - A cluster runs under one of two profiles. The production profile uses `.data` and a fixed cluster
@@ -29,13 +27,13 @@
 
 ## Cluster Steps In The Chain
 
-The chain is the project: `chain :: RootConfig -> [Step]` is one ordered representation the recursive
+The chain is the project: `chain :: ProjectConfig -> [Step]` is one ordered representation the recursive
 interpreter walks (see [composition_methodology](../architecture/composition_methodology.md), the
-canonical home of the model). Cluster lifecycle is expressed as **step kinds** in that chain, not as a
-top-level `cluster` command. `hostbootstrap-core` contributes the cluster step kinds
-(`deploy-kind`-class steps plus the chart deploy); a project contributes its own steps
-(`deploy-harbor`, `launch-web`, …) into the *same* `[Step]`, and host and workload steps interleave
-freely. The cluster steps are leaves: they bottom out at the container frame into `kubectl`/`helm`/`kind`.
+canonical home of the model). Cluster lifecycle is expressed as **step kinds** in that chain.
+`hostbootstrap-core` contributes the cluster step kinds (`deploy-kind`-class steps plus the chart
+deploy); a project contributes its own steps (`deploy-harbor`, `push-image`, …) into the *same*
+`[Step]`, and host and workload steps interleave freely. The cluster steps are leaves: they bottom out
+at the container frame into `kubectl`/`helm`/`kind`.
 
 `HostBootstrap.Cluster.Lifecycle` provides the cluster-step actions and applies the resource cordon
 (`HostBootstrap.Cluster.Cordon`) from [resource_budgeting](resource_budgeting.md). The plan resolution
@@ -65,12 +63,11 @@ container frame the recursive interpreter reaches — not host tools (see
 
 ## `project down`: Stop Without Delete
 
-`project down` **stops** the running cluster and its services without deleting anything. This is a new
-capability distinct from teardown: the cluster's compute is paused so the host reclaims resources, but
-the cluster definition, its `.data`, and its derived paths are left in place so the next `project up`
-resumes the same cluster rather than recreating it. `down` recurses *in* (the frame is still up) and
-stops on ascent, mirroring how VM `down` stops the VM without destroying it (see
-[incus](incus.md), [lima](lima.md)).
+`project down` **stops** the running cluster and its services without deleting anything. The cluster's
+compute is paused so the host reclaims resources, while the cluster definition, its `.data`, and its
+derived paths are left in place so the next `project up` resumes the same cluster rather than recreating
+it. `down` recurses *in* (the frame is still up) and stops on ascent, mirroring how VM `down` stops the
+VM without destroying it (see [incus](incus.md), [lima](lima.md)).
 
 Stop steps use the best-effort `reportStep`, which logs a failed step without aborting the rest of the
 descent, so a partial stack is tolerated and the operation stays idempotent.
@@ -90,8 +87,8 @@ tolerating a partially-up stack and staying idempotent.
 Neither stop (`down`) nor teardown (`destroy`) deletes a cluster's data directory.
 
 - Production state lives in `.data`.
-- Stopping a cluster (`down`), or tearing it down and recreating it (`destroy` → `up`), preserves the
-  data directory so persistent state survives the cluster's lifecycle.
+- Stopping a cluster (`down`), or tearing it down with `destroy` and recreating it with a later
+  `up`, preserves the data directory so persistent state survives the cluster's lifecycle.
 
 - **WRONG**: a teardown step removes the data directory along with the cluster. This is wrong because
   it destroys persistent state that must outlive the cluster, conflating compute lifecycle with data
@@ -110,33 +107,36 @@ A cluster runs under a `ClusterProfile` that selects its data directory and clus
 
 The test profile isolates the test harness from production state: it never touches `.data`, writing
 instead under `.test_data`, and it uses a test-scoped cluster name so test clusters are clearly
-distinct from production clusters. This isolation is what lets the test harness stand up, exercise,
-and tear down clusters per case without endangering production data; the never-delete-data invariant
-still applies to `.test_data` within a case's lifecycle. The harness drives these profiles as a **lift
-target**, decoupled from the production chain: `test run all` validates the live `project up` stack
-from the root frame. See [testing](testing.md).
+distinct from production clusters. This isolation lets the test harness stand up, exercise, and tear
+down clusters per case without endangering production data; the never-delete-data invariant still
+applies to `.test_data` within a case's lifecycle.
+
+`test run all` is the separate test surface, decoupled from the persistent `project up` stack. It
+drives the standardized harness over the project's case matrix: each case brings up an **isolated
+per-case kind cluster** (the test profile, under `.test_data/<case>/`), runs its body, and tears that
+cluster down — guaranteed even if the body fails. `project up` does not run the harness, and the
+harness does not stand up the persistent stack; the two are independent. See [testing](testing.md).
 
 ## Current Status
 
-The cluster-lifecycle semantics described above ship today and are real-run-validated end-to-end on
-real hardware.
+The cluster-lifecycle semantics described above are real-run-validated end-to-end on real hardware.
 
-- **Shipped**: cluster bring-up/teardown are chain steps the recursive `project up`/`project
-  down`/`project destroy` interpreter runs, with stop-without-delete (`down`) as a capability distinct
-  from `destroy`. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional; the
-  stop and teardown steps are best-effort; read-only state is reported through `context inspect`, which
-  renders the lift composition and current frame and reports whether the resolved cluster is live
-  alongside the preserved `.data` and derived paths, never mutating state. The flat `cluster
-  up|down|delete|status` verbs are removed; the `clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/
-  `clusterDelete` reconcilers remain in `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps
-  and the lifecycle command. The never-delete-`.data` invariant and the production/test profiles are
-  unit-tested and in force. The demo reaches this path through its `demoChain :: ProjectConfig ->
-  [Step]` value (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle.
-- **Validated end-state**: a single `project up` on Incus/Linux stood up the live persistent stack —
-  the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the full
-  8-pod production Harbor (NodePort 30500), the 20GB project image pushed to the in-cluster registry,
-  and the web chart pod serving HTTP 200 at `localhost:30080` — then `project down` / `project destroy`
-  tore it down with host `.data` preserved.
+- **Behavior**: cluster bring-up and teardown are chain steps the recursive `project up`/`project
+  down`/`project destroy` interpreter runs, with `down` stopping the cluster without deleting it and
+  `destroy` deleting it. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional;
+  the stop and teardown steps are best-effort. Read-only state is reported through `context inspect`,
+  which renders the lift composition with the current frame marked, reports whether the resolved cluster
+  is live alongside the preserved `.data` and derived paths, and never mutates state. The
+  `clusterCreate`/`deployChart`/`clusterUp`/`clusterDown`/`clusterDelete` reconcilers live in
+  `HostBootstrap.Cluster.Lifecycle` and the chain-step actions invoke them. The never-delete-`.data`
+  invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
+  through its `demoChain :: ProjectConfig -> [Step]` value
+  (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle.
+- **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
+  the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
+  in-cluster Harbor registry (NodePort 30500), the project image pushed to that registry, and the web
+  chart pod serving HTTP 200 at `localhost:30080` — and `project down` / `project destroy` tear it down
+  with host `.data` preserved.
 
 ## See also
 
@@ -146,5 +146,5 @@ real hardware.
 - [dhall_topology](dhall_topology.md) — the topology frames that drive the recursive chain.
 - [incus](incus.md), [lima](lima.md) — VM lifecycle expressed as core chain steps, including
   stop-without-delete.
-- [testing](testing.md) — how the harness drives the production/test profiles as a decoupled lift
-  target.
+- [testing](testing.md) — `test run all`, the separate harness that drives the test profile over
+  isolated per-case clusters, independent of the persistent `project up` stack.

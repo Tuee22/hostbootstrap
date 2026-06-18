@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-- The chain shape is **code**: `chain :: RootConfig -> [Step]` is the project's identity, owned by the
+- The chain shape is **code**: `chain :: ProjectConfig -> [Step]` is the project's identity, owned by the
   project binary and interpreted recursively by `project up`. It is not in any `.dhall`.
 - `.dhall` carries **parameters + context + witness**, never the shape. The sibling `<project>.dhall`
   parameterizes the chain (budgets, ports, replicas, optional structural flags) and declares the
@@ -28,7 +28,7 @@
 
 ## The Chain Is Code; The Dhall Is Parameters
 
-The recursive lift chain is a Haskell value, `chain :: RootConfig -> [Step]`, and it **is** the
+The recursive lift chain is a Haskell value, `chain :: ProjectConfig -> [Step]`, and it **is** the
 project — its single representation (see
 [composition_methodology](../architecture/composition_methodology.md)). The sibling `<project>.dhall`
 does not encode that chain. It supplies three things and nothing more:
@@ -57,14 +57,15 @@ witnesses             local checks that prove the process is actually in that fr
 The `topologyFrames` list — frames plus `topologyParentId` references — is the map of the recursive
 descent. Each frame is one segment of the `project up` chain: `project up` interprets the current
 frame's steps, then hands off `pb project up` into the next frame, where the child copy reads its own
-sibling `<project>.dhall` and continues. The frame list is open-ended, so a project can represent
-`host -> VM -> container -> kind cluster -> pod` or `host -> VM -> Pulumi role -> EKS cluster -> workload`
-without the core library learning every provider in advance. The core checks the common frame graph and
-command gate; higher layers add provider payloads and witness checks.
+sibling `<project>.dhall` and continues. The frame list is open-ended, so a project represents
+`host -> VM -> container -> kind cluster -> pod` or any other provider-backed descent without the core
+library learning every provider in advance. The core checks the common frame graph and command gate;
+higher layers add provider payloads and witness checks.
 
-This is the data behind the `context` command (read-only introspection): `context` renders the global
-lift composition — `topologyFrames` / `parentChain` — with the current frame highlighted, so an
-operator can see where a binary copy sits in the descent without running it.
+This is the data behind the `context` command (read-only introspection): `context inspect` renders the
+global lift composition — `topologyFrames` / `parentChain` — with the current frame highlighted, so an
+operator sees where a binary copy sits in the descent without running it. `context` also exposes `path`,
+`show`, `schema`, and `render` for inspecting and describing the project-local config.
 
 ## Each Binary Verifies Its Frame
 
@@ -131,20 +132,21 @@ and test artifacts are owned by the project binary.
 The project binary owns default local config generation (via `project init`), pure child projection
 helpers, and command gating through the sibling `<project>.dhall`. The context authority is topology-aware:
 runtime configs carry provider-backed `topologyFrames`, a `currentFrame`, and locally checked witnesses,
-and the binary verifies its frame before side effects. The core command surface in place today is
+and the binary verifies its frame before side effects. The core command surface is
 `ensure`/`context`/`project`/`test`/`check-code`, and the demo drives its lifecycle through the recursive
 `project` chain — `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` —
-interpreted by `project up` (the demo additionally retains only the `web` verb and the `vm`/`incus`
-debug-hatch verbs).
+interpreted by `project up`. The demo also contributes the `web` verb and the `vm`/`incus`
+provider/VM verbs.
 
-The model this document describes is the recursive `project` chain: `chain :: RootConfig -> [Step]`
+The model this document describes is the recursive `project` chain: `chain :: ProjectConfig -> [Step]`
 interpreted by `project up`, with `project init` writing the root config, the context-init step minting
-child configs, and `context` reduced to read-only introspection. This is **shipped and real-run
-validated** end-to-end: a single `project up` on Incus/Linux stood up the live persistent stack — a
-cordoned kind cluster, the full 8-pod production Harbor, the project image pushed to the in-cluster
-registry, and the web chart pod serving `localhost:30080` — and `project down` / `project destroy` tore
-it back down with durable host `.data` preserved. The topology data and per-frame fail-fast above are the
-substrate the chain interpreter builds on. See
+child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
+stands up the live persistent stack — a cordoned kind cluster, the full 8-pod production Harbor, the
+project image pushed to the in-cluster registry, and the web chart pod serving `localhost:30080` — and
+`project down` / `project destroy` tear it back down with durable host `.data` preserved. The topology
+data and per-frame fail-fast above are the substrate the chain interpreter builds on. `test run all`
+drives a separate standardized harness whose isolated per-case kind clusters stand outside this
+persistent stack; `project up` does not run that harness. See
 [composition_methodology](../architecture/composition_methodology.md) for the model and
 `DEVELOPMENT_PLAN/` for phase status.
 

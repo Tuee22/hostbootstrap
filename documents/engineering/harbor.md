@@ -1,21 +1,23 @@
 # Harbor (downstream guidance)
 
 **Status**: Supporting reference
-**Supersedes**: the execution-model split (container vs host-binary/host-daemon ownership of the push)
+**Supersedes**: the prior downstream-push reference
 **Referenced by**: [../README.md](../README.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
 
 > **Purpose**: Document the convention for a downstream project pushing its own arch-explicit image,
-> and make clear that hostbootstrap never pushes project images.
+> and make clear that hostbootstrap core never pushes project images.
 
-hostbootstrap **does not push your project image.** It builds the project
+The hostbootstrap core **does not push your project image.** It builds the project
 container `FROM` the base tag (the code-check gate) and materializes the project
-binary at `./.build/<project>`, then stops. Whether and how the project container
-reaches a registry is the **downstream project's** job, not the tool's. This page
-is convention, not enforcement: hostbootstrap has no `push` command for project
-images and no Harbor configuration of its own.
+binary, then stops. Whether and how the project container reaches a registry is the
+**downstream project's** job, not the core's. This page is convention, not
+enforcement: the core has no push command for project images and no Harbor
+configuration of its own.
 
-If the project wants its container in Harbor, the project's own build/CI step (or
-a subcommand on the project binary) pushes it as part of its own lifecycle.
+A project that wants its container in a registry contributes its own chain steps
+that push it as part of the project's deploy. The `hostbootstrap-demo` consumer
+does exactly this: its `deploy-harbor` and `push-image` steps stand up an
+in-cluster Harbor and push the project image during `project up`.
 
 ## Recommended convention: arch-explicit tags only
 
@@ -62,14 +64,16 @@ and [base_image.md](base_image.md). A project never re-pushes the large base
 image — it pulls the base from Docker Hub and pushes only its own thin
 layer(s).
 
-The `hostbootstrap-demo` worked consumer (`demo/`) drives this convention
-end-to-end: its `deploy-harbor` / `push-image` container-frame chain steps —
-interpreted by `project up` as it descends `demoChain :: ProjectConfig ->
-[Step]` — bring up the in-cluster Harbor and push the arch-explicit image tag
-during the deploy. The validated real run stood this up on Incus/Linux: a single
-`project up` brought up the full 8-pod production Harbor (NodePort 30500) and
-pushed the 20GB project image into the in-cluster registry as part of the live
-persistent stack.
+The `hostbootstrap-demo` consumer (`demo/`) drives this convention end-to-end. Its
+`deploy-harbor` and `push-image` steps belong to the container frame of
+`demoChain :: ProjectConfig -> [Step]`, the demo's contributed chain, and `project
+up` interprets them as it descends into that frame. `deploy-harbor` installs the
+in-cluster Harbor with `helm upgrade --install harbor harbor/harbor`, exposes it as
+a NodePort on port 30500, and waits for all eight Harbor pods to be Ready.
+`push-image` loads the project image into the kind nodes, logs in to the registry
+at `localhost:30500`, tags the image, and pushes it to
+`localhost:30500/library/hostbootstrap-demo:demo`. The push runs as part of the
+live persistent stack that `project up` stands up.
 
 ## See also
 

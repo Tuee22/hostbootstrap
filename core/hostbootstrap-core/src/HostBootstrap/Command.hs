@@ -141,18 +141,22 @@ testCommand progName suite =
             "run"
             ( info
                 (runTestRun <$> caseArg)
-                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (root-only, needs test.dhall)"))
+                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (needs test.dhall)"))
             )
     caseArg =
         strArgument
             ( metavar "SUITE"
                 <> help ("test suite to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
             )
-    runTestInit = gate progName Context.HostOrchestratorCommand [] $ do
+    -- The test surface gates as 'TestWorkflowCommand', the class permitted in
+    -- every frame that hosts the standardized harness (the orchestration frames
+    -- and the TestHarness frame), so @test run@ runs wherever the kind tooling
+    -- lives — directly on a host that has it, or lifted into the VM/container.
+    runTestInit = gate progName Context.TestWorkflowCommand [] $ do
         path <- testDhallPath progName
         writeTestDhall path (testSuiteCaseIds suite ++ [allCasesSelector])
         putStrLn ("test init: wrote " ++ path)
-    runTestRun selector = gate progName Context.HostOrchestratorCommand [] $ do
+    runTestRun selector = gate progName Context.TestWorkflowCommand [] $ do
         path <- testDhallPath progName
         exists <- doesFileExist path
         unless exists (die ("test run: missing " ++ path ++ "; run `" ++ progName ++ " test init` first"))
@@ -411,11 +415,11 @@ projectCommandGroup progName chain frameCtx teardown =
             (info (pure runDestroy) (progDesc "Stop then delete everything spun up; preserve host .data"))
 
     -- @project up@ is the recursive interpreter that runs in EVERY orchestration
-    -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand' —
-    -- the one class in the allowed set of all three orchestration kinds
-    -- (HostOrchestrator / VMOrchestrator / VMProjectContainer) yet correctly
-    -- rejected in the leaf frames (ClusterService / Daemon / ImageBuildContainer),
-    -- where a recursive @project up@ must not run (§ X).
+    -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand',
+    -- which is permitted in all three orchestration kinds (HostOrchestrator /
+    -- VMOrchestrator / VMProjectContainer) and rejected in the
+    -- ClusterService / Daemon / ImageBuildContainer leaves, where a recursive
+    -- @project up@ must not run (§ X).
     runUp dryRun =
         withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \rootCfg ctx ->
             if dryRun
@@ -428,10 +432,13 @@ projectCommandGroup progName chain frameCtx teardown =
         result <- runChainFromFrame cfg self (frameCtx rootCfg) current (chain rootCfg)
         either die pure result
 
-    -- Teardown recurses in then stops/deletes on ascent (§ Y): the inner cluster
-    -- frame is torn down first (clusterDown/clusterDelete, which preserve host
-    -- @.data@, § O), then the project's chain-frame teardown stops (down) or
-    -- deletes (destroy) the outer VM frame last.
+    -- Teardown runs the cluster-lifecycle reconciler (clusterDown / clusterDelete,
+    -- which never remove host @.data@, § O), then the project's chain-frame
+    -- 'teardown' stops (down) or deletes (destroy) the provisioned frames. For a
+    -- project whose cluster lives inside a provider VM (the demo), the VM is the
+    -- wall: stopping or deleting the VM takes the in-VM cluster down with it, so
+    -- the host-side cluster reconciler is a no-op there and the VM teardown is the
+    -- effective one.
     runDown =
         withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \rootCfg ctx -> do
             cfg <- hostConfig

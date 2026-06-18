@@ -65,8 +65,7 @@ naming the shortfall and exits non-zero rather than over-committing the host.
 
 `verifyBudget` is the pure core of this check; `preflightBudget resources hostCapacity` derives the
 budget and runs `verifyBudget` against resolved spare host capacity. `resolveHostCapacity` resolves
-capacity **per substrate**, so the preflight is a real gate on every supported host rather than a no-op
-off Linux:
+capacity **per substrate**, so the preflight is a real gate on every supported host:
 
 | Substrate | CPU cores | Memory | Storage |
 |-----------|-----------|--------|---------|
@@ -76,16 +75,8 @@ off Linux:
 Storage is reported generously because the applied storage cordon (Lima/Colima `--disk`, incus `root,size`,
 a quota'd hostPath) is the real storage wall, not the preflight. On Apple, `sysctl` is invoked through
 the resolved `HostTool Sysctl`, preserving the host-tool absolute-path rule. The preflight runs inside
-`clusterUp` before any substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
-[cluster_lifecycle](cluster_lifecycle.md) for where it runs.
-
-## Current Status
-
-The substrate-aware spare-capacity resolution above is implemented and validated in
-[phase 9, sprint 9.5](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md). The retired
-off-Linux fallbacks are recorded in
-[legacy-tracking-for-deletion](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). Every ring in
-this document is implemented and validated.
+`clusterCreate` before any substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up
+ring and [cluster_lifecycle](cluster_lifecycle.md) for where it runs.
 
 ## Cordoning per Substrate
 
@@ -95,7 +86,7 @@ bootstrapper.
 
 | Substrate | Cordoning mechanism |
 |-----------|---------------------|
-| `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM remains the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
+| `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM is the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
 | `linux-cpu` / `linux-gpu` | A kind-node cap applied during cluster bring-up: `docker update --cpus --memory --memory-swap` on the control-plane container, capping the cluster's consumption to the declared budget. |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows may use the per-project

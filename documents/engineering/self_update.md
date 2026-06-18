@@ -1,7 +1,7 @@
 # Bootstrapper Self-Update
 
 **Status**: Authoritative source
-**Supersedes**: legacy pipx `#egg=hostbootstrap` install/update guidance and automatic latest-version gating proposals
+**Supersedes**: prior bootstrapper install/update guidance
 **Referenced by**: [../README.md](../README.md), [../architecture/python_haskell_boundary.md](../architecture/python_haskell_boundary.md), [../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md)
 
 > **Purpose**: Define the self-update doctrine for the pipx-installed Python bootstrapper while
@@ -11,25 +11,23 @@
 
 - The Python bootstrapper owns its own explicit self-update command because it updates the
   pipx-installed wrapper before or outside any project binary.
-- `hostbootstrap` has no versioned Python release channel today. The canonical install/update source is
-  the repository's default branch through a direct VCS requirement.
-- A fixed package version means normal version-based upgrade semantics are not the supported update
-  primitive. The supported primitive is a forced pipx reinstall from the canonical VCS spec.
+- `hostbootstrap` ships from a single canonical install/update source: the repository's default branch
+  through a direct VCS requirement.
+- The supported update primitive is a forced pipx reinstall from the canonical VCS spec.
 - Self-update is never automatic. `doctor`, `build`, `run`, and `base` must not contact GitHub to check
   freshness, must not mutate the pipx environment, and must not fail merely because the wrapper is not
   at the latest commit.
 
 ## Current Status
 
-`hostbootstrap update` is implemented in
-[Phase 6, Sprint 6.5](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md). It
-updates the pipx app explicitly:
+`hostbootstrap update` updates the pipx app explicitly. It is specified in
+[Phase 6, Sprint 6.5](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md):
 
 ```bash
 hostbootstrap update
 ```
 
-Local checkout installs remain development-only and use:
+Local checkout installs are development-only and use:
 
 ```bash
 pipx install --force /path/to/hostbootstrap
@@ -70,19 +68,19 @@ to the default branch.
 
 ## No Hidden Freshness Gate
 
-Being behind the default branch is not a host minimum. The only hard fail-fast Python surface remains
-the irreducible pre-binary host floor documented in [prerequisites](prerequisites.md). Normal commands
-must remain usable offline after installation and must not turn GitHub reachability into a prerequisite:
+Being behind the default branch is not a host minimum. The only hard fail-fast Python surface is the
+irreducible pre-binary host floor documented in [prerequisites](prerequisites.md). Normal commands stay
+usable offline after installation and do not turn GitHub reachability into a prerequisite:
 
 - `hostbootstrap doctor` checks local host minimums only.
 - `hostbootstrap build` and `hostbootstrap run` build/exec the project binary without a latest-version
   check.
-- `hostbootstrap base build` and `hostbootstrap base build-and-push` perform their existing local
-  self-check and Docker operations, but do not self-update the wrapper.
+- `hostbootstrap base build` and `hostbootstrap base build-and-push` perform their local self-check and
+  Docker operations, but do not self-update the wrapper.
 
 ## Validation
 
-Phase 6.5 validates the implementation:
+The test suite covers the implementation:
 
 - unit tests cover the generated pipx argv without mutating the user's pipx environment;
 - failure tests cover missing `pipx`, non-pipx/local installs, and failed subprocesses;

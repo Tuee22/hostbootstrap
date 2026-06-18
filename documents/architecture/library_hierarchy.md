@@ -12,7 +12,7 @@
   `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2). `mcts` and `hostbootstrap-demo` consume L0
   directly.
 - Each level adds only its **delta** to four parallel streams, one additive merge idiom each: the
-  **lift chain** (`chain :: RootConfig -> [Step]`, core + project steps), the **Dhall vocabulary**,
+  **lift chain** (`chain :: ProjectConfig -> [Step]`, core + project steps), the **Dhall vocabulary**,
   the **schema-gen** `ConfigArtifact` registry, and the **test-harness** `Seams`.
 - A project's primary CLI contribution is its lift **chain value**, not a set of new noun verbs:
   the core ships host-management step kinds and the project contributes its own step kinds into the
@@ -55,7 +55,7 @@ a delta, so the lower surface is preserved verbatim.
 ### Stream 1 — The Lift Chain
 
 The first stream is the project's lift **chain**: an ordered `[Step]` value
-(`chain :: RootConfig -> [Step]`) that the core's recursive `project up` interpreter walks frame by
+(`chain :: ProjectConfig -> [Step]`) that the core's recursive `project up` interpreter walks frame by
 frame. A level merges by contributing its own step kinds into that single list; the core's
 host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
 deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
@@ -78,10 +78,10 @@ action, and artifact delta in `ProjectSpec`. See
 contributes named step kinds, so a project cannot silently shadow a core step kind or a core
 top-level verb.
 
-- **WRONG**: a project re-implements VM bring-up or cluster deploy with its own top-level noun verb,
-  intending to "extend" the core. This is wrong because it shadows the core step kind with a parallel
-  verb — behavior then diverges across binaries and the append-only guarantee is broken; it also
-  reintroduces a second representation the single-representation doctrine forbids.
+- **WRONG**: a project re-implements VM bring-up or kind cluster deploy with its own top-level noun
+  verb, intending to "extend" the core. This is wrong because it shadows the core step kind with a
+  parallel verb — behavior then diverges across binaries and the append-only guarantee is broken; it
+  also introduces a second representation the single-representation doctrine forbids.
 - **RIGHT**: the project adds only new step kinds to its `chain` value and lets the core host-
   management steps pass through unchanged; the interpreter walks the one merged list and a shadow
   attempt is rejected before dispatch.
@@ -130,10 +130,12 @@ the context-init step inside `project up`, deriving from the active local config
 
 The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
 its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` surface.
-The harness is **implemented** — the standardized-test-harness phase
-([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) — completing the
-four-stream contract: every level extends the surface through exactly these four parallel, additive
-streams.
+The `test run all` harness is a separate test surface from `project up`: it drives the project's case
+matrix, each case bringing up an isolated per-case kind cluster, running its body, and tearing that
+cluster down. The standardized-test-harness phase
+([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) owns the harness. The
+test-harness stream completes the four-stream contract: every level extends the surface through exactly
+these four parallel, additive streams.
 
 ## Why Four Parallel Streams
 
@@ -148,26 +150,24 @@ statement of the contract lives in
 
 ## Current Status
 
-The reusable surface is implemented today as the chain stream and the recursive `project`
-interpreter this document describes, real-run-validated end-to-end on real hardware:
+The reusable surface is the chain stream and the recursive `project` interpreter this document
+describes, exercised end-to-end on real hardware:
 
-- Stream 1 is implemented as the single contributed `chain :: RootConfig -> [Step]` value walked by
-  the recursive `project up` interpreter, threaded through `ProjectSpec` (the demo's
-  `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The former
-  flat `cluster`, `config init`, and `context create` mutation verbs are now core step kinds
-  (deploy-kind/deploy-chart, the project-init lifecycle, and the context-init step); `ensure` is
-  retained only as a hidden debug surface, alongside the demo's `vm`/`incus` debug-hatch verbs and its
-  load-bearing `web` verb. The hand-written demo deploy chain (the old Op-based
-  `demo/src/HostBootstrapDemo/Chain.hs`) is deleted in favor of the single `demoChain` representation.
-  The `project` command and its recursive/fractal interpreter are **shipped and validated**: a single
-  `project up` on Incus/Linux stood up the live persistent stack, and `project down` / `project
-  destroy` tore it down with host `.data` preserved.
-- Streams 2, 3, and 4 are implemented as described: the `Core.dhall` vocabulary import-and-extend
-  idiom, the `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`.
-  Stream 3's renders/projections are surfaced through the read-only `context` command and the
-  context-init step, and stream 4 is invoked through `test init` / `test run`, with the additive merge
-  idioms unchanged.
+- Stream 1 is the single contributed `chain :: ProjectConfig -> [Step]` value walked by the recursive
+  `project up` interpreter and threaded through `ProjectSpec` (the demo's
+  `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The core ships
+  the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
+  deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-harbor, push-image)
+  into the same ordered `[Step]`. Every derived binary inherits the `ensure`, `context`, `project`,
+  `test`, and `check-code` verbs; the demo binary adds its `incus`, `vm`, and `web` verbs alongside
+  them. A single `project up` on Incus/Linux stands up the live persistent stack — deploy-kind →
+  deploy-harbor → push-image → deploy-chart → expose-port ending at a live web service on
+  `localhost:30080` — and `project down` / `project destroy` tear it down with host `.data` preserved.
+- Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
+  `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
+  renders and projections surface through the read-only `context` command and the context-init step.
+  Stream 4 surfaces through `test init` and `test run`, which drive the standardized harness over the
+  demo's case matrix independently of `project up`.
 
-`DEVELOPMENT_PLAN/` owns the migration status and closure criteria for the flat-verb → project-chain
-move; reconcile any status claim here to it rather than treating this document as a parallel status
-authority.
+`DEVELOPMENT_PLAN/` owns the closure criteria for the four-stream contract; reconcile any status claim
+here to it rather than treating this document as a parallel status authority.

@@ -5,33 +5,32 @@
 **Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [binary_context_config](binary_context_config.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
 
 > **Purpose**: Define the foundational composition model of `hostbootstrap-core` — a project *is* its
-> lift chain (`chain :: RootConfig -> [Step]`), `project up` is the recursive/fractal interpreter that
+> lift chain (`chain :: ProjectConfig -> [Step]`), `project up` is the recursive/fractal interpreter that
 > descends the topology one frame at a time, and that single `[Step]` value is the one representation of
 > both deployment and runtime business logic.
 
 ## TL;DR
 
-- **The chain is the project.** A project binary's identity is the value `chain :: RootConfig -> [Step]`
-  — an ordered list of host-management and workload steps. There is no separate command surface to
-  re-derive: the chain is code, it is the single representation (§W), and `project up --dry-run` renders
-  exactly that value.
+- **The chain is the project.** A project binary's identity is the value `chain :: ProjectConfig -> [Step]`
+  — an ordered list of host-management and workload steps. The chain is code, it is the single
+  representation (§W), and `project up --dry-run` renders exactly that value.
 - **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
   `pb project up` into the next frame; each `pb` owns its own segment of the chain and is restartable from
   any frame. Descent is always the same shape: *provision the frame → build/install the `pb` in it → hand
   off `pb project up`*.
 - **`.dhall` is parameters + context + witness, never the shape.** Each `pb` verifies it is in the frame
-  its sibling `<project>.dhall` describes, or fails fast. Structural variation (skip the VM → straight to
-  Docker) is a root-`.dhall` flag, so the chain stays a pure function of root parameters.
+  its sibling `<project>.dhall` describes, or fails fast. The chain is a pure function of root parameters,
+  so the shape lives in code and the `.dhall` carries only parameters, context, and witnesses.
 - **The Step algebra is the reuse unit.** The core ships host-management step kinds (`deploy-vm`,
   `ensure-X`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`,
-  `expose-port`); the project contributes workload step kinds (`deploy-harbor`, `launch-web`, …) into the
+  `expose-port`); the project contributes workload step kinds (`deploy-harbor`, `push-image`, …) into the
   *same* `[Step]`. Host and workload steps interleave freely — this is the workload-extension seam.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
 - **Fractal bootstrap.** The Python bootstrapper is the **metal-frame instance** of the descent pattern,
-  and the recursion bottoms out at the container `pb` running `kind`/`harbor`/`web` as `kubectl`/`helm`
-  leaves. See [§ Fractal Bootstrap](#fractal-bootstrap).
+  and the recursion bottoms out at the container `pb` running the `deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm` leaves. See
+  [§ Fractal Bootstrap](#fractal-bootstrap).
 
 ## The Step And The Chain
 
@@ -39,10 +38,10 @@ The foundational unit is a composable **step**: an action a binary runs and repo
 frame. The whole project is the ordered list of those steps:
 
 ```haskell
-chain :: RootConfig -> [Step]
+chain :: ProjectConfig -> [Step]
 ```
 
-`RootConfig` is derived purely from the root `<project>.dhall` parameters, so the chain is a pure
+`ProjectConfig` is derived purely from the root `<project>.dhall` parameters, so the chain is a pure
 function — there is no hidden, imperatively assembled command graph. Steps differ in execution semantics,
 and that difference drives plan/apply, retry, and run-model selection:
 
@@ -132,7 +131,8 @@ model makes explicit rather than hides:
   parent frame builds/installs it before it can hand off.
 - The **container frame skips the build** (`docker run <image> project up`), because the project image
   already carries the `pb` as its `ENTRYPOINT`. Recursion **bottoms out** at the container `pb`, which
-  runs `kind`/`harbor`/`web` steps as `kubectl`/`helm` leaves — no further frame to descend into.
+  runs the `deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm`
+  leaves — no further frame to descend into.
 
 ## Context-Aware Topology
 
@@ -213,18 +213,18 @@ parallel hand-assembled second chain that could drift from it.
 - `project up` interprets the chain to bring up a **persistent stack**; `project down`/`project destroy`
   interpret it for teardown; `--dry-run` renders it; `context` introspects it (see
   [§ Current Status](#current-status)).
-- `test run all` validates the live stack **from the root**, decoupled from deploy: the test surface
-  reads its own `test.dhall` and is a chain step like any other, lifted into the frame that owns it.
+- `test run all` is the **separate** test surface, decoupled from the deploy chain. It reads its own
+  `test.dhall` and drives the standardized harness over the project's case matrix. `project up` does not
+  run the harness; the persistent-stack deploy and the test harness are independent surfaces.
 - The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`, see
-  [harness_workflow](harness_workflow.md)) is the context-agnostic test **engine** — a step's lift target,
-  not a lift-aware component. It brings up an isolated per-case environment, runs the case, and tears it
-  down, invoking reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` locally; the interpreter, not the
-  harness, decides which frame it runs in.
+  [harness_workflow](harness_workflow.md)) is the context-agnostic test **engine**. For each case it brings
+  up an isolated per-case environment, runs the case body, and tears that environment down — guaranteed
+  even if the body fails — invoking reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` locally.
 
-- **WRONG**: re-expressing cluster bring-up / Harbor / web-serve / e2e as a **separate**, hand-written
-  chain of lifted ops *alongside* the steps already in `[Step]`. This is wrong because it is a redundant
-  second representation of the same project: it duplicates the chain and can drift from it. There is one
-  representation — the `[Step]` value the core interprets.
+- **WRONG**: re-expressing the deploy as a **separate**, hand-written chain of lifted ops *alongside* the
+  steps already in `[Step]`. This is wrong because it is a redundant second representation of the same
+  project: it duplicates the chain and can drift from it. There is one representation — the `[Step]` value
+  the core interprets.
 - **RIGHT**: every host and workload action is a step contributed into the one `[Step]`; `project up`
   interprets it, descending frame by frame, and the child Dhall names each frame explicitly so the binary
   verifies it before acting.
@@ -233,31 +233,25 @@ parallel hand-assembled second chain that could drift from it.
 
 The lift primitive is built: the core has provider-backed folds for Incus and Lima, the binary-context
 gate is topology-aware (runtime configs carry provider-backed frames, a current frame, and locally
-checked witnesses), and the single canonical demo chain runs end-to-end. **What is implemented and
-real-run-validated today is the unified lifecycle surface** — the core command tree is exactly `ensure`,
-`context`, `project`, `test`, and `check-code`. The demo contributes its deploy as the pure value
-`demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` (there is no separate
-hand-written deploy sequence — the old `HostBootstrapDemo.Chain` is deleted), and retains only the `web`
-verb plus the `vm`/`incus` debug-hatch verbs. The single lifted compute step is `test all` lifted into the
-project container in the VM.
+checked witnesses), and the canonical demo chain runs end-to-end. The core command tree is exactly
+`ensure`, `context`, `project`, `test`, and `check-code`. The demo contributes its deploy as the pure
+value `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, and adds the
+`web` verb plus the `vm`/`incus` provider verbs.
 
 `project init|up|down|destroy` is the recursive lifecycle interpreter driven by the
-`chain :: RootConfig -> [Step]` value: `project up` descends the 3-frame fractal topology
-(`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`), `project down` stops services,
+`chain :: ProjectConfig -> [Step]` value: `project up` descends the 3-frame fractal topology
+(`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`), `project down` stops services,
 clusters, and VMs (incus/Lima **stop**) without deleting, and `project destroy` deletes them — both
 preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
-standardized harness. The old flat verbs have dissolved into chain steps: `cluster up` → the
-`deploy-kind`/`deploy-chart` steps, `cluster down`/`delete` → `project down`/`destroy`, `cluster status` →
-`context inspect`; `config init` → `project init` and `config show|schema|render` → `context show|schema|
-render`; `context create` → the `context-init` step that mints the child `<project>.dhall`; the demo's
-`harbor install`/`harbor push` → the `deploy-harbor`/`push-image` container-frame steps. A single
-`project up` on Incus/Linux stood up the live persistent stack end-to-end — a cordoned kind cluster (kind
-`extraPortMappings` publish NodePorts to the VM localhost) → the full 8-pod production Harbor
-(NodePort 30500) → the 20GB project image pushed to the in-cluster registry → the web chart pod at
-`localhost:30080` serving HTTP 200 — then `project down`/`project destroy` tore it down with host `.data`
-preserved. `DEVELOPMENT_PLAN/` owns the migration status and closure criteria; this document is the
-canonical statement of the model the validated build ships.
+standardized harness. `context-init` mints the child `<project>.dhall`; `deploy-kind`/`deploy-chart`
+bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
+the project image; `context inspect` renders the topology with the current frame marked. A single
+`project up` on Incus/Linux stands up the live persistent stack end-to-end — a cordoned kind cluster (kind
+`extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod production Harbor
+(NodePort 30500), the project image pushed to the in-cluster registry, and the web chart pod at
+`localhost:30080` serving HTTP 200 — then `project down`/`project destroy` tear it down with host `.data`
+preserved. This document is the canonical statement of the model the validated build ships.
 
 ## Foundational Principles
 
@@ -302,9 +296,9 @@ from these primitives, never baked into L0.
 - [run_models](run_models.md) — the four run-models the interpreter selects between per step.
 - [incus](../engineering/incus.md) and [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the
   `InVM` frame and the fail-closed in-container cluster path.
-- [harness_workflow](harness_workflow.md) — the `runMatrix` + `Seams` test engine that is the lift target
-  of the `test run all` step.
+- [harness_workflow](harness_workflow.md) — the `runMatrix` + `Seams` test engine that `test run all`
+  drives, separate from the deploy chain.
 - [composition_patterns](../engineering/composition_patterns.md) — the cookbook of shapes that instantiate
   this model.
 - [authoring_project_binaries](../engineering/authoring_project_binaries.md) — how a consumer authors its
-  `chain :: RootConfig -> [Step]`.
+  `chain :: ProjectConfig -> [Step]`.

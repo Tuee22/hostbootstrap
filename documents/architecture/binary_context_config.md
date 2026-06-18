@@ -21,7 +21,7 @@
   lives in [composition_methodology](composition_methodology.md); this doc defers to it.
 - `context` is a **read-only** introspection/visualization command: it decodes the sibling `.dhall`,
   renders `topologyFrames`/`parentChain` with the current frame highlighted, and shows schema and witnesses.
-  Context files are written by an internal **context-init step** of `project up`, never by a user verb.
+  An internal **context-init step** of `project up` writes context files; no user verb does.
 
 ## The Contract
 
@@ -88,8 +88,8 @@ runtime callback. The reflected schema carries these fields on the context recor
 let ContextKind =
       < HostOrchestrator
       | VMOrchestrator
-      | ImageBuildContainer
       | VMProjectContainer
+      | ImageBuildContainer
       | ClusterService
       | Daemon
       | OneShotJob
@@ -179,8 +179,8 @@ command tree exists in each frame, but each copy refuses work that does not belo
 
 ## The `context` Command: Read-Only Introspection
 
-`context` is a **read-only** command. It mutates nothing and creates no files. It absorbs the former
-`config show`/`config schema`/`config render` surfaces:
+`context` is a **read-only** command. It mutates nothing and creates no files. Its subcommands —
+`inspect`, `path`, `show`, `schema`, and `render` — are the single introspection surface:
 
 - decode the sibling `<project>.dhall` and pretty-print parameters, context, and witnesses;
 - render the global lift composition (`topologyFrames`/`parentChain`) with the **current frame
@@ -192,10 +192,9 @@ sibling config (alongside help/version). It never projects authority into a chil
 
 ### Context creation is an internal step, not a verb
 
-Context files are minted by an internal **context-init step** of `project up`, at the boundary where the
-next binary becomes meaningful — there is no user-facing `context create` verb. The context-init step is a
-core step kind in the chain (see the Step algebra in
-[hostbootstrap_core_library](hostbootstrap_core_library.md)):
+An internal **context-init step** of `project up` mints context files, at the boundary where the
+next binary becomes meaningful. The context-init step is a core step kind in the chain (see the Step
+algebra in [hostbootstrap_core_library](hostbootstrap_core_library.md)):
 
 1. Python derives `<project>` from the Cabal file, builds `./.build/<project>`, and execs the requested
    command. It writes no Dhall; it is the metal-frame instance of the fractal bootstrap.
@@ -248,7 +247,7 @@ The worked demo descends through four frames, each reading its own `<project>.dh
 |---|---|
 | Host | metal-side orchestrator: select the VM provider, size and launch the VM, tear it down behind the guard |
 | VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux; re-establish the host-native binary and build the project container |
-| Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`) and run `test run all` |
+| Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`) that stand up the persistent stack |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 
 The same `project` command tree exists in each copy of the binary. Each copy reads a different local
@@ -265,7 +264,7 @@ environment name), never represented in Dhall and never persisted. See
 
 ## Current Status
 
-[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) ships the binary-context gate.
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) governs the binary-context gate.
 Python does not create runtime config. The built binary owns ungated default generation, schema/help,
 validation, child-config projection, and the normal command gate that reads the context authority embedded
 in the local config. The gate checks project/binary identity, context kind, command class,
@@ -274,22 +273,20 @@ witnesses, and a command fails before side effects when the process is not actua
 declares. Dockerfiles bake the narrow `image-build-container` role; runtime containers receive
 parent-generated `vm-project-container` configs mounted over the baked file.
 
-The model described above is shipped and real-run-validated end-to-end on real hardware:
+The model described above is real-run-validated end-to-end on real hardware:
 
 - The recursive `project up` interpreter interprets the `[Step]` chain across the 3-frame fractal descent.
-  Context creation is the internal context-init step kind, and the root config is written by `project init`;
-  the flat `context create vm|container|service` and `config init` verbs are gone.
-- The read-only `context` command is the single introspection surface, absorbing the former
-  `config show`/`config schema`/`config render` as `context show`/`context schema`/`context render`
-  (alongside `context inspect`/`context path`).
+  Context creation is the internal context-init step kind, and `project init` writes the root config.
+- The read-only `context` command is the single introspection surface: `context inspect`, `context path`,
+  `context show`, `context schema`, and `context render`.
 - The `.dhall` is the explicit parameters + context + witness value of a root the chain is a pure function
   of, with structural variation expressed as a root parameter flag.
 
-A single `project up` on Incus/Linux stood up the live persistent stack — a cordoned kind cluster, the full
+A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the full
 production Harbor, the project image pushed to the in-cluster registry, and the web chart pod serving
-`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tore it down with host `.data`
-preserved. The phase records tracking this migration live in `DEVELOPMENT_PLAN/`, which owns implementation
-status; this document describes the authority contract in present tense.
+`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
+preserved. The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
+describes the authority contract.
 
 ## See Also
 

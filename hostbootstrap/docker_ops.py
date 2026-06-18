@@ -124,12 +124,12 @@ def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
     return tuple(entrypoint)
 
 
-async def build(spec: BuildSpec) -> process.CommandResult:
-    return await process.run_checked(build_command(spec))
+async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
+    return await process.run_checked(build_command(spec), prefix=prefix)
 
 
-async def push(tag: str) -> process.CommandResult:
-    return await process.run_checked(push_command(tag))
+async def push(tag: str, *, prefix: str = "") -> process.CommandResult:
+    return await process.run_checked(push_command(tag), prefix=prefix)
 
 
 async def image_exists(tag: str) -> bool:

@@ -136,27 +136,30 @@ logic, and no automatic latest-version check in normal commands. See
 
 ## Current Status
 
-The ownership boundary described above is implemented today and is **unchanged** by the fractal-bootstrap
-framing — the framing is a renaming of the existing handoff, not a behavior change.
+The ownership boundary described above is the shipped implementation.
 
-- **Implemented today.** Python derives `<project>` from the Cabal file, asserts the host minimums,
+- **Implementation.** Python derives `<project>` from the Cabal file, asserts the host minimums,
   ensures the build toolchain, builds `./.build/<project>` host-native on every substrate, triggers the
   binary's if-missing config init, and execs without reading or writing Dhall. The execed binary owns
   Docker, the container build, the VM provider, the cluster, and teardown. On the Haskell side the
-  shipped surface is the recursive `project` command (`project init|up|down|destroy`), which interprets a
+  surface is the recursive `project` command (`project init|up|down|destroy`), which interprets a
   project's contributed `chain :: ProjectConfig -> [Step]` (the demo's `demoChain`) as a single fractal
   descent — the chain is the SINGLE representation of the deploy. The core command tree is exactly
   `ensure`, `context`, `project`, `test`, and `check-code`; `context` is read-only introspection
-  (`inspect`/`path`/`show`/`schema`/`render`). The former flat verbs are chain steps under `project up`
+  (`inspect`/`path`/`show`/`schema`/`render`). `project up` interprets the chain steps
   (`deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port`), and the lifecycle rests on
-  the **self-reference lift** primitive with provider-backed folds for Lima and Incus. The demo retains
-  only its `web` verb (load-bearing: the chart pod runs `web serve`, the Dockerfile runs `web bridge`)
-  and the `vm`/`incus` debug-hatch verbs.
-- **Real-run validated.** A single `project up` on Incus/Linux interprets the chain across the 3-frame
+  the lift primitive with provider-backed folds for Lima and Incus. The demo contributes its `web` verb
+  (load-bearing: the chart pod runs `web serve`, the Dockerfile runs `web bridge`) and the `vm`/`incus`
+  provider verbs.
+- **Persistent stack.** A single `project up` on Incus/Linux interprets the chain across the 3-frame
   fractal descent (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`) and stands up
-  the live persistent stack — cordoned kind cluster → the full 8-pod production Harbor (NodePort 30500) →
-  the 20GB project image pushed to the in-cluster registry → the web chart pod serving HTTP 200 at
-  `localhost:30080` — then `project down` (incus/Lima **stop**, no delete) and `project destroy` (delete)
-  tear it down with host `.data` preserved. The metal-frame role of Python is identical under the chain
-  surface — provision, build the `pb`, hand off. Phase order and closure live in `DEVELOPMENT_PLAN/`, the
-  canonical status authority. See [composition_methodology](composition_methodology.md) for the model.
+  the live persistent stack — a cordoned kind cluster, then the full 8-pod production Harbor (NodePort
+  30500), then the project image pushed to the in-cluster registry, then the web chart pod serving HTTP
+  200 at `localhost:30080`. `project down` (incus/Lima **stop**, no delete) and `project destroy`
+  (delete) tear it down with host `.data` preserved. `test run all` is the separate test surface: it
+  drives the standardized harness over the demo's cases, each bringing up its own isolated per-case kind
+  cluster, running the web build and Playwright end-to-end cases, and tearing that cluster down; the
+  harness is decoupled from the persistent deploy stack. The metal-frame role of Python is the same under
+  the chain surface — provision, build the `pb`, hand off. Phase order and closure live in
+  `DEVELOPMENT_PLAN/`, the canonical status authority. See
+  [composition_methodology](composition_methodology.md) for the model.

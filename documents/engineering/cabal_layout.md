@@ -87,5 +87,5 @@ root would run `cabal` where no project file exists and fail for every file.
 
 - `cabal build all` builds the library and the bare executable.
 - `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
-- `hostbootstrap --help` prints the composed core command tree, which lists the `ensure`, `config`,
-  and `cluster` verbs today.
+- `hostbootstrap --help` prints the composed core command tree, which lists the `ensure`, `context`,
+  `project`, `test`, and `check-code` verbs.

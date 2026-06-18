@@ -15,13 +15,13 @@
   no-op when present (install-and-verify) — an absent-but-installable dependency is installed, not a
   hard stop.
 - **Reconcilers run as `ensure-X` chain steps inside `project up`.** They are core-shipped step kinds
-  the lift chain (`chain :: RootConfig -> [Step]`) sequences alongside `deploy-VM`, `copy-source`,
+  the lift chain (`chain :: ProjectConfig -> [Step]`) sequences alongside `deploy-VM`, `copy-source`,
   `build-pb`, and the project's own steps. The chain is the project; a reconciler is one kind of step
   in it. See [composition_methodology](../architecture/composition_methodology.md), the canonical home
   of the model.
-- **Standalone `ensure <tool>` is a hidden debug surface, not part of the everyday command tree.** It
-  is retained so an operator can converge one dependency in isolation while diagnosing a host; normal
-  operation drives reconcilers only as chain steps.
+- **`ensure <tool>` is also a top-level verb in the command tree.** It converges exactly one dependency
+  in the current frame, so an operator can isolate a host problem; `project up` drives the `ensure-X`
+  steps in dependency order without it.
 - **Provider reconcilers reach "usable", not merely "installed".** `ensure docker` and `ensure incus`
   converge to a frame that has the substrate capability the next chain step needs (a reachable Docker
   daemon / a VM-capable Incus) **and** working egress, so a `build-pb`, `build-image`, or `deploy-VM`
@@ -57,22 +57,21 @@ lift requires (see [composition_methodology](../architecture/composition_methodo
 
 ## Reconcilers As Chain Steps
 
-The lift chain is the project's identity. `project up` recursively interprets `chain rootCfg :: [Step]`
+The lift chain is the project's identity. `project up` recursively interprets `chain projectCfg :: [Step]`
 from the current frame; an `ensure-X` step is the chain's request to converge dependency `X` in the
 frame it is reached in, before the steps that depend on it run. A descent's reconcilers therefore run
 in dependency order *inside* the frame: a metal frame converges its VM provider before `deploy-VM`; a
 VM frame converges GHC before `build-pb` and Docker before `build-image`.
 
 Because a reconciler is idempotent, re-running `project up` re-converges every `ensure-X` step as a
-verified no-op — reconcile-to-running is the lifecycle, not a one-shot install. The standalone
-`ensure <tool>` subcommand remains as a **hidden debug surface**: it converges exactly one dependency
-in the current frame so an operator can isolate a host problem, but it is not how the chain installs
-dependencies. Normal runs never call it; `project up` drives the `ensure-X` steps.
+verified no-op — reconcile-to-running is the lifecycle, not a one-shot install. The `ensure <tool>`
+verb converges exactly one dependency in the current frame, so an operator can isolate a host problem;
+`project up` drives the `ensure-X` steps in dependency order.
 
 - **WRONG**: a runbook tells an operator to converge a host by hand-running `ensure docker`,
   `ensure incus`, … in sequence as the supported install path. This is wrong because it re-derives, by
   hand, the dependency order the chain already encodes — the chain is the single representation, and
-  the standalone verb is a debug escape hatch, not the install procedure.
+  the standalone verb diagnoses one dependency, not the whole install procedure.
 - **RIGHT**: the operator runs `project up`; the chain reaches each `ensure-X` step in the right frame
   in the right order. `ensure docker` by hand is reserved for diagnosing one stuck dependency.
 
@@ -157,32 +156,34 @@ failing the applicability check. The applicability decision is the pure `decide`
 `HostBootstrap.Ensure`; `runReconciler` is the IO wrapper that performs the stderr write and the
 non-zero exit, so the decision is testable without exiting the process. When a reconciler runs as an
 `ensure-X` chain step, the same fail-fast surfaces as a non-zero step result and aborts `project up`;
-when run as the hidden standalone debug verb it surfaces directly to the operator.
+when run as the standalone `ensure <tool>` verb it surfaces directly to the operator.
 
 - **WRONG**: a reconciler reached on a non-applicable substrate prints nothing and exits `0`. This is
   wrong because it masks an operator error and lets a build proceed against an environment that cannot
   satisfy it.
 - **RIGHT**: the reconciler prints `ensure tart: not applicable on linux-cpu (requires apple-silicon)`
-  and exits non-zero, whether it was reached as a chain step or as the standalone debug verb.
+  and exits non-zero, whether it was reached as a chain step or as the standalone `ensure <tool>` verb.
 
-## Current Status
+## Two Invocation Surfaces, One Contract
 
-Honest split between what ships today and the target chain model:
+The reconcilers carry a single contract — install-and-verify, idempotence, wrong-host fail-fast, and
+provider reconcilers reaching "usable" — and the system reaches that contract through two invocation
+surfaces:
 
-- **Implemented today (the flat verbs).** Reconcilers are real and exercised: `installAndVerify`, the
-  substrate-branched install plans, the `decide`/`runReconciler` split, and the install-and-verify +
-  wrong-host fail-fast contract are built and tested. They are surfaced **today** as flat
-  `optparse-applicative` subcommands (`ensure docker`, `ensure colima`, `ensure incus`, …) and are
-  invoked by the demo's existing `vm`/`deploy` verbs and by the Python bootstrapper's pre-binary host
-  setup. Provider reconcilers already converge `docker`/`incus` to a reachable, usable substrate.
-- **Target (the `ensure-X` chain steps).** The recursive `project up` interpreter and the
-  `chain :: RootConfig -> [Step]` representation that sequences `ensure-X` steps alongside the other
-  core and project step kinds are the **target** model; they are **not yet implemented**. Reframing
-  the flat `ensure <tool>` subcommands into core-shipped step kinds, and demoting standalone
-  `ensure <tool>` to a hidden debug surface, lands with that interpreter. Until then the reconcilers
-  keep their current flat-verb surface.
+- **The `ensure <tool>` top-level verb.** `ensure` is one of the core command-tree verbs
+  (`ensure`, `context`, `project`, `test`, `check-code`). The `ensure` group dispatches the concrete
+  reconciler set `allReconcilers` (the `docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`, `lima`,
+  and the cross-substrate `incus` reconcilers) as subcommands — `ensure docker`, `ensure colima`,
+  `ensure incus`, … — through `ensureCommandWith`, which runs the binary-context gate before
+  dispatching. The Python bootstrapper drives the Apple-silicon `ensure colima` / `ensure ghc` /
+  `ensure homebrew` host setup pre-binary, and an operator runs a single `ensure <tool>` to converge
+  one stuck dependency.
+- **The `ensure-X` chain steps.** The recursive `project up` interpreter walks
+  `chain projectCfg :: [Step]` and converges each dependency in the frame its step is reached in,
+  sequenced alongside the other core and project step kinds (`deploy-VM`, `copy-source`, `build-pb`,
+  `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port`).
 
-The reconciler **contract** — install-and-verify, idempotence, wrong-host fail-fast, provider
-reconcilers reaching "usable" — is stable across both the current flat surface and the target chain
-surface; only the *invocation shape* (flat verb → `ensure-X` chain step) changes. The development plan
-tracks the interpreter and the step-kind refactor as open work.
+Both surfaces run the same reconciler values: `installAndVerify`, the substrate-branched install
+plans, the pure `decide` / IO `runReconciler` split, and the provider reconcilers that converge
+`docker` / `incus` to a reachable, usable substrate. The contract is the reconciler; the surface is
+only how it is reached.

@@ -14,7 +14,7 @@
   arg-builder family emits the complete argv for every substrate.
 - The ceiling is held by three rings of defense in depth: the compile ring (a Dhall `assert`), the
   bring-up ring (the pure `verifyBudget` / `fitsBudget` preflight), and the runtime ring (the applied
-  VM / kind-node / `docker run` caps).
+  VM and kind-node caps).
 - Storage is cordoned per substrate and carries no `docker update` flag, so it is omitted from the
   kind-node argv while remaining in `verifyBudget`.
 
@@ -34,12 +34,10 @@ and [resource budgeting](resource_budgeting.md) for the budget field itself.
 
 ### Why One Parser
 
-- **WRONG**: the Python layer keeps its own quantity helper and builds the `colima` argv itself. This is
-  wrong because two interpreters of one number can diverge, so the VM sizing and the Haskell-verified
-  budget may disagree and the declared ceiling may not be the enforced ceiling.
-- **RIGHT**: one canonical `parseQuantity` decodes every quantity, and one arg-builder family
-  (`colimaSizingArgs`, `kindNodeCordonArgs`) emits the complete argv. The Python bootstrapper builds no
-  sizing argv. The one declared number is the one enforced ceiling.
+One canonical `parseQuantity` decodes every quantity, and one arg-builder family (`colimaSizingArgs`,
+`limaSizingArgs`, `kindNodeCordonArgs`, `incusSizingArgs`) emits the complete argv for every substrate.
+The Python bootstrapper builds no sizing argv. Because every interpreter is the same parser, the VM
+sizing and the Haskell-verified budget agree, and the one declared number is the one enforced ceiling.
 
 ## The Three Rings
 
@@ -49,8 +47,8 @@ defense.
 | Ring | Mechanism | Where |
 |------|-----------|-------|
 | Compile | A Dhall-time `assert : C.fitsWithin budget pods === True` (from `Core.dhall`) | Generated deploy config |
-| Bring-up | The pure `verifyBudget` and `fitsBudget` preflight | `clusterUp`, before any spinup |
-| Runtime | The applied VM / kind-node / `docker run` caps | The live substrate |
+| Bring-up | The pure `verifyBudget` and `fitsBudget` preflight | `clusterCreate`, before any spinup |
+| Runtime | The applied VM / kind-node caps | The live substrate |
 
 ### Compile Ring
 
@@ -71,7 +69,7 @@ Two pure functions gate bring-up before any substrate is touched:
 `resolveHostCapacity cfg` resolves spare capacity **per substrate**: on `apple-silicon` it reads
 `hw.ncpu` and `hw.memsize` via the resolved `HostTool Sysctl`; on `linux-cpu` / `linux-gpu` it reads the
 `/proc/cpuinfo` processor count and `/proc/meminfo` `MemAvailable`. Storage is reported generously (the
-applied storage cordon is the real wall). The IO surface in `clusterUp` resolves capacity and runs
+applied storage cordon is the real wall). The IO surface in `clusterCreate` resolves capacity and runs
 `preflightBudget` as a fail-fast preflight; the pure source mapping and live Apple `sysctl` read are
 unit-tested. See [cluster lifecycle](cluster_lifecycle.md).
 
@@ -80,15 +78,15 @@ unit-tested. See [cluster lifecycle](cluster_lifecycle.md).
 The runtime ring is the cap actually applied to the live substrate.
 
 On Linux, `kindNodeCordonArgs clusterName resources` emits
-`docker update --cpus N --memory <bytes> --memory-swap <bytes> <clusterName>-control-plane`. It is
-applied in `HostBootstrap.Cluster.Lifecycle`'s `clusterUp` AFTER `kind create` and BEFORE Helm,
-fail-closed. `--memory-swap == --memory`, so an over-budget cluster self-limits instead of swapping
-past its ceiling. `<clusterName>` is the resolved `ClusterPlan` name, so each per-case test cluster is
-cordoned too.
+`docker update --cpus N --memory <bytes> --memory-swap <bytes> <clusterName>-control-plane`.
+`HostBootstrap.Cluster.Lifecycle`'s `applyLinuxCordon` applies it fail-closed AFTER `kind create` (and
+the kubeconfig export) and BEFORE Helm. `--memory-swap == --memory`, so an over-budget cluster
+self-limits instead of swapping past its ceiling. `<clusterName>` is the resolved `ClusterPlan` name, so
+each isolated per-case harness cluster is cordoned too.
 
-On Apple, the pristine demo uses a Lima VM sized by `limaSizingArgs`; direct Docker workflows may use the
-per-project Colima VM sized by `colimaSizingArgs`. In both cases the VM boundary is the first cordon, so
-there is no host-side kind-node cap outside the VM.
+On Apple, a Lima VM sized by `limaSizingArgs` is the cordon; the per-project Colima VM sized by
+`colimaSizingArgs` is the cordon for direct Docker workflows. In both cases the VM boundary is the first
+cordon, so there is no host-side kind-node cap outside the VM.
 
 ## Per-Substrate Storage Cordon
 
@@ -99,18 +97,19 @@ Each substrate cordons storage where it can:
 | Substrate | Storage cordon |
 |-----------|----------------|
 | Apple | Lima or Colima `--disk` (the VM's sized disk) |
-| incus VM | `root,size` on the incus instance (the incus builder is Phase 11) |
+| incus VM | `root,size` on the incus instance |
 | Bare Linux | A quota'd hostPath plus image garbage collection |
 
-The incus builder is a later phase and is named here in prose only.
+On Linux, `incusSizingArgs resources` emits the `limits.cpu`, `limits.memory`, and `root,size` config
+arguments the VM-up step applies to the incus instance, so the incus VM wall cordons storage at the VM
+boundary.
 
 ## Current Status
 
-The per-substrate `resolveHostCapacity` described in the bring-up ring is implemented and validated in
-[phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md) (sprint 9.5). The retired
-off-Linux fallbacks are recorded in
-[legacy-tracking-for-deletion](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The one canonical
-parser, all three rings, and the per-substrate storage cordon are implemented and validated.
+The per-substrate `resolveHostCapacity` described in the bring-up ring reads CPU and memory from the
+substrate-specific sources. The one canonical parser, all three rings, and the per-substrate storage
+cordon are implemented and validated. The development plan for this surface is
+[phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 
 ## See Also
 

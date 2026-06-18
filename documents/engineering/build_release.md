@@ -13,7 +13,8 @@ design (see [base_image.md](base_image.md)).
 
 ## Building & publishing
 
-By default, one command builds and pushes both CPU and CUDA tags for one arch:
+By default, one command builds and pushes both the CPU and CUDA tags for one
+arch, **concurrently**:
 
 ```sh
 hostbootstrap base build-and-push --arch amd64
@@ -22,11 +23,23 @@ hostbootstrap base build-and-push --arch amd64
 The CLI:
 
 1. Detects the host substrate (or uses the explicit `--arch`).
-2. Resolves every dynamic value (versions, URLs, the CUDA base image).
-3. Invokes `docker build --build-arg … --pull --no-cache` against
-   `docker/basecontainer.Dockerfile`.
-4. `docker push`es
+2. Resolves every dynamic value (versions, URLs, the CUDA base image) per flavor.
+3. For each flavor, invokes `docker build --build-arg … --pull --no-cache`
+   against `docker/basecontainer.Dockerfile`, then `docker push`es
    `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`.
+
+The two flavors' builds are independent (different base image, distinct tag,
+separate layer cache), so they run concurrently and each build's streamed output
+is line-prefixed `[cpu]` / `[cuda]`. This is **host-level parallelism of two
+plain single-arch `docker build`s** — not a buildx multi-platform manifest, which
+remains forbidden. Concurrency roughly halves the wall-clock at the cost of ~2×
+peak RAM/CPU/disk; pass `--sequential` to build one at a time on a constrained
+host (concurrency is automatically moot with `--flavor`, which builds a single
+tag):
+
+```sh
+hostbootstrap base build-and-push --arch amd64 --sequential
+```
 
 Pass `--flavor cpu` or `--flavor cuda` to publish only one flavor:
 
@@ -62,20 +75,18 @@ hostbootstrap base build-and-push --arch amd64
 The CLI never re-pushes the large base image when a downstream project pushes
 its custom image (see [harbor.md](harbor.md)).
 
-## `--build-base` for downstream projects
+## Building the base for downstream projects
 
-**Planned (not yet wired).** A future `--build-base`/`--base-context` flow will
-let a downstream project's bootstrap invocation pass
-`--build-base --base-context /path/to/hostbootstrap` to build the base locally
-from that checkout's `docker/basecontainer.Dockerfile`, tagging it with the
-identical name. The downstream project container would then be built without
-pulling the base tag from Docker Hub.
+A downstream project builds against the published
+`docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` base. To validate
+against a local checkout instead, `hostbootstrap base build` cold-rebuilds the
+base from that checkout's `docker/basecontainer.Dockerfile` and leaves it tagged
+with the identical name in the local Docker daemon. A downstream project image
+build then resolves the local tag in place of pulling the published base.
 
-The `run` command does **not** expose these flags today: it accepts only `--project-root`.
-The supporting helpers exist (`_resolve_pull` and
-`_base_context_value` in `hostbootstrap/cli.py`), but no command wires
-them yet. The current default behaviour is to **pull** the base from Docker Hub,
-and `--no-pull` reuses an existing locally-tagged image as-is.
+The `run` command accepts a single `--project-root` option, which points at the
+project root containing exactly one `.cabal` file. It builds the project binary
+idempotently and execs it.
 
 ## Loss of provenance
 

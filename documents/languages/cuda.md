@@ -24,7 +24,7 @@ time.
 ## Ldconfig
 
 The Dockerfile checks for `/usr/local/cuda/lib64`; when present it adds the
-path to `/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. This is a runtime
+path to `/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. This is a build-time
 filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 
 ## CUDA drift
@@ -35,5 +35,5 @@ when invoking `hostbootstrap base build-and-push`.
 
 ## arm64
 
-`basecontainer-cuda-arm64` is supported by the naming scheme but built only
-on demand; GPU projects today are amd64 in practice.
+`basecontainer-cuda-arm64` is supported by the naming scheme and built on
+demand. GPU projects run on amd64 in practice.

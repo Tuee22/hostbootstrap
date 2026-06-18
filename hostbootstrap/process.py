@@ -41,6 +41,7 @@ async def _drain(
     stream: asyncio.StreamReader | None,
     sink_lines: list[str],
     mirror: TextIO,
+    prefix: str = "",
 ) -> None:
     if stream is None:
         return
@@ -49,8 +50,8 @@ async def _drain(
         if not chunk:
             return
         text = chunk.decode("utf-8", errors="replace")
-        sink_lines.append(text)
-        mirror.write(text)
+        sink_lines.append(text)  # captured raw, unprefixed
+        mirror.write(prefix + text)  # live mirror is labelled when a prefix is given
         mirror.flush()
 
 
@@ -60,8 +61,13 @@ async def run(
     cwd: Path | str | None = None,
     env: Mapping[str, str] | None = None,
     quiet: bool = False,
+    prefix: str = "",
 ) -> CommandResult:
-    """Run *cmd* asynchronously, streaming output and capturing the result."""
+    """Run *cmd* asynchronously, streaming output and capturing the result.
+
+    When *prefix* is given, every mirrored output line is prepended with it so
+    concurrent runs stay legible (the captured ``stdout``/``stderr`` stay raw).
+    """
 
     effective_env: Mapping[str, str] | None
     if env is None:
@@ -87,8 +93,8 @@ async def run(
 
     try:
         await asyncio.gather(
-            _drain(process.stdout, out_lines, out_sink),
-            _drain(process.stderr, err_lines, err_sink),
+            _drain(process.stdout, out_lines, out_sink, prefix),
+            _drain(process.stderr, err_lines, err_sink, prefix),
         )
         returncode = await process.wait()
     finally:
@@ -110,8 +116,9 @@ async def run_checked(
     cwd: Path | str | None = None,
     env: Mapping[str, str] | None = None,
     quiet: bool = False,
+    prefix: str = "",
 ) -> CommandResult:
-    result = await run(cmd, cwd=cwd, env=env, quiet=quiet)
+    result = await run(cmd, cwd=cwd, env=env, quiet=quiet, prefix=prefix)
     if not result.ok:
         raise CommandError(result)
     return result

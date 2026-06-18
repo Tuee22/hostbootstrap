@@ -13,11 +13,11 @@ material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
 The model is **the lift chain is the project**. A project binary's identity is its
-`chain :: RootConfig -> [Step]` value; `project up` is a recursive interpreter that runs the current
+`chain :: ProjectConfig -> [Step]` value; `project up` is a recursive interpreter that runs the current
 frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
 [architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc
-defers to it rather than re-deriving it. The current command surface and the target one are tracked
-in [Current Status](#current-status).
+defers to it rather than re-deriving it. The command surface is summarized in
+[Command Surface](#command-surface).
 
 ## Architecture
 
@@ -43,10 +43,10 @@ in [Current Status](#current-status).
   library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively,
   where stream 1 is the lift chain (the ordered `[Step]` of core and project step kinds).
 - [architecture/dhall_generation.md](architecture/dhall_generation.md) — `.dhall` as parameters +
-  context + witness, the child config minted by the generated context-init step, and the generated Dhall
-  roles, plus the three-vocabulary layering and the reflect-from-decoders vs hand-written-assert nuance.
+  context + witness, the child config minted by the generated context-init step, the generated Dhall
+  vocabulary, the three-vocabulary layering, and the reflect-from-decoders schema derivation.
 - [architecture/run_models.md](architecture/run_models.md) — the four run-models (`OneShot`,
-  `HostNative`, `HostDaemon`, `Cluster`) and the collapsed key that selects one, never declared in Dhall.
+  `HostNative`, `HostDaemon`, `Cluster`) and the key that selects one, never declared in Dhall.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
   the seam-split (L0 driver vs cluster seams vs app matrix), the mechanical delete-guard, and budget-slicing.
 
@@ -65,11 +65,10 @@ in [Current Status](#current-status).
   business-logic shapes) consumers compose their chain from.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
   step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
-  `chain :: RootConfig -> [Step]` (plus step actions, test suite, Dhall vocabulary, and budget) rather
-  than noun verbs.
+  `chain :: ProjectConfig -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
   contract and the fail-fast-on-wrong-host CLIs; reconcilers run as chain steps within `project up`,
-  with standalone `ensure <tool>` retained as a hidden debug surface.
+  and standalone `ensure <tool>` is a hidden debug surface.
 - [engineering/resource_budgeting.md](engineering/resource_budgeting.md) — the resource budget,
   verify-spare-resources, and Colima/kind cordoning.
 - [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
@@ -119,25 +118,23 @@ in [Current Status](#current-status).
   visualization, the feature-to-harness-case table, and the
   three-builds-vs-standard-host-native-build explanation.
 
-## Current Status
+## Command Surface
 
-The summaries above describe the **shipped** command surface — the recursive `project` lifecycle and the
-`[Step]` chain. That refactor is real-run-validated end-to-end on real hardware: a single `project up` on
-Incus/Linux stood up the live persistent stack and `project down` / `project destroy` tore it down, so the
-recursive `project up` interpreter is implemented and gating, not a target.
+The core command tree is exactly `ensure`, `context`, `project`, `test`, and `check-code`. The recursive
+`project init|up|down|destroy` lifecycle interprets the project's `chain :: ProjectConfig -> [Step]` value
+across the three-frame descent: `project up` runs the current frame's steps then hands `pb project up` to
+the next frame, standing up the live persistent stack; `project down` / `project destroy` tear it down
+while preserving host `.data`.
 
-- **Shipped today (the chain):** the core command tree is exactly `ensure`, `context`, `project`, `test`,
-  and `check-code`. The recursive `project init|up|down|destroy` lifecycle interprets the project's
-  `chain :: RootConfig -> [Step]` value across the three-frame descent; the read-only `context` command
-  (`inspect`/`path`/`show`/`schema`/`render`) introspects and visualizes the frame; and `test init` /
-  `test run <suite>|all` drive the standardized harness. The demo retains only its `web` verb (load-bearing
-  for the chart pod and Dockerfile) plus the `vm` / `incus` debug-hatch verbs.
-- **Dissolved (formerly flat verbs):** the old `config init`, `config show/schema/render`,
-  `context create vm|container|service`, the flat `cluster` group, and the demo's hand-written `deploy`,
-  `harbor`, and `role` verbs are GONE. Their behaviors now live as chain steps (cluster bring-up via
-  `deploy-kind`/`deploy-chart`, the `context-init` mint, `deploy-harbor`/`push-image`, and `ensure`
-  reconcilers) interpreted under `project up` as the single representation; `config show/schema/render`
-  moved under the read-only `context` command.
+- **The chain is the single representation.** Cluster bring-up runs as the `deploy-kind` and `deploy-chart`
+  steps, the `context-init` step mints the child config, `deploy-harbor` and `push-image` stand up and load
+  the registry, and the `ensure` reconcilers run as chain steps — all interpreted under `project up`.
+- **`context` is read-only introspection.** Its `inspect`/`path`/`show`/`schema`/`render` subcommands
+  introspect and visualize the current frame, including schema and render output.
+- **`test init` / `test run <suite>|all`** drive the standardized harness, the separate test surface with
+  its own isolated per-case kind clusters.
+- **The demo contributes its `web` verb** (load-bearing for the chart pod and Dockerfile) plus the
+  `vm` / `incus` provider verbs.
 
 See [composition_methodology.md](architecture/composition_methodology.md) for the model and
 [`DEVELOPMENT_PLAN/`](../DEVELOPMENT_PLAN/) for the authoritative phase status.

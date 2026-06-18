@@ -6,7 +6,7 @@
 
 > **Purpose**: A cookbook of reusable composition shapes — frame topologies, step kinds, and
 > business-logic shapes — so a downstream author can recognize their workflow and express it as the
-> `chain :: RootConfig -> [Step]` value a self-referential project binary interprets.
+> `chain :: ProjectConfig -> [Step]` value a self-referential project binary interprets.
 
 ## TL;DR
 
@@ -33,11 +33,10 @@ its own segment.
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container →
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
-   Its chain is a **single** ordered `[Step]` — host-pb → deploy-VM (Lima on Apple Silicon, Incus on
-   Linux) → copy-source + ensure-GHC in the VM → build-pb in the VM → ensure-docker in the VM →
-   build-image → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port — whose only
-   lifted compute step lifts the *whole* test workflow into the project container in the VM
-   (`test run all`); see
+   Its chain is a **single** ordered `[Step]` — deploy-VM (Lima on Apple Silicon, Incus on Linux) →
+   build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
+   VM) → context-init in the VM → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port —
+   that stands up a live, persistent stack ending at a web service. See
    [single representation](#single-representation-the-chain-is-the-representation).
 3. **Host → managed cloud cluster** — build the container, then a container-frame step uses a cloud CLI
    to provision a managed Kubernetes cluster against an external state backend, then a later step runs
@@ -67,7 +66,7 @@ interpreter. The canonical home for this doctrine is
 [composition_methodology § The Self-Reference Lift](../architecture/composition_methodology.md#the-recursive-project-up-interpreter);
 the cookbook summary:
 
-- **`chain :: RootConfig -> [Step]`.** The whole project topology is one flat, ordered list of steps,
+- **`chain :: ProjectConfig -> [Step]`.** The whole project topology is one flat, ordered list of steps,
   computed purely from the root parameters. `--dry-run` renders exactly this value.
 - **Fractal descent.** Each frame boundary is the same move: *provision the frame → build/install the
   pb in it → hand off `pb project up`*. The interpreter runs the current frame's steps, then re-invokes
@@ -101,22 +100,26 @@ those kinds across the topologies above. Which layer contributes which kind is
 
 ## Single Representation: The Chain Is The Representation
 
-One operation has one representation; the chain `[Step]` **is** that representation. The test workflow
-is a **lifted** step in the chain, not a parallel representation of the deploy. The canonical home is
+One operation has one representation; the chain `[Step]` **is** that representation. A project's deploy
+is the single ordered `[Step]` its `chain` function returns, and `project up` is the one interpreter
+that walks it. The canonical home is
 [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)
 (and [development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)); the
 summary for shape 2:
 
-- The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is frame-agnostic — it runs
-  its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` "locally", so it is a **lift target**, not
-  a lift-aware component (no frame machinery inside it).
-- The shape-2 chain therefore carries a single lifted compute step that lifts the *whole* harness:
-  `test run all` interpreted in the project container in the VM. Inside that one lifted frame the
-  harness runs `clusterUp` on the VM's Docker, so the kind cluster lives **in the VM**, reached with no
-  second "bring up a cluster" step.
-- Standing up cluster/Harbor/web-serve/e2e as a **separate** chain of lifted ops alongside the harness
-  would be a redundant second representation (it duplicates the harness and double-creates clusters when
-  it lifts a harness case). There is one representation, and the chain is it.
+- The shape-2 chain stands up a persistent stack as one descent: `project up` interprets it across the
+  composed frame stack — the metal frame provisions the VM and rebuilds the binary + project image in
+  it, the in-VM frame mints the project-container child config and hands off, and the in-container frame
+  runs deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port. The chain ends at a live
+  web service.
+- The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
+  surface, frame-agnostic — it runs its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
+  "locally", with no frame machinery inside it. `test run all` drives it; `project up` does not. The two
+  surfaces are decoupled.
+- The harness brings up an **isolated per-case kind cluster** (the `TestCase` profile, under
+  `.test_data/<case>/`) for each case, runs the case body, and tears that cluster down — guaranteed even
+  if the body fails. Each case owns its own cluster, distinct from the persistent stack `project up`
+  stands up. There is one representation of the deploy, and the chain is it.
 
 ## Business-Logic Composition Shapes
 
@@ -148,30 +151,31 @@ Reused across shapes and step kinds:
   the mutating apply.
 - **Substrate multiplexing** — the same pure chain parameterized over `(model × substrate)` under one
   control-plane contract.
-- **The whole test workflow lifts as one step** — the chain carries the *entire* harness
-  (`test run all`) lifted into the project container in the VM as its single compute step; the harness
-  itself stays frame-agnostic and may further lift a case into the cluster as a Job (a finite-job
-  operation). It is one representation, not a parallel chain of lifted cluster/e2e ops; see
+- **The test surface is separate from the deploy** — `test run all` drives the standardized harness
+  (`runMatrix` over the project's cases), which brings up an isolated per-case kind cluster, runs the
+  case body, and tears that cluster down. `project up` stands up the persistent stack; the harness is
+  the context-agnostic test engine, decoupled from it. The harness stays frame-agnostic and may lift a
+  case into the cluster as a Job (a finite-job operation); see
   [single representation](#single-representation-the-chain-is-the-representation) and
   [harness_workflow](../architecture/harness_workflow.md).
 
 ## Current Status
 
-What is implemented today is the **chain surface** this cookbook describes: the core command tree is
-exactly `ensure`, `context`, `project`, `test`, `check-code`, and the demo's deploy is the pure value
+The **chain surface** this cookbook describes is the running system: the core command tree is exactly
+`ensure`, `context`, `project`, `test`, `check-code`, and the demo's deploy is the pure value
 `demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), which realizes shape
-2 as a single lift sequence whose only lifted compute step is `test all`. The lift primitive is built:
-provider-backed folds for Incus and Lima and a topology-aware binary-context gate. The reconcilers
-(`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
+2 as one ordered chain that stands up the persistent stack and ends at a live web service. The lift
+primitive uses provider-backed folds for Incus and Lima and a topology-aware binary-context gate. The
+reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
-The `chain :: RootConfig -> [Step]` value, the recursive `project up` interpreter, the core Step
+The `chain :: ProjectConfig -> [Step]` value, the recursive `project up` interpreter, the core Step
 algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
-are **shipped and real-run-validated end-to-end**: a single `project up` on Incus/Linux stood up the
-live persistent stack — a cordoned kind cluster, the full production Harbor, the 20GB project image
-pushed to the in-cluster registry, and the web chart pod serving `localhost:30080` (HTTP 200) — then
-`project down`/`project destroy` tore it down with host `.data` preserved. The phase history is tracked
-in [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
+compose end-to-end: a single `project up` on Incus/Linux stands up the live persistent stack — a
+cordoned kind cluster, the production Harbor, the project image pushed to the in-cluster registry, and
+the web chart pod serving `localhost:30080` — and `project down`/`project destroy` tear it down with
+host `.data` preserved. The demo's status is tracked in
+[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
 development plan.
 
 ## See also

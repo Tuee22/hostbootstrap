@@ -533,6 +533,77 @@ def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
 
 
+async def _ok_build(*_a: object, **_kw: object) -> object:
+    return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+
+def test_base_build_and_push_concurrent_labels_each_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ``--flavor`` builds both flavors concurrently, labelling each line."""
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+
+    async def _ok_push(_tag: str, *_a: object, **_kw: object) -> object:
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _ok_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _ok_push)
+
+    result = CliRunner().invoke(cli.main, ["base", "build-and-push", "--arch", "amd64"])
+    assert result.exit_code == 0, result.output
+    # cpu is padded to cuda's width so the labels align.
+    assert (
+        "[cpu ] built and pushed docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
+        in result.output
+    )
+    assert (
+        "[cuda] built and pushed docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"
+        in result.output
+    )
+
+
+def test_base_build_and_push_sequential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--sequential`` pushes the flavors strictly in order."""
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+    order: list[str] = []
+
+    async def _record_push(tag: str, *_a: object, **_kw: object) -> object:
+        order.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _ok_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _record_push)
+
+    result = CliRunner().invoke(
+        cli.main, ["base", "build-and-push", "--arch", "amd64", "--sequential"]
+    )
+    assert result.exit_code == 0, result.output
+    assert order == [
+        "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64",
+        "docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64",
+    ]
+
+
+def test_base_build_both_flavors_concurrent_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``base build`` (no push) builds both flavors concurrently, labelled."""
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+    pushed: list[str] = []
+
+    async def _record_push(tag: str, *_a: object, **_kw: object) -> object:
+        pushed.append(tag)
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _ok_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _record_push)
+
+    result = CliRunner().invoke(cli.main, ["base", "build", "--arch", "amd64"])
+    assert result.exit_code == 0, result.output
+    assert pushed == []
+    assert "[cpu ] built docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64" in result.output
+    assert "[cuda] built docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64" in result.output
+
+
 def test_self_check_runs_poetry_in_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

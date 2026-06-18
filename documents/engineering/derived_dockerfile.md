@@ -9,9 +9,8 @@
 ## TL;DR
 
 - A derived project's container is built **by the project binary**, not by the
-  Python bootstrapper (see
-  [build and run model](../architecture/build_and_run_model.md) is referenced from
-  the runbook; here the binary is the builder).
+  Python bootstrapper: the binary is the builder (see
+  [build and run model](../architecture/build_and_run_model.md)).
 - The reference container is `FROM ${BASE_IMAGE}` → build + install the project
   binary (reusing the warm store) → create the image-build sibling
   `<project>.dhall` → `RUN <project> check-code` → web build (`<project> web bridge` →
@@ -25,10 +24,11 @@
 ## The reference shape
 
 The derived Dockerfile (the worked example is `demo/docker/Dockerfile`) inherits the warm-store base
-image, builds and installs the project binary (reusing the warm store), creates the image-build binary
-context, runs the code-check gate, then builds the web bundle, with tini as PID 1. Runtime launchers mount
-a parent-generated runtime config over the baked file when the container is used for `test all`, services,
-or daemon roles. Its skeleton:
+image, builds and installs the project binary (reusing the warm store), writes the image-build sibling
+`<project>.dhall`, runs the code-check gate, then builds the web bundle, with tini as PID 1. When the
+container runs `project up` in the deploy stack, the parent frame's `context-init` step mounts a freshly
+minted runtime `<project>.dhall` over the baked image-build file at the binary's sibling-config path. Its
+skeleton:
 
 ```dockerfile
 # check=skip=InvalidDefaultArgInFrom
@@ -106,13 +106,12 @@ The web build follows the gate, in three ordered steps:
 3. `esbuild --bundle --minify` — bundle the compiled output into the served
    `public/app.js`.
 
-The Playwright e2e suite is not part of the image build; it runs later from the
-already-built project image on the kind network against the in-cluster service via
-its NodePort during a demo run. Because that project image inherits the base
-image's global Playwright install and browser cache, validation does not pull a
-separate `mcr.microsoft.com/playwright:*` image and does not run `npm install` or
-`npx` at test time. See [playwright](../languages/playwright.md) and the
-[demo runbook](../operations/demo_runbook.md).
+The Playwright e2e suite is not part of the image build. It runs in the `test run all` harness's
+`e2e-tabs` case, from the already-built project image on the kind network against that case's in-cluster
+service via its NodePort. Because the project image inherits the base image's global Playwright install
+and browser cache, the harness runs the e2e from that baked install: it does not pull a separate
+`mcr.microsoft.com/playwright:*` image and does not run `npm install` or `npx` at test time. See
+[playwright](../languages/playwright.md) and the [demo runbook](../operations/demo_runbook.md).
 
 ## Build-stage ordering
 

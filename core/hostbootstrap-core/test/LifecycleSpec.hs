@@ -17,6 +17,7 @@ tests =
     "LifecycleSpec"
     [ testGroup "resolvePlan" planCases,
       testGroup "profiles are distinct" profileCases,
+      testGroup "host-port publication" hostPortCases,
       testGroup "never-delete-.data" dataInvariantCases,
       testGroup "status report" statusCases
     ]
@@ -31,6 +32,14 @@ planCases =
       clusterName test1 @?= "demo-test-case1"
       dataPath test1 @?= "/srv/demo/.test_data/case1"
       derivedPaths test1 @?= ["/srv/demo/.cluster/demo-test-case1"]
+  ]
+
+hostPortCases :: [TestTree]
+hostPortCases =
+  [ testCase "production publishes the host NodePorts (kind.yaml)" $
+      publishesHostPorts prod @?= True,
+    testCase "test cluster binds no host port so cases never collide" $
+      publishesHostPorts test1 @?= False
   ]
 
 profileCases :: [TestTree]

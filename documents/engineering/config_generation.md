@@ -11,7 +11,7 @@
 
 ## TL;DR
 
-- The chain `chain :: RootConfig -> [Step]` is **code** — it is the project's identity and the single
+- The chain `chain :: ProjectConfig -> [Step]` is **code** — it is the project's identity and the single
   representation of the lift sequence. The `.dhall` is **parameters + context + witness**, never the
   chain shape. The canonical home of that model is
   [composition_methodology](../architecture/composition_methodology.md); this doc defers to it and
@@ -188,7 +188,7 @@ Dhall tier topology is in [dhall_topology](dhall_topology.md), and the runtime c
 
 ## Current Status
 
-The generation substrate is implemented and exercised today: the `ConfigArtifact` registry,
+The generation substrate is implemented and exercised: the `ConfigArtifact` registry,
 `reflectedSchema`, `deployConfigText` with the budget assertion, the parent-to-child projection helpers,
 the union hoisting, the committed schema snapshot, and the round-trip test all run through the canonical
 code-check.

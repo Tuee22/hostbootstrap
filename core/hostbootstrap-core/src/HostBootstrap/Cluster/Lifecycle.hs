@@ -44,11 +44,19 @@ data ClusterProfile = Production | TestCase String
   deriving (Eq, Show)
 
 -- | A resolved cluster plan: the kind cluster name, the never-deleted host
--- @.data@ path, and the derived state safe to remove on @delete@.
+-- @.data@ path, the derived state safe to remove on @delete@, and whether this
+-- cluster publishes the project's fixed host NodePorts (via @./kind.yaml@'s
+-- @extraPortMappings@). Only the production cluster does — it is the persistent
+-- stack the host reaches on @localhost:\<nodePort\>@. Test-case clusters set this
+-- 'False' so they create a plain kind cluster with no host-port binding: several
+-- isolated case clusters then coexist (and never collide with a running
+-- production cluster) on the same host, and each case reaches its in-cluster
+-- workload through the kind container network rather than a fixed host port.
 data ClusterPlan = ClusterPlan
   { clusterName :: String,
     dataPath :: FilePath,
-    derivedPaths :: [FilePath]
+    derivedPaths :: [FilePath],
+    publishesHostPorts :: Bool
   }
   deriving (Eq, Show)
 
@@ -59,13 +67,15 @@ resolvePlan project root profile = case profile of
     ClusterPlan
       { clusterName = project,
         dataPath = root </> ".data",
-        derivedPaths = [root </> ".cluster" </> project]
+        derivedPaths = [root </> ".cluster" </> project],
+        publishesHostPorts = True
       }
   TestCase caseId ->
     ClusterPlan
       { clusterName = project ++ "-test-" ++ caseId,
         dataPath = root </> ".test_data" </> caseId,
-        derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
+        derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)],
+        publishesHostPorts = False
       }
 
 -- | The kind of teardown.
@@ -123,12 +133,19 @@ clusterCreate cfg plan resources = do
       | clusterName plan `elem` lines out ->
           putStrLn ("cluster up: kind cluster " ++ clusterName plan ++ " already exists")
     Right (ExitSuccess, _, _) -> do
-      -- A project that needs node port-mappings (publish a NodePort to the host —
-      -- the in-VM registry/web endpoints the demo reaches on @localhost@) ships a
-      -- @./kind.yaml@; @kind create@ uses it via @--config@. Without one, a plain
+      -- The production cluster publishes its NodePorts to the host (the in-VM
+      -- registry/web endpoints the demo reaches on @localhost@) by shipping a
+      -- @./kind.yaml@ with @extraPortMappings@; @kind create@ uses it via
+      -- @--config@. A test-case cluster ('publishesHostPorts' 'False') skips the
+      -- config even when the file is present, so its node binds no fixed host
+      -- port: several isolated case clusters then coexist on one host without
+      -- colliding on the shared @kind.yaml@ ports (each case reaches its workload
+      -- through the kind container network instead). Without a config a plain
       -- single-node cluster is created.
       hasKindConfig <- doesFileExist kindClusterConfig
-      let configArgs = if hasKindConfig then ["--config", kindClusterConfig] else []
+      let configArgs
+            | publishesHostPorts plan && hasKindConfig = ["--config", kindClusterConfig]
+            | otherwise = []
       created <- runTool cfg Kind (["create", "cluster", "--name", clusterName plan] ++ configArgs)
       requireStep "kind create cluster" created
     _ -> die "cluster up: kind not available; install kind and retry"

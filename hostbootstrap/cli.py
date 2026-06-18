@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
@@ -266,9 +267,9 @@ def _arch_default() -> str:
     return substrate.detect().arch
 
 
-async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str) -> None:
-    await docker_ops.build(build_spec)
-    await docker_ops.push(tag)
+async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str, *, prefix: str = "") -> None:
+    await docker_ops.build(build_spec, prefix=prefix)
+    await docker_ops.push(tag, prefix=prefix)
 
 
 def _run_self_check_or_abort(context: Path) -> None:
@@ -310,6 +311,68 @@ def _base_targets(flavor: str | None) -> tuple[Flavor, ...]:
     return (Flavor(flavor),)
 
 
+def _base_work(
+    flavor: str | None, target_arch: str, context: Path
+) -> list[tuple[docker_ops.BuildSpec, str, str]]:
+    """Resolve the (build spec, tag, label) targets for one arch.
+
+    The label is the flavor name (``cpu`` / ``cuda``) used to prefix that build's
+    streamed output. With no ``--flavor`` this is both flavors; with one, a
+    single target (so concurrency is moot).
+    """
+    work: list[tuple[docker_ops.BuildSpec, str, str]] = []
+    for flavor_enum in _base_targets(flavor):
+        build_spec, _ = base_image.build_spec_for(
+            flavor_enum,
+            target_arch,
+            context=context,
+            pull=True,
+            no_cache=True,
+        )
+        tag = base_image.base_image_ref(flavor_enum, target_arch)
+        work.append((build_spec, tag, flavor_enum.value))
+    return work
+
+
+async def _run_base_targets(
+    work: Sequence[tuple[docker_ops.BuildSpec, str, str]],
+    *,
+    push: bool,
+    sequential: bool,
+) -> None:
+    """Build (and optionally push) each target.
+
+    Concurrent by default — the cpu/cuda base builds are fully independent — with
+    each build's streamed output line-prefixed ``[<label>]`` so the interleaved
+    streams stay legible. ``--sequential`` (and the single-target case) runs them
+    one at a time, preserving the original fail-fast behaviour. In the concurrent
+    case both builds run to completion, then the first failure (if any) is
+    re-raised so the friendly Docker-error translation still applies.
+    """
+    width = max((len(label) for _spec, _tag, label in work), default=0)
+
+    async def _one(build_spec: docker_ops.BuildSpec, tag: str, label: str) -> None:
+        prefix = f"[{label.ljust(width)}] "
+        if push:
+            await _build_then_push(build_spec, tag, prefix=prefix)
+        else:
+            await docker_ops.build(build_spec, prefix=prefix)
+        click.echo(f"{prefix}built{' and pushed' if push else ''} {tag}")
+
+    if sequential or len(work) <= 1:
+        for build_spec, tag, label in work:
+            await _one(build_spec, tag, label)
+        return
+
+    outcomes = await asyncio.gather(
+        *(_one(build_spec, tag, label) for build_spec, tag, label in work),
+        return_exceptions=True,
+    )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
 _BASE_FLAVOR_OPTION = click.option(
     "--flavor",
     type=click.Choice([f.value for f in Flavor]),
@@ -332,56 +395,57 @@ _BASE_CONTEXT_BUILD_OPTION = click.option(
     help="Build context root (the hostbootstrap repo).",
 )
 
+_BASE_SEQUENTIAL_OPTION = click.option(
+    "--sequential",
+    is_flag=True,
+    default=False,
+    help=(
+        "Build flavors one at a time instead of concurrently "
+        "(lower peak RAM/CPU/disk; only affects building both cpu and cuda)."
+    ),
+)
+
 
 @base.command("build")
 @_BASE_FLAVOR_OPTION
 @_BASE_ARCH_OPTION
 @_BASE_CONTEXT_BUILD_OPTION
-def base_build(flavor: str | None, arch: str | None, context: Path) -> None:
+@_BASE_SEQUENTIAL_OPTION
+def base_build(flavor: str | None, arch: str | None, context: Path, sequential: bool) -> None:
     """Cold-rebuild base image(s) locally (``--no-cache --pull``); no push.
 
     For local validation: rebuilds the base image from scratch and leaves it
     tagged in the local Docker daemon, so a downstream project image build
-    resolves the local tag instead of pulling a published base.
+    resolves the local tag instead of pulling a published base. With no
+    ``--flavor`` the cpu and cuda builds run concurrently (output line-prefixed
+    ``[cpu]`` / ``[cuda]``); pass ``--sequential`` to build one at a time.
     """
     _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()
-    for flavor_enum in _base_targets(flavor):
-        build_spec, _ = base_image.build_spec_for(
-            flavor_enum,
-            target_arch,
-            context=context,
-            pull=True,
-            no_cache=True,
-        )
-        tag = base_image.base_image_ref(flavor_enum, target_arch)
-        asyncio.run(docker_ops.build(build_spec))
-        click.echo(f"built {tag}")
+    work = _base_work(flavor, target_arch, context)
+    asyncio.run(_run_base_targets(work, push=False, sequential=sequential))
 
 
 @base.command("build-and-push")
 @_BASE_FLAVOR_OPTION
 @_BASE_ARCH_OPTION
 @_BASE_CONTEXT_BUILD_OPTION
-def base_build_and_push(flavor: str | None, arch: str | None, context: Path) -> None:
+@_BASE_SEQUENTIAL_OPTION
+def base_build_and_push(
+    flavor: str | None, arch: str | None, context: Path, sequential: bool
+) -> None:
     """Cold-rebuild base image(s) (``--no-cache --pull``) and push them.
 
     The publish path is always cold so the registry copy matches a clean
-    rebuild from source — no silent layer-cache carryover.
+    rebuild from source — no silent layer-cache carryover. With no ``--flavor``
+    the cpu and cuda builds run concurrently (output line-prefixed ``[cpu]`` /
+    ``[cuda]``); pass ``--sequential`` to build one at a time (lower peak
+    resource use).
     """
     _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()
-    for flavor_enum in _base_targets(flavor):
-        build_spec, _ = base_image.build_spec_for(
-            flavor_enum,
-            target_arch,
-            context=context,
-            pull=True,
-            no_cache=True,
-        )
-        tag = base_image.base_image_ref(flavor_enum, target_arch)
-        asyncio.run(_build_then_push(build_spec, tag))
-        click.echo(f"built and pushed {tag}")
+    work = _base_work(flavor, target_arch, context)
+    asyncio.run(_run_base_targets(work, push=True, sequential=sequential))
 
 
 if __name__ == "__main__":

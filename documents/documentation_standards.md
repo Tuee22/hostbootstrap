@@ -41,7 +41,7 @@ Rules:
 - `**Supersedes**:` is required; use `N/A` when nothing is superseded
 - `**Referenced by**:` is required, even when there is only one cross-reference
 - the purpose blockquote is required
-- YAML front-matter is no longer used; the metadata block replaces it
+- Document metadata uses the metadata block, not YAML front-matter
 
 ## Broad Doctrine Structure
 

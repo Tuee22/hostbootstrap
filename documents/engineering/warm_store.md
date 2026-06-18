@@ -35,16 +35,15 @@ L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze`
 **and** `daemon.freeze`. A non-daemon consumer (e.g. `mcts`) is therefore **not** coupled
 to the daemon dependency closure.
 
-> **Current state.** The base build projects the shared store into the two
-> layered fragments in-image: `cabal freeze --project-file=core.project` pins the
-> core + web closure into `core.freeze`, and `--project-file=daemon.project` pins
-> the daemon-family closure into `daemon.freeze` (all three project files import
-> `warm-store.config`, so both freezes are projections of one store, then the base
-> build moves `core.project.freeze`/`daemon.project.freeze` to
-> `core.freeze`/`daemon.freeze`). The membership of the shared web-server packages
-> (`warp` / `wai*` / `network`) is **settled into `core.freeze`**. The published
-> `basecontainer-<flavor>-<arch>` tag's full warm-store compile is produced by the
-> operator's `base build-and-push`.
+The base build projects the shared store into the two layered fragments in-image:
+`cabal freeze --project-file=core.project` pins the core + web closure into
+`core.freeze`, and `--project-file=daemon.project` pins the daemon-family closure
+into `daemon.freeze`. All three project files import `warm-store.config`, so both
+freezes are projections of one store; the base build then moves
+`core.project.freeze`/`daemon.project.freeze` to `core.freeze`/`daemon.freeze`.
+The shared web-server packages (`warp` / `wai*` / `network`) live in `core.freeze`.
+The operator's `base build-and-push` produces the published
+`basecontainer-<flavor>-<arch>` tag's full warm-store compile.
 
 The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
 `optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
@@ -66,7 +65,7 @@ and
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
 * Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
   vanilla, profiling, **and** dynamic (`dyn`) ways are all in the store.
-* Compiled at **`-O2`** (`optimization: 2` in
+* Compiled at **`-O2`** (`optimization: 2` in `warm-store.config`, imported by
   [`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project)).
 * Pinned to the versions in the in-image freezes (`core.freeze` and, for the
   daemon-family deps, `daemon.freeze`).

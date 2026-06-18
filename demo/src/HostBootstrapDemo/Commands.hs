@@ -36,6 +36,7 @@ module HostBootstrapDemo.Commands (
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (finally)
 import Control.Monad (unless)
 import Data.List (intercalate, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
@@ -47,7 +48,7 @@ import HostBootstrap.Cluster.Cordon (
     incusSizingArgs,
     limaSizingArgs,
  )
-import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, clusterDelete, clusterUp, deployChart, resolvePlan)
+import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, clusterDelete, deployChart, resolvePlan)
 import HostBootstrap.Config.Schema (ProjectConfig (..), Resources (..), projectConfigFromContext, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
@@ -59,7 +60,7 @@ import HostBootstrap.Harness (Case (..), CaseResult (..), Seams (..), testCasePr
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs, stopVMArgs)
-import HostBootstrap.Lift (ContainerLift (..), LiftContext, inContainer, inVM, localContext)
+import HostBootstrap.Lift (ContainerLift (..), LiftContext, inContainer, inLimaVM, inVM, localContext)
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as LimaVM
 import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
@@ -74,7 +75,7 @@ import HostBootstrap.Step (
     exposePortStep,
     projectStep,
  )
-import HostBootstrap.Substrate (detect, isAppleSilicon, isLinux, renderArch, substrateArch)
+import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, renderArch, substrateArch)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Options.Applicative
@@ -130,19 +131,15 @@ demoCases =
 demoProject :: String
 demoProject = "hostbootstrap-demo"
 
-{- | § Y — the demo's deploy as a contributed @chain :: ProjectConfig -> [Step]@
-value the core @project up@ interprets, replacing the hand-written
-@demoDeployChain@. @project up --dry-run@ renders this. The chain descends three
-frames (the full fractal): the metal host-orchestrator provisions the VM and
-builds the pb + image in it; the in-VM @vm-orchestrator-1@ mints the
-project-container child config and hands off; the in-container
-@vm-project-container-2@ stands up the persistent stack (kind → Harbor → web →
-role → expose). Each frame's binary runs only its own segment then hands off
-@project up@ one level down via 'demoFrameContext'. The metal-frame steps reuse
-the demo's proven orchestration IO; the container-frame workload actions are the
-real-run-gated remainder of the recursive migration (Sprint 16.4) and currently
-'pendingContainerStep' stubs, so an accidental apply fails loudly rather than
-silently no-op'ing.
+{- | The demo's deploy: a contributed @chain :: ProjectConfig -> [Step]@ value the
+core @project up@ interprets recursively (§ Y). @project up --dry-run@ renders it.
+The chain descends three frames (the full fractal): the metal host-orchestrator
+provisions the VM and builds the pb (#2) + the project image (#3) in it; the in-VM
+@vm-orchestrator-1@ mints the project-container child config and hands off; the
+in-container @vm-project-container-2@ stands up the persistent stack —
+@deploy-kind@ → @deploy-harbor@ → @push-image@ → @deploy-chart@ → @expose-port@ —
+ending at a live webservice on the NodePort. Each frame's binary runs only its
+own segment, then hands off @project up@ one level down via 'demoFrameContext'.
 -}
 demoChain :: ProjectConfig -> [Step]
 demoChain _ =
@@ -169,19 +166,23 @@ demoVMFrame = StepFrame "vm-orchestrator-1" "vm-orchestrator"
 demoContainerFrame :: StepFrame
 demoContainerFrame = StepFrame containerRuntimeFrameId "project-container"
 
-{- | The per-frame lift-context resolver (§ U) attached via 'withTeardown'’s
-sibling 'withFrameContext': how the binary in the CURRENT frame descends ONE
-level into @next@. The metal binary's handoff into @vm-orchestrator-1@ folds to
-@incus exec \<vm\> -- \<pb\> project up@; the in-VM binary's handoff into
-@vm-project-container-2@ folds to a local @docker run --rm \<image\> project up@
-(local because that binary already runs inside the VM). Each binary only ever
-hands off to its immediate next frame, so a single one-level lift per transition
-is correct. (Incus/Linux is wired here — the validated substrate; Apple/Lima
-@inLimaVM@ selection is a follow-up.)
+{- | The per-frame lift-context resolver (§ U) attached via 'withFrameContext':
+how the binary in the CURRENT frame descends ONE level into @next@. The metal
+binary's handoff into @vm-orchestrator-1@ folds to the substrate's VM shell —
+@incus exec \<vm\> -- \<pb\> project up@ on Linux, @limactl shell \<vm\> -- \<pb\>
+project up@ on Apple Silicon — selected by the detected 'Substrate' the demo
+threads in from @main@ (the same selection 'demoVMProvider' makes). The in-VM
+binary's handoff into @vm-project-container-2@ folds to a local @docker run --rm
+\<image\> project up@ (local because that binary already runs inside the VM, so it
+needs no provider). Each binary only ever hands off to its immediate next frame,
+so a single one-level lift per transition is correct.
 -}
-demoFrameContext :: ProjectConfig -> StepFrame -> LiftContext
-demoFrameContext _ next
-    | frameId next == frameId demoVMFrame = inVM demoVM localContext
+demoFrameContext :: Substrate -> ProjectConfig -> StepFrame -> LiftContext
+demoFrameContext sub _ next
+    | frameId next == frameId demoVMFrame =
+        if isAppleSilicon sub
+            then inLimaVM demoLimaVM localContext
+            else inVM demoVM localContext
     | frameId next == frameId demoContainerFrame = inContainer demoDeployImage localContext
     | otherwise = localContext
 
@@ -219,7 +220,7 @@ kind cluster (Production profile) → the Harbor registry → the image (kind-lo
 -}
 deployKindAction :: HostConfig -> IO ()
 deployKindAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (resourcesFromContext ctx))
 
 {- | The default Harbor admin credential the demo installs Harbor with and logs in
@@ -230,7 +231,7 @@ harborAdminPassword = "Harbor12345"
 
 deployHarborAction :: HostConfig -> IO ()
 deployHarborAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     runOrDie cfg Helm ["repo", "add", "harbor", "https://helm.goharbor.io"]
     runOrDie cfg Helm ["repo", "update"]
     runOrDie
@@ -250,7 +251,7 @@ deployHarborAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
         , "externalURL=http://" ++ harborEndpoint
         , "--set"
         , "harborAdminPassword=" ++ harborAdminPassword
-        , -- Wait for all 8 Harbor pods to be Ready before returning, so push-image
+        , -- Wait for the Harbor pods to be Ready before returning, so push-image
           -- finds the registry live (helm returns immediately without this).
           "--wait"
         , "--timeout"
@@ -260,7 +261,7 @@ deployHarborAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
 
 pushImageAction :: HostConfig -> IO ()
 pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     -- Load the image into the kind nodes (so the web chart pod's IfNotPresent pull
     -- resolves without a registry round-trip), then also push it to Harbor (the
     -- in-cluster registry capability). @localhost@ registries are insecure by
@@ -289,7 +290,7 @@ waitHarborLogin cfg n = do
 
 deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx))
 
 exposeAction :: HostConfig -> IO ()
@@ -380,11 +381,19 @@ demoSeams :: Seams CaseEnv
 demoSeams =
     Seams
         { seamSetup = \c -> do
-            cfg <- metalConfig
+            cfg <- resolveHostConfig
             root <- getCurrentDirectory
             let plan = resolvePlan demoProject root (testCaseProfile c)
             putStrLn ("harness setup: cluster up " ++ clusterName plan)
-            clusterUp cfg plan caseResources
+            -- Create the isolated test cluster, then load the project image into it
+            -- before the chart deploys — mirroring the production
+            -- @deploy-kind → push-image → deploy-chart@ order. The chart's web pod
+            -- pulls @hostbootstrap-demo:local@ with @IfNotPresent@; the per-case
+            -- cluster has no registry to pull from, so without the kind-load the
+            -- pod would ImagePullBackOff and the chart's @--wait@ would time out.
+            clusterCreate cfg plan caseResources
+            runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName plan]
+            deployChart cfg plan
             pure (CaseEnv cfg plan)
         , seamRun = \(CaseEnv cfg plan) c -> case caseId c of
             "pristine-bootstrap" -> assertClusterLive cfg plan
@@ -412,49 +421,44 @@ assertWebBundle = do
     pure $
         if built
             then Pass
-            else Fail "web bundle web/public/app.js is missing (run `web bridge` + spago build + esbuild)"
+            else Fail "web bundle web/public/app.js is missing from the project image (the Dockerfile's `web bridge` + spago + esbuild stage builds it)"
 
 {- | Per-case assertion: the Playwright e2e passes against the in-cluster
-webservice, reached through its NodePort. Starts the project image itself on
-the kind docker network and points base-provided Playwright at the
-control-plane node's NodePort (live-gated: needs the chart deployed and the
-project image).
+webservice, reached through its NodePort. The project image is already
+kind-loaded and the chart deployed in 'seamSetup'; this waits for the
+webservice to answer on its NodePort — reached over the @kind@ container
+network at @\<cluster\>-control-plane:30080@, not a host port — then runs the
+base-provided Playwright against it.
 -}
 assertE2E :: HostConfig -> ClusterPlan -> IO CaseResult
 assertE2E cfg plan = do
     let baseUrl = "http://" ++ clusterName plan ++ "-control-plane:30080"
-    -- Make the project image available to the per-case cluster (the chart pod runs it).
-    loaded <- runTool cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName plan]
-    case loaded of
-        Left err -> pure (Fail ("e2e: kind load: " ++ err))
-        Right (ExitFailure n, _, err) -> pure (Fail ("e2e: kind load exit " ++ show n ++ " " ++ err))
-        Right (ExitSuccess, _, _) -> do
-            ready <- waitNodePort cfg (baseUrl ++ "/api/budget") 72
-            if not ready
-                then pure (Fail "e2e: the in-cluster webservice did not become reachable via its NodePort")
-                else do
-                    result <-
-                        runTool
-                            cfg
-                            Docker
-                            [ "run"
-                            , "--rm"
-                            , "--network"
-                            , "kind"
-                            , "--entrypoint"
-                            , "sh"
-                            , "-e"
-                            , "BASE_URL=" ++ baseUrl
-                            , "-e"
-                            , "NODE_PATH=" ++ baseNodeModulesPath
-                            , demoProjectImage
-                            , "-lc"
-                            , "cd /workspace/demo/playwright && playwright test"
-                            ]
-                    pure $ case result of
-                        Right (ExitSuccess, _, _) -> Pass
-                        Right (_, _, err) -> Fail ("e2e failed: " ++ err)
-                        Left err -> Fail ("e2e: " ++ err)
+    ready <- waitNodePort cfg (baseUrl ++ "/api/budget") 72
+    if not ready
+        then pure (Fail "e2e: the in-cluster webservice did not become reachable via its NodePort")
+        else do
+            result <-
+                runTool
+                    cfg
+                    Docker
+                    [ "run"
+                    , "--rm"
+                    , "--network"
+                    , "kind"
+                    , "--entrypoint"
+                    , "sh"
+                    , "-e"
+                    , "BASE_URL=" ++ baseUrl
+                    , "-e"
+                    , "NODE_PATH=" ++ baseNodeModulesPath
+                    , demoProjectImage
+                    , "-lc"
+                    , "cd /workspace/demo/playwright && playwright test"
+                    ]
+            pure $ case result of
+                Right (ExitSuccess, _, _) -> Pass
+                Right (_, _, err) -> Fail ("e2e failed: " ++ err)
+                Left err -> Fail ("e2e: " ++ err)
 
 {- | Poll the in-cluster NodePort (via a curl container on the kind network) until
 it serves, bounded by @n@ five-second attempts — the readiness check the e2e
@@ -505,9 +509,13 @@ demoCommands = [incusCmd, vmCmd, webCmd]
 -- Metal-host orchestration helpers.
 -- ---------------------------------------------------------------------------
 
--- | Detect the substrate and resolve the metal host's tool configuration.
-metalConfig :: IO HostConfig
-metalConfig = do
+{- | Detect the current frame's substrate and resolve its host tool
+configuration. The demo binary runs this in every frame (metal, VM, and
+container), so it resolves whichever host it currently executes on — not
+only the metal orchestrator.
+-}
+resolveHostConfig :: IO HostConfig
+resolveHostConfig = do
     detected <- detect
     either die buildHostConfig detected
 
@@ -604,7 +612,7 @@ ensureIncus = demoAction Context.HostOrchestratorCommand [Context.IncusProvider]
 ensureIncusProvider :: IO ()
 ensureIncusProvider = do
     runEnsure Incus.reconciler
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     case (isLinux (hcSubstrate cfg), isAppleSilicon (hcSubstrate cfg)) of
         (True, _) -> ensureLinuxIncusVMCapability cfg
         (_, True) ->
@@ -678,7 +686,7 @@ Incus on Linux.
 -}
 runVmEnsure :: IO ()
 runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     if isAppleSilicon (hcSubstrate cfg)
         then do
             runEnsure EnsureLima.reconciler
@@ -691,7 +699,7 @@ Silicon starts a dedicated Lima VM; Linux launches an Incus VM.
 -}
 runVmUp :: IO ()
 runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     provider <- demoVMProvider cfg
     let lifecycleResources = resourcesFromContext ctx
     either die pure (requireDemoLifecycleResources lifecycleResources)
@@ -723,9 +731,9 @@ requireDemoLifecycleResources actualResources = do
     required <- budgetFromResources demoFullLifecycleResources
     let shortages =
             concat
-                [ shortage "cpu" show show budgetCpu actual required
-                , shortage "memory" showGiB showGiB budgetMemoryBytes actual required
-                , shortage "storage" showGiB showGiB budgetStorageBytes actual required
+                [ shortage "cpu" show budgetCpu actual required
+                , shortage "memory" showGiB budgetMemoryBytes actual required
+                , shortage "storage" showGiB budgetStorageBytes actual required
                 ]
     case shortages of
         [] -> Right ()
@@ -735,13 +743,13 @@ requireDemoLifecycleResources actualResources = do
                     ++ intercalate ", " shortages
                     ++ "; regenerate the host config with `hostbootstrap run --project-root demo -- project init --role host-orchestrator --output .build/hostbootstrap-demo.dhall --source-root demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force`"
   where
-    shortage label renderActual renderRequired field actual required
+    shortage label render field actual required
         | field actual < field required =
             [ label
                 ++ " has "
-                ++ renderActual (field actual)
+                ++ render (field actual)
                 ++ ", needs at least "
-                ++ renderRequired (field required)
+                ++ render (field required)
             ]
         | otherwise = []
     showGiB bytes = show (gibibytes bytes) ++ "GiB"
@@ -778,7 +786,7 @@ exec'ing it (here with @context schema@, so the built binary proves itself).
 -}
 runVmBootstrap :: IO ()
 runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     provider <- demoVMProvider cfg
     -- Discovered on the metal host (the only place the credential lives); forwarded
     -- into the VM only over stdin for the build #3 base-image pull. 'Nothing' when
@@ -910,14 +918,20 @@ stageSource cfg provider sourceRoot = do
             | tarballWritten ->
                 putStrLn ("pristine-bootstrap: tar warning (non-fatal): " ++ takeWhile (/= '\n') terr)
         _ -> die ("pristine-bootstrap: source tar failed: " ++ terr)
-    case provider of
-        LinuxIncusVM vm -> do
-            runOrDie cfg Incus (pushFileArgs vm tarball "/tmp/hostbootstrap-src.tgz")
-            runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
-        AppleLimaVM vm -> do
-            runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
-            runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
-    removeFile tarball
+    -- Always remove the host-side staging tarball, even if a push or in-VM
+    -- extract dies: 'finally' guarantees the cleanup runs on the exception path
+    -- so a failed run never leaves a stale @.hostbootstrap-src.tgz@ in the repo
+    -- root. The tarball is guaranteed to exist here (a fatal tar already
+    -- 'die'd above), so the unconditional 'removeFile' cannot itself throw.
+    ( case provider of
+            LinuxIncusVM vm -> do
+                runOrDie cfg Incus (pushFileArgs vm tarball "/tmp/hostbootstrap-src.tgz")
+                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
+            AppleLimaVM vm -> do
+                runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
+                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
+        )
+        `finally` removeFile tarball
 
 copyFileToDemoVM :: HostConfig -> DemoVMProvider -> FilePath -> FilePath -> IO ()
 copyFileToDemoVM cfg provider localPath remotePath =
@@ -938,7 +952,7 @@ shellQuote s = "'" ++ concatMap quoteChar s ++ "'"
 -- | @demo vm down@: destroy the demo VM behind the name-prefix delete-guard.
 runVmDown :: IO ()
 runVmDown = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     provider <- demoVMProvider cfg
     case provider of
         AppleLimaVM vm ->
@@ -966,7 +980,7 @@ hard failure, so a partial stack always tears down.
 -}
 demoTeardown :: ProjectConfig -> Bool -> IO ()
 demoTeardown _ destroyVM = do
-    cfg <- metalConfig
+    cfg <- resolveHostConfig
     provider <- demoVMProvider cfg
     let name = demoVMName provider
     case provider of
@@ -1001,8 +1015,7 @@ harborEndpoint = "localhost:30500"
 
 {- | The minted project-container child @<project>.dhall@ path in the VM: the
 @context-init@ chain step writes it and 'demoDeployImage' mounts it into the
-container at the binary's sibling-config path. (Migrated here from the dissolved
-@HostBootstrapDemo.Chain@.)
+container at the binary's sibling-config path.
 -}
 vmRuntimeContainerConfigPath :: FilePath
 vmRuntimeContainerConfigPath = "/tmp/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall"
@@ -1055,7 +1068,6 @@ demoDeployImage =
         , clRemoveAfter = True
         }
 
--- The demo's CLI tree (the project-extension seam): the VM/provider debug hatches
--- (@incus@/@vm@) and the @web@ verb the chart pod + Dockerfile depend on. The
--- deploy itself is the contributed @demoChain@ interpreted by @project up@; the
--- former hand-written @deploy@/@harbor@/@role@ verbs are dissolved.
+-- The demo's CLI tree (the project-extension seam): the @incus@ / @vm@
+-- provider+VM verbs and the @web@ verb the chart pod and Dockerfile depend on.
+-- The deploy itself is the contributed @demoChain@ that @project up@ interprets.

@@ -1,13 +1,14 @@
 -- | The recursive/fractal chain interpreter (development_plan_standards § U, § Y).
 --
--- A project's deploy is the pure @chain :: RootConfig -> [Step]@ value (see
+-- A project's deploy is the pure @chain :: ProjectConfig -> [Step]@ value (see
 -- 'HostBootstrap.Step'); this module interprets that @[Step]@ across the composed
 -- frame stack. @project up@ runs the steps belonging to the /current/ frame, then
 -- hands off @project up@ into the next frame, where the nested binary runs the
 -- same interpreter over its own segment. The descent is fractal — each frame
 -- transition is provision the frame, build/install the @pb@ in it (both are steps
--- in the current frame's segment), then hand off — and idempotent steps make a
--- partially built stack restartable from any frame.
+-- in the current frame's segment), then hand off. The interpreter re-runs the
+-- current frame's full segment on each entry, so a re-run is restartable exactly
+-- when each contributed step's action is itself idempotent.
 --
 -- The descent logic is pure and unit-tested ('nextFrameAfter', 'handoffDispatch',
 -- 'renderChain'); 'runChainFromFrame' is the thin effectful seam that runs a
@@ -22,6 +23,7 @@ module HostBootstrap.Chain
   )
 where
 
+import Data.List (intercalate)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lift
   ( LiftContext,
@@ -60,7 +62,13 @@ nextFrameAfter current steps =
 -- resolver-mapped absolute tool; every nested tool is the target's own bare
 -- @$PATH@ name.
 handoffDispatch :: SelfRef -> LiftContext -> LiftDispatch
-handoffDispatch self ctx = foldLift self ctx ["project", "up"]
+handoffDispatch self ctx = foldLift self ctx handoffArgv
+
+-- | The argv the interpreter hands off into each next frame. Shared by
+-- 'handoffDispatch' (the unit-tested pure fold) and 'runChainFromFrame' (the
+-- effectful seam) so the two never drift.
+handoffArgv :: [String]
+handoffArgv = ["project", "up"]
 
 -- | Interpret the chain from the current frame: run this frame's steps in order
 -- (the provisioning and @pb@ build of the next frame are themselves steps in this
@@ -74,15 +82,30 @@ runChainFromFrame ::
   String ->
   [Step] ->
   IO (Either String ())
-runChainFromFrame cfg self liftCtx current steps = do
-  mapM_ (\s -> stepRun s cfg) (stepsForFrame current steps)
-  case nextFrameAfter current steps of
-    Nothing -> pure (Right ())
-    Just next -> do
-      result <- liftSubcommand cfg self (liftCtx next) ["project", "up"]
-      case result of
-        Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
-        -- Surface the nested frame's captured stdout even on failure (it holds the
-        -- frame's step-by-step progress); the stderr becomes the propagated error.
-        Right (_, out, err) -> putStr out >> pure (Left err)
-        Left err -> pure (Left err)
+runChainFromFrame cfg self liftCtx current steps
+  -- Fail closed if @current@ is not a frame the chain enters: otherwise
+  -- 'stepsForFrame' is empty and 'nextFrameAfter' is 'Nothing', so the descent
+  -- would be a silent successful no-op (a config/chain drift, e.g. a topology
+  -- frame id absent from the contributed chain).
+  | current `notElem` map frameId (chainFrames steps) =
+      pure
+        ( Left
+            ( "project up: current frame "
+                ++ current
+                ++ " is not a frame of the chain (frames: "
+                ++ intercalate ", " (map frameId (chainFrames steps))
+                ++ ")"
+            )
+        )
+  | otherwise = do
+      mapM_ (\s -> stepRun s cfg) (stepsForFrame current steps)
+      case nextFrameAfter current steps of
+        Nothing -> pure (Right ())
+        Just next -> do
+          result <- liftSubcommand cfg self (liftCtx next) handoffArgv
+          case result of
+            Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
+            -- Surface the nested frame's captured stdout even on failure (it holds
+            -- the frame's step-by-step progress); the stderr becomes the error.
+            Right (_, out, err) -> putStr out >> pure (Left err)
+            Left err -> pure (Left err)

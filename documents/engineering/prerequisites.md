@@ -1,7 +1,7 @@
 # Prerequisites
 
 **Status**: Authoritative source
-**Supersedes**: the `hostbootstrap doctor` host-prerequisite model and the PATH-ignored `dhall-to-json` provisioning note
+**Supersedes**: prior host-prerequisite notes without metadata
 **Referenced by**: [../README.md](../README.md), [schema.md](schema.md), [base_image.md](base_image.md)
 
 > **Purpose**: Define the small set of host minimums the thin Python bootstrapper asserts fail-fast
@@ -87,14 +87,13 @@ See [self_update.md](self_update.md).
 ## Typed Checks In hostbootstrap-core
 
 The fail-fast minimums above are expressed as typed checks in `HostBootstrap.HostPrereqs`, dispatched
-by the detected substrate (`HostBootstrap.Substrate`). Each check resolves its external tools through
-the closed `HostTool` enumeration to absolute paths (`HostBootstrap.HostTool` /
-`HostBootstrap.HostConfig`) — no `$PATH`-resolved bare command names — and returns a one-line
-diagnostic on the first unmet minimum. Substrate detection and host-tool resolution are owned by
-`hostbootstrap-core`; the pure-Python `prereqs.py` / `substrate.py` are the **retained** pre-binary
-minimums implementation (the thin bootstrapper's fail-fast surface — the irreducible host floor), and
-the eventual lift of their residual checks into `HostBootstrap.HostPrereqs` is tracked in the
-[legacy ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
+by the detected substrate (`HostBootstrap.Substrate`). `checkHostMinimums` runs the labelled checks
+in order and stops at the first failure, returning a one-line `PrereqError`. Each check resolves its
+external tools through the closed `HostTool` enumeration to absolute paths (`HostBootstrap.HostTool` /
+`HostBootstrap.HostConfig`) — no `$PATH`-resolved bare command names. Substrate detection and host-tool
+resolution are owned by `hostbootstrap-core`. The pure-Python `prereqs.py` and `substrate.py` are the
+thin bootstrapper's fail-fast surface — the irreducible host floor the pre-binary work depends on. The
+consolidated host minimums live in `HostBootstrap.HostPrereqs`. See
 [hostbootstrap_core_library.md](../architecture/hostbootstrap_core_library.md).
 
 > **WRONG** — treating an ensured tool as a manual host prerequisite

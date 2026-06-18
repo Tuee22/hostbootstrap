@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import sys
 
@@ -18,6 +19,20 @@ async def test_drain_none_is_noop() -> None:
 
     assert lines == []
     assert mirror.getvalue() == ""
+
+
+async def test_drain_prefixes_mirror_but_keeps_lines_raw() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"one\ntwo\n")
+    reader.feed_eof()
+    lines: list[str] = []
+    mirror = io.StringIO()
+
+    await process._drain(reader, lines, mirror, "[cpu ] ")
+
+    # Captured lines stay raw; only the live mirror is labelled.
+    assert lines == ["one\n", "two\n"]
+    assert mirror.getvalue() == "[cpu ] one\n[cpu ] two\n"
 
 
 async def test_run_captures_stdout_stderr_env_and_quiet() -> None:

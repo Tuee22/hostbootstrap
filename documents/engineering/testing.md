@@ -14,39 +14,41 @@
   the `test` surface prints its report card. The mechanics live once in `HostBootstrap.Harness`; the
   app supplies only its case matrix. See
   [../architecture/harness_workflow.md](../architecture/harness_workflow.md).
-- The `test` surface is two root-gated subcommands: `test init` writes the project's `test.dhall`, and
-  `test run <suite>|all` runs one named suite (or every suite via the reserved `all`).
+- The `test` surface is two root-gated subcommands: `test init` writes the project's
+  `<project>.test.dhall`, and `test run <suite>|all` runs one named suite (or every suite via the
+  reserved `all`).
 - `hostbootstrap-core` (Haskell) carries the bulk of the unit-test surface: host-tool resolution,
   substrate detection, the `ensure` reconcilers' pure decision logic, the project-local Dhall config
-  decoder/generator, cluster-lifecycle semantics, the harness driver, and the documentation validator.
+  decoder/generator, cluster-lifecycle semantics, the harness driver, and the documentation
+  validator.
 - The thin Python bootstrapper carries a small, hermetic test surface for the pre-binary
   bootstrapping steps it owns.
-- A mechanical documentation validator (`HostBootstrap.DocValidator`) is an implemented
-  `hostbootstrap-core` quality-gate deliverable that runs through `cabal test`.
+- A mechanical documentation validator (`HostBootstrap.DocValidator`) is a `hostbootstrap-core`
+  quality gate that runs through `cabal test`.
 - The default unit-test run touches no network, no Docker daemon, no `sudo`, and no host service
   manager.
 
 ## The `test` Surface And `test.dhall`
 
-The `test` surface is owned by the root frame — the host orchestrator. It is intentionally decoupled
-from the chain that `project up` interprets: a chain stands the stack up, and `test run all` validates
-that live stack from the root. The surface is two subcommands:
+The `test` surface is owned by the root frame — the host orchestrator. It is a separate surface from
+the chain that `project up` interprets: `project up` stands the persistent stack up, and `test run`
+drives an independent test engine whose cases bring up their own isolated kind clusters. The surface
+is two subcommands:
 
 - `test init` requires an existing `<project>.dhall` (the root config the chain is a pure function of)
-  and writes the sibling `test.dhall`. `test.dhall` carries test-specific configuration — the suite
-  vocabulary, per-suite budgets, and any fixtures the matrix needs — separate from the deploy
-  parameters in `<project>.dhall`. It fails fast unless invoked on the root frame with a project
-  config present.
+  and writes the sibling `<project>.test.dhall`. `<project>.test.dhall` carries test-specific
+  configuration — the suite vocabulary, per-suite budgets, and any fixtures the matrix needs —
+  separate from the deploy parameters in `<project>.dhall`. It fails fast unless invoked on the root
+  frame with a project config present.
 - `test run <suite>` runs the single named suite over the standardized engine and prints its report
   card; `test run all` runs every suite, with `all` reserved by the verb (a project may not name a
   suite `all`). Both are root-only: they fail fast, listing the valid suite names and `all`, when
-  invoked off the root frame or without a `test.dhall`.
+  invoked off the root frame or without a `<project>.test.dhall`.
 
 Under the hood each suite drives `runMatrix :: Seams env -> [Case] -> IO Report` over that suite's
 case matrix. A project supplies its `Case`s and `Seams` as a non-empty `TestSuite` through
 `ProjectSpec` (in its `app/Main.hs`), so the cases run under `test run`, not a per-noun subcommand. The
-bare core binary ships no suites, so a bare `test run all` intentionally prints
-`test report: 0/0 passed`.
+bare core binary ships no suites, so a bare `test run all` prints `test report: 0/0 passed`.
 
 The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` → `seamTeardown`,
 with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never leaked),
@@ -71,11 +73,14 @@ therefore a **lift target**, lifted as a whole. A suite that needs its per-case 
 nested frame lifts the entire `test run` workflow there (through the selected VM provider and then
 `docker run --rm <image> test run all`), and the cluster lands on that frame's Docker.
 
-The `test run all` workflow is the **one** representation of the test path. Re-expressing cluster
-bring-up / web-serve / e2e as a parallel chain of lifted operations alongside the harness would be a
-redundant second representation — the chain `project up` interprets stands the stack up, and the test
-surface validates it; the two are not two parallel test chains. The canonical model — the lift chain as
-the project, the recursive interpreter, and why the harness is the single lift target — lives in
+The `test run all` workflow is the **one** representation of the test path, and it is a surface
+separate from `project up`. `project up` interprets the `[Step]` chain to stand the persistent stack up
+(`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`). `test run all`
+drives the harness over the project's case matrix, where each case brings up its **own isolated
+per-case kind cluster**, runs its body, and tears that cluster down. The two are decoupled: `project
+up` does not run the harness, and the harness does not interpret the deploy chain. The canonical
+model — the lift chain as the project, the recursive interpreter, and why the harness is the single
+lift target — lives in
 [../architecture/composition_methodology.md](../architecture/composition_methodology.md); this document
 defers to it rather than re-deriving it.
 
@@ -93,9 +98,9 @@ suite stays hermetic:
   its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
-- **Project-local Dhall config** — decoding/generating `<project>.dhall` and `test.dhall`, including
-  project settings, runtime context authority, the suite vocabulary, and rejection of malformed
-  values. See [schema.md](schema.md).
+- **Project-local Dhall config** — decoding/generating `<project>.dhall` and `<project>.test.dhall`,
+  including project settings, runtime context authority, the suite vocabulary, and rejection of
+  malformed values. See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
 - **Harness driver** — `HarnessSpec` asserts the per-case profile/path derivation, that teardown runs
@@ -125,8 +130,8 @@ The enforced 100% coverage gate (`fail_under = 100`) covers the Python layer onl
 
 ## Documentation validator
 
-The mechanical documentation validator is an implemented `hostbootstrap-core` quality-gate
-deliverable. `HostBootstrap.DocValidator` is wired into the tasty suite as `DocValidatorSpec` and
+The mechanical documentation validator is a `hostbootstrap-core` quality gate.
+`HostBootstrap.DocValidator` is wired into the tasty suite as `DocValidatorSpec` and
 runs through `cabal test` by default; it verifies required metadata lines, broad-doctrine structure,
 governed root-document metadata, relative-link resolution, and the phase-plan
 `## Documentation Requirements` retention. Documentation conformance is therefore enforced
@@ -142,19 +147,18 @@ no unit-file rendering tests or real service-manager integration tests.
 
 ## Current Status
 
-The command surface described here is shipped and real-run-validated end-to-end;
-`DEVELOPMENT_PLAN/` remains the implementation-status authority.
+`DEVELOPMENT_PLAN/` is the implementation-status authority for this command surface.
 
-- **Shipped and validated.** The standardized harness (`runMatrix` + `Seams`, the per-case isolation,
-  the delete-guard, budget-slicing, and the report card) ships and runs through `cabal test`. The
-  `ensure`, `context`, `project`, `test`, and `check-code` verbs are the core top-level command tree the
-  binary carries now; the demo retains only its `web` verb and its `vm` / `incus` debug-hatch verbs. The
-  Python bootstrapper suite and the `HostBootstrap.DocValidator` gate are both implemented and green.
-- **Validated end-to-end.** The `test init` / `test run <suite>|all` split, gated to the root frame and
-  backed by a sibling `test.dhall`, is the shipped surface — decoupled from the chain so `test run all`
-  validates the live stack that the recursive `project up` interpreter stands up. The recursive
-  `project init|up|down|destroy` command and the `[Step]` chain it interprets are real-run-validated
-  end-to-end: a single `project up` on Incus/Linux stood up the cordoned kind cluster, the full 8-pod
-  production Harbor (NodePort 30500), the 20GB project image pushed to the in-cluster registry, and the
-  web chart pod serving HTTP 200 at `localhost:30080`, then `project down` / `project destroy` tore it
-  down with host `.data` preserved.
+- The standardized harness (`runMatrix` + `Seams`, the per-case isolation, the delete-guard,
+  budget-slicing, and the report card) runs through `cabal test`. The `ensure`, `context`, `project`,
+  `test`, and `check-code` verbs are the core top-level command tree the binary carries; the demo
+  contributes its `web` verb and its `vm` / `incus` provider verbs. The Python bootstrapper suite and
+  the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
+- The `test init` / `test run <suite>|all` split is gated to the root frame and backed by a sibling
+  `<project>.test.dhall`. It is a surface separate from the chain: `test run all` drives the harness
+  over isolated per-case kind clusters, while the recursive `project up` interpreter stands up the
+  persistent stack. The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
+  across the composed frame stack: on Incus/Linux a single `project up` stands up the cordoned kind
+  cluster, the 8-pod production Harbor (NodePort 30500), the project image pushed to the in-cluster
+  registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
+  `project destroy` tear it down with host `.data` preserved.

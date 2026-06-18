@@ -18,8 +18,8 @@
   execed binary's job, gating on the `check-code` code-check.
 - The four run-models (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`) are **selected** from detected
   facts and generated topology — never declared in Dhall. They are selected
-  **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, not by a
-  standalone `cluster` or `deploy` verb.
+  **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, each a
+  derived fact of the step being interpreted.
 - `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
   leaving the VM, cluster, and services up. `project down` stops them; `project destroy` deletes them.
   `.data` is preserved across both.
@@ -29,9 +29,8 @@
 ## Why the binary is built host-native
 
 A `hostbootstrap` binary is a native executable for one OS/arch. A binary built inside a Linux
-container is a Linux ELF; it cannot exec on a general host such as Apple silicon. Earlier designs
-built the binary in the project container and copied it out — that was abandoned for exactly this
-reason. Every substrate builds the binary **host-native**, for the host it will run on:
+container is a Linux ELF; it cannot exec on a general host such as Apple silicon. Every substrate
+builds the binary **host-native**, for the host it will run on:
 
 | Substrate | Where the binary is built | Where it runs | Why |
 |-----------|---------------------------|---------------|-----|
@@ -124,11 +123,12 @@ chain**:
 - a cluster step resolves to `Cluster`, realized by the kind/Helm
   [cluster_lifecycle](../engineering/cluster_lifecycle.md).
 
-There is no standalone `cluster` or `deploy` verb that fixes a run-model up front; the model is a
-derived fact of the step being interpreted. The test harness remains the **context-agnostic** engine:
-the `Cluster` model runs wherever the harness is lifted to, so lifting `test all` into a VM-container
-stands the kind cluster up on that VM's Docker. The harness is lifted as a whole, never re-expressed as
-a parallel chain of lifted cluster ops — see
+The run-model is a derived fact of the step being interpreted, never declared up front. The
+`test run all` harness is a **separate** surface from `project up`: it is the **context-agnostic**
+engine that brings up an isolated per-case kind cluster, runs each case, and tears that cluster down.
+The `Cluster` model runs wherever the harness is lifted to, so `test run all` lifted into a
+VM-container stands its per-case clusters up on that VM's Docker. The harness is lifted as a whole, never
+re-expressed as a parallel chain of lifted cluster ops — see
 [composition_methodology](composition_methodology.md) for the single-representation rule.
 
 ## Deploy Is a Persistent Stack
@@ -166,9 +166,9 @@ Every linux-host operation runs through one dispatch point, `runInTarget`, again
 with **no per-call branching** at the call sites. `runInTarget cfg Local t args` runs the resolved
 tool directly; `runInTarget cfg (InVM vm) t args` dispatches through one host
 `incus exec <name> -- <tool> <args>` into the VM (where the in-VM `<tool>` is the VM's own `$PATH`
-binary, since the VM is a separate machine). The run-models in [run_models](run_models.md) are
-unchanged; the host target sits underneath them, so the same machinery runs identically whether the
-Linux host is local or encapsulated in an Incus VM. See
+binary, since the VM is a separate machine). The host target sits underneath the run-models in
+[run_models](run_models.md), so the same machinery runs identically whether the Linux host is local or
+encapsulated in an Incus VM. See
 [incus](../engineering/incus.md) for the host-provider axis, the Incus install reconciler, and the VM
 lifecycle (including stop-without-delete for `project down`).
 
@@ -183,38 +183,39 @@ frame its `.dhall` describes. See [composition_methodology](composition_methodol
 
 ## Current Status
 
-The host-native, no-copy-out build is the implemented mechanism and is **unchanged** by the chain
-model: Python ensures the host toolchain, builds the binary into `./.build/`, and execs it; the binary
-ensures Docker and builds the project container `FROM` the base image, gating on `check-code`.
+The host-native, no-copy-out build is the mechanism: Python ensures the host toolchain, builds the
+binary into `./.build/`, and execs it; the binary ensures Docker and builds the project container
+`FROM` the base image, gating on `check-code`.
 
-The recursive `project` command and the `[Step]` chain interpreter described above are **implemented and
-real-run-validated end-to-end on real hardware**. A single `project up` on Incus/Linux stood up the live
-persistent stack — the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM
-localhost) → the full 8-pod production Harbor (NodePort 30500) → the 20GB project image pushed to the
-in-cluster registry → the web chart pod serving `localhost:30080` with HTTP 200 — then `project down` /
-`project destroy` tore it down with host `.data` preserved.
+The recursive `project` command and the `[Step]` chain interpreter described above run end-to-end on
+real hardware. A single `project up` on Incus/Linux stands up the live persistent stack — the cordoned
+kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) → the production Harbor
+(NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod serving
+`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
+preserved.
 
-- **Shipped (the `project` chain):** a single `chain :: ProjectConfig -> [Step]` value the core
-  interprets, driven by `project init|up|down|destroy`, a read-only `context` introspection command
+- **The `project` chain:** a single `chain :: ProjectConfig -> [Step]` value the core interprets,
+  driven by `project init|up|down|destroy`, a read-only `context` introspection command
   (`inspect`/`path`/`show`/`schema`/`render`), and a `test init` / `test run <suite>|all` split.
-  Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are implemented; the four
+  Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are real; the four
   run-models are real. The core command tree is exactly `ensure`, `context`, `project`, `test`,
-  `check-code`; the demo's canonical deploy is `demoChain :: ProjectConfig -> [Step]` in
-  `demo/src/HostBootstrapDemo/Commands.hs`, and the demo retains only the `web` verb plus the `vm` /
-  `incus` debug-hatch verbs. `project down`'s stop-without-delete is a real provider capability.
-- **Folded into chain steps (formerly flat verbs):** the old flat surfaces no longer exist as standalone
-  verbs. The former `cluster up`/`down`/`delete`/`status` is now the `deploy-kind` / `deploy-chart` chain
-  steps under `project up`, with `project down` / `project destroy` and read-only `context inspect`
-  taking the teardown and status roles; the former `context create <kind>` is now the `context-init`
-  chain step that mints the child `<project>.dhall` inside `project up`; the former `config init` is now
-  `project init`, and `config show|schema|render` moved under read-only `context`; the demo's former
-  `deploy` / `harbor` / `role` verbs are gone, replaced by the chain's `deploy-kind` / `deploy-harbor` /
-  `push-image` / `deploy-chart` / `expose-port` steps. The reconcilers behind the old `cluster` verb
-  (`clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/`clusterDelete`) remain in
-  `HostBootstrap.Cluster.Lifecycle`, now invoked by the chain steps / lifecycle.
+  `check-code`. The demo's deploy is `demoChain :: ProjectConfig -> [Step]` in
+  `demo/src/HostBootstrapDemo/Commands.hs`, and the demo carries the `web` verb plus the `vm` /
+  `incus` debug-hatch verbs. `project down` stops the VM without deleting it.
+- **The chain steps:** `project up` interprets the chain across three frames. The metal frame runs
+  `deploy-VM` (ensure the provider, launch the budget-sized VM) and `build-pb` (the host-native binary
+  build plus the project-image build in the VM), then hands off into the VM. The in-VM frame runs
+  `context-init`, which mints the child `<project>.dhall` for the project container, then hands off into
+  the container. The container frame runs `deploy-kind` (the cordoned Production-profile kind cluster) →
+  `deploy-harbor` (the in-cluster Harbor registry) → `push-image` (kind-load + push the project image) →
+  `deploy-chart` (the web service pod) → `expose-port` (verify the NodePort). Core ships the
+  host-management step kinds; the demo interleaves its workload step kinds into the same `[Step]`. The
+  kind/Helm reconcilers (`clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/`clusterDelete`) live in
+  `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the teardown path. `project down` /
+  `project destroy` and read-only `context inspect` carry the teardown and status roles.
 
-`DEVELOPMENT_PLAN/` owns the migration status and the closed phases. The `project` command and the
-recursive interpreter are the shipped model this doc describes throughout.
+`DEVELOPMENT_PLAN/` owns the phase status. The `project` command and the recursive interpreter are the
+model this doc describes throughout.
 
 ## See also
 

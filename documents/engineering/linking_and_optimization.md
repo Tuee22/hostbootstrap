@@ -126,10 +126,9 @@ for the pattern; add it where measured.
   This is the measured-and-justified case for blanket `-fllvm`. New Haskell
   modules under `MCTS.*` should add `INLINABLE` to any polymorphic exports
   that participate in the inner search loop.
-* **jitML:** the migration to GHC 9.12 also relaxes `base >=4.22` to
-  `base >=4.18`; once on 9.12 the project should adopt the canonical
-  `cabal.project` template from
-  [warm_store.md](warm_store.md#recommended-project-cabalproject) and audit
+* **jitML:** the project builds on GHC 9.12 with `base >=4.18`. It adopts the
+  canonical `cabal.project` template from
+  [warm_store.md](warm_store.md#recommended-project-cabalproject) and audits
   hot numeric modules for `-fllvm` opportunities.
 
 ## See also

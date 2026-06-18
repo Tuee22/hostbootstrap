@@ -24,8 +24,8 @@
 - It is forwarded only over **ephemeral channels**, never `argv`: piped on `stdin` into a transient
   `DOCKER_CONFIG` that is removed when the command exits, or carried into a container by an environment
   variable the in-container binary consumes once into a transient `DOCKER_CONFIG` and never persists.
-- When the host is not logged in, discovery yields `Nothing` and every pull degrades to the previous
-  anonymous behaviour — the pristine-host story is unchanged.
+- When the host is not logged in, discovery yields `Nothing` and every pull runs anonymously — a
+  pristine host needs no Docker Hub login.
 
 ## Why credentials are not in Dhall
 
@@ -52,16 +52,19 @@ copied into the VM and the cluster and would survive on disk. The type system en
 The host binary discovers the credential (the only place it is read). It then reaches a nested pull over
 one of two ephemeral channels, chosen by the boundary — never `argv`, never a persisted file, never Dhall:
 
-- **VM, raw `docker build`/`docker pull`** (the worked demo's build #3 base-image pull): the host pipes
-  the minimal `config.json` on `stdin` to a command wrapped by `dockerAuthStdinWrapper`. The in-VM shell
-  writes it to a `mktemp` `DOCKER_CONFIG`, runs the build, and the `trap` removes it on exit. The
-  credential touches the VM only in that transient directory and is gone when the build returns.
-- **Container, the lifted `test all`**: `liftSubcommandWithAuth` pipes the payload on `stdin` to the VM
-  shell, which imports it into the environment with `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` (so the
-  value never appears in a process listing) and `exec`s a `docker run -e HOSTBOOTSTRAP_REGISTRY_AUTH`
-  (the **name** only). Docker forwards the value into the container's environment; the in-container
-  binary's `withForwardedRegistryAuth` consumes it once into a transient `DOCKER_CONFIG` so its nested
-  `kind` (node image) and `docker run` (e.g. the e2e `curl` probe) pulls authenticate, then scrubs it.
+- **VM, raw `docker build`/`docker pull`** (the demo's build #3 base-image pull in `pristine-bootstrap`):
+  the host pipes the minimal `config.json` on `stdin` to a command wrapped by `dockerAuthStdinWrapper`.
+  The in-VM shell writes it to a `mktemp` `DOCKER_CONFIG`, runs the build, and the `trap` removes it on
+  exit. The credential touches the VM only in that transient directory and is gone when the build returns.
+- **Container, the persistent stack's in-container pulls**: the project container the chain hands
+  `project up` into (`demoDeployImage`) carries `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the **name** only) on
+  its `docker run`, so Docker forwards the value into the container's environment without it ever
+  appearing in `argv` or a process listing. The in-container binary's `withForwardedRegistryAuth`
+  consumes it once at startup into a transient `DOCKER_CONFIG`, so the `deploy-kind` step's `kind` node-
+  image pull and the in-container `docker run` probes authenticate, then scrubs it. The core lift seam
+  `liftSubcommandWithAuth` supports the same shape for a container reached directly through a VM: it
+  pipes the payload on `stdin` to the VM shell, which imports it with
+  `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and `exec`s a `docker run -e HOSTBOOTSTRAP_REGISTRY_AUTH`.
 
 This is the "every project binary at every level has global knowledge" idiom: the host binary knows it is
 the outermost frame and holds the credential; each nested binary knows it may receive a forwarded
@@ -75,14 +78,15 @@ level.
   Docker config into a VM or container.
 - Putting the credential value in `argv` (it would show in `ps`/process listings) — it travels on `stdin`
   or, into a container, as a forwarded environment **name** whose value Docker supplies out of band.
-- A hard dependency on being logged in: with no host login, pulls run anonymously exactly as before.
+- A hard dependency on being logged in: with no host login, pulls run anonymously.
 
 ## Validation
 
 - `RegistrySpec` (run through the canonical code-check) covers the Docker-Hub-only projection (the host's
   other registry credentials are dropped), the redacted `Show`, the `Nothing` anonymous-fallback paths,
   and that the `stdin` wrapper embeds no secret.
-- The worked demo (`project up`, interpreting the demo's `demoChain`) exercises forwarding end to end:
-  build #3 pulls the base image authenticated, and the lifted `test all` pulls the kind node image and
-  the e2e probe image authenticated, all without the credential appearing in Dhall, a persisted file, or
-  `argv`. See [demo_runbook](../operations/demo_runbook.md).
+- The demo (`project up`, interpreting the demo's `demoChain`) exercises forwarding end to end: the
+  metal frame's build #3 pulls the base image authenticated, and the container frame's `deploy-kind`
+  step pulls the kind node image authenticated (with the in-container `docker run` probes likewise),
+  all without the credential appearing in Dhall, a persisted file, or `argv`. See
+  [demo_runbook](../operations/demo_runbook.md).

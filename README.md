@@ -183,8 +183,8 @@ The Python bootstrapper (installed with `pipx install …`):
 | `hostbootstrap build` | Run the bootstrap — build the project binary host-native into `./.build/`; no exec |
 | `hostbootstrap run [args...]` | Build idempotently, then exec the project binary with `args` |
 | `hostbootstrap update` | Explicitly update the pipx-installed Python bootstrapper |
-| `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push |
-| `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s) |
+| `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push. With no `--flavor`, cpu+cuda build concurrently (`--sequential` opts out) |
+| `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s); with no `--flavor`, cpu+cuda build concurrently (`--sequential` opts out) |
 
 Self-update is never run automatically by `doctor`, `build`, `run`, or `base`, and those commands must
 not fail just because the wrapper is not at the latest commit.

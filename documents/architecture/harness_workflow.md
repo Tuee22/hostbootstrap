@@ -18,17 +18,18 @@
   report) lives once in core; cluster projects supply kind/Helm `Seams`; the app supplies only its
   case matrix.
 - The test surface is a **separate, root-gated** command pair — `test init` writes `test.dhall`,
-  `test run <suite>|all` drives `runMatrix` — **decoupled** from the deploy chain. `test run all`
-  validates the live stack that `project up` brought up; it is not part of bringing the stack up.
+  `test run <suite>|all` drives `runMatrix` — **decoupled** from the deploy chain. `project up` stands
+  up the persistent stack; `test run all` is its own validation surface and does not run as part of
+  bringing the stack up.
 - Never-touch-production is mechanical: `guardTestDelete` refuses any cluster name without the
   project's test prefix, and the pure `teardown` partition keeps `.data` out of the removal set.
 - `sliceBudget` keeps the matrix within the project ceiling — divisible cases split by weight,
   indivisible cases run serially at the full budget.
-- The harness is **context-agnostic**: its seams invoke reconcilers (e.g. `clusterUp`) "locally",
-  with no `LiftContext` inside the engine. It is therefore a **lift target** — `test run all` lifts
-  the whole workflow into the project container in the VM, and the per-case cluster comes up wherever
-  the harness lands. The harness is the **one** representation of the test workflow. See
-  [composition_methodology](composition_methodology.md) for the canonical model.
+- The harness is **context-agnostic**: its seams call `clusterUp` (and the per-case deploy/e2e)
+  "locally", with no `LiftContext` inside the engine. It is therefore a **lift target** — `test run
+  all` lifts the whole workflow into the project container in the VM, and each case's isolated kind
+  cluster comes up wherever the harness lands. The harness is the **one** representation of the test
+  workflow. See [composition_methodology](composition_methodology.md) for the canonical model.
 
 ## The Per-Case Loop
 
@@ -66,9 +67,8 @@ and `Seams` as a non-empty `TestSuite` so the cases run under `test run`, not a 
 
 The pair is **decoupled from deploy**. `project up` brings up a persistent stack (VM → project image →
 kind → harbor → webservice, exposed to the host); it does not run tests as part of standing the stack
-up. `test run all` then validates that **already-running** stack, root-gated and on demand. This is the
-inversion of the demo's older shape, where the lone lifted compute step *was* the test workflow: in the
-target model the stack is durable and the test surface is a separate validation pass over it.
+up. `test run all` is a separate validation pass that runs root-gated and on demand. The stack is
+durable, and the test surface drives its own isolated per-case kind clusters independently of it.
 
 ## The Seam-Split
 
@@ -150,18 +150,17 @@ documented in [resource budgeting](../engineering/resource_budgeting.md) and
 
 ## Current Status
 
-Implemented today is the flat `test` verb: `<project> test all` and `<project> test <case>` drive
-`runMatrix` over the project matrix, root-gating, the prefix delete-guard, the data-preserving
-teardown partition, and budget-slicing are all in place and exercised by the core test suite. In the
-demo, this `test all` step is lifted as the single compute step of the hand-written deploy chain.
+The root-gated **`test init` / `test run <suite>|all`** pair backs the harness with a sibling
+`test.dhall` and stays **decoupled** from the persistent `project up` stack. `project up` interprets the
+project's `chain :: ProjectConfig -> [Step]` recursively across the composed frame stack to stand up the
+durable stack (VM → project image → kind → harbor → webservice, exposed to the host); `test run all`
+drives `runMatrix` over the project's case matrix as a separate validation surface with its own isolated
+per-case kind clusters.
 
-The target model is the root-gated **`test init` / `test run <suite>|all`** pair, backed by a sibling
-`test.dhall` and **decoupled** from a persistent `project up` stack that `test run all` validates after
-the fact. That surface — and the recursive `project up` interpreter whose stack it validates — is not
-yet implemented; only the flat `test` verb and the demo's lifted `test all` exist today. The
-`HostBootstrap.Harness` engine itself (the `runMatrix` loop, the seam-split, the guard, budget-slicing)
-is unchanged by the migration: it is the one engine in both the current and target surfaces. The
-[development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md) tracks the verb split
+The `HostBootstrap.Harness` engine (the `runMatrix` loop, the seam-split, the prefix delete-guard,
+budget-slicing) is the one engine the surface drives. Root-gating, the prefix delete-guard, the
+data-preserving teardown partition, and budget-slicing are exercised by the core test suite. The
+[development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md) records the test surface
 and the deploy/test decoupling.
 
 ## See Also

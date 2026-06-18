@@ -1,7 +1,7 @@
 # Base image
 
 **Status**: Authoritative source
-**Supersedes**: the substrate-keyed base-flavor selection and `--force-target` arch/flavor model
+**Supersedes**: prior base-image notes without metadata
 **Referenced by**: [../README.md](../README.md), [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md), [code_check_doctrine.md](code_check_doctrine.md)
 
 > **Purpose**: Describe the four prebuilt base tags and the warm `hostbootstrap-core` dependency
@@ -28,7 +28,7 @@ The four published tags above are the **source of truth** every derived project 
 `demo/`) builds `FROM`. Whenever the repo's base inputs change — `docker/basecontainer.Dockerfile`
 or the warm-store inputs under [`core/warm-deps/`](../../core/warm-deps/) (the layer
 manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection) — the published
-tag no longer matches the repo and **must be rebuilt and republished**
+tag falls out of sync with the repo and **must be rebuilt and republished**
 (`hostbootstrap base build-and-push`; see [build_release.md](build_release.md)). Consumers then
 **pull** the republished tag; they never rebuild the base as a one-off and never build against an
 un-republished local base, which would hide the drift between the repo and the registry. A freeze a
@@ -57,7 +57,7 @@ flavor it needs for the build it is about to run.
 | `linux-gpu` (amd64) | amd64 | `basecontainer-cuda-amd64` |
 | `linux-gpu` (arm64) | arm64 | `basecontainer-cuda-arm64` (built on demand) |
 
-There is no force-target override: substrate is detected, never declared (see [schema.md](schema.md)).
+Substrate is detected, never declared (see [schema.md](schema.md)).
 
 Python derives the project name from the Cabal file and does not evaluate Dhall, so Linux/arm64 support
 does not depend on a Python-provisioned Dhall binary.
@@ -144,7 +144,9 @@ derived project follows.
 >
 > Plain `docker build` under the hood, single-arch, host-native, with every version/URL computed on
 > the host, and immediate `docker push`es for the CPU and CUDA tags so the registry copies match the
-> just-built local layers (see [build_release.md](build_release.md)).
+> just-built local layers. The CPU and CUDA tags build **concurrently** by default (`--sequential`
+> opts out) — that is host-level parallelism of two independent single-arch `docker build`s, **not** a
+> buildx multi-platform manifest, which stays forbidden (see [build_release.md](build_release.md)).
 
 ### The one CUDA exception
 

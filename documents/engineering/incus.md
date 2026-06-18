@@ -12,18 +12,18 @@
 ## TL;DR
 
 - `incus` is a host-provider axis **orthogonal** to substrate: a target linux host is either the
-  local host or an incus VM. It is not a substrate (the VM is still `linux-cpu`/`linux-gpu` inside)
-  and not a fifth run-model — it parameterizes the existing machinery by a typed `HostTarget`.
-- `HostTool` gained the `Incus` constructor (`toolCommandName Incus = "incus"`), so the host `incus`
+  local host or an incus VM. It is not a substrate (the VM is a `linux-cpu`/`linux-gpu` machine inside)
+  and not a fifth run-model — it parameterizes the host machinery by a typed `HostTarget`.
+- `HostTool` carries the `Incus` constructor (`toolCommandName Incus = "incus"`), so the host `incus`
   resolves to an absolute-path `AbsExe` like every other tool — never a bare `$PATH` invocation.
-- `ensure incus` is the first cross-substrate reconciler: `appliesTo = isAppleSilicon || isLinux`.
+- `ensure incus` is a cross-substrate reconciler: `appliesTo = isAppleSilicon || isLinux`.
   Install-and-verify, probe-first and idempotent. On Apple silicon it provisions the macOS client plus
   a named Colima profile running the Incus runtime; on Linux it provisions the native daemon.
-- The incus VM is the native-Linux **VM frame** of the lift chain. Its lifecycle is expressed as core
-  chain steps — `deploy-VM` (bring up), `down` (stop without delete), `destroy` (stop then delete) —
-  interpreted by the recursive `project up`/`project down`/`project destroy` interpreter. The model
-  is owned by [composition_methodology](../architecture/composition_methodology.md); this doc defers
-  to it and describes the incus-specific step actions.
+- The incus VM is the native-Linux **VM frame** of the chain. Its bring-up is the `deploy-vm` chain
+  step the recursive `project up` interpreter runs; `project down` stops it without deleting, and
+  `project destroy` stops then deletes it. The model is owned by
+  [composition_methodology](../architecture/composition_methodology.md); this doc describes the
+  incus-specific step actions.
 - `HostTarget = Local | InVM IncusVM`. `runInTarget` runs the resolved tool directly for `Local` and
   dispatches through one host `incus exec <name> -- <tool> <args>` for `InVM`, with no per-call
   branching at the call sites.
@@ -32,19 +32,18 @@
 
 ## The Host-Provider Axis
 
-A linux-host operation can run against one of two **host targets**: the local host, or an incus VM
+A linux-host operation runs against one of two **host targets**: the local host, or an incus VM
 running on the local host. This is a distinct axis from substrate. Substrate (`apple-silicon`,
 `linux-cpu`, `linux-gpu`) describes what the machine *is*; the host target describes *which* machine
 the operation runs on. An incus VM is itself a `linux-cpu` or `linux-gpu` machine — the axes compose,
-they do not collapse. `incus` is likewise not a fifth run-model: the four run-models in
-[run models](../architecture/run_models.md) are unchanged, and the host target sits underneath them.
-The parameterization detail — every linux-host operation runs against `Local` or `InVM` with no
-per-call branching — is in [build and run model](../architecture/build_and_run_model.md).
+they do not collapse. `incus` is likewise not a fifth run-model: the host target sits underneath the
+four run-models in [run models](../architecture/run_models.md). The parameterization detail — every
+linux-host operation runs against `Local` or `InVM` with no per-call branching — is in
+[build and run model](../architecture/build_and_run_model.md).
 
-`incus` is not standardized for all workflows. The worked demo uses native Incus to encapsulate a fresh
-Linux host on Linux. On Apple Silicon, the worked demo uses Lima for that pristine VM instead; `ensure
-incus` remains available for explicit Incus workflows and remote/provider experiments. Outside those
-flows, the local host is the default target.
+The worked demo uses native Incus to encapsulate a fresh Linux host on Linux. On Apple Silicon, the
+worked demo uses Lima for that pristine VM; `ensure incus` serves explicit Incus workflows and
+remote/provider work. Where neither flow applies, the local host is the default target.
 
 On macOS, `incus` is a client; the Incus daemon runs on Linux. The supported Apple-silicon local
 provider is therefore Colima's Incus runtime, started as the named profile `incus`
@@ -53,23 +52,22 @@ usable provider: the client has no daemon until the Colima profile exists or a r
 configured. Apple Incus VMs also depend on Apple's nested-virtualization support. The demo therefore does
 not use an Incus VM on Apple Silicon; it uses Lima to create the pristine Linux VM.
 
-The two-case `HostTarget = Local | InVM` described here is the **tool-level** lift (run one resolved tool
-in a target). It is generalized by the **subcommand-level self-reference lift** (`HostBootstrap.Lift`),
-which composes contexts as an n-level stack (`Local | InVM | InContainer`): a binary crosses any boundary
-by invoking its *own* subcommand in the nested context, so `incus exec` is the VM layer and
-`docker run --rm` is the container layer (folding e.g. to `incus exec <vm> -- docker run --rm <image>
-<subcmd>`). `HostTarget`/`runInTarget` are retained as the narrower tool-level lift. See
+The two-case `HostTarget = Local | InVM` is the **tool-level** lift: run one resolved tool in a target.
+The **subcommand-level self-reference lift** (`HostBootstrap.Lift`) composes contexts as an n-level
+stack (`Local | InVM | InContainer`): a binary crosses any boundary by invoking its *own* subcommand in
+the nested context, so `incus exec` is the VM layer and `docker run --rm` is the container layer
+(folding e.g. to `incus exec <vm> -- docker run --rm <image> <subcmd>`). `HostTarget`/`runInTarget` are
+the narrower tool-level lift. See
 [composition_methodology](../architecture/composition_methodology.md).
 
 ## `ensure incus`
 
-`ensure incus` (`HostBootstrap.Ensure.Incus`) is the **first cross-substrate reconciler**: its
-applicability predicate is `appliesTo = isAppleSilicon || isLinux`, true on both Apple silicon and
-Linux. Every other reconciler in [ensure reconcilers](ensure_reconcilers.md) applies to a single
-substrate family; `ensure incus` is the first that spans them, because the supported provider can be
-Colima-backed on Apple or native on Linux. The reconciler is invoked as a chain step within `project
-up` (the VM frame's provider must reach "usable" — VM capability plus egress — before the chain can
-descend into it); the standalone `ensure incus` subcommand is retained only as a hidden debug surface.
+`ensure incus` (`HostBootstrap.Ensure.Incus`) is a **cross-substrate reconciler**: its applicability
+predicate is `appliesTo = isAppleSilicon || isLinux`, true on both Apple silicon and Linux. It spans
+both substrate families because the supported provider is Colima-backed on Apple or native on Linux.
+The reconciler runs as a chain step within `project up` — the VM frame's provider must reach "usable"
+(VM capability plus egress) before the chain descends into it — and the standalone `ensure incus`
+subcommand is a hidden debug surface.
 
 It follows the standard probe-first, idempotent install-and-verify contract:
 
@@ -104,55 +102,55 @@ data HostTarget = Local | InVM IncusVM
 For the `InVM` case the in-VM `<tool>` is the VM's **own** `$PATH` binary, not a host-resolved
 `AbsExe`. The host-tool absolute-path resolution discipline governs **host** invocation only — the VM
 is a separate machine, so the tool name crossing the `incus exec` boundary is resolved by the VM's
-own `$PATH`. The host side of that single dispatch — the host `incus` — is still resolved to an
-absolute-path `AbsExe` through the `HostTool` enum.
+own `$PATH`. The host side of that single dispatch — the host `incus` — resolves to an absolute-path
+`AbsExe` through the `HostTool` enum.
 
 ## VM Lifecycle As Chain Steps
 
-The incus VM is the native-Linux VM frame of the chain (`chain :: RootConfig -> [Step]`, the single
+The incus VM is the native-Linux VM frame of the chain (`chain :: ProjectConfig -> [Step]`, the single
 ordered representation; see [composition_methodology](../architecture/composition_methodology.md),
-the canonical home of the model). Its lifecycle is expressed as **core step kinds** the recursive
-interpreter runs, not as standalone verbs:
+the canonical home of the model). The VM's bring-up is a **core step kind** the recursive interpreter
+runs, and its stop/delete are interpreter teardown operations:
 
-| Chain step | Interpreter command | Incus action |
+| Interpreter command | VM operation | Incus action |
 |---|---|---|
-| `deploy-VM` | `project up` | bring the VM to *running* (idempotent), then hand off `pb project up` into the VM |
-| `down` | `project down` | **stop** the VM without deleting it (stop-without-delete) |
-| `destroy` | `project destroy` | stop the VM, then delete it and its compute (`.data` preserved) |
+| `project up` | `deploy-vm` step | bring the VM to *running* (idempotent), then hand off `pb project up` into the VM |
+| `project down` | stop the VM frame | **stop** the VM without deleting it (stop-without-delete) |
+| `project destroy` | delete the VM frame | stop the VM, then delete it and its compute (`.data` preserved) |
 
-`HostBootstrap.Incus` is the pure argv builders plus the IO loop that runs them; the lifecycle step
-actions drive those builders. The builders:
+`HostBootstrap.Incus` is the pure argv builders plus the IO loop that runs them; the `deploy-vm` step
+action and the teardown drive those builders. The builders:
 
 | Builder | Emits |
 |---------|-------|
 | `createVMArgs` | `incus launch <image> <name> --vm [sizing]` |
 | `startVMArgs` | start the named VM |
-| `stopVMArgs` | stop the named VM (the `down` step's stop-without-delete) |
+| `stopVMArgs` | stop the named VM (the `project down` stop-without-delete) |
 | `execVMArgs` | `incus exec <name> -- <cmd>` |
 | `pushFileArgs` | `incus file push <src> <name><dst>` |
 | `rebootVMArgs` | `incus restart <name>` |
 | `destroyVMArgs prefix vm` | `incus delete <name> --force`, **guarded** by `prefix` |
 
-### `deploy-VM`: idempotent bring-up and handoff
+### `deploy-vm`: idempotent bring-up and handoff
 
-`deploy-VM` under `project up` is **fail-closed** and **idempotent** (reconcile-to-running): an
-already-running VM is a no-op, an absent VM is launched and sized, and a stopped VM is started. Once
+The `deploy-vm` step under `project up` is **fail-closed** and **idempotent** (reconcile-to-running):
+an already-running VM is a no-op, an absent VM is launched and sized, and a stopped VM is started. Once
 the VM is up the interpreter descends into the VM frame and hands off `pb project up` — provision the
 frame, build/install the pb in it, then continue the chain inside. This is the fractal-bootstrap
 descent owned by [composition_methodology](../architecture/composition_methodology.md); the incus
 step contributes the native-Linux provisioning leaf.
 
-### `down`: stop without delete
+### `project down`: stop without delete
 
-`down` under `project down` **stops** the VM and deletes nothing. It emits `stopVMArgs` only — no
-`destroyVMArgs` — so the VM, its disk, and `.data` all survive. A subsequent `deploy-VM` restarts the
+`project down` **stops** the VM and deletes nothing. The VM-frame teardown emits `stopVMArgs` only — no
+`destroyVMArgs` — so the VM, its disk, and `.data` all survive. A subsequent `project up` restarts the
 same VM in place. Stop-without-delete is the capability that distinguishes `project down` from
 `project destroy`.
 
-### `destroy`: stop then delete, guarded
+### `project destroy`: stop then delete, guarded
 
-`destroy` under `project destroy` stops the VM and then deletes it through the prefix-guarded
-`destroyVMArgs prefix vm`, reusing the harness `guardTestDelete` idiom (see
+`project destroy` stops the VM and then deletes it through the prefix-guarded `destroyVMArgs prefix vm`,
+reusing the harness `guardTestDelete` idiom (see
 [harness workflow](../architecture/harness_workflow.md)): `incus delete <name> --force` is refused
 unless the VM name carries the guard prefix. A non-prefixed name yields no argv at all. `.data` is
 preserved across teardown — the never-delete-`.data` invariant holds at the VM frame exactly as it
@@ -205,21 +203,14 @@ cordon table.
 
 ## Current Status
 
-The implemented surface is the **flat** topology: `ensure incus` is a real subcommand, and the incus
-VM lifecycle is driven today by the demo's flat `vm`/`deploy` verbs (`vm ensure`/`vm up`/`vm
-pristine-bootstrap`/`vm down`) wiring the `HostBootstrap.Incus` argv builders and `runInTarget`
-dispatch. The argv builders, `runInTarget`, the reboot-to-ready loop, and `incusSizingArgs` are all
-built and unit-tested.
-
-The **target** model in this doc — the `deploy-VM`/`down`/`destroy` chain steps interpreted by a
-recursive `project up`/`project down`/`project destroy` interpreter, with `down` as a first-class
-stop-without-delete capability and the VM frame as a fractal-bootstrap descent — is **not yet
-implemented**. The `project` command and the recursive `[Step]` interpreter do not exist today; the
-flat verbs above are what runs. The development plan tracks the migration from the flat verbs to the
-chain interpreter (phases reopened and planned per
-[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) and the cluster/command-tree
-phases). The `stopVMArgs`-only stop-without-delete builder already exists; surfacing it as a `down`
-chain step is target work.
+`ensure incus` is a reconciler the chain runs, and the incus VM frame's lifecycle is the recursive
+interpreter's: the `deploy-vm` step brings the VM to *running* under `project up` and hands off
+`pb project up` into it, `project down` stops the VM frame without deleting it, and `project destroy`
+stops then prefix-guarded-deletes it. The `HostBootstrap.Incus` argv builders, `runInTarget` dispatch,
+the reboot-to-ready loop, and `incusSizingArgs` carry these operations. The pure pieces — the argv
+builders, the `classifyDockerReadiness` classifier, and `incusSizingArgs` — are unit-tested, and the
+IO dispatch is exercised live. [Phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+is the development plan for this surface.
 
 ## See Also
 
