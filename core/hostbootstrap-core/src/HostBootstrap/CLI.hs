@@ -14,6 +14,9 @@ module HostBootstrap.CLI (
     ProjectSpec,
     projectCommand,
     projectSpec,
+    withChain,
+    withFrameContext,
+    withTeardown,
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
 )
@@ -23,8 +26,11 @@ import Control.Monad (join)
 import Data.List (group, intercalate, sort)
 import qualified Data.Text as T
 import HostBootstrap.Command (coreCommandNames, coreCommands)
+import HostBootstrap.Config.Schema (ProjectConfig)
 import HostBootstrap.Dhall.Gen (ConfigArtifact (..), coreArtifacts)
 import HostBootstrap.Harness (TestSuite, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.Lift (LiftContext, localContext)
+import HostBootstrap.Step (Step, StepFrame)
 import Options.Applicative
 import System.Exit (die)
 
@@ -47,10 +53,47 @@ data ProjectSpec = ProjectSpec
     , psTestSuite :: TestSuite
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
+    , psChain :: ProjectConfig -> [Step]
+    , psFrameContext :: ProjectConfig -> StepFrame -> LiftContext
+    , -- | The chain-frame teardown the @project down@ / @project destroy@
+      -- lifecycle runs after the recursive cluster teardown: stop (@False@) or
+      -- delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
+      -- and idempotent; the never-delete-@.data@ invariant (§ O) is the cluster
+      -- teardown's responsibility. Attach with 'withTeardown'.
+      psTeardown :: ProjectConfig -> Bool -> IO ()
     }
 
+{- | Build a project spec. The project's lift chain (its primary CLI
+contribution, § Y) and per-frame lift-context builder default to empty/local;
+attach them with 'withChain' / 'withFrameContext'.
+-}
 projectSpec :: [ProjectCommand] -> TestSuite -> IO () -> [ConfigArtifact] -> ProjectSpec
-projectSpec = ProjectSpec
+projectSpec cmds suite check arts =
+    ProjectSpec cmds suite check arts (const []) (const (const localContext)) (\_ _ -> pure ())
+
+{- | Attach the project's lift chain: a pure function from the root
+@<project>.dhall@ config to the ordered @[Step]@ the core @project@ lifecycle
+interprets (§ Y). The chain is the project's primary CLI contribution.
+-}
+withChain :: (ProjectConfig -> [Step]) -> ProjectSpec -> ProjectSpec
+withChain f spec = spec{psChain = f}
+
+{- | Attach the per-frame lift-context builder the recursive interpreter uses to
+cross into a nested frame — the project supplies the provider VM/container
+identity for each frame (§ U).
+-}
+withFrameContext :: (ProjectConfig -> StepFrame -> LiftContext) -> ProjectSpec -> ProjectSpec
+withFrameContext f spec = spec{psFrameContext = f}
+
+{- | Attach the project's chain-frame teardown: how @project down@ (stop, @False@)
+and @project destroy@ (delete, @True@) tear down the frames the chain provisioned
+(for the demo: stop/delete the VM). Runs after the core's recursive cluster
+teardown (which preserves host @.data@, § O), so the outermost frame — the VM — is
+stopped or deleted last. Best-effort and idempotent: a missing frame is not an
+error, so a partial stack always tears down.
+-}
+withTeardown :: (ProjectConfig -> Bool -> IO ()) -> ProjectSpec -> ProjectSpec
+withTeardown f spec = spec{psTeardown = f}
 
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
@@ -58,7 +101,7 @@ with a validated project spec.
 runHostBootstrapCLI :: String -> ProjectSpec -> IO ()
 runHostBootstrapCLI progName spec = do
     either die pure (validateProjectSpec spec)
-    runCLI progName (projectCommands spec) (psArtifacts spec) (psTestSuite spec) (psCheckCode spec)
+    runCLI progName (projectCommands spec) (psArtifacts spec) (psTestSuite spec) (psCheckCode spec) (psChain spec) (psFrameContext spec) (psTeardown spec)
 
 {- | Run the bare core binary. This is the only supported path that intentionally
 has no project commands, no project checks, no project artifacts, and an empty
@@ -66,13 +109,30 @@ test matrix.
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName =
-    runCLI progName [] [] emptySuite (putStrLn "check-code: bare core binary has no project checks")
+    runCLI
+        progName
+        []
+        []
+        emptySuite
+        (putStrLn "check-code: bare core binary has no project checks")
+        (const [])
+        (const (const localContext))
+        (\_ _ -> pure ())
 
-runCLI :: String -> [Mod CommandFields (IO ())] -> [ConfigArtifact] -> TestSuite -> IO () -> IO ()
-runCLI progName projectCommandMods projectArtifacts testSuite checkCode =
+runCLI ::
+    String ->
+    [Mod CommandFields (IO ())] ->
+    [ConfigArtifact] ->
+    TestSuite ->
+    IO () ->
+    (ProjectConfig -> [Step]) ->
+    (ProjectConfig -> StepFrame -> LiftContext) ->
+    (ProjectConfig -> Bool -> IO ()) ->
+    IO ()
+runCLI progName projectCommandMods projectArtifacts testSuite checkCode chain frameCtx teardown =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
-    allCommands = coreCommands progName projectArtifacts testSuite checkCode ++ projectCommandMods
+    allCommands = coreCommands progName projectArtifacts testSuite checkCode chain frameCtx teardown ++ projectCommandMods
     opts =
         info
             (parser <**> helper)

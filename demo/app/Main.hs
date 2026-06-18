@@ -8,10 +8,10 @@ without re-implementing any core verb. See
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI)
+import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withTeardown)
 import HostBootstrap.Harness (TestSuite (TestSuite))
 import HostBootstrap.Registry (withForwardedRegistryAuth)
-import HostBootstrapDemo.Commands (demoArtifacts, demoCases, demoCheckCode, demoCommands, demoSeams)
+import HostBootstrapDemo.Commands (demoArtifacts, demoCases, demoChain, demoCheckCode, demoCommands, demoFrameContext, demoSeams, demoTeardown)
 
 main :: IO ()
 main =
@@ -23,4 +23,10 @@ main =
     withForwardedRegistryAuth $
         runHostBootstrapCLI
             "hostbootstrap-demo"
-            (projectSpec demoCommands (TestSuite demoSeams demoCases) demoCheckCode demoArtifacts)
+            ( withChain
+                demoChain
+                ( withFrameContext
+                    demoFrameContext
+                    (withTeardown demoTeardown (projectSpec demoCommands (TestSuite demoSeams demoCases) demoCheckCode demoArtifacts))
+                )
+            )

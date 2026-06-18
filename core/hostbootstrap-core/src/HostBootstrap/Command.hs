@@ -15,28 +15,28 @@ import Control.Monad (unless, when)
 import Data.List (find, intercalate)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import HostBootstrap.Chain (renderChain, runChainFromFrame)
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
     ClusterProfile (Production),
     clusterDelete,
     clusterDown,
-    clusterStatus,
-    clusterUp,
     resolvePlan,
  )
 import HostBootstrap.Config.Schema (
     DeployConfig (..),
+    ProjectConfig (..),
     Resources (..),
     configRoleNames,
     decodeProjectConfigFile,
     defaultDeployConfig,
     defaultResources,
-    deriveProjectConfigForKind,
     parseConfigRole,
     projectConfigFileName,
     projectConfigForRole,
     projectConfigSchemaText,
     renderProjectConfigSummary,
+    siblingProjectConfigPath,
     withSiblingProjectConfigContext,
     writeProjectConfigFile,
  )
@@ -55,8 +55,10 @@ import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Tart as Tart
-import HostBootstrap.Harness (TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection)
+import HostBootstrap.Harness (TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection, testSuiteCaseIds)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
+import HostBootstrap.Lift (LiftContext, currentSelfRef)
+import HostBootstrap.Step (Step, StepFrame)
 import HostBootstrap.Substrate (detect)
 import Options.Applicative
 import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
@@ -84,18 +86,25 @@ under distinct names; 'HostBootstrap.CLI' rejects a project command that would
 shadow one of these.
 -}
 coreCommandNames :: [String]
-coreCommandNames = ["ensure", "config", "context", "cluster", "test", "check-code"]
+coreCommandNames = ["ensure", "context", "project", "test", "check-code"]
 
 {- | The core subcommands every @hostbootstrap@-derived binary exposes. The
 project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
 cases run under @test@ (not a per-noun subcommand).
 -}
-coreCommands :: String -> [ConfigArtifact] -> TestSuite -> IO () -> [Mod CommandFields (IO ())]
-coreCommands progName projectArtifacts suite checkCode =
+coreCommands ::
+    String ->
+    [ConfigArtifact] ->
+    TestSuite ->
+    IO () ->
+    (ProjectConfig -> [Step]) ->
+    (ProjectConfig -> StepFrame -> LiftContext) ->
+    (ProjectConfig -> Bool -> IO ()) ->
+    [Mod CommandFields (IO ())]
+coreCommands progName projectArtifacts suite checkCode chain frameCtx teardown =
     [ ensureCommandWith (gate progName Context.EnsureCommand []) allReconcilers
-    , configCommand progName projectArtifacts
-    , contextCommand progName
-    , clusterCommand progName
+    , contextCommand progName projectArtifacts
+    , projectCommandGroup progName chain frameCtx teardown
     , testCommand progName suite
     , checkCodeCommand progName checkCode
     ]
@@ -116,22 +125,57 @@ testCommand progName suite =
     command
         "test"
         ( info
-            (runTests <$> caseArg)
-            (progDesc "Run a project test case, or `all` for the whole matrix")
+            (hsubparser (testInitCmd <> testRunCmd))
+            (progDesc "Test surface: `init` writes test.dhall; `run` runs a suite against the live stack (root-only)")
         )
   where
+    testInitCmd =
+        command
+            "init"
+            ( info
+                (pure runTestInit)
+                (progDesc "Write test.dhall next to the project config (requires an existing project config)")
+            )
+    testRunCmd =
+        command
+            "run"
+            ( info
+                (runTestRun <$> caseArg)
+                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (root-only, needs test.dhall)"))
+            )
     caseArg =
         strArgument
-            ( metavar "CASE"
-                <> help ("test case id to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
+            ( metavar "SUITE"
+                <> help ("test suite to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
             )
-    runTests selector = gate progName Context.TestWorkflowCommand [] $ do
+    runTestInit = gate progName Context.HostOrchestratorCommand [] $ do
+        path <- testDhallPath progName
+        writeTestDhall path (testSuiteCaseIds suite ++ [allCasesSelector])
+        putStrLn ("test init: wrote " ++ path)
+    runTestRun selector = gate progName Context.HostOrchestratorCommand [] $ do
+        path <- testDhallPath progName
+        exists <- doesFileExist path
+        unless exists (die ("test run: missing " ++ path ++ "; run `" ++ progName ++ " test init` first"))
         outcome <- runSuiteSelection suite selector
         case outcome of
             Left err -> die err
             Right report -> do
                 putStr (reportCard report)
                 unless (allPassed report) (die "test: one or more cases failed")
+
+-- | The per-project @test.dhall@ path: a sibling of the project config (the
+-- @test run@ gate, § Z).
+testDhallPath :: String -> IO FilePath
+testDhallPath progName = do
+    cfgPath <- siblingProjectConfigPath (T.pack progName)
+    pure (takeDirectory cfgPath </> (progName ++ ".test.dhall"))
+
+-- | Write @test.dhall@ as the Dhall list of selectable suites (the project's
+-- case ids plus @all@), reflected from the threaded 'TestSuite' so it cannot
+-- drift.
+writeTestDhall :: FilePath -> [String] -> IO ()
+writeTestDhall path suites =
+    writeFile path ("[ " ++ intercalate ", " (map show suites) ++ " ]\n")
 
 {- | The @check-code@ verb: the fail-fast image-build quality gate. Its body is
 supplied by the project spec (or by the explicit bare-core entrypoint).
@@ -145,19 +189,29 @@ checkCodeCommand progName checkCode =
             (progDesc "Run the project's fail-fast code-check gate (project-defined body)")
         )
 
-{- | The @config@ command group: decode, inspect, and generate project-local
-Dhall configs.
+{- | The @context@ command group (§ Z): read-only composition introspection plus
+the absorbed read-only config-inspection surfaces (@show@ / @schema@ / @render@ /
+@path@). Child-config creation is the @context-init@ chain step inside @project
+up@, not a @context@ subcommand; config generation is @project init@.
 -}
-configCommand :: String -> [ConfigArtifact] -> Mod CommandFields (IO ())
-configCommand progName projectArtifacts =
+contextCommand :: String -> [ConfigArtifact] -> Mod CommandFields (IO ())
+contextCommand progName projectArtifacts =
     command
-        "config"
+        "context"
         ( info
-            (hsubparser (initCmd <> showCmd <> schemaCmd <> renderCmd))
-            (progDesc "Decode, inspect, and generate hostbootstrap Dhall configs")
+            (hsubparser (inspectCmd <> showCmd <> schemaCmd <> renderCmd <> showPathCmd))
+            (progDesc "Read-only: render the lift composition and inspect/describe the project-local config")
         )
   where
     artifacts = coreArtifacts ++ projectArtifacts
+
+    showPathCmd =
+        command
+            "path"
+            ( info
+                (pure (putStrLn (projectConfigFileName (T.pack progName))))
+                (progDesc "Print the canonical project-local config filename")
+            )
 
     showCmd =
         command
@@ -170,24 +224,74 @@ configCommand progName projectArtifacts =
         cfg <- decodeProjectConfigFile path
         putStr (renderProjectConfigSummary cfg)
 
-    initCmd =
+    schemaCmd =
         command
-            "init"
+            "schema"
             ( info
-                ( initAction
-                    <$> optional outputOpt
-                    <*> roleOpt
-                    <*> optional initSourceRootOpt
-                    <*> dockerfileOpt
-                    <*> optional initCpuOpt
-                    <*> memoryOpt
-                    <*> storageOpt
-                    <*> optional haReplicasOpt
-                    <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
-                    <*> switch (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
-                )
-                (progDesc "Write a default project-local <project>.dhall without requiring an existing config")
+                (pure schemaAction)
+                (progDesc "Print the Dhall schema the binary's decoders accept (the in-scope artifact union)")
             )
+    schemaAction =
+        putStrLn $
+            T.unpack $
+                schemaUnion artifacts
+                    <> T.pack "\n\n-- projectConfig\n"
+                    <> projectConfigSchemaText
+
+    renderCmd =
+        command
+            "render"
+            ( info
+                (renderAction <$> optional artifactOpt)
+                (progDesc "Render static Dhall artifact examples from the reusable vocabulary")
+            )
+    artifactOpt =
+        strOption (long "artifact" <> metavar "NAME" <> help "render only the named artifact")
+    renderAction mname = case mname of
+        Nothing -> putStr (concatMap renderOne artifacts)
+        Just n ->
+            case find ((== T.pack n) . artifactName) artifacts of
+                Just a -> putStr (renderOne a)
+                Nothing ->
+                    die $
+                        "context render: unknown artifact "
+                            ++ show n
+                            ++ "; available: "
+                            ++ intercalate ", " (map (T.unpack . artifactName) artifacts)
+    renderOne a = T.unpack (artifactName a) <> ":\n" <> T.unpack (renderText a) <> "\n\n"
+    inspectCmd =
+        command
+            "inspect"
+            ( info
+                (pure runInspect)
+                (progDesc "Render the lift composition with the current frame highlighted (read-only)")
+            )
+    runInspect = do
+        path <- siblingProjectConfigPath (T.pack progName)
+        ProjectConfig _ _ ctx _ <- decodeProjectConfigFile path
+        putStr (Context.renderComposition ctx)
+
+{- | The @init@ parser for @project init@ (§ Y): write a default project-local
+@<project>.dhall@ without requiring an existing config (a bootstrap entrypoint).
+Python triggers it idempotently after the host-native build (§ M).
+-}
+initParserInfo :: String -> ParserInfo (IO ())
+initParserInfo progName =
+    info
+        ( initAction
+            <$> optional outputOpt
+            <*> roleOpt
+            <*> optional initSourceRootOpt
+            <*> dockerfileOpt
+            <*> optional initCpuOpt
+            <*> memoryOpt
+            <*> storageOpt
+            <*> optional haReplicasOpt
+            <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
+            <*> switch (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
+        )
+        (progDesc "Write a default project-local <project>.dhall without requiring an existing config")
+  where
     initAction moutput roleName mroot cfgDockerfile mcpu cfgMemory cfgStorage mha force ifMissing = do
         role <- either die pure (parseConfigRole roleName)
         root <- maybe getCurrentDirectory pure mroot
@@ -268,145 +372,76 @@ configCommand progName projectArtifacts =
     haReplicasOpt =
         option auto (long "ha-replicas" <> metavar "N" <> help "HA replica count recorded in deploy settings")
 
-    schemaCmd =
-        command
-            "schema"
-            ( info
-                (pure schemaAction)
-                (progDesc "Print the Dhall schema the binary's decoders accept (the in-scope artifact union)")
-            )
-    schemaAction =
-        putStrLn $
-            T.unpack $
-                schemaUnion artifacts
-                    <> T.pack "\n\n-- projectConfig\n"
-                    <> projectConfigSchemaText
-
-    renderCmd =
-        command
-            "render"
-            ( info
-                (renderAction <$> optional artifactOpt)
-                (progDesc "Render static Dhall artifact examples from the reusable vocabulary")
-            )
-    artifactOpt =
-        strOption (long "artifact" <> metavar "NAME" <> help "render only the named artifact")
-    renderAction mname = case mname of
-        Nothing -> putStr (concatMap renderOne artifacts)
-        Just n ->
-            case find ((== T.pack n) . artifactName) artifacts of
-                Just a -> putStr (renderOne a)
-                Nothing ->
-                    die $
-                        "config render: unknown artifact "
-                            ++ show n
-                            ++ "; available: "
-                            ++ intercalate ", " (map (T.unpack . artifactName) artifacts)
-    renderOne a = T.unpack (artifactName a) <> ":\n" <> T.unpack (renderText a) <> "\n\n"
-
-{- | The @context@ command group: explicit binary-context materialization
-surfaces. Container creation is a bootstrap entrypoint; VM and service
-creation derive from the active parent context before crossing a boundary.
+{- | The @project@ lifecycle command (§ Y): @init@ writes the root config, then
+the recursive interpreter brings the chain @up@ / @down@ / @destroy@. @project up
+--dry-run@ renders the pure @chain rootCfg@ plan (the single representation, § W);
+@project up@ interprets it recursively from the current frame; @project down@
+stops services/clusters/VMs without deleting them; @project destroy@ deletes
+everything spun up while preserving host @.data@.
 -}
-contextCommand :: String -> Mod CommandFields (IO ())
-contextCommand progName =
+projectCommandGroup ::
+    String ->
+    (ProjectConfig -> [Step]) ->
+    (ProjectConfig -> StepFrame -> LiftContext) ->
+    (ProjectConfig -> Bool -> IO ()) ->
+    Mod CommandFields (IO ())
+projectCommandGroup progName chain frameCtx teardown =
     command
-        "context"
+        "project"
         ( info
-            (hsubparser (createCmd <> showPathCmd))
-            (progDesc "Create or inspect project-local context configs")
+            (hsubparser (pInit <> pUp <> pDown <> pDestroy))
+            (progDesc "Project lifecycle: init the root config, then interpret the chain (up/down/destroy)")
         )
   where
-    createCmd =
-        command
-            "create"
-            ( info
-                (hsubparser (vmCmd <> containerCmd <> serviceCmd))
-                (progDesc "Create a project-local config for a nested context")
-            )
-    vmCmd =
-        command
-            "vm"
-            ( info
-                (createDerived Context.VMOrchestrator <$> outputArg <*> optional sourceRootOpt)
-                (progDesc "Create a VM-orchestrator project config from the active config")
-            )
-    containerCmd =
-        command
-            "container"
-            ( info
-                (createDerived Context.VMProjectContainer <$> outputArg <*> optional sourceRootOpt)
-                (progDesc "Create a parent-derived project-container project config")
-            )
-    serviceCmd =
-        command
-            "service"
-            ( info
-                (createDerived Context.ClusterService <$> outputArg <*> optional sourceRootOpt)
-                (progDesc "Create a cluster-service project config from the active config")
-            )
-    showPathCmd =
-        command
-            "path"
-            ( info
-                (pure (putStrLn (projectConfigFileName (T.pack progName))))
-                (progDesc "Print the canonical project-local config filename")
-            )
-
-    createDerived kind out mroot = do
-        root <- maybe getCurrentDirectory pure mroot
-        withSiblingProjectConfigContext (T.pack progName) Context.ContextCreationCommand [] $ \parentCfg _ -> do
-            childCfg <- either die pure (deriveProjectConfigForKind kind parentCfg (T.pack root))
-            writeProjectConfigFile out childCfg
-
-    outputArg =
-        strArgument
-            ( metavar "OUTPUT"
-                <> help "path to write the child <project>.dhall"
-            )
-    sourceRootOpt =
-        strOption (long "source-root" <> metavar "DIR" <> help "source root recorded in the context")
-
--- | The @cluster@ command group: kind/Helm lifecycle within the cordoned budget.
-clusterCommand :: String -> Mod CommandFields (IO ())
-clusterCommand progName =
-    command
-        "cluster"
-        ( info
-            (hsubparser (upCmd <> downCmd <> deleteCmd <> statusCmd))
-            (progDesc "Bring the cluster up/down/delete/status within the cordoned resource budget")
-        )
-  where
-    upCmd =
+    pInit = command "init" (initParserInfo progName)
+    pUp =
         command
             "up"
-            (info (pure runUp) (progDesc "Bring the stack up (idempotent), cordoned to the context budget"))
-    downCmd =
+            ( info
+                (runUp <$> switch (long "dry-run" <> help "render the chain plan without acting"))
+                (progDesc "Interpret the chain from the current frame (idempotent); --dry-run renders the plan")
+            )
+    pDown =
         command
             "down"
-            (info (pure runDown) (progDesc "Tear the cluster down; preserve host .data"))
-    deleteCmd =
+            (info (pure runDown) (progDesc "Stop services/clusters/VMs without deleting them; preserve host .data"))
+    pDestroy =
         command
-            "delete"
-            (info (pure runDelete) (progDesc "Delete derived cluster state; preserve host .data"))
-    statusCmd =
-        command
-            "status"
-            (info (pure runStatus) (progDesc "Report the cluster status (read-only)"))
+            "destroy"
+            (info (pure runDestroy) (progDesc "Stop then delete everything spun up; preserve host .data"))
 
-    runUp = withClusterContext $ \cfg ctx ->
-        clusterUp cfg (planForContext ctx) (resourcesFromEnvelope (Context.resourceEnvelope ctx))
-    runDown = withClusterContext $ \cfg ctx ->
-        clusterDown cfg (planForContext ctx)
-    runDelete = withClusterContext $ \cfg ctx ->
-        clusterDelete cfg (planForContext ctx)
-    runStatus = withClusterContext $ \cfg ctx ->
-        clusterStatus cfg (planForContext ctx)
+    -- @project up@ is the recursive interpreter that runs in EVERY orchestration
+    -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand' —
+    -- the one class in the allowed set of all three orchestration kinds
+    -- (HostOrchestrator / VMOrchestrator / VMProjectContainer) yet correctly
+    -- rejected in the leaf frames (ClusterService / Daemon / ImageBuildContainer),
+    -- where a recursive @project up@ must not run (§ X).
+    runUp dryRun =
+        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \rootCfg ctx ->
+            if dryRun
+                then putStr (renderChain (chain rootCfg))
+                else applyChain rootCfg ctx
+    applyChain rootCfg ctx = do
+        cfg <- hostConfig
+        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        let current = T.unpack (Context.currentFrame ctx)
+        result <- runChainFromFrame cfg self (frameCtx rootCfg) current (chain rootCfg)
+        either die pure result
 
-    withClusterContext run =
-        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \_ ctx -> do
+    -- Teardown recurses in then stops/deletes on ascent (§ Y): the inner cluster
+    -- frame is torn down first (clusterDown/clusterDelete, which preserve host
+    -- @.data@, § O), then the project's chain-frame teardown stops (down) or
+    -- deletes (destroy) the outer VM frame last.
+    runDown =
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \rootCfg ctx -> do
             cfg <- hostConfig
-            withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (run cfg ctx)
+            withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx))
+            teardown rootCfg False
+    runDestroy =
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \rootCfg ctx -> do
+            cfg <- hostConfig
+            withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx))
+            teardown rootCfg True
 
 hostConfig :: IO HostConfig
 hostConfig = do
@@ -430,6 +465,3 @@ planForContext :: Context.BinaryContext -> ClusterPlan
 planForContext ctx =
     resolvePlan (T.unpack (Context.project ctx)) (T.unpack (Context.sourceRoot ctx)) Production
 
-resourcesFromEnvelope :: Context.ResourceEnvelope -> Resources
-resourcesFromEnvelope envelope =
-    Resources (Context.cpu envelope) (Context.memory envelope) (Context.storage envelope)

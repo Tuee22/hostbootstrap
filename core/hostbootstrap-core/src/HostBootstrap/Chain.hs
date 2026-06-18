@@ -82,5 +82,7 @@ runChainFromFrame cfg self liftCtx current steps = do
       result <- liftSubcommand cfg self (liftCtx next) ["project", "up"]
       case result of
         Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
-        Right (_, _, err) -> pure (Left err)
+        -- Surface the nested frame's captured stdout even on failure (it holds the
+        -- frame's step-by-step progress); the stderr becomes the propagated error.
+        Right (_, out, err) -> putStr out >> pure (Left err)
         Left err -> pure (Left err)

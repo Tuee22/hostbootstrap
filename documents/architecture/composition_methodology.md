@@ -233,20 +233,31 @@ parallel hand-assembled second chain that could drift from it.
 
 The lift primitive is built: the core has provider-backed folds for Incus and Lima, the binary-context
 gate is topology-aware (runtime configs carry provider-backed frames, a current frame, and locally
-checked witnesses), and a single canonical demo lift sequence runs end-to-end. **What is implemented today
-is the old flat verb surface** — `ensure`, `config`, `context create`, `cluster`, `test`, and the demo's
-`vm`/`deploy` — and the demo's hand-written deploy sequence (`demo/src/HostBootstrapDemo/Chain.hs`,
-`Commands.hs`), where the single lifted compute step is `test all` lifted into the project container in
-the VM.
+checked witnesses), and the single canonical demo chain runs end-to-end. **What is implemented and
+real-run-validated today is the unified lifecycle surface** — the core command tree is exactly `ensure`,
+`context`, `project`, `test`, and `check-code`. The demo contributes its deploy as the pure value
+`demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` (there is no separate
+hand-written deploy sequence — the old `HostBootstrapDemo.Chain` is deleted), and retains only the `web`
+verb plus the `vm`/`incus` debug-hatch verbs. The single lifted compute step is `test all` lifted into the
+project container in the VM.
 
-**The target** described above — the unified `project init|up|down|destroy` lifecycle command, the
-read-only `context` introspection, the `test init|run` split, and especially the recursive `project up`
-interpreter driven by the `chain :: RootConfig -> [Step]` value — is **not yet implemented**. The flat
-verbs dissolve into chain steps (`cluster` → cluster steps, `context create` → a `context-init` step,
-`config init` → `project init`, the demo's `deploy`/`vm`/`harbor`/`web`/`role` → the interpreted chain).
-`DEVELOPMENT_PLAN/` owns the migration status and closure criteria; this document is the canonical
-statement of the *target* model and never claims the `project` command or its interpreter is shipped. Do
-not read any present-tense description here as an implementation claim ahead of the development plan.
+`project init|up|down|destroy` is the recursive lifecycle interpreter driven by the
+`chain :: RootConfig -> [Step]` value: `project up` descends the 3-frame fractal topology
+(`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`), `project down` stops services,
+clusters, and VMs (incus/Lima **stop**) without deleting, and `project destroy` deletes them — both
+preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
+`schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
+standardized harness. The old flat verbs have dissolved into chain steps: `cluster up` → the
+`deploy-kind`/`deploy-chart` steps, `cluster down`/`delete` → `project down`/`destroy`, `cluster status` →
+`context inspect`; `config init` → `project init` and `config show|schema|render` → `context show|schema|
+render`; `context create` → the `context-init` step that mints the child `<project>.dhall`; the demo's
+`harbor install`/`harbor push` → the `deploy-harbor`/`push-image` container-frame steps. A single
+`project up` on Incus/Linux stood up the live persistent stack end-to-end — a cordoned kind cluster (kind
+`extraPortMappings` publish NodePorts to the VM localhost) → the full 8-pod production Harbor
+(NodePort 30500) → the 20GB project image pushed to the in-cluster registry → the web chart pod at
+`localhost:30080` serving HTTP 200 — then `project down`/`project destroy` tore it down with host `.data`
+preserved. `DEVELOPMENT_PLAN/` owns the migration status and closure criteria; this document is the
+canonical statement of the model the validated build ships.
 
 ## Foundational Principles
 

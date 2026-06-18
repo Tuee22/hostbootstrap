@@ -57,7 +57,7 @@ The sibling `<project>.dhall` carries three layers in one typed value:
 | **Context** | the parent frame's context-init step | this binary's place in the topology: identity, frames, current frame, capabilities, allowed command classes, resource envelope |
 | **Witness** | the parent frame's context-init step | locally checkable facts (`runtimeWitnesses`) that let this binary prove it really is in the declared frame |
 
-The `.dhall` never encodes the lift chain itself. The chain is `chain :: RootConfig -> [Step]` — a Haskell
+The `.dhall` never encodes the lift chain itself. The chain is `chain :: ProjectConfig -> [Step]` — a Haskell
 value, the project's single representation (see [composition_methodology](composition_methodology.md)).
 Structural variation (for example, skipping the VM frame to go straight to a Docker frame) is a parameter
 flag on the **root** `.dhall`, so the chain stays a pure function of root parameters rather than a second
@@ -248,7 +248,7 @@ The worked demo descends through four frames, each reading its own `<project>.dh
 |---|---|
 | Host | metal-side orchestrator: select the VM provider, size and launch the VM, tear it down behind the guard |
 | VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux; re-establish the host-native binary and build the project container |
-| Container on the VM | lifted workload: run `test run all`, bring up per-case kind clusters, deploy harbor/web, run e2e |
+| Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`) and run `test run all` |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 
 The same `project` command tree exists in each copy of the binary. Each copy reads a different local
@@ -265,28 +265,31 @@ environment name), never represented in Dhall and never persisted. See
 
 ## Current Status
 
-[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) ships the binary-context gate today.
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) ships the binary-context gate.
 Python does not create runtime config. The built binary owns ungated default generation, schema/help,
 validation, child-config projection, and the normal command gate that reads the context authority embedded
-in the local config. The current gate checks project/binary identity, context kind, command class,
+in the local config. The gate checks project/binary identity, context kind, command class,
 capabilities, execution topology, current frame, parent/ancestor relationships, and local runtime
 witnesses, and a command fails before side effects when the process is not actually in the frame its Dhall
 declares. Dockerfiles bake the narrow `image-build-container` role; runtime containers receive
 parent-generated `vm-project-container` configs mounted over the baked file.
 
-What is described above as the **target** and is **not** yet implemented:
+The model described above is shipped and real-run-validated end-to-end on real hardware:
 
-- The recursive `project up` interpreter and the `[Step]` chain. Context creation is implemented today as
-  the flat `context create vm|container|service` verb and `config init`; the target folds these into the
-  internal context-init step kind and `project init`. The recursive interpreter that performs the
-  per-frame handoff is not built.
-- The read-only `context` command absorbing `config show`/`config schema`/`config render`. Today these are
-  separate `config` subcommands; `context` is not yet the single read-only introspection surface.
-- The `.dhall` as the explicit parameters + context + witness value of a root the chain is a pure function
+- The recursive `project up` interpreter interprets the `[Step]` chain across the 3-frame fractal descent.
+  Context creation is the internal context-init step kind, and the root config is written by `project init`;
+  the flat `context create vm|container|service` and `config init` verbs are gone.
+- The read-only `context` command is the single introspection surface, absorbing the former
+  `config show`/`config schema`/`config render` as `context show`/`context schema`/`context render`
+  (alongside `context inspect`/`context path`).
+- The `.dhall` is the explicit parameters + context + witness value of a root the chain is a pure function
   of, with structural variation expressed as a root parameter flag.
 
-The phase reopenings tracking this migration are recorded in `DEVELOPMENT_PLAN/`, which owns
-implementation status; this document describes the target authority contract in present tense.
+A single `project up` on Incus/Linux stood up the live persistent stack — a cordoned kind cluster, the full
+production Harbor, the project image pushed to the in-cluster registry, and the web chart pod serving
+`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tore it down with host `.data`
+preserved. The phase records tracking this migration live in `DEVELOPMENT_PLAN/`, which owns implementation
+status; this document describes the authority contract in present tense.
 
 ## See Also
 

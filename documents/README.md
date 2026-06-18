@@ -121,18 +121,23 @@ in [Current Status](#current-status).
 
 ## Current Status
 
-The summaries above describe the **target** command surface — the recursive `project` lifecycle and the
-`[Step]` chain. That refactor is in progress: the affected `DEVELOPMENT_PLAN/` phases are reopened or
-planned, so it is not a Done-claim, and the recursive `project up` interpreter is not yet implemented.
+The summaries above describe the **shipped** command surface — the recursive `project` lifecycle and the
+`[Step]` chain. That refactor is real-run-validated end-to-end on real hardware: a single `project up` on
+Incus/Linux stood up the live persistent stack and `project down` / `project destroy` tore it down, so the
+recursive `project up` interpreter is implemented and gating, not a target.
 
-- **Implemented today (flat verbs):** the core binaries expose `ensure`, `config` (`init`/`schema`/
-  `show`/`render`), `context create`, `cluster`, and `test`; the demo exposes `vm` and `deploy` (the
-  hand-written `demoDeployChain`). These are the surfaces the code ships now.
-- **Target (the chain):** the recursive `project init|up|down|destroy` lifecycle, the read-only
-  `context` introspection command (absorbing `config show/schema/render`), and the
-  `test init` / `test run <suite>|all` split — all interpreting the project's
-  `chain :: RootConfig -> [Step]` value. The flat verbs dissolve into chain steps (cluster bring-up,
-  context-init, `ensure`, the demo's deploy stages) under this single representation.
+- **Shipped today (the chain):** the core command tree is exactly `ensure`, `context`, `project`, `test`,
+  and `check-code`. The recursive `project init|up|down|destroy` lifecycle interprets the project's
+  `chain :: RootConfig -> [Step]` value across the three-frame descent; the read-only `context` command
+  (`inspect`/`path`/`show`/`schema`/`render`) introspects and visualizes the frame; and `test init` /
+  `test run <suite>|all` drive the standardized harness. The demo retains only its `web` verb (load-bearing
+  for the chart pod and Dockerfile) plus the `vm` / `incus` debug-hatch verbs.
+- **Dissolved (formerly flat verbs):** the old `config init`, `config show/schema/render`,
+  `context create vm|container|service`, the flat `cluster` group, and the demo's hand-written `deploy`,
+  `harbor`, and `role` verbs are GONE. Their behaviors now live as chain steps (cluster bring-up via
+  `deploy-kind`/`deploy-chart`, the `context-init` mint, `deploy-harbor`/`push-image`, and `ensure`
+  reconcilers) interpreted under `project up` as the single representation; `config show/schema/render`
+  moved under the read-only `context` command.
 
 See [composition_methodology.md](architecture/composition_methodology.md) for the model and
 [`DEVELOPMENT_PLAN/`](../DEVELOPMENT_PLAN/) for the authoritative phase status.

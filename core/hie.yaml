@@ -1,0 +1,12 @@
+# HLS cradle for the hostbootstrap-core Cabal workspace (core/cabal.project).
+#
+# Makes IntelliSense (hover, go-to-definition, diagnostics) work for every .hs
+# file under core/hostbootstrap-core/ — the library, the `hostbootstrap`
+# executable, and the test-suite — even when the repository ROOT is opened as
+# the editor workspace. hie-bios discovers the nearest hie.yaml by walking up
+# from each source file and runs `cabal repl` from this directory, so it
+# resolves core/cabal.project. The repository root holds no Cabal project file,
+# so a cradle anchored at the root would fail; this per-workspace cradle anchors
+# it correctly. See documents/engineering/cabal_layout.md.
+cradle:
+  cabal:

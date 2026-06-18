@@ -10,7 +10,14 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
+
+The cluster lifecycle is now reached **only** as `deploy-kind` / `deploy-chart` chain steps under
+`project up` (the flat `cluster` verb group is removed; read-only liveness moved under `context`), and the
+real-run gate is **met (2026-06-18)**: a live `project up` on Incus/Linux brought the cordoned kind cluster
+up in the container frame (`clusterCreate` preflight + `kind create` + `kind export kubeconfig` + the Linux
+cordon, then the Harbor + web charts), and `project down` / `project destroy` tore it down with host `.data`
+preserved (§ O). The pure cores below are unchanged and unit-tested.
 
 `HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,
 `kindNodeCordonArgs`, `incusSizingArgs`) and `verifyBudget` checks spare capacity;
@@ -26,12 +33,14 @@ lift when the workflow is lifted.
 Under the "the chain is the project" model (§ Y, § W), cluster bring-up and teardown are no longer a
 standalone `cluster` verb group: they become **chain steps** (`deploy-kind`, `deploy-chart`) interpreted
 by the core `project` lifecycle command, driven by `project up` (bring up), `project down` (stop without
-delete — a new capability), and `project destroy` (delete). The cordon derivation and the
-never-delete-`.data` invariant carry forward unchanged into the step interpreters. The phase is therefore
-`Active`: the pure cordon math and the lifecycle/teardown cores built here remain valid, but the
-command-surface contract those cores hang off is being re-expressed as steps, and the stop-without-delete
-capability is new. The new `project` command is **not** implemented; the chain-step shape described here is
-the target being built. New work is owned by [Phase 16](phase-16-project-lifecycle-command.md).
+delete), and `project destroy` (delete). The flat `cluster` verb is **removed** (phase-4), and the new
+**stop-without-delete capability** is implemented as the pure `stopVMArgs` argv builders in
+`HostBootstrap.Incus` / `HostBootstrap.Lima`, unit-tested in `IncusSpec` / `LimaSpec`. The cordon derivation
+and the never-delete-`.data` invariant carry forward unchanged. The phase stays `Active` for the
+**real-run-gated** remainder: wiring the cluster bring-up as a real `deploy-kind` / `deploy-chart` step
+action and the recursive `project down` / `project destroy` teardown that issues the stop/delete to the
+live VM — validated by a real `project up` run (owned with
+[Phase 16](phase-16-project-lifecycle-command.md)).
 
 ## Phase Objective
 
@@ -44,9 +53,12 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 
 ## Remaining Work
 
-Re-express cluster bring-up/teardown as chain steps under `project up` / `project down` / `project
-destroy`; add stop-without-delete (`project down`) distinct from delete (`project destroy`); `.data`
-invariant preserved. New work owned by [Phase 16](phase-16-project-lifecycle-command.md).
+The flat `cluster` verb is removed (phase-4) and the **stop-without-delete capability** is implemented
+(`stopVMArgs` for Incus and Lima, unit-tested in `IncusSpec` / `LimaSpec`). Remaining
+(**real-run-gated**, § C): wire the cluster bring-up/teardown as real `deploy-kind` / `deploy-chart` /
+teardown step actions under `project up` / `project down` / `project destroy` (the recursive teardown
+issuing stop versus delete to the live VM), the `.data` invariant preserved — validated by a real
+`project up` run, owned with [Phase 16](phase-16-project-lifecycle-command.md).
 
 Specifically:
 
@@ -96,9 +108,9 @@ provider flows.
 
 None.
 
-### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Active]
+### Sprint 5.2: Cluster lifecycle + profiles + never-delete-.data [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
@@ -139,14 +151,18 @@ command-surface contract they hang off.
 - Split the single `cluster down` (which collapsed stop and delete) into `project down` (stop the cluster
   without deleting it — the new stop-without-delete capability) and `project destroy` (stop then delete).
   The never-delete-`.data` invariant holds across both, with `.data` never in any removal set (§ O).
-- The `project` step interpreters are **not yet implemented**; the code still exposes the flat `cluster`
-  verbs. New work owned by [Phase 16](phase-16-project-lifecycle-command.md); the dissolved `cluster up|
-  down|delete` verbs are recorded `Pending` in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **Done (code-check):** the `project` lifecycle interpreter ships and the flat `cluster up|down|delete`
+  verbs are removed from the core tree (`coreCommandNames`). The teardown split is implemented and
+  **real-run-validated** — `project down` stops, `project destroy` deletes, both preserving host `.data`
+  (§ O). The kind/Helm bring-up is re-expressed as the demo's `deploy-kind` (`clusterCreate`) /
+  `deploy-chart` (`deployChart`) container-frame chain steps under `project up` (the core `clusterUp` split
+  into exported `clusterCreate` + `deployChart`). **Remaining (real-run-gated, § C):** the container-frame
+  apply that runs those steps end-to-end — owned by the demo's container-frame real run
+  ([Phase 16](phase-16-project-lifecycle-command.md) increment 3, [Phase 13](phase-13-hostbootstrap-demo.md)).
 
-### Sprint 5.3: Read-only `cluster status` [Active]
+### Sprint 5.3: Read-only `cluster status` [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`
@@ -188,9 +204,9 @@ forward; what changes is where their read-only output surfaces.
   [Phase 15](phase-15-binary-context-config.md)); the dissolved `cluster status` verb is recorded
   `Pending` in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-### Sprint 5.4: Fail-closed `cluster up` and the in-container path [Active]
+### Sprint 5.4: Fail-closed `cluster up` and the in-container path [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `documents/architecture/composition_methodology.md`
 
@@ -223,10 +239,13 @@ hangs off them.
   steps interpreted by `project up` (§ Y). Inside `project up`'s recursive interpretation, the steps run in
   the in-container frame reached by the self-reference lift (§ U), so `helm` / `kind` still resolve on the
   container `$PATH`. Best-effort teardown becomes the `project down` / `project destroy` descent.
-- The `project up` step interpreter is **not yet implemented**; the fail-closed path still hangs off the
-  flat `cluster up` verb. New work owned by [Phase 16](phase-16-project-lifecycle-command.md); the live
-  in-container run is exercised in the [demo](phase-13-hostbootstrap-demo.md), whose own chain migration is
-  tracked by [Phase 13](phase-13-hostbootstrap-demo.md).
+- **Done (code-check):** the fail-closed bring-up now hangs off the `deploy-kind` / `deploy-chart`
+  container-frame chain steps under `project up` (the `requireStep` discipline in `clusterCreate` /
+  `deployChart` is unchanged), reached by the recursive interpreter's `docker run … project up` handoff into
+  the `vm-project-container-2` frame, so `helm` / `kind` resolve on the container `$PATH`. The flat
+  `cluster up` verb is removed. **Remaining (real-run-gated, § C):** the live in-container run exercising the
+  fail-closed steps end-to-end, owned by the [demo](phase-13-hostbootstrap-demo.md)'s container-frame real
+  run ([Phase 16](phase-16-project-lifecycle-command.md) increment 3).
 
 ## Documentation Requirements
 

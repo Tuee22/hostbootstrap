@@ -143,14 +143,20 @@ framing — the framing is a renaming of the existing handoff, not a behavior ch
   ensures the build toolchain, builds `./.build/<project>` host-native on every substrate, triggers the
   binary's if-missing config init, and execs without reading or writing Dhall. The execed binary owns
   Docker, the container build, the VM provider, the cluster, and teardown. On the Haskell side the
-  shipped surface is the **flat verb set** — `ensure`, `config`/`context create`, `cluster`, `test`, and
-  the demo's `vm`/`deploy` — and the **self-reference lift** primitive with provider-backed folds for
-  Lima and Incus.
-- **Target, not yet implemented.** The recursive `project` command (`project init|up|down|destroy`) that
-  interprets a project's contributed `chain :: RootConfig -> [Step]` as a single fractal descent is the
-  target surface; the flat verbs above become chain steps under it, and `context` becomes read-only
-  introspection. The metal-frame role of Python is identical under both surfaces — provision, build the
-  `pb`, hand off — so this boundary document is stable across that migration. The `project` command and
-  the `[Step]` interpreter are **not** implemented yet; the flat verbs are what runs today. Phase order
-  and closure for that migration live in `DEVELOPMENT_PLAN/`, the canonical status authority. See
-  [composition_methodology](composition_methodology.md) for the target model.
+  shipped surface is the recursive `project` command (`project init|up|down|destroy`), which interprets a
+  project's contributed `chain :: ProjectConfig -> [Step]` (the demo's `demoChain`) as a single fractal
+  descent — the chain is the SINGLE representation of the deploy. The core command tree is exactly
+  `ensure`, `context`, `project`, `test`, and `check-code`; `context` is read-only introspection
+  (`inspect`/`path`/`show`/`schema`/`render`). The former flat verbs are chain steps under `project up`
+  (`deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port`), and the lifecycle rests on
+  the **self-reference lift** primitive with provider-backed folds for Lima and Incus. The demo retains
+  only its `web` verb (load-bearing: the chart pod runs `web serve`, the Dockerfile runs `web bridge`)
+  and the `vm`/`incus` debug-hatch verbs.
+- **Real-run validated.** A single `project up` on Incus/Linux interprets the chain across the 3-frame
+  fractal descent (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`) and stands up
+  the live persistent stack — cordoned kind cluster → the full 8-pod production Harbor (NodePort 30500) →
+  the 20GB project image pushed to the in-cluster registry → the web chart pod serving HTTP 200 at
+  `localhost:30080` — then `project down` (incus/Lima **stop**, no delete) and `project destroy` (delete)
+  tear it down with host `.data` preserved. The metal-frame role of Python is identical under the chain
+  surface — provision, build the `pb`, hand off. Phase order and closure live in `DEVELOPMENT_PLAN/`, the
+  canonical status authority. See [composition_methodology](composition_methodology.md) for the model.

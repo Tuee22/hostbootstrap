@@ -21,6 +21,8 @@ argvCases =
     [ testCase "start uses the named Ubuntu 24.04 template" $
         startVMArgs vm ["--cpus", "4", "--memory", "8", "--disk", "20"]
             @?= ["start", "-y", "--timeout", "15m", "--name=hostbootstrap-demo-vm", "--containerd", "none", "--cpus", "4", "--memory", "8", "--disk", "20", "template:ubuntu-24.04"]
+    , testCase "stop halts the named instance without deleting it (project down)" $
+        stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
     , testCase "shell dispatches a bare in-VM command through limactl shell" $
         shellVMArgs vm ["docker", "info"]
             @?= ["shell", "hostbootstrap-demo-vm", "--", "docker", "info"]

@@ -7,6 +7,7 @@ the argv through resolved 'HostTool' values.
 module HostBootstrap.Lima (
     LimaVM (..),
     startVMArgs,
+    stopVMArgs,
     shellVMArgs,
     copyToVMArgs,
     statusVMArgs,
@@ -26,6 +27,11 @@ newtype LimaVM = LimaVM
 startVMArgs :: LimaVM -> [String] -> [String]
 startVMArgs vm sizing =
     ["start", "-y", "--timeout", "15m", "--name=" ++ limaName vm, "--containerd", "none"] ++ sizing ++ ["template:ubuntu-24.04"]
+
+-- | Stop a named Lima instance without deleting it — the @project down@
+-- teardown stops the VM (it does not destroy it; that is @project destroy@).
+stopVMArgs :: LimaVM -> [String]
+stopVMArgs vm = ["stop", limaName vm]
 
 -- | Execute a command inside the Lima VM.
 shellVMArgs :: LimaVM -> [String] -> [String]

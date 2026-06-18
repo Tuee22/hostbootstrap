@@ -10,7 +10,18 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
+
+**The chain-is-the-project migration is complete and real-run-validated end-to-end (2026-06-18):** the
+demo's deploy is now the contributed `demoChain :: ProjectConfig -> [Step]` value (plus `demoFrameContext` /
+`demoTeardown`) interpreted by the core `project up`, which stood up the full live persistent stack — the
+3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
+pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy` (host
+`.data` preserved, § O). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and the demo's
+`deploy` / `harbor` / `role` noun verbs are deleted; the `web` verb (load-bearing for the chart pod + the
+Dockerfile) and the `vm` / `incus` debug hatches remain. The interpreter it rests on is
+[phase-16](phase-16-project-lifecycle-command.md) (Done). The original narrative below describes the shape
+that is now built.
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
@@ -361,9 +372,9 @@ Make `demo/` the documented worked consumer.
 
 None.
 
-### Sprint 13.8: Wire the demo through the self-reference lift [Active]
+### Sprint 13.8: Wire the demo through the self-reference lift [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
 
@@ -447,9 +458,9 @@ None. The per-case seams (`assertClusterLive` / `assertWebBundle` / `assertE2E`,
 are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e
 runner is context-agnostic because it uses the project image.
 
-### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Active]
+### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`
 **Docs to update**: `documents/engineering/composition_patterns.md`
 
@@ -507,9 +518,9 @@ existing `fitsBudget` engine — the in-tree worked instance of the business-log
 
 None.
 
-### Sprint 13.12: Collapse the two cluster-deploy representations into one lift sequence [Active]
+### Sprint 13.12: Collapse the two cluster-deploy representations into one lift sequence [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
 

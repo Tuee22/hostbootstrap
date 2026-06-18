@@ -58,6 +58,14 @@ tests =
         [ testCase "rendered context decodes back to the same value" $ do
             decoded <- decodeContextText (renderContext sampleContext)
             decoded @?= sampleContext
+        , testCase "renderComposition renders the lift chain with the current frame highlighted" $
+            renderComposition sampleContext
+                @?= unlines
+                    [ "composition (3 frames; current = vm-project-container-2):"
+                    , "   . host-orchestrator-0  [HostProvider / HostOrchestrator]"
+                    , "   . vm-orchestrator-1  [LimaVMProvider / VMOrchestrator]  (parent: host-orchestrator-0)"
+                    , "  -> vm-project-container-2  [DockerContainerProvider / VMProjectContainer]  (parent: vm-orchestrator-1)"
+                    ]
         , testCase "projectConfigPathForExecutable uses the executable directory" $
             Schema.projectConfigPathForExecutable "demo" "/tmp/bin/demo" @?= "/tmp/bin/demo.dhall"
         , testCase "readContextFile reports a missing file" $
@@ -211,11 +219,11 @@ tests =
                     result @?= Right ()
                 )
                 `finally` removeFile path
-        , testCase "config init writes a project-local config before sibling context gating" $
+        , testCase "project init writes a project-local config before sibling context gating" $
             withSystemTempDirectory "hostbootstrap-config-init" $ \dir -> do
                 let path = dir </> "demo.dhall"
                 withArgs
-                    [ "config"
+                    [ "project"
                     , "init"
                     , "--role"
                     , "image-build-container"
@@ -242,11 +250,11 @@ tests =
                 cfgDeploy @?= Schema.DeployConfig 3
                 contextKind cfgContext @?= ImageBuildContainer
                 sourceRoot cfgContext @?= "/workspace/demo"
-        , testCase "config init --if-missing writes when absent and is a no-op when present" $
+        , testCase "project init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
                 let path = dir </> "demo.dhall"
                     initArgs root =
-                        [ "config"
+                        [ "project"
                         , "init"
                         , "--output"
                         , path

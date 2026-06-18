@@ -63,7 +63,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Lima` | 11.6 | yes | Lima VM lifecycle argv for Apple Silicon demo execution (`start`, `shell`, `copy`, `list`, name-guarded `delete`) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
-| `HostBootstrap.Project` | 16 | no | target (§ Y): the `project init\|up\|down\|destroy` lifecycle command and the recursive `[Step]` chain interpreter (`--dry-run` renders the pure chain) |
+| `HostBootstrap.Command` (project group) | 16 | partial | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-gated |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, with the pure `renderChainPlan` dry-run render and `stepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | partial | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-gated |
 
@@ -229,16 +229,18 @@ See
 
 | Core verb group (target) | Phase | Implemented | Source |
 |-----------------|-------|-------------|--------|
-| `project init\|up\|down\|destroy` | 16 | no (target) | the recursive `[Step]` chain interpreter (§ Y); subsumes `config init`, `cluster`, `context create` |
+| `project init\|up\|down\|destroy` | 16 | partial | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply + VM stop-without-delete real-run-gated; subsumes `config init`, `cluster`, `context create` |
 | `context` (read-only introspection) | 15, 16 | partial | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
 | `test init\|run <suite\|all>` | 10, 17 | partial | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated, decoupled from deploy (§ Z) |
 | `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
 | `ensure <tool>` (hidden debug; incl. `incus`) | 3, 11 | yes | the `ensure` reconcilers, normally invoked as chain steps within `project up` |
 
-Until phases 16-17 land, the implemented surface is the flat verbs — `ensure`, `config
-init|path|schema|show|render`, `context create vm|container|service`, `cluster up|down|delete|status`,
-`test <case|all>`, `check-code` — recorded in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) as superseded.
+The flat orchestration verbs (`config init`, `cluster up|down|delete|status`, `context create
+vm|container|service`) are **removed** — `config init` -> `project init`, `cluster` ->
+`project up|down|destroy`, `context create` -> the `context-init` chain step — and `config
+show|schema|render|path` are folded into the read-only `context` command (recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`). The effectful
+`project up` apply (recursive provisioning) remains real-run-gated (phase-16).
 
 ## hostbootstrap-demo (worked consumer)
 

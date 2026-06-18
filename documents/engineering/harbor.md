@@ -63,9 +63,13 @@ image — it pulls the base from Docker Hub and pushes only its own thin
 layer(s).
 
 The `hostbootstrap-demo` worked consumer (`demo/`) drives this convention
-end-to-end: its `demo harbor install` / `demo harbor push` verbs bring up an
-in-VM Harbor and push the arch-explicit image tag during the demo run (the live
-in-VM execution is exercised in the worked demo).
+end-to-end: its `deploy-harbor` / `push-image` container-frame chain steps —
+interpreted by `project up` as it descends `demoChain :: ProjectConfig ->
+[Step]` — bring up the in-cluster Harbor and push the arch-explicit image tag
+during the deploy. The validated real run stood this up on Incus/Linux: a single
+`project up` brought up the full 8-pod production Harbor (NodePort 30500) and
+pushed the 20GB project image into the in-cluster registry as part of the live
+persistent stack.
 
 ## See also
 

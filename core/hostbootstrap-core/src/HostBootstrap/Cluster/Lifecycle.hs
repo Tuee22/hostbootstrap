@@ -14,6 +14,8 @@ module HostBootstrap.Cluster.Lifecycle
     teardown,
     statusReport,
     clusterUp,
+    clusterCreate,
+    deployChart,
     clusterDown,
     clusterDelete,
     clusterStatus,
@@ -31,7 +33,7 @@ import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind))
 import HostBootstrap.Substrate (isLinux)
-import System.Directory (doesDirectoryExist, removePathForcibly)
+import System.Directory (doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..), die)
 import System.FilePath ((</>))
 
@@ -93,13 +95,24 @@ statusReport plan live =
 -- IO drivers
 -- ---------------------------------------------------------------------------
 
--- | Bring the cluster up (idempotent): run the spare-capacity preflight, create
--- the kind cluster if absent, apply the budget cordon (fail-closed), then
--- install/upgrade the Helm release. The applied cordon sits **after** @kind
--- create@ and **before** Helm, so the workloads never schedule against an
--- un-cordoned node.
+-- | Bring the cluster up (idempotent): create the cordoned kind cluster, then
+-- install/upgrade the Helm release. This is 'clusterCreate' followed by
+-- 'deployChart' — the bundled bring-up a single-chart project uses. A project
+-- that must sequence other steps between cluster creation and the chart (e.g.
+-- stand up an in-cluster registry and push the image the chart pulls) calls
+-- 'clusterCreate' and 'deployChart' as separate chain steps instead.
 clusterUp :: HostConfig -> ClusterPlan -> Resources -> IO ()
 clusterUp cfg plan resources = do
+  clusterCreate cfg plan resources
+  deployChart cfg plan
+
+-- | Create the cordoned kind cluster (idempotent), **without** the chart: run the
+-- spare-capacity preflight, create the kind cluster if absent, then apply the
+-- budget cordon (fail-closed). The applied cordon sits **after** @kind create@ so
+-- workloads never schedule against an un-cordoned node. Split out from 'clusterUp'
+-- so a chain can interleave registry setup / image push before 'deployChart'.
+clusterCreate :: HostConfig -> ClusterPlan -> Resources -> IO ()
+clusterCreate cfg plan resources = do
   resolvedCapacity <- resolveHostCapacity cfg
   case resolvedCapacity >>= preflightBudget resources of
     Left err -> die err
@@ -110,11 +123,23 @@ clusterUp cfg plan resources = do
       | clusterName plan `elem` lines out ->
           putStrLn ("cluster up: kind cluster " ++ clusterName plan ++ " already exists")
     Right (ExitSuccess, _, _) -> do
-      created <- runTool cfg Kind ["create", "cluster", "--name", clusterName plan]
+      -- A project that needs node port-mappings (publish a NodePort to the host —
+      -- the in-VM registry/web endpoints the demo reaches on @localhost@) ships a
+      -- @./kind.yaml@; @kind create@ uses it via @--config@. Without one, a plain
+      -- single-node cluster is created.
+      hasKindConfig <- doesFileExist kindClusterConfig
+      let configArgs = if hasKindConfig then ["--config", kindClusterConfig] else []
+      created <- runTool cfg Kind (["create", "cluster", "--name", clusterName plan] ++ configArgs)
       requireStep "kind create cluster" created
     _ -> die "cluster up: kind not available; install kind and retry"
+  -- Always export the kubeconfig — whether the cluster was just created or already
+  -- existed (an idempotent re-run, or any container that did not create it) — so
+  -- helm/kubectl reach the cluster instead of the localhost:8080 default.
+  exported <- runTool cfg Kind ["export", "kubeconfig", "--name", clusterName plan]
+  requireStep "kind export kubeconfig" exported
   applyLinuxCordon cfg plan resources
-  deployChart cfg plan
+  where
+    kindClusterConfig = "kind.yaml"
 
 -- | Deploy the project's Helm chart if one is present. A project ships its chart
 -- at @./chart@ (relative to the directory the lifecycle runs in — the project root
@@ -128,7 +153,10 @@ deployChart cfg plan = do
   hasChart <- doesDirectoryExist chartPath
   if hasChart
     then do
-      release <- runTool cfg Helm ["upgrade", "--install", clusterName plan, chartPath]
+      -- @--wait@ so the chart's pods are Ready before the step returns — a
+      -- following expose/readiness step (or a lifting parent) then sees a live
+      -- service, not a still-scheduling one.
+      release <- runTool cfg Helm ["upgrade", "--install", clusterName plan, chartPath, "--wait", "--timeout", "8m"]
       requireStep "helm upgrade --install" release
     else putStrLn ("cluster up: no chart at ./" ++ chartPath ++ "; skipping deploy (kind + cordon only)")
   where

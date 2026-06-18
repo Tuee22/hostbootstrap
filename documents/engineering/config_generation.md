@@ -193,17 +193,13 @@ The generation substrate is implemented and exercised today: the `ConfigArtifact
 the union hoisting, the committed schema snapshot, and the round-trip test all run through the canonical
 code-check.
 
-The surface that drives them is the **flat verb set** today: `config init [--role ROLE]` writes a local
-config for a selected role (host-orchestrator, vm-orchestrator, vm-project-container,
-image-build-container, cluster-service, daemon, one-shot-job, test-harness), with `--if-missing` for the
-idempotent post-build write the Python bootstrapper triggers; `config schema` and `config render` are the
-ungated inspection verbs; and child configs are minted by the demo's `context create <kind>` mutation
-verb. The implemented topology-aware gate already checks the per-frame witnesses.
-
-The **target** reshapes that surface without changing the generation code: `project init` writes only the
-root host-orchestrator config (fail-fast on an existing sibling); the parent-to-child projection runs as
-the **context-init step** inside the recursive `project up` interpreter rather than as a standalone
-`context create` verb; and `config schema`/`config render` fold into the read-only `context` command.
-The recursive `project up` interpreter and the `[Step]` chain that calls the context-init step are the
-target — they are not implemented yet. See the development plan
-([phase 8](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)) for the migration status.
+The surface that drives them is the recursive lifecycle command: `project init` writes only the root
+host-orchestrator config, failing fast on an existing sibling `<project>.dhall`; the parent-to-child
+projection runs as the **context-init step** the chain executes inside the recursive `project up`
+interpreter, minting each child `<project>.dhall` just before the chain hands off into the next frame
+(the VM, then the project container); and `context schema`/`context render` are the ungated read-only
+inspection verbs under the `context` command. The topology-aware gate checks the per-frame witnesses on
+every descent. The recursive `project up` interpreter and the `[Step]` chain that calls the context-init
+step are real-run-validated end-to-end: a single `project up` on Incus/Linux stands up the live
+persistent stack and `project down` / `project destroy` tear it back down (see the development plan
+[phase 8](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)).

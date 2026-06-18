@@ -28,20 +28,21 @@
 
 ## Current Status
 
-What is implemented today is the **flat command tree**, not the recursive `project` interpreter. The
-shipped core surface merges the flat verbs `ensure`, `config` (`config init|path|schema|show|render`),
-and `cluster` (`cluster up|down|delete|status`) into a composable `optparse-applicative` value, plus the
-inherited `test all` verb. The demo composes a hand-written `demoDeployChain` (in
-`demo/src/HostBootstrapDemo/Chain.hs` and `Commands.hs`) and exposes flat `deploy`/`vm` verbs. The
-binary-context gate and the project-local `<project>.dhall` schema decoder/encoder are implemented.
+What is implemented today is the **recursive `project` interpreter**, not a flat command tree. The
+shipped core surface merges `project init|up|down|destroy`, the `context` read-only command, the
+`test init|run` split, and `check-code` into a composable `optparse-applicative` value, plus the hidden
+`ensure <tool>` debug surface. The demo's deploy is the first-class `demoChain :: ProjectConfig ->
+[Step]` value (in `demo/src/HostBootstrapDemo/Commands.hs`), interpreted recursively by `project up`;
+the demo retains only its `web` verb and the `vm`/`incus` debug-hatch verbs. The binary-context gate and
+the project-local `<project>.dhall` schema decoder/encoder are implemented.
 
-The **target** described below — the `project init|up|down|destroy` command, the `context` read-only
-command, the `test init|run` split, the first-class `chain :: RootConfig -> [Step]` value, and the
-recursive `[Step]` interpreter that replaces both the flat `cluster` verbs and the demo's hand-written
-chain — is **not yet implemented**. `DEVELOPMENT_PLAN/` tracks the reopened and planned phases (the
-command tree, cluster→steps, the test split, the demo chain migration, and the recursive interpreter);
-treat any `project`/chain statement here as the architecture the code is moving toward, not present
-behavior.
+This model is **real-run validated end-to-end on real hardware**: a single `project up` on Incus/Linux
+stood up the live persistent stack — a cordoned kind cluster, the full 8-pod production Harbor, the
+20GB project image pushed to the in-cluster registry, and the web chart pod serving HTTP 200 on
+`localhost:30080` — and `project down` / `project destroy` tore it down with host `.data` preserved. The
+flat `cluster` verbs and the demo's hand-written deploy chain (the former `demoDeployChain` in
+`HostBootstrapDemo.Chain`) have been removed; their reconcilers now run as chain steps under the
+recursive interpreter. `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` tracks the removed surface.
 
 ## Module Surface
 

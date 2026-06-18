@@ -44,7 +44,7 @@ RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin ... exe:<project>)" /usr/local/bin/<project>
 
 # 2. Create the image-build config next to /usr/local/bin/<project>.
-RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall
+RUN <project> project init --role image-build-container --output /usr/local/bin/<project>.dhall
 
 # 3. The mandatory code-check gate.
 RUN <project> check-code
@@ -78,7 +78,7 @@ demo's `purescript-bridge` dependency lives in that warm store's `core.freeze`.
 
 After the binary is installed, the Dockerfile first runs the bootstrap-only config initialization
 entrypoint, for example
-`RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`. That
+`RUN <project> project init --role image-build-container --output /usr/local/bin/<project>.dhall`. That
 Dhall file is stored next to the binary and tells subsequent image-build commands that they have
 build-time authority only. The initialization entrypoint is the only command allowed to run before the
 sibling config exists; normal commands fail fast without it. See
@@ -122,7 +122,7 @@ The ordering is load-bearing and every derived project preserves it:
 |---|---|---|
 | 1 | `FROM ${BASE_IMAGE}` + `COPY` | Inherit the warm-store base; bring the source in. |
 | 2 | Build + install the binary | The web build and the gate both need the installed binary. |
-| 3 | `RUN <project> config init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
+| 3 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
 | 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
 | 5 | `web bridge` → `spago build` → `esbuild` | Types must exist before `spago`; the bundle is the last artifact. |
 | 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |

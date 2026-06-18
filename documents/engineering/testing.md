@@ -142,18 +142,19 @@ no unit-file rendering tests or real service-manager integration tests.
 
 ## Current Status
 
-The split between target command surface and what is implemented today follows the development plan;
+The command surface described here is shipped and real-run-validated end-to-end;
 `DEVELOPMENT_PLAN/` remains the implementation-status authority.
 
-- **Implemented today.** The standardized harness (`runMatrix` + `Seams`, the per-case isolation, the
-  delete-guard, budget-slicing, and the report card) ships and runs through `cabal test`. The `ensure`,
-  config, `context create`, `cluster`, and `test` verbs are the flat top-level command tree the binary
-  carries now; today a project's whole matrix runs as a single `test all` verb, and the demo's
-  lifecycle is its `vm` / `deploy` verbs. The Python bootstrapper suite and the `HostBootstrap.DocValidator`
-  gate are both implemented and green.
-- **Target.** The `test init` / `test run <suite>|all` split, gated to the root frame and backed by a
-  sibling `test.dhall`, is the target surface — decoupled from the chain so `test run all` validates the
-  live stack that the recursive `project up` interpreter stands up. The recursive `project` command and
-  the `[Step]` chain it interprets are **not** yet implemented; this document describes them as the
-  target architecture, not as shipped behavior. The migration from the flat `test all` verb to the
-  root-gated `test init` / `test run` surface is tracked in the development plan.
+- **Shipped and validated.** The standardized harness (`runMatrix` + `Seams`, the per-case isolation,
+  the delete-guard, budget-slicing, and the report card) ships and runs through `cabal test`. The
+  `ensure`, `context`, `project`, `test`, and `check-code` verbs are the core top-level command tree the
+  binary carries now; the demo retains only its `web` verb and its `vm` / `incus` debug-hatch verbs. The
+  Python bootstrapper suite and the `HostBootstrap.DocValidator` gate are both implemented and green.
+- **Validated end-to-end.** The `test init` / `test run <suite>|all` split, gated to the root frame and
+  backed by a sibling `test.dhall`, is the shipped surface — decoupled from the chain so `test run all`
+  validates the live stack that the recursive `project up` interpreter stands up. The recursive
+  `project init|up|down|destroy` command and the `[Step]` chain it interprets are real-run-validated
+  end-to-end: a single `project up` on Incus/Linux stood up the cordoned kind cluster, the full 8-pod
+  production Harbor (NodePort 30500), the 20GB project image pushed to the in-cluster registry, and the
+  web chart pod serving HTTP 200 at `localhost:30080`, then `project down` / `project destroy` tore it
+  down with host `.data` preserved.

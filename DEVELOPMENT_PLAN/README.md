@@ -52,20 +52,20 @@ for the component inventory.
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
-| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
+| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
 | 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the four-stream extension](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
-| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active |
+| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
-| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Active |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
-| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Active |
-| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Blocked |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
+| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
+| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |
+| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Done |
 
 ## Governance
 

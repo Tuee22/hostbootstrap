@@ -9,7 +9,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Config.Schema` provides the in-process Haskell decoder/encoder for the project-local
 `<project>.dhall` shape: project settings, Dockerfile/build inputs, resource budget, deploy knobs, and the
@@ -24,29 +24,20 @@ model (see [development_plan_standards.md § Y, § Z](development_plan_standards
 is no longer the flat `config` verbs plus `ensure`; it is the recursive lifecycle command
 `project init|up|down|destroy`, the read-only `context` introspection command, `test init|run`, and
 `check-code`. The schema/decoder sprints (4.1, 4.3, 4.4) built a still-valid project-local `<project>.dhall`
-shape and stay `Done`; the command-tree sprint (4.2) is reopened.
+shape and stay `Done`; the command-tree sprint (4.2) is now complete — the flat `config init` / `cluster` /
+`context create` verbs are removed, the read-only `config` inspection folded into `context`, and the
+surfaced tree is `project init|up|down|destroy` / read-only `context` / `test init|run` / `check-code`
+(plus hidden-debug `ensure`), validated by `cabal test` (core green) and the migrated Python trigger.
 
 ## Remaining Work
 
-Collapse the flat verbs into the `project` lifecycle command plus the `[Step]` chain. The target shape
-being built — **not yet implemented** (the code still carries the old flat `config`/`ensure` topology and
-the demo's noun verbs) — is:
-
-- `config init` -> `project init` (the host-orchestrator root-config surface, idempotently triggered by
-  Python after the host-native build, § M).
-- `cluster` -> chain steps interpreted by `project up` (owned with [Phase 5](phase-5-cluster-lifecycle-and-resource-cordoning.md)
-  and Phase 16, project lifecycle command and step-chain interpreter).
-- `context create` -> the internal `context-init` step inside `project up`; `context` becomes a read-only
-  introspection command absorbing `config schema` / `config show` / static `config render`.
-- A project contributes a **lift chain** value, `chain :: RootConfig -> [Step]`, as the primary member of
-  its `ProjectSpec` (§ T, § Y) rather than noun verbs; host and project step kinds interleave in one
-  `[Step]`.
-
-The `project` lifecycle command, the recursive chain interpreter, and the `[Step]` algebra are **not**
-implemented here. The new work is owned by Phase 16 (project lifecycle command and step-chain interpreter)
-and, for the test/context surface, by Phase 17 (chain-driven test surface and context introspection). This
-phase tracks the command-tree contract delta; the removals are recorded `Pending` in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+None. The command tree is migrated to the new surface (Sprint 4.2): `config init` -> `project init` (with
+the Python trigger migrated), `cluster` -> `project up|down|destroy`, `context create` -> the `context-init`
+chain step, and `config show|schema|render|path` folded into the read-only `context` command. A project's
+primary `ProjectSpec` contribution is its `chain :: RootConfig -> [Step]` value (threaded via `withChain`).
+The recursive interpreter and `[Step]` algebra that this tree surfaces are owned by
+[Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
 
 ## Phase Objective
 
@@ -92,9 +83,9 @@ by config inspection, default generation, and command gating.
 
 None.
 
-### Sprint 4.2: Composable command tree [Active]
+### Sprint 4.2: Composable command tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/app/Main.hs` (the bare `hostbootstrap` binary; the worked extension is now
 `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`)
@@ -139,21 +130,13 @@ deltas; the **target** tree surfaces the `project init|up|down|destroy`, read-on
 
 #### Remaining Work
 
-Migrate the surfaced command tree from the flat `config`/`ensure` topology to the `project` lifecycle
-contract — **not yet implemented** (the code still surfaces the flat verbs and the demo's noun verbs):
-
-- Replace the flat `config init|show|schema|render|path` surface: `config init` -> `project init`;
-  `config schema` / `config show FILE` / static `config render` / `config path` fold into the read-only
-  `context` introspection command (§ X).
-- Surface `project init|up|down|destroy`, `context`, `test init|run`, and `check-code` as the core verbs;
-  add the recursive `project up` chain interpreter and the `[Step]` algebra (deploy-VM, `ensure-*`,
-  copy-source, build-pb, build-image, `context-init`, deploy-kind, deploy-chart, expose-port). This
-  interpreter and step algebra are owned by Phase 16 (project lifecycle command and step-chain
-  interpreter).
-- Make a project's primary `ProjectSpec` contribution its `chain :: RootConfig -> [Step]` value; keep the
-  `ensure <tool>` subcommand only as a hidden debug surface and demote it from the help surface.
-- Record the dissolved flat verbs in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`.
+None. The surfaced core tree is `project init|up|down|destroy`, the read-only `context` command (absorbing
+`show` / `schema` / `render` / `path`), `test init|run`, and `check-code`, with `ensure <tool>` retained as
+a hidden debug surface. `config init` is migrated to `project init` (the Python trigger updated), and a
+project's primary `ProjectSpec` contribution is its `chain :: RootConfig -> [Step]` value (threaded via
+`withChain` / `withFrameContext`). The recursive `project up` interpreter and the `[Step]` algebra this tree
+surfaces are owned by [Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded
+in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
 
 ### Sprint 4.3: Schema fixture and drift checks [Done]
 

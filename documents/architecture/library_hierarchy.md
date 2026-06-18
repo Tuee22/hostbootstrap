@@ -148,22 +148,25 @@ statement of the contract lives in
 
 ## Current Status
 
-The reusable surface is implemented today as a set of **flat top-level verbs**, not yet as the chain
-stream and the recursive `project` interpreter this document describes as the target:
+The reusable surface is implemented today as the chain stream and the recursive `project`
+interpreter this document describes, real-run-validated end-to-end on real hardware:
 
-- Stream 1 is implemented as flat verbs threaded through `ProjectSpec`: `ensure …`, `cluster …`,
-  `config …`, `test`, and `check-code`, plus the demo's `vm` and `deploy` verbs and a hand-written
-  demo deploy chain (`demo/src/HostBootstrapDemo/Chain.hs`). The target collapses these into a single
-  contributed `chain :: RootConfig -> [Step]` value walked by the recursive `project up`
-  interpreter; the `cluster`, `config init`, and `context create` mutation verbs become core step
-  kinds, and `ensure` is retained only as a hidden debug surface. The `project` command and its
-  recursive/fractal interpreter are **not implemented** — they are target architecture tracked in
-  `DEVELOPMENT_PLAN/`.
+- Stream 1 is implemented as the single contributed `chain :: RootConfig -> [Step]` value walked by
+  the recursive `project up` interpreter, threaded through `ProjectSpec` (the demo's
+  `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The former
+  flat `cluster`, `config init`, and `context create` mutation verbs are now core step kinds
+  (deploy-kind/deploy-chart, the project-init lifecycle, and the context-init step); `ensure` is
+  retained only as a hidden debug surface, alongside the demo's `vm`/`incus` debug-hatch verbs and its
+  load-bearing `web` verb. The hand-written demo deploy chain (the old Op-based
+  `demo/src/HostBootstrapDemo/Chain.hs`) is deleted in favor of the single `demoChain` representation.
+  The `project` command and its recursive/fractal interpreter are **shipped and validated**: a single
+  `project up` on Incus/Linux stood up the live persistent stack, and `project down` / `project
+  destroy` tore it down with host `.data` preserved.
 - Streams 2, 3, and 4 are implemented as described: the `Core.dhall` vocabulary import-and-extend
-  idiom, the `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. The
-  target migration touches only how stream 3's renders/projections are surfaced (the read-only
-  `context` command and the context-init step) and how stream 4 is invoked (`test init` / `test run`),
-  not the additive merge idioms themselves.
+  idiom, the `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`.
+  Stream 3's renders/projections are surfaced through the read-only `context` command and the
+  context-init step, and stream 4 is invoked through `test init` / `test run`, with the additive merge
+  idioms unchanged.
 
 `DEVELOPMENT_PLAN/` owns the migration status and closure criteria for the flat-verb → project-chain
 move; reconcile any status claim here to it rather than treating this document as a parallel status

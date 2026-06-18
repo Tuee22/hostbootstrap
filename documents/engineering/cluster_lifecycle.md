@@ -118,22 +118,25 @@ from the root frame. See [testing](testing.md).
 
 ## Current Status
 
-The cluster-lifecycle semantics described above are split between what ships today and the target
-chain model.
+The cluster-lifecycle semantics described above ship today and are real-run-validated end-to-end on
+real hardware.
 
-- **Implemented today**: the cluster lifecycle is reached through the flat verbs
-  `cluster up` / `cluster down` / `cluster delete` plus the read-only `cluster status`. `cluster up`
-  is fail-closed and chart-conditional; `cluster down`/`cluster delete` are best-effort; `cluster
-  status` probes `kind get clusters` and reports whether the resolved cluster is live alongside the
-  preserved `.data` and derived paths, never mutating state. The never-delete-`.data` invariant and
-  the production/test profiles are unit-tested and in force. The demo reaches this path through its
-  `vm`/`deploy` flat verbs and the hand-written demo deploy chain.
-- **Target**: cluster bring-up/teardown become chain steps the recursive `project up`/`project
-  down`/`project destroy` interpreter runs, with stop-without-delete (`down`) as a new capability
-  distinct from `delete`. The flat `cluster up|down|delete|status` verbs dissolve into chain steps
-  and the read-only `context` introspection. The recursive `project` command and the `[Step]` chain
-  interpreter are **not yet implemented**; `DEVELOPMENT_PLAN/` tracks the reopened phases that
-  deliver them.
+- **Shipped**: cluster bring-up/teardown are chain steps the recursive `project up`/`project
+  down`/`project destroy` interpreter runs, with stop-without-delete (`down`) as a capability distinct
+  from `destroy`. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional; the
+  stop and teardown steps are best-effort; read-only state is reported through `context inspect`, which
+  renders the lift composition and current frame and reports whether the resolved cluster is live
+  alongside the preserved `.data` and derived paths, never mutating state. The flat `cluster
+  up|down|delete|status` verbs are removed; the `clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/
+  `clusterDelete` reconcilers remain in `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps
+  and the lifecycle command. The never-delete-`.data` invariant and the production/test profiles are
+  unit-tested and in force. The demo reaches this path through its `demoChain :: ProjectConfig ->
+  [Step]` value (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle.
+- **Validated end-state**: a single `project up` on Incus/Linux stood up the live persistent stack —
+  the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the full
+  8-pod production Harbor (NodePort 30500), the 20GB project image pushed to the in-cluster registry,
+  and the web chart pod serving HTTP 200 at `localhost:30080` — then `project down` / `project destroy`
+  tore it down with host `.data` preserved.
 
 ## See also
 

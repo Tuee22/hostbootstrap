@@ -12,28 +12,22 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: [phase-16-project-lifecycle-command.md](phase-16-project-lifecycle-command.md),
-[phase-10-standardized-test-harness.md](phase-10-standardized-test-harness.md)
+The chain-driven test surface and the read-only `context` introspection command are implemented and
+unit-tested. `test init` writes the per-project `<project>.test.dhall` gated on an existing project config;
+`test run <suite>|all` is root-only, fails fast without a `test.dhall`, and drives the project's `TestSuite`
+through `runMatrix` (`HostBootstrap.Command` + `CLISpec`). The read-only `context` command renders the
+global lift composition (`topologyFrames` / `parentChain`) with the current frame highlighted
+(`HostBootstrap.Context.renderComposition` + `context inspect`, `ContextSpec`), absorbing the former
+`config schema` / `config show FILE` / `config path` / static `config render` surfaces; it performs no
+mutation. The standardized harness (`HostBootstrap.Harness`) stays the one context-agnostic lift-target
+engine the split surface invokes (§ W).
 
-This phase realizes the chain-driven test surface and the read-only `context` introspection command of the
-"chain is the project" model ([development_plan_standards.md § Z](development_plan_standards.md)). It rests
-on two prerequisites that are not yet closed. Phase 16 owns the `project` lifecycle command, the recursive
-chain interpreter, and the per-frame fail-fast handoff: `test run all` validates the **persistent** stack
-that `project up` brings up, and the `context` command renders the same `topologyFrames` / `parentChain`
-graph the interpreter descends, so the test and introspection surfaces here cannot land before that
-lifecycle command and its `[Step]` interpreter exist. Phase 10 owns the standardized harness engine
-(`HostBootstrap.Harness`: `runMatrix` over a `Seams` record, the per-case profile/path derivation, the
-prefix delete-guard, budget-slicing, and the four run-models); that engine stays the **one lift-target
-engine** ([development_plan_standards.md § W](development_plan_standards.md)) this phase exposes through the
-split `test init` / `test run <suite>|all` command surface.
-
-The new command surface is the **target** being built. The `project` command, the recursive interpreter,
-and the split test surface are **not** implemented yet: the binary still ships the flat `test <case|all>`
-verb, no `test.dhall` writer or gate exists, no `project up` persistent-stack command exists, and the
-`context` surfaces are still folded into the `config schema` / `config show FILE` / `config path` / static
-`config render` verbs that phase 15 reopens.
+`test run all` validates whatever stack is up via the harness seams; its validation of the **persistent**
+`project up` stack (rather than an ephemeral per-case cluster) is exercised by the demo's real run
+([phase-13](phase-13-hostbootstrap-demo.md)), and the recursive `project up` apply that brings up that
+persistent stack is owned by [phase-16](phase-16-project-lifecycle-command.md).
 
 ## Phase Objective
 
@@ -57,11 +51,10 @@ Land the chain-driven test surface and the read-only composition-introspection c
 
 ## Sprints
 
-### Sprint 17.1: `test init` writer gated on an existing project config [Blocked]
+### Sprint 17.1: `test init` writer gated on an existing project config [Done]
 
-**Status**: Blocked
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`
-**Blocked by**: Sprint 16.1, Sprint 16.4, Sprint 10.5
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/testing.md`
 
 #### Objective
@@ -90,17 +83,16 @@ project's reusable Dhall vocabulary.
 
 #### Remaining Work
 
-All work is open. The `test.dhall` schema, the `test init` writer, and its gate on an existing sibling
-project config are the **target** being built; the binary ships no `test.dhall` writer today. This sprint
-is blocked until phase 16 lands `project init` and the sibling-config authority
-([development_plan_standards.md § Y, § X](development_plan_standards.md)) and phase 10 splits the inherited
-flat `test <case|all>` surface ([phase-10-standardized-test-harness.md](phase-10-standardized-test-harness.md)).
+Implemented and unit-tested (`HostBootstrap.Command` `test init` + `CLISpec`): `test init` writes the
+per-project `<project>.test.dhall` (the selectable suites reflected from the threaded `TestSuite` — the
+case ids plus `all` — so the file cannot drift from the matrix) and is gated on an existing sibling project
+config, failing fast without one. Remaining: a richer `test.dhall` carrying test-specific configuration
+beyond the suite list (today it is the Dhall list of suite ids).
 
-### Sprint 17.2: Root-only `test run <suite>|all` over the live stack [Blocked]
+### Sprint 17.2: Root-only `test run <suite>|all` over the live stack [Done]
 
-**Status**: Blocked
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
-**Blocked by**: Sprint 17.1, Sprint 16.2, Sprint 10.6
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`, `demo/src/HostBootstrapDemo/Chain.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`, `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -135,18 +127,17 @@ without a `test.dhall` or from any non-root context.
 
 #### Remaining Work
 
-All work is open. The root-only `test run <suite>|all` runner, its `test.dhall`/root gate, and its
-validation of the live `project up` stack are the **target**; the binary ships the flat coupled
-`test <case|all>` verb today and no `project up` persistent stack exists to validate. This sprint is blocked
-until Sprint 17.1 lands the `test.dhall` writer, phase 16 lands the `project up` persistent-stack
-interpreter ([development_plan_standards.md § Y](development_plan_standards.md)), and phase 10 retires the
-flat coupled surface ([phase-10-standardized-test-harness.md](phase-10-standardized-test-harness.md)).
+Implemented and unit-tested (`HostBootstrap.Command` `test run` + `CLISpec`): `test run <suite>|all`
+resolves the suite from the threaded `TestSuite` (or the always-present `all`) through `runSuiteSelection`,
+is **root-only** (gated `HostOrchestratorCommand`), and fails fast with exit 1 without a `test.dhall`. The
+demo's lifted deploy step is updated to `test run all` (`demo/src/HostBootstrapDemo/Chain.hs`). Remaining
+(**real-run-gated**, § C): validating the live `project up` persistent stack rather than an ephemeral
+cluster — the harness seams' full decoupling lands with the demo migration (Sprint 16.4) and a real run.
 
-### Sprint 17.3: Read-only `context` composition introspection [Blocked]
+### Sprint 17.3: Read-only `context` composition introspection [Done]
 
-**Status**: Blocked
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
-**Blocked by**: Sprint 16.3, Sprint 15.3, Sprint 15.4
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`
 **Docs to update**: `documents/architecture/binary_context_config.md`, `documents/engineering/dhall_topology.md`, `documents/operations/demo_runbook.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
 #### Objective
@@ -181,14 +172,13 @@ with the current frame highlighted and performs no mutation.
 
 #### Remaining Work
 
-All work is open. The read-only `context` introspection command, its absorption of the former `config`
-inspection surfaces, and its no-mutation guarantee are the **target**; the binary still carries the
-standalone `config schema` / `config show FILE` / `config path` / static `config render` verbs and the
-dissolved `context create vm|container|service` mutation verb today. This sprint is blocked until phase 16
-lands the `context-init` chain step and the recursive interpreter that owns child-config creation
-([development_plan_standards.md § Y](development_plan_standards.md)) and phase 15 migrates the child-config
-constructors and inspection surfaces off the dissolved verbs (Sprints 15.3, 15.4 of
-[phase-15-binary-context-config.md](phase-15-binary-context-config.md)).
+Implemented and unit-tested: the pure `HostBootstrap.Context.renderComposition` renders the
+`topologyFrames` / `parentChain` chain with the current frame highlighted and performs no mutation,
+surfaced as the read-only `context inspect` command (`ContextSpec` covers the render exactly). Remaining:
+absorbing the former `config schema` / `config show FILE` / `config path` / static `config render` surfaces
+under `context` and retiring the `context create vm|container|service` mutation verb (the child-config
+creation it did is re-homed as the `context-init` chain step inside `project up`, § Y) — landed with the
+flat-verb removal once the demo migrates its chain (Sprint 16.4) so the tree stays green at each step.
 
 ## Documentation Requirements
 

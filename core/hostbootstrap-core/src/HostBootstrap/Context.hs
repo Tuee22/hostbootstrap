@@ -40,6 +40,7 @@ module HostBootstrap.Context
     decodeContextText,
     decodeContextFile,
     readContextFile,
+    renderComposition,
     renderContext,
     writeContextFile,
     validateContext,
@@ -75,6 +76,37 @@ import System.Posix.Files (FileStatus, getFileStatus, isSocket)
 -- the parent envelope forward.
 defaultResourceEnvelope :: ResourceEnvelope
 defaultResourceEnvelope = ResourceEnvelope {cpu = 0, memory = "0GiB", storage = "0GiB"}
+
+-- | Render the global lift composition this context declares — the
+-- 'topologyFrames' chain with the current frame highlighted — for the read-only
+-- @context@ introspection command (development_plan_standards § Z). Pure, so the
+-- rendering is unit-tested; @context@ performs no mutation.
+renderComposition :: BinaryContext -> String
+renderComposition ctx =
+  unlines (header : map renderFrame (topologyFrames ctx))
+  where
+    cur = currentFrame ctx
+    header =
+      "composition ("
+        ++ show (length (topologyFrames ctx))
+        ++ " frames; current = "
+        ++ T.unpack cur
+        ++ "):"
+    renderFrame f =
+      mark f
+        ++ T.unpack (topologyFrameId f)
+        ++ "  ["
+        ++ show (topologyProvider f)
+        ++ " / "
+        ++ show (topologyKind f)
+        ++ "]"
+        ++ parentNote f
+    mark f
+      | topologyFrameId f == cur = "  -> "
+      | otherwise = "   . "
+    parentNote f
+      | T.null (topologyParentId f) = ""
+      | otherwise = "  (parent: " ++ T.unpack (topologyParentId f) ++ ")"
 
 -- | The place this process occupies in the composed topology.
 data ContextKind

@@ -17,14 +17,14 @@
   for the local config.
 - Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
   limited to help/version and explicit config inspection/initialization commands, including static
-  `config render`.
+  `context render`.
 - Host, VM, ad-hoc container, daemon, and service copies use the same filename rule but different file
   contents. The role is a field inside the Dhall value, not part of the filename.
 
 ## Current Status
 
 The Python bootstrapper does not read or write Dhall. The Haskell schema has a project-local config shape,
-`config init` can generate role-specific defaults, pure projection helpers derive narrower child configs,
+`project init` can generate role-specific defaults, pure projection helpers derive narrower child configs,
 and normal command gating reads the context authority embedded in the sibling `<project>.dhall`.
 See
 [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
@@ -110,10 +110,7 @@ let Capability = < HostTools | IncusProvider | DockerSocket | ContainerRuntime |
 
 let CommandClass =
       < EnsureCommand
-      | ConfigInspectionCommand
-      | ConfigGenerationCommand
-      | ContextCreationCommand
-      | ClusterLifecycleCommand
+      | ContextInspectionCommand
       | TestWorkflowCommand
       | CheckCodeCommand
       | HostOrchestratorCommand
@@ -149,10 +146,7 @@ in  { dockerfile = "docker/Dockerfile"
       , capabilities = [ Capability.HostTools, Capability.IncusProvider ]
       , allowedCommandClasses =
         [ CommandClass.EnsureCommand
-        , CommandClass.ConfigInspectionCommand
-        , CommandClass.ConfigGenerationCommand
-        , CommandClass.ContextCreationCommand
-        , CommandClass.ClusterLifecycleCommand
+        , CommandClass.ContextInspectionCommand
         , CommandClass.TestWorkflowCommand
         , CommandClass.CheckCodeCommand
         , CommandClass.HostOrchestratorCommand
@@ -171,8 +165,8 @@ in  { dockerfile = "docker/Dockerfile"
   }
 ```
 
-The exact generated value is owned by the binary. Use `<project> config init` for a valid default and
-`<project> config schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
+The exact generated value is owned by the binary. Use `<project> project init` for a valid default and
+`<project> context schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
 schema in project docs.
 
 ## Default Generation
@@ -180,18 +174,18 @@ schema in project docs.
 The project binary provides an ungated initialization command, for example:
 
 ```bash
-<project> config init --output ./.build/<project>.dhall
+<project> project init --output ./.build/<project>.dhall
 ```
 
-The generated file is a valid default; `config init --help` names the editable options (`--dockerfile`,
-`--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`) and `config schema` includes the
+The generated file is a valid default; `project init --help` names the editable options (`--dockerfile`,
+`--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`) and `context schema` includes the
 reflected `ProjectConfig` type. Normal commands do not silently create a missing config. They fail fast
 and tell the user how to run the initialization command.
 
 The Dockerfile creates a build-time image config after installing the binary:
 
 ```dockerfile
-RUN <project> config init --role image-build-container --output /usr/local/bin/<project>.dhall
+RUN <project> project init --role image-build-container --output /usr/local/bin/<project>.dhall
 ```
 
 Runtime, service, or daemon deployments override the baked build-time config by mounting or materializing
@@ -221,10 +215,12 @@ Normal commands treat the active config as an immutable startup snapshot:
 - run against that snapshot;
 - ignore later file changes during the same short-lived process.
 
-Allowed writes are explicit and narrow: `config init`, `config upgrade FILE`, user-requested config-edit
-commands, and parent commands generating child configs. Runtime status, discovered endpoints, locks,
-leader election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating
-the active config.
+Allowed writes are explicit and narrow: `project init`, `project upgrade FILE`, user-requested config-edit
+commands, and parent commands generating child configs. The canonical example of a parent generating a
+child config is the `context-init` chain step inside `project up`, which mints the narrower
+`<project>.dhall` for the project-container frame. Runtime status, discovered endpoints, locks, leader
+election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating the
+active config.
 
 Long-running daemons and services use the same rule by default: read once at startup, log the config path
 and hash, and require restart or reconcile to observe changes. If a project later supports live reload, it

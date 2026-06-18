@@ -30,7 +30,7 @@ RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" /usr/local/bin/hostbootstrap-demo
 
 # The bootstrap-only image-build config is allowed before normal command gating.
-RUN hostbootstrap-demo config init \
+RUN hostbootstrap-demo project init \
     --role image-build-container \
     --output /usr/local/bin/hostbootstrap-demo.dhall \
     --source-root /workspace/demo \

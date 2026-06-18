@@ -139,19 +139,22 @@ topology), so the model is always derived.
 ## Current Status
 
 The four run-models and `selectRunModel` are implemented and exercised by the core tests; selection
-already consumes the generated topology plus detected substrate. Today that selection is reached through
-the **flat verb surface** — the implemented binaries dispatch `ensure`, `config`/`context create`,
-`cluster`, and `test` (plus the demo's `vm`/`deploy`/`incus`/`harbor`/`web`/`role`), and the demo's
-deploy sequence is the hand-written `demoDeployChain` in `demo/src/HostBootstrapDemo/Chain.hs`. The
-harness lift (`test all` lifted into the VM-container) is the implemented single-representation deploy.
+already consumes the generated topology plus detected substrate. That selection is reached through the
+recursive `project up` interpreter over an explicit `chain :: RootConfig -> [Step]` value. The core
+command tree is exactly `ensure`, `context`, `project`, `test`, and `check-code` — `project init|up|down|destroy`
+drives the lifecycle, the read-only `context` command introspects (`inspect`/`path`/`show`/`schema`/`render`),
+and `test init` / `test run <suite>|all` split the harness. The demo retains only the `web` verb plus the
+`vm`/`incus` debug-hatch verbs; its deploy sequence is the canonical `demoChain :: ProjectConfig -> [Step]`
+in `demo/src/HostBootstrapDemo/Commands.hs`, interpreted recursively rather than expressed as a hand-written
+deploy script.
 
-The **target** is the recursive `project up` interpreter over an explicit `chain :: RootConfig -> [Step]`
-value: `project init|up|down|destroy`, the read-only `context` introspection command, and the
-`test init` / `test run <suite>|all` split. The `project` command and the `[Step]` chain interpreter are
-**not yet implemented** — `project up`, `project down` (stop-without-delete), `project destroy`, and the
-core `Step` algebra are planned, with the affected phases reopened in `DEVELOPMENT_PLAN/`. Until that
-lands, the four run-models are selected inside the flat verbs above rather than inside a chain step; the
-selection logic itself is unchanged by the migration.
+This model is **real-run-validated end-to-end on real hardware**: a single `project up` on Incus/Linux stood
+up the live persistent stack — a cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM
+localhost) → the full 8-pod production Harbor (NodePort 30500) → the 20GB project image pushed to the
+in-cluster registry → the web chart pod at `localhost:30080` serving HTTP 200 — then `project down`
+(stop-without-delete) and `project destroy` tore it down with host `.data` preserved. The four run-models are
+selected inside the chain steps `project up` interprets; the selection logic itself is unchanged by the
+migration off the prior flat verb surface.
 
 ## See Also
 

@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 Phases 6, 8, 11, 13, and 14 provide the needed substrate: the thin Python bootstrapper, typed Dhall
 generation, the self-reference lift, the worked demo chain, and the composition methodology. This phase
@@ -23,36 +23,34 @@ host/VM/container/service placement configs, and normal cluster lifecycle comman
 as their runtime authority. The context schema, loader, command gate, topology frames, and runtime
 witnesses are built and validated; the Python boundary holds.
 
-This phase is **reopened** to align the binary-context contract with the "chain is the project" model
-(§ Y, § Z, § X). Under the new model the sibling `<project>.dhall` carries **parameters + context +
-witness** and never the chain shape, child-config creation is no longer a standalone `context create`
-mutation verb but the internal `context-init` chain step inside `project up`, the host-level default
-surface is renamed from `config init` to `project init`, the read-only `context` command absorbs the
-former `config schema` / `config show FILE` / `config path` / static `config render` surfaces, and each
-copy of the binary must fail fast per frame on the recursive handoff when its local witnesses do not prove
-it is in the declared current frame. The schema/loader/gate substrate (Sprints 15.1, 15.2, 15.6) stays
-`Done`; the sprints whose command-surface contract the new model changes (Sprints 15.3, 15.4, 15.5)
-reopen to `Active`.
+This phase was **realigned** to the "chain is the project" model (§ Y, § Z, § X), and the binary-context
+contract now matches it: the sibling `<project>.dhall` carries **parameters + context + witness** and never
+the chain shape; child-config creation is off the dissolved `context create` mutation verb (the
+`context-init` step kind plus `deriveProjectConfigForKind` are the primitives the recursive interpreter
+wires inside `project up`, phase-16); the host-level default surface is renamed from `config init` to
+`project init` (Python migrated); the read-only `context` command (`renderComposition` + `context inspect`)
+absorbs the former `config schema` / `config show FILE` / `config path` / static `config render` surfaces;
+and the per-frame fail-fast mechanism (`validateRuntimeContext` over the topology witnesses) is built and
+unit-tested. The schema/loader/gate substrate (Sprints 15.1, 15.2, 15.6) and the realigned command-surface
+sprints (15.3, 15.4, 15.5) are `Done`; the effectful wiring of the `context-init` step and the per-frame
+gate into the recursive `project up` apply is owned by phase-16.
 
 ## Remaining Work
 
-The new command surface is the **target** being built; the `project` command is **not** implemented yet,
-and the code still carries the old `config init` / `config show|schema|render` / `context create` topology.
+None. The binary-context contract is realigned to the chain model and validated:
 
-- Make `context` a **read-only composition-introspection** command: it introspects the sibling
-  `<project>.dhall` and renders the global lift composition (`topologyFrames` / `parentChain`) with the
-  current frame highlighted, absorbing the former `config schema` / `config show FILE` / `config path` /
-  static `config render` surfaces. It performs no mutation.
-- Move child-config creation off the standalone `context create vm|container|service` verb and into the
-  internal `context-init` chain step that runs inside `project up` (§ Y); the step mints the callee's
-  child `<project>.dhall` before the recursive handoff.
-- Rename the host-level default-config surface from `config init` to `project init` (§ Y); Python triggers
-  it idempotently after the host-native build (§ M).
-- Enforce **per-frame fail-fast on the recursive handoff**: before a frame acts, its copy of the binary
-  verifies its local witnesses prove it is in the frame its `<project>.dhall` describes, or exits 1 (§ X).
-- Hold the doctrine that `.dhall` = **parameters + context + witness**, never the chain shape; optional
-  structural variation (skip the VM, deploy straight to Docker) is a root-`<project>.dhall` flag so the
-  chain stays a pure function of root parameters (§ Y).
+- `context` is a **read-only composition-introspection** command (`HostBootstrap.Context.renderComposition`
+  + `context inspect`, `ContextSpec`), absorbing the former `config schema` / `config show FILE` /
+  `config path` / static `config render` surfaces; no mutation.
+- The standalone `context create vm|container|service` verb is removed; the `context-init` step kind
+  (`HostBootstrap.Step`) plus `deriveProjectConfigForKind` (`SchemaSpec`) are the primitives the recursive
+  interpreter wires inside `project up` (the effectful step and its real-run validation owned by phase-16).
+- The host-level default-config surface is renamed `config init` -> `project init` (§ Y); the Python
+  bootstrapper triggers `project init --if-missing` (139 Python tests green).
+- The **per-frame fail-fast mechanism** is `validateRuntimeContext` over the declared topology witnesses,
+  built and unit-tested; the recursive-handoff gating of `project up` is owned by phase-16.
+- `.dhall` = **parameters + context + witness**, never the chain shape; structural variation is a
+  root-`<project>.dhall` flag, so the chain stays a pure function of root parameters (§ Y).
 
 The `project` lifecycle command, the `context-init` chain step, and the recursive interpreter that carries
 the per-frame fail-fast handoff are **new work owned by phase-16** (`phase-16-project-lifecycle-command.md`,
@@ -140,9 +138,9 @@ None. Validation:
 `poetry run python -m hostbootstrap.test_all -q` passes (113 tests), `poetry run python -m
 hostbootstrap.check_code` passes, and `cabal test all` passes.
 
-### Sprint 15.3: Nested context creation surfaces [Active]
+### Sprint 15.3: Nested context creation surfaces [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `demo/docker/Dockerfile`, `core/hostbootstrap-core/test/ContextSpec.hs`
 **Docs to update**: `documents/engineering/derived_dockerfile.md`, `documents/engineering/derived_project_standards.md`, `documents/operations/demo_runbook.md`
 
@@ -181,9 +179,9 @@ work owned by phase-16** (`phase-16-project-lifecycle-command.md`, Project lifec
 step-chain interpreter); this sprint migrates the existing constructors off the dissolved verb and onto
 that step.
 
-### Sprint 15.4: Normal runtime config reads [Active]
+### Sprint 15.4: Normal runtime config reads [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/engineering/schema.md`, `documents/architecture/dhall_generation.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
@@ -228,9 +226,9 @@ The `project`/`context` command surface and the chain interpreter that re-homes 
 step-chain interpreter); the dissolved `cluster` and demo verbs are tracked in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-### Sprint 15.5: Context lives in `<project>.dhall` [Active]
+### Sprint 15.5: Context lives in `<project>.dhall` [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,

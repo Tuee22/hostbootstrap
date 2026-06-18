@@ -17,7 +17,7 @@
   toolchain, builds the binary host-native, and execs it. Building the **project container** is the
   execed binary's job, gating on the `check-code` code-check.
 - The four run-models (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`) are **selected** from detected
-  facts and generated topology — never declared in Dhall. In the target model they are selected
+  facts and generated topology — never declared in Dhall. They are selected
   **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, not by a
   standalone `cluster` or `deploy` verb.
 - `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
@@ -41,7 +41,7 @@ reason. Every substrate builds the binary **host-native**, for the host it will 
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
 requires the sibling `./.build/<project>.dhall`: the root host-orchestrator config the built binary
-mints for itself (the target `project init` surface, see [Current Status](#current-status)).
+mints for itself (the `project init` surface, see [Current Status](#current-status)).
 
 ## Why `./.build/` Is Always Present
 
@@ -90,7 +90,7 @@ built binary reasonably can:
 
 - **Ensure Docker**: the binary's Docker reconciler provisions and verifies Docker (on Apple, the
   per-project Colima VM sized to the resource budget; on Linux, the daemon plus invoking-user socket
-  access for the current session and future login sessions). In the target model this is an `ensure`
+  access for the current session and future login sessions). This is an `ensure`
   reconciler invoked as a **chain step** within `project up`. See
   [resource_budgeting](../engineering/resource_budgeting.md).
 - **Build the project container** `FROM` the base image, gating on the project's canonical code-check
@@ -112,12 +112,12 @@ the binary the image already carries. See [composition_methodology](composition_
 
 The four run-models — `OneShot`, `HostNative`, `HostDaemon`, `Cluster` — are **selected** from
 detected substrate and the generated topology, never declared in Dhall. The canonical definition lives
-in [run_models](run_models.md); this section states only *when* the selection happens in the target
-model.
+in [run_models](run_models.md); this section states only *when* the selection happens.
 
-In the target model, `project up` recursively interprets the lift chain — an ordered `[Step]` produced
-by the project's `chain :: RootConfig -> [Step]` value. Each step that runs compute selects its
-run-model from the facts in force at that step, **inside the interpretation of the chain**:
+`project up` recursively interprets the lift chain — an ordered `[Step]` produced
+by the project's `chain :: ProjectConfig -> [Step]` value (the demo's `demoChain`). Each step that runs
+compute selects its run-model from the facts in force at that step, **inside the interpretation of the
+chain**:
 
 - a build-image or `OneShot`-shaped step resolves to `OneShot`/`HostNative`;
 - a long-running serving step resolves to `HostDaemon`;
@@ -133,7 +133,7 @@ a parallel chain of lifted cluster ops — see
 
 ## Deploy Is a Persistent Stack
 
-In the target model, deploy is what `project up` leaves running: a **persistent stack**, not a
+Deploy is what `project up` leaves running: a **persistent stack**, not a
 run-to-completion job. `project up` reconciles the chain to running and is idempotent — a rerun against
 a partially-up stack converges the remainder rather than rebuilding from zero. The VM, the cluster, and
 the workload services stay up after `project up` returns.
@@ -176,34 +176,45 @@ The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level sel
 (`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
 binary crosses a boundary by invoking its *own* subcommand in the nested context. The Apple Silicon demo
 uses the Lima VM provider (`limactl shell <instance> -- ...`); native Linux uses Incus
-(`incus exec <vm> -- ...`); containers use `docker run --rm`. In the target model, `project up` is the
+(`incus exec <vm> -- ...`); containers use `docker run --rm`. `project up` is the
 **recursive interpreter** of that lift: it runs the current frame's steps, then hands off
 `<binary> project up` into the next frame, where the child owns its segment and verifies it is in the
 frame its `.dhall` describes. See [composition_methodology](composition_methodology.md).
 
 ## Current Status
 
-The host-native, no-copy-out build is the implemented mechanism and is **unchanged** by the target
+The host-native, no-copy-out build is the implemented mechanism and is **unchanged** by the chain
 model: Python ensures the host toolchain, builds the binary into `./.build/`, and execs it; the binary
 ensures Docker and builds the project container `FROM` the base image, gating on `check-code`.
 
-The recursive `project` command and the `[Step]` chain interpreter described above are the **target**,
-not yet implemented. What runs today is the flat command surface and the demo's hand-written sequence:
+The recursive `project` command and the `[Step]` chain interpreter described above are **implemented and
+real-run-validated end-to-end on real hardware**. A single `project up` on Incus/Linux stood up the live
+persistent stack — the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM
+localhost) → the full 8-pod production Harbor (NodePort 30500) → the 20GB project image pushed to the
+in-cluster registry → the web chart pod serving `localhost:30080` with HTTP 200 — then `project down` /
+`project destroy` tore it down with host `.data` preserved.
 
-- **Built today (flat verbs):** the binary exposes flat surfaces — `ensure <tool>`, `config`
-  (`init`/`show`/`schema`/`render`), `context create <kind>`, `cluster up|down|delete|status`, and
-  `test`. The demo drives the lifecycle with its own `vm` and `deploy` verbs and a hand-written
-  deploy chain. Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are
-  implemented; the four run-models are real.
-- **Target (the `project` chain):** a single `chain :: RootConfig -> [Step]` value the core interprets,
-  driven by `project init|up|down|destroy`, a read-only `context` introspection command, and a
-  `test init` / `test run <suite>|all` split. The flat verbs dissolve into chain steps and step
-  actions: `cluster` bring-up/teardown, `context create`, `config init`, and the demo's `vm`/`deploy`
-  become steps under `project up`/`down`/`destroy`. `project down`'s stop-without-delete is a new
-  provider capability.
+- **Shipped (the `project` chain):** a single `chain :: ProjectConfig -> [Step]` value the core
+  interprets, driven by `project init|up|down|destroy`, a read-only `context` introspection command
+  (`inspect`/`path`/`show`/`schema`/`render`), and a `test init` / `test run <suite>|all` split.
+  Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are implemented; the four
+  run-models are real. The core command tree is exactly `ensure`, `context`, `project`, `test`,
+  `check-code`; the demo's canonical deploy is `demoChain :: ProjectConfig -> [Step]` in
+  `demo/src/HostBootstrapDemo/Commands.hs`, and the demo retains only the `web` verb plus the `vm` /
+  `incus` debug-hatch verbs. `project down`'s stop-without-delete is a real provider capability.
+- **Folded into chain steps (formerly flat verbs):** the old flat surfaces no longer exist as standalone
+  verbs. The former `cluster up`/`down`/`delete`/`status` is now the `deploy-kind` / `deploy-chart` chain
+  steps under `project up`, with `project down` / `project destroy` and read-only `context inspect`
+  taking the teardown and status roles; the former `context create <kind>` is now the `context-init`
+  chain step that mints the child `<project>.dhall` inside `project up`; the former `config init` is now
+  `project init`, and `config show|schema|render` moved under read-only `context`; the demo's former
+  `deploy` / `harbor` / `role` verbs are gone, replaced by the chain's `deploy-kind` / `deploy-harbor` /
+  `push-image` / `deploy-chart` / `expose-port` steps. The reconcilers behind the old `cluster` verb
+  (`clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/`clusterDelete`) remain in
+  `HostBootstrap.Cluster.Lifecycle`, now invoked by the chain steps / lifecycle.
 
-`DEVELOPMENT_PLAN/` owns the migration status and the reopened phases. Nothing in this doc should be
-read as a claim that the `project` command or the recursive interpreter is already implemented.
+`DEVELOPMENT_PLAN/` owns the migration status and the closed phases. The `project` command and the
+recursive interpreter are the shipped model this doc describes throughout.
 
 ## See also
 

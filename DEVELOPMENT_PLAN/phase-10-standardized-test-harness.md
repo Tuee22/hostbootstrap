@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
@@ -33,17 +33,20 @@ runs it and threaded through `ProjectSpec`. The "chain is the project" model (de
 § Y, § Z) changes that contract: the test surface splits into a `test init` writer and a
 `test run <suite>|all` runner, both **root-only** and gated on a sibling `test.dhall`, and is **decoupled**
 from deploy — `project up` brings up a **persistent** stack and `test run all` validates that running stack.
-The split-surface command tree and its `test.dhall` gate are the **target**; they are **not** yet
-implemented (the binary still ships the flat `test <case|all>` verb and no `project` command exists). This
-phase stays `Active` until the split surface lands. New work is owned by
-[phase-17-chain-driven-test-and-context-introspection.md](phase-17-chain-driven-test-and-context-introspection.md).
+The split-surface command tree and its `test.dhall` gate are implemented and unit-tested
+(`HostBootstrap.Command` `test init` / `test run <suite>|all` + `CLISpec`): `test init` writes the
+per-project `<project>.test.dhall` gated on an existing project config; `test run <suite>|all` is
+**root-only**, fails fast without a `test.dhall`, and drives the project's `TestSuite` through `runMatrix`;
+the flat coupled `test <case|all>` verb is retired. The live-`project up`-stack validation behaviour is
+exercised by the demo's real run ([phase-13](phase-13-hostbootstrap-demo.md)); the split surface co-owned
+with [phase-17](phase-17-chain-driven-test-and-context-introspection.md) has landed.
 
 ## Remaining Work
 
-Split the inherited test surface into `test init` and `test run <suite>|all` (root-only, needs
-`test.dhall`), decoupled from deploy; `test run all` validates the live `project up` stack; the harness
-stays the one lift-target engine. New work owned by
-[phase-17-chain-driven-test-and-context-introspection.md](phase-17-chain-driven-test-and-context-introspection.md).
+None. The test surface is split into `test init` (writes the per-project `<project>.test.dhall`, gated on
+an existing project config) and root-only `test run <suite>|all` (fails fast without `test.dhall`),
+decoupled from deploy; the harness stays the one lift-target engine. The live-stack validation behaviour is
+exercised by the demo's real run ([phase-13](phase-13-hostbootstrap-demo.md)).
 
 ## Phase Objective
 
@@ -159,10 +162,10 @@ Name the minimal run-model set and how it is selected.
 
 None.
 
-### Sprint 10.5: `test` and `check-code` verbs [Active]
+### Sprint 10.5: `test` and `check-code` verbs [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/engineering/testing.md`, `documents/engineering/code_check_doctrine.md`
 
 #### Objective
@@ -195,25 +198,16 @@ Put the `test` and `check-code` verbs on the core tree so every project binary i
 
 #### Remaining Work
 
-The `check-code` verb is complete and stays as built. The `test` verb's contract changes under the "chain
-is the project" model (development_plan_standards § Z): the flat, context-coupled `test <case|all>` verb
-must be split into
+The `check-code` verb is complete and stays as built. The `test` verb is split per § Z: `test init` writes
+the per-project `<project>.test.dhall` (gated on an existing project config), and root-only
+`test run <suite>|all` fails fast without a `test.dhall` and drives the matrix via `runSuiteSelection`; the
+flat coupled `test <case|all>` verb is retired. Implemented in `HostBootstrap.Command` and covered by
+`CLISpec`. The live-`project up`-stack validation behaviour is exercised by the demo's real run
+([phase-13](phase-13-hostbootstrap-demo.md)).
 
-- `test init` — runs only when a sibling `project` config already exists; writes the per-project
-  `test.dhall` (which may carry test-specific instructions); and
-- `test run <suite>|all` — **root-only**, fails fast without a `test.dhall` or from any non-root context;
-  `all` is always a suite.
+### Sprint 10.6: Project test-matrix hook + `all` selector on the inherited `test` verb [Done]
 
-The runner is **decoupled** from deploy: `project up` brings up a **persistent** stack and `test run all`
-validates that running stack (the harness engine from Sprints 10.1–10.4/10.7 remains the one lift-target
-engine, development_plan_standards § W). The `test init`/`test run` surface and the `test.dhall` gate are
-the **target**; the binary still ships the flat `test <case|all>` verb today. This work depends on the
-core lifecycle command and is owned by
-[phase-17-chain-driven-test-and-context-introspection.md](phase-17-chain-driven-test-and-context-introspection.md).
-
-### Sprint 10.6: Project test-matrix hook + `all` selector on the inherited `test` verb [Active]
-
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`
 (`TestSuite`/`emptySuite`/`allCasesSelector`/`runSuiteSelection`),
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs` (`testCommand` parses the `CASE` argument),
@@ -262,14 +256,10 @@ threading built here is **still valid** and is reused under the new `test run` v
 #### Remaining Work
 
 The `TestSuite` existential, `allCasesSelector`/`runSuiteSelection`, `emptySuite`, and the `ProjectSpec`
-threading are complete and carry over unchanged. What changes is the **verb shape** the selection is
-exposed through: the flat `test <case|all>` must become `test run <suite>|all` under a `test run`
-subcommand, paired with a `test init` writer, with the runner made **root-only** and gated on a sibling
-`test.dhall` (development_plan_standards § Z). The current per-noun removal (project tests living under a
-top-level `test` instead of `vm test`) stays correct; the new shape only re-homes the selection under
-`test run`. The `test run`/`test init` surface and the `test.dhall` gate are the **target** and are not yet
-implemented. This work is owned by
-[phase-17-chain-driven-test-and-context-introspection.md](phase-17-chain-driven-test-and-context-introspection.md).
+threading carry over unchanged. The selection is now exposed under `test run <suite>|all` (a `test run`
+subcommand) paired with the `test init` writer, root-only and gated on a sibling `test.dhall` (§ Z),
+implemented in `HostBootstrap.Command` and covered by `CLISpec`; the demo's lifted deploy step is updated
+to `test run all` (`demo/src/HostBootstrapDemo/Chain.hs`).
 
 ### Sprint 10.7: Case-isolated setup and real seams [Done]
 

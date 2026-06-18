@@ -108,20 +108,27 @@ applied at every boundary; teardown preserves `.data`.
 
 ## Current Status
 
-- **Implemented today (flat verbs).** `hostbootstrap-core` exposes the flat command tree the demo uses:
-  `ensure`, `config` (`init`/`schema`/`show`/`render`), `context create`, `cluster`, and `test`. The demo
-  binary contributes hand-written noun verbs — `deploy`, `vm`, `incus`, `harbor`, `web`, `role` — and a
-  hand-written deploy chain (`demoDeployChain` in `demo/src/HostBootstrapDemo/Chain.hs`, dispatched from
-  `Commands.hs`). The single-representation doctrine already holds: today's `demo deploy` is one lift
-  sequence whose only lifted compute step is `test all` in the VM-project-container.
-- **Target (the `[Step]` chain).** This document describes the target model. The consumer's contribution
-  becomes `chain :: RootConfig -> [Step]` plus project step actions; the demo's noun verbs and
-  `demoDeployChain` collapse into a core `Step` interpreter that consumes the demo's contributed chain
-  value. The recursive `project` command (`init`/`up`/`down`/`destroy`), the read-only `context`
-  introspection (which absorbs `config show/schema/render`), and the `test init` / `test run <suite>|all`
-  split are **not yet implemented**; `ensure <tool>` is retained only as a hidden debug surface once the
-  chain interpreter lands. The development plan tracks the reopened and planned phases for this migration;
-  this guide does not claim the `project` command or its recursive interpreter exists.
+- **Shipped (the `[Step]` chain).** `hostbootstrap-core` exposes exactly `ensure`, `context`, `project`,
+  `test`, and `check-code`. The consumer's contribution is `chain :: RootConfig -> [Step]` plus project
+  step actions; the demo supplies `demoChain :: ProjectConfig -> [Step]` in
+  `demo/src/HostBootstrapDemo/Commands.hs`. The recursive `project` command (`init`/`up`/`down`/`destroy`),
+  the read-only `context` introspection (`inspect`/`path`/`show`/`schema`/`render` — `inspect` renders the
+  lift composition and current frame; `show`/`schema`/`render` were formerly the flat `config` verb), and
+  the `test init` / `test run <suite>|all` split are all implemented and real-run validated end-to-end on
+  real hardware. The demo retains only the `web` verb (`web serve`/`web bridge` — load-bearing: the chart
+  pod runs `web serve`, the Dockerfile runs `web bridge`) plus the `vm`/`incus` debug-hatch verbs;
+  `ensure <tool>` is the hidden debug surface alongside the chain interpreter. The single-representation
+  doctrine holds: `demo deploy` collapsed into the one `project up` lift sequence whose only lifted compute
+  step is `test run all` in the VM-project-container.
+- **History.** The old flat surface — `config` (`init`/`schema`/`show`/`render`), the flat `cluster` verb,
+  `context create`, and the demo's hand-written noun verbs (`deploy`, `harbor`, `role`) plus the Op-based
+  `demoDeployChain` in `HostBootstrapDemo.Chain` — has been removed. `config init` became `project init`;
+  `config show/schema/render` moved under the read-only `context` verb; `cluster up`/`down`/`delete`/
+  `status` became the `deploy-kind`/`deploy-chart` chain steps under `project up`, `project down`,
+  `project destroy`, and `context inspect`; `context create` became the in-`project up` `context-init`
+  chain step. The `clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/`clusterDelete` reconcilers
+  remain in `HostBootstrap.Cluster.Lifecycle`, now invoked by the chain steps and the lifecycle interpreter
+  rather than by a flat verb.
 
 ## See also
 

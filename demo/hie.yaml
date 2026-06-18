@@ -1,0 +1,9 @@
+# HLS cradle for the worked consumer (demo/cabal.project): hostbootstrap-demo
+# plus hostbootstrap-core built from local source.
+#
+# Makes IntelliSense work for every .hs file under demo/ when the repository
+# ROOT is opened as the editor workspace. hie-bios runs `cabal repl` from this
+# directory, so it resolves demo/cabal.project (the repository root holds no
+# Cabal project file). See documents/engineering/cabal_layout.md.
+cradle:
+  cabal:

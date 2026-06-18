@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 This phase owns the **new** surface the "chain is the project" model targets: the `Step` algebra, the
 recursive interpreter, and the `project` lifecycle command, built on the reopened substrate phases —
@@ -20,13 +20,20 @@ reconcilers the chain interprets as steps), phase-14 (the self-reference lift ge
 `project up` interpreter framing, § U), and phase-15 (the binary-context contract the per-frame fail-fast
 handoff rests on, § X).
 
-Sprint 16.1 — the `Step` algebra (`HostBootstrap.Step`) — is `Done` and unit-tested (`StepSpec`). The
-recursive interpreter (Sprint 16.2), the `project init|up|down|destroy` command (Sprint 16.3), and the demo
-chain migration (Sprint 16.4) are the remaining work; the code still carries the old topology (the flat
-`cluster up|down|delete|status` verb, `config init` / `config show|schema|render`, `context create
-vm|container|service`, and the demo's hand-written `demoDeployChain` plus the `deploy`/`vm`/`incus`/`harbor`/
-`web`/`role` verbs), tracked `Pending` in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+**All four sprints are `Done` and the model is real-run-validated end-to-end on Incus/Linux (2026-06-18):**
+a single `project up` drove the full recursive descent — `host-orchestrator-0` (provision VM, build pb #2 +
+image #3) → `vm-orchestrator-1` (`incus exec` handoff, mint the child config) → `vm-project-container-2`
+(`docker run` handoff: `deploy-kind` → `deploy-harbor` (the full 8-pod production Harbor) → `push-image` (the
+20GB image to the in-cluster registry) → `deploy-chart` → `expose-port`) — to a **live persistent stack**
+(the webservice serving HTTP 200 on `localhost:30080`), then `project down` / `project destroy` tore it down
+with host `.data` preserved (§ O). The `Step` algebra (16.1), the recursive interpreter + multi-frame descent
+(16.2), the `project init|up|down|destroy` command (16.3), and the demo chain migration incl. dissolving the
+old `deploy` / `harbor` / `role` verbs + the Op-based `HostBootstrapDemo.Chain` (16.4) all landed. The core
+tree carries only `coreCommandNames` = `ensure` / `context` / `project` / `test` / `check-code` (the flat
+`cluster`, `config init`, `config show|schema|render`, and `context create` verbs are removed); the demo
+contributes `demoChain :: ProjectConfig -> [Step]` + `demoFrameContext` + `demoTeardown` and keeps only the
+`web` (load-bearing) and `vm` / `incus` (debug-hatch) verbs (see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
 ## Phase Objective
 
@@ -90,9 +97,9 @@ None. `HostBootstrap.Step` ships the `Step` type, the closed core `StepKind` set
 order, and frame segmentation selects a frame's steps in order. The demo's hand-written `demoDeployChain`
 that this supersedes is migrated in Sprint 16.4.
 
-### Sprint 16.2: The recursive/fractal chain interpreter [Active]
+### Sprint 16.2: The recursive/fractal chain interpreter [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`, `core/hostbootstrap-core/test/ChainSpec.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/dhall_topology.md`
 
@@ -132,17 +139,26 @@ The pure interpreter core is implemented and unit-tested (`HostBootstrap.Chain` 
 `renderChain` (the `--dry-run` plan), `nextFrameAfter` (the descent order), `handoffDispatch` (the
 recursive `project up` argv fold over `HostBootstrap.Lift.foldLift`, honouring § K), the effectful
 `runChainFromFrame` seam (run this frame's steps, then hand off `project up` into the next frame, fail-closed
-on a non-zero handoff), and the dry-run==apply single-representation invariant. Remaining
-(**real-run-gated**, § C): the `context-init` step's reconcile action wired to
-`deriveProjectConfigForKind` / `writeProjectConfigFile`, the per-frame fail-fast handoff wired through the
-live binary-context gate (`HostBootstrap.Context`), and end-to-end provisioning validated by a real
-`project up` run — landed with the lifecycle command (Sprint 16.3) and the demo chain (Sprint 16.4).
+on a non-zero handoff), and the dry-run==apply single-representation invariant. The **multi-frame recursive
+descent is now real-run-validated on Incus/Linux**: a real `project up` ran the metal segment (provision VM →
+build pb #2 → build image #3), then the metal→VM handoff (`incus exec <vm> -- /usr/local/bin/hostbootstrap-demo
+project up`) and the VM→container handoff (`docker run <image> project up`) both **succeeded** — the
+`context-init` step minted the `vm-project-container-2` child config (`deriveContainerContext` /
+`writeProjectConfigFile`), the per-frame fail-fast gate accepted each frame's runtime witnesses
+(`/run/hostbootstrap/vm-provider`, docker.sock, `HOSTBOOTSTRAP_CURRENT_FRAME`), and `project up` re-entered
+the interpreter in the nested frame (gating as `ClusterLifecycleCommand`, the class allowed in all three
+orchestration kinds — a real gating bug fixed here: it previously gated as `HostOrchestratorCommand`, rejected
+in the VM/container frames). **None remaining — the full recursive descent ran end-to-end on Incus/Linux
+(2026-06-18):** a single `project up` exited 0 having driven the container-frame **workload** apply
+(`deploy-kind` → `deploy-harbor` (the full 8-pod production Harbor) → `push-image` (the 20GB image to the
+in-cluster registry) → `deploy-chart` → `expose-port`) to a **live persistent stack** — `localhost:30080`
+serving the webservice (HTTP 200), the Harbor registry on `localhost:30500`. The interpreter also prints a
+nested frame's captured stdout on failure now, so the recursive workload is observable in the run log.
 
-### Sprint 16.3: The `project init|up|down|destroy` lifecycle command [Blocked]
+### Sprint 16.3: The `project init|up|down|destroy` lifecycle command [Done]
 
-**Status**: Blocked
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`, `core/hostbootstrap-core/test/CommandSpec.hs`
-**Blocked by**: 16.2 (the recursive interpreter), 4.x (the composable optparse command tree and entrypoint), 5.x (cluster bring-up/teardown reconcilers and stop-without-delete)
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `documents/engineering/cluster_lifecycle.md`, `documents/engineering/incus.md`, `documents/engineering/lima.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -179,17 +195,26 @@ drive the chain interpreter from it.
 
 #### Remaining Work
 
-The `project init|up|down|destroy` command, the new VM stop-without-delete capability, and the
-`--dry-run` chain rendering are the target being built; nothing is implemented. The flat
-`cluster up|down|delete|status` verb (`HostBootstrap.Command`) and the standalone `config init` verb are
-superseded by these lifecycle verbs and are tracked `Pending` in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+None. The `project init|up|down|destroy` surface ships on the core optparse tree
+(`HostBootstrap.Command.projectCommandGroup`), with the chain and the chain-frame teardown threaded through
+`ProjectSpec` (`psChain` / `psFrameContext` / `psTeardown`, attached with `withChain` / `withFrameContext` /
+`withTeardown`). `project up --dry-run` renders `chain rootCfg` through the context gate; the apply path
+(`runChainFromFrame`) is **real-run-validated end-to-end on Incus/Linux** — a real `project up` provisioned
+the VM, built the demo binary host-native in it (build #2, self-proved with `context schema`), and built the
+project image FROM the published base in it (build #3), exiting 0. `project down` runs the recursive cluster
+teardown (host `.data` preserved, § O) then **stops** the VM (incus/Lima `stop`, the new stop-without-delete)
+— validated leaving the VM `STOPPED`; `project destroy` runs the cluster delete (host `.data` preserved) then
+**deletes** the VM (guard-prefixed, best-effort) — validated leaving the VM gone. The pure argv contract
+(`stopVMArgs` = stop-not-delete, guarded `destroyVMArgs` / `deleteVMArgs` = delete) is unit-tested in
+`IncusSpec` / `LimaSpec`. The flat `cluster` / `config init` / `context create` verbs are already removed from
+the core tree (`coreCommandNames` = `ensure` / `context` / `project` / `test` / `check-code`); the demo's own
+legacy `vm` / `harbor` / `web` / `deploy` / `role` / `incus` verbs are dissolved with the demo chain
+migration (Sprint 16.4, tracked in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
-### Sprint 16.4: Demo chain migration onto the core interpreter [Blocked]
+### Sprint 16.4: Demo chain migration onto the core interpreter [Done]
 
-**Status**: Blocked
-**Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`, `demo/docker/Dockerfile`, `demo/test/DemoChainSpec.hs`
-**Blocked by**: 16.3 (the lifecycle command), 13.x (the worked demo chain), 15.x (per-frame context gating)
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Chain.hs`
 **Docs to update**: `documents/engineering/authoring_project_binaries.md`, `documents/engineering/derived_project_standards.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -224,14 +249,58 @@ workload-extension seam (§ T, § Y).
 
 #### Remaining Work
 
-The demo chain value, its step actions, and the dissolution of the demo verbs are the target being built;
-nothing is implemented. The demo `deploy` / `vm` / `incus` / `harbor` / `web` / `role` verbs and the
-hand-written `demoDeployChain` (`demo/src/HostBootstrapDemo/Chain.hs`,
-`demo/src/HostBootstrapDemo/Commands.hs`) are superseded by the core `Step` interpreter plus the demo's
-contributed chain value and step actions, and are tracked `Pending` in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The real-run validation of `project up`
-and the decoupled `test run all` surface are owned with phase-17
-([phase-17-chain-driven-test-and-context-introspection.md](phase-17-chain-driven-test-and-context-introspection.md)).
+The metal-frame migration is **done and real-run-validated**: the demo contributes
+`demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), wired via `withChain` (and
+the chain-frame teardown via `withTeardown`) in `demo/app/Main.hs`, and a real `hostbootstrap-demo project
+up` on Incus/Linux ran the chain's three metal-frame steps end-to-end — ensure the VM provider → launch the
+budget VM (cordon #1) → pristine-bootstrap (build #2 host-native + build #3 project image in the VM) —
+exiting 0, with `project down` / `project destroy` stopping / deleting the VM (host `.data` preserved).
+`project up --dry-run` renders the chain and `context inspect` renders the composition. The user chose
+(2026-06-17) the maximalist target: `project up` ends at a **persistent full stack**, descending **three
+frames** (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`, each a real handoff). The
+container-frame migration is landing in code-check-validated increments:
+
+- **Increment 1 (Done, code-check-gated):** the demo chain now renders the full 3-frame interleaved value —
+  metal (`deploy-vm` ×2, `build-pb`) → `vm-orchestrator-1` (`context-init`) → `vm-project-container-2`
+  (`deploy-kind`, `deploy-harbor`, `push-image`, `deploy-chart`, `deploy-role`, `expose-port`). The per-frame
+  lift-context resolver `demoFrameContext` is wired via `withFrameContext` (metal→VM folds to `incus exec`,
+  VM→container to a local `docker run`); the container-frame actions are loud `pendingContainerStep` stubs.
+  Validated: `cabal build all --ghc-options=-Werror`, `project up --dry-run` renders the steps in frame
+  order, fourmolu + hlint clean via the base image. The validated metal frame is untouched.
+- **Increment 2 (Done, code-check-gated):** the container-frame actions are now **real** (no longer stubs).
+  Core `clusterUp` is split into exported `clusterCreate` (kind + cordon) + `deployChart` so the chain can
+  interleave registry setup between cluster creation and the chart (`HostBootstrap.Cluster.Lifecycle`, 220
+  core tests still green). The demo's six container-frame steps drive: `context-init` (mint the
+  `vm-project-container-2` child config via `deriveContainerContext` + `writeProjectConfigFile` to where
+  `demoDeployImage` mounts it), `deploy-kind` (`clusterCreate`, Production profile), `deploy-harbor` (the
+  Helm Harbor install, NodePort 30500), `push-image` (`kind load` + Docker push to Harbor), `deploy-chart`
+  (`deployChart` — the web pod), and `expose-port` (`waitNodePort` readiness on 30080). Validated:
+  `cabal build all --ghc-options=-Werror`, the 9-step dry-run, fourmolu + hlint clean.
+
+- **Increment 3 (Done, real-run-validated 2026-06-18):** a single `hostbootstrap-demo project up` ran the
+  whole 3-frame chain end-to-end on the live Incus VM (exit 0) to a **live persistent full stack** —
+  `deploy-kind` (cordoned cluster, kind `extraPortMappings` via a `demo/kind.yaml`, `kind export kubeconfig`)
+  → `deploy-harbor` (the full **8-pod production Harbor**, `helm --wait`) → `push-image` (`docker login` + the
+  20GB image pushed to the in-cluster registry) → `deploy-chart` (`deployChart --wait`, the web pod) →
+  `expose-port` (a direct in-container `curl` on the host network) → `localhost:30080` serving HTTP 200.
+  `project down` stopped the VM and `project destroy` deleted it, both `kind delete cluster` + host `.data`
+  preserved (§ O). Handoff plumbing landed: the build-#2 in-VM pb + its sibling `.dhall` install at
+  `/usr/local/bin/hostbootstrap-demo`; the VM was sized above the cluster budget (`vmSizingWithHeadroom`,
+  cordon #1 > cordon #2). The full Harbor + 20GB push fit once `docker builder prune` freed host disk.
+
+- **Increment 4 (Done, 2026-06-18):** the legacy cleanup landed. `demo/src/HostBootstrapDemo/Chain.hs`
+  (the Op-based `demoDeployChain` / `renderPlan` / `runDeploy`) and `HostBootstrapDemo.Role` are deleted; the
+  `deploy`, `harbor` (`runHarborInstall` / `runHarborPush`), and `role` verbs are removed from `demoCommands`
+  (now `[incusCmd, vmCmd, webCmd]`); the `containerRuntimeFrameId` / `vmRuntimeContainerConfigPath` constants
+  moved into `Commands.hs`. The `web` verb **stays** (the chart pod's `args: ["web", "serve"]` and the
+  Dockerfile's `web bridge` build step depend on it) and `vm` / `incus` stay as provider/VM debug hatches
+  whose IO the metal chain steps reuse. Validated: `cabal build all --ghc-options=-Werror` (6 modules),
+  `project up --dry-run` still renders the 9-step chain, the verb tree no longer lists `deploy` / `harbor` /
+  `role`, fourmolu + hlint clean. Recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+None remaining. Optional future follow-ups (not gating): build #3 in the `vm-orchestrator-1` segment for the
+purest fractal, role-as-pod folded into the chart, and `test run all` against the live persistent stack
+(§ Z, [phase-17](phase-17-chain-driven-test-and-context-introspection.md)).
 
 ## Documentation Requirements
 

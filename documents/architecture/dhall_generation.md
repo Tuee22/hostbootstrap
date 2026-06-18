@@ -149,18 +149,22 @@ context-init projection that realize this, and
 
 ## Current Status
 
-Today the built binary exposes the **flat** Dhall surface: `config init` renders the root config for a
-selected `--role` (Dockerfiles use `--role vm-project-container` to materialize the ad-hoc container
-config), `config schema`/`config show`/`config render` are the inspection commands, and `context create`
-is the standalone verb that mints child projections at VM/container/service boundaries. The three-layer
+The built binary exposes the Dhall surface through the `project` chain. `project init` renders the root
+config (root parameters only — `--cpu/--memory/--storage/--ha-replicas` and the optional skip-VM flag),
+the **context-init step** the recursive `project up` interpreter runs at each frame boundary mints the
+child projections at the VM/container/service boundaries (Dockerfiles bake the narrow
+`image-build-container` config so build-time commands run during the image build), and the read-only
+`context` command introspects the sibling `.dhall` and renders the lift composition via
+`context inspect`/`context path`/`context show`/`context schema`/`context render`. The three-layer
 vocabulary, the reflected-type/hand-written-function split, and the budget assertion are implemented and
 gated by core tests. The parameters/context/witness data model is itself the implemented
 `binary_context_config` authority.
 
-In the **target** model these dissolve into the `project` chain: `config init` becomes `project init`
-(root parameters only), `context create` becomes the internal **context-init step** the recursive
-`project up` interpreter runs at each frame boundary, and `config schema`/`config show`/`config render`
-fold into the read-only `context` command that introspects the sibling `.dhall` and renders the lift
-composition. The recursive `project up` interpreter and the context-init step are not yet implemented;
-`DEVELOPMENT_PLAN/` tracks the migration. Reconcile current-state claims to `DEVELOPMENT_PLAN/`, not to
-this document.
+The recursive `project up` interpreter and the context-init step are real-run-validated end-to-end on
+real hardware: a single `project up` on Incus/Linux interprets `demoChain :: ProjectConfig -> [Step]`
+across the three-frame fractal descent and stands up the live persistent stack — the cordoned kind
+cluster, the full Harbor, the project image pushed to the in-cluster registry, and the web chart pod
+serving `localhost:30080` — after which `project down` stops it and `project destroy` deletes it, both
+preserving durable host `.data`. The flat `config init` / `config schema`/`config show`/`config render`
+verbs and the standalone `context create` mutation verb that this model superseded are gone; the schema
+and example surfaces are introspection under the read-only `context` command.

@@ -10,7 +10,7 @@ The Python layer does only what must run *before any project binary exists*
    binary;
 4. build the project binary **host-native** at ``./.build/<project>`` on every
    substrate;
-5. trigger the binary's own idempotent ``config init --if-missing`` so a default
+5. trigger the binary's own idempotent ``project init --if-missing`` so a default
    ``./.build/<project>.dhall`` always exists (the binary writes the Dhall; Python
    does not);
 6. ``exec`` the binary, handing control to ``hostbootstrap-core``'s command tree
@@ -133,17 +133,17 @@ def binary_path(spec: ProjectBuildSpec, project_root: Path) -> Path:
     return project_root / _BUILD_DIR / spec.project
 
 
-def config_init_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
+def project_init_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
     """Idempotently ensure the sibling ``<project>.dhall`` exists.
 
-    Runs the just-built binary's own ``config init --if-missing``: the binary
+    Runs the just-built binary's own ``project init --if-missing``: the binary
     writes a default sibling config when none is present and is a no-op (leaving
     any user-edited config untouched) when one already exists. Python never reads
     or writes the Dhall itself -- it only triggers the binary's surface (§ M).
     """
     return (
         str(binary_path(spec, project_root)),
-        "config",
+        "project",
         "init",
         "--if-missing",
     )
@@ -196,7 +196,7 @@ async def build_binary(spec: ProjectBuildSpec, *, project_root: Path) -> Path:
     await _assert_minimums(sub)
     await _ensure_toolchain(sub)
     await _build_native(spec, project_root=project_root)
-    await process.run_checked(config_init_command(spec, project_root), cwd=project_root)
+    await process.run_checked(project_init_command(spec, project_root), cwd=project_root)
     return binary_path(spec, project_root)
 
 

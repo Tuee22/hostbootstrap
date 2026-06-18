@@ -68,9 +68,10 @@ Phase 11.
 
 Phase 4 owns the project-local `<project>.dhall` schema and the composable command tree. `ProjectConfig`
 validates project identity against the Cabal-derived name and carries Dockerfile inputs, resources, deploy
-knobs, runtime context, and child-projection defaults. It is `Active`: reopened to collapse the flat
-`config init` / `cluster` / `context create` verbs into the recursive `project` lifecycle and the
-`[Step]` chain (phase-16).
+knobs, runtime context, and child-projection defaults. It is `Done`: the command tree is migrated to the
+new surface — `config init` -> `project init` (Python trigger updated), `cluster` -> `project up|down|destroy`,
+`context create` -> the `context-init` chain step, and `config show|schema|render|path` folded into the
+read-only `context` command (core `cabal test` green; the recursive interpreter it surfaces is phase-16).
 
 ### Phase 5 — cluster lifecycle and resource cordoning
 
@@ -114,8 +115,9 @@ It is `Done`; the incus VM storage cordon is part of Phase 11.
 Phase 10 owns the standardized test harness and run-model vocabulary. `runMatrix` drives a `Seams`
 record over isolated per-case profiles, budget slicing, the delete guard, guaranteed teardown, and
 case-local setup failure handling. The four run-models are `OneShot`, `HostNative`, `HostDaemon`, and
-`Cluster`; every binary inherits `test` and `check-code`. It is `Active`: reopened to split the surface
-into `test init` and root-gated `test run <suite>|all`, decoupled from deploy (phase-17).
+`Cluster`; every binary inherits `test` and `check-code`. It is `Done`: the surface is split into
+`test init` and root-only `test run <suite>|all` (gated on `test.dhall`, decoupled from deploy),
+implemented in `HostBootstrap.Command` and covered by `CLISpec`; the harness engine is unchanged.
 
 ### Phase 11 — incus first-class host-provider
 
@@ -146,19 +148,21 @@ hand-written `demoDeployChain` and the `vm`/`deploy` verbs to the core `[Step]` 
 Phase 14 owns the composition methodology: operations as the composable unit, self-reference lift as the
 context-crossing primitive, deploy and runtime business logic as the same algebra, the L0
 `HostBootstrap.RoleLifecycle` skeleton, and the single-representation doctrine. The standardized test
-harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Active`:
-the lift primitive is built and validated by the full real demo lifecycle, and it is reopened to
-generalize the lift into the recursive `project up` interpreter of the chain (the fractal bootstrap,
-phase-16).
+harness is the one representation of the test/deploy workflow and is lifted as a whole. It is `Done`: the
+methodology is recast around the chain-is-the-project model (`composition_methodology.md` is the canonical
+home — `project up` as the recursive/fractal interpreter, Python as the metal-frame instance, the `[Step]`
+chain as the single representation); the interpreter primitive it surfaces is built under phase-16.
 
 ### Phase 15 — Binary context config and command gating
 
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, not
-authorized for the requested command, or missing required topology witnesses. It is `Active`: the gate is
-built and validated by the full real demo lifecycle, and it is reopened to make `context` a read-only
-introspection command and fold child-config creation into the `context-init` chain step (phase-16).
+authorized for the requested command, or missing required topology witnesses. It is `Done`: the
+binary-context contract is realigned to the chain model — `context` is read-only introspection
+(`renderComposition` + `context inspect`), `config init` -> `project init` (Python migrated), the
+per-frame fail-fast mechanism (`validateRuntimeContext`) is built; the effectful `context-init`/handoff
+wiring into `project up` is owned by phase-16.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -174,7 +178,11 @@ down` stops without deleting; `project destroy` deletes but preserves `.data`. I
 
 Phase 17 owns the decoupled `test init` / `test run <suite>|all` surface (root-gated, `test.dhall`-driven,
 validating the live `project up` stack) and the read-only `context` command that renders the global lift
-composition with the current frame highlighted. It is `Blocked` by phases 16 and 10.
+composition with the current frame highlighted. It is `Done`: `test init` / root-only `test run
+<suite>|all` (gated on `test.dhall`) and the read-only `context` composition render
+(`renderComposition` + `context inspect`) are implemented and unit-tested; the persistent-stack validation
+of `test run all` is exercised by the demo's real run (phase-13), and the recursive `project up` apply that
+brings the stack up is owned by phase-16.
 
 ## Dependency edges
 

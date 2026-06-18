@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -20,15 +20,14 @@ principles, and the L0 role-lifecycle skeleton on which L1 builds concrete busin
 typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded lift context.
 
 The single-representation doctrine is part of the methodology: one operation has one representation. The
-methodology is being recast around the **"chain is the project"** model: a project's deploy is its **lift
+methodology is **recast** around the **"chain is the project"** model: a project's deploy is its **lift
 chain** — a pure `chain :: RootConfig -> [Step]` value that *is* the project's identity (§ W) — and that
-`[Step]` chain is the single representation. The foundational primitive (`HostBootstrap.Lift`) is built,
-and the worked demo lifts the whole `test all` workflow into the project container in the managed VM; but
-the methodology's canonical narrative still describes the lift as a hand-written deploy sequence with a
-single lifted compute step, **not** the recursive `project up` interpreter the brief now targets. The
-recast — chain-is-the-project, the recursive/fractal interpreter, Python as the metal-frame instance of
-the fractal bootstrap — is target, not built: the `project` command and the `[Step]`-chain interpreter do
-not yet exist in the code.
+`[Step]` chain is the single representation. `composition_methodology.md` (the canonical home) and
+`composition_patterns.md` present `project up` as the recursive/fractal interpreter of that chain and the
+Python bootstrapper as the metal-frame instance of the fractal bootstrap, with an honest `## Current Status`
+separating the built primitives from the real-run-gated apply. The interpreter primitive
+(`HostBootstrap.Chain`) and the `project` command exist and are unit-tested (phase-16); their effectful
+end-to-end provisioning is real-run-gated and owned by phase-16.
 
 The topology-aware composition path is validated by the full real demo lifecycle: Dhall expresses the
 complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
@@ -37,23 +36,13 @@ into the project container in the managed Lima VM (`3/3 passed`, including Playw
 
 ## Remaining Work
 
-The composition methodology is reopened to reflect the **"chain is the project"** model. The foundational
-self-reference lift (`HostBootstrap.Lift`) is built and validated, but the methodology's canonical
-documentation describes the lift as a hand-written single deploy sequence rather than as the recursive
-chain interpreter the target now requires. The remaining work:
-
-- **Generalize the self-reference lift into the recursive `project up` interpreter of the chain**
-  (chain-is-the-project; fractal bootstrap — each frame transition is provision -> build pb -> hand off
-  `pb project up`, with Python the metal-frame instance). New work — the `project` lifecycle command and
-  the `[Step]`-chain interpreter — is **owned by phase-16**; this phase owns recasting the methodology
-  documentation (`composition_methodology.md` as the canonical home of the model, plus
-  `composition_patterns.md`) to present the chain `[Step]` value as the single representation, `project up`
-  as its recursive/fractal interpreter, and the Python bootstrapper as the metal-frame instance of the
-  fractal-bootstrap pattern (provision -> build pb -> hand off).
-- The phase stays `Active` until the methodology docs describe the recursive interpreter and fractal
-  bootstrap as the target model with an honest `## Current Status` separating the built lift primitive from
-  the not-yet-implemented `project`/chain interpreter, and the affected sprints below close. The
-  `project`/chain interpreter itself is **not** claimed implemented here; that build is phase-16 work.
+None. The methodology documentation is recast: `composition_methodology.md` is the canonical home of the
+chain-is-the-project model — `project up` as the recursive/fractal interpreter, the Python bootstrapper as
+the metal-frame instance of the fractal bootstrap, and the `[Step]` chain as the single representation —
+with a `## Current Status` separating the built lift/interpreter primitives from the real-run-gated apply.
+The `project` lifecycle command and the `[Step]`-chain interpreter that the methodology describes are built
+and unit-tested under [phase-16](phase-16-project-lifecycle-command.md); their effectful end-to-end
+provisioning is real-run-gated there.
 
 The sprints that built still-valid substrate (the role-lifecycle skeleton, the arbitrary-topology frame
 graph, and credential forwarding across the lift) remain `Done`. The sprints whose contract the
@@ -71,9 +60,9 @@ operations across contexts through the four-stream merge without L0 changes (see
 
 ## Sprints
 
-### Sprint 14.1: Composition methodology and cookbook docs [Active]
+### Sprint 14.1: Composition methodology and cookbook docs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/authoring_project_binaries.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ U, § W, § Y)
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`, `documents/engineering/authoring_project_binaries.md`, `documents/README.md`, `README.md`
 
@@ -153,9 +142,9 @@ reconcilers stay `HostConfig -> IO ()` (no threaded context), per the compositio
 
 None.
 
-### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Active]
+### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `documents/architecture/composition_methodology.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ W, § Y, § Z)
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/engineering/composition_patterns.md`
 

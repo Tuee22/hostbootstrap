@@ -1,0 +1,15 @@
+# HLS cradle for the warm-store packages (basecontainer-core-deps /
+# basecontainer-daemon-deps).
+#
+# These are build-only stubs: their app/Main.hs files are `main = pure ()` and
+# their .cabal files exist solely to pull the entire warm dependency closure so
+# the base image can prebuild the shared Cabal store. They are built only inside
+# the container, and their core.freeze / daemon.freeze pins are generated
+# in-image and never committed, so there is no host-resolvable build plan here.
+#
+# Declare a `none` cradle so HLS deliberately gives these stubs no IDE support,
+# rather than trying to solve and build the whole dependency closure on the
+# host. See documents/engineering/warm_store.md and
+# documents/engineering/cabal_layout.md.
+cradle:
+  none:

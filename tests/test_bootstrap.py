@@ -118,11 +118,11 @@ def test_binary_path_and_exec_argv() -> None:
     )
 
 
-def test_config_init_command() -> None:
+def test_project_init_command() -> None:
     spec = _project(Path("/proj"))
-    assert bootstrap.config_init_command(spec, Path("/proj")) == (
+    assert bootstrap.project_init_command(spec, Path("/proj")) == (
         "/proj/.build/demo",
-        "config",
+        "project",
         "init",
         "--if-missing",
     )
@@ -171,7 +171,7 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
@@ -196,7 +196,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert binary == bootstrap.binary_path(spec, tmp_path)
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
@@ -218,7 +218,7 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     assert recorded_commands[-3:] == [
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo")]]
 
@@ -242,7 +242,7 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
         ("ghcup", "whereis", "cabal"),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
 
@@ -271,7 +271,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         ("ghcup", "install", "cabal", "--set"),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "play"]]
 
@@ -297,7 +297,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         ("ghcup", "install", "cabal", "--set"),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
-        bootstrap.config_init_command(spec, tmp_path),
+        bootstrap.project_init_command(spec, tmp_path),
     ]
     assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
 

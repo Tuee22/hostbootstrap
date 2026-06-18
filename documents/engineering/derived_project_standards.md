@@ -26,7 +26,7 @@ is governed by the sibling runtime config file, [`<project>.dhall`](schema.md).
 The binary's primary contribution is **not** a set of noun verbs — it is a value:
 
 ```haskell
-chain :: RootConfig -> [Step]
+chain :: ProjectConfig -> [Step]
 ```
 
 an ordered list of `Step`s the core interprets. The shape of that list **is** the project's identity
@@ -53,7 +53,7 @@ main =
 
 `runHostBootstrapCLI progName projectSpec` composes the project's chain, test suite, code-check action, and
 schema artifacts onto the inherited tree (`project init|up|down|destroy`, `context`, `test init|run`,
-`check-code`). The spec is fail-closed: the chain must type-check against `RootConfig`, the test suite must
+`check-code`). The spec is fail-closed: the chain must type-check against `ProjectConfig`, the test suite must
 be non-empty, the `check-code` action is required, duplicate case/artifact names are rejected, and project
 artifacts feed the inherited `context` introspection registry. The bare `hostbootstrap` binary uses
 `runBareHostBootstrapCLI`; it is the only intentional empty-chain/empty-suite binary. `project init` runs
@@ -64,10 +64,10 @@ root config, and child configs are minted by the context-init step inside `proje
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
 `runHostBootstrapCLI "hostbootstrap-demo" (projectSpec demoChain ... demoCheckCode demoArtifacts)`. Its
-`demoChain` contributes the demo's host→VM→container→cluster lift (deploy VM, copy source + ensure GHC,
-build pb in VM, ensure docker, build project image, deploy kind, deploy harbor, launch webservice, expose
-NodePort) as a single `[Step]` the core interprets; `context` visualizes that composition, and
-`test run all` validates the live stack from the root frame.
+`demoChain` contributes the demo's host→VM→container→cluster lift (deploy VM, build pb + image in the VM,
+context-init the project-container child config, deploy kind, deploy harbor, push image, deploy chart,
+expose NodePort) as a single `[Step]` the core interprets across the 3-frame fractal descent; `context`
+visualizes that composition, and `test run all` validates the live stack from the root frame.
 
 ## The three-level library hierarchy
 
@@ -85,7 +85,7 @@ Each level extends the same **four parallel streams**, one additive merge idiom 
 
 | Stream | Merge idiom | Rule |
 |--------|-------------|------|
-| **the lift chain** | append `Step`s into `chain :: RootConfig -> [Step]` | core ships host-management step kinds; a level appends its own step kinds; host and workload steps interleave, never shadow |
+| **the lift chain** | append `Step`s into `chain :: ProjectConfig -> [Step]` | core ships host-management step kinds; a level appends its own step kinds; host and workload steps interleave, never shadow |
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
 | **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test run` verb |
@@ -188,7 +188,7 @@ COPY . /workspace/app
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" /usr/local/bin/app
 
-RUN app context init --role image-build-container --output /usr/local/bin/app.dhall
+RUN app project init --role image-build-container --output /usr/local/bin/app.dhall
 
 RUN app check-code
 
@@ -226,7 +226,7 @@ This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon ap
 No freeze is committed in the project — the layered warm-store freezes are imported from the
 base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
 
-The `context init --role image-build-container` line is the container-image bootstrap hook. It is the only
+The `project init --role image-build-container` line is the container-image bootstrap hook. It is the only
 binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
 commands such as `check-code` load that config and refuse commands not valid for the image-build frame. At
 runtime the parent's context-init step mounts or materializes the role-specific `<project>.dhall` at
@@ -234,25 +234,33 @@ runtime the parent's context-init step mounts or materializes the role-specific 
 
 ## Current Status
 
-Today's binary surface is the **flat verb set**, not the `project` chain. This page describes the target
-model; the migration is in progress and the recursive `project` interpreter is **not yet implemented**.
+Today's binary surface **is** the `project` chain, real-run-validated end-to-end on real hardware. The
+recursive `project` interpreter is shipped; the old flat verb set is removed.
 
-- **Implemented today**: the bare-tree verbs (`ensure <tool>`, substrate detection, `cluster up|down|delete`,
-  `config init|schema|show|render`, `test`) and, in the demo, the hand-written noun verbs
-  (`incus`/`vm`/`harbor`/`web`/`deploy`/`role`). The demo's deploy is a hand-written
-  `demoDeployChain :: LiftContext -> LiftContext -> [Op]` value in `demo/src/HostBootstrapDemo/Chain.hs`,
-  sequenced by the demo's own `deploy` command in `Commands.hs` — a list of `Op` the demo executes, not a
-  core-interpreted `[Step]`. The image-build hook runs as `config init --role image-build-container`.
-- **Target**: `chain :: RootConfig -> [Step]` interpreted by the recursive `project up`/`down`/`destroy`
-  commands; `context` as read-only introspection (absorbing `config show|schema|render` and the mutating
-  `context create`/`config init`); `test init` / `test run <suite>|all` split; the demo's noun verbs and
-  hand-written chain dissolve into core step kinds plus the demo's contributed chain value and step actions.
-  `ensure <tool>` is retained only as a hidden debug surface, normally invoked as a chain step within
-  `project up`.
+- **Shipped now**: `chain :: ProjectConfig -> [Step]` interpreted by the recursive `project
+  init|up|down|destroy` commands; `context` as read-only introspection (absorbing the former
+  `config show|schema|render` as `context show|schema|render`, plus `inspect`/`path`/`render`);
+  `test init` / `test run <suite>|all` split; `check-code` unchanged. The core command tree is exactly
+  `ensure`, `context`, `project`, `test`, `check-code`. The demo's deploy is the contributed
+  `demoChain :: ProjectConfig -> [Step]` value in `demo/src/HostBootstrapDemo/Commands.hs` — a list of
+  `Step` the core interprets across the 3-frame fractal descent, not a hand-written op script. The demo
+  retains only the `web` verb (`web serve`/`web bridge`, load-bearing) and the `vm`/`incus` debug-hatch
+  verbs. The image-build hook runs as `project init --role image-build-container`.
+- **Removed**: the flat `cluster up|down|delete` verb group (folded into the `deploy-kind`/`deploy-chart`
+  chain steps and `project up`/`down`/`destroy`; the `clusterUp`/`clusterCreate`/`deployChart`/
+  `clusterDown`/`clusterDelete` reconcilers remain in `HostBootstrap.Cluster.Lifecycle`, invoked by the
+  chain), the flat `config init|schema|show|render` verb group (`config init` → `project init`; the rest
+  → read-only `context`), and the demo's hand-written `deploy`/`harbor`/`role` noun verbs and the
+  `HostBootstrapDemo.Chain` op script (the `deploy`/`harbor`/`role` surfaces dissolved into core step kinds
+  plus the demo's contributed chain value). `ensure <tool>` is retained only as a hidden debug surface,
+  normally invoked as a chain step within `project up`.
 
-`DEVELOPMENT_PLAN/` owns the phase status for this migration (the affected phases are reopened or planned);
-this page does not assert closure. Until the interpreter lands, follow the flat-verb shape above with the
-target as the direction of travel.
+A single `project up` on Incus/Linux has stood up the live persistent stack — a cordoned kind cluster
+(kind `extraPortMappings` publish NodePorts to the VM localhost) → the full 8-pod production Harbor
+(NodePort 30500) → the 20GB project image pushed to the in-cluster registry → the web chart pod →
+`localhost:30080` serving HTTP 200 — after which `project down` / `project destroy` tore it down with the
+durable host `.data` preserved. `DEVELOPMENT_PLAN/` owns the phase status; this page describes the shipped
+model and the worked `demo/` consumer that realizes it.
 
 ## See also
 

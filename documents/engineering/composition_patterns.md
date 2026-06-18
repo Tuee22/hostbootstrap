@@ -35,8 +35,9 @@ its own segment.
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
    Its chain is a **single** ordered `[Step]` — host-pb → deploy-VM (Lima on Apple Silicon, Incus on
    Linux) → copy-source + ensure-GHC in the VM → build-pb in the VM → ensure-docker in the VM →
-   build-image → deploy-kind → deploy-harbor → launch-web → expose-port — whose only lifted compute
-   step lifts the *whole* test workflow into the project container in the VM (`test run all`); see
+   build-image → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port — whose only
+   lifted compute step lifts the *whole* test workflow into the project container in the VM
+   (`test run all`); see
    [single representation](#single-representation-the-chain-is-the-representation).
 3. **Host → managed cloud cluster** — build the container, then a container-frame step uses a cloud CLI
    to provision a managed Kubernetes cluster against an external state backend, then a later step runs
@@ -90,7 +91,7 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 | Origin | Step kinds (examples) |
 |---|---|
 | Core (host-management) | `deploy-vm`, `ensure-<tool>`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port` |
-| Project (workload) | `deploy-harbor`, `launch-web`, … contributed by the consumer |
+| Project (workload) | `deploy-harbor`, `push-image`, … contributed by the consumer |
 
 The canonical taxonomy of step semantics — converge / context-lift / one-shot action / control-loop /
 run-to-completion, plus each kind's plan/apply, retry behaviour, and L0/L1/L2 layer — lives in
@@ -156,18 +157,21 @@ Reused across shapes and step kinds:
 
 ## Current Status
 
-What is implemented today is the **old flat-verb surface**: the standalone reconciler verbs
-(`ensure <tool>`, `config`/`context create`, `cluster`, `test`) and the demo's hand-written
-`deploy`/`vm` sequence (`demo/src/HostBootstrapDemo/Chain.hs`, `Commands.hs`), which realizes shape 2
-as a single lift sequence whose only lifted compute step is `test all`. The lift primitive itself is
-built: provider-backed folds for Incus and Lima and a topology-aware binary-context gate.
+What is implemented today is the **chain surface** this cookbook describes: the core command tree is
+exactly `ensure`, `context`, `project`, `test`, `check-code`, and the demo's deploy is the pure value
+`demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), which realizes shape
+2 as a single lift sequence whose only lifted compute step is `test all`. The lift primitive is built:
+provider-backed folds for Incus and Lima and a topology-aware binary-context gate. The reconcilers
+(`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
+`HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
-The **target** in this cookbook — the `chain :: RootConfig -> [Step]` value, the recursive `project up`
-interpreter, the core Step algebra, the workload-contributed step kinds, and fractal teardown via
-`project down`/`project destroy` — is **not yet implemented**. The `project` command and its recursive
-interpreter do not exist today; the demo deploy-chain is migrating from a hand-written sequence to a
-`[Step]` value the core interprets. The open phases are tracked in
-[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
+The `chain :: RootConfig -> [Step]` value, the recursive `project up` interpreter, the core Step
+algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
+are **shipped and real-run-validated end-to-end**: a single `project up` on Incus/Linux stood up the
+live persistent stack — a cordoned kind cluster, the full production Harbor, the 20GB project image
+pushed to the in-cluster registry, and the web chart pod serving `localhost:30080` (HTTP 200) — then
+`project down`/`project destroy` tore it down with host `.data` preserved. The phase history is tracked
+in [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
 development plan.
 
 ## See also

@@ -10,6 +10,7 @@ import HostBootstrap.CLI (
     projectCommand,
     projectSpec,
     runHostBootstrapCLI,
+    withChain,
  )
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
@@ -22,9 +23,11 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     emptySuite,
  )
+import HostBootstrap.Step (Step, StepFrame (..), deployVMStep)
 import Options.Applicative (info, progDesc)
 import System.Directory (removeFile)
 import System.Environment (withArgs)
+import System.FilePath (takeDirectory, (</>))
 import System.Exit (ExitCode (ExitFailure), die)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
@@ -58,24 +61,54 @@ tests =
                     try (withArgs ["check-code"] (runHostBootstrapCLI "cli-check-fail" (projectSpec [] passingSuite (die "seeded check failure") []))) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
-        , testCase "test exits non-zero when any case fails" $
-            withProjectConfig "cli-test-fail" $ do
+        , testCase "test run fails fast without a test.dhall" $
+            withProjectConfig "cli-test-notdhall" $ do
                 result <-
-                    try (withArgs ["test", "all"] (runHostBootstrapCLI "cli-test-fail" (projectSpec [] failingSuite (pure ()) []))) ::
+                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-notdhall" (projectSpec [] passingSuite (pure ()) []))) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
-        , testCase "config render fails fast on an unknown artifact" $ do
+        , testCase "test init then test run exits non-zero when a case fails" $
+            withProjectConfig "cli-test-fail" $ do
+                cfgPath <- Schema.siblingProjectConfigPath "cli-test-fail"
+                let testPath = takeDirectory cfgPath </> "cli-test-fail.test.dhall"
+                ( do
+                    _ <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-fail" (projectSpec [] failingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-fail" (projectSpec [] failingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result @?= Left (ExitFailure 1)
+                    )
+                    `finally` removeFile testPath
+        , testCase "context render fails fast on an unknown artifact" $ do
             result <-
-                try (withArgs ["config", "render", "--artifact", "missing"] (runHostBootstrapCLI "cli-render-missing" (projectSpec [] passingSuite (pure ()) []))) ::
+                try (withArgs ["context", "render", "--artifact", "missing"] (runHostBootstrapCLI "cli-render-missing" (projectSpec [] passingSuite (pure ()) []))) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
-        , testCase "config render sees project artifacts from the spec" $ do
+        , testCase "context render sees project artifacts from the spec" $ do
             let arts = [artifactOf @V.Budget "localBudget" (V.Budget 1 2 3)]
             result <-
-                try (withArgs ["config", "render", "--artifact", "localBudget"] (runHostBootstrapCLI "cli-render-local" (projectSpec [] passingSuite (pure ()) arts))) ::
+                try (withArgs ["context", "render", "--artifact", "localBudget"] (runHostBootstrapCLI "cli-render-local" (projectSpec [] passingSuite (pure ()) arts))) ::
                     IO (Either ExitCode ())
             result @?= Right ()
+        , testCase "project up --dry-run renders the chain through the context gate" $
+            withProjectConfig "cli-project-dryrun" $ do
+                result <-
+                    try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-dryrun" (withChain sampleChain (projectSpec [] passingSuite (pure ()) [])))) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+        , testCase "project up fails fast without a sibling context" $ do
+            result <-
+                try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-nocfg" (withChain sampleChain (projectSpec [] passingSuite (pure ()) [])))) ::
+                    IO (Either ExitCode ())
+            result @?= Left (ExitFailure 1)
         ]
+
+-- A one-step demo-shaped chain used to prove `project up --dry-run` renders.
+sampleChain :: Schema.ProjectConfig -> [Step]
+sampleChain _ =
+    [deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))]
 
 passingSuite :: TestSuite
 passingSuite =

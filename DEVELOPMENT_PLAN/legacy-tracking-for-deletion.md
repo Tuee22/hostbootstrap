@@ -10,25 +10,10 @@
 
 ## Pending
 
-These obsolete top-level surfaces are superseded by the recursive `project` lifecycle command and the
-`[Step]` chain (see [development_plan_standards.md § Y/§ Z](development_plan_standards.md) and
-[composition_methodology](../documents/architecture/composition_methodology.md)). Each remains in the
-code until its owning reopened phase lands, so each is listed here rather than in **Removed Surfaces**.
-
-- **Flat `cluster up|down|delete|status` top-level verb** (`HostBootstrap.Command`) — superseded by
-  cluster bring-up/teardown expressed as chain steps under `project up` / `project down` /
-  `project destroy`. Owning phase: phase-5, phase-16.
-- **`context create vm|container|service` mutation verb** (`HostBootstrap.Command` /
-  `HostBootstrap.Context`) — superseded by the internal `context-init` chain step; the `context` command
-  becomes read-only composition introspection. Owning phase: phase-15, phase-16.
-- **`config init` standalone top-level verb** — superseded by `project init`; `config schema|show|render`
-  fold under the read-only `context` command. Owning phase: phase-4, phase-16.
-- **Demo `deploy` / `vm` / `incus` / `harbor` / `web` / `role` orchestration verbs and the hand-written
-  `demoDeployChain`** (`demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`) —
-  superseded by the core `Step` interpreter plus the demo's contributed `chain :: RootConfig -> [Step]`
-  value and its workload step actions (the single-representation invariant under **Removed Surfaces** is
-  unchanged; only the hand-rolled metal-side orchestration IO moves into core step kinds). Owning phase:
-  phase-13, phase-16.
+None. All previously-tracked obsolete surfaces have been removed — see **Removed Surfaces** (the demo's
+superseded `deploy` / `harbor` / `role` verbs and the hand-written `demoDeployChain` were dissolved when the
+container-frame `project up` was validated end-to-end, 2026-06-18). An empty **Pending** section is valid;
+it is the stable home for the next cleanup obligation.
 
 ## Retained Current Surfaces
 
@@ -39,15 +24,34 @@ These surfaces are intentionally present and are not cleanup obligations.
   passwordless sudo, `linux-gpu` additionally the NVIDIA container runtime; Apple: passwordless sudo +
   Xcode CLT + Homebrew), dispatched by substrate alone. Richer host logic lives in Haskell
   `HostBootstrap.HostPrereqs` plus the `ensure` reconcilers.
+- **Demo `web` / `vm` / `incus` verbs** — retained, not cleanup obligations. `web serve` / `web bridge` are
+  **load-bearing** (the chart pod runs `args: ["web", "serve"]` and the Dockerfile's build step runs `web
+  bridge`); `vm` and `incus` are low-level provider/VM debug hatches whose IO (`runVmEnsure` / `runVmUp` /
+  `runVmBootstrap`, `ensureIncus`) the metal-frame chain steps reuse. None is a parallel deploy
+  representation, so none violates the single-representation invariant (§ W).
 
 ## Removed Surfaces
 
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
-- **Redundant demo deploy-chain representation** — the demo has one canonical deploy lift sequence in
-  `demo/src/HostBootstrapDemo/Chain.hs`; it does not maintain a second standalone deploy path beside
-  `HostBootstrap.Harness`.
+- **Flat `config init` top-level verb** — config generation is now `project init`; the Python bootstrapper
+  triggers `project init --if-missing` after the host-native build (the shared init parser is reused).
+  Owning phase: phase-4.
+- **Flat `cluster up|down|delete|status` top-level verb** — superseded by `project up` / `project down` /
+  `project destroy`; the `clusterDown` / `clusterDelete` reconcilers remain, invoked by the lifecycle
+  command. Owning phase: phase-4.
+- **`context create vm|container|service` mutation verb** — superseded by the `context-init` chain step
+  inside `project up`; the `context` command is now read-only introspection (`inspect` / `show` /
+  `schema` / `render` / `path`), absorbing the former `config show|schema|render` inspection surfaces.
+  Owning phase: phase-4.
+- **Demo `deploy` / `harbor` / `role` verbs and the Op-based `HostBootstrapDemo.Chain`** — the demo has one
+  canonical deploy: the contributed `demoChain :: ProjectConfig -> [Step]` value
+  (`demo/src/HostBootstrapDemo/Commands.hs`) interpreted recursively by the core `project up`. The
+  hand-written `demoDeployChain` / `renderPlan` / `runDeploy` module and the `deploy` (its interpreter),
+  `harbor` (`runHarborInstall` / `runHarborPush` — now the chain's `deploy-harbor` / `push-image` steps), and
+  `role` (`HostBootstrapDemo.Role`) verbs are deleted (2026-06-18); the demo does not maintain a second
+  standalone deploy path beside `HostBootstrap.Harness`. Owning phase: phase-13, phase-16.
 - **Dockerfile-baked `vm-project-container` runtime authority** — Dockerfiles now bake
   `image-build-container` authority only. Runtime workflows receive parent-mounted configs for the exact
   frame they run in.
@@ -67,12 +71,12 @@ a plan update creates a new current owner for it.
   sibling `<project>.dhall` initialization and child projection.
 - **`StaticBase` compatibility API in `HostBootstrap.Config.Schema`** (`StaticBase`,
   `decodeStaticBaseText`, `decodeStaticBaseFile`, `renderStaticBase`) — the current API is
-  `ProjectConfig`, `decodeProjectConfigText`/`File`, `renderProjectConfig`, `config init`, and the
+  `ProjectConfig`, `decodeProjectConfigText`/`File`, `renderProjectConfig`, `project init`, and the
   sibling `<project>.dhall` command gate.
 - **`project-binary-context-config.dhall` artifact name** — host, VM, container, daemon, and service
   copies use the sibling `<project>.dhall` filename rule, with role/capability context inside the file.
 - **`--create-container-config` Dockerfile shortcut** — container images create image-build config through
-  `<project> config init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime
+  `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime
   contexts are parent-generated and mounted or materialized at launch.
 - **`demo/hostbootstrap.dhall`** — the demo uses `hostbootstrap-demo.dhall` at each execution context.
 - **`core/hostbootstrap-core/example/Main.hs` and the `hostbootstrap-example` executable** — the

@@ -43,6 +43,14 @@ The base image smoke-tests both binaries during its own build (see
 derived projects invoke them via their own `<project> check-code` command as a
 `RUN` step in the project Dockerfile.
 
+## Editor support (HLS)
+
+The repository is a multi-workspace Cabal layout with no project file at the root, so each Cabal
+workspace carries its own `hie.yaml` cradle. This lets the Haskell Language Server provide hover,
+go-to-definition, and diagnostics for every `.hs` file even when the repository root is opened as the
+editor workspace. See the cradle table in
+[engineering/cabal_layout.md](../engineering/cabal_layout.md#editor-and-hls-cradles).
+
 ## Project standardisation
 
 All downstream projects standardise on GHC 9.12 as part of adopting

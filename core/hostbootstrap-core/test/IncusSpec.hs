@@ -35,7 +35,9 @@ argvCases =
       pushFileArgs vm "./wrapper.pyz" "/root/wrapper.pyz"
         @?= ["file", "push", "./wrapper.pyz", "hostbootstrap-demo-vm/root/wrapper.pyz"],
     testCase "restart reboots the guest" $
-      rebootVMArgs vm @?= ["restart", "hostbootstrap-demo-vm"]
+      rebootVMArgs vm @?= ["restart", "hostbootstrap-demo-vm"],
+    testCase "stop halts the VM without deleting it (project down)" $
+      stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
   ]
 
 guardCases :: [TestTree]
