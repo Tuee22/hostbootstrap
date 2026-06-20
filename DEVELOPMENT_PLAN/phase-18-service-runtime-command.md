@@ -11,18 +11,38 @@
 
 ## Phase Status
 
-**Status**: Blocked
+**Status**: Done
 
-**Blocked by**: phase-16 (the fixed command surface the `service` verb slots into), phase-15 (the
-binary-context contract: the service-role config and forwarded-parameter generation `service` reads).
+**Reopened from Blocked then closed (2026-06-19):** the fixed command surface (phase-16) and the
+binary-context contract (phase-15) it depended on are in place, the `service` command landed in code, and
+the demo's `web serve` → `service run web` migration is **real-run-validated** — the live demo's web pod
+runs `args: ["service","run","web"]` and serves **HTTP 200** at `localhost:30080` on the 16 GiB
+Apple-Silicon host ([phase-13](phase-13-hostbootstrap-demo.md)), reading its ConfigMap-delivered
+cluster-service config. No remaining work.
 
-`service` is **new core scope** — there has never been a `service` command; the demo's long-running web
-workload runs today through the load-bearing `web serve` verb. This phase adds the generic command so a
+`service` is **new core scope** — there had never been a `service` command; the demo's long-running web
+workload ran through the load-bearing `web serve` verb. This phase adds the generic command so a
 project's long-running roles are reached through the fixed surface (development_plan_standards § AA), not a
-per-project verb. It is a forward dependency on the earlier reopened phases (§ A: a later phase names its
-earlier prerequisites; no earlier phase is blocked by this one). The contract is documented now; the code
-lands once the fixed surface (phase-16) and the multi-role/forwarded-parameter context (phase-15) are in
-place, and is real-run-gated by the demo's `web serve` → `service run` migration ([phase-13](phase-13-hostbootstrap-demo.md)).
+per-project verb.
+
+The code is built and code-check-validated (`cabal test all` green, `cabal build all --ghc-options=-Werror`
+green, fourmolu/hlint clean on the demo):
+
+- `HostBootstrap.Service` ships the `ServiceHandler` / `ServiceRegistry` extension stream (variant name +
+  role action), `lookupServiceHandler`, `serviceVariantNames`, and `duplicateServiceVariants`; the registry
+  may be empty.
+- `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` on the core tree
+  (`coreCommandNames` = `ensure` / `context` / `project` / `test` / `service` / `check-code`); there is **no
+  `service down`**. `service run <variant>` gates as `Context.ServiceCommand` (the leaf-frame service-role
+  gate) then dispatches on the variant; an unknown variant or empty registry fails fast.
+- `HostBootstrap.CLI` threads the registry through `ProjectSpec` (`withServices`) alongside the other
+  extension streams; the entrypoint rejects duplicate service variants.
+- The demo registers the `web` variant (`demoServices`, `serveWeb`) and its chart pod's entrypoint is
+  `service run web` (the former `web serve`); `CLISpec` covers `service schema`, the leaf-frame refusal, and
+  the duplicate-variant rejection.
+
+Real-run-validated (§ C): the demo's live `web` pod serves HTTP 200 via `service run web` on the NodePort
+(the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 ## Phase Objective
 
@@ -34,10 +54,10 @@ Kubernetes controller and torn down by `project destroy` (§ O, § Y).
 
 ## Sprints
 
-### Sprint 18.1: The `service init|schema|run` command surface [Blocked]
+### Sprint 18.1: The `service init|schema|run` command surface [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-16
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` (`serviceCommandGroup`), `core/hostbootstrap-core/src/HostBootstrap/Service.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/architecture/run_models.md`, `README.md`
 
 #### Objective
@@ -60,12 +80,15 @@ project binary inherits it.
 
 #### Remaining Work
 
-All of the above is the open, real-run-gated work; blocked on the fixed surface from phase-16.
+Built and code-check-validated: `serviceCommandGroup` surfaces `service init|schema|run` (no `service
+down`); `service run` gates as `Context.ServiceCommand` (leaf-frame, never an orchestrator); `service init`
+writes a `cluster-service`-role config; `service schema` prints the variants + reflected config schema.
+`CLISpec` covers the leaf-frame refusal and `service schema`. Real-run-validated in the demo run ([phase-13](phase-13-hostbootstrap-demo.md)).
 
-### Sprint 18.2: The `ServiceType` ADT and service-handler registry [Blocked]
+### Sprint 18.2: The `ServiceType` ADT and service-handler registry [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-16
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`withServices`), `core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/architecture/library_hierarchy.md`, `system-components.md`
 
 #### Objective
@@ -87,12 +110,16 @@ Let a binary define **more than one** service type and dispatch `service run` ov
 
 #### Remaining Work
 
-All of the above; blocked on phase-16.
+Built and code-check-validated: the `ServiceRegistry` is a list of `ServiceHandler`s (variant name + role
+action) threaded through `ProjectSpec` via `withServices`; `service run` dispatches on the variant and fails
+fast on an unknown variant or empty registry; the entrypoint rejects duplicate variants (`validateProjectSpec`,
+`CLISpec`). The Dhall `ServiceType` ADT is modelled as the variant-name registry (the realistic L0 contract;
+a richer per-variant-parameter ADT is an optional follow-up). Real-run-validated in the demo run.
 
-### Sprint 18.3: Leaf-frame gating and ConfigMap-delivered config [Blocked]
+### Sprint 18.3: Leaf-frame gating and ConfigMap-delivered config [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-15, phase-16
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/chart/templates/deployment.yaml`, `demo/chart/templates/configmap.yaml`
 **Docs to update**: `documents/architecture/binary_context_config.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -115,12 +142,17 @@ Gate `service run` to a service-role frame and deliver its config the binary-con
 
 #### Remaining Work
 
-All of the above; blocked on phase-15 and phase-16.
+Built and code-check-validated: `service run` refuses a non-service-role config (the
+`Context.ServiceCommand` gate — only `cluster-service` / `daemon` leaf contexts allow it; verified on the
+real binary against a host-orchestrator config). The chart pod's entrypoint is `service run web` with the
+cluster-service `<project>.dhall` delivered as the mounted ConfigMap (`demo/chart/templates`).
+Real-run-validated: the live pod reads the ConfigMap-supplied config and serves HTTP 200 via `service run
+web` (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
-### Sprint 18.4: Demo `web serve` → `service run` migration [Blocked]
+### Sprint 18.4: Demo `web serve` → `service run` migration [Done]
 
-**Status**: Blocked
-**Blocked by**: phase-13
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`demoServices`), `demo/app/Main.hs` (`withServices`), `demo/chart/templates/deployment.yaml`, `demo/docker/Dockerfile`
 **Docs to update**: `documents/operations/demo_runbook.md`, `README.md`
 
 #### Objective
@@ -140,7 +172,12 @@ real-run gate for this phase.
 
 #### Remaining Work
 
-All of the above; blocked on the demo verb removal in phase-13.
+Built and code-check-validated: `web serve` → `service run web` (the `web` 'ServiceHandler' in
+`demoServices`, wired via `withServices`); `web bridge` → the build-image chain step (`runVmBootstrap`
+generates the PureScript bridge before the image build, so the Dockerfile no longer invokes a `web bridge`
+verb); the chart pod's `args` is `["service", "run", "web"]`. The `web` verb is removed. Real-run-validated:
+the full demo lifecycle on the 16 GiB Apple-Silicon host serves HTTP 200 via `service run web` on the
+NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 ## Documentation Requirements
 

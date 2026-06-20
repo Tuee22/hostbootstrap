@@ -131,9 +131,12 @@ streams) — so L0 hosts it without modification.
   hydrator role concentrates WAN egress; batching/scheduler policy is the scaling composition point; a
   lifecycle reconciler realizes declared topic/bucket lifecycle. The workflow is a declared topology
   (request-response / fan-out-in / batched / pipeline / stream) as data.
-- **Webservice / SPA** — a serving role whose API and UI are generated from typed Dhall (config-gen +
-  the schema-gen registry stream); the in-tree demo webapp is the minimal instance, an arbitrary-SPA
-  Dhall DSL the aspirational extension.
+- **Webservice / SPA** — a serving role whose API and UI are described as typed Dhall (config-gen + the
+  schema-gen registry stream). The in-tree demo is the minimal instance: it contributes its SPA as a typed
+  Dhall artifact (`demoWebApp` — title + tabs + each tab's API binding, reflected through the registry and
+  renderable with `context render --artifact demoWebApp`), mirroring the tabs the Halogen app renders.
+  Generating the SPA's source *from* that spec (rather than mirroring a hand-written app) is the aspirational
+  extension — an arbitrary-SPA Dhall DSL.
 
 ## Cross-Cutting Concerns
 

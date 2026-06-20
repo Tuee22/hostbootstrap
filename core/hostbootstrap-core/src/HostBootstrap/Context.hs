@@ -26,6 +26,7 @@ module HostBootstrap.Context
     defaultResourceEnvelope,
     defaultRoleName,
     contextForKind,
+    addRole,
     hostOrchestratorContext,
     deriveVMContextWithProvider,
     deriveVMContext,
@@ -55,7 +56,7 @@ module HostBootstrap.Context
 where
 
 import Control.Exception (SomeException, try)
-import Data.List (find)
+import Data.List (find, union)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -246,6 +247,20 @@ contextForKind projectName binaryName root envelope kind =
       allowedCommandClasses = commandClassesForKind kind,
       resourceEnvelope = envelope,
       childContextKinds = childKindsForKind kind
+    }
+
+-- | Grant a secondary role's authority to a context, so a single @<project>.dhall@
+-- can declare **more than one role** (development_plan_standards § X) — e.g. a
+-- project (deployment) authority that is also a @service@ authority. The primary
+-- 'contextKind' and topology frame are unchanged; only the allowed command
+-- classes and the local capabilities are unioned with the added role's, so each
+-- command's gate ('commandAllowed') sees the capability it needs. Pure and
+-- order-insensitive (idempotent when the role is already present).
+addRole :: ContextKind -> BinaryContext -> BinaryContext
+addRole role ctx =
+  ctx
+    { allowedCommandClasses = allowedCommandClasses ctx `union` commandClassesForKind role,
+      capabilities = capabilities ctx `union` capabilitiesForKind role
     }
 
 -- | Construct a host-orchestrator context.

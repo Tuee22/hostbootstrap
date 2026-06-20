@@ -36,12 +36,14 @@ daemon.freeze
 # Intermediate per-projection freezes (cabal freeze --project-file=core.project
 # writes core.project.freeze, moved to core.freeze in the base build).
 *.project.freeze
-# demo web build artifacts — regenerated in-container by web bridge / spago / esbuild.
+# demo web build artifacts — regenerated in-container by spago / esbuild.
+# NOTE: demo/web/src/Generated/ (the purescript-bridge output) is intentionally
+# NOT excluded: the build-image chain step now generates it host-side before the
+# build (the `web bridge` verb is gone, § P), so it must reach the build context.
 demo/web/.spago/
 demo/web/output/
 demo/web/node_modules/
 demo/web/public/
-demo/web/src/Generated/
 .tox/
 .nox/
 htmlcov/

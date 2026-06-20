@@ -9,14 +9,18 @@ import HostBootstrap.Config.Schema
   ( DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
+    TestConfig (..),
     decodeProjectConfigFile,
     decodeProjectConfigText,
+    decodeTestConfigText,
     defaultProjectConfig,
+    defaultTestConfig,
     deriveProjectConfigForKind,
     parseConfigRole,
     projectConfigSnapshotHash,
     renderProjectConfig,
     renderProjectConfigSnapshotLog,
+    renderTestConfig,
     validateProjectConfigForProject,
   )
 import HostBootstrap.Context
@@ -85,6 +89,10 @@ tests =
       testCase "rendered project-local config decodes back" $ do
         decoded <- decodeProjectConfigText (renderProjectConfig expected)
         decoded @?= expected,
+      testCase "rendered test.dhall decodes back to the same TestConfig" $ do
+        let tc = defaultTestConfig ["pristine-bootstrap", "all"] (Resources 6 "10GiB" "80GiB")
+        decoded <- decodeTestConfigText (renderTestConfig tc)
+        decoded @?= tc,
       testCase "rendered config hoists each vocabulary union into a single let" $ do
         let rendered = renderProjectConfig (defaultProjectConfig "demo" "/workspace/demo" HostOrchestrator)
         -- Each union is declared once at the top, not inlined at every use site.

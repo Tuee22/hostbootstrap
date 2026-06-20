@@ -37,6 +37,7 @@ executable hostbootstrap-demo
       base >=4.18 && <5
     , aeson
     , bytestring
+    , dhall
     , directory
     , filepath
     , hostbootstrap-core

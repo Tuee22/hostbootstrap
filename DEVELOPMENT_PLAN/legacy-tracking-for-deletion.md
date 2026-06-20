@@ -10,27 +10,9 @@
 
 ## Pending
 
-These obsolete surfaces still exist and are tracked for removal by the unified-harness / fixed-surface /
-resource-SSoT correction (development_plan_standards § W, § O, § P, § AA):
-
-- **`vmSizingWithHeadroom` budget-doubling and the full-budget production cluster cordon**
-  (`demo/src/HostBootstrapDemo/Commands.hs`) — `vmSizingWithHeadroom` adds a budget-sized headroom so the
-  VM is sized to 2× the budget, and `deployKindAction` cordons the production kind cluster to the *full*
-  budget; together they count the one ceiling twice. Replacement: the VM is sized to the budget (the VM
-  wall) and the production cluster is cordoned to a slice within it (§ O). Owning phase: phase-13.
-- **`demoSeams` inline bring-up mirror and the per-case cluster model**
-  (`demo/src/HostBootstrapDemo/Commands.hs`) — `seamSetup`'s `clusterCreate caseResources` → `kind load` →
-  `deployChart` re-implements the production `deploy-kind → push-image → deploy-chart` order, and
-  `testCaseProfile` / `caseResources` stand up an isolated per-case cluster — a second cluster-bring-up
-  representation beside the chain. Replacement: the harness drives the real `project up` (§ W). Owning
-  phase: phase-10, phase-13.
-- **The demo `vm` / `incus` / `web` project verbs and the `ProjectCommand` extension point**
-  (`demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`) — the
-  command surface is fixed to `project` / `test` / `service` / `context` / `check-code`, and
-  `hostbootstrap-core` is a library of composable tools, not a CLI topology (§ P). The IO is retained as
-  library/step functions; only the verbs and the extension point are removed. Replacement: `vm`/`incus` IO
-  → chain steps under `project up`; `web serve` → `service run` (`Web` variant, § AA); `web bridge` → the
-  build-image step. Owning phase: phase-13, phase-16, phase-18.
+No pending cleanup obligations. The unified-harness / fixed-surface / resource-SSoT correction
+(development_plan_standards § W, § O, § P, § AA) has landed in code; the surfaces it superseded are
+recorded under **Removed Surfaces** below. (An empty `Pending` section is valid — see **Rules**.)
 
 ## Retained Current Surfaces
 
@@ -41,10 +23,13 @@ These surfaces are intentionally present and are not cleanup obligations.
   passwordless sudo, `linux-gpu` additionally the NVIDIA container runtime; Apple: passwordless sudo +
   Xcode CLT + Homebrew), dispatched by substrate alone. Richer host logic lives in Haskell
   `HostBootstrap.HostPrereqs` plus the `ensure` reconcilers.
-- **Demo `web` / `vm` / `incus` verbs** — moved to **Pending** (above): the command surface is fixed to
-  `project` / `test` / `service` / `context` / `check-code` (§ P), so these verbs are deleted. Their IO is
-  retained as library/step functions the chain reuses (`runVmEnsure` / `runVmUp` / `runVmBootstrap`,
-  `ensureIncus`); `web serve` → `service run` and `web bridge` → the build-image step.
+- **Demo VM/provider chain-step IO** (`runVmEnsure` / `runVmUp` / `runVmBootstrap` /
+  `ensureIncusProvider` in `demo/src/HostBootstrapDemo/Commands.hs`) — the IO that the dissolved `vm` /
+  `incus` verbs used to expose is **retained as the metal chain's step actions** the core `project up`
+  interprets. Only the verbs were removed (see **Removed Surfaces**), not the IO.
+- **Demo web role + bridge IO** (`serveWeb` / `writeBridge`) — `serveWeb` is retained as the `web`
+  'ServiceHandler' in `demoServices` (`service run web`), and `writeBridge` is retained as the bridge
+  codegen the build-image chain step runs before the image build. Only the `web` verb was removed.
 
 ## Removed Surfaces
 

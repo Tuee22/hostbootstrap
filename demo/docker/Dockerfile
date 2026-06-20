@@ -43,10 +43,12 @@ RUN hostbootstrap-demo project init \
 # The mandatory code-check quality gate: the image cannot exist with violations.
 RUN hostbootstrap-demo check-code
 
-# The web build: generate PureScript types from the API, compile the Halogen SPA,
-# then bundle it.
-RUN hostbootstrap-demo web bridge \
-    && cd web \
+# The web build: compile the Halogen SPA from the bridge-generated PureScript
+# types and bundle it. The bridge codegen is re-homed into the build-image chain
+# step (it runs before this image build and stages the generated sources into the
+# context), so there is no `web bridge` verb — the command surface is fixed
+# (development_plan_standards § P).
+RUN cd web \
     && spago build \
     && esbuild --bundle --minify --outfile=public/app.js src/index.js
 

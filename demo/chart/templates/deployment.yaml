@@ -22,9 +22,11 @@ spec:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # The project container's ENTRYPOINT is the demo binary; `web serve`
-          # binds the warp/wai webservice on the service port.
-          args: ["web", "serve"]
+          # The project container's ENTRYPOINT is the demo binary; `service run web`
+          # runs the demo's `web` service variant — the warp/wai webservice — on
+          # the service port (the leaf-frame service run-model, § AA). The pod's
+          # cluster-service config arrives as the mounted ConfigMap below.
+          args: ["service", "run", "web"]
           env:
             - name: HOSTBOOTSTRAP_CURRENT_FRAME
               value: cluster-service-3

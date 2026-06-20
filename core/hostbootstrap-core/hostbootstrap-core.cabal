@@ -55,6 +55,7 @@ library
       HostBootstrap.Cluster.Lifecycle
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Harness
+      HostBootstrap.Service
       HostBootstrap.DocValidator
   build-depends:
       aeson

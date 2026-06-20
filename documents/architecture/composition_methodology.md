@@ -252,11 +252,16 @@ preserving durable host `.data` (§ O). `context` is read-only introspection (`i
 standardized harness. `context-init` mints the child `<project>.dhall`; `deploy-kind`/`deploy-chart`
 bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
 the project image; `context inspect` renders the topology with the current frame marked. A single
-`project up` on Incus/Linux stands up the live persistent stack end-to-end — a cordoned kind cluster (kind
-`extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod production Harbor
-(NodePort 30500), the project image pushed to the in-cluster registry, and the web chart pod at
-`localhost:30080` serving HTTP 200 — then `project down`/`project destroy` tear it down with host `.data`
-preserved. This document is the canonical statement of the model the validated build ships.
+`project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
+budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod
+production Harbor (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
+pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
+it down with host `.data` preserved. This is validated end-to-end on both substrates: Incus/Linux
+(2026-06-18) and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
+overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
+(see [harbor](../engineering/harbor.md)). The decoupled `test run all` drives that **same** `project up`
+under the test surface and reports `3/3 passed` (reachability + the Playwright e2e lifted into the VM
+frame). This document is the canonical statement of the model the validated build ships.
 
 ## Foundational Principles
 

@@ -11,11 +11,16 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened (2026-06-19)** to make the command surface **fixed and closed** — `project` / `test` / `service`
-/ `context` / `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas and `hostbootstrap-core`
-framed as a library of composable tools (see `## Remaining Work`).
+**Reopened (2026-06-19) and closed (2026-06-20)** to make the command surface **fixed and closed** —
+`project` / `test` / `service` / `context` / `check-code`, with `ProjectSpec` carrying no `ProjectCommand`
+deltas and `hostbootstrap-core` framed as a library of composable tools. The closure is real-run-validated:
+the fixed surface drove the full `project up` lifecycle + `test run all` (`3/3 passed`) end-to-end on a 16
+GiB Apple-Silicon host (2026-06-20, [phase-13](phase-13-hostbootstrap-demo.md)); `project up` / `project
+destroy` ran on Apple Silicon and the full `project down` / `up` / `destroy` set on Incus/Linux (2026-06-18)
+with the pure VM-stop/destroy argv unit-tested (`IncusSpec` / `LimaSpec`). See `## Remaining Work` for the
+delivered surface closure.
 
 This phase owns the **new** surface the "chain is the project" model targets: the `Step` algebra, the
 recursive interpreter, and the `project` lifecycle command, built on the reopened substrate phases —
@@ -42,18 +47,28 @@ contributes `demoChain :: ProjectConfig -> [Step]` + `demoFrameContext` + `demoT
 ## Remaining Work
 
 Close the command surface to the fixed core set and make `hostbootstrap-core` a **library of composable
-tools**, not a CLI topology (development_plan_standards § P, § T):
+tools**, not a CLI topology (development_plan_standards § P, § T).
 
-- The surface is exactly `project` / `test` / `service` / `context` / `check-code` for every project
-  binary. Remove `ProjectCommand` as a `ProjectSpec` extension point; a project extends core only through
-  the streams (lift chain, Dhall vocabulary, schema-gen, test seams, service handlers).
-- Delete the residual `vm` / `incus` / `web` project verbs (and the hand-run `ensure` verb, retained only
-  as a hidden debug surface). Their IO is **retained as library/step functions** the chain reuses; only the
-  verbs are removed (see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
-- Re-home the build-time `web bridge` into the **build-image** chain step.
-- Forward dependency: the `service` command itself is owned by
-  [phase-18](phase-18-service-runtime-command.md) (this phase exposes the fixed surface it slots into); the
-  demo's verb removal lands in [phase-13](phase-13-hostbootstrap-demo.md). Real-run-gated by the demo run.
+**Landed in code (2026-06-19), code-check-validated** (`cabal test all` green; `cabal build all
+--ghc-options=-Werror` green; fourmolu/hlint clean on the demo; verified on the real binary that
+`hostbootstrap-demo --help` lists only `ensure` / `context` / `project` / `test` / `service` /
+`check-code`):
+
+- The surface is exactly `project` / `test` / `service` / `context` / `check-code` for every project binary.
+  The `ProjectCommand` / `projectCommand` / `psCommands` extension point is **removed** from
+  `HostBootstrap.CLI`; a project extends core only through the streams (lift chain, Dhall vocabulary,
+  schema-gen, test suite, service handlers — `withChain` / `withFrameContext` / `withTeardown` /
+  `withServices`). `runHostBootstrapCLI` no longer merges project command mods.
+- The residual demo `vm` / `incus` / `web` project verbs are **deleted** (`demoCommands` is gone); their IO
+  is retained as the chain-step library functions `runVmEnsure` / `runVmUp` / `runVmBootstrap` /
+  `ensureIncusProvider` and the `web` 'ServiceHandler' / build-image bridge codegen
+  ([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+- The build-time `web bridge` is **re-homed into the build-image chain step** (`runVmBootstrap` runs
+  `writeBridge` before the image build; the Dockerfile no longer invokes a `web bridge` verb).
+- The `service` command it slots into is owned by [phase-18](phase-18-service-runtime-command.md).
+
+Remaining (real-run-gated, § C): the fixed surface exercised by the full demo `project up` run
+([phase-13](phase-13-hostbootstrap-demo.md)).
 
 ## Phase Objective
 

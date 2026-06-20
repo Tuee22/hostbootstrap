@@ -10,9 +10,10 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-15 built the host-management substrate (validated by the full real demo lifecycle — a
-> real Apple Silicon Lima run, `3/3 passed` including Playwright e2e). Phases 10/13/14/15/16/17 are reopened
-> (`Active`) and phase 18 added for the **unified-harness / fixed-surface / resource-SSoT** correction. The
+> Note: All phases (0-18) are `Done`. The **unified-harness / fixed-surface / resource-SSoT** correction
+> (phases 10/13/14/15/16/17/18) is complete — code-check-validated and real-run-validated end-to-end (the
+> full `project up` lifecycle + `test run all` `3/3 passed` on both Incus/Linux and a 16 GiB Apple-Silicon
+> host, 2026-06-20). The
 > command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` — no per-project
 > verbs; `hostbootstrap-core` is a **library of composable tools**, not a CLI topology (§ P). The test
 > harness **drives the real `project up`** under a test config rather than re-expressing bring-up (§ W); the
@@ -57,8 +58,8 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
 | `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
-| `HostBootstrap.Harness` | 10 | partial | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb through `ProjectSpec`; `emptySuite` is bare-only) + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam. **Reopened (§ W):** the engine drives the real `project up` per test config (writes a test `<project>.dhall`, runs `project up`, asserts in-frame, `project destroy`) with the two fail-fast preconditions + the self-created-only delete-guard, rather than standing up isolated per-case clusters |
-| `HostBootstrap.Service` | 18 | no | the `service init\|schema\|run` command body, the `ServiceType` ADT + project-contributed service-handler registry, leaf-frame fail-fast gating, and ConfigMap-delivered service config (§ AA); target surface, real-run-gated |
+| `HostBootstrap.Harness` | 10 | yes | the kept pure cores — `runMatrix` + `Seams` + `sliceBudget` + `selectRunModel` + `guardTestDelete` + the L0 OneShot seam — plus the **recast stack-driven `TestSuite`** `(safety, bring-up, cases, assertion, tear-down)` and `runSuiteSelection`/`testSafetyPreconditions`/`emptySuite`. The engine drives the real `project up` (bring-up) / `project destroy` (tear-down) per test config, enforces the two fail-fast preconditions, owns the run's `.test_data` lifecycle under the self-created-only delete-guard (`testDataRoot` / `selfCreatedTestDataRemoval` / `withSelfCreatedTestData`), and reuses `runMatrix` for the per-case assertions — no second bring-up path (§ W). Built + unit-tested; real-run-validated by `test run all` (`3/3 passed`, 2026-06-20) |
+| `HostBootstrap.Service` | 18 | yes | `ServiceHandler` / `ServiceRegistry` (variant name + role action), `lookupServiceHandler` / `serviceVariantNames` / `duplicateServiceVariants`; threaded through `ProjectSpec` (`withServices`). Drives `HostBootstrap.Command.serviceCommandGroup` (`service init\|schema\|run`, no `service down`); `service run` gates as `Context.ServiceCommand` (leaf-frame) then dispatches on the variant (§ AA). Built + unit-tested; real-run-validated — the live web pod runs `service run web` and serves HTTP 200 (2026-06-20) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11, 14 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`) + `liftSubcommandWithAuth` (forwards a Docker Hub credential into a container-through-a-VM frame over stdin, never argv); the subcommand-level superset of `HostTarget` |
 | `HostBootstrap.Registry` | 14 | yes | the effect-only Docker Hub credential capability: opaque `RegistryAuth` (no Dhall codec, redacted `Show`), host-only discovery (`discoverHostRegistryAuth`, Docker-Hub-only projection), and the ephemeral forwarding seams (`dockerAuthStdinWrapper`, `withForwardedRegistryAuth`) that authenticate nested pulls without persisting, leaking, or representing the secret in Dhall |
@@ -67,9 +68,9 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Lima` | 11.6 | yes | Lima VM lifecycle argv for Apple Silicon demo execution (`start`, `shell`, `copy`, `list`, name-guarded `delete`) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
-| `HostBootstrap.Command` (project group) | 16 | partial | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-gated |
+| `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-validated end-to-end on Incus/Linux and Apple Silicon |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, with the pure `renderChainPlan` dry-run render and `stepsForFrame`/`chainFrames` segmentation |
-| `HostBootstrap.Chain` | 16 | partial | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-gated |
+| `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-validated |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -235,10 +236,10 @@ See
 
 | Core verb group (target) | Phase | Implemented | Source |
 |-----------------|-------|-------------|--------|
-| `project init\|up\|down\|destroy` | 16 | partial | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply + VM stop-without-delete real-run-gated; subsumes `config init`, `cluster`, `context create` |
-| `context` (read-only introspection) | 15, 16 | partial | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
-| `test init\|run <suite\|all>` | 10, 17 | partial | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
-| `service init\|schema\|run` | 18 | partial | long-running roles (`HostDaemon`/service run-model); `service run` is a leaf-frame pod entrypoint dispatched over a project-contributed `ServiceType` ADT; no `service down` (§ AA) |
+| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply + VM stop-without-delete real-run-validated end-to-end; subsumes `config init`, `cluster`, `context create` |
+| `context` (read-only introspection) | 15, 16 | yes | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
+| `test init\|run <suite\|all>` | 10, 17 | yes | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
+| `service init\|schema\|run` | 18 | yes | long-running roles (`HostDaemon`/service run-model); `service run` is a leaf-frame pod entrypoint dispatched over a project-contributed `ServiceType` ADT; no `service down` (§ AA) |
 | `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
 | `ensure <tool>` (hidden debug; incl. `incus`) | 3, 11 | yes | the `ensure` reconcilers, normally invoked as chain steps within `project up` |
 
@@ -247,7 +248,8 @@ vm|container|service`) are **removed** — `config init` -> `project init`, `clu
 `project up|down|destroy`, `context create` -> the `context-init` chain step — and `config
 show|schema|render|path` are folded into the read-only `context` command (recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`). The effectful
-`project up` apply (recursive provisioning) remains real-run-gated (phase-16).
+`project up` apply (recursive provisioning) is real-run-validated end-to-end on Incus/Linux and a 16 GiB
+Apple-Silicon host (phase-16, phase-13).
 
 ## hostbootstrap-demo (worked consumer)
 

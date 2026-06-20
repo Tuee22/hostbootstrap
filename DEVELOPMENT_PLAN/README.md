@@ -36,15 +36,23 @@ lifecycle command, with a read-only `context` introspection command and a `test`
 the same fractal bootstrap — provision the frame, build the pb in it, hand off `pb project up` — of which
 the Python bootstrapper is the metal-frame instance.
 
-Phases 10, 13, 14, 15, 16, and 17 are **reopened** (`Active`) and phase 18 is added for the
-**unified-harness / fixed-surface / resource-SSoT** correction: the command surface is **fixed** to
-`project` / `test` / `service` / `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a
-library of composable tools, § P); the test harness **drives the real `project up`** under a test config
-rather than re-expressing bring-up (§ W); the declared budget is the **one ceiling = the VM wall** with the
-cluster a **slice within it** (no doubling, § O); each `<project>.dhall` carries an explicit, possibly
-multi-role context generated from forwarded parameters (§ X); and long-running roles run through the new
-`service` command (§ AA). The earlier phases stay `Done` because the defects are corrected in the phases
-that own them, with **forward-only dependencies** — no earlier phase is blocked by a later one. The flat
+The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18) is
+**complete — all phases are `Done`**. The command surface is **fixed** to `project` / `test` / `service` /
+`context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
+the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
+(§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (no
+doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role context (`project init
+--also-role`, § X); and long-running roles run through the `service` command (§ AA). It is code-check- and
+real-run-validated: `cabal test all` (226), `cabal build all --ghc-options=-Werror`, fourmolu/hlint on the
+demo, and the Python gate are green, and the **full `project up` lifecycle + `test run all` (`3/3 passed`,
+incl. the Playwright e2e lifted into the VM frame) run end-to-end on both Incus/Linux (2026-06-18) and a 16
+GiB Apple-Silicon host (2026-06-20)** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via the
+dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). The two formerly-noted
+follow-ups are now **delivered**: `test.dhall` is a reflected record carrying per-test resource overrides
+(`TestConfig`, written by `test init`, read by `test run`), and the demo's SPA is described as typed Dhall
+data (the `demoWebApp` schema-gen artifact). The only remaining aspirational item is generating the SPA's
+source *from* that spec (full SPA codegen), tracked as a vision note in
+[composition_patterns.md](../documents/engineering/composition_patterns.md), not open phase work. The flat
 `cluster` / `config init` / `context create` verbs, the demo `vm` / `incus` / `web` verbs, the
 `ProjectCommand` extension, the harness bring-up mirror, and the budget-doubling VM sizing are superseded
 ([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
@@ -68,15 +76,15 @@ for the component inventory.
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
-| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active |
+| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
-| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Active |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
-| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Active |
-| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Active |
-| 18 | [Service runtime command](phase-18-service-runtime-command.md) | Blocked |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
+| 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
+| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |
+| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Done |
+| 18 | [Service runtime command](phase-18-service-runtime-command.md) | Done |
 
 ## Governance
 

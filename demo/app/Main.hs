@@ -1,18 +1,19 @@
 {- | The hostbootstrap-demo metal-orchestrator binary.
 
 It calls 'runHostBootstrapCLI' with the demo's project spec, so the demo binary
-shows the inherited core verbs (@ensure@, @config@, @cluster@, @test@,
-@check-code@) alongside its own noun-first verbs (@incus@/@vm@/@harbor@/@web@)
-without re-implementing any core verb. See
-@documents/operations/demo_runbook.md@.
+surfaces exactly the fixed core command tree (@project@ / @test@ / @service@ /
+@context@ / @check-code@) — it adds no verbs. The demo extends the core only
+through the extension streams threaded into its 'projectSpec': its lift chain
+('withChain'), per-frame lift context ('withFrameContext'), chain-frame teardown
+('withTeardown'), service-handler registry ('withServices'), test suite, schema
+artifacts, and @check-code@ action. See @documents/operations/demo_runbook.md@.
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withTeardown)
-import HostBootstrap.Harness (TestSuite (TestSuite))
+import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServices, withTeardown)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoCases, demoChain, demoCheckCode, demoCommands, demoFrameContext, demoSeams, demoTeardown)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChain, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
 import System.Exit (die)
 
 main :: IO ()
@@ -33,6 +34,12 @@ main =
                 demoChain
                 ( withFrameContext
                     (demoFrameContext substrate)
-                    (withTeardown demoTeardown (projectSpec demoCommands (TestSuite demoSeams demoCases) demoCheckCode demoArtifacts))
+                    ( withTeardown
+                        demoTeardown
+                        ( withServices
+                            demoServices
+                            (projectSpec demoTestSuite demoCheckCode demoArtifacts)
+                        )
+                    )
                 )
             )

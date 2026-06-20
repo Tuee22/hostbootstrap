@@ -68,12 +68,69 @@ The `hostbootstrap-demo` consumer (`demo/`) drives this convention end-to-end. I
 `deploy-harbor` and `push-image` steps belong to the container frame of
 `demoChain :: ProjectConfig -> [Step]`, the demo's contributed chain, and `project
 up` interprets them as it descends into that frame. `deploy-harbor` installs the
-in-cluster Harbor with `helm upgrade --install harbor harbor/harbor`, exposes it as
-a NodePort on port 30500, and waits for all eight Harbor pods to be Ready.
+in-cluster Harbor with `helm upgrade --install harbor harbor/harbor --version
+1.18.3`, **overriding every Harbor component image to the dual-arch
+`ghcr.io/octohelm/harbor/*` mirror** (see the next section), exposes it as a
+NodePort on port 30500, and waits for all eight Harbor pods to be Ready.
 `push-image` loads the project image into the kind nodes, logs in to the registry
 at `localhost:30500`, tags the image, and pushes it to
 `localhost:30500/library/hostbootstrap-demo:demo`. The push runs as part of the
 live persistent stack that `project up` stands up.
+
+## Dual-arch Harbor component images
+
+The in-cluster Harbor's own component images must match the architecture of the
+kind node they run on — the same host-native, no-emulation discipline this page
+applies to project image *pushes*, applied now to the registry the demo *deploys*.
+
+The upstream `goharbor/*` images (`harbor-core`, `harbor-db`, `redis-photon`,
+`registry-photon`, `nginx-photon`, `harbor-portal`, `harbor-jobservice`,
+`harbor-registryctl`, `trivy-adapter-photon`) are published as **amd64-only
+single-arch manifests** — they carry no `linux/arm64` variant. On an `arm64` kind
+node (the substrate when the VM runs on Apple Silicon) every Harbor pod then
+crash-loops with `exec format error`, because the node runs an amd64 binary it
+cannot execute. This is a substrate floor, not a resource limit: the kind node
+reports `MemoryPressure False` while the pods crash.
+
+The demo's `deploy-harbor` step therefore retargets each component's
+`image.repository` / `image.tag` to the community **`ghcr.io/octohelm/harbor/*`**
+mirror at the chart-matched tag `v2.14.0`, which publishes both `linux/amd64` and
+`linux/arm64` for every component. The chart is pinned to `1.18.3` so its templates
+stay in lockstep with the `v2.14.0` images. Harbor then runs natively on whatever
+architecture the VM is — `arm64` on Apple Silicon, `amd64` on Linux — with no
+emulation and no cross-arch indirection.
+
+> **WRONG**
+>
+> ```sh
+> helm upgrade --install harbor harbor/harbor --set expose.type=nodePort
+> ```
+>
+> The default chart pulls `goharbor/*`, which is amd64-only. On an `arm64` kind
+> node the pods crash-loop with `exec format error`, and `--wait` times out on
+> `harbor-core not ready`. Pre-pulling and `kind load`-ing the same images does
+> **not** help: the host pull on Apple Silicon still resolves to the only
+> (amd64) manifest, so the loaded image is still the wrong architecture. `kind
+> load` fixes registry rate limits and network resolution, not architecture.
+>
+> **RIGHT**
+>
+> ```sh
+> helm upgrade --install harbor harbor/harbor --version 1.18.3 \
+>   --set core.image.repository=ghcr.io/octohelm/harbor/harbor-core \
+>   --set core.image.tag=v2.14.0 \
+>   # …and the same repository/tag override for every other component…
+> ```
+>
+> Dual-arch (`linux/amd64` + `linux/arm64`) images at a tag matched to the pinned
+> chart, so the kubelet selects the node-native variant and Harbor runs without
+> emulation on either substrate.
+
+`hostbootstrap-core` does not own this override — it is a property of the demo's
+contributed chain step (`deployHarborAction` in
+`demo/src/HostBootstrapDemo/Commands.hs`), consistent with the core never owning
+Harbor configuration. A derived project that deploys Harbor adopts the same
+dual-arch override in its own `deploy-harbor` step.
 
 ## See also
 

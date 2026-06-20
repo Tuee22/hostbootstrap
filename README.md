@@ -209,9 +209,12 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a project
 binary. The fixed `project`/`test`/`service`/`context`/`check-code` surface, the harness driving the real
-`project up`, and the `service` command are the **target**; the unified-harness / service migration is
-tracked as reopened, real-run-gated work — see [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)
-and the "Current state" note in the Architecture section above. See
+`project up`, and the `service` command are **implemented and code-check-validated** (the `ProjectCommand`
+extension point and the demo `vm`/`incus`/`web` verbs are removed; `service` + its registry exist; the
+harness drives `project up`); their **closing gate is the real demo run**, which needs operator-only
+prerequisites (a host Docker Hub login + a republished `arm64` base). See
+[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md) and the "Current state" note in the Architecture
+section above. See
 [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
 for the command-tree extension contract.
 

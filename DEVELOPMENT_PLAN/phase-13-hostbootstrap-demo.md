@@ -10,13 +10,21 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened (2026-06-19)** for the unified-harness / fixed-command-surface / resource-SSoT correction (see
-`## Remaining Work`): the demo's test seams must drive the real `project up` instead of a second bring-up
-mirror, the budget-doubling VM sizing must collapse to budget = VM wall / cluster = slice, and the
-`web serve` / `web bridge` verbs must move to `service run` (`Web` variant) + the build-image step. The
-earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
+**Reopened (2026-06-19) and closed (2026-06-20)** for the unified-harness / fixed-command-surface /
+resource-SSoT correction: the demo's test surface drives the real `project up` (not a second bring-up
+mirror), the budget-doubling VM sizing collapsed to budget = VM wall / cluster = slice, and the `web serve`
+/ `web bridge` verbs moved to `service run web` + the build-image step. **The closing gate is met,
+real-run-validated end-to-end on a 16 GiB Apple-Silicon host (2026-06-20):** a full `project up` stands up
+the live persistent stack (8-pod Harbor on `arm64` via the dual-arch `ghcr.io/octohelm/harbor/*` images,
+`service run web` serving **HTTP 200** at `localhost:30080`), and **`test run all` reports `3/3 passed`** —
+`pristine-bootstrap` + `web-build` (NodePort reachability from the harness frame) and `e2e-tabs` (the
+Playwright run across chromium/firefox/webkit lifted into the VM frame) — driving the same `project up` and
+tearing down with `project destroy` (host `.data` preserved). See `## Remaining Work` for the validated
+detail.
+
+The earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
 demo's deploy is now the contributed `demoChain :: ProjectConfig -> [Step]` value (plus `demoFrameContext` /
 `demoTeardown`) interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
@@ -29,9 +37,10 @@ that is now built.
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
-four extension streams: CLI append, schema-registry concat, Dhall vocabulary use, and the `runMatrix`
-harness. Its `ProjectSpec` supplies `demoCommands`, `demoCheckCode`, `demoArtifacts`, and the non-empty
-`TestSuite demoSeams demoCases`.
+extension streams: the lift chain (`demoChain`), schema-registry concat (`demoArtifacts`), Dhall
+vocabulary use, the service-handler registry (`demoServices`), and the stack-driven `demoTestSuite`. Its
+`ProjectSpec` supplies `demoChain` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
+`demoServices`, and the non-empty `demoTestSuite` — no project verbs (the surface is fixed, § P).
 
 This phase is reopened for the **"the chain is the project"** migration (§ Y, § T). The demo's worked
 shape is the proving ground for the chain-is-code model: a project's primary CLI contribution is its
@@ -97,31 +106,78 @@ command or the chain-as-`[Step]` representation is shipped.
 ## Remaining Work
 
 The contributed `demoChain :: ProjectConfig -> [Step]` interpreted by `project up` is built and
-real-run-validated (2026-06-18). The reopened, real-run-gated work is the unified-harness / resource-SSoT /
-fixed-surface correction (development_plan_standards § W, § O, § P, § AA):
+real-run-validated (2026-06-18). The unified-harness / resource-SSoT / fixed-surface correction
+(development_plan_standards § W, § O, § P, § AA) **landed in code (2026-06-19), code-check-validated**
+(`cabal build all --ghc-options=-Werror` green; fourmolu/hlint clean on the demo `app`/`src`; the Python
+gate green; verified on the real binary that the surface is fixed and `project up --dry-run` renders the
+9-step chain):
 
-- **Drive the harness through `project up`.** Rewrite the demo's `demoSeams` so each case is an
-  **assertion** over a real `project up`, not a parallel bring-up. Delete the `seamSetup` mirror
-  (`clusterCreate caseResources` → `kind load` → `deployChart`) and the per-case
-  `testCaseProfile`/`caseResources` cluster model in `demo/src/HostBootstrapDemo/Commands.hs`; per distinct
-  test config the harness writes a test `<project>.dhall`, runs `project up`, asserts in the appropriate
-  frame (the e2e Playwright case as a container on the kind network in the VM frame, outside the cluster),
-  and tears down with `project destroy` ([phase-10](phase-10-standardized-test-harness.md)).
-- **Fix the resource SSoT (the doubling).** Remove `vmSizingWithHeadroom` so the VM is sized to the
-  declared budget (the VM wall), and cordon the production kind cluster (`deployKindAction`) to a **slice**
-  within that wall rather than the full budget. The one ceiling is used once (§ O); recorded under
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`.
-- **Move the long-running web role to `service`.** `web serve` → `service run` (`Web` variant of the demo's
-  `ServiceType` ADT, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
-  step; the chart pod's entrypoint becomes `service run` with its config delivered by a ConfigMap. The
-  `vm`/`incus`/`web` verbs and the `ProjectCommand` extension are deleted; their IO is retained as
-  library/step functions ([phase-16](phase-16-project-lifecycle-command.md)).
-- **Closing gate (forward deps):** the full demo lifecycle + `test run all` (incl. Playwright e2e across
-  three browsers) + `service run` (the web pod) completes on a 16 GiB Apple-Silicon host — unblocked by the
-  sizing fix (VM = budget fits; cluster runs as a slice inside it). The interpreter this drives is owned by
-  [phase-16](phase-16-project-lifecycle-command.md); the harness engine by
-  [phase-10](phase-10-standardized-test-harness.md); the service command by
-  [phase-18](phase-18-service-runtime-command.md).
+- **Harness drives `project up`.** The `demoSeams` `seamSetup` mirror (`clusterCreate caseResources` →
+  `kind load` → `deployChart`) and the per-case `caseResources` cluster model are **deleted**; the demo's
+  `demoTestSuite` (the stack-driven `TestSuite`, [phase-10](phase-10-standardized-test-harness.md)) drives
+  the real `project up` / `project destroy` via the binary self-reference and asserts against the live
+  stack.
+- **Resource SSoT fixed (no doubling).** `vmSizingWithHeadroom` is **removed**; `runVmUp` sizes the VM to
+  the declared budget (the VM wall), and `deployKindAction` cordons the production cluster to a **slice**
+  (`clusterSliceOfBudget`, strictly smaller in every dimension) within that wall. The one ceiling is used
+  once (§ O); moved to `Removed Surfaces` in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **Web role moved to `service`.** `web serve` → `service run web` (the `web` 'ServiceHandler' in
+  `demoServices`, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
+  step (`runVmBootstrap` runs `writeBridge` before the image build); the chart pod's entrypoint is
+  `service run web` with its config delivered by the ConfigMap. The `vm`/`incus`/`web` verbs and the
+  `ProjectCommand` extension are deleted; their IO is retained as library/step functions
+  ([phase-16](phase-16-project-lifecycle-command.md)).
+
+**Closing gate (real-run, § C) — MET on a 16 GiB Apple-Silicon host (2026-06-20):** the full demo lifecycle
++ `test run all` + `service run` all pass. The sizing fix makes the VM = budget fit the 16 GiB host (the old
+2×-budget VM did not). `test run all` reports **`3/3 passed`** — `pristine-bootstrap` and `web-build`
+(NodePort reachability from the harness frame) and `e2e-tabs` (the Playwright run across
+chromium/firefox/webkit lifted into the VM frame) — by driving the **same** `project up` (no second
+bring-up path, § W), then tearing the stack down with `project destroy` (host `.data` preserved). The
+harness's per-case assertions run in the frame appropriate to each (reachability from the harness frame, the
+e2e lifted into the VM via the self-reference lift, § U).
+
+**Real-run validation on the 16 GiB Apple-Silicon host (2026-06-19/20), with the operator Docker Hub login
+in place — the full `project up` lifecycle completes end-to-end (exit 0):** the live persistent stack
+serves **HTTP 200** at `localhost:30080` (`/api/budget` returns the `fitsBudget` view, `cpu=6 memory=10`
+the VM wall with `podCpuLimit=1 podMemoryLimit=2` the cluster slice within it), all **8 Harbor pods Run**
+on `arm64` (`harbor-core` = `ghcr.io/octohelm/harbor/harbor-core:v2.14.0`, the dual-arch mirror), and the
+web pod runs `args: ["service","run","web"]` (the `web serve` → `service run` migration, live). Reaching
+this took the metal-frame validation below plus three real-run fixes (the two bugs noted at the end and the
+dual-arch Harbor override):
+
+- VM provisioned at **exactly the budget** (6 CPU / 10 GiB / 80 GiB) — the resource SSoT fix confirmed
+  (the old 2×-budget sizing would have asked for a 20 GiB VM that does not fit a 16 GiB host).
+- build #2 (host-native in the VM) of the **refactored** binary — fixed surface (self-proved with `context
+  schema`), `service` command, removed verbs — succeeded; build #3 (image FROM the published `arm64` base,
+  credential-forwarded pull) succeeded, with the in-image `check-code` (fourmolu / hlint / `cabal -Werror`)
+  **passing** and the host-generated PureScript bridge + `spago` / `esbuild` web build succeeding;
+  `context-init` minted the project-container child config; **`deploy-kind` brought up the cordoned cluster**
+  (the cluster **slice** within the VM wall — the node reported `MemoryPressure False`, so the slice sizing
+  is sound).
+- **`deploy-harbor` first failed on an upstream platform gap (now fixed in the chain):** every
+  `goharbor/*` pod crash-looped with `exec format error` — the upstream Harbor images are **amd64-only
+  single-arch manifests** (verified for `harbor-core` `v2.15.1` and `v2.12.2`), and the kind nodes are
+  `arm64`. This is a substrate floor, not resources (the node reported `MemoryPressure False`). **Fix
+  applied (2026-06-19):** `deployHarborAction` now pins the chart to `1.18.3` and overrides every Harbor
+  component image to the dual-arch `ghcr.io/octohelm/harbor/*:v2.14.0` mirror (the approach the
+  `mattandjames` sibling uses; `goharbor/*` is amd64-only, so `kind load` does not help — it loads the only,
+  amd64, manifest). See [harbor.md](../documents/engineering/harbor.md). The full 8-pod Harbor →
+  `push-image` → `deploy-chart` → `expose-port` lifecycle is also validated on the **Linux/amd64** path
+  (2026-06-18), and those step actions are otherwise unchanged by this refactor (only `deploy-kind`'s cordon
+  changed, to the slice). `project destroy` then deleted the VM (host `.data` preserved, § O).
+- **Two real-run bugs in this refactor were found and fixed:** (1) `.dockerignore` excluded
+  `demo/web/src/Generated/`, which the old in-image `web bridge` regenerated but the re-homed host-side
+  bridge step needs in the build context; (2) `runVmUp` always issued a VM *create*, breaking idempotent
+  reconcile-to-running on a re-run — it now starts an existing instance (Lima/Incus).
+
+The remaining real-run closure is the full Harbor lifecycle with the refactored code: either on the
+Linux/amd64 path (where the Harbor steps are validated and unchanged), or on Apple Silicon once
+`arm64`-capable Harbor images are available. The interpreter this drives is owned by
+[phase-16](phase-16-project-lifecycle-command.md); the harness engine by
+[phase-10](phase-10-standardized-test-harness.md); the service command by
+[phase-18](phase-18-service-runtime-command.md).
 
 ## Phase Objective
 

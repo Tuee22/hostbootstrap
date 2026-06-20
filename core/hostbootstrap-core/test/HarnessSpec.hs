@@ -123,13 +123,15 @@ suiteCases =
         Right _ -> assertFailure "expected Left for an unknown case"
   ]
   where
-    twoCaseSuite = TestSuite passSeams [Case "a" 1 False, Case "b" 1 False]
-    passSeams =
-      Seams
-        { seamSetup = \_ -> pure (),
-          seamRun = \_ _ -> pure Pass,
-          seamTeardown = \_ _ -> pure ()
-        }
+    -- A stack-driven suite (trivial bring-up, passing assertions) — exercises
+    -- `runSuiteSelection`'s case selection over the new TestSuite shape.
+    twoCaseSuite =
+      TestSuite
+        (pure (Right ()))
+        (pure ())
+        [Case "a" 1 False, Case "b" 1 False]
+        (\_ _ -> pure Pass)
+        (\_ -> pure ())
 
 guardCases :: [TestTree]
 guardCases =
@@ -137,7 +139,10 @@ guardCases =
       guardTestDelete "demo-test-" "demo-test-case1" @?= Right "demo-test-case1",
     testCase "a non-prefixed (production) name is refused" $
       guardTestDelete "demo-test-" "demo"
-        @?= Left (NotPrefixed "demo-test-" "demo")
+        @?= Left (NotPrefixed "demo-test-" "demo"),
+    testCase "self-created .test_data is removed; a found one is preserved" $ do
+      selfCreatedTestDataRemoval False testDataRoot @?= [testDataRoot]
+      selfCreatedTestDataRemoval True testDataRoot @?= []
   ]
 
 sliceCases :: [TestTree]

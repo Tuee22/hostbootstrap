@@ -12,11 +12,13 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened (2026-06-19)**: `test run` drives the real `project up` under a test-written config, enforces
-the two fail-fast safety preconditions, uses `.test_data`, and deletes only what it created; `context` is
-uniform over all `<project>.dhall`s (see `## Remaining Work`).
+**Reopened (2026-06-19) and closed (2026-06-20)**: `test run` drives the real `project up`, enforces the two
+fail-fast safety preconditions, uses the L0 `.test_data` self-created-only delete-guard, and deletes only
+what it created; `context` is uniform over all `<project>.dhall`s and read-only. Real-run-validated on a 16
+GiB Apple-Silicon host (2026-06-20): `test run all` reported `3/3 passed` driving the same `project up` and
+tearing down with `project destroy` (see `## Remaining Work`).
 
 The chain-driven test surface and the read-only `context` introspection command are implemented and
 unit-tested. `test init` writes the per-project `<project>.test.dhall` gated on an existing project config;
@@ -36,22 +38,36 @@ persistent stack is owned by [phase-16](phase-16-project-lifecycle-command.md).
 ## Remaining Work
 
 Make the test surface **drive** `project up` and enforce the safety contract
-(development_plan_standards § Z):
+(development_plan_standards § Z).
 
-- `test run` writes a test-specific `<project>.dhall` (the test-config overrides), runs `project up` over
-  the project's own chain, asserts in the appropriate frame, and tears down with `project destroy` — one
-  `project up` per distinct test config. The harness owns no second bring-up path (the engine recast is
-  [phase-10](phase-10-standardized-test-harness.md)).
-- Enforce two **hard fail-fast safety preconditions** before any test runs: refuse if a `<project>.dhall`
-  already exists (never overwrite a production config), and refuse if a production cluster is running (never
-  touch production state). Either → no tests run.
-- Test durable storage is `.test_data` (never `.data`); teardown deletes **only** the `<project>.dhall` and
-  `.test_data` the harness created this run (the self-created-only delete-guard, mirroring never-delete-
-  `.data`, § O).
-- The read-only `context` command treats **all** `<project>.dhall`s uniformly (§ X).
-- Forward dependency: the `project up` interpreter is owned by
-  [phase-16](phase-16-project-lifecycle-command.md); real-run-gated by the demo run
-  ([phase-13](phase-13-hostbootstrap-demo.md)).
+**Landed in code (2026-06-19), code-check-validated** (`cabal test all` green):
+
+- The stack-driven `TestSuite` (phase-10) makes `test run` drive the real `project up` and tear down with
+  `project destroy` — one bring-up per distinct test config, no second bring-up path. The demo wires
+  `demoTestUp` (`project up`) / `demoTestDown` (`project destroy`) via the binary self-reference.
+- The two **hard fail-fast safety preconditions** are enforced by `testSafetyPreconditions` and checked in
+  `runSuiteSelection` before any bring-up: refuse if a production config already exists, refuse if a
+  production cluster is running — either → no tests run (the demo's `demoTestSafety` supplies the
+  cluster-running detector).
+- The read-only `context` command already treats all `<project>.dhall`s uniformly and has **absorbed** the
+  former `config schema` / `config show FILE` / `config path` / static `config render` surfaces (the
+  `context` group is `inspect` / `show` / `schema` / `render` / `path`); the `context create` mutation verb
+  is gone (re-homed as the `context-init` chain step). No mutation surface remains on `context`.
+
+**Real-run-validated (2026-06-20):** on a 16 GiB Apple-Silicon host, `test run all` enforced the safety
+preconditions, drove the real `project up`, asserted against the live stack in-frame (NodePort reachability
+from the harness frame + the `e2e-tabs` Playwright run lifted into the VM frame), and tore down with
+`project destroy` — **`3/3 passed`** ([phase-13](phase-13-hostbootstrap-demo.md)).
+
+**`.test_data` self-created-only delete-guard landed (2026-06-20)** (co-owned with the L0 engine,
+[phase-10](phase-10-standardized-test-harness.md)): `runSuiteSelection` wraps each run's bring-up / assert /
+teardown in `HostBootstrap.Harness.withSelfCreatedTestData testDataRoot`, so `test run` creates `.test_data`
+under the self-created-only guard and removes only what it created — never a `.test_data` (or `.data`) it
+found (the pure `selfCreatedTestDataRemoval` is unit-tested). **The richer `test.dhall` also landed
+(2026-06-20):** it is now a reflected record carrying `testSuites` + a `testResources` override (`TestConfig`
+in `HostBootstrap.Config.Schema`); `test init` writes it and `test run` decodes and reports the test-config
+resources before running (round-trip unit-tested, tracked in
+[phase-10](phase-10-standardized-test-harness.md)). The phase scope is complete.
 
 ## Phase Objective
 

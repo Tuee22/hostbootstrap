@@ -75,8 +75,9 @@ service variant run by `service run`):
 | Stream | How the demo extends it | Observable through |
 |---|---|---|
 | Lift chain | the demo contributes `chain :: ProjectConfig -> [Step]` (its steps appended, never shadowing core's) | `project up`; `project up --dry-run` renders `chain rootCfg` |
-| Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (the demo adds a `demoWeb` pod) | `context render --artifact demoWeb` |
-| Test harness | `demoCases` driven by `runMatrix` with `demoSeams`, threaded into the test surface | `test run all` |
+| Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (a `demoWeb` pod footprint and the `demoWebApp` SPA-as-typed-Dhall spec) | `context render --artifact demoWeb` / `--artifact demoWebApp` |
+| Test harness | `demoCases` + per-case assertions in the stack-driven `demoTestSuite` (it drives the real `project up`/`project destroy`, no separate per-case bring-up) | `test run all` |
+| Service handlers | `demoServices` registers the `web` variant (`serveWeb`), threaded via `withServices` | `service run web` (the chart pod's entrypoint) |
 | Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `context schema` / `project init` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case `runMatrix` loop and the
@@ -268,10 +269,13 @@ substrate-specific prerequisites:
   consumer never works around a stale published base by editing `container.cabal.project` to import a
   freeze the published base does not ship. See [base image](../engineering/base_image.md) and
   [build & release](../engineering/build_release.md).
-- **Verify the `arm64` image set.** The Harbor chart and the project image's Playwright browsers
-  (`chromium`/`firefox`/`webkit`) pull `linux/arm64` images. An operator confirms each `goharbor/*`
-  sub-image and the WebKit system dependencies resolve on `aarch64` before relying on the Apple path, so
-  `deploy-harbor`'s `--wait` and the `e2e-tabs` case do not stall on a missing-arch image.
+- **Harbor runs on dual-arch images (handled by the chain, not the operator).** The upstream
+  `goharbor/*` images are amd64-only, so on an `arm64` kind node they crash with `exec format error`. The
+  demo's `deploy-harbor` step pins the chart to `1.18.3` and overrides every Harbor component image to the
+  dual-arch `ghcr.io/octohelm/harbor/*:v2.14.0` mirror, so `deploy-harbor`'s `--wait` does not stall on a
+  missing-arch image — see [Harbor: dual-arch component images](../engineering/harbor.md). The operator
+  still confirms the project image's Playwright browsers (`chromium`/`firefox`/`webkit`) and WebKit system
+  dependencies resolve on `aarch64` so the `e2e-tabs` case does not stall.
 - **Provision host disk.** Lima sizes `--disk` only on first creation of the instance, and the
   budget-sized VM needs ~100 GiB of free APFS space to grow into. An operator deletes any stale
   `hostbootstrap-demo-vm` instance (`limactl delete`) so the fresh sizing takes effect, and confirms the

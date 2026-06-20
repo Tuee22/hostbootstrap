@@ -1,22 +1,30 @@
-{- | The composable @optparse-applicative@ command tree and the generic
-entrypoints project binaries use to extend it.
+{- | The fixed @optparse-applicative@ command tree and the generic entrypoints
+project binaries use to extend it.
 
-A project binary calls 'runHostBootstrapCLI' with a 'ProjectSpec'. The
-entrypoint validates that the project appended distinct command names, supplied
-a non-empty test matrix, provided its @check-code@ action, and then merges it
-with the core command tree ('HostBootstrap.Command.coreCommands'). The bare
-@hostbootstrap@ binary (built like any project binary, not baked into the base
-image) uses the separate 'runBareHostBootstrapCLI'. See
+The command surface is **fixed and closed** (development_plan_standards § P):
+every project binary — and the bare @hostbootstrap@ binary — surfaces the same
+tree (@project@ / @test@ / @service@ / @context@ / @check-code@, plus the hidden
+@ensure@ debug surface). @hostbootstrap-core@ is a **library of composable
+tools**, not a CLI topology, so a project never adds a command. A project extends
+the core only through the parallel extension streams carried by 'ProjectSpec':
+its lift chain ('withChain'), its Dhall-vocabulary artifacts, its test suite, its
+service-handler registry ('withServices'), and its @check-code@ action.
+
+A project binary calls 'runHostBootstrapCLI' with a 'ProjectSpec'. The entrypoint
+validates the extension points (a non-empty test suite, no duplicate test
+cases/artifacts/service variants, a supplied @check-code@ action) and then merges
+the spec into the core command tree ('HostBootstrap.Command.coreCommands'). The
+bare @hostbootstrap@ binary (built like any project binary, not baked into the
+base image) uses the separate 'runBareHostBootstrapCLI'. See
 @documents/architecture/hostbootstrap_core_library.md@.
 -}
 module HostBootstrap.CLI (
-    ProjectCommand,
     ProjectSpec,
-    projectCommand,
     projectSpec,
     withChain,
     withFrameContext,
     withTeardown,
+    withServices,
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
 )
@@ -25,34 +33,27 @@ where
 import Control.Monad (join)
 import Data.List (group, intercalate, sort)
 import qualified Data.Text as T
-import HostBootstrap.Command (coreCommandNames, coreCommands)
+import HostBootstrap.Command (coreCommands)
 import HostBootstrap.Config.Schema (ProjectConfig)
 import HostBootstrap.Dhall.Gen (ConfigArtifact (..), coreArtifacts)
 import HostBootstrap.Harness (TestSuite, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
 import HostBootstrap.Lift (LiftContext, localContext)
+import HostBootstrap.Service (ServiceRegistry, duplicateServiceVariants, emptyServiceRegistry)
 import HostBootstrap.Step (Step, StepFrame)
 import Options.Applicative
 import System.Exit (die)
 
-{- | One top-level project command. The name is carried with the parser info so the
-CLI layer can reject shadowing before constructing the final parser.
--}
-data ProjectCommand = ProjectCommand String (ParserInfo (IO ()))
-
--- | Build a named project command.
-projectCommand :: String -> ParserInfo (IO ()) -> ProjectCommand
-projectCommand = ProjectCommand
-
-{- | A derived project's required extension points. There are no ambient project
-defaults here: the project must supply its own command delta, runtime test
-suite, code-check action, and schema artifact delta. The bare core binary uses
+{- | A derived project's required extension points. There are no per-project
+commands: the surface is fixed (§ P). A project supplies its runtime test suite,
+code-check action, schema artifact delta, lift chain, per-frame lift context,
+chain-frame teardown, and service-handler registry. The bare core binary uses
 'runBareHostBootstrapCLI' instead.
 -}
 data ProjectSpec = ProjectSpec
-    { psCommands :: [ProjectCommand]
-    , psTestSuite :: TestSuite
+    { psTestSuite :: TestSuite
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
+    , psServices :: ServiceRegistry
     , psChain :: ProjectConfig -> [Step]
     , psFrameContext :: ProjectConfig -> StepFrame -> LiftContext
     , -- | The chain-frame teardown the @project down@ / @project destroy@
@@ -63,17 +64,17 @@ data ProjectSpec = ProjectSpec
       psTeardown :: ProjectConfig -> Bool -> IO ()
     }
 
-{- | Build a project spec. The project's lift chain (its primary CLI
-contribution, § Y) and per-frame lift-context builder default to empty/local;
-attach them with 'withChain' / 'withFrameContext'.
+{- | Build a project spec. The project's lift chain (§ Y), per-frame lift-context
+builder, chain-frame teardown, and service registry default to empty/local;
+attach them with 'withChain' / 'withFrameContext' / 'withTeardown' / 'withServices'.
 -}
-projectSpec :: [ProjectCommand] -> TestSuite -> IO () -> [ConfigArtifact] -> ProjectSpec
-projectSpec cmds suite check arts =
-    ProjectSpec cmds suite check arts (const []) (const (const localContext)) (\_ _ -> pure ())
+projectSpec :: TestSuite -> IO () -> [ConfigArtifact] -> ProjectSpec
+projectSpec suite check arts =
+    ProjectSpec suite check arts emptyServiceRegistry (const []) (const (const localContext)) (\_ _ -> pure ())
 
 {- | Attach the project's lift chain: a pure function from the root
 @<project>.dhall@ config to the ordered @[Step]@ the core @project@ lifecycle
-interprets (§ Y). The chain is the project's primary CLI contribution.
+interprets (§ Y). The chain is the project's primary deploy contribution.
 -}
 withChain :: (ProjectConfig -> [Step]) -> ProjectSpec -> ProjectSpec
 withChain f spec = spec{psChain = f}
@@ -95,44 +96,51 @@ error, so a partial stack always tears down.
 withTeardown :: (ProjectConfig -> Bool -> IO ()) -> ProjectSpec -> ProjectSpec
 withTeardown f spec = spec{psTeardown = f}
 
+{- | Attach the project's service-handler registry (one of the extension streams,
+§ T, § AA): the long-running roles @service run \<variant\>@ dispatches over. The
+registry may be empty (not every project ships a service); the fixed @service@
+surface is unchanged either way.
+-}
+withServices :: ServiceRegistry -> ProjectSpec -> ProjectSpec
+withServices svcs spec = spec{psServices = svcs}
+
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
 -}
 runHostBootstrapCLI :: String -> ProjectSpec -> IO ()
 runHostBootstrapCLI progName spec = do
     either die pure (validateProjectSpec spec)
-    runCLI progName (projectCommands spec) (psArtifacts spec) (psTestSuite spec) (psCheckCode spec) (psChain spec) (psFrameContext spec) (psTeardown spec)
+    runCLI progName (psArtifacts spec) (psTestSuite spec) (psCheckCode spec) (psServices spec) (psChain spec) (psFrameContext spec) (psTeardown spec)
 
 {- | Run the bare core binary. This is the only supported path that intentionally
-has no project commands, no project checks, no project artifacts, and an empty
-test matrix.
+has no project artifacts, an empty test matrix, and no service registry.
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName =
     runCLI
         progName
         []
-        []
         emptySuite
         (putStrLn "check-code: bare core binary has no project checks")
+        emptyServiceRegistry
         (const [])
         (const (const localContext))
         (\_ _ -> pure ())
 
 runCLI ::
     String ->
-    [Mod CommandFields (IO ())] ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
+    ServiceRegistry ->
     (ProjectConfig -> [Step]) ->
     (ProjectConfig -> StepFrame -> LiftContext) ->
     (ProjectConfig -> Bool -> IO ()) ->
     IO ()
-runCLI progName projectCommandMods projectArtifacts testSuite checkCode chain frameCtx teardown =
+runCLI progName projectArtifacts testSuite checkCode services chain frameCtx teardown =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
-    allCommands = coreCommands progName projectArtifacts testSuite checkCode chain frameCtx teardown ++ projectCommandMods
+    allCommands = coreCommands progName projectArtifacts testSuite checkCode services chain frameCtx teardown
     opts =
         info
             (parser <**> helper)
@@ -141,21 +149,14 @@ runCLI progName projectCommandMods projectArtifacts testSuite checkCode chain fr
                 <> progDesc
                     ( "Host-management commands for "
                         ++ progName
-                        ++ ". Project binaries extend this tree with their own subcommands."
+                        ++ ". The command surface is fixed; projects extend it through the extension streams, not new verbs."
                     )
             )
     parser :: Parser (IO ())
     parser = hsubparser (mconcat allCommands)
 
-projectCommands :: ProjectSpec -> [Mod CommandFields (IO ())]
-projectCommands spec = [command name info' | ProjectCommand name info' <- psCommands spec]
-
 validateProjectSpec :: ProjectSpec -> Either String ()
 validateProjectSpec spec
-    | not (null shadowedCommands) =
-        Left ("project commands shadow core commands: " ++ comma shadowedCommands)
-    | not (null duplicateCommands) =
-        Left ("project command names are duplicated: " ++ comma duplicateCommands)
     | testSuiteCaseCount (psTestSuite spec) == 0 =
         Left "project test suite is empty; use runBareHostBootstrapCLI only for the bare core binary"
     | not (null duplicateCases) =
@@ -164,17 +165,17 @@ validateProjectSpec spec
         Left ("project artifacts shadow core artifacts: " ++ comma shadowedArtifacts)
     | not (null duplicateArtifacts) =
         Left ("project artifact names are duplicated: " ++ comma duplicateArtifacts)
+    | not (null duplicateServices) =
+        Left ("project service variants are duplicated: " ++ comma duplicateServices)
     | otherwise = Right ()
   where
-    commandNames = [name | ProjectCommand name _ <- psCommands spec]
-    shadowedCommands = filter (`elem` coreCommandNames) commandNames
-    duplicateCommands = duplicates commandNames
     caseIds = testSuiteCaseIds (psTestSuite spec)
     duplicateCases = duplicates caseIds
     artifactNames = map (T.unpack . artifactName) (psArtifacts spec)
     coreArtifactNames = map (T.unpack . artifactName) coreArtifacts
     shadowedArtifacts = filter (`elem` coreArtifactNames) artifactNames
     duplicateArtifacts = duplicates artifactNames
+    duplicateServices = duplicateServiceVariants (psServices spec)
 
 duplicates :: [String] -> [String]
 duplicates names = [name | name : _ : _ <- group (sort names)]

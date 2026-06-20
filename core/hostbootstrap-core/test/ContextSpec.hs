@@ -106,6 +106,23 @@ tests =
             roleName host @?= "host-orchestrator"
             capabilities host @?= [HostTools, IncusProvider]
             childContextKinds host @?= [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
+        , testCase "addRole grants a second role's authority (multi-role config)" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                dual = addRole ClusterService host
+            -- the primary project (deployment) authority is retained ...
+            commandAllowed dual HostOrchestratorCommand @?= True
+            commandAllowed dual ClusterLifecycleCommand @?= True
+            -- ... and the service authority is granted, so one config runs both
+            -- `project up` and `service run`
+            commandAllowed dual ServiceCommand @?= True
+            -- the primary kind/frame is unchanged; service capabilities are unioned in
+            contextKind dual @?= HostOrchestrator
+            assertBool "service port capability unioned" (ServicePort `elem` capabilities dual)
         , testCase "deriveContainerContext appends the VM frame and carries the envelope" $ do
             let host =
                     hostOrchestratorContext

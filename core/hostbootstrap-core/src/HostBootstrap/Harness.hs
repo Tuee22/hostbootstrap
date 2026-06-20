@@ -26,12 +26,16 @@ module HostBootstrap.Harness (
     testSuiteCaseCount,
     allCasesSelector,
     runSuiteSelection,
+    testSafetyPreconditions,
     RunModel (..),
     Topology (..),
     RunModelKey (..),
     testCaseProfile,
     guardTestDelete,
     GuardError (..),
+    testDataRoot,
+    selfCreatedTestDataRemoval,
+    withSelfCreatedTestData,
     sliceBudget,
     splitByWeight,
     selectRunModel,
@@ -55,6 +59,8 @@ import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker))
 import Numeric.Natural (Natural)
+import Control.Monad (unless)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (ExitSuccess))
 
 {- | A test case: an id, a budget-slicing weight, and whether it is indivisible
@@ -123,6 +129,36 @@ guardTestDelete :: String -> String -> Either GuardError String
 guardTestDelete prefix name
     | prefix `isPrefixOf` name = Right name
     | otherwise = Left (NotPrefixed prefix name)
+
+{- | The canonical durable directory for test runs (development_plan_standards § Z):
+test durable storage is always @.test_data@, **never** @.data@. A test stack's
+data is rooted here (the @TestCase@ cluster profile resolves to
+@\<root\>/.test_data/\<case\>@; see "HostBootstrap.Cluster.Lifecycle").
+-}
+testDataRoot :: FilePath
+testDataRoot = ".test_data"
+
+{- | The **self-created-only** delete-guard removal set for a run's @.test_data@
+directory (development_plan_standards § Z): a directory this run created is
+removed on teardown; a directory that already existed is **preserved** (mirroring
+the never-delete-@.data@ invariant — the harness never deletes a config or data
+directory it merely /found/). Pure, so the guard is unit-tested.
+-}
+selfCreatedTestDataRemoval :: Bool -> FilePath -> [FilePath]
+selfCreatedTestDataRemoval preexisting path = [path | not preexisting]
+
+{- | Run @body@ with a run's @.test_data@ durable directory under the
+self-created-only delete-guard (§ Z): create @path@ if it is absent (recording
+that this run created it), then on exit remove it **only** if this run created it.
+A pre-existing @.test_data@ (or any directory the harness found) is preserved, so
+a test never deletes durable state it did not create. The removal decision is the
+pure 'selfCreatedTestDataRemoval'; this is the thin IO bracket around it.
+-}
+withSelfCreatedTestData :: FilePath -> IO a -> IO a
+withSelfCreatedTestData path body = do
+    preexisting <- doesDirectoryExist path
+    unless preexisting (createDirectoryIfMissing True path)
+    body `finally` mapM_ removePathForcibly (selfCreatedTestDataRemoval preexisting path)
 
 {- | Split a budget proportionally across weights by floor division (the Haskell
 mirror of @Core.dhall@ @split@; an empty/zero total yields zero slices).
@@ -225,25 +261,50 @@ defaultSeams =
         , seamTeardown = \_ _ -> pure ()
         }
 
-{- | A project's complete test surface: its 'Seams' (with the per-project env type
-hidden behind the existential) and the 'Case' matrix they drive. A project
-supplies one 'TestSuite' to 'HostBootstrap.CLI.runHostBootstrapCLI'; the
-inherited @test@ verb selects over it ('runSuiteSelection'). The bare binary
-ships 'emptySuite' through its explicit bare entrypoint.
--}
-data TestSuite = forall env. TestSuite (Seams env) [Case]
+{- | A project's complete, /stack-driven/ test surface
+(development_plan_standards § W, § Z). The harness is **not** a second
+cluster-bring-up path: per distinct test configuration it drives the real
+@project up@ (the same chain interpreter production uses), runs the case
+assertions against that live stack, and tears it down with @project destroy@.
+A project supplies one 'TestSuite' to 'HostBootstrap.CLI.runHostBootstrapCLI';
+the inherited @test run@ verb selects over it ('runSuiteSelection'). The
+existential @env@ hides the per-project assertion environment.
 
-{- | The empty suite the bare @hostbootstrap@ binary ships: the trivial
-'defaultSeams' over no cases, so @test all@ renders @0/0 passed@.
+The fields, in order:
+
+  1. the two hard fail-fast safety preconditions (§ Z): @Right ()@ to proceed,
+     @Left reason@ to refuse before any side effect — built with
+     'testSafetyPreconditions';
+  2. /bring up/: write the test-specific @<project>.dhall@ and drive @project up@,
+     then resolve the assertion @env@ (one @project up@ per distinct test config);
+  3. the 'Case' matrix the assertions cover;
+  4. the per-case assertion against the live stack (reusing the self-reference
+     lift, § U);
+  5. /tear down/: drive @project destroy@, deleting only what this run created
+     (the self-created-only delete-guard, § O).
+
+The bare binary ships 'emptySuite' through its explicit bare entrypoint.
+-}
+data TestSuite
+  = forall env.
+    TestSuite
+      (IO (Either String ()))
+      (IO env)
+      [Case]
+      (env -> Case -> IO CaseResult)
+      (env -> IO ())
+
+{- | The empty suite the bare @hostbootstrap@ binary ships: no safety obstacle, a
+trivial bring-up over no cases, so @test run all@ renders @0/0 passed@.
 -}
 emptySuite :: TestSuite
-emptySuite = TestSuite defaultSeams []
+emptySuite = TestSuite (pure (Right ())) (pure ()) [] (\_ _ -> pure Pass) (\_ -> pure ())
 
 {- | The case ids in a suite. Used by the CLI layer to reject accidental empty or
 duplicate project suites before command dispatch.
 -}
 testSuiteCaseIds :: TestSuite -> [String]
-testSuiteCaseIds (TestSuite _ cases) = map caseId cases
+testSuiteCaseIds (TestSuite _ _ cases _ _) = map caseId cases
 
 -- | The number of cases in a suite.
 testSuiteCaseCount :: TestSuite -> Int
@@ -256,24 +317,75 @@ a case @all@.
 allCasesSelector :: String
 allCasesSelector = "all"
 
-{- | Resolve a @test@ selector against a suite and run the chosen case(s):
-'allCasesSelector' runs the whole matrix; any other value runs the single case
-with that id; an unknown id is a 'Left' naming the valid case ids plus @all@,
-so the inherited @test@ verb can fail fast. The selection happens inside the
-existential unwrap, where the 'Seams' env type stays hidden.
+{- | The two hard fail-fast safety preconditions checked before any test runs
+(development_plan_standards § Z), so a test never interferes with production:
+
+  1. refuse if a production @<project>.dhall@ already exists at @configPath@
+     (never overwrite a production config);
+  2. refuse if a production cluster is already running (the caller supplies the
+     detector, since "running" is substrate/tool-specific).
+
+If either holds, no tests run. Pure obstacle reporting: returns @Right ()@ only
+when neither obstacle is present.
+-}
+testSafetyPreconditions :: FilePath -> IO Bool -> IO (Either String ())
+testSafetyPreconditions configPath productionClusterRunning = do
+  cfgExists <- doesFileExist configPath
+  if cfgExists
+    then pure (Left ("a production config already exists at " ++ configPath ++ "; refusing to overwrite it"))
+    else do
+      running <- productionClusterRunning
+      pure $
+        if running
+          then Left "a production cluster is already running; refusing to touch production state"
+          else Right ()
+
+{- | Resolve a @test run@ selector against a suite, enforce the safety
+preconditions, bring the test stack up (drive @project up@), run the chosen
+case(s)' assertions against it, and guarantee teardown (drive @project destroy@)
+via 'finally'. 'allCasesSelector' runs the whole matrix; any other value runs the
+single case with that id; an unknown id is a 'Left' naming the valid case ids
+plus @all@, so the inherited @test run@ verb can fail fast. A refused safety
+precondition is a 'Left' and **no stack is brought up**. The per-case loop reuses
+'runMatrix' (the live stack is the shared, already-up env), so the harness owns
+no second bring-up path (§ W).
 -}
 runSuiteSelection :: TestSuite -> String -> IO (Either String Report)
-runSuiteSelection (TestSuite seams cases) selector
-    | selector == allCasesSelector = Right <$> runMatrix seams cases
-    | otherwise = case filter ((== selector) . caseId) cases of
-        [] -> pure (Left unknown)
-        chosen -> Right <$> runMatrix seams chosen
+runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) selector =
+  case chosenCases of
+    Left err -> pure (Left err)
+    Right chosen -> do
+      safe <- safety
+      case safe of
+        Left reason -> pure (Left ("test run refused: " ++ reason))
+        -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
+        -- the self-created-only delete-guard, so the run's durable storage is
+        -- isolated and a `.test_data` (or `.data`) the run did not create is never
+        -- removed.
+        Right () -> withSelfCreatedTestData testDataRoot $ do
+          env <- bringUp
+          report <- runMatrix (assertSeams env) chosen `finally` tearDown env
+          pure (Right report)
   where
+    chosenCases
+      | selector == allCasesSelector = Right cases
+      | otherwise = case filter ((== selector) . caseId) cases of
+          [] -> Left unknown
+          chosen -> Right chosen
+    -- Reuse the per-case loop: the live stack `bringUp` produced is the shared
+    -- env every case asserts against; teardown is the suite-level `project
+    -- destroy`, so the per-case teardown is a no-op.
+    assertSeams env =
+      Seams
+        { seamSetup = \_ -> pure env,
+          seamRun = assertCase,
+          seamTeardown = \_ _ -> pure ()
+        }
     unknown =
-        "unknown test case "
-            ++ show selector
-            ++ "; available: "
-            ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
+      "unknown test case "
+        ++ show selector
+        ++ "; available: "
+        ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
 
 {- | The real L0 'OneShot' container-run seam: each case runs @docker run --rm@
 (budget-capped via 'oneShotRunArgs') through the resolved Docker tool, passing

@@ -11,11 +11,17 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened (2026-06-19):** the single-representation doctrine is corrected so the standardized test harness
-**reuses the chain** (drives `project up`) rather than re-expressing bring-up as a separate seam path. See
-`## Remaining Work`.
+**Reopened (2026-06-19) and closed (2026-06-20):** the single-representation doctrine is corrected — in both
+code and the canonical doc — so the standardized test harness **reuses the chain** (drives `project up`)
+rather than re-expressing bring-up as a separate seam path. `composition_methodology.md` carries the recast:
+the chain `[Step]` value is THE single representation, `project up` is its recursive/fractal interpreter,
+the Python bootstrapper is the metal-frame instance, the harness-drives-`project up` vs separate-seam-path
+WRONG/RIGHT block, and the multi-role-config note — with a `## Current Status` recording the validated build
+(full `project up` + `test run all 3/3` on both Incus/Linux and a 16 GiB Apple-Silicon host). The behaviour
+is enforced in code (the stack-driven `TestSuite`, [phase-10](phase-10-standardized-test-harness.md)) and
+real-run-validated ([phase-13](phase-13-hostbootstrap-demo.md)). See `## Remaining Work`.
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -43,15 +49,20 @@ into the project container in the managed Lima VM (`3/3 passed`, including Playw
 Recast the single-representation doctrine (§ W) so the standardized test harness **reuses the chain** — it
 drives the real `project up` with a test-written config — instead of being a context-agnostic engine that
 brings up an isolated per-case environment "locally". The harness is not a second representation lifted
-alongside the chain; it *is* the chain, driven under a test config. Concretely:
+alongside the chain; it *is* the chain, driven under a test config.
 
-- Rewrite the single-representation section of `composition_methodology.md` (and the WRONG/RIGHT block) so
-  the harness driving `project up` is the RIGHT pattern, and a separate seam bring-up beside the chain is
-  the WRONG one. Record that one `<project>.dhall` may declare multiple roles and that context
-  relationships are pure compositional lifts.
-- Real-run-gated via the harness recast ([phase-10](phase-10-standardized-test-harness.md)) and the demo's
-  run ([phase-13](phase-13-hostbootstrap-demo.md)); the `project up` interpreter the harness drives is
-  owned by [phase-16](phase-16-project-lifecycle-command.md).
+**Landed in code (2026-06-19):** the doctrine is now enforced in code, not only documented — the
+stack-driven `HostBootstrap.Harness.TestSuite` makes the harness drive the real `project up` / `project
+destroy` ([phase-10](phase-10-standardized-test-harness.md)), and the demo's second bring-up path
+(`demoSeams`) is deleted. There is no longer a separate seam bring-up beside the chain.
+
+**Delivered (2026-06-20), DocValidator-validated:** the single-representation section of
+`composition_methodology.md` is recast — the harness driving `project up` is the RIGHT pattern and a
+separate seam bring-up beside the chain is the WRONG one (an explicit WRONG/RIGHT block), one
+`<project>.dhall` may declare multiple roles, and context relationships are pure compositional lifts. The
+behavioural recast is enforced by the harness recast ([phase-10](phase-10-standardized-test-harness.md)) and
+exercised by the demo's run ([phase-13](phase-13-hostbootstrap-demo.md)); the `project up` interpreter the
+harness drives is owned by [phase-16](phase-16-project-lifecycle-command.md). No remaining work.
 
 The sprints that built still-valid substrate (the role-lifecycle skeleton, the arbitrary-topology frame
 graph, and credential forwarding across the lift) remain `Done`.

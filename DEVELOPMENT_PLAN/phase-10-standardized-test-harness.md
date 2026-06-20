@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
@@ -43,28 +43,50 @@ the chain production uses. This phase is reopened for that engine recast; the re
 
 The split command surface (`test init` / `test run <suite>|all`) and the pure harness cores (the case
 matrix, `sliceBudget`, `selectRunModel`, `guardTestDelete`, the data-preserving `teardown` partition, the
-`seamSetup`-in-`try` isolation) are built, unit-tested, and stay valid. The **engine recast** is the open,
-real-run-gated work (development_plan_standards § W, § Z):
+`seamSetup`-in-`try` isolation) are built, unit-tested, and stay valid.
 
-- Recast the standardized harness engine so it **drives the real `project up`** instead of bringing up
-  isolated per-case clusters via `Seams.seamSetup`. The current `seamSetup` mirror (the production
-  `deploy-kind → push-image → deploy-chart` order re-implemented as a parallel bring-up) is deleted; the
-  engine owns no second cluster-bring-up path.
-- For each **distinct test configuration** the engine: (a) writes a test-specific `<project>.dhall` (the
-  test-config overrides — resources, secrets — projected into a normal project config), (b) runs
-  `project up` over the project's own chain (the same interpreter production uses, [phase-16](phase-16-project-lifecycle-command.md)),
-  (c) runs that config's case assertions in the frame appropriate to each, reusing the self-reference lift
-  (§ U) — e.g. a Playwright assertion as a container on the kind network in the VM frame, outside the
-  cluster — and (d) tears the stack down with `project destroy`. There is **one `project up` per distinct
-  test config**; cases sharing a config assert against that one live stack.
-- The engine reuses the core pure-functional logic (the case matrix, budget-slicing, run-model selection,
-  the delete-guard) and owns only the case matrix, the per-case assertions, and the test-config parameters
-  — never a second `HostConfig -> IO ()` bring-up.
-- Forward dependency: the engine drives the `project up` interpreter owned by
-  [phase-16](phase-16-project-lifecycle-command.md) and is exercised by the demo's real run
-  ([phase-13](phase-13-hostbootstrap-demo.md)); the two fail-fast safety preconditions, `.test_data`, and
-  the self-created-only delete-guard the surface enforces are co-owned with
-  [phase-17](phase-17-chain-driven-test-and-context-introspection.md).
+**Engine recast landed in code (2026-06-19), code-check-validated** (`cabal test all` green, 224 tests):
+the standardized harness no longer carries a second bring-up path. `HostBootstrap.Harness.TestSuite` is
+recast into a **stack-driven** suite — `(safety-preconditions, bring-up, cases, per-case assertion,
+tear-down)` — where bring-up drives the real `project up` and tear-down drives `project destroy` (the demo
+wires these via the binary's self-reference, § U). `runSuiteSelection` enforces the two safety preconditions
+(`testSafetyPreconditions`), brings the stack up once per distinct test config, runs the chosen cases'
+assertions against that **one live stack** by reusing `runMatrix` (the kept per-case loop), and guarantees
+`project destroy` via `finally`. The demo's `demoSeams` `clusterCreate → kind load → deployChart`
+bring-up mirror is **deleted**; `demoTestSuite` drives `project up` instead. The pure cores
+(`runMatrix`/`Seams`, `sliceBudget`, `selectRunModel`, `guardTestDelete`) are kept and still unit-tested.
+
+**Recast engine real-run-validated (2026-06-20):** on a 16 GiB Apple-Silicon host, `test run all` drove the
+recast engine end-to-end — safety preconditions → the real `project up` → the per-case assertions against
+the one live stack (run in the frame appropriate to each, reusing the self-reference lift, § U) →
+`project destroy` — reporting **`3/3 passed`** (`pristine-bootstrap` / `web-build` reachability + the
+`e2e-tabs` Playwright run lifted into the VM frame), with **no second cluster-bring-up path**
+([phase-13](phase-13-hostbootstrap-demo.md)). The engine reuses the kept pure cores (the case matrix,
+`runMatrix`/`Seams`, budget-slicing, run-model selection, the delete-guard).
+
+**`.test_data` self-created-only delete-guard landed (2026-06-20), code-check-validated** (`cabal test all`
+green, 225 tests): the L0 engine now owns the run's `.test_data` lifecycle (§ Z). `HostBootstrap.Harness`
+adds `testDataRoot` (the canonical `.test_data`), the pure `selfCreatedTestDataRemoval` (a directory the run
+created is removed, a found one is preserved — mirroring never-delete-`.data`), and the
+`withSelfCreatedTestData` bracket, which `runSuiteSelection` wraps the bring-up/assert/teardown in. So every
+`test run` creates `.test_data` under the self-created-only guard and removes only what it created, never a
+`.test_data` (or `.data`) it found. With the recast engine real-run-validated (`3/3 passed`, above) and the
+pure cores (the `TestCase` profile rooting at `.test_data`, the data-preserving `teardown` partition,
+`guardTestDelete`) unit-tested, the phase scope is complete.
+
+**Richer `test.dhall` landed (2026-06-20), code-check-validated:** `test.dhall` is now a reflected record
+`{ testSuites : List Text, testResources : { cpu, memory, storage } }` (`HostBootstrap.Config.Schema.TestConfig`,
+`defaultTestConfig` / `renderTestConfig` / `decodeTestConfigFile`), carrying per-test **resource overrides**
+alongside the selectable suites. `test init` writes it (seeded from the project config's resources, reflected
+so it cannot drift); `test run` decodes it and reports the test-config resources before running. `SchemaSpec`
+covers the render→decode round-trip. A consumer edits `testResources` to run its tests at a different budget
+than production; the demo runs at its declared budget (its test resources equal its config's, since its full
+lifecycle needs the full budget). Secrets are intentionally not carried as plaintext in `test.dhall` (the
+credential-forwarding doctrine keeps secrets out of Dhall, § U).
+
+The `project up` interpreter the engine drives is owned by
+[phase-16](phase-16-project-lifecycle-command.md) (Done); the test surface that invokes the engine is
+co-owned with [phase-17](phase-17-chain-driven-test-and-context-introspection.md).
 
 ## Phase Objective
 

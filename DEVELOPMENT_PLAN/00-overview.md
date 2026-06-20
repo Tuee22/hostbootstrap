@@ -36,15 +36,18 @@ recursive `project init|up|down|destroy` lifecycle that interprets a pure `chain
 value, `context` is a read-only introspection command, and `test` is decoupled from deploy (see
 [development_plan_standards.md § Y/§ Z](development_plan_standards.md)).
 
-Phases 10, 13, 14, 15, 16, and 17 are reopened (`Active`) and phase 18 is added for the **unified-harness /
-fixed-surface / resource-SSoT** correction: the command surface is **fixed** to `project` / `test` /
-`service` / `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable
-tools, § P); the test harness **drives the real `project up`** under a test config rather than
-re-expressing bring-up (§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a
-**slice within it** (no doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role
-context generated from forwarded parameters (§ X); and long-running roles run through the new `service`
-command (§ AA). Dependencies are **forward-only** — no earlier phase is blocked by a later one; the core
-cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
+The **unified-harness / fixed-surface / resource-SSoT** correction spans phases 10, 13, 14, 15, 16, 17, and
+18: the command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` (no
+per-project verbs; `hostbootstrap-core` is a library of composable tools, § P); the test harness **drives
+the real `project up`** under a test config rather than re-expressing bring-up (§ W); the declared budget is
+the **one ceiling = the VM wall** with the cluster a **slice within it** (no doubling, § O); each
+`<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
+(§ X); and long-running roles run through the new `service` command (§ AA). The correction is **complete —
+all of phases 10, 13, 14, 15, 16, 17, and 18 are `Done`**: the code is code-check-validated (`cabal test
+all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
+lifecycle + `test run all` (`3/3 passed`) is real-run-validated end-to-end on both Incus/Linux (2026-06-18)
+and a 16 GiB Apple-Silicon host (2026-06-20)**. Dependencies are **forward-only** — no earlier phase is
+blocked by a later one; the core cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
 
 ## Phase Responsibilities
 
@@ -126,10 +129,11 @@ It is `Done`; the incus VM storage cordon is part of Phase 11.
 Phase 10 owns the standardized test harness and run-model vocabulary. `runMatrix` drives a `Seams`
 record over isolated per-case profiles, budget slicing, the delete guard, guaranteed teardown, and
 case-local setup failure handling. The four run-models are `OneShot`, `HostNative`, `HostDaemon`, and
-`Cluster`; every binary inherits `test` and `check-code`. It is `Active`: reopened to recast the harness
-**engine** so it drives the real `project up` under a test config (one `project up` per distinct test
-config) instead of standing up isolated per-case clusters via `Seams` — the harness owns no second
-bring-up path (§ W). The split `test init` / `test run` surface and the pure cores stay valid.
+`Cluster`; every binary inherits `test` and `check-code`. It is `Done`: the harness **engine** is recast to
+drive the real `project up` under the test surface (one `project up` per distinct test config) instead of
+standing up isolated per-case clusters via `Seams` — the harness owns no second bring-up path (§ W) — and
+owns the run's `.test_data` lifecycle under a self-created-only delete-guard. Real-run-validated by
+`test run all` reporting `3/3 passed` (2026-06-20).
 
 ### Phase 11 — incus first-class host-provider
 
@@ -151,35 +155,37 @@ inside a managed Linux VM, project-container build, harness cluster lifecycle, w
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the base-provided browser runtime in the project image, and the single-representation
 deploy chain. The demo uses Lima for the VM provider on Apple Silicon and native Incus on Linux.
 It uses sibling `hostbootstrap-demo.dhall` configs for host, VM, image-build container, runtime
-container, and service/daemon contexts. It is `Active`: the contributed `demoChain` interpreted by
-`project up` is real-run-validated (2026-06-18), and it is reopened for the unified-harness / resource-SSoT
-/ fixed-surface correction — drive the demo's test seams through `project up`, remove the
-`vmSizingWithHeadroom` doubling and cordon the production cluster to a slice, and move `web serve` →
-`service run` (`Web` variant) / `web bridge` → the build-image step. The closing gate is the full lifecycle
-on a 16 GiB Apple-Silicon host.
+container, and service/daemon contexts. It is `Done`: the contributed `demoChain` interpreted by
+`project up` drove the unified-harness / resource-SSoT / fixed-surface correction to a real-run close on a
+16 GiB Apple-Silicon host (2026-06-20) — the demo's test surface drives the real `project up` (no second
+bring-up), the VM is sized to the budget with the cluster a slice within it, and `web serve` / `web bridge`
+moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 (8-pod
+`arm64` Harbor via the dual-arch `ghcr.io/octohelm/harbor/*` images) and `test run all` reports `3/3
+passed` (incl. the Playwright e2e lifted into the VM frame).
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
 Phase 14 owns the composition methodology: operations as the composable unit, self-reference lift as the
 context-crossing primitive, deploy and runtime business logic as the same algebra, the L0
 `HostBootstrap.RoleLifecycle` skeleton, and the single-representation doctrine. The standardized test
-harness is the one representation of the test/deploy workflow. It is `Active`: reopened to recast the
-single-representation doctrine so the harness **reuses the chain** (drives `project up`) rather than being a
-separate engine lifted alongside it (§ W); `composition_methodology.md` is the canonical home (`project up`
-as the recursive/fractal interpreter, Python as the metal-frame instance, the `[Step]` chain as the single
-representation, the harness as a driver of that chain).
+harness is the one representation of the test/deploy workflow. It is `Done`: the single-representation
+doctrine is recast in both code and the canonical doc so the harness **reuses the chain** (drives `project
+up`) rather than being a separate engine lifted alongside it (§ W); `composition_methodology.md` is the
+canonical home (`project up` as the recursive/fractal interpreter, Python as the metal-frame instance, the
+`[Step]` chain as the single representation, the harness as a driver of that chain, with a WRONG/RIGHT block
+and a validated `## Current Status`).
 
 ### Phase 15 — Binary context config and command gating
 
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, not
-authorized for the requested command, or missing required topology witnesses. It is `Active`: reopened so
-each `<project>.dhall` carries an **explicit context** and may declare **multiple roles** (project +
-service), context relationships are pure compositional lifts, and child configs are generated from
-parameters **forwarded from the parent** (§ X); `context` stays read-only and uniform over all configs. The
-realigned contract (`context` introspection, `config init` -> `project init`, `validateRuntimeContext`) is
-built.
+authorized for the requested command, or missing required topology witnesses. It is `Done`: each
+`<project>.dhall` carries an **explicit context** and may declare **multiple roles** (project + service,
+generated by `project init --also-role` via `Context.addRole`), context relationships are pure compositional
+lifts, and child configs are generated from parameters **forwarded from the parent** (§ X); `context` stays
+read-only and uniform over all configs. The realigned contract (`context` introspection, `config init` ->
+`project init`, `validateRuntimeContext`, multi-role generation) is built and validated.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -189,31 +195,33 @@ A project's deploy is a pure `chain :: RootConfig -> [Step]` value; `project up`
 frame — the fractal bootstrap), is idempotent, and renders the pure chain under `--dry-run`. `project
 down` stops without deleting; `project destroy` deletes but preserves `.data`. The `Step` algebra, the
 recursive interpreter, and the `project` command are built and real-run-validated (2026-06-18). It is
-`Active`: reopened to make the command surface **fixed and closed** — `project` / `test` / `service` /
-`context` / `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a
-library of composable tools, § P) — and to re-home the build-time `web bridge` into the build-image step.
+`Done`: the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
+`check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
+composable tools, § P) — and the build-time `web bridge` is re-homed into the build-image step. The fixed
+surface is real-run-validated by the full `project up` + `test run all` run on Apple Silicon (2026-06-20).
 
 ### Phase 17 — Chain-driven test surface and context introspection
 
 Phase 17 owns the decoupled `test init` / `test run <suite>|all` surface and the read-only `context`
-command that renders the global lift composition with the current frame highlighted. It is `Active`:
-reopened so `test run` **drives the real `project up`** under a test-written config, enforces the two hard
-fail-fast safety preconditions (refuse if a `<project>.dhall` exists; refuse if a production cluster is
-running), uses `.test_data` (never `.data`) with a self-created-only delete-guard, and keeps `context`
-uniform over all `<project>.dhall`s (§ Z, § X). The split surface and the read-only `context` render are
-built and unit-tested.
+command that renders the global lift composition with the current frame highlighted. It is `Done`:
+`test run` **drives the real `project up`**, enforces the two hard fail-fast safety preconditions (refuse if
+a `<project>.dhall` exists; refuse if a production cluster is running), uses `.test_data` (never `.data`)
+under the L0 self-created-only delete-guard (`withSelfCreatedTestData`), and `context` is read-only and
+uniform over all `<project>.dhall`s (§ Z, § X). Real-run-validated by `test run all` reporting `3/3 passed`
+(2026-06-20).
 
 ### Phase 18 — Service runtime command
 
 Phase 18 owns the third DSL-driven core command, `service` (`init` / `schema` / `run`), for a project's
 long-running roles (the `HostDaemon`/service run-model). `service run` is a leaf-frame pod entrypoint (not
 an orchestrator) that fails fast unless the config declares a service role + valid variant; a binary
-defines multiple service types via a `ServiceType` Dhall ADT with a project-contributed service-handler
-registry; there is no `service down` (lifetime owned by the k8s controller, torn down by `project
-destroy`); `project up`'s `deploy-chart` step deploys the pod whose entrypoint is `service run`, its config
-delivered by a ConfigMap overriding the baked container `<project>.dhall` (§ AA). It is `Blocked` on
-phase-16 (the fixed surface) and phase-15 (the context contract); the demo `web serve` → `service run`
-migration is its real-run gate.
+defines its service variants via a project-contributed service-handler registry (`HostBootstrap.Service`,
+threaded through `ProjectSpec` with `withServices`); there is no `service down` (lifetime owned by the k8s
+controller, torn down by `project destroy`); `project up`'s `deploy-chart` step deploys the pod whose
+entrypoint is `service run`, its config delivered by a ConfigMap overriding the baked container
+`<project>.dhall` (§ AA). It is `Done`: the command, registry, and demo `web serve` → `service run web`
+migration landed in code and are **real-run-validated** — the live demo's web pod runs `service run web` and
+serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19).
 
 ## Dependency edges
 
@@ -231,7 +239,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-15 (builds on 6, 8, 11, 13, 14; makes each lifted/runtime context explicit)
   phase-16 (reopens/builds on 4, 5, 14, 15; the project lifecycle command + the [Step] interpreter + the fixed surface)
   phase-17 (builds on 16, 10; the test surface that drives project up + the read-only context command)
-  phase-18 (builds on 15, 16; the service runtime command + the ServiceType registry) ← blocked on 15, 16
+  phase-18 (builds on 15, 16; the service runtime command + the service-handler registry) ← Done; service run web real-run-validated in the demo
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The
