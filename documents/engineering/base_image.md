@@ -148,6 +148,39 @@ derived project follows.
 > opts out) — that is host-level parallelism of two independent single-arch `docker build`s, **not** a
 > buildx multi-platform manifest, which stays forbidden (see [build_release.md](build_release.md)).
 
+### Host-sized warm-store build budget
+
+The warm Cabal store is compiled at `-O2` with the vanilla **and** dynamic ways enabled — RAM-hungry,
+especially the `criterion`/`statistics`/`math-functions` numeric subtree. An **unbounded** `cabal
+build all` fans out to `-j$ncpus`, and enough concurrent `-O2` GHC processes can exhaust host memory;
+when they do, the GHC RTS dies with **SIGSEGV** rather than a clean OOM. (This is distinct from the
+`--jobs=1` rule above, which concerns the forbidden buildx orchestrator flag, not cabal's `-j`.)
+
+So the base build is **resource-managed, not guessed**. Before building, `hostbootstrap base
+build`/`build-and-push` measures the host (`hostbootstrap/resources.py`: CPU affinity +
+`/proc/meminfo`) and:
+
+* **refuses below a floor** — the supported build machine is **16 GB RAM / 8 CPUs**, so the floor is
+  8 CPUs / 14 GiB total / 8 GiB available (a real 16 GB box reports ~15.5 GiB total; 12 GB fails) —
+  with remediation guidance, and
+* **caps each build** — passing `docker build --memory/--memory-swap/--cpus` and a *memory-derived*
+  `cabal build all -j<N>` (the `CABAL_BUILD_JOBS` build-arg) so the warm-store compile provably fits
+  under the memory cap instead of OOM-racing. When the CPU and CUDA tags build concurrently the host
+  budget is split between them (`--sequential` gives each the whole host).
+
+On the 16 GB / 8 CPU reference, a single-flavor build (or `--sequential`) resolves to roughly
+`--memory ~10–12g --cpus 7` and `cabal -j4` — memory is the binding constraint there, not the cores,
+and `-j4` is the largest fan-out that provably fits. Building both flavors concurrently splits that in
+half (`-j2` each), so on a 16 GB box prefer `--flavor`/`--sequential`.
+
+The sizing is Linux-only (off Linux, docker already runs inside a resource-bounded VM); a plain
+`docker build` with no `CABAL_BUILD_JOBS` arg keeps the conservative Dockerfile default of `-j1`.
+
+Per-build resource caps are honoured only by the **classic** builder (`docker buildx build` rejects
+`--memory`/`--cpu-*`), so a resource-capped build sets `DOCKER_BUILDKIT=0` — consistent with the
+no-buildx rule above. The classic builder has no `--cpus`, so the CPU cap is expressed as a CFS quota
+(`--cpu-period 100000 --cpu-quota <cpus×100000>`), the same decomposition `--cpus` uses.
+
 ### The one CUDA exception
 
 There is exactly **one** permitted conditional in the Dockerfile: an

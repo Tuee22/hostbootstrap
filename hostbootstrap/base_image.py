@@ -23,7 +23,7 @@ from typing import Final
 
 import httpx
 
-from . import docker_ops
+from . import docker_ops, resources
 from .substrate import SubstrateName
 
 
@@ -277,6 +277,8 @@ class BaseImageBuildArgs:
     mc_download_url: str
     aws_download_url: str
     pulumi_download_url: str
+    cabal_build_jobs: str = "1"
+    ghc_rts_opts: str = ""
 
     def as_build_args(self) -> dict[str, str]:
         return {
@@ -312,6 +314,8 @@ class BaseImageBuildArgs:
             "MC_DOWNLOAD_URL": self.mc_download_url,
             "AWS_DOWNLOAD_URL": self.aws_download_url,
             "PULUMI_DOWNLOAD_URL": self.pulumi_download_url,
+            "CABAL_BUILD_JOBS": self.cabal_build_jobs,
+            "GHC_RTS_OPTS": self.ghc_rts_opts,
         }
 
 
@@ -421,12 +425,21 @@ def build_spec_for(
     args: BaseImageBuildArgs | None = None,
     pull: bool = True,
     no_cache: bool = False,
+    budget: resources.BuildBudget | None = None,
 ) -> tuple[docker_ops.BuildSpec, BaseImageBuildArgs]:
     """Build the ``BuildSpec`` for ``(flavor, arch)``.
 
     *args* is resolved lazily; pass it in to override values for testing.
+
+    *budget*, when supplied, applies explicit resource limits: the docker
+    ``--memory`` / ``--cpus`` caps on the build container, and a memory-sized
+    cabal ``-j`` (``CABAL_BUILD_JOBS``) so the warm-store build stays within the
+    memory cap instead of OOM-racing. Without it the build is unbounded (the
+    historical behaviour) and ``CABAL_BUILD_JOBS`` keeps the Dockerfile default.
     """
     resolved = args if args is not None else compute_build_args(flavor, arch)
+    if budget is not None:
+        resolved = replace(resolved, cabal_build_jobs=str(budget.cabal_jobs))
     primary_tag = base_image_ref(flavor, arch)
     spec = docker_ops.BuildSpec(
         dockerfile=dockerfile if dockerfile is not None else context / REPO_ROOT_DOCKERFILE,
@@ -435,6 +448,9 @@ def build_spec_for(
         build_args=resolved.as_build_args(),
         pull=pull,
         no_cache=no_cache,
+        memory=budget.docker_memory if budget is not None else None,
+        memory_swap=budget.docker_memory_swap if budget is not None else None,
+        cpus=budget.docker_cpus if budget is not None else None,
     )
     return spec, resolved
 

@@ -381,6 +381,8 @@ def _patch_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
+    # Keep base-build tests hermetic: don't probe real host resources.
+    monkeypatch.setattr(cli, "_resolve_build_budget", lambda _targets, *, sequential: None)
 
 
 @pytest.mark.parametrize(
@@ -475,6 +477,58 @@ def test_friendly_group_converts_known_errors(
 # ---------------------------------------------------------------------------
 # base build / build-and-push + self-check
 # ---------------------------------------------------------------------------
+
+
+def test_resolve_build_budget_off_linux_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.resources, "detect_host_resources", lambda: None)
+    assert cli._resolve_build_budget((cli.Flavor.CPU,), sequential=False) is None
+
+
+def test_resolve_build_budget_aborts_below_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    res = cli.resources.HostResources(cpu_count=1, mem_total_bytes=1, mem_available_bytes=1)
+    monkeypatch.setattr(cli.resources, "detect_host_resources", lambda: res)
+    with pytest.raises(cli.click.ClickException, match="insufficient host resources"):
+        cli._resolve_build_budget((cli.Flavor.CPU, cli.Flavor.CUDA), sequential=False)
+
+
+def test_resolve_build_budget_splits_for_concurrent_flavors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    res = cli.resources.HostResources(
+        cpu_count=9, mem_total_bytes=32 * 1024**3, mem_available_bytes=24 * 1024**3
+    )
+    monkeypatch.setattr(cli.resources, "detect_host_resources", lambda: res)
+
+    one = cli._resolve_build_budget((cli.Flavor.CPU,), sequential=False)
+    two = cli._resolve_build_budget((cli.Flavor.CPU, cli.Flavor.CUDA), sequential=False)
+    seq = cli._resolve_build_budget((cli.Flavor.CPU, cli.Flavor.CUDA), sequential=True)
+
+    assert one is not None and two is not None and seq is not None
+    # Two concurrent builds split the host; --sequential collapses back to one.
+    assert two.cabal_jobs < one.cabal_jobs
+    assert seq.cabal_jobs == one.cabal_jobs
+
+
+def test_base_build_threads_budget_into_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
+    res = cli.resources.HostResources(
+        cpu_count=8, mem_total_bytes=32 * 1024**3, mem_available_bytes=24 * 1024**3
+    )
+    monkeypatch.setattr(cli.resources, "detect_host_resources", lambda: res)
+    captured: list[object] = []
+
+    def _capture(*_a: object, **kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append(kwargs.get("budget"))
+        return _stub_build_spec()
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _capture)
+    monkeypatch.setattr(cli.docker_ops, "build", _ok_build)
+
+    result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu", "--arch", "amd64"])
+    assert result.exit_code == 0, result.output
+    assert captured and all(
+        isinstance(budget, cli.resources.BuildBudget) for budget in captured
+    )
 
 
 def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:

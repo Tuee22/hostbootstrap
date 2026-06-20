@@ -35,6 +35,7 @@ from . import (
     docker_ops,
     prereqs,
     process,
+    resources,
     self_update,
     substrate,
     test_all,
@@ -352,14 +353,40 @@ def _base_targets(flavor: str | None) -> tuple[Flavor, ...]:
     return (Flavor(flavor),)
 
 
+def _resolve_build_budget(
+    targets: tuple[Flavor, ...], *, sequential: bool
+) -> resources.BuildBudget | None:
+    """Measure host resources, abort if below floor, and size a per-build budget.
+
+    Returns ``None`` off Linux (docker already runs inside a resource-bounded VM
+    there), leaving the build unbounded as before. On Linux a below-floor host
+    aborts the command; otherwise the host is split across however many flavors
+    build concurrently so two simultaneous builds never sum past the host.
+    """
+    res = resources.detect_host_resources()
+    if res is None:
+        return None
+    try:
+        resources.assert_build_minimums(res)
+    except resources.ResourceError as exc:
+        raise click.ClickException(str(exc)) from exc
+    concurrency = 1 if sequential or len(targets) <= 1 else len(targets)
+    return resources.compute_build_budget(res, concurrency=concurrency)
+
+
 def _base_work(
-    flavor: str | None, target_arch: str, context: Path
+    flavor: str | None,
+    target_arch: str,
+    context: Path,
+    *,
+    budget: resources.BuildBudget | None,
 ) -> list[tuple[docker_ops.BuildSpec, str, str]]:
     """Resolve the (build spec, tag, label) targets for one arch.
 
     The label is the flavor name (``cpu`` / ``cuda``) used to prefix that build's
     streamed output. With no ``--flavor`` this is both flavors; with one, a
-    single target (so concurrency is moot).
+    single target (so concurrency is moot). *budget*, when set, applies the
+    docker memory/cpu caps and host-sized cabal ``-j`` to every target.
     """
     work: list[tuple[docker_ops.BuildSpec, str, str]] = []
     for flavor_enum in _base_targets(flavor):
@@ -369,6 +396,7 @@ def _base_work(
             context=context,
             pull=True,
             no_cache=True,
+            budget=budget,
         )
         tag = base_image.base_image_ref(flavor_enum, target_arch)
         work.append((build_spec, tag, flavor_enum.value))
@@ -463,7 +491,8 @@ def base_build(flavor: str | None, arch: str | None, context: Path, sequential: 
     """
     _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()
-    work = _base_work(flavor, target_arch, context)
+    budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)
+    work = _base_work(flavor, target_arch, context, budget=budget)
     asyncio.run(_run_base_targets(work, push=False, sequential=sequential))
 
 
@@ -485,7 +514,8 @@ def base_build_and_push(
     """
     _run_self_check_or_abort(context)
     target_arch = arch or _arch_default()
-    work = _base_work(flavor, target_arch, context)
+    budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)
+    work = _base_work(flavor, target_arch, context, budget=budget)
     asyncio.run(_run_base_targets(work, push=True, sequential=sequential))
 
 

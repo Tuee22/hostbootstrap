@@ -68,6 +68,70 @@ def test_build_command_no_cache() -> None:
     assert cmd.index("--no-cache") > cmd.index("--pull")
 
 
+def test_build_command_resource_limits() -> None:
+    spec = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+        pull=False,
+        memory="4096m",
+        memory_swap="4096m",
+        cpus="3",
+    )
+    cmd = docker_ops.build_command(spec)
+    i = cmd.index("--memory")
+    assert cmd[i : i + 2] == ("--memory", "4096m")
+    j = cmd.index("--memory-swap")
+    assert cmd[j : j + 2] == ("--memory-swap", "4096m")
+    # The classic builder has no --cpus; 3 CPUs == a CFS quota of 3 * period.
+    assert "--cpus" not in cmd
+    p = cmd.index("--cpu-period")
+    assert cmd[p : p + 2] == ("--cpu-period", "100000")
+    q = cmd.index("--cpu-quota")
+    assert cmd[q : q + 2] == ("--cpu-quota", "300000")
+    # resource caps precede the dockerfile/context tail.
+    assert cmd.index("--memory") < cmd.index("--file")
+    assert cmd.index("--cpu-quota") < cmd.index("--file")
+
+
+def test_build_command_omits_resource_limits_when_unset() -> None:
+    spec = docker_ops.BuildSpec(
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+    )
+    cmd = docker_ops.build_command(spec)
+    assert "--memory" not in cmd
+    assert "--memory-swap" not in cmd
+    assert "--cpu-period" not in cmd
+    assert "--cpu-quota" not in cmd
+
+
+async def test_build_forces_classic_builder_only_with_resource_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[object] = []
+
+    async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
+        seen.append(kwargs.get("env"))
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        return process.CommandResult(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
+
+    plain = docker_ops.BuildSpec(dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={})
+    capped = docker_ops.BuildSpec(
+        dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}, memory="1g", cpus="2"
+    )
+    await docker_ops.build(plain)
+    await docker_ops.build(capped)
+
+    assert seen[0] is None
+    assert seen[1] == {"DOCKER_BUILDKIT": "0"}
+
+
 def test_run_command_one_shot_rm_with_mounts() -> None:
     spec = docker_ops.RunSpec(
         image="img",

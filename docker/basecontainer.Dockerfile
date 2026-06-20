@@ -42,6 +42,15 @@ ARG AWS_DOWNLOAD_URL
 ARG GHCUP_DOWNLOAD_URL
 ARG RUST_TOOLCHAIN=1.95.0
 
+# Warm-store build sizing, resolved on the host from measured RAM/CPU
+# (hostbootstrap.resources). CABAL_BUILD_JOBS caps the package-level fan-out of
+# `cabal build all` so concurrent -O2 GHC compiles stay within the build's
+# memory budget; the conservative default of 1 keeps a plain `docker build`
+# (no build-arg) safe. GHC_RTS_OPTS is an optional per-GHC RTS knob (e.g. a
+# heap cap), empty by default.
+ARG CABAL_BUILD_JOBS=1
+ARG GHC_RTS_OPTS=
+
 ENV DEBIAN_FRONTEND=noninteractive
 # Default RUN shell only (POSIX /bin/sh): no bash, no pipes, no shell branching.
 # The one allowed exception is the documented CUDA ldconfig check at the end.
@@ -247,11 +256,15 @@ COPY core/warm-deps/ /opt/basecontainer/haskell-deps/
 # A derived project `import:`s the fragment(s) for its layer; an L0-direct
 # consumer imports only core.freeze and is never coupled to the daemon closure.
 # The freezes are generated here, never committed (.gitignore / .dockerignore).
-RUN cd /opt/basecontainer/haskell-deps \
+# GHCRTS (scoped to this RUN, not persisted into the image) carries the optional
+# per-GHC RTS knob to every compile, dependencies included; empty by default.
+# -j${CABAL_BUILD_JOBS} bounds the package-level fan-out to the host-sized budget.
+RUN export GHCRTS="${GHC_RTS_OPTS}" \
+    && cd /opt/basecontainer/haskell-deps \
     && cabal update \
-    && cabal build all --only-dependencies \
+    && cabal build all --only-dependencies -j${CABAL_BUILD_JOBS} \
          --enable-tests --enable-benchmarks --enable-shared \
-    && cabal build all \
+    && cabal build all -j${CABAL_BUILD_JOBS} \
          --enable-tests --enable-benchmarks --enable-shared \
     && cabal freeze --project-file=core.project \
          --enable-tests --enable-benchmarks --enable-shared \

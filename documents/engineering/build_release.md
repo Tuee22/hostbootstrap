@@ -28,8 +28,12 @@ poetry run hostbootstrap base build-and-push --arch amd64
 The CLI:
 
 1. Detects the host substrate (or uses the explicit `--arch`).
-2. Resolves every dynamic value (versions, URLs, the CUDA base image) per flavor.
-3. For each flavor, invokes `docker build --build-arg … --pull --no-cache`
+2. On Linux, measures host CPU/RAM and **refuses below a floor** — the supported build machine is
+   16 GB RAM / 8 CPUs, so the floor is 8 CPUs / 14 GiB total / 8 GiB available — then sizes a
+   per-build resource budget (see
+   [base_image.md](base_image.md#host-sized-warm-store-build-budget)).
+3. Resolves every dynamic value (versions, URLs, the CUDA base image) per flavor.
+4. For each flavor, invokes `docker build --build-arg … --memory/--cpus … --pull --no-cache`
    against `docker/basecontainer.Dockerfile`, then `docker push`es
    `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`.
 
@@ -37,10 +41,11 @@ The two flavors' builds are independent (different base image, distinct tag,
 separate layer cache), so they run concurrently and each build's streamed output
 is line-prefixed `[cpu]` / `[cuda]`. This is **host-level parallelism of two
 plain single-arch `docker build`s** — not a buildx multi-platform manifest, which
-remains forbidden. Concurrency roughly halves the wall-clock at the cost of ~2×
-peak RAM/CPU/disk; pass `--sequential` to build one at a time on a constrained
-host (concurrency is automatically moot with `--flavor`, which builds a single
-tag):
+remains forbidden. Concurrency roughly halves the wall-clock; the measured host
+budget is **split** between the two concurrent builds (each gets half the
+memory/CPU cap) so peak usage stays bounded, while `--sequential` gives each
+build the whole host (higher per-build `-j`, lower disk pressure). Concurrency is
+automatically moot with `--flavor`, which builds a single tag:
 
 ```sh
 hostbootstrap base build-and-push --arch amd64 --sequential

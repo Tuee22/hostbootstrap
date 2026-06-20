@@ -16,6 +16,15 @@ from . import process
 
 _DOCKER: Final[str] = "docker"
 
+# Per-build resource caps are only honoured by the classic (non-BuildKit) builder
+# — `docker buildx build` rejects `--memory`/`--cpu-*`. The repo already mandates
+# plain single-arch `docker build` (no buildx; see base_image.md), so when a build
+# carries a resource budget we force the classic builder via this env. The classic
+# builder has no `--cpus`; we express the same cap with a CFS quota over a fixed
+# 100 ms period (quota = cpus * period), exactly how `--cpus` is implemented.
+_BUILDKIT_OFF_ENV: Final[dict[str, str]] = {"DOCKER_BUILDKIT": "0"}
+_CPU_PERIOD_US: Final[int] = 100_000
+
 
 @dataclass(frozen=True)
 class BuildSpec:
@@ -32,6 +41,9 @@ class BuildSpec:
     target: str | None = None
     pull: bool = True
     no_cache: bool = False
+    memory: str | None = None
+    cpus: str | None = None
+    memory_swap: str | None = None
 
 
 def build_command(spec: BuildSpec) -> tuple[str, ...]:
@@ -46,6 +58,13 @@ def build_command(spec: BuildSpec) -> tuple[str, ...]:
         cmd.append("--pull")
     if spec.no_cache:
         cmd.append("--no-cache")
+    if spec.memory is not None:
+        cmd.extend(["--memory", spec.memory])
+    if spec.memory_swap is not None:
+        cmd.extend(["--memory-swap", spec.memory_swap])
+    if spec.cpus is not None:
+        quota = int(float(spec.cpus) * _CPU_PERIOD_US)
+        cmd.extend(["--cpu-period", str(_CPU_PERIOD_US), "--cpu-quota", str(quota)])
     cmd.extend(["--file", str(spec.dockerfile)])
     cmd.append(str(spec.context))
     return tuple(cmd)
@@ -124,8 +143,13 @@ def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
     return tuple(entrypoint)
 
 
+def _has_resource_caps(spec: BuildSpec) -> bool:
+    return spec.memory is not None or spec.memory_swap is not None or spec.cpus is not None
+
+
 async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
-    return await process.run_checked(build_command(spec), prefix=prefix)
+    env = _BUILDKIT_OFF_ENV if _has_resource_caps(spec) else None
+    return await process.run_checked(build_command(spec), prefix=prefix, env=env)
 
 
 async def push(tag: str, *, prefix: str = "") -> process.CommandResult:

@@ -70,6 +70,13 @@ and
 * Pinned to the versions in the in-image freezes (`core.freeze` and, for the
   daemon-family deps, `daemon.freeze`).
 
+The store is warmed by `cabal build all -j${CABAL_BUILD_JOBS}`; the package-level fan-out is **not**
+left unbounded. The base build sizes `-j` (and a matching `docker --memory/--cpus` cap) from measured
+host RAM/CPU so the `-O2` + dynamic-way compile of the heavy numeric subtree
+(`criterion`/`statistics`/`math-functions`) stays within budget rather than OOM-racing into a GHC
+SIGSEGV. Parallelism only affects build wall-clock, not store contents, so the cache-hit contract
+below is unchanged. See [base_image.md](base_image.md#host-sized-warm-store-build-budget).
+
 `fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
 (see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
 

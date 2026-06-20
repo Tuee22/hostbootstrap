@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hostbootstrap import base_image
+from hostbootstrap import base_image, resources
 from hostbootstrap.base_image import Flavor
 from hostbootstrap.substrate import SubstrateName
 
@@ -176,6 +176,40 @@ def test_compute_build_args_cpu_and_cuda_defaults(monkeypatch: pytest.MonkeyPatc
 def test_compute_build_args_rejects_unknown_arch() -> None:
     with pytest.raises(RuntimeError, match="unsupported arch"):
         base_image.compute_build_args(Flavor.CPU, "s390x")
+
+
+def test_build_args_include_cabal_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_version_resolvers(monkeypatch)
+    d = base_image.compute_build_args(Flavor.CPU, "amd64", base_image_override="b").as_build_args()
+    assert d["CABAL_BUILD_JOBS"] == "1"
+    assert d["GHC_RTS_OPTS"] == ""
+
+
+def test_build_spec_for_applies_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_version_resolvers(monkeypatch)
+    budget = resources.BuildBudget(
+        docker_cpus="3",
+        docker_memory="6144m",
+        docker_memory_swap="6144m",
+        cabal_jobs=3,
+    )
+    spec, args = base_image.build_spec_for(
+        Flavor.CPU, "amd64", context=Path("/repo"), budget=budget
+    )
+    assert spec.memory == "6144m"
+    assert spec.memory_swap == "6144m"
+    assert spec.cpus == "3"
+    assert args.cabal_build_jobs == "3"
+    assert spec.build_args["CABAL_BUILD_JOBS"] == "3"
+
+
+def test_build_spec_for_without_budget_is_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_version_resolvers(monkeypatch)
+    spec, _ = base_image.build_spec_for(Flavor.CPU, "amd64", context=Path("/repo"))
+    assert spec.memory is None
+    assert spec.memory_swap is None
+    assert spec.cpus is None
+    assert spec.build_args["CABAL_BUILD_JOBS"] == "1"
 
 
 def test_build_spec_for_resolves_args_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
