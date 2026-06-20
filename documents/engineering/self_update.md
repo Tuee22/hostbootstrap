@@ -75,8 +75,10 @@ usable offline after installation and do not turn GitHub reachability into a pre
 - `hostbootstrap doctor` checks local host minimums only.
 - `hostbootstrap build` and `hostbootstrap run` build/exec the project binary without a latest-version
   check.
-- `hostbootstrap base build` and `hostbootstrap base build-and-push` perform their local self-check and
-  Docker operations, but do not self-update the wrapper.
+- `hostbootstrap base build` and `hostbootstrap base build-and-push` (dev-only maintainer commands,
+  exposed only in a Poetry development install — see
+  [../languages/python.md](../languages/python.md#maintainer-commands-are-dev-only)) perform their
+  local self-check and Docker operations, but do not self-update the wrapper.
 
 ## Validation
 

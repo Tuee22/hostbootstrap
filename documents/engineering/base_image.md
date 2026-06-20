@@ -139,7 +139,7 @@ derived project follows.
 > **RIGHT**
 >
 > ```sh
-> hostbootstrap base build-and-push --arch amd64
+> poetry run hostbootstrap base build-and-push --arch amd64
 > ```
 >
 > Plain `docker build` under the hood, single-arch, host-native, with every version/URL computed on

@@ -13,11 +13,16 @@ design (see [base_image.md](base_image.md)).
 
 ## Building & publishing
 
+`base` is a **maintainer command**: it is registered only in this repo's Poetry development install
+(it needs the dev toolchain), so run it from the repo root via `poetry run` — the pipx-installed
+consumer CLI does not expose it. See
+[../languages/python.md](../languages/python.md#maintainer-commands-are-dev-only).
+
 By default, one command builds and pushes both the CPU and CUDA tags for one
 arch, **concurrently**:
 
 ```sh
-hostbootstrap base build-and-push --arch amd64
+poetry run hostbootstrap base build-and-push --arch amd64
 ```
 
 The CLI:

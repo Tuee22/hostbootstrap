@@ -60,6 +60,22 @@ The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
 - Coverage: `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`
   (configured with `fail_under = 100`).
 
+### Maintainer commands are dev-only
+
+`base`, `check-code`, and `test-all` are **maintainer** commands: the CLI registers them only when the
+dev toolchain (ruff/black/mypy/pytest) is importable — i.e. in this repo's Poetry `.venv`, never in the
+pipx-installed consumer CLI. The gate is `cli._maintainer_cli_enabled()`; in the global CLI these names
+resolve to a plain `No such command` and are absent from `--help`. The Poetry venv additionally exposes
+two convenience subcommands that wrap the module runners:
+
+- `poetry run hostbootstrap check-code` — same gate as `python -m hostbootstrap.check_code`.
+- `poetry run hostbootstrap test-all [pytest args...]` — same runner as `python -m hostbootstrap.test_all`
+  (forwards args to pytest; still goes through the `HOSTBOOTSTRAP_TEST_ALL` sentinel).
+
+Because `base` only runs inside the dev venv, its pre-build self-check runs `check_code` directly in the
+current interpreter (`sys.executable -m hostbootstrap.check_code`) rather than shelling out to
+`poetry run` — see [../engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md).
+
 Do not invoke `pytest` directly; `tests/conftest.py` requires the
 `hostbootstrap.test_all` runner. See
 [../architecture/python_haskell_boundary.md](../architecture/python_haskell_boundary.md)

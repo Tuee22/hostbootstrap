@@ -26,9 +26,13 @@ def _pytest_main(args: list[str]) -> int:
     return int(pytest.main(args))
 
 
-def main() -> int:
+def run(args: list[str]) -> int:
     os.environ[_SENTINEL] = "1"
-    return _pytest_main(["tests", *sys.argv[1:]])
+    return _pytest_main(["tests", *args])
+
+
+def main() -> int:
+    return run(sys.argv[1:])
 
 
 if __name__ == "__main__":

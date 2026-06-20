@@ -26,15 +26,20 @@ def _project() -> bootstrap.ProjectBuildSpec:
 # ---------------------------------------------------------------------------
 
 
+def _help_commands(output: str) -> set[str]:
+    return {
+        line.strip().split()[0]
+        for line in output.splitlines()
+        if line.startswith("  ") and line.strip()
+    }
+
+
 def test_help_lists_only_thin_commands() -> None:
     result = CliRunner().invoke(cli.main, ["--help"])
     assert result.exit_code == 0
-    commands = {
-        line.strip().split()[0]
-        for line in result.output.splitlines()
-        if line.startswith("  ") and line.strip()
-    }
-    for command in ("doctor", "build", "run", "base", "update"):
+    commands = _help_commands(result.output)
+    # In a dev (Poetry) install the maintainer commands are visible too.
+    for command in ("doctor", "build", "run", "base", "update", "check-code", "test-all"):
         assert command in commands
     for unsupported in ("up", "cluster", "daemon", "push"):
         assert unsupported not in commands
@@ -604,7 +609,7 @@ def test_base_build_both_flavors_concurrent_no_push(monkeypatch: pytest.MonkeyPa
     assert "[cuda] built docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64" in result.output
 
 
-def test_self_check_runs_poetry_in_context(
+def test_self_check_runs_check_code_in_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     (tmp_path / "pyproject.toml").touch()
@@ -620,9 +625,10 @@ def test_self_check_runs_poetry_in_context(
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
     cli._run_self_check_or_abort(tmp_path)
+    # Runs in the current (dev) interpreter, not `poetry run`, since base is dev-only.
     assert captured == [
         (
-            ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
+            [cli.sys.executable, "-m", "hostbootstrap.check_code"],
             tmp_path,
         )
     ]
@@ -644,19 +650,6 @@ def test_self_check_nonzero_raises_click_exception(
         cli._run_self_check_or_abort(tmp_path)
 
 
-def test_self_check_missing_poetry_raises_click_exception(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    (tmp_path / "pyproject.toml").touch()
-
-    def _fake_run(*_a: object, **_kw: object) -> object:
-        raise FileNotFoundError(2, "No such file or directory", "poetry")
-
-    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
-    with pytest.raises(cli.click.ClickException, match="poetry"):
-        cli._run_self_check_or_abort(tmp_path)
-
-
 def test_self_check_rejects_non_repo_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -666,3 +659,58 @@ def test_self_check_rejects_non_repo_root(
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
     with pytest.raises(cli.click.ClickException, match="not a hostbootstrap repo root"):
         cli._run_self_check_or_abort(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Maintainer-only command gating (dev venv vs global pipx)
+# ---------------------------------------------------------------------------
+
+
+def test_maintainer_cli_enabled_reflects_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda _name: object())
+    assert cli._maintainer_cli_enabled() is True
+
+    def _missing_pytest(name: str) -> object | None:
+        return None if name == "pytest" else object()
+
+    monkeypatch.setattr(cli.importlib.util, "find_spec", _missing_pytest)
+    assert cli._maintainer_cli_enabled() is False
+
+
+def test_maintainer_commands_hidden_in_global_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_maintainer_cli_enabled", lambda: False)
+
+    commands = _help_commands(CliRunner().invoke(cli.main, ["--help"]).output)
+    for hidden in ("base", "check-code", "test-all"):
+        assert hidden not in commands
+    # The consumer surface still works.
+    for consumer in ("doctor", "build", "run", "update"):
+        assert consumer in commands
+
+    for argv in (["base", "build-and-push"], ["check-code"], ["test-all"]):
+        result = CliRunner().invoke(cli.main, argv)
+        assert result.exit_code != 0
+        assert "No such command" in result.output
+
+
+def test_check_code_command_propagates_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.check_code, "main", lambda: 0)
+    assert CliRunner().invoke(cli.main, ["check-code"]).exit_code == 0
+
+    monkeypatch.setattr(cli.check_code, "main", lambda: 3)
+    assert CliRunner().invoke(cli.main, ["check-code"]).exit_code == 3
+
+
+def test_test_all_command_forwards_args_and_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def _run(args: list[str]) -> int:
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(cli.test_all, "run", _run)
+    assert CliRunner().invoke(cli.main, ["test-all", "-k", "models", "-q"]).exit_code == 0
+    assert captured["args"] == ["-k", "models", "-q"]
+
+    monkeypatch.setattr(cli.test_all, "run", lambda _args: 5)
+    assert CliRunner().invoke(cli.main, ["test-all"]).exit_code == 5

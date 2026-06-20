@@ -175,7 +175,7 @@ Two programs share the `hostbootstrap` name: the **pipx-installed Python bootstr
 you install and run) and the **`hostbootstrap-core` command tree** that every built binary — the
 bare `hostbootstrap` binary and each project binary — exposes.
 
-The Python bootstrapper (installed with `pipx install …`):
+The Python bootstrapper (installed with `pipx install …`) exposes only the **consumer** commands:
 
 | Command | What it does |
 |---|---|
@@ -183,8 +183,17 @@ The Python bootstrapper (installed with `pipx install …`):
 | `hostbootstrap build` | Run the bootstrap — build the project binary host-native into `./.build/`; no exec |
 | `hostbootstrap run [args...]` | Build idempotently, then exec the project binary with `args` |
 | `hostbootstrap update` | Explicitly update the pipx-installed Python bootstrapper |
+
+The **maintainer** commands below are registered **only in a Poetry development install** of this repo
+(they need the dev toolchain — ruff/black/mypy/pytest); they are hidden from the pipx-installed CLI, where
+invoking them prints a plain `No such command`. Run them from the repo with `poetry run hostbootstrap …`:
+
+| Command (dev-only) | What it does |
+|---|---|
 | `hostbootstrap base build` | Cold-rebuild the base image(s) locally (`--no-cache --pull`); no push. With no `--flavor`, cpu+cuda build concurrently (`--sequential` opts out) |
 | `hostbootstrap base build-and-push` | Cold-rebuild and push the base image(s); with no `--flavor`, cpu+cuda build concurrently (`--sequential` opts out) |
+| `hostbootstrap check-code` | Run the Python code-check gate (ruff → black → mypy); same as `python -m hostbootstrap.check_code` |
+| `hostbootstrap test-all [pytest args...]` | Run the full pytest suite via the supported runner; same as `python -m hostbootstrap.test_all` |
 
 Self-update is never run automatically by `doctor`, `build`, `run`, or `base`, and those commands must
 not fail just because the wrapper is not at the latest commit.

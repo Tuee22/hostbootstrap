@@ -4,9 +4,12 @@ The single entrypoint installed on every downstream host (via
 ``pip install git+…``). The surface is thin: ``doctor`` asserts the fail-fast
 host minimums; ``build`` runs the pre-binary bootstrapper (assert minimums →
 ensure the host build toolchain → build the binary host-native) without exec'ing;
-``run`` does the same and then execs the binary with the forwarded args; ``base
-build`` / ``base build-and-push`` produce the ``basecontainer-<flavor>-<arch>``
-tags; ``update`` explicitly updates the pipx-installed wrapper. Ensuring Docker,
+``run`` does the same and then execs the binary with the forwarded args; ``update``
+explicitly updates the pipx-installed wrapper. The maintainer commands ``base``
+(``base build`` / ``base build-and-push``, producing the ``basecontainer-<flavor>-<arch>``
+tags), ``check-code``, and ``test-all`` need the dev toolchain and are registered only
+in a Poetry development install — they are hidden from the pipx-installed CLI (see
+``_maintainer_cli_enabled``). Ensuring Docker,
 building the project container, and cordoning are the project binary's job; all
 richer host-management logic lives in ``hostbootstrap-core`` and runs through the
 execed project binary.
@@ -15,6 +18,7 @@ execed project binary.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -24,7 +28,17 @@ from typing import Final
 import click
 import httpx
 
-from . import base_image, bootstrap, docker_ops, prereqs, process, self_update, substrate
+from . import (
+    base_image,
+    bootstrap,
+    check_code,
+    docker_ops,
+    prereqs,
+    process,
+    self_update,
+    substrate,
+    test_all,
+)
 from .base_image import Flavor
 from .substrate import Substrate
 
@@ -150,6 +164,40 @@ class _FriendlyGroup(click.Group):
 
 
 # ---------------------------------------------------------------------------
+# Maintainer-only command gating
+# ---------------------------------------------------------------------------
+
+_MAINTAINER_TOOLCHAIN: Final[tuple[str, ...]] = ("ruff", "black", "mypy", "pytest")
+_MAINTAINER_COMMANDS: Final[frozenset[str]] = frozenset({"base", "check-code", "test-all"})
+
+
+def _maintainer_cli_enabled() -> bool:
+    """True only in a dev (Poetry) install carrying the maintainer toolchain.
+
+    ``base`` / ``check-code`` / ``test-all`` need ruff/black/mypy/pytest — dev-only
+    dependencies absent from the pipx-installed CLI's own venv — so the global CLI
+    never advertises commands it cannot run. The dev group is atomic, so the whole
+    toolchain must be importable.
+    """
+    return all(importlib.util.find_spec(name) is not None for name in _MAINTAINER_TOOLCHAIN)
+
+
+class _MainGroup(_FriendlyGroup):
+    """Top-level group that hides the maintainer commands outside a dev install."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        names = super().list_commands(ctx)
+        if _maintainer_cli_enabled():
+            return names
+        return [name for name in names if name not in _MAINTAINER_COMMANDS]
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name in _MAINTAINER_COMMANDS and not _maintainer_cli_enabled():
+            return None
+        return super().get_command(ctx, cmd_name)
+
+
+# ---------------------------------------------------------------------------
 # Click app
 # ---------------------------------------------------------------------------
 
@@ -163,7 +211,7 @@ _PROJECT_ROOT_OPTION = click.option(
 )
 
 
-@click.group(cls=_FriendlyGroup, context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(cls=_MainGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
 def main() -> None:
     """Host-installed CLI for the hostbootstrap base images."""
@@ -275,33 +323,26 @@ async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str, *, prefix
 def _run_self_check_or_abort(context: Path) -> None:
     """Run hostbootstrap's own ruff/black/mypy gate before building the base.
 
-    The base image build flow MUST NOT publish source with style or type
-    errors. We shell out to ``poetry run python -m hostbootstrap.check_code``
-    in the build context root (where the Poetry project lives) so the check
-    runs against Poetry's development venv — ruff, black, and mypy are
-    dev-only dependencies and are not available in the pipx-installed CLI's
-    own venv. See documents/engineering/code_check_doctrine.md.
+    The base image build flow MUST NOT publish source with style or type errors.
+    ``base`` is a dev-only command (see ``_maintainer_cli_enabled``), so it always
+    runs inside the Poetry development venv where ruff/black/mypy live; we invoke
+    ``check_code`` in that same interpreter (``sys.executable``) against the repo at
+    ``context``. See documents/engineering/code_check_doctrine.md.
     """
     if not (context / "pyproject.toml").is_file():
         raise click.ClickException(
             f"{context} is not a hostbootstrap repo root (no pyproject.toml); "
             "run from the repo root or pass --context."
         )
-    try:
-        completed = subprocess.run(
-            ["poetry", "run", "python", "-m", "hostbootstrap.check_code"],
-            cwd=context,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise click.ClickException(
-            "self-check requires `poetry` on PATH; install Poetry and retry "
-            "(see hostbootstrap README)."
-        ) from exc
+    completed = subprocess.run(
+        [sys.executable, "-m", "hostbootstrap.check_code"],
+        cwd=context,
+        check=False,
+    )
     if completed.returncode != 0:
         raise click.ClickException(
-            "self-check failed; fix with "
-            "`poetry run python -m hostbootstrap.check_code` and retry."
+            f"self-check failed (exit {completed.returncode}); fix the ruff/black/mypy "
+            "issues reported above and re-run."
         )
 
 
@@ -446,6 +487,27 @@ def base_build_and_push(
     target_arch = arch or _arch_default()
     work = _base_work(flavor, target_arch, context)
     asyncio.run(_run_base_targets(work, push=True, sequential=sequential))
+
+
+# ---------------------------------------------------------------------------
+# dev-only runners (check-code / test-all) — hidden outside a Poetry install
+# ---------------------------------------------------------------------------
+
+
+@main.command("check-code")
+def check_code_command() -> None:
+    """Run the Python code-check gate (ruff → black → mypy). Dev-only."""
+    raise SystemExit(check_code.main())
+
+
+@main.command(
+    "test-all",
+    context_settings={"allow_interspersed_args": False, "ignore_unknown_options": True},
+)
+@click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
+def test_all_command(pytest_args: tuple[str, ...]) -> None:
+    """Run the full pytest suite via the supported runner; forwards args to pytest. Dev-only."""
+    raise SystemExit(test_all.run(list(pytest_args)))
 
 
 if __name__ == "__main__":
