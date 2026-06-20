@@ -10,7 +10,14 @@
 ## TL;DR
 
 - The host-level `<project>.dhall` `resources` field is the one ceiling: one declared `cpu` / `memory` /
-  `storage` number per project. Child configs receive a generated resource envelope or slice.
+  `storage` number per project, used **once**. Child configs receive a generated resource envelope or slice.
+- The declared budget **is the VM wall**: the VM (cordon #1) is sized to the budget, and the in-VM cluster
+  (cordon #2) is a **slice within it** that fits alongside the VM OS, Docker, and image builds. The budget
+  is never added to itself — there is no budget-sized VM "headroom" that sizes the VM above the ceiling
+  (that double-counts the one requirement; see
+  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+- A test config may override the budget (e.g. smaller resources); `test run` projects the override into the
+  test `<project>.dhall` it writes, then drives the same sizing path as deploy.
 - The project binary verifies the active context has the spare budget available before proceeding, then
   applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on Linux, Colima for
   direct Apple Docker workloads), a kind-node cap, or a container cap.

@@ -99,6 +99,7 @@ DEVELOPMENT_PLAN/
 ├── phase-15-binary-context-config.md
 ├── phase-16-project-lifecycle-command.md
 ├── phase-17-chain-driven-test-and-context-introspection.md
+├── phase-18-service-runtime-command.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -218,7 +219,7 @@ The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
-(`daemon-substrate`) contributes via the four-stream merge (§ T). The `ensure` reconcilers are normally
+(`daemon-substrate`) contributes via the extension-stream merge (§ T). The `ensure` reconcilers are normally
 invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs; the standalone
 `ensure <tool>` subcommand is retained only as a hidden debug surface. A provider reconciler reaches a
 **usable** provider, not merely an installed binary — on Linux `ensure incus` also ensures the VM
@@ -284,34 +285,42 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 ### O. Resource Budget and Cordoning
 
 The host-level `<project>.dhall` declares a per-project resource budget (`cpu`, `memory`, `storage`) —
-the one ceiling the project may not exceed. The project binary reads that value from its active config and
-projects narrower resource envelopes into child configs (§ X). It is enforced with defense in depth: a
-Dhall-time `assert`
-(`Budget/fitsWithin`) at render, the pure `verifyBudget`/`fitsBudget` before bring-up, and the applied
-wall at runtime — a sized Lima VM on Apple Silicon, a sized Incus VM on Linux (§ U), the applied
-`docker update` kind-node cap, or `docker run` caps (one-shot). All VM/node sizing is emitted by **one**
-canonical quantity parser/argument builder in `hostbootstrap-core` and applied by the **project binary**;
-the Python bootstrapper does **not** ensure Docker or cordon (§ M), so there is no second budget
-interpreter.
+the **one ceiling** the project may not exceed, used **once**. The declared budget **is the VM wall**: the
+VM (cordon #1) is sized to the budget, and the in-VM cluster (cordon #2) is a **slice within that wall**,
+strictly smaller in every dimension so it fits inside the VM's spare capacity alongside the VM OS, Docker,
+and image builds. The budget is **never** added to itself: there is no budget-sized VM "headroom" that
+sizes the VM above the ceiling (that would count the one requirement twice and is forbidden — see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). The project binary reads the budget
+from its active config and projects narrower resource envelopes into child configs (§ X). It is enforced
+with defense in depth: a Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure
+`verifyBudget`/`fitsBudget` before bring-up, and the applied wall at runtime — a sized Lima VM on Apple
+Silicon, a sized Incus VM on Linux (§ U), the applied `docker update` kind-node cap, or `docker run` caps
+(one-shot). All VM/node sizing is emitted by **one** canonical quantity parser/argument builder in
+`hostbootstrap-core` and applied by the **project binary**; the Python bootstrapper does **not** ensure
+Docker or cordon (§ M), so there is no second budget interpreter.
 Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a quota'd hostPath
 on Linux), since `docker update` has no storage flag. The budget flows from the local host config into
 child config projections, then into both the spinup cordon and the binary-generated configs.
 
-### P. optparse Command-Tree Extension Contract
+### P. Fixed Command Surface And The Extension Streams
 
-`hostbootstrap-core` exposes its subcommands as a composable optparse value plus a project entrypoint
-(`runHostBootstrapCLI progName projectSpec`). The surfaced core tree is the recursive lifecycle command
-`project init|up|down|destroy`, the read-only `context` introspection command, `test init|run`, and
-`check-code` (§ Y, § Z). A project binary extends the core through a `ProjectSpec` whose primary member is
-its **lift chain** (`chain :: RootConfig -> [Step]`, § Y), alongside the non-empty test suite, project
-`check-code` action, and project `ConfigArtifact` delta; any residual named `ProjectCommand` deltas are
-still validated to never shadow a core verb. The entrypoint validates those extension points before parser
-construction: project commands cannot shadow core verbs, duplicate commands/cases/artifacts are rejected,
-the test suite must be non-empty, and `check-code` is supplied by construction rather than silently
-defaulted. This CLI tree is the first of the four parallel extension streams the library hierarchy
-composes additively (§ T). The bare `hostbootstrap` binary (`hostbootstrap-core`'s own executable) uses
-the separate `runBareHostBootstrapCLI` entrypoint; it is built like any project binary, not baked into the
-base image.
+`hostbootstrap-core` exposes a **fixed** command surface plus a project entrypoint
+(`runHostBootstrapCLI progName projectSpec`). Every project binary — and the bare `hostbootstrap` binary —
+surfaces the **same** tree: the three DSL-driven commands `project init|up|down|destroy`,
+`test init|run`, and `service init|schema|run` (§ Y, § Z, § AA), plus the read-only `context`
+introspection command and `check-code`. There are **no per-project verbs**: `hostbootstrap-core` is a
+**library of composable tools** (step kinds, reconcilers, the self-reference lift, service handlers), not a
+CLI topology, so a project never adds a command. A project extends the core only through the
+**extension streams** carried by `ProjectSpec`: its **lift chain** (`chain :: RootConfig -> [Step]`, § Y),
+the **Dhall vocabulary**, the **schema-gen** `ConfigArtifact` registry, the **test seams** (a non-empty
+test suite), and the **service handlers** (the `ServiceType` registry, possibly empty, § AA) — alongside
+the project `check-code` action. The entrypoint validates those extension points before parser
+construction: duplicate cases/artifacts/service variants are rejected, the test suite must be non-empty,
+and `check-code` is supplied by construction rather than silently defaulted. `ProjectSpec` carries **no**
+`ProjectCommand` deltas — the surface is closed (see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). The bare `hostbootstrap` binary
+(`hostbootstrap-core`'s own executable) uses the separate `runBareHostBootstrapCLI` entrypoint; it is
+built like any project binary, not baked into the base image.
 
 ### Q. Configuration via Dhall
 
@@ -351,21 +360,25 @@ validation cadence; those remain consumer concerns. Non-adopted external doctrin
 treated as a current blocker or completion criterion. The four run-models and the standardized test
 harness, however, are `hostbootstrap`-**owned** contracts that downstream refactors follow (§ T).
 
-### T. Library Hierarchy, Four-Stream Extension, and Run-Models
+### T. Library Hierarchy, Extension Streams, and Run-Models
 
-The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
-`daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes L0 directly. Each level adds only its
-delta to **four parallel streams**, one additive merge idiom each: the **lift chain**
-(`chain :: RootConfig -> [Step]` — the level below's host-management step kinds with the project's own
-step kinds appended, interleaved and interpreted by the core `project` lifecycle, § Y); the **Dhall
-vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the
-**schema-gen** `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); and the
-**test-harness** `Seams` (threaded through a non-empty `TestSuite`). A project integrates in one of two
-modes: freeze-import + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or
-`source-repository-package` + the `runHostBootstrapCLI` extension. The system runs one of four
-**run-models** — `OneShot` (one-shot `docker run`), `HostNative` (host-native build + host exec),
-`HostDaemon` (a long-running host service), `Cluster` (kind+Helm) — selected within `project up`'s step interpretation by
-`(step × detected-substrate × library-layer × generated-topology)`, never declared in Dhall.
+`hostbootstrap-core` is a **library of composable tools**, not a CLI topology; the command surface is
+fixed (§ P) and is **not** an extension point. The reusable surface is a three-level Cabal library
+hierarchy: `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes
+L0 directly. Each level adds only its delta to the **parallel extension streams**, one additive merge idiom
+each: the **lift chain** (`chain :: RootConfig -> [Step]` — the level below's host-management step kinds
+with the project's own step kinds appended, interleaved and interpreted by the core `project` lifecycle,
+§ Y); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen**
+`ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test-harness** `Seams`
+(threaded through a non-empty `TestSuite`); and the **service handlers** (the `ServiceType` registry
+dispatched by `service run`, possibly empty, § AA). A project integrates in one of two modes: freeze-import
++ the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or `source-repository-package` + the
+`runHostBootstrapCLI` extension. The system runs one of four **run-models** — `OneShot` (one-shot
+`docker run`), `HostNative` (host-native build + host exec), `HostDaemon`/service (a long-running role,
+reached via `service run` as a leaf-frame pod entrypoint that the chain's `deploy-chart` step deploys,
+§ AA), `Cluster` (kind+Helm) — selected within `project up`'s step interpretation (and, for the service
+leaf, by the running pod's service-role config) by `(step × detected-substrate × library-layer ×
+generated-topology)`, never declared imperatively.
 
 ### U. Host-Provider Axis And The Self-Reference Lift
 
@@ -398,21 +411,23 @@ The base-image warm Cabal store freeze is split by library layer: `core.freeze` 
 **never committed** (`.dockerignore`/`.gitignore` exclude them); each project imports only its layer's
 fragment(s), so cache-hit and version-pinning track the hierarchy.
 
-### W. Single Representation And The Lifted Test Workflow
+### W. Single Representation And The Harness That Drives The Chain
 
 An operation has exactly **one** representation. A project's deploy is its **lift chain** — a pure
 `chain :: RootConfig -> [Step]` value that *is* the project's identity; `project up` is its interpreter and
 `--dry-run` renders the same value apply executes (§ Y). There is no second hand-written orchestration path
-beside the chain. The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is the
-context-agnostic test engine — it brings up an isolated per-case environment, runs the case body, and
-tears it down, invoking its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` **locally**, unaware
-of any enclosing context. The harness is therefore a **lift target**, not a lift-aware component: there is
-**no** `LiftContext` inside it, and that is correct (per the self-reference-lift rule, § U). `project up`
-brings up a **persistent** stack; the test workflow is a **separate**, root-gated operation
-(`test run all`, § Z) that validates that running stack — re-expressing deploy bring-up as a parallel
-chain of lifted ops alongside the chain would be a redundant representation. Cross-references: § Y (the
-chain and its recursive interpreter), § Z (the decoupled test surface), and § U (the self-reference lift
-the chain is built from).
+beside the chain — and the test harness is not one. The standardized test harness
+(`HostBootstrap.Harness`) **drives the real `project up`** rather than re-expressing bring-up: per distinct
+test configuration it writes a test-specific `<project>.dhall`, runs `project up` over the project's own
+chain, runs the case assertions in the frame appropriate to each (reusing the self-reference lift, § U),
+and tears the stack down with `project destroy`. The bring-up a test exercises is therefore **the same
+chain** production uses — there is no parallel `seamSetup` that stands up a cluster a second way, and no
+resource model that can drift between test and deploy. The harness owns only the case matrix, the per-case
+assertions, and the test-config parameters; it never owns a second cluster-bring-up path. Re-expressing
+deploy bring-up as a parallel chain of lifted ops alongside the chain — including inside a test seam —
+would be a redundant representation. Cross-references: § Y (the chain and its recursive interpreter), § Z
+(the chain-driven test surface and its safety preconditions), and § U (the self-reference lift the chain
+and the in-frame assertions are built from).
 
 ### X. Binary Context Configuration And Command Gating
 
@@ -439,12 +454,17 @@ or creates its own local config before it runs:
   for durable services, that controller is a `StatefulSet`.
 
 The current context shape is project-extensible and carries enough typed information for the local command
-gate: project/binary identity, context kind, local capabilities, allowed command classes, parent chain,
-topology frames, current frame, runtime witnesses, resource envelope, and child-context creation rules.
-The topology is a pure frame graph with parent links, not an implicit permission in the command line; it
-can represent arbitrary chains such as host -> VM -> container -> cluster -> service pod, or host -> VM ->
-Pulumi role -> EKS cluster -> workload. A process must fail before side effects when its local witnesses
-do not prove it is in the declared current frame. Bootstrap/inspection entrypoints are the only binary
+gate: project/binary identity, **explicit context** (context kind), local capabilities, allowed command
+classes, parent chain, topology frames, current frame, runtime witnesses, resource envelope, and
+child-context creation rules. Each `<project>.dhall` carries one explicit context and **may declare more
+than one role** — a single config can be both a project (deployment) authority and a `service` authority,
+and each command checks the config declares the capability it needs (so a `.dhall` that is service-capable
+but not project-capable runs `service run` and refuses `project up`). The relationship between a context
+and the others is expressed in the **pure compositional lifts** — the topology is a pure frame graph with
+parent links (§ U), not an implicit permission in the command line; it can represent arbitrary chains such
+as host -> VM -> container -> cluster -> service pod, or host -> VM -> Pulumi role -> EKS cluster ->
+workload. A process must fail before side effects when its local witnesses do not prove it is in the
+declared current frame. Bootstrap/inspection entrypoints are the only binary
 entrypoints allowed to run without an existing sibling context: help/version, `project init`, and the
 read-only `context` introspection command (which absorbs the former `config schema` / `config show FILE` /
 `config path` / static `config render` surfaces). All normal commands fail
@@ -456,11 +476,19 @@ host-orchestrator commands must refuse to run inside a cluster-service pod; and 
 workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
 test-harness frame.
 
-Phase 15 established this contract in the shared substrate: the built project binary creates the
-host-level default, parent/container creation surfaces materialize nested configs, and normal command
-dispatch uses the sibling project config as its runtime authority. The reopened work (§ Y) renames the
-host-level default surface to `project init`, folds child-config creation into the `context-init` chain
-step inside `project up`, and makes `context` a read-only introspection command.
+Every context's `<project>.dhall` is **generated by the project binary from passed Dhall parameters** —
+some supplied at the frame and some **forwarded from the parent context's `<project>.dhall`** — so a child
+config is a parameterized projection of its parent, never a hand-authored copy. The `context-init` chain
+step inside `project up` (§ Y) performs that generation before each handoff; a Kubernetes service pod
+receives its config the same way, as a **ConfigMap that overrides the image's baked container
+`<project>.dhall`** (§ AA). The read-only `context` command (§ Z) treats **every** `<project>.dhall`
+uniformly — it introspects the explicit context and renders the global compositional lift sequence
+(`topologyFrames` / `parentChain`) with the current frame highlighted, regardless of which roles the config
+declares; it performs no mutation. Phase 15 established the shared-substrate contract (the built binary
+creates the host-level default, parent surfaces materialize nested configs, normal dispatch gates on the
+sibling config); the reopened work (§ Y, § Z, § AA) makes the surface the fixed `project` / `test` /
+`service` tree, folds child-config creation into the `context-init` step, supports multi-role configs and
+forwarded parameters, and keeps `context` read-only.
 
 ### Y. Project Lifecycle Command And The Step Chain
 
@@ -493,17 +521,62 @@ role) is expressed as steps in the chain, not as separate top-level verbs.
 
 ### Z. Chain-Driven Test Surface And Context Introspection
 
-The test surface mirrors `project` and is **decoupled** from deploy:
+The test surface **drives the real `project up`** rather than re-expressing bring-up (§ W). It is the one
+test engine; it owns the case matrix, the per-case assertions, and the test-config parameters, never a
+second cluster-bring-up path.
 
 - `test init` — runs only when a sibling `project` config already exists; writes the per-project
-  `test.dhall` (which may carry test-specific instructions).
-- `test run <suite>|all` — runs one or more test suites; `all` is always a suite. It is **root-only** and
-  fails fast when invoked without a `test.dhall` or from any non-root context. `project up` brings up a
-  persistent stack; `test run all` validates that running stack (the standardized harness remains the one
-  lift-target engine, § W).
+  `test.dhall` (the test DSL — the case matrix plus config overrides such as resources or secrets to pass
+  through to the normal binary).
+- `test run <suite>|all` — runs one or more suites; `all` is always a suite. It is **root-only** and fails
+  fast without a `test.dhall` or from any non-root context. For each **distinct test configuration**
+  (cases sharing a config share one stack; a case needing different resources/secrets declares a different
+  config) the harness: (a) writes a test-specific `<project>.dhall` (the test-config overrides projected
+  into a normal project config), (b) runs `project up` over the project's own chain, (c) runs that config's
+  case assertions in the frame appropriate to each, reusing the self-reference lift (§ U) — e.g. a
+  Playwright assertion as a container on the kind network in the VM frame, outside the cluster — and
+  (d) tears the stack down with `project destroy`.
 
-`context` is a **read-only** command: it introspects the sibling `<project>.dhall` and renders the global
-compositional sequence of lifts (`topologyFrames` / `parentChain`) with the current frame highlighted, so
-an operator can see the whole `metal → VM → container → cluster` chain and where this binary lands in it.
-It performs no mutation; child-config creation is the `context-init` chain step inside `project up` (§ Y),
-not a `context` subcommand.
+Two **hard fail-fast safety preconditions** are checked before *any* test runs, so a test never interferes
+with production: (1) a sibling `<project>.dhall` already exists → refuse (never overwrite a production
+config); (2) a production cluster is running → refuse (never touch production state). If either holds, **no
+tests run**. Teardown removes **only** the `<project>.dhall` and the `.test_data` durable directory the
+harness *created this run* — never a config or data directory it found (the delete-guard mirrors the
+never-delete-`.data` invariant, § O); test durable storage is always `.test_data`, never `.data`.
+
+`context` is a **read-only** command that treats **every** `<project>.dhall` uniformly: it introspects the
+explicit context and renders the global compositional sequence of lifts (`topologyFrames` / `parentChain`)
+with the current frame highlighted, so an operator can see the whole `metal → VM → container → cluster`
+chain and where this binary lands in it — regardless of which roles the config declares. It performs no
+mutation; child-config creation is the `context-init` chain step inside `project up` (§ Y), not a `context`
+subcommand.
+
+### AA. Service Runtime Command
+
+`service` is the third DSL-driven core command (alongside `project` and `test`). It runs a project's
+**long-running roles** — the `HostDaemon`/service run-model (§ T) — and is driven by a **service-configured**
+`<project>.dhall`:
+
+- `service init` — writes a service-configured `<project>.dhall` from passed parameters (forwarded from a
+  parent where applicable, § X).
+- `service schema` — prints the service config schema (reflected from the decoder so it cannot drift, § Q).
+- `service run` — runs the selected role. There is **no `service down`**: a service's lifetime is owned by
+  its Kubernetes controller (a `StatefulSet`/`Deployment`) and torn down by `project destroy` (§ Y).
+
+`service run` is a **leaf-frame runtime command, never an orchestrator**: it assumes it is already placed
+in its frame (typically a k8s pod) and runs the role; it brings up no VM or cluster. It **fails fast**
+unless the effective `<project>.dhall` declares a **service role** and a valid **service variant** (the
+same gate discipline as `project`/`test`, § X). A binary defines **more than one** service type through a
+Dhall **ADT** (`ServiceType = < Web : … | WorkloadOrchestrator : … >`, with arbitrary per-variant
+parameters); the project contributes the matching **service handlers** as a registry threaded through
+`ProjectSpec` (§ P, § T), and `service run` dispatches on the variant. The registry **may be empty** — the
+fixed surface is unchanged and `service run` simply fails fast when no service is configured, so not every
+project ships a service.
+
+`project up` and `service` **compose, they do not overlap**: the chain's `deploy-chart` step deploys the
+pod whose entrypoint is `service run`, and the pod's config arrives as a **ConfigMap that overrides the
+image's baked container `<project>.dhall`** (§ X). `project up` *deploys* the service; `service run` *is*
+the service. A project's long-running workload is therefore a service variant reached through this fixed
+command, not a per-project verb (the former demo `web serve` / `web bridge` verbs are dissolved — `web
+serve` → `service run` (`Web` variant); `web bridge` → the build-image chain step; see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).

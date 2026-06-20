@@ -4,13 +4,13 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-8-dhall-generation-and-extension.md](phase-8-dhall-generation-and-extension.md), [phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md)
 
-> **Purpose**: Land the one standardized Dhall-driven test harness (`runMatrix` over a `Seams` record,
-> with isolated per-case profiles, the prefix delete-guard, and budget-slicing) and name the minimal set
-> of four run-models the harness and the bootstrapper select between.
+> **Purpose**: Land the one standardized Dhall-driven test harness (`runMatrix` over a `Seams` record) that
+> **drives the real `project up`** under a test config, with the two fail-fast safety preconditions and the
+> self-created-only delete-guard, and name the minimal set of four run-models.
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
@@ -22,31 +22,49 @@ indivisible (GPU) cases each get the full budget at concurrency 1. `selectRunMod
 run-models (`OneShot`/`HostNative`/`HostDaemon`/`Cluster`) from the collapsed selection key — never
 declared in Dhall. The L0 `OneShot` model ships both the pure `oneShotRunArgs` argv and the real
 `oneShotSeams` IO seam (wired through the resolved Docker tool like `cluster up`). `runMatrix` isolates a
-throwing `seamSetup` to its own case by recording a `Fail` rather than crashing the matrix. The L0 engine,
-pure cores, run-model selection, and setup-isolation behavior are implemented and unit-tested; the worked
-demo exercises the container/cluster path in real runs. **That harness engine is still valid and stays the
-one lift-target engine** (development_plan_standards § W); this phase is reopened only for the **command
-surface** the engine is exposed through.
+throwing `seamSetup` to its own case by recording a `Fail` rather than crashing the matrix. The pure cores,
+the run-model selection, and the setup-isolation behavior are implemented and unit-tested. The split test
+surface — `test init` writes the per-project `<project>.test.dhall` gated on an existing project config;
+root-only `test run <suite>|all` fails fast without a `test.dhall` and drives the project's `TestSuite`
+through `runMatrix` — is implemented and unit-tested (`HostBootstrap.Command` + `CLISpec`); the flat coupled
+`test <case|all>` verb is retired.
 
-The shipped surface is a single `test <case|all>` verb (Sprints 10.5–10.6) coupled to whatever context
-runs it and threaded through `ProjectSpec`. The "chain is the project" model (development_plan_standards
-§ Y, § Z) changes that contract: the test surface splits into a `test init` writer and a
-`test run <suite>|all` runner, both **root-only** and gated on a sibling `test.dhall`, and is **decoupled**
-from deploy — `project up` brings up a **persistent** stack and `test run all` validates that running stack.
-The split-surface command tree and its `test.dhall` gate are implemented and unit-tested
-(`HostBootstrap.Command` `test init` / `test run <suite>|all` + `CLISpec`): `test init` writes the
-per-project `<project>.test.dhall` gated on an existing project config; `test run <suite>|all` is
-**root-only**, fails fast without a `test.dhall`, and drives the project's `TestSuite` through `runMatrix`;
-the flat coupled `test <case|all>` verb is retired. The live-`project up`-stack validation behaviour is
-exercised by the demo's real run ([phase-13](phase-13-hostbootstrap-demo.md)); the split surface co-owned
-with [phase-17](phase-17-chain-driven-test-and-context-introspection.md) has landed.
+The "chain is the project" model (development_plan_standards § W, § Z) recasts the **engine**: the
+standardized harness **drives the real `project up`** rather than standing up isolated per-case clusters
+through `Seams` (`seamSetup`'s `clusterCreate`→`kind load`→`deployChart` mirror). Per **distinct test
+configuration** the engine writes a test-specific `<project>.dhall`, runs `project up` over the project's
+**own chain**, runs that config's case assertions in the frame appropriate to each (reusing the
+self-reference lift, § U), and tears the stack down with `project destroy`. There is **one `project up` per
+distinct test config**, and the engine owns **no second cluster-bring-up path** — it reuses the core pure
+functional logic (the case matrix, the budget-slicing cores, the run-model selection, the delete-guard) and
+the chain production uses. This phase is reopened for that engine recast; the remaining work is real-run-gated.
 
 ## Remaining Work
 
-None. The test surface is split into `test init` (writes the per-project `<project>.test.dhall`, gated on
-an existing project config) and root-only `test run <suite>|all` (fails fast without `test.dhall`),
-decoupled from deploy; the harness stays the one lift-target engine. The live-stack validation behaviour is
-exercised by the demo's real run ([phase-13](phase-13-hostbootstrap-demo.md)).
+The split command surface (`test init` / `test run <suite>|all`) and the pure harness cores (the case
+matrix, `sliceBudget`, `selectRunModel`, `guardTestDelete`, the data-preserving `teardown` partition, the
+`seamSetup`-in-`try` isolation) are built, unit-tested, and stay valid. The **engine recast** is the open,
+real-run-gated work (development_plan_standards § W, § Z):
+
+- Recast the standardized harness engine so it **drives the real `project up`** instead of bringing up
+  isolated per-case clusters via `Seams.seamSetup`. The current `seamSetup` mirror (the production
+  `deploy-kind → push-image → deploy-chart` order re-implemented as a parallel bring-up) is deleted; the
+  engine owns no second cluster-bring-up path.
+- For each **distinct test configuration** the engine: (a) writes a test-specific `<project>.dhall` (the
+  test-config overrides — resources, secrets — projected into a normal project config), (b) runs
+  `project up` over the project's own chain (the same interpreter production uses, [phase-16](phase-16-project-lifecycle-command.md)),
+  (c) runs that config's case assertions in the frame appropriate to each, reusing the self-reference lift
+  (§ U) — e.g. a Playwright assertion as a container on the kind network in the VM frame, outside the
+  cluster — and (d) tears the stack down with `project destroy`. There is **one `project up` per distinct
+  test config**; cases sharing a config assert against that one live stack.
+- The engine reuses the core pure-functional logic (the case matrix, budget-slicing, run-model selection,
+  the delete-guard) and owns only the case matrix, the per-case assertions, and the test-config parameters
+  — never a second `HostConfig -> IO ()` bring-up.
+- Forward dependency: the engine drives the `project up` interpreter owned by
+  [phase-16](phase-16-project-lifecycle-command.md) and is exercised by the demo's real run
+  ([phase-13](phase-13-hostbootstrap-demo.md)); the two fail-fast safety preconditions, `.test_data`, and
+  the self-created-only delete-guard the surface enforces are co-owned with
+  [phase-17](phase-17-chain-driven-test-and-context-introspection.md).
 
 ## Phase Objective
 

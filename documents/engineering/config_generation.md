@@ -60,8 +60,9 @@ data ConfigArtifact = ConfigArtifact
 | `kindNode` | `HostBootstrap.Config.Vocab.KindNode` | `KindNode 4 8 20` |
 
 A project binary supplies its own artifacts in `ProjectSpec`; `HostBootstrap.Command` concatenates them
-onto `coreArtifacts` for the inherited inspection surface — the schema-gen stream of the four-stream
-extension contract (see [library_hierarchy](../architecture/library_hierarchy.md)). The
+onto `coreArtifacts` for the inherited inspection surface — the schema-gen stream of the extension
+contract (the command surface itself is fixed and is not a stream; see
+[library_hierarchy](../architecture/library_hierarchy.md)). The
 reflect-from-decoders versus hand-written-assert split is described in
 [dhall_generation](../architecture/dhall_generation.md).
 

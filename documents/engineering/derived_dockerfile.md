@@ -123,7 +123,7 @@ The ordering is load-bearing and every derived project preserves it:
 | 2 | Build + install the binary | The web build and the gate both need the installed binary. |
 | 3 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
 | 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
-| 5 | `web bridge` → `spago build` → `esbuild` | Types must exist before `spago`; the bundle is the last artifact. |
+| 5 | bridge step (PureScript-bridge) → `spago build` → `esbuild` | Types must exist before `spago`; the bundle is the last artifact. |
 | 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
 
 This is the reference shape; see [derived project standards](derived_project_standards.md)

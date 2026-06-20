@@ -12,7 +12,11 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened (2026-06-19)**: `test run` drives the real `project up` under a test-written config, enforces
+the two fail-fast safety preconditions, uses `.test_data`, and deletes only what it created; `context` is
+uniform over all `<project>.dhall`s (see `## Remaining Work`).
 
 The chain-driven test surface and the read-only `context` introspection command are implemented and
 unit-tested. `test init` writes the per-project `<project>.test.dhall` gated on an existing project config;
@@ -28,6 +32,26 @@ engine the split surface invokes (§ W).
 `project up` stack (rather than an ephemeral per-case cluster) is exercised by the demo's real run
 ([phase-13](phase-13-hostbootstrap-demo.md)), and the recursive `project up` apply that brings up that
 persistent stack is owned by [phase-16](phase-16-project-lifecycle-command.md).
+
+## Remaining Work
+
+Make the test surface **drive** `project up` and enforce the safety contract
+(development_plan_standards § Z):
+
+- `test run` writes a test-specific `<project>.dhall` (the test-config overrides), runs `project up` over
+  the project's own chain, asserts in the appropriate frame, and tears down with `project destroy` — one
+  `project up` per distinct test config. The harness owns no second bring-up path (the engine recast is
+  [phase-10](phase-10-standardized-test-harness.md)).
+- Enforce two **hard fail-fast safety preconditions** before any test runs: refuse if a `<project>.dhall`
+  already exists (never overwrite a production config), and refuse if a production cluster is running (never
+  touch production state). Either → no tests run.
+- Test durable storage is `.test_data` (never `.data`); teardown deletes **only** the `<project>.dhall` and
+  `.test_data` the harness created this run (the self-created-only delete-guard, mirroring never-delete-
+  `.data`, § O).
+- The read-only `context` command treats **all** `<project>.dhall`s uniformly (§ X).
+- Forward dependency: the `project up` interpreter is owned by
+  [phase-16](phase-16-project-lifecycle-command.md); real-run-gated by the demo run
+  ([phase-13](phase-13-hostbootstrap-demo.md)).
 
 ## Phase Objective
 

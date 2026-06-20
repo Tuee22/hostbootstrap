@@ -112,7 +112,7 @@ evaluates with no network access, both in-process via the Haskell `dhall` librar
 `Mount`, `Substrate`, `RunModel`, `ClusterProfile`, and `Weight`, plus the budget functions
 `fitsWithin` and `split` (also under the aliases `Budget/fitsWithin` and `Budget/split`). Higher
 layers embed it via `let C = ./Core.dhall` and extend it; they never redefine the L0 types (the Dhall
-stream of the four-stream contract — see [library_hierarchy](library_hierarchy.md)).
+stream of the extension-stream contract — see [library_hierarchy](library_hierarchy.md)).
 
 ## The Load-Bearing Nuance: Reflected Types, Hand-Written Functions
 

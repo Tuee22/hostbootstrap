@@ -1,28 +1,32 @@
-# Library Hierarchy And The Four-Stream Extension Contract
+# Library Hierarchy And The Extension-Stream Contract
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)
 
-> **Purpose**: Describe the three additive Cabal library levels and the four-stream extension contract — one additive merge idiom per stream — that lets each level compose on the level below without shadowing or redefinition.
+> **Purpose**: Describe the three additive Cabal library levels and the extension-stream contract — one additive merge idiom per stream — that lets each level compose on the level below without shadowing or redefinition.
 
 ## TL;DR
 
+- `hostbootstrap-core` is a **library of composable tools with a fixed command surface**
+  (`project` / `test` / `service` / `context` / `check-code`), **not** a CLI topology. There are
+  **no per-project verbs**, and a `ProjectSpec` carries **no `ProjectCommand` deltas**.
 - The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
   `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2). `mcts` and `hostbootstrap-demo` consume L0
   directly.
-- Each level adds only its **delta** to four parallel streams, one additive merge idiom each: the
-  **lift chain** (`chain :: ProjectConfig -> [Step]`, core + project steps), the **Dhall vocabulary**,
-  the **schema-gen** `ConfigArtifact` registry, and the **test-harness** `Seams`.
-- A project's primary CLI contribution is its lift **chain value**, not a set of new noun verbs:
-  the core ships host-management step kinds and the project contributes its own step kinds into the
-  same ordered `[Step]`.
+- A project extends core only through additive **streams**, one merge idiom each: the **lift chain**
+  (`chain :: ProjectConfig -> [Step]`, core + project steps), the **Dhall vocabulary**, the
+  **schema-gen** `ConfigArtifact` registry, the **test seams** `Seams`, and the **service handlers**
+  (the `ServiceType` variants `service run` resolves). The command surface itself is never a stream.
+- A project's primary contribution is its lift **chain value** plus its service handlers — never a new
+  noun verb: the core ships host-management step kinds and the project contributes its own step kinds
+  into the same ordered `[Step]`, and registers service handlers behind the fixed `service` verb.
 - Every merge is additive: lower levels are appended/embedded/concatenated, never shadowed or
-  redefined. A level only contributes steps, vocabulary, artifacts, and seams; it never rewrites the
-  level below.
+  redefined. A level only contributes steps, vocabulary, artifacts, seams, and service handlers; it
+  never rewrites the level below and never adds a command verb.
 - The chain shape is the canonical model owned by
   [composition_methodology](composition_methodology.md); this document defers to it for the chain and
-  the recursive `project up` interpreter and describes only how the four streams layer.
+  the recursive `project up` interpreter and describes only how the streams layer.
 
 ## The Three Library Levels
 
@@ -30,7 +34,7 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: the `project`/`context`/`test`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). |
+| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). |
 | L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
 | L2 | `jitML`, `infernix` | L1 | App-level step kinds, vocabulary, and artifacts on top of the daemon substrate. |
 
@@ -42,15 +46,15 @@ layer. The cross-repo levels are referenced by absolute URL, not relative link:
 [mcts](https://github.com/Tuee22/mcts).
 
 A consumer integrates in one of two modes: a `source-repository-package` Cabal dependency that
-extends the core via `runHostBootstrapCLI` (the four-stream contract below), or a freeze-import that
-relies on the base-image `LABEL`/`ENTRYPOINT` contract with no Cabal dependency. The four-stream
-contract governs the extending mode.
+extends the core via `runHostBootstrapCLI` (the extension-stream contract below), or a freeze-import that
+relies on the base-image `LABEL`/`ENTRYPOINT` contract with no Cabal dependency. The extension-stream
+contract governs the extending mode; the command surface itself is fixed and is never a stream.
 
-## The Four-Stream Extension Contract
+## The Extension Streams
 
-A level composes on the level below through exactly four parallel streams. Each stream has one merge
-idiom, and every idiom is **additive**: it appends or embeds the lower level's contribution and adds
-a delta, so the lower surface is preserved verbatim.
+A level composes on the level below through five parallel streams. Each stream has one merge idiom, and
+every idiom is **additive**: it appends or embeds the lower level's contribution and adds a delta, so the
+lower surface is preserved verbatim.
 
 ### Stream 1 — The Lift Chain
 
@@ -130,18 +134,24 @@ the context-init step inside `project up`, deriving from the active local config
 
 The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
 its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` surface.
-The `test run all` harness is a separate test surface from `project up`: it drives the project's case
-matrix, each case bringing up an isolated per-case kind cluster, running its body, and tearing that
-cluster down. The standardized-test-harness phase
-([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) owns the harness. The
-test-harness stream completes the four-stream contract: every level extends the surface through exactly
-these four parallel, additive streams.
+The harness **drives the real `project up`** under a test config (one `project up` per distinct test
+config; write a test `<project>.dhall` → `project up` → assert in-frame → `project destroy`); it owns no
+second cluster-bring-up path. The standardized-test-harness phase
+([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) owns the harness.
 
-## Why Four Parallel Streams
+### Stream 5 — Service Handlers
 
-Splitting extension into four single-idiom streams keeps the hierarchy DRY: each concern (the lift
-chain, vocabulary, schema, tests) has one place a level may add to and a clear "append, never shadow"
-rule. A project that follows all four idioms inherits the entire lower surface for free and contributes
+The fifth stream is the project's **service handlers**. A project defines its long-running roles as a Dhall
+`ServiceType` ADT (`< Web : … | WorkloadOrchestrator : … >`) and contributes the matching handlers as a
+registry threaded through `ProjectSpec`; the fixed `service run` verb dispatches on the variant. The
+registry may be empty (not every project ships a service). This stream completes the extension contract:
+every level extends the surface through these five parallel, additive streams — never a new command verb.
+
+## Why Parallel Streams
+
+Splitting extension into single-idiom streams keeps the hierarchy DRY: each concern (the lift chain,
+vocabulary, schema, tests, service handlers) has one place a level may add to and a clear "append, never
+shadow" rule. A project that follows the idioms inherits the entire lower surface for free and contributes
 only its delta — most importantly its `chain` value, the steps that distinguish it. The per-stream
 rules every derived project follows are catalogued in
 [derived_project_standards](../engineering/derived_project_standards.md); the standards-level
@@ -158,9 +168,10 @@ describes, exercised end-to-end on real hardware:
   `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The core ships
   the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
   deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-harbor, push-image)
-  into the same ordered `[Step]`. Every derived binary inherits the `ensure`, `context`, `project`,
-  `test`, and `check-code` verbs; the demo binary adds its `incus`, `vm`, and `web` verbs alongside
-  them. A single `project up` on Incus/Linux stands up the live persistent stack — deploy-kind →
+  into the same ordered `[Step]`. Every binary surfaces the same fixed tree — `project`, `test`,
+  `service`, `context`, and `check-code` — and adds no verbs; the demo contributes its `Web` service
+  variant and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
+  persistent stack — deploy-kind →
   deploy-harbor → push-image → deploy-chart → expose-port ending at a live web service on
   `localhost:30080` — and `project down` / `project destroy` tear it down with host `.data` preserved.
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
@@ -169,5 +180,5 @@ describes, exercised end-to-end on real hardware:
   Stream 4 surfaces through `test init` and `test run`, which drive the standardized harness over the
   demo's case matrix independently of `project up`.
 
-`DEVELOPMENT_PLAN/` owns the closure criteria for the four-stream contract; reconcile any status claim
+`DEVELOPMENT_PLAN/` owns the closure criteria for the extension-stream contract; reconcile any status claim
 here to it rather than treating this document as a parallel status authority.

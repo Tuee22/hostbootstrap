@@ -32,7 +32,8 @@ The core surface is the **recursive `project` interpreter**. It merges `ensure <
 read-only command, `project init|up|down|destroy`, the `test init|run` split, and `check-code` into a
 composable `optparse-applicative` value. The demo's deploy is the first-class `demoChain :: ProjectConfig
 -> [Step]` value (in `demo/src/HostBootstrapDemo/Commands.hs`), interpreted recursively by `project up`;
-the demo also surfaces its `web` verb and its `vm`/`incus` provider verbs. The binary-context gate and
+the demo also contributes its `Web` service variant (run by `service run`) and its VM/provider IO as chain
+steps — the surface is fixed, so it adds no verbs. The binary-context gate and
 the project-local `<project>.dhall` schema decoder/encoder back the interpreter.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
@@ -61,8 +62,8 @@ on; the canonical inventory is tracked in
 | `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant, invoked as the deploy-kind / deploy-chart step kinds. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Lima` | Lima VM lifecycle argv builders for the Apple Silicon pristine demo VM (`start`, `shell`, `copy`, guarded `delete`), invoked by the deploy-VM step kind. |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/provider VM/`InContainer`) by invoking the binary again there. The `[Step]` interpreter lifts `pb project up` across each frame boundary through this seam. The pure argv fold is unit-tested. See [composition_methodology](composition_methodology.md). |
-| `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over a project's `Seams` (`seamSetup`/`seamRun`/`seamTeardown`), per-case isolation, the delete-guard, and budget-slicing. The harness is **context-agnostic**: its seams invoke reconcilers locally, and each case brings up an isolated per-case kind cluster, runs its body, and tears that cluster down through `finally` even when the body fails. `test run all` drives this engine as a surface separate from the persistent `project up` stack. See [harness_workflow](harness_workflow.md). |
-| `HostBootstrap.Command` | The composable core command tree (`coreCommands`): `ensure <tool>`, `context`, `project init|up|down|destroy`, `test init|run`, and `check-code`. |
+| `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over a project's `Seams` and case matrix. It **drives the real `project up`**: per distinct test config it writes a test-specific `<project>.dhall`, runs `project up` over the project's own chain, runs the case assertions in the appropriate frame (reusing the self-reference lift), and tears down with `project destroy` through `finally`. It owns no second cluster-bring-up path; two fail-fast preconditions (refuse if a `<project>.dhall` exists or a production cluster is running) and a self-created-only delete-guard protect production. See [harness_workflow](harness_workflow.md). *(Target; the engine recast is reopened, real-run-gated — phase-10/13/17.)* |
+| `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code` (`ensure <tool>` is a hidden debug surface). No per-project verbs. |
 | `HostBootstrap.CLI` | `ProjectSpec`, `runHostBootstrapCLI`, and `runBareHostBootstrapCLI`; the entrypoint validates a project's `chain`, test suite, code-check, and artifact delta before merging them with `coreCommands`. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |
 
@@ -191,13 +192,15 @@ contributes step kinds, a chain value, and its own verbs alongside the core comm
 | `project down` | Stop services/clusters/VMs (the provider **stop** capability, e.g. `incus`/`limactl stop`); deletes nothing, preserves `.data`. |
 | `project destroy` | Stop, then delete everything spun up; `.data` is always preserved. |
 | `test init` | Needs an existing `<project>.dhall`; writes `<project>.test.dhall` (may carry test-specific config). |
-| `test run <suite>\|all` | Root-only, needs `<project>.test.dhall`; `all` runs the whole matrix. Drives the standardized harness, a surface separate from `project up`: each case brings up an isolated per-case kind cluster, runs its body, and tears that cluster down even if the body fails. Fail-fast on any failing case. |
+| `test run <suite>\|all` | Root-only, needs `<project>.test.dhall`; `all` runs the whole matrix. Per distinct test config it **drives the real `project up`** under a test-written `<project>.dhall`, asserts in-frame, then `project destroy`; two fail-fast preconditions protect production; durable storage is `.test_data`. Fail-fast on any failing case. |
+| `service init\|schema\|run` | Run a long-running role; `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT; fail-fast unless the config declares a service role + variant; no `service down`. |
 | `check-code` | Runs the project's fail-fast code-check action. |
 
-`project up` and `test run all` are distinct surfaces. `project up` interprets the chain to stand up the
-persistent deploy stack and ends at a live webservice on `localhost:30080`. `test run all` runs the
-context-agnostic test engine over the project's case matrix, each case in its own isolated, budget-sliced
-kind cluster under `.test_data/<case>/`. The harness is independent of the persistent deploy stack.
+`project up` *deploys* and `test run` *drives* that deploy under a test config — they are the same chain,
+not two representations. `project up` interprets the chain to stand up the persistent deploy stack and ends
+at a live webservice (`service run`) on `localhost:30080`. `test run all` runs that same `project up` per
+distinct test config and asserts the live stack, using `.test_data` (never `.data`) and deleting only what
+it created. *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)*
 
 ## Consumption
 

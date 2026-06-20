@@ -70,14 +70,17 @@ representation living in config.
 | Project identity | project name, binary name, and source root |
 | Execution topology | a list of provider-backed frames, their parent links, and the current frame id |
 | Context kind | host orchestrator, VM orchestrator, VM project container, image-build container, cluster service, daemon, one-shot job, or test harness |
-| Role name | optional project-specific role label such as `webservice`, `worker`, or `host` |
+| Role name(s) | the roles this config authorizes — a single `<project>.dhall` may declare **more than one** (e.g. project *and* service); each command checks the capability it needs |
 | Runtime witnesses | locally checkable facts proving the process is in the declared frame: provider profile, mounted socket, env value, config hash, or executable path |
 | Local capabilities | tools and services this context may use: Docker socket, kind network, Kubernetes API, durable store |
 | Allowed command classes | which command families are valid in this context |
 | Resource envelope | the budget slice or cordon this context is inside |
 
 Project-specific logic may extend the value, but it must never make a child reach back to the parent's
-config or treat a missing config as implicit authority.
+config or treat a missing config as implicit authority. A context's relationship to the others lives in the
+pure execution-topology frame graph (the compositional lifts), not implicitly in the command line; the
+read-only `context` command renders that graph uniformly for **every** `<project>.dhall`, whatever roles it
+declares.
 
 ## Topology Shape
 
@@ -200,8 +203,10 @@ algebra in [hostbootstrap_core_library](hostbootstrap_core_library.md)):
    command. It writes no Dhall; it is the metal-frame instance of the fractal bootstrap.
 2. `project init` writes the **root** `<project>.dhall` (host orchestrator, no parent) carrying the
    user-owned parameters. It runs only on a fresh host-level binary with no sibling `.dhall`.
-3. During `project up`, a context-init step in a host or VM frame materializes the **child** frame's
-   `<project>.dhall` before handing off into it. The child config names the child frame and includes the
+3. During `project up`, a context-init step in a host or VM frame **generates** the **child** frame's
+   `<project>.dhall` from passed parameters — some supplied at the frame and some **forwarded from the
+   parent context's `<project>.dhall`** — before handing off into it. A child config is a parameterized
+   projection of its parent, never a hand-authored copy; it names the child frame and includes the
    witnesses the child can verify locally.
 4. The project Dockerfile bakes a narrow `image-build-container` config at `/usr/local/bin/<project>.dhall`
    so build-time commands (`check-code`, static code generation, web asset compilation) run during the
@@ -215,15 +220,25 @@ algebra in [hostbootstrap_core_library](hostbootstrap_core_library.md)):
 The Docker image carries a safe default `ImageBuildContainer` config so build-time commands can run during
 the Dockerfile. That baked config is narrow: build/code-quality and context-init authority only.
 
-A lifted runtime workflow such as `test run all` must not gain authority merely because the image has a
-baked default file. The parent VM or host frame's context-init step mounts or materializes a runtime child
-`<project>.dhall` at the canonical path before launching the container; that runtime config declares the
-VM/project-container frame and witnesses the VM/container ancestry. A direct host invocation without that
-runtime context fails fast instead of silently creating a kind cluster on the wrong Docker daemon.
+A lifted runtime workflow must not gain authority merely because the image has a baked default file. The
+parent VM or host frame's context-init step mounts or materializes a runtime child `<project>.dhall` at the
+canonical path before launching the container; that runtime config declares the frame and witnesses its
+ancestry. A direct host invocation without that runtime context fails fast instead of silently creating a
+kind cluster on the wrong Docker daemon.
 
-A long-running service or daemon follows the same rule: its controller mounts or materializes a
-role-specific file at the canonical path. The same image therefore serves image-build, ad-hoc runtime, and
-service contexts while each container instance reads exactly one local file.
+A long-running service follows the same rule and is the common case: the chart's `deploy-chart` step deploys
+a pod whose entrypoint is **`service run`**, and the pod's service-role `<project>.dhall` arrives as a
+**ConfigMap that overrides the image's baked container config** at the canonical path. The config declares a
+service role and a valid service variant; `service run` fails fast otherwise (§ AA). The same image
+therefore serves image-build, ad-hoc runtime, and service contexts while each container instance reads
+exactly one local file.
+
+The test harness obeys the same authority rules without a distinct lifted "TestHarness" path: `test run`
+runs the **real `project up`** under a test-written root config, so its assertions execute in the normal
+host/VM/container frames the chain mints. Two preconditions protect production before any test runs — the
+harness refuses if a `<project>.dhall` already exists (it would overwrite a real config) or if a production
+cluster is running (it would touch production state) — and it deletes only the config and `.test_data` it
+created this run.
 
 ## Config Snapshot And Daemons
 

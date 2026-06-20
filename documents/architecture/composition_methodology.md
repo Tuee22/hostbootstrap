@@ -57,7 +57,7 @@ and that difference drives plan/apply, retry, and run-model selection:
 
 `ensure` (the install-and-verify reconciler, see
 [ensure_reconcilers](../engineering/ensure_reconcilers.md)) and the host-management step kinds are what L0
-ships. The workload kinds are an **open, extensible set** added through the four-stream merge (see
+ships. The workload kinds are an **open, extensible set** added through the extension-stream merge (see
 [library_hierarchy](library_hierarchy.md)); L0 carries no message-bus or cloud dependency. A project
 **contributes its own step kinds** into the same `[Step]` value — the chain, not a tree of noun verbs, is
 the project's primary CLI contribution.
@@ -213,30 +213,35 @@ parallel hand-assembled second chain that could drift from it.
 - `project up` interprets the chain to bring up a **persistent stack**; `project down`/`project destroy`
   interpret it for teardown; `--dry-run` renders it; `context` introspects it (see
   [§ Current Status](#current-status)).
-- `test run all` is the **separate** test surface, decoupled from the deploy chain. It reads its own
-  `test.dhall` and drives the standardized harness over the project's case matrix. `project up` does not
-  run the harness; the persistent-stack deploy and the test harness are independent surfaces.
+- `test run` is a **driver** of that one representation, not a second one. It reads its own `test.dhall`
+  (the case matrix plus config overrides) and, per distinct test configuration, writes a test-specific
+  `<project>.dhall`, runs the **real `project up`** over the project's own chain, runs the case assertions
+  in the appropriate frame, and tears down with `project destroy`. The bring-up a test exercises is the
+  same chain production uses, so no resource model can drift between test and deploy.
 - The standardized test harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`, see
-  [harness_workflow](harness_workflow.md)) is the context-agnostic test **engine**. For each case it brings
-  up an isolated per-case environment, runs the case body, and tears that environment down — guaranteed
-  even if the body fails — invoking reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()` locally.
+  [harness_workflow](harness_workflow.md)) owns only the case matrix, the per-case **assertions**, and the
+  test-config parameters — never a second cluster-bring-up path.
+- A single `<project>.dhall` carries an explicit context and may declare **more than one role** (project
+  *and* service); a context's relationship to the others is expressed in these pure compositional lifts
+  (the frame graph), not implicitly.
 
-- **WRONG**: re-expressing the deploy as a **separate**, hand-written chain of lifted ops *alongside* the
-  steps already in `[Step]`. This is wrong because it is a redundant second representation of the same
-  project: it duplicates the chain and can drift from it. There is one representation — the `[Step]` value
-  the core interprets.
+- **WRONG**: re-expressing deploy bring-up as a **separate**, hand-written path *alongside* the chain —
+  including inside a test seam that stands a cluster up a second way. This is wrong because it is a
+  redundant second representation that duplicates the chain and can drift from it (it is exactly how the
+  test and deploy resource models drifted before this rule).
 - **RIGHT**: every host and workload action is a step contributed into the one `[Step]`; `project up`
-  interprets it, descending frame by frame, and the child Dhall names each frame explicitly so the binary
-  verifies it before acting.
+  interprets it, descending frame by frame; and the **test harness drives that same `project up`** under a
+  test config rather than re-expressing it.
 
 ## Current Status
 
 The lift primitive is built: the core has provider-backed folds for Incus and Lima, the binary-context
 gate is topology-aware (runtime configs carry provider-backed frames, a current frame, and locally
 checked witnesses), and the canonical demo chain runs end-to-end. The core command tree is exactly
-`ensure`, `context`, `project`, `test`, and `check-code`. The demo contributes its deploy as the pure
-value `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, and adds the
-`web` verb plus the `vm`/`incus` provider verbs.
+`project`, `test`, `service`, `context`, and `check-code` — a fixed surface with no per-project verbs. The
+demo contributes its deploy as the pure value `demoChain :: ProjectConfig -> [Step]` in
+`demo/src/HostBootstrapDemo/Commands.hs`, its `Web` service variant (run by `service run`), and its
+VM/provider IO as chain steps.
 
 `project init|up|down|destroy` is the recursive lifecycle interpreter driven by the
 `chain :: ProjectConfig -> [Step]` value: `project up` descends the 3-frame fractal topology
@@ -267,7 +272,7 @@ Three principles keep the foundation general — design rubric, not new mechanis
    business-logic at the fixpoint.
 
 The test the L0 foundation must pass: any new consumer shape is expressible as *(pure `[Step]` chain) +
-(interpreter) + (durable stores) + (steps composed across frames)* through the four-stream merge, without
+(interpreter) + (durable stores) + (steps composed across frames)* through the extension-stream merge, without
 L0 changes.
 
 ## Layering
@@ -291,7 +296,7 @@ from these primitives, never baked into L0.
 - [hostbootstrap_core_library](hostbootstrap_core_library.md) — the `HostBootstrap.Lift` module surface
   and the command-tree / step-extension contract.
 - [binary_context_config](binary_context_config.md) — how a frame verifies its place before acting.
-- [library_hierarchy](library_hierarchy.md) — the L0/L1/L2 levels and the four-stream merge that adds step
+- [library_hierarchy](library_hierarchy.md) — the L0/L1/L2 levels and the extension-stream merge that adds step
   kinds (stream 1 = the lift chain).
 - [run_models](run_models.md) — the four run-models the interpreter selects between per step.
 - [incus](../engineering/incus.md) and [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the

@@ -111,11 +111,15 @@ distinct from production clusters. This isolation lets the test harness stand up
 down clusters per case without endangering production data; the never-delete-data invariant still
 applies to `.test_data` within a case's lifecycle.
 
-`test run all` is the separate test surface, decoupled from the persistent `project up` stack. It
-drives the standardized harness over the project's case matrix: each case brings up an **isolated
-per-case kind cluster** (the test profile, under `.test_data/<case>/`), runs its body, and tears that
-cluster down — guaranteed even if the body fails. `project up` does not run the harness, and the
-harness does not stand up the persistent stack; the two are independent. See [testing](testing.md).
+`test run all` **drives** the persistent `project up` rather than being a separate bring-up: per distinct
+test config the harness runs `project up` under a test-written `<project>.dhall` (the Test profile, under
+`.test_data`), asserts the live stack, and tears it down with `project destroy`. Two fail-fast
+preconditions protect production — the harness refuses if a `<project>.dhall` already exists or if a
+**production cluster is running** (never touch production state) — and it deletes only the `.test_data` and
+config it created this run. The production kind cluster is cordoned to a **slice within the VM wall** (the
+budget = VM wall, cluster = slice rule, [resource_budgeting](resource_budgeting.md)), never the full
+budget. *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)* See
+[testing](testing.md).
 
 ## Current Status
 
@@ -146,5 +150,5 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
 - [dhall_topology](dhall_topology.md) — the topology frames that drive the recursive chain.
 - [incus](incus.md), [lima](lima.md) — VM lifecycle expressed as core chain steps, including
   stop-without-delete.
-- [testing](testing.md) — `test run all`, the separate harness that drives the test profile over
-  isolated per-case clusters, independent of the persistent `project up` stack.
+- [testing](testing.md) — `test run all`, the harness that drives the real `project up` under a test config
+  (Test profile, `.test_data`) and asserts the live stack.

@@ -26,7 +26,7 @@ incus` install-and-verify). `ensure incus` is owned by
 
 The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
 drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
-GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the four-stream merge.
+GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the extension-stream merge.
 
 ## Phase Objective
 

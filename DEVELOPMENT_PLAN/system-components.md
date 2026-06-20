@@ -11,19 +11,22 @@
 > command tree projects extend.
 
 > Note: Phases 0-15 built the host-management substrate (validated by the full real demo lifecycle — a
-> real Apple Silicon Lima run, `3/3 passed` including Playwright e2e). Phases 4/5/10/13/14/15 are reopened
-> (`Active`) and phases 16-17 added for the **chain-is-the-project** refactor (the recursive
-> `project init|up|down|destroy` lifecycle, the `[Step]` interpreter, the read-only `context` command, and
-> the decoupled `test init|run` surface). The rows below name the supported component surfaces, their
-> owning phases, and whether the repository implements them. Runtime authority is a
-> sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
+> real Apple Silicon Lima run, `3/3 passed` including Playwright e2e). Phases 10/13/14/15/16/17 are reopened
+> (`Active`) and phase 18 added for the **unified-harness / fixed-surface / resource-SSoT** correction. The
+> command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` — no per-project
+> verbs; `hostbootstrap-core` is a **library of composable tools**, not a CLI topology (§ P). The test
+> harness **drives the real `project up`** under a test config rather than re-expressing bring-up (§ W); the
+> declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (§ O); each
+> `<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
+> (§ X); long-running roles run through the new `service` command (§ AA). The rows below name the supported
+> component surfaces, their owning phases, and whether the repository implements them. Runtime authority is
+> a sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
 > and command permissions inside the file content, including provider-backed topology frames, a current
-> frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` /
-> `base` pre-binary bootstrapper plus the explicit `update` pipx self-update surface, and
-> `hostbootstrap-core` is the reusable library consumed through `runHostBootstrapCLI progName
-> projectSpec`. The single-representation rule is part of the supported architecture: a project's deploy is
-> its one pure `chain :: RootConfig -> [Step]` value interpreted recursively by `project up`, and the
-> standardized test harness remains the one test-workflow representation (a lift target).
+> frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` / `base` pre-binary
+> bootstrapper plus the explicit `update` pipx self-update surface, and `hostbootstrap-core` is the reusable
+> library consumed through `runHostBootstrapCLI progName projectSpec`. The single-representation rule is part
+> of the supported architecture: a project's deploy is its one pure `chain :: RootConfig -> [Step]` value
+> interpreted recursively by `project up`, and the standardized test harness drives that same chain.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -32,7 +35,7 @@ surface; the column records whether the module exists in this repository.
 
 | Module | Phase | Implemented | Purpose |
 |--------|-------|-------------|---------|
-| `HostBootstrap.CLI` | 1 | yes | `ProjectCommand`, `ProjectSpec`, `runHostBootstrapCLI progName projectSpec`, and `runBareHostBootstrapCLI`; validated optparse entrypoints |
+| `HostBootstrap.CLI` | 1, 16 | yes | `ProjectSpec`, `runHostBootstrapCLI progName projectSpec`, and `runBareHostBootstrapCLI`; validated optparse entrypoints. The surface is **fixed** (`project` / `test` / `service` / `context` / `check-code`); `ProjectSpec` carries no `ProjectCommand` deltas — a project extends core via the chain, Dhall vocabulary, schema-gen, test seams, and service handlers (§ P) |
 | `HostBootstrap.HostTool` | 2 | yes | closed `HostTool` enumeration; absolute-path resolution |
 | `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
 | `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
@@ -54,7 +57,8 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
 | `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
-| `HostBootstrap.Harness` | 10 | yes | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb through `ProjectSpec`; `emptySuite` is bare-only) + `guardTestDelete` + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam (`oneShotRunArgs` argv + `oneShotSeams` IO seam) |
+| `HostBootstrap.Harness` | 10 | partial | `runMatrix` + `Seams` + the `TestSuite` hook (`runSuiteSelection`/`emptySuite`, threaded into the inherited `test` verb through `ProjectSpec`; `emptySuite` is bare-only) + `sliceBudget` + `selectRunModel` (the four run-models) + the L0 OneShot seam. **Reopened (§ W):** the engine drives the real `project up` per test config (writes a test `<project>.dhall`, runs `project up`, asserts in-frame, `project destroy`) with the two fail-fast preconditions + the self-created-only delete-guard, rather than standing up isolated per-case clusters |
+| `HostBootstrap.Service` | 18 | no | the `service init\|schema\|run` command body, the `ServiceType` ADT + project-contributed service-handler registry, leaf-frame fail-fast gating, and ConfigMap-delivered service config (§ AA); target surface, real-run-gated |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11, 14 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure `foldLift` argv fold + the `liftSubcommand` IO seam (`runSelf`) + `liftSubcommandWithAuth` (forwards a Docker Hub credential into a container-through-a-VM frame over stdin, never argv); the subcommand-level superset of `HostTarget` |
 | `HostBootstrap.Registry` | 14 | yes | the effect-only Docker Hub credential capability: opaque `RegistryAuth` (no Dhall codec, redacted `Show`), host-only discovery (`discoverHostRegistryAuth`, Docker-Hub-only projection), and the ephemeral forwarding seams (`dockerAuthStdinWrapper`, `withForwardedRegistryAuth`) that authenticate nested pulls without persisting, leaking, or representing the secret in Dhall |
@@ -218,10 +222,12 @@ The base image continues to publish `basecontainer-<flavor>-<arch>` tags (CPU an
 `hostbootstrap-core` exposes its subcommands as a composable optparse value plus the generic project
 entrypoint `runHostBootstrapCLI progName projectSpec` (`HostBootstrap.CLI`, Phase 1; command tree in
 `HostBootstrap.Command`, Phase 4; test suite hook from Phase 10; config-artifact registry from Phase 8).
-A project binary extends the core tree through named `ProjectCommand` values and a `ProjectSpec` that
-also supplies its non-empty test suite, required `check-code` action, and project `ConfigArtifact` delta
-rather than re-implementing core verbs. The entrypoint rejects shadowed core commands, duplicate names,
-empty project suites, duplicate test cases, and duplicate/shadowed artifacts. The bare `hostbootstrap`
+The command surface is **fixed** for every binary — `project` / `test` / `service` / `context` /
+`check-code` — and a project adds **no verbs**: `hostbootstrap-core` is a library of composable tools, not
+a CLI topology (§ P). A project extends the core through `ProjectSpec` only — its lift chain, Dhall
+vocabulary, schema-gen `ConfigArtifact` delta, non-empty test suite, service-handler registry, and required
+`check-code` action; there are no `ProjectCommand` deltas. The entrypoint rejects empty project suites,
+duplicate test cases, duplicate/shadowed artifacts, and duplicate service variants. The bare `hostbootstrap`
 binary (`hostbootstrap-core`'s own executable) uses `runBareHostBootstrapCLI`, built like any project
 binary rather than baked into the base image.
 See
@@ -231,7 +237,8 @@ See
 |-----------------|-------|-------------|--------|
 | `project init\|up\|down\|destroy` | 16 | partial | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply + VM stop-without-delete real-run-gated; subsumes `config init`, `cluster`, `context create` |
 | `context` (read-only introspection) | 15, 16 | partial | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
-| `test init\|run <suite\|all>` | 10, 17 | partial | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated, decoupled from deploy (§ Z) |
+| `test init\|run <suite\|all>` | 10, 17 | partial | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
+| `service init\|schema\|run` | 18 | partial | long-running roles (`HostDaemon`/service run-model); `service run` is a leaf-frame pod entrypoint dispatched over a project-contributed `ServiceType` ADT; no `service down` (§ AA) |
 | `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
 | `ensure <tool>` (hidden debug; incl. `incus`) | 3, 11 | yes | the `ensure` reconcilers, normally invoked as chain steps within `project up` |
 
@@ -247,17 +254,20 @@ show|schema|render|path` are folded into the read-only `context` command (record
 `hostbootstrap-demo` (Phase 13) is the self-contained worked consumer under `demo/` (runtime config
 `hostbootstrap-demo.dhall`, Haskell source `demo/app/Main.hs` + `demo/src/HostBootstrapDemo/Commands.hs`,
 build path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) via
-`runHostBootstrapCLI "hostbootstrap-demo" projectSpec` and demonstrates the four-stream extension — the
-CLI append (today `incus`/`vm`/`harbor`/`web` noun verbs alongside the inherited core verbs; under the
-refactor these become `[Step]` chain steps the core `project up` interprets — phase-13/16), the schema-gen
-concat (`config schema` / `config render --artifact demoWeb` over `coreArtifacts ++ demoArtifacts`), and
-the harness (`hostbootstrap-demo test all` → `runMatrix` over the demo's case matrix, bound to the inherited `test`
-verb). The demo's four runtime contexts are explicit sibling `hostbootstrap-demo.dhall` files: host, VM,
-container on the VM, and cluster-service/daemon pod. Its verbs drive the live surface — `vm ensure`, the
-provider-aware VM axis (Lima on Apple Silicon, Incus on Linux), applied budget cordons, an
-idiomatic in-Dockerfile `check-code` gate (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago`
-webservice and SPA, and Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that inherits the base-provided
-browser runtime — centered on a from-zero pristine-host bootstrap inside a managed Linux VM.
+`runHostBootstrapCLI "hostbootstrap-demo" projectSpec` and demonstrates the extension streams — the lift
+chain (`demoChain :: ProjectConfig -> [Step]` the core `project up` interprets; the former
+`incus`/`vm`/`harbor`/`web` verbs collapse into chain steps and the `service` `Web` variant — phase-13/16/18),
+the schema-gen concat (`config schema` / `config render --artifact demoWeb` over `coreArtifacts ++
+demoArtifacts`), the harness (`hostbootstrap-demo test run all` → `runMatrix` driving the real `project up`
+per test config, bound to the inherited `test` verb), and the service handlers (the demo's `Web` service
+variant run by `service run`). The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall`
+files (host, VM, container on the VM, and cluster-service pod, the last delivered by a ConfigMap). The chain
+drives the live surface — the provider-aware VM axis (Lima on Apple Silicon, Incus on Linux), applied budget
+cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-code` gate
+(`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA served by `service run`, and
+Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that
+inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside a
+managed Linux VM.
 
 ## Update rule
 

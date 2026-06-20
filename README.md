@@ -189,8 +189,10 @@ The Python bootstrapper (installed with `pipx install …`):
 Self-update is never run automatically by `doctor`, `build`, `run`, or `base`, and those commands must
 not fail just because the wrapper is not at the latest commit.
 
-The `hostbootstrap-core` command surface (exposed by every built binary; the project's primary CLI
-contribution is its chain value, not noun verbs):
+The `hostbootstrap-core` command surface is **fixed**: every built binary exposes the **same** tree, and a
+project adds **no verbs**. `hostbootstrap-core` is a library of composable tools (step kinds, reconcilers,
+the self-reference lift, service handlers), not a CLI topology — a project's identity is its chain, Dhall
+vocabulary, schema-gen artifacts, test seams, and service handlers, never bespoke commands.
 
 | Command | What it does |
 |---|---|
@@ -198,17 +200,18 @@ contribution is its chain value, not noun verbs):
 | `<binary> project up` | Recursively interpret `chain rootCfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
 | `<binary> project down` | Stop the services/clusters/VMs the chain spun up (incus/limactl **stop**) without deleting anything |
 | `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
-| `<binary> context` | Read-only: introspect the sibling `.dhall` and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
-| `<binary> test init` | With an existing `project.dhall`, write `test.dhall` (may carry test-specific config) |
-| `<binary> test run <suite>\|all` | Root-gated, decoupled from deploy; run one suite or `all` (always a suite) against the live stack; fail-fast otherwise |
+| `<binary> test init` | With an existing `project.dhall`, write `test.dhall` (the case matrix + config overrides) |
+| `<binary> test run <suite>\|all` | Root-gated; per distinct test config, drives the real `project up` under a test-written `.dhall`, asserts in-frame, then `project destroy`; two fail-fast safety preconditions (refuse if a `<project>.dhall` exists or a production cluster is running); uses `.test_data` |
+| `<binary> service init\|schema\|run` | Run a long-running role: `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT, fail-fast unless the config declares a service role + variant; no `service down` (the controller owns lifetime) |
+| `<binary> context` | Read-only: introspect **any** sibling `.dhall` uniformly and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
 | `<binary> check-code` | Run the inherited code-check surface; failed checks exit non-zero |
 | `<binary> ensure <tool>` | **Hidden debug** surface that reconciles a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); normally invoked as a chain step within `project up` |
 
-These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a
-project binary. The above is the **target** surface; today's implemented surface is the flat verbs
-(`ensure`, `config`, `context create`, `cluster`, `test`, plus the demo's `vm`/`deploy`) — see
-[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md) and the "Current state" note in the
-Architecture section above. See
+These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a project
+binary. The fixed `project`/`test`/`service`/`context`/`check-code` surface, the harness driving the real
+`project up`, and the `service` command are the **target**; the unified-harness / service migration is
+tracked as reopened, real-run-gated work — see [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)
+and the "Current state" note in the Architecture section above. See
 [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
 for the command-tree extension contract.
 
@@ -251,7 +254,7 @@ pipx install --force /path/to/hostbootstrap
 core directly (L0-direct, like `mcts`) and contributes its own `chain :: RootConfig -> [Step]` value plus
 the step actions, test suites, and Dhall vocabulary that go with it, so the **demo's deploy is its chain**
 — interpreted by the single `project up` lifecycle command rather than a tree of noun verbs. It is the
-end-to-end exercise of the four-stream additive extension contract: the lift chain (`[Step]` = core host
+end-to-end exercise of the extension-stream additive extension contract: the lift chain (`[Step]` = core host
 steps + the demo's workload steps), the schema-gen registry (`coreArtifacts ++ demoArtifacts`), the test
 suites, and the binary-owned local config. Its target `hostbootstrap-demo.dhall` budget is the demo's one
 ceiling — 6 cores, 10 GiB memory, 80 GiB storage — feeding both the VM sizing cordon and the kind-node
@@ -287,12 +290,14 @@ Harbor, and the webservice run **in the VM** on the VM's Docker, reached with no
 cluster" path. The doctrine is stated canonically in
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Status.** This `[Step]` chain interpreted by `project up` is the **target** demo shape and is not yet
-> implemented — today the demo runs the flat `deploy`/`vm` verbs against the hand-written deploy chain
-> (`demo/src/HostBootstrapDemo/Chain.hs`). That flat shape is validated by the full real Apple Silicon Lima
-> lifecycle — it brought up the cordon VM, ran the host-native build and the project-image build in the
-> VM, lifted `test all` with the per-case kind clusters on the VM's Docker, reported `3/3 passed` including
-> the Playwright e2e case, and tore the VM down behind the guard. The Incus real-run remains a historical
+> **Status.** This `[Step]` chain interpreted by `project up` is implemented and real-run-validated: a
+> single `project up` brings up the cordon VM, runs the host-native build and the project-image build in the
+> VM, and stands up kind → Harbor → the web service on the VM's Docker. The **reopened** work is the
+> unified-harness / fixed-surface / resource-SSoT correction (see
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)): the demo's test seams drive that same
+> `project up` under a test config (rather than a separate per-case cluster), the budget-doubling VM sizing
+> collapses to budget = VM wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima
+> run reported `3/3 passed` including the Playwright e2e case; the Incus real-run remains a historical
 > Linux validation point. The migration of that hand-written chain to a core-interpreted `[Step]` value is
 > tracked under the reopened phases and phases 16–17.
 
@@ -325,39 +330,38 @@ cabal build                           # builds hostbootstrap-demo against ../cor
 cabal run hostbootstrap-demo -- context
 ```
 
-`demo web serve` is the service-role webserver command. It normally runs inside the chart-launched
-service context, whose mounted `hostbootstrap-demo.dhall` authorizes `ServiceCommand`; a host-orchestrator
-config should reject it. In the target model the integrated VM/cluster lifecycle is **not** a separate
-chain of verbs: it is the demo's contributed `[Step]` chain above, interpreted recursively by
-`project up`, whose frame transitions carry cluster bring-up, Harbor, web, and the NodePort **inside** the
-VM. The deploy-VM step is the metal-side cordon step of that one chain, documented in the runbook.
+`service run` (the demo's `Web` service variant) is the long-running webserver role. It runs inside the
+chart-launched pod, whose ConfigMap-delivered `hostbootstrap-demo.dhall` declares a service role and the
+`Web` variant; a host-orchestrator config rejects it. The integrated VM/cluster lifecycle is **not** a
+separate chain of verbs: it is the demo's contributed `[Step]` chain above, interpreted recursively by
+`project up`, whose `deploy-chart` step launches the pod whose entrypoint is `service run`, carrying cluster
+bring-up, Harbor, the web service, and the NodePort **inside** the VM. The deploy-VM step is the metal-side
+cordon step of that one chain, documented in the runbook.
 
 ### Run its test suite
 
-The test surface is **decoupled from deploy** in the target model: `test run all` is root-gated and
-validates the live `project up` stack, rather than deploy carrying the harness as a lifted step. The demo
+The test surface **drives** deploy rather than duplicating it: `test run all` is root-gated and, per
+distinct test config, runs the real `project up`, asserts the live stack, then tears it down. The demo
 carries two test layers:
 
 - **Haskell harness** — `hostbootstrap-demo test run all` drives the demo's case matrix
   (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single suite runs with
-  `hostbootstrap-demo test run <suite>`), each case bringing up an isolated per-case kind cluster in setup
-  and tearing it down in teardown (guaranteed via `finally`, preserving host `.data`). The harness remains
-  the **one** test-engine and lift target — it invokes `clusterUp` as `HostConfig -> IO ()` "locally", with
-  no `LiftContext` of its own. Run against the live stack, `clusterUp` runs on the VM's Docker and the
-  per-case kind cluster lives in the VM. The per-case bodies (`pristine-bootstrap` a live cluster,
+  `hostbootstrap-demo test run <suite>`). The harness is the **one** test engine and it *is* the chain,
+  driven under a test config: per distinct test config it writes a test-specific `hostbootstrap-demo.dhall`,
+  runs `project up` over the demo's own chain, runs the case assertions in the appropriate frame, and tears
+  the stack down with `project destroy` (guaranteed via `finally`, preserving host `.data`). There is no
+  separate `seamSetup` that stands a cluster up a second way — the bring-up a test exercises is the same
+  chain production uses. Two fail-fast safety preconditions run before any test: the harness refuses if a
+  `hostbootstrap-demo.dhall` already exists or if a production cluster is running, and it deletes only the
+  config and `.test_data` it created. The per-case assertions (`pristine-bootstrap` a live cluster,
   `e2e-tabs` the project image's base-provided Playwright runtime against the in-cluster webservice via its
-  NodePort, `web-build` the `spago`/`esbuild` bundle) come up on the **VM's** Docker; direct host
-  invocation is a development smoke, not the authoritative context. Illegal direct-host VM-container
-  representations fail before cluster creation because the topology lacks the VM ancestor and runtime
-  witnesses. `test run all` is the **target** surface (today the harness is reached as the lifted compute
-  step of the flat `deploy` verb — `limactl shell <instance> -- docker run --rm <image> test all` on Apple
-  Silicon, `incus exec <vm> -- docker run --rm <image> test all` on Linux); see
-  [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
+  NodePort, `web-build` the `spago`/`esbuild` bundle) run on the **VM's** Docker, in the frame each needs.
+  This is the **target** surface; the harness recast onto `project up` is tracked as reopened, real-run-gated
+  work — see [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
 
   ```bash
   cd demo
-  hostbootstrap run -- project up        # bring up the stack (target; flat: deploy)
-  hostbootstrap run -- test run all      # validate the live stack (target; flat: test all via deploy)
+  hostbootstrap run -- test run all      # per test config: project up → assert → project destroy
   ```
 
 - **Playwright e2e** — [`demo/playwright/`](demo/playwright/) is source/config only. The supported

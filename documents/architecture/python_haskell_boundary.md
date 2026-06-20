@@ -148,17 +148,18 @@ The ownership boundary described above is the shipped implementation.
   `ensure`, `context`, `project`, `test`, and `check-code`; `context` is read-only introspection
   (`inspect`/`path`/`show`/`schema`/`render`). `project up` interprets the chain steps
   (`deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port`), and the lifecycle rests on
-  the lift primitive with provider-backed folds for Lima and Incus. The demo contributes its `web` verb
-  (load-bearing: the chart pod runs `web serve`, the Dockerfile runs `web bridge`) and the `vm`/`incus`
-  provider verbs.
+  the lift primitive with provider-backed folds for Lima and Incus. The demo contributes its `Web` service
+  variant (the chart pod runs `service run`; the build-time bridge folds into the build-image step) and its
+  VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.
 - **Persistent stack.** A single `project up` on Incus/Linux interprets the chain across the 3-frame
   fractal descent (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`) and stands up
   the live persistent stack — a cordoned kind cluster, then the full 8-pod production Harbor (NodePort
   30500), then the project image pushed to the in-cluster registry, then the web chart pod serving HTTP
   200 at `localhost:30080`. `project down` (incus/Lima **stop**, no delete) and `project destroy`
-  (delete) tear it down with host `.data` preserved. `test run all` is the separate test surface: it
-  drives the standardized harness over the demo's cases, each bringing up its own isolated per-case kind
-  cluster, running the web build and Playwright end-to-end cases, and tearing that cluster down; the
+  (delete) tear it down with host `.data` preserved. `test run all` **drives that same `project up`** under
+  a test config (one per distinct test config), runs the web build and Playwright end-to-end assertions
+  against the live stack, and tears it down with `project destroy` — reusing the chain, not a per-case
+  cluster; the
   harness is decoupled from the persistent deploy stack. The metal-frame role of Python is the same under
   the chain surface — provision, build the `pb`, hand off. Phase order and closure live in
   `DEVELOPMENT_PLAN/`, the canonical status authority. See

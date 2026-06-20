@@ -14,7 +14,7 @@
 `hostbootstrap-core` is a consumable Cabal package and
 `documents/engineering/derived_project_standards.md` documents the consume-as-library pattern. The
 supported hierarchy is `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2),
-with `mcts` and `hostbootstrap-demo` consuming L0 directly; each level extends the four parallel streams
+with `mcts` and `hostbootstrap-demo` consuming L0 directly; each level extends the parallel extension streams
 (CLI tree, Dhall vocabulary, schema-gen registry, harness seams). The worked consumer is
 **`hostbootstrap-demo`** (see [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)). Consumer
 repository adoption is tracked in each consumer's own repository. This phase is `Done`.
@@ -113,7 +113,7 @@ parallel streams (see [development_plan_standards.md § P, § T](development_pla
 #### Deliverables
 
 - `derived_project_standards.md` gains a *three-level library hierarchy* section (the L0/L1/L2 table
-  and the four-stream merge-idiom table) and a *two integration modes* section: (1) freeze-import + the
+  and the extension-stream merge-idiom table) and a *two integration modes* section: (1) freeze-import + the
   base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency, e.g. `mcts`); (2)
   `source-repository-package` + `runHostBootstrapCLI` extension (`daemon-substrate` and its apps, and
   the `demo/` consumer).

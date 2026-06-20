@@ -40,8 +40,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
   build/run model, Tart as build-only, `./.build/`, and why the binary (not the bootstrapper) builds
   the project container.
 - [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
-  library levels (L0◄L1◄L2) and the four-stream extension contract every level composes additively,
-  where stream 1 is the lift chain (the ordered `[Step]` of core and project step kinds).
+  library levels (L0◄L1◄L2) and the extension streams every level composes additively (lift chain, Dhall
+  vocabulary, schema-gen, test seams, service handlers), over a fixed command surface that is never a stream.
 - [architecture/dhall_generation.md](architecture/dhall_generation.md) — `.dhall` as parameters +
   context + witness, the child config minted by the generated context-init step, the generated Dhall
   vocabulary, the three-vocabulary layering, and the reflect-from-decoders schema derivation.
@@ -96,7 +96,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   root-gated `test init` / `test run <suite>|all` surface (`test.dhall`), and the project test suites.
 - [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
-  every derived project follows, including the four-stream contract whose stream 1 is the lift chain.
+  every derived project follows, including the extension-stream contract whose stream 1 is the lift chain.
 - [engineering/derived_dockerfile.md](engineering/derived_dockerfile.md) — the idiomatic derived
   project container: the in-Dockerfile `check-code` gate, the `purescript-bridge` → `spago` →
   `esbuild` web build, and the build-stage ordering.
@@ -131,10 +131,11 @@ while preserving host `.data`.
   the registry, and the `ensure` reconcilers run as chain steps — all interpreted under `project up`.
 - **`context` is read-only introspection.** Its `inspect`/`path`/`show`/`schema`/`render` subcommands
   introspect and visualize the current frame, including schema and render output.
-- **`test init` / `test run <suite>|all`** drive the standardized harness, the separate test surface with
-  its own isolated per-case kind clusters.
-- **The demo contributes its `web` verb** (load-bearing for the chart pod and Dockerfile) plus the
-  `vm` / `incus` provider verbs.
+- **`test init` / `test run <suite>|all`** drive the standardized harness, which runs the real `project up`
+  under a test config (one per distinct test config), asserts the live stack, and tears it down.
+- **The demo contributes its `Web` service variant** (run by `service run` in the chart pod; the build-time
+  bridge folds into the build-image step); the former `vm` / `incus` / `web` verbs are removed (the surface
+  is fixed) and their provider IO runs as chain steps.
 
 See [composition_methodology.md](architecture/composition_methodology.md) for the model and
 [`DEVELOPMENT_PLAN/`](../DEVELOPMENT_PLAN/) for the authoritative phase status.

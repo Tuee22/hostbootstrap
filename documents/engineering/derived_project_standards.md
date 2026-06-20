@@ -74,9 +74,9 @@ demoSeams demoCases) demoCheckCode demoArtifacts)))`. Its `demoChain` contribute
 host→VM→container→cluster lift (deploy VM, build pb + image in the VM, context-init the project-container
 child config, deploy kind, deploy harbor, push image, deploy chart, expose NodePort) as a single `[Step]`
 the core interprets across the 3-frame fractal descent. `project up` interprets that chain to stand up the
-persistent stack; `context` visualizes the composition; and `test run all` is the separate test surface,
-driving the harness matrix over `demoCases` with `demoSeams` (each case brings up its own isolated per-case
-kind cluster, runs its body, and tears it down).
+persistent stack; `context` visualizes the composition; and `test run all` **drives that same `project up`**
+under a test config (one per distinct test config), asserting the live stack with `demoSeams` and tearing it
+down with `project destroy` — reusing the chain, not a separate per-case cluster.
 
 ## The three-level library hierarchy
 
@@ -89,7 +89,7 @@ imports the level below it; nothing re-implements a lower level's verbs:
 | L1 | `daemon-substrate` | the daemon apps import it |
 | L2 | `{jitML, infernix}` | the leaf apps |
 
-Each level extends the same **four parallel streams**, one additive merge idiom each (canonical statement:
+Each level extends the same **parallel extension streams**, one additive merge idiom each (canonical statement:
 [library_hierarchy](../architecture/library_hierarchy.md)):
 
 | Stream | Merge idiom | Rule |
@@ -257,15 +257,17 @@ tree is exactly `ensure`, `context`, `project`, `test`, `check-code`:
 
 The demo's deploy is the contributed `demoChain :: ProjectConfig -> [Step]` value in
 `demo/src/HostBootstrapDemo/Commands.hs` — a list of `Step` the core interprets across the 3-frame fractal
-descent. The demo adds the `web` verb (`web serve`/`web bridge`) and the `vm`/`incus` debug-hatch verbs as
-its `demoCommands`. The image-build hook runs as `project init --role image-build-container`.
+descent. The demo contributes its `Web` service variant (run by `service run`; the build-time bridge folds
+into the build-image step) and its VM/provider IO as chain steps — the surface is fixed, so it adds no
+verbs. The image-build hook runs as `project init --role image-build-container`.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster
 (kind `extraPortMappings` publish NodePorts to the VM localhost) → the full 8-pod production Harbor
 (NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod →
 `localhost:30080` serving HTTP 200 — after which `project down` / `project destroy` tear it down with the
-durable host `.data` preserved. `test run all` is the separate test surface, bringing up an isolated
-per-case kind cluster for each `demoCases` entry, running its body, and tearing that cluster down.
+durable host `.data` preserved. `test run all` **drives that same `project up`** under a test config (one
+per distinct test config), asserts the live stack, and tears it down — reusing the chain rather than a
+separate per-case cluster.
 `DEVELOPMENT_PLAN/` owns the phase status; this page describes the model and the worked `demo/` consumer
 that realizes it.
 
@@ -273,7 +275,7 @@ that realizes it.
 
 * [composition_methodology](../architecture/composition_methodology.md) — the canonical model: chain-is-the-project, the recursive `project up` interpreter, fractal bootstrap
 * [authoring_project_binaries](authoring_project_binaries.md) — how a consumer authors its `chain` and step actions
-* [library_hierarchy](../architecture/library_hierarchy.md) — the four-stream extension contract (stream 1 = the lift chain)
+* [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream contract (stream 1 = the lift chain)
 * [base_image.md](base_image.md) — what the base image ships, including the warm core closure
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate

@@ -65,22 +65,22 @@ The `test` surface runs through the **project binary**, against the runtime — 
 `check-code` verb, which is the fail-fast image-build gate over source shape (see
 [code_check_doctrine.md](code_check_doctrine.md)).
 
-## The Harness Is A Lift Target, Not A Parallel Chain
+## The Harness Drives The Chain, It Is Not A Parallel Chain
 
-The harness is the **context-agnostic test engine**: its seams invoke reconcilers (e.g. cluster
-bring-up) "locally", carrying no execution-context parameter and unaware of any enclosing frame. It is
-therefore a **lift target**, lifted as a whole. A suite that needs its per-case cluster to come up in a
-nested frame lifts the entire `test run` workflow there (through the selected VM provider and then
-`docker run --rm <image> test run all`), and the cluster lands on that frame's Docker.
+The harness **drives the real `project up`** rather than re-expressing bring-up. It is the **one**
+representation of the test path because it *is* the deploy chain, run under a test config: per distinct test
+config the harness writes a test-specific `<project>.dhall`, runs `project up` over the project's own chain
+(`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
+in the frame appropriate to each (reusing the self-reference lift — e.g. a Playwright assertion as a
+container on the kind network in the VM frame, outside the cluster), and tears the stack down with
+`project destroy`. There is no separate `seamSetup` that stands a cluster up a second way, so the test and
+deploy resource models cannot drift.
 
-The `test run all` workflow is the **one** representation of the test path, and it is a surface
-separate from `project up`. `project up` interprets the `[Step]` chain to stand the persistent stack up
-(`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`). `test run all`
-drives the harness over the project's case matrix, where each case brings up its **own isolated
-per-case kind cluster**, runs its body, and tears that cluster down. The two are decoupled: `project
-up` does not run the harness, and the harness does not interpret the deploy chain. The canonical
-model — the lift chain as the project, the recursive interpreter, and why the harness is the single
-lift target — lives in
+Two **hard fail-fast safety preconditions** run before any test: the harness refuses if a `<project>.dhall`
+already exists (never overwrite a production config) or if a production cluster is running (never touch
+production state). Durable test storage is `.test_data` (never `.data`); teardown deletes only the config
+and `.test_data` the harness created this run. The canonical model — the lift chain as the project, the
+recursive interpreter, and the harness as a driver of that chain — lives in
 [../architecture/composition_methodology.md](../architecture/composition_methodology.md); this document
 defers to it rather than re-deriving it.
 
@@ -150,14 +150,14 @@ no unit-file rendering tests or real service-manager integration tests.
 `DEVELOPMENT_PLAN/` is the implementation-status authority for this command surface.
 
 - The standardized harness (`runMatrix` + `Seams`, the per-case isolation, the delete-guard,
-  budget-slicing, and the report card) runs through `cabal test`. The `ensure`, `context`, `project`,
-  `test`, and `check-code` verbs are the core top-level command tree the binary carries; the demo
-  contributes its `web` verb and its `vm` / `incus` provider verbs. The Python bootstrapper suite and
-  the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
+  budget-slicing, and the report card) runs through `cabal test`. The fixed core tree is `project`,
+  `test`, `service`, `context`, and `check-code` — the binary carries no per-project verbs; the demo
+  contributes its `Web` service variant and its VM/provider IO as chain steps. The Python bootstrapper
+  suite and the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
 - The `test init` / `test run <suite>|all` split is gated to the root frame and backed by a sibling
-  `<project>.test.dhall`. It is a surface separate from the chain: `test run all` drives the harness
-  over isolated per-case kind clusters, while the recursive `project up` interpreter stands up the
-  persistent stack. The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
+  `<project>.test.dhall`. `test run all` **drives the real `project up`** under a test config (one per
+  distinct test config), asserts the live stack, and tears it down — it reuses the chain rather than
+  standing up a separate per-case cluster. The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
   across the composed frame stack: on Incus/Linux a single `project up` stands up the cordoned kind
   cluster, the 8-pod production Harbor (NodePort 30500), the project image pushed to the in-cluster
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /

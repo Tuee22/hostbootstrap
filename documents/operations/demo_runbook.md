@@ -24,9 +24,10 @@
   metal-frame instance of the same fractal pattern (provision the frame → build the binary in it → hand
   off `project up`).
 - `project up` / `project down` / `project destroy` drive the chain, `context` visualizes it, and
-  `test run all` validates the surface through the standardized harness. The deploy is **one**
-  representation: the `[Step]` chain. `project up` stands up a persistent stack; `test run all` is a
-  separate harness with its own isolated per-case kind clusters.
+  `test run all` validates the surface by **driving the same `project up`** under a test config. The deploy
+  is **one** representation: the `[Step]` chain. `project up` stands up a persistent stack; `test run all`
+  reuses that chain (write a test `<project>.dhall` → `project up` → assert → `project destroy`, one
+  `project up` per distinct test config), with no separate per-case bring-up.
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
 
@@ -50,8 +51,10 @@ its own segment, then hands off `project up` one level down. `project up` ends a
 The core command tree is exactly `ensure`, `context`, `project`, `test`, and `check-code`. Cluster
 bring-up is the `deploy-kind` / `deploy-chart` chain steps; `project init` writes the root config;
 `context` carries the read-only `show` / `schema` / `render` introspection; and `context-init` is the
-chain step that mints a child config. The demo contributes its `web` verb (load-bearing: the chart pod
-runs `web serve`, the Dockerfile runs `web bridge`) and the `vm` / `incus` provider verbs. The deploy
+chain step that mints a child config. The demo contributes its long-running web role as a `service` variant
+(the chart pod runs `service run`, the `Web` variant; the Dockerfile's PureScript→JS bridge runs as the
+build-image step) and its VM/provider IO as chain steps — the `vm` / `incus` / `web` verbs are removed (the
+surface is fixed; see [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)). The deploy
 itself is the contributed `demoChain` interpreted by `project up`.
 
 ## The demo and its extension contract
@@ -64,9 +67,10 @@ context-init, deploy-kind, deploy-chart, expose-port); the demo interleaves its 
 (deploy-harbor, push-image) into the same `[Step]`. This is the workload-extension seam —
 host and workload steps compose in one chain.
 
-The demo demonstrates the four-stream additive extension. Stream 1 is the **lift chain** (the ordered
-`[Step]`, core + demo steps); the other three streams are the schema-gen registry, the test harness, and
-config:
+The demo demonstrates the additive extension streams (the command surface is **fixed** — a project adds no
+verbs). Stream 1 is the **lift chain** (the ordered `[Step]`, core + demo steps); the others are the Dhall
+vocabulary, the schema-gen registry, the test harness, and the **service handlers** (the demo's `Web`
+service variant run by `service run`):
 
 | Stream | How the demo extends it | Observable through |
 |---|---|---|
@@ -126,7 +130,7 @@ copy refuse commands that do not belong to its frame.
 | VM (`vm-orchestrator-1`) | fresh Linux host: build the host-native binary and the project container, then mint the project-container child config and hand off `project up` |
 | Image-build container | Dockerfile-time `check-code` and config/code generation only |
 | Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, Harbor, the pushed image, the web chart pod, and the verified NodePort |
-| Cluster service | chart-launched webservice pod: runs `web serve` under the service-role config |
+| Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant) under a ConfigMap-delivered service-role config |
 
 ## Lifecycle ownership
 
@@ -192,7 +196,7 @@ The operator drives the chain through the `project` lifecycle.
   `vm-project-container-2` frame then brings up the persistent kind cluster (cordon #2, Production
   profile) on the **VM's** Docker, installs the in-cluster Harbor registry (NodePort 30500), loads and
   pushes the `hostbootstrap-demo:local` image to Harbor, deploys the `warp` / `wai` web service chart pod
-  (NodePort 30080, the pod runs `web serve`), and verifies the NodePort — ending at a live
+  (NodePort 30080, the pod's entrypoint is `service run`, the `Web` variant), and verifies the NodePort — ending at a live
   webservice on `localhost:30080`. When the metal host is logged in to Docker Hub, the orchestrator
   forwards that login over `stdin` so the nested pulls authenticate; the credential is never written into
   the VM or container and never appears in Dhall or `argv` (see
@@ -202,10 +206,12 @@ The operator drives the chain through the `project` lifecycle.
   [harbor](../engineering/harbor.md) for the in-cluster registry, and
   [cluster lifecycle](../engineering/cluster_lifecycle.md) for the fail-closed `clusterUp` reconciler the
   `deploy-kind` step drives.
-- **`test run all`** — the separate test surface, root-gated, needs `test.dhall`
-  (written by `test init`). Drives `runMatrix` over the demo's case matrix; `all` is always a suite. A
-  single case runs with `test run <case>`. The harness is decoupled from the deploy: `project up` does
-  not run it, and each case stands up its own isolated per-case kind cluster.
+- **`test run all`** — root-gated, needs `test.dhall` (written by `test init`). Drives `runMatrix` over the
+  demo's case matrix; `all` is always a suite; a single case runs with `test run <case>`. Per distinct test
+  config the harness writes a test `hostbootstrap-demo.dhall`, runs the real `project up`, asserts in-frame,
+  and tears down with `project destroy` — it reuses the deploy chain rather than standing up a separate
+  per-case cluster. Two fail-fast preconditions run first: refuse if a `hostbootstrap-demo.dhall` exists or
+  if a production cluster is running; teardown removes only the config and `.test_data` it created.
 - **`project down`** — stop the VM (the cluster stops with it), delete nothing.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
@@ -214,12 +220,13 @@ The operator drives the chain through the `project` lifecycle.
 
 ## Feature-to-harness-case table
 
-`test run all` drives `runMatrix` over the demo's case matrix — the standardized harness, a separate
-surface from `project up`. Each `demoCases` case asserts a distinct slice of the surface via its real
-per-case seam: `seamSetup` brings up an **isolated per-case kind cluster** (the `TestCase` profile, name
-`hostbootstrap-demo-test-<case>`, data under `./.test_data/<case>/`), the body runs, and `seamTeardown`
-deletes that cluster via `clusterDelete`, which `runMatrix` guarantees through `finally` even when the
-body fails. The seams run where Docker and kind are present — inside the demo VM / project container.
+`test run all` drives `runMatrix` over the demo's case matrix — the standardized harness, which **drives
+the real `project up`** under a test config rather than being a separate bring-up. Per distinct test config
+the harness writes a test `hostbootstrap-demo.dhall` (the Test profile, data under `./.test_data/`), runs
+`project up`, and tears the stack down with `project destroy` (guaranteed through `finally`); each
+`demoCases` case asserts a distinct slice of the live stack in the frame appropriate to it (e.g. the
+`e2e-tabs` Playwright assertion as a container on the kind network in the VM frame, outside the cluster).
+*(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)*
 
 | Harness case | Feature demonstrated |
 |---|---|

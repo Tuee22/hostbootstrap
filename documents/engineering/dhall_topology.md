@@ -135,8 +135,8 @@ runtime configs carry provider-backed `topologyFrames`, a `currentFrame`, and lo
 and the binary verifies its frame before side effects. The core command surface is
 `ensure`/`context`/`project`/`test`/`check-code`, and the demo drives its lifecycle through the recursive
 `project` chain — `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` —
-interpreted by `project up`. The demo also contributes the `web` verb and the `vm`/`incus`
-provider/VM verbs.
+interpreted by `project up`. The demo also contributes its `Web` service variant (run by `service run`)
+and its VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.
 
 The model this document describes is the recursive `project` chain: `chain :: ProjectConfig -> [Step]`
 interpreted by `project up`, with `project init` writing the root config, the context-init step minting
@@ -145,8 +145,10 @@ stands up the live persistent stack — a cordoned kind cluster, the full 8-pod 
 project image pushed to the in-cluster registry, and the web chart pod serving `localhost:30080` — and
 `project down` / `project destroy` tear it back down with durable host `.data` preserved. The topology
 data and per-frame fail-fast above are the substrate the chain interpreter builds on. `test run all`
-drives a separate standardized harness whose isolated per-case kind clusters stand outside this
-persistent stack; `project up` does not run that harness. See
+**drives the same `project up`** under a test-written config (one `project up` per distinct test config),
+asserts the live stack, and tears it down — it reuses the chain rather than standing up a separate per-case
+cluster. Child configs are generated from passed parameters, some **forwarded from the parent** context's
+`<project>.dhall`. See
 [composition_methodology](../architecture/composition_methodology.md) for the model and
 `DEVELOPMENT_PLAN/` for phase status.
 

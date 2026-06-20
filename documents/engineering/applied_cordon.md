@@ -82,7 +82,8 @@ On Linux, `kindNodeCordonArgs clusterName resources` emits
 `HostBootstrap.Cluster.Lifecycle`'s `applyLinuxCordon` applies it fail-closed AFTER `kind create` (and
 the kubeconfig export) and BEFORE Helm. `--memory-swap == --memory`, so an over-budget cluster
 self-limits instead of swapping past its ceiling. `<clusterName>` is the resolved `ClusterPlan` name, so
-each isolated per-case harness cluster is cordoned too.
+a test cluster (the harness's `project up` under the Test profile) is cordoned the same way — to its slice
+within the VM wall.
 
 On Apple, a Lima VM sized by `limaSizingArgs` is the cordon; the per-project Colima VM sized by
 `colimaSizingArgs` is the cordon for direct Docker workflows. In both cases the VM boundary is the first

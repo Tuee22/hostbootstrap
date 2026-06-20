@@ -10,9 +10,13 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-**The chain-is-the-project migration is complete and real-run-validated end-to-end (2026-06-18):** the
+**Reopened (2026-06-19)** for the unified-harness / fixed-command-surface / resource-SSoT correction (see
+`## Remaining Work`): the demo's test seams must drive the real `project up` instead of a second bring-up
+mirror, the budget-doubling VM sizing must collapse to budget = VM wall / cluster = slice, and the
+`web serve` / `web bridge` verbs must move to `service run` (`Web` variant) + the build-image step. The
+earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
 demo's deploy is now the contributed `demoChain :: ProjectConfig -> [Step]` value (plus `demoFrameContext` /
 `demoTeardown`) interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
@@ -92,28 +96,32 @@ command or the chain-as-`[Step]` representation is shipped.
 
 ## Remaining Work
 
-Migrate the hand-written `demoDeployChain` and the demo `vm`/`deploy`/`incus`/`harbor`/`web`/`role` verbs
-to the core `Step` interpreter: the demo contributes a `chain :: RootConfig -> [Step]` value plus its
-workload step actions; the single-representation invariant (§ W) is unchanged. Concretely:
+The contributed `demoChain :: ProjectConfig -> [Step]` interpreted by `project up` is built and
+real-run-validated (2026-06-18). The reopened, real-run-gated work is the unified-harness / resource-SSoT /
+fixed-surface correction (development_plan_standards § W, § O, § P, § AA):
 
-- Replace the hand-written `demoDeployChain` and its bespoke interpreter (`demo/src/HostBootstrapDemo/Chain.hs`)
-  with a `chain :: RootConfig -> [Step]` value the **core** `project` lifecycle interprets recursively
-  (§ Y). The current single lift sequence (`vm ensure` → `vm up` → `vm pristine-bootstrap` → lifted
-  `test all` → `vm down`) is re-expressed as ordered core step kinds (deploy-VM, `ensure-*`, copy-source,
-  build-pb, build-image, `context-init`, …) interleaved with the demo's contributed step kinds.
-- Express the demo's workload verbs as **step actions / step kinds** the demo contributes into the same
-  `[Step]` (the lift-chain extension stream, § T), not as standalone top-level nouns: `harbor install`/`push`
-  → registry-install steps; `web bridge`/`serve` → web-serve steps; `role serve`/`submit` → role steps;
-  the VM-lifecycle verbs (`vm`/`incus`) fold into the core deploy-VM/down/destroy step kinds.
-- The demo's deploy is then driven by `project up`/`project down`/`project destroy` (the core interpreter,
-  phase-16) over that chain value, with `--dry-run` rendering the same chain that apply executes — the one
-  representation (§ W). The interpreter and the `project` command surface are **new work owned by
-  phase-16**; this phase owns the demo's `chain`/step-action contribution and the retirement of the demo
-  noun verbs.
-- Honest tracking: the `project` command and the chain-as-`[Step]` interpreter are the **target** being
-  built, not implemented surfaces; the demo's current noun-verb chain stays the validated baseline until the
-  migration lands. The retired noun verbs and the `demoDeployChain` are recorded under
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending` (phase-13/16).
+- **Drive the harness through `project up`.** Rewrite the demo's `demoSeams` so each case is an
+  **assertion** over a real `project up`, not a parallel bring-up. Delete the `seamSetup` mirror
+  (`clusterCreate caseResources` → `kind load` → `deployChart`) and the per-case
+  `testCaseProfile`/`caseResources` cluster model in `demo/src/HostBootstrapDemo/Commands.hs`; per distinct
+  test config the harness writes a test `<project>.dhall`, runs `project up`, asserts in the appropriate
+  frame (the e2e Playwright case as a container on the kind network in the VM frame, outside the cluster),
+  and tears down with `project destroy` ([phase-10](phase-10-standardized-test-harness.md)).
+- **Fix the resource SSoT (the doubling).** Remove `vmSizingWithHeadroom` so the VM is sized to the
+  declared budget (the VM wall), and cordon the production kind cluster (`deployKindAction`) to a **slice**
+  within that wall rather than the full budget. The one ceiling is used once (§ O); recorded under
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`.
+- **Move the long-running web role to `service`.** `web serve` → `service run` (`Web` variant of the demo's
+  `ServiceType` ADT, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
+  step; the chart pod's entrypoint becomes `service run` with its config delivered by a ConfigMap. The
+  `vm`/`incus`/`web` verbs and the `ProjectCommand` extension are deleted; their IO is retained as
+  library/step functions ([phase-16](phase-16-project-lifecycle-command.md)).
+- **Closing gate (forward deps):** the full demo lifecycle + `test run all` (incl. Playwright e2e across
+  three browsers) + `service run` (the web pod) completes on a 16 GiB Apple-Silicon host — unblocked by the
+  sizing fix (VM = budget fits; cluster runs as a slice inside it). The interpreter this drives is owned by
+  [phase-16](phase-16-project-lifecycle-command.md); the harness engine by
+  [phase-10](phase-10-standardized-test-harness.md); the service command by
+  [phase-18](phase-18-service-runtime-command.md).
 
 ## Phase Objective
 

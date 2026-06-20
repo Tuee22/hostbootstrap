@@ -11,7 +11,11 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened (2026-06-19):** the single-representation doctrine is corrected so the standardized test harness
+**reuses the chain** (drives `project up`) rather than re-expressing bring-up as a separate seam path. See
+`## Remaining Work`.
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -36,26 +40,28 @@ into the project container in the managed Lima VM (`3/3 passed`, including Playw
 
 ## Remaining Work
 
-None. The methodology documentation is recast: `composition_methodology.md` is the canonical home of the
-chain-is-the-project model — `project up` as the recursive/fractal interpreter, the Python bootstrapper as
-the metal-frame instance of the fractal bootstrap, and the `[Step]` chain as the single representation —
-with a `## Current Status` separating the built lift/interpreter primitives from the real-run-gated apply.
-The `project` lifecycle command and the `[Step]`-chain interpreter that the methodology describes are built
-and unit-tested under [phase-16](phase-16-project-lifecycle-command.md); their effectful end-to-end
-provisioning is real-run-gated there.
+Recast the single-representation doctrine (§ W) so the standardized test harness **reuses the chain** — it
+drives the real `project up` with a test-written config — instead of being a context-agnostic engine that
+brings up an isolated per-case environment "locally". The harness is not a second representation lifted
+alongside the chain; it *is* the chain, driven under a test config. Concretely:
+
+- Rewrite the single-representation section of `composition_methodology.md` (and the WRONG/RIGHT block) so
+  the harness driving `project up` is the RIGHT pattern, and a separate seam bring-up beside the chain is
+  the WRONG one. Record that one `<project>.dhall` may declare multiple roles and that context
+  relationships are pure compositional lifts.
+- Real-run-gated via the harness recast ([phase-10](phase-10-standardized-test-harness.md)) and the demo's
+  run ([phase-13](phase-13-hostbootstrap-demo.md)); the `project up` interpreter the harness drives is
+  owned by [phase-16](phase-16-project-lifecycle-command.md).
 
 The sprints that built still-valid substrate (the role-lifecycle skeleton, the arbitrary-topology frame
-graph, and credential forwarding across the lift) remain `Done`. The sprints whose contract the
-chain-is-the-project recast changes — the methodology/lift documentation (14.1) and the
-single-representation doctrine framed as a lifted `test all` deploy sequence (14.3) — are reopened to
-`Active`.
+graph, and credential forwarding across the lift) remain `Done`.
 
 ## Phase Objective
 
 Land the foundational composition model in `hostbootstrap-core` and its documentation: operations as the
 composable unit, the self-reference lift as the context-crossing operation (Phase 11), the deploy ≡
 business-logic unification, and the L0 role-lifecycle skeleton — so a consumer composes any chain of
-operations across contexts through the four-stream merge without L0 changes (see
+operations across contexts through the extension-stream merge without L0 changes (see
 [development_plan_standards.md § T, § U](development_plan_standards.md)).
 
 ## Sprints
@@ -168,7 +174,7 @@ duplicates the harness and double-creates clusters); there is one representation
 
 - The doctrine is documented in `documents/architecture/composition_methodology.md` (the harness as the
   one representation, lifted; no parallel deploy chain) and stated as a contract in § W of the
-  development-plan standards, cross-referencing § T (the harness/four-stream) and § U (the self-reference
+  development-plan standards, cross-referencing § T (the harness/extension-stream) and § U (the self-reference
   lift).
 
 #### Validation

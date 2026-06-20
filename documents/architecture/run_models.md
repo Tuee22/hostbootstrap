@@ -23,15 +23,15 @@
 - **Deploy is a persistent stack.** `project up` stands up a long-lived stack and keeps it running
   (services, clusters, VMs stay up); `project down` stops it and `project destroy` deletes it, both
   preserving `.data`. `test run all` is the separate test surface, decoupled from deploy.
-- The model feeds the test harness through `Seams`: the default L0 `defaultSeams` realize the
-  `OneShot` model; a cluster project supplies kind/Helm seams for the `Cluster` model. See
+- The `HostDaemon` model is reached operationally through the **`service` command**: `service run` is a
+  **leaf-frame pod entrypoint** (not an orchestrator) that runs one long-running role, and it is deployed
+  into the cluster by `project up`'s `deploy-chart` step. The role and its variant come from a Dhall
+  `ServiceType` ADT resolved against a **service-handler registry**. See
+  [The `service` Command And Service Handlers](#the-service-command-and-service-handlers) below.
+- The model feeds the test harness through `Seams`, but the harness **drives the real `project up`**: it
+  writes a test `<project>.dhall`, runs `project up`, asserts in-frame via the self-reference lift, then
+  runs `project destroy`. It does not stand up isolated per-case clusters via a separate seam path. See
   [harness workflow](harness_workflow.md).
-- The harness is the **context-agnostic test engine** — it brings up each case's isolated cluster
-  "locally", unaware of any enclosing frame — so it is a **lift target**, not a lift-aware component.
-  The `Cluster` run-model runs **wherever the harness is lifted to**: lift `test run all` into a
-  VM-container and the kind cluster comes up on that VM's Docker. The harness is lifted as a whole, never
-  re-expressed as a parallel chain of lifted cluster steps. See
-  [composition_methodology](composition_methodology.md).
 
 ## The Four Run-Models
 
@@ -39,7 +39,7 @@
 |-------|--------------|------------------|
 | `OneShot` | Build-if-needed, then `docker run --rm [-it] [mounts]` — a single container invocation that exits. | Budget-capped: the container runs within the project ceiling. |
 | `HostNative` | Host-native build (into `./.build/`) plus a host exec of the resulting binary. | Host process, sliced by the harness budget when run as a case. |
-| `HostDaemon` | A long-running host service (not a one-shot exec): a stateless service over durable external stores (message bus + object store). See [composition_methodology](composition_methodology.md). | Host process; the daemon holds its share for its lifetime. |
+| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores (message bus + object store), run operationally via `service run` as a leaf-frame pod entrypoint. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
 | `Cluster` | A kind cluster plus Helm releases — the full orchestrated substrate. | Cordoned per substrate; `fitsBudget` proves the concurrent set fits. |
 
 `OneShot` and `HostNative` differ only in **where the code runs**: `OneShot` runs inside a container
@@ -49,11 +49,31 @@ stands up an orchestrated multi-node substrate; it is realized by the cluster li
 [cluster lifecycle](../engineering/cluster_lifecycle.md), driven by the `deploy-kind`/`deploy-chart`
 steps the chain interprets.
 
-The `Cluster` model is **context-agnostic**: the harness brings each case's cluster up "locally" against
-whatever Docker the running process sees. Lifting the whole `test run all` workflow into a VM-container
-therefore stands the kind cluster up on the **VM's** Docker (the mounted socket), with no second "bring up
-a cluster" path — the harness is the one representation, lifted as a unit (see
+The `Cluster` model is **context-agnostic**: it is stood up by the real `project up` against whatever
+Docker the running process sees. The harness drives that same `project up` rather than maintaining a
+parallel "bring up a cluster" path — there is one representation, exercised as a unit (see
 [composition_methodology](composition_methodology.md)).
+
+## The `service` Command And Service Handlers
+
+The `HostDaemon` run-model is the long-running-service shape; the **`service` command** is how that shape
+is run in production and in tests.
+
+- `service run` is a **leaf-frame pod entrypoint**, not an orchestrator. It runs exactly one long-running
+  role inside the pod it was deployed into. It **fails fast** unless the active `<project>.dhall` declares
+  a service role with a valid variant.
+- Multiple service types are expressed as a Dhall **`ServiceType` ADT**; `service run` resolves the
+  declared variant against a **service-handler registry** (each variant maps to one handler) and runs that
+  handler. There is **no `service down`** — a service's lifetime is the pod's lifetime, and teardown is
+  `project down`/`project destroy` of the enclosing stack.
+- A service is **deployed by `project up`'s `deploy-chart` step**. The pod's container is the baked project
+  image whose entrypoint is `service run`; the active config is delivered as a **ConfigMap** that overrides
+  the baked container `<project>.dhall`, so the deployed role/variant is config-selected at deploy time.
+
+In the demo, `web serve` maps to `service run` with the `Web` variant (the long-running HTTP role), and
+`web bridge` maps to the build-image step (a build-time role, not a service). The `service` command is a
+fixed core verb; a project extends it by **registering service handlers**, not by adding service
+sub-commands.
 
 ## Selection Happens Inside The Step Chain
 
@@ -63,7 +83,7 @@ The run-model is not a top-level mode the operator picks. It is the shape a **co
 - A binary's identity is its chain value `chain :: ProjectConfig -> [Step]` — an ordered list of steps that
   interleaves core host-management step kinds (deploy-VM, ensure-X, copy-source, build-pb, build-image,
   context-init, deploy-kind, deploy-chart, expose-port) with the project's own step kinds (deploy-harbor,
-  push-image, …). This ordered `[Step]` is the four-stream's **lift chain** (stream 1); see
+  push-image, …). This ordered `[Step]` is the extension-stream's **lift chain** (stream 1); see
   [library hierarchy](library_hierarchy.md).
 - `project up` interprets that chain recursively (the fractal interpreter): it runs the current frame's
   steps, then hands off `pb project up` into the next frame, where each nested binary owns its segment.
@@ -138,33 +158,46 @@ topology), so the model is always derived.
 
 ## Current Status
 
-The four run-models and `selectRunModel` are implemented and exercised by the core tests; selection
-consumes the generated topology plus detected substrate. That selection is reached through the recursive
-`project up` interpreter over an explicit `chain :: ProjectConfig -> [Step]` value. The core command tree is
-exactly `ensure`, `context`, `project`, `test`, and `check-code` — `project init|up|down|destroy` drives
-the lifecycle, the read-only `context` command introspects (`inspect`/`path`/`show`/`schema`/`render`),
-and `test init` / `test run <suite>|all` split out the harness. The demo carries the `web` verb plus the
-`vm`/`incus` provider verbs; its deploy sequence is the `demoChain :: ProjectConfig -> [Step]` value in
-`demo/src/HostBootstrapDemo/Commands.hs`, interpreted recursively by `project up`.
+The new behavior described above — the `service`-command service run-model (leaf-frame `service run`
+entrypoint, `ServiceType` ADT + service-handler registry, deploy via `deploy-chart` with a ConfigMap
+override, no `service down`) and the harness that **drives the real `project up`** rather than standing up
+isolated per-case clusters — is the **target**. It is not yet fully implemented; the reconciliation
+spans the reopened phases (phase-10, phase-13, phase-14, phase-15, phase-16, phase-17) and new phase-18.
+Treat the sections above as the direction of travel, not a claim of current state.
+
+The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
+there are **no per-project verbs**. `project init|up|down|destroy` drives the lifecycle; `service run`
+runs a long-running service role; the read-only `context` command introspects uniformly across every
+`<project>.dhall`; and `test` drives the harness. A project extends core through streams (lift chain,
+Dhall vocabulary, schema-gen, test seams, and service handlers), never by adding command verbs.
+
+The four run-models and `selectRunModel` are exercised by the core tests; selection consumes the
+generated topology plus detected substrate, reached through the recursive `project up` interpreter over
+an explicit `chain :: ProjectConfig -> [Step]` value. In the demo, the deploy sequence is the
+`demoChain :: ProjectConfig -> [Step]` value in `demo/src/HostBootstrapDemo/Commands.hs`, interpreted
+recursively by `project up`; `web serve` resolves to `service run` (`Web` variant) and `web bridge` to
+the build-image step.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster (kind
 `extraPortMappings` publish NodePorts to the VM localhost) → the production Harbor registry (NodePort
 30500) → the project image pushed to the in-cluster registry → the web chart pod at `localhost:30080`
-serving HTTP 200. `project down` stops the stack without deleting it and `project destroy` deletes it,
-both preserving host `.data`. The four run-models are selected inside the chain steps `project up`
-interprets. `test run all` is the separate test surface: its harness brings up an isolated per-case kind
-cluster, runs the case body, and tears that cluster down — independent of the persistent deploy stack.
+serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` stops the stack
+without deleting it and `project destroy` deletes it, both preserving host `.data`. The test harness
+drives this same `project up`: it writes a test `<project>.dhall`, refuses to run if a `<project>.dhall`
+already exists or a production cluster is running, runs `project up`, asserts in-frame via the
+self-reference lift, then runs `project destroy` (deleting only what it created this run) — using
+durable test storage `.test_data`, never `.data`.
 
 ## See Also
 
 - [composition_methodology](composition_methodology.md) — the canonical home of the chain-is-the-project
   model, the recursive `project up` interpreter, and the single-representation doctrine; `HostDaemon` is
   the long-running-service model.
-- [harness workflow](harness_workflow.md) — how `Seams` realize the selected model per case; the
-  `test init` / `test run` split.
+- [harness workflow](harness_workflow.md) — how `Seams` realize the selected model per case while the
+  harness drives the real `project up`.
 - [build and run model](build_and_run_model.md) — the host-native build into `./.build/` that
   `keyHostNative` reflects.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind/Helm lifecycle the `Cluster`
   model drives, expressed as `deploy-kind`/`deploy-chart` chain steps.
-- [library hierarchy](library_hierarchy.md) — the four-stream merge whose stream 1 is the lift chain.
+- [library hierarchy](library_hierarchy.md) — the extension-stream merge whose stream 1 is the lift chain.
 - [testing](../engineering/testing.md) — the `test` surface that runs the harness over a project's matrix.

@@ -28,8 +28,8 @@ The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite wit
 this Playwright runtime through the standardized test harness. The `e2e-tabs` case
 in the harness's case matrix brings up an isolated kind cluster, loads the
 already-built `hostbootstrap-demo:local` project image into it, deploys the web
-chart pod (the pod's entrypoint is the demo binary, which runs `web serve` to bind
-the warp/wai webservice on `:8080`), and waits for the cluster's control-plane
+chart pod (the pod's entrypoint is the demo binary, which runs `service run` — the
+`Web` variant — to bind the warp/wai webservice on `:8080`), and waits for the cluster's control-plane
 NodePort to serve. It then starts the same project image as a one-off container on
 the kind Docker network. That container sets `BASE_URL` to the control-plane
 node's NodePort (`http://<cluster>-control-plane:30080`), sets `NODE_PATH` to

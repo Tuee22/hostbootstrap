@@ -114,16 +114,15 @@ summary for shape 2:
   web service.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
   surface, frame-agnostic — it runs its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
-  "locally", with no frame machinery inside it. `test run all` drives it; `project up` does not. The two
-  surfaces are decoupled.
-- The harness brings up an **isolated per-case kind cluster** (the `TestCase` profile, under
-  `.test_data/<case>/`) for each case, runs the case body, and tears that cluster down — guaranteed even
-  if the body fails. Each case owns its own cluster, distinct from the persistent stack `project up`
-  stands up. There is one representation of the deploy, and the chain is it.
+  with no second bring-up path inside it. `test run all` drives the real `project up`.
+- The harness, per distinct test config, writes a test `<project>.dhall`, runs `project up` (the Test
+  profile, under `.test_data/`), asserts the live stack in-frame, and tears it down with `project destroy`
+  — guaranteed even if a body fails. It reuses the same chain `project up` stands up, so there is no
+  separate per-case bring-up. There is one representation of the deploy, and the chain is it.
 
 ## Business-Logic Composition Shapes
 
-The same algebra composes runtime logic. Each is an extension (L1/L2 via the four-stream merge) that
+The same algebra composes runtime logic. Each is an extension (L1/L2 via the extension-stream merge) that
 relies only on an L0 affordance (the role-lifecycle skeleton, Dhall config/schema-gen, the extension
 streams) — so L0 hosts it without modification.
 
@@ -151,10 +150,10 @@ Reused across shapes and step kinds:
   the mutating apply.
 - **Substrate multiplexing** — the same pure chain parameterized over `(model × substrate)` under one
   control-plane contract.
-- **The test surface is separate from the deploy** — `test run all` drives the standardized harness
-  (`runMatrix` over the project's cases), which brings up an isolated per-case kind cluster, runs the
-  case body, and tears that cluster down. `project up` stands up the persistent stack; the harness is
-  the context-agnostic test engine, decoupled from it. The harness stays frame-agnostic and may lift a
+- **The test surface drives the deploy** — `test run all` runs the standardized harness
+  (`runMatrix` over the project's cases), which per distinct test config drives the real `project up`,
+  asserts the live stack, and tears it down with `project destroy`. It reuses the chain rather than
+  standing up a separate per-case cluster. The harness stays frame-agnostic and may lift a
   case into the cluster as a Job (a finite-job operation); see
   [single representation](#single-representation-the-chain-is-the-representation) and
   [harness_workflow](../architecture/harness_workflow.md).
@@ -184,6 +183,6 @@ development plan.
   model these shapes instantiate.
 - [authoring_project_binaries](authoring_project_binaries.md) — how to author a `chain` from these
   shapes (its step actions, test suite, and Dhall vocabulary).
-- [library_hierarchy](../architecture/library_hierarchy.md) — the four-stream merge that adds step
+- [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream merge that adds step
   kinds.
 - [dhall_topology](dhall_topology.md) — the topology frames the recursive chain descends through.

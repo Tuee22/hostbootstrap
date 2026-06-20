@@ -1,4 +1,4 @@
-# Phase 8: Dhall Generation and the Four-Stream Extension
+# Phase 8: Dhall Generation and the Extension Contract
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -6,7 +6,7 @@
 
 > **Purpose**: Land the binary-generated Dhall model — each project binary emits its own schema/default
 > config and renders child/deploy/test configs from a reusable Dhall vocabulary — and formalize the
-> four-stream extension contract every library level composes.
+> extension-stream contract every library level composes.
 
 ## Phase Status
 
@@ -18,7 +18,7 @@ The binary-generated rich tiers are implemented: `HostBootstrap.Config.Vocab` mi
 `ToDhall` embedding; `config schema` prints the in-scope schema union (guarded by a committed snapshot)
 and `config render` materializes static registry examples. The hand-written `Core.dhall` `fitsWithin`/`split` are
 evaluation-tested, and a deploy config carries the `fitsWithin` assert so an over-budget render fails to
-type-check. The **four-stream extension contract** is complete: the CLI-tree, Dhall-vocabulary,
+type-check. The **extension-stream contract** is complete: the CLI-tree, Dhall-vocabulary,
 schema-gen-registry, and test-harness `Seams` streams are implemented, and the `hostbootstrap-demo`
 consumer
 ([Phase 13](phase-13-hostbootstrap-demo.md)) exercises all four end-to-end (`--help` CLI append,
@@ -35,7 +35,7 @@ context section inside `<project>.dhall`.
 ## Phase Objective
 
 Realize the binary-generated-configuration half of the Dhall model (see
-[development_plan_standards.md § P, Q](development_plan_standards.md)) and the four-stream extension
+[development_plan_standards.md § P, Q](development_plan_standards.md)) and the extension contract
 contract (see [development_plan_standards.md § T](development_plan_standards.md)). The binary generates
 the default local config, generated child configs, and richer deploy/test configs from reusable
 vocabulary and decoder-owned schema, so the schema and the configs flow from the binary's types and
@@ -161,7 +161,7 @@ deterministic and idempotent. Rich deploy renders use `deployConfigText` to carr
 
 None.
 
-### Sprint 8.5: The four-stream extension contract [Done]
+### Sprint 8.5: The extension-stream contract [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `documents/architecture/library_hierarchy.md`, `demo/src/HostBootstrapDemo/Commands.hs`
@@ -242,7 +242,7 @@ None.
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
-- `documents/architecture/library_hierarchy.md` - the three additive library levels and the four-stream
+- `documents/architecture/library_hierarchy.md` - the three additive library levels and the extension-stream
   extension contract.
 - `documents/architecture/dhall_generation.md` - local runtime config generation, child projections, the
   three-vocabulary model, and the reflect-from-decoders vs hand-written-assert nuance.

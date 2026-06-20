@@ -11,7 +11,11 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened (2026-06-19)** to make the command surface **fixed and closed** — `project` / `test` / `service`
+/ `context` / `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas and `hostbootstrap-core`
+framed as a library of composable tools (see `## Remaining Work`).
 
 This phase owns the **new** surface the "chain is the project" model targets: the `Step` algebra, the
 recursive interpreter, and the `project` lifecycle command, built on the reopened substrate phases —
@@ -34,6 +38,22 @@ tree carries only `coreCommandNames` = `ensure` / `context` / `project` / `test`
 contributes `demoChain :: ProjectConfig -> [Step]` + `demoFrameContext` + `demoTeardown` and keeps only the
 `web` (load-bearing) and `vm` / `incus` (debug-hatch) verbs (see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
+## Remaining Work
+
+Close the command surface to the fixed core set and make `hostbootstrap-core` a **library of composable
+tools**, not a CLI topology (development_plan_standards § P, § T):
+
+- The surface is exactly `project` / `test` / `service` / `context` / `check-code` for every project
+  binary. Remove `ProjectCommand` as a `ProjectSpec` extension point; a project extends core only through
+  the streams (lift chain, Dhall vocabulary, schema-gen, test seams, service handlers).
+- Delete the residual `vm` / `incus` / `web` project verbs (and the hand-run `ensure` verb, retained only
+  as a hidden debug surface). Their IO is **retained as library/step functions** the chain reuses; only the
+  verbs are removed (see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+- Re-home the build-time `web bridge` into the **build-image** chain step.
+- Forward dependency: the `service` command itself is owned by
+  [phase-18](phase-18-service-runtime-command.md) (this phase exposes the fixed surface it slots into); the
+  demo's verb removal lands in [phase-13](phase-13-hostbootstrap-demo.md). Real-run-gated by the demo run.
 
 ## Phase Objective
 
@@ -311,7 +331,7 @@ purest fractal, role-as-pod folded into the chart, and `test run all` against th
 - `documents/architecture/hostbootstrap_core_library.md` - the surfaced core command tree
   (`project init|up|down|destroy`, `context`, `test init|run`, `check-code`) and the `Step` algebra a
   project extends with its chain.
-- `documents/architecture/library_hierarchy.md` - four-stream stream 1 is the lift chain (`[Step]`, core +
+- `documents/architecture/library_hierarchy.md` - extension-stream stream 1 is the lift chain (`[Step]`, core +
   project step kinds).
 - `documents/architecture/binary_context_config.md` - the `context-init` chain step mints child configs,
   `context` is read-only, and `.dhall` is parameters + context + witness with per-frame fail-fast on the

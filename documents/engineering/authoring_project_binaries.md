@@ -43,7 +43,7 @@
    these — together with the chain, a non-empty `TestSuite`, the `check-code` action, and the
    `ConfigArtifact` delta — to `runHostBootstrapCLI` through `ProjectSpec` so they merge into the recursive
    interpreter. The core command surface (`project`/`context`/`test`/`check-code`) is fixed; the project
-   extends the chain and the step vocabulary (the lift-chain stream of the four-stream contract; see
+   extends the chain and the step vocabulary (the lift-chain stream of the extension-stream contract; see
    [library_hierarchy](../architecture/library_hierarchy.md)).
 4. **Let the interpreter cross boundaries.** Each descent is fractal bootstrap: provision the frame, build
    or install the binary in it, then hand off `pb project up` into the next frame. The consumer attaches a
@@ -54,10 +54,11 @@
    [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
 5. **Supply the test suite.** Provide a `Seams`/`Case` matrix (the test stream); `test run <suite>|all`
-   drives `runMatrix` from the root frame, gated on an existing `test.dhall`. Each case sets up its
-   isolated per-case kind cluster, asserts the real workload, and tears that cluster down — guaranteed
-   even when the body fails. The harness is the context-agnostic test engine, independent of the
-   persistent `project up` stack; `project up` does not run the harness. See [testing](testing.md) and
+   drives `runMatrix` from the root frame, gated on an existing `test.dhall`. Per distinct test config the
+   harness writes a test `<project>.dhall`, runs the real `project up`, asserts the real workload in-frame,
+   and tears it down with `project destroy` — guaranteed even when a body fails. It reuses the chain rather
+   than a separate per-case cluster, and two preconditions (refuse if a `<project>.dhall` exists or a
+   production cluster is running) protect production. See [testing](testing.md) and
    [harness_workflow](../architecture/harness_workflow.md).
 6. **Register schema artifacts and Dhall vocabulary.** Concatenate the project's `ConfigArtifact`s onto
    `coreArtifacts` and embed `Core.dhall` for any new step parameters, provider kinds, or witness kinds
@@ -119,12 +120,12 @@ through `runHostBootstrapCLI` with `withChain`, `withFrameContext`, and `withTea
 `project` command (`init`/`up`/`down`/`destroy`), the read-only `context` introspection
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <suite>|all` split are real-run validated end-to-end on real
-hardware. The demo contributes three extra verbs through `demoCommands`: `web` (`web serve` runs the chart
-pod's webservice, `web bridge` generates the PureScript types), plus `vm` and `incus` for provider/VM
-operations. `ensure <tool>` reconciles a single host tool. The single-representation doctrine holds:
-`demoChain` is the one `project up` lift sequence whose only lifted **compute** step is `buildPbStep`
-(pristine-bootstrap), and `test run all` is the separate harness with its own isolated per-case kind
-clusters.
+hardware. The surface is fixed — `project` / `test` / `service` / `context` / `check-code` — so the demo
+adds no verbs: it contributes its `Web` service variant (run by `service run`; the build-time bridge that
+generates the PureScript types folds into the build-image step) and its VM/provider IO as chain steps.
+`ensure <tool>` is a hidden debug surface. The single-representation doctrine holds: `demoChain` is the one
+`project up` lift sequence, and `test run all` **drives that same `project up`** under a test config rather
+than standing up a separate per-case cluster.
 
 ## See also
 
