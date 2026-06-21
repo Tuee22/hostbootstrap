@@ -43,6 +43,9 @@ def test_detect_reads_meminfo_and_affinity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(resources.platform, "system", lambda: "Linux")
+    # Pin sys.platform so the Linux affinity branch runs deterministically on any
+    # test host (it gates on sys.platform == "linux"; see detect_host_resources).
+    monkeypatch.setattr(resources.sys, "platform", "linux")
     # Includes rows that exercise the skip branches: empty value and non-int.
     _patch_proc(
         monkeypatch,
@@ -66,6 +69,7 @@ def test_detect_meminfo_without_available_falls_back_to_total(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(resources.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(resources.sys, "platform", "linux")
     _patch_proc(monkeypatch, tmp_path, "MemTotal:       16384 kB\n")
     monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: {0})
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -116,9 +117,14 @@ def detect_host_resources() -> HostResources | None:
     info = _parse_meminfo(meminfo.read_text())
     mem_total = info.get("MemTotal", 0)
     mem_available = info.get("MemAvailable", mem_total)
-    try:
+    # os.sched_getaffinity is Linux-only (typeshed guards it behind
+    # `sys.platform == "linux"`); use the same guard so mypy passes under a darwin
+    # target too. On Linux it respects the CPU affinity / cgroup mask docker sees;
+    # elsewhere we fall back to cpu_count. The else is unreachable at runtime (we
+    # already returned None off Linux above) but keeps mypy total and portable.
+    if sys.platform == "linux":
         cpu_count = len(os.sched_getaffinity(0))
-    except AttributeError:  # pragma: no cover - sched_getaffinity is Linux-only
+    else:  # pragma: no cover - non-Linux returns None before reaching here
         cpu_count = os.cpu_count() or 1
     return HostResources(
         cpu_count=cpu_count,
