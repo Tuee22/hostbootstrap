@@ -46,11 +46,10 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 all of phases 10, 13, 14, 15, 16, 17, and 18 are `Done`**: the code is code-check-validated (`cabal test
 all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
 lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
-`test run all` reports **`3/3 passed` on Apple-Silicon/Lima (2026-06-20)**; on **native Incus/Linux** the
-lifecycle completes (HTTP 200 in-VM) and the VM-lifted `e2e-tabs` passes, but the two host-frame
-reachability assertions (`pristine-bootstrap` / `web-build`) are unreachable from the host because Incus
-does not forward the guest NodePort to host `localhost`, so it is **`1/3` there today** (tracked in
-[phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
+`test run all` reports **`3/3 passed` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
+(2026-06-21): every case runs in the **VM frame** via the self-reference lift, so each reachability probe
+reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to the host
+(see [phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
 blocked by a later one; the core cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
 
 The **generic-project-model** correction (phase 19, § BB) is **newly reopened and documentation-only**:

@@ -260,12 +260,14 @@ it down with host `.data` preserved. This is validated end-to-end on both substr
 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
 (see [harbor](../engineering/harbor.md)). The decoupled `test run all` drives that **same** `project up`
-under the test surface and reports `3/3 passed` on Apple-Silicon/Lima (2026-06-20) — reachability + the
-Playwright e2e lifted into the VM frame. On native Incus/Linux the full `project up` lifecycle runs
-end-to-end and the VM-lifted `e2e-tabs` case passes, but the two host-frame reachability assertions
-(`pristine-bootstrap` / `web-build` curl `localhost:30080` from the harness/metal frame) aren't reachable
-from the host because Incus — unlike Lima — does not forward the guest NodePort, so `test run all` is
-`1/3` there today; this is a tracked code follow-up ([phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) / phase-17). This document is the canonical statement of the model the validated build ships.
+under the test surface and reports `3/3 passed` on **both** Apple-Silicon/Lima (2026-06-20) and native
+Incus/Linux (2026-06-21). Every case — the two reachability checks and the Playwright e2e — runs in the
+**VM frame**: each is a pure probe folded into the VM by the self-reference lift
+(`HostBootstrap.Lift.reachLeaf`/`liftLeaf`, the generalized `foldLeaf`), so it reaches the in-cluster
+NodePort whether or not the provider forwards the guest port to the host. This is the same single
+representation as `project up` (one fold places any leaf — a self-subcommand handoff or a reachability
+probe — into the correct frame). This document is the canonical statement of the model the validated build
+ships.
 
 The harness's config handling is being reconciled with the §W single-representation rule above. **Today** `test run all` REUSES the existing config: `demoTestUp` drives `project up` against the pre-existing
 `.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was DELETED. Generating

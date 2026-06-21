@@ -42,10 +42,11 @@ Two facts about the harness as it ships today, ahead of
   the pre-existing `.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was
   removed. Generating the run's config from a thin `test.dhall` override (then deleting it on teardown) is
   the phase-19 target.
-- **Substrate parity.** On Apple-Silicon/Lima `test run all` is `3/3` (2026-06-20). On native Incus/Linux
-  it is `1/3` today: only the VM-lifted `e2e-tabs` passes, because `pristine-bootstrap` / `web-build` curl
-  `localhost:30080` from the harness/metal frame, which Incus — unlike Lima — does NOT forward from the
-  guest NodePort. This is a tracked follow-up.
+- **Substrate parity.** `test run all` is **`3/3` on both** Apple-Silicon/Lima (2026-06-20) and native
+  Incus/Linux (2026-06-21). All three cases run in the **VM frame**: each reachability check is a pure probe
+  folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl
+  …`), so it reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to
+  the host.
 
 The operator surface below (`project init|up|down|destroy`, read-only `context`, `test init` /
 `test run <suite>|all`) and the recursive interpreter that walks the demo's `chain :: ProjectConfig ->

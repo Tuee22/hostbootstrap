@@ -70,7 +70,7 @@ import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSa
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs, startVMArgs, stopVMArgs)
-import HostBootstrap.Lift (ContainerLift (..), LiftContext, inContainer, inLimaVM, inVM, localContext)
+import HostBootstrap.Lift (ContainerLift (..), LiftContext, LiftLeaf (..), inContainer, inLimaVM, inVM, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as LimaVM
 import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
@@ -227,12 +227,20 @@ so a single one-level lift per transition is correct.
 -}
 demoFrameContext :: Substrate -> ProjectConfig -> StepFrame -> LiftContext
 demoFrameContext sub _ next
-    | frameId next == frameId demoVMFrame =
-        if isAppleSilicon sub
-            then inLimaVM demoLimaVM localContext
-            else inVM demoVM localContext
+    | frameId next == frameId demoVMFrame = demoVMFrameContext sub
     | frameId next == frameId demoContainerFrame = inContainer demoDeployImage localContext
     | otherwise = localContext
+
+{- | The lift from the metal/harness frame into the demo's VM frame, selected by
+substrate — @inLimaVM@ on Apple Silicon, @inVM@ (Incus) on Linux. Shared by
+'demoFrameContext' (the @project up@ handoff) and 'demoTestUp' (so the harness's
+reachability probes run inside the VM, where the NodePort is published, on both
+providers — § U).
+-}
+demoVMFrameContext :: Substrate -> LiftContext
+demoVMFrameContext sub
+    | isAppleSilicon sub = inLimaVM demoLimaVM localContext
+    | otherwise = inVM demoVM localContext
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): mint the project-container
 child @<project>.dhall@ (parameters + context + witness, never the chain) from
@@ -391,25 +399,27 @@ deployChartAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> d
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx))
 
 exposeAction :: HostConfig -> IO ()
-exposeAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
-    ready <- waitWebReachable "http://localhost:30080/api/budget" 60
+exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+    ready <- waitWebReachable cfg localContext "http://localhost:30080/api/budget" 60
     unless ready (die "expose-port: the web NodePort 30080 did not become reachable on the host")
     putStrLn "expose-port: web service reachable at http://localhost:30080/"
 
-{- | Poll a URL with the project container's own @curl@ on the VM host network
-(the container runs @--network=host@), so the NodePort published on the VM's
-@localhost@ is reached directly. Distinct from the harness's 'waitNodePort', which
-curls from a throwaway container on the @kind@ docker network (where @localhost@
-is that container's own loopback, not the VM's). Bounded by @n@ five-second
-attempts.
+{- | Poll a URL by folding a 'reachLeaf' (@curl@) into @frame@ via the
+self-reference lift, so the probe runs in the frame where the NodePort is
+published. The @expose-port@ step passes 'localContext' (it already runs in the
+@vm-project-container@ frame, @--network=host@, so @localhost@ is the VM's); the
+harness passes the VM frame ('demoVMFrameContext'), so the same probe folds to
+@incus exec \<vm\> -- curl …@ on Linux and @limactl shell \<vm\> -- curl …@ on
+Apple Silicon — correct on both providers, with no dependency on host port
+forwarding. Bounded by @n@ five-second attempts.
 -}
-waitWebReachable :: String -> Int -> IO Bool
-waitWebReachable _ 0 = pure False
-waitWebReachable url n = do
-    (code, _, _) <- readProcessWithExitCode "curl" ["-fsS", "-m", "5", "-o", "/dev/null", url] ""
-    case code of
-        ExitSuccess -> pure True
-        _ -> threadDelay 5000000 >> waitWebReachable url (n - 1)
+waitWebReachable :: HostConfig -> LiftContext -> String -> Int -> IO Bool
+waitWebReachable _ _ _ 0 = pure False
+waitWebReachable cfg frame url n = do
+    result <- liftLeaf cfg frame (reachLeaf url)
+    case result of
+        Right (ExitSuccess, _, _) -> pure True
+        _ -> threadDelay 5000000 >> waitWebReachable cfg frame url (n - 1)
 
 demoConfigContext :: Context.CommandClass -> [Context.Capability] -> (ProjectConfig -> Context.BinaryContext -> IO a) -> IO a
 demoConfigContext =
@@ -457,12 +467,12 @@ clusterSliceOfBudget r = do
             (T.pack (show sliceStore ++ "GiB"))
         )
 
-{- | A case's live environment: the resolved host config and the VM provider, so
-the assertions can reach the live persistent stack @project up@ brought up — the
-reachability checks from the harness frame (the provider-forwarded NodePort) and
-the Playwright e2e lifted into the VM frame (§ U).
+{- | A case's live environment: the resolved host config and the **VM frame**
+lift context, so every assertion reaches the live persistent stack @project up@
+brought up by folding its probe into the frame where the NodePort is published
+(the VM) — correct on both Lima and Incus via the self-reference lift (§ U).
 -}
-data CaseEnv = CaseEnv HostConfig DemoVMProvider
+data CaseEnv = CaseEnv HostConfig LiftContext
 
 {- | The demo's **stack-driven** test suite (development_plan_standards § W, § Z):
 it drives the **real** @project up@ under a test config and asserts against the
@@ -513,8 +523,7 @@ demoTestUp = do
     putStrLn "test run: bringing the stack up via the real `project up`"
     runSelfOrDie self ["project", "up"]
     cfg <- resolveHostConfig
-    provider <- demoVMProvider cfg
-    pure (CaseEnv cfg provider)
+    pure (CaseEnv cfg (demoVMFrameContext (hcSubstrate cfg)))
 
 {- | Tear the test stack down by driving @project destroy@ (best-effort, so a
 partial stack always tears down; host @.data@ is preserved by the lifecycle, § O).
@@ -526,53 +535,45 @@ demoTestDown _ = do
     runSelfBestEffort self ["project", "destroy"]
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
-up, each run in the frame appropriate to it (§ Z): the reachability checks curl the
-provider-forwarded NodePort from the harness frame, and the Playwright e2e is
-lifted into the VM frame — a container on the VM host network reaching the NodePort
-the VM publishes on its own @localhost@ — reusing the self-reference lift (§ U).
+up. Every case runs in the **VM frame** (the frame where the NodePort is
+published), folded there by the self-reference lift (§ U): the reachability checks
+probe via 'reachLeaf' and the Playwright e2e via a raw @bash -lc@ leaf. Because the
+frame is the VM on every provider, all three pass on both Lima and Incus without
+any provider-specific assertion code.
 -}
 demoAssert :: CaseEnv -> Case -> IO CaseResult
-demoAssert (CaseEnv cfg provider) c = case caseId c of
-    "pristine-bootstrap" -> assertReachable "http://localhost:30080/api/budget" "the in-cluster webservice"
-    "web-build" -> assertReachable "http://localhost:30080/app.js" "the esbuild SPA bundle"
-    "e2e-tabs" -> assertE2EInVM cfg provider
+demoAssert (CaseEnv cfg frame) c = case caseId c of
+    "pristine-bootstrap" -> assertReachable cfg frame "http://localhost:30080/api/budget" "the in-cluster webservice"
+    "web-build" -> assertReachable cfg frame "http://localhost:30080/app.js" "the esbuild SPA bundle"
+    "e2e-tabs" -> assertE2EInVM cfg frame
     other -> pure (Fail ("unknown demo case: " ++ other))
 
-{- | Reachability assertion from the harness frame: the live stack already up, poll
-the provider-forwarded NodePort a few times and pass when it answers.
+{- | Reachability assertion: poll the endpoint from @frame@ (the VM frame, where
+the NodePort lives) via the lifted 'reachLeaf' probe, passing when it answers.
 -}
-assertReachable :: String -> String -> IO CaseResult
-assertReachable url what = do
-    ok <- waitWebReachable url 12
+assertReachable :: HostConfig -> LiftContext -> String -> String -> IO CaseResult
+assertReachable cfg frame url what = do
+    ok <- waitWebReachable cfg frame url 12
     pure (if ok then Pass else Fail (what ++ " was not reachable at " ++ url))
 
-{- | Lift the Playwright e2e into the VM frame (§ U): run the base-provided
-Playwright from a container on the VM host network against the NodePort the VM
-publishes on its own @localhost@. Captures the result rather than dying, so a
-failure is a case 'Fail' (not a crashed matrix).
+{- | The Playwright e2e, lifted into @frame@ (the VM) via a raw @bash -lc@ leaf:
+run the base-provided Playwright from a container on the VM host network against
+the NodePort the VM publishes on its own @localhost@. Captures the result rather
+than dying, so a failure is a case 'Fail' (not a crashed matrix).
 -}
-assertE2EInVM :: HostConfig -> DemoVMProvider -> IO CaseResult
-assertE2EInVM cfg provider = do
+assertE2EInVM :: HostConfig -> LiftContext -> IO CaseResult
+assertE2EInVM cfg frame = do
     let script =
             "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e NODE_PATH="
                 ++ baseNodeModulesPath
                 ++ " "
                 ++ demoProjectImage
                 ++ " -lc 'cd /workspace/demo/playwright && playwright test'"
-    result <- runInVMCapture cfg provider script
+    result <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
     pure $ case result of
         Right (ExitSuccess, _, _) -> Pass
         Right (_, out, err) -> Fail ("e2e failed: " ++ takeWhile (/= '\n') (err ++ out))
         Left err -> Fail ("e2e: " ++ err)
-
-{- | Run a command inside the demo VM and capture its result (the non-dying sibling
-of 'runInDemoVM', for assertions that must report 'Fail' rather than abort).
--}
-runInVMCapture :: HostConfig -> DemoVMProvider -> String -> IO (Either String (ExitCode, String, String))
-runInVMCapture cfg provider script =
-    case provider of
-        AppleLimaVM vm -> runToolWithStdin cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script]) ""
-        LinuxIncusVM vm -> runToolWithStdin cfg Incus (execVMArgs vm ["bash", "-lc", script]) ""
 
 -- | Run the binary's own subcommand (the self-reference, § U), dying on failure.
 runSelfOrDie :: FilePath -> [String] -> IO ()

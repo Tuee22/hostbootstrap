@@ -44,14 +44,15 @@ where the demo reuses a pre-existing config; `test init` no longer requires a pr
 This is documentation-only target work; the superseded surfaces are listed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
-**Native-Linux test parity (code follow-up).** `test run all` reports `3/3 passed` on Apple-Silicon/Lima
-but **`1/3` on native Incus/Linux**: `pristine-bootstrap` / `web-build` assert `localhost:30080` from the
-**harness frame**, and Incus — unlike Lima — does not forward the guest NodePort to host `localhost`, so
-only the VM-lifted `e2e-tabs` reaches the in-cluster service. Lift those two reachability assertions into
-the VM frame (reusing the self-reference lift, § U, the way `e2e-tabs` already does) — or have the demo's
-deploy-VM step add an Incus proxy device forwarding host `:30080` → guest — so the suite is `3/3` on both
-providers. The live stack itself is healthy on Incus (the chain's `expose-port` verifies HTTP 200 in-VM);
-this is purely an assertion-frame fix.
+**Native-Linux test parity — DONE (2026-06-21).** `test run all` now reports **`3/3 passed` on native
+Incus/Linux** as well as Apple-Silicon/Lima. The fix generalized the self-reference lift's leaf
+(`HostBootstrap.Lift`: `LiftLeaf = SelfSub | RawCmd`, `foldLeaf`, `liftLeaf`, `reachLeaf`; `foldLift` is now
+the `SelfSub` special case), so a reachability check is a pure probe placed in the frame where the NodePort
+is published (the VM). The demo's `pristine-bootstrap` / `web-build` assertions now fold their `curl` into
+the VM frame (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl …`) like `e2e-tabs`, so they pass
+on both providers with zero provider-specific assertion code; the ad-hoc `runInVMCapture` provider switch
+was removed. Validated by `cabal test` (5 new `LiftSpec` `foldLeaf` cases) and a real `test run all` →
+`3/3 passed` on this Incus host (2026-06-21).
 
 Make the test surface **drive** `project up` and enforce the safety contract
 (development_plan_standards § Z).

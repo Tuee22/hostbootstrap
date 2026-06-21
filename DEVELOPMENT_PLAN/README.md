@@ -47,11 +47,10 @@ real-run-validated: `cabal test all` (226), `cabal build all --ghc-options=-Werr
 demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
 Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via
 the dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). `test run all`
-reports **`3/3 passed` on Apple-Silicon/Lima (2026-06-20)** (incl. the Playwright e2e lifted into the VM
-frame). On **native Incus/Linux** the lifecycle completes (HTTP 200 verified in-VM) and the VM-lifted
-`e2e-tabs` case passes, but the two host-frame reachability assertions (`pristine-bootstrap` / `web-build`)
-are not reachable from the host because Incus — unlike Lima — does not forward the guest NodePort to host
-`localhost`, so `test run all` is **`1/3` there today** (a tracked follow-up, see
+reports **`3/3 passed` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux (2026-06-21): every
+case (incl. the two reachability checks and the Playwright e2e) runs in the **VM frame** via the
+self-reference lift, so it reaches the in-cluster NodePort regardless of whether the provider forwards the
+guest port to the host (see
 [phase-17](phase-17-chain-driven-test-and-context-introspection.md)). The two formerly-noted
 follow-ups are now **delivered**: `test.dhall` is a reflected record carrying per-test resource overrides
 (`TestConfig`, written by `test init`, read by `test run`), and the demo's SPA is described as typed Dhall

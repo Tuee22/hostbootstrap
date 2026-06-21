@@ -373,11 +373,11 @@ carries two test layers:
   config and `.test_data` it created. The per-case assertions (`pristine-bootstrap` a live cluster,
   `e2e-tabs` the project image's base-provided Playwright runtime against the in-cluster webservice via its
   NodePort, `web-build` the `spago`/`esbuild` bundle) run on the **VM's** Docker, in the frame each needs.
-  The harness recast onto `project up` is **implemented**. On **native Incus/Linux** the two host-frame
-  reachability assertions (`pristine-bootstrap`/`web-build`) are not reachable from the host because Incus —
-  unlike Lima — does not forward the guest NodePort to host `localhost`, so today only the VM-lifted
-  `e2e-tabs` passes there; on Apple Silicon/Lima all `3/3` pass. This is a tracked follow-up — see
-  [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
+  The harness recast onto `project up` is **implemented**, and `test run all` is **`3/3` on both** Apple
+  Silicon/Lima and native Incus/Linux: every case runs in the **VM frame** — each reachability check is a
+  pure probe folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell
+  <vm> -- curl …`), so it reaches the in-cluster NodePort whether or not the provider forwards the guest
+  port to the host. See [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
 
   ```bash
   cd demo

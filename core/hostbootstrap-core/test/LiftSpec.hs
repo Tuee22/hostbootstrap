@@ -15,6 +15,7 @@ tests =
   testGroup
     "LiftSpec"
     [ testGroup "foldLift across context stacks" foldCases,
+      testGroup "foldLeaf places any command in the right frame" foldLeafCases,
       testGroup "containerRunArgs" containerCases
     ]
 
@@ -101,6 +102,29 @@ foldCases =
             "cluster",
             "up"
           ]
+  ]
+
+foldLeafCases :: [TestTree]
+foldLeafCases =
+  [ testCase "reachLeaf locally runs curl directly (no self path)" $
+      foldLeaf localContext (reachLeaf "http://localhost:30080/api/budget")
+        @?= DispatchLocal "curl" ["-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
+    testCase "reachLeaf in an Incus VM folds to incus exec -- curl …" $
+      foldLeaf (inVM vm localContext) (reachLeaf "http://localhost:30080/api/budget")
+        @?= DispatchTool
+          Incus
+          ["exec", "demo-vm", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
+    testCase "reachLeaf in a Lima VM folds to limactl shell -- curl …" $
+      foldLeaf (inLimaVM limaVM localContext) (reachLeaf "http://localhost:30080/api/budget")
+        @?= DispatchTool
+          Lima
+          ["shell", "demo-vm", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
+    testCase "a raw bash -lc leaf folds into the VM frame verbatim" $
+      foldLeaf (inVM vm localContext) (RawCmd ["bash", "-lc", "echo hi"])
+        @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],
+    testCase "foldLift is the SelfSub special case of foldLeaf" $
+      foldLeaf (inVM vm localContext) (SelfSub self sub)
+        @?= foldLift self (inVM vm localContext) sub
   ]
 
 containerCases :: [TestTree]

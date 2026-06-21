@@ -36,8 +36,12 @@ module HostBootstrap.Lift
 
     -- * Folding and dispatch
     LiftDispatch (..),
+    LiftLeaf (..),
+    reachLeaf,
+    foldLeaf,
     foldLift,
     containerRunArgs,
+    liftLeaf,
     liftSubcommand,
     liftSubcommandWithAuth,
     runSelf,
@@ -146,36 +150,84 @@ containerRunArgs c inner =
           ++ (if Vocab.readOnly m then ":ro" else "")
       ]
 
--- | Fold a context stack and a subcommand into the host invocation. Pure, so the
+-- | The innermost thing a lift runs at the bottom frame: either /this binary's/
+-- own subcommand (whose path differs by frame — local vs in-VM), or an arbitrary
+-- fixed command run as-is in that frame (e.g. @curl …@ or @bash -lc …@). The raw
+-- form lets the /same/ pure fold place a reachability probe (or any command) into
+-- the correct frame, so an assertion is provider-agnostic by construction — the
+-- only thing that varies across Lima and Incus is the 'LiftLayer' constructor.
+data LiftLeaf
+  = SelfSub SelfRef [String]
+  | RawCmd [String]
+  deriving (Eq, Show)
+
+-- | A reachability-probe leaf: a quiet, bounded @curl@ of @url@. Placed in the
+-- frame where the endpoint is published (the VM), it folds to
+-- @incus exec \<vm\> -- curl …@ / @limactl shell \<vm\> -- curl …@, so the one
+-- probe value is correct on every provider regardless of host port-forwarding.
+reachLeaf :: String -> LiftLeaf
+reachLeaf url = RawCmd ["curl", "-fsS", "-m", "5", "-o", "/dev/null", url]
+
+-- | The argv to run once inside the innermost VM (no remaining layers).
+leafInVMArgv :: LiftLeaf -> [String]
+leafInVMArgv (SelfSub self sub) = inVMSelfPath self : sub
+leafInVMArgv (RawCmd argv) = argv
+
+-- | The command tail passed after a container image. A 'SelfSub' relies on the
+-- container @ENTRYPOINT@ being the binary, so only the subcommand is passed.
+leafContainerInner :: LiftLeaf -> [String]
+leafContainerInner (SelfSub _ sub) = sub
+leafContainerInner (RawCmd argv) = argv
+
+-- | The dispatch when the stack is empty (run at the local host frame).
+leafLocalDispatch :: LiftLeaf -> LiftDispatch
+leafLocalDispatch (SelfSub self sub) = DispatchLocal (localSelfPath self) sub
+leafLocalDispatch (RawCmd (exe : args)) = DispatchLocal exe args
+leafLocalDispatch (RawCmd []) = DispatchLocal "" []
+
+-- | Fold a context stack and a 'LiftLeaf' into the host invocation. Pure, so the
 -- argv is unit-tested. Encodes the @§ K@ rule already implicit in 'execVMArgs':
 -- only the outermost host dispatch names a tool that the resolver maps to an
 -- absolute path; every nested tool is the target's own bare @$PATH@ name.
-foldLift :: SelfRef -> LiftContext -> [String] -> LiftDispatch
-foldLift self (LiftContext layers) sub = build layers
+foldLeaf :: LiftContext -> LiftLeaf -> LiftDispatch
+foldLeaf (LiftContext layers) leaf = build layers
   where
-    build [] = DispatchLocal (localSelfPath self) sub
+    build [] = leafLocalDispatch leaf
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
     build (ViaLimaVM vm : rest) = DispatchTool Lima (Lima.shellVMArgs vm (insideVM rest))
-    build (ViaContainer c : _) = DispatchTool Docker (containerRunArgs c sub)
+    build (ViaContainer c : _) = DispatchTool Docker (containerRunArgs c (leafContainerInner leaf))
 
     -- The argv to run inside a VM, given the remaining inner layers.
-    insideVM [] = inVMSelfPath self : sub
+    insideVM [] = leafInVMArgv leaf
     insideVM (ViaVM vm : rest) = toolCommandName Incus : execVMArgs vm (insideVM rest)
     insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : Lima.shellVMArgs vm (insideVM rest)
-    insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c sub
+    insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
 
--- | Run a subcommand of this binary in a context: fold to a 'LiftDispatch', then
--- exec — a host tool via 'runTool' (absolute path), or the binary itself via
--- 'runSelf'.
+-- | Fold a context stack and a subcommand of /this binary/ into the host
+-- invocation — the 'SelfSub' special case of 'foldLeaf'.
+foldLift :: SelfRef -> LiftContext -> [String] -> LiftDispatch
+foldLift self ctx sub = foldLeaf ctx (SelfSub self sub)
+
+-- | Run a 'LiftLeaf' in a context: fold to a 'LiftDispatch', then exec — a host
+-- tool via 'runTool' (absolute path), or a local command via 'runSelf'.
+liftLeaf ::
+  HostConfig ->
+  LiftContext ->
+  LiftLeaf ->
+  IO (Either String (ExitCode, String, String))
+liftLeaf cfg ctx leaf = case foldLeaf ctx leaf of
+  DispatchLocal exe args -> runSelf exe args
+  DispatchTool tool args -> runTool cfg tool args
+
+-- | Run a subcommand of this binary in a context — the 'SelfSub' special case of
+-- 'liftLeaf'.
 liftSubcommand ::
   HostConfig ->
   SelfRef ->
   LiftContext ->
   [String] ->
   IO (Either String (ExitCode, String, String))
-liftSubcommand cfg self ctx sub = case foldLift self ctx sub of
-  DispatchLocal exe args -> runSelf exe args
-  DispatchTool tool args -> runTool cfg tool args
+liftSubcommand cfg self ctx sub = liftLeaf cfg ctx (SelfSub self sub)
 
 -- | Run a local executable (the binary itself — not a 'HostTool') capturing its
 -- exit/stdout/stderr; 'Left' on an exec failure.
