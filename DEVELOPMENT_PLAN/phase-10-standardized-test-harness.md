@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
@@ -40,6 +40,13 @@ functional logic (the case matrix, the budget-slicing cores, the run-model selec
 the chain production uses. This phase is reopened for that engine recast; the remaining work is real-run-gated.
 
 ## Remaining Work
+
+**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
+development_plan_standards § BB): the harness must GENERATE the run's `<project>.dhall` from the
+`test.dhall` override via the project-owned `psTestConfig` (reusing `psInit`) and delete the generated
+config on teardown, rather than driving `project up` against a pre-existing config.
+This is documentation-only target work; the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
 The split command surface (`test init` / `test run <suite>|all`) and the pure harness cores (the case
 matrix, `sliceBudget`, `selectRunModel`, `guardTestDelete`, the data-preserving `teardown` partition, the

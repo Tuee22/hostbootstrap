@@ -150,6 +150,16 @@ real-run-gated `Active` work in
 `HostBootstrap.Harness` `runMatrix` loop, the report aggregation, and the data-preserving teardown are
 exercised by the core test suite.
 
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test run`
+no longer drives `project up` against a pre-existing config. Instead it GENERATES the run's
+`<project>.dhall` from a thin `test.dhall` override via the project-owned `psTestConfig` (which reuses the
+project's `psInit` defaults), drives the real `project up` over that generated config, and on teardown
+deletes the generated `<project>.dhall` plus the `.test_data` it created this run while keeping the
+authored `test.dhall`. See the [generic_project_model.md](generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
 ## See Also
 
 - [composition_methodology](composition_methodology.md) — the canonical home of the chain/lift model the

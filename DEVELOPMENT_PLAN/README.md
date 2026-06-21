@@ -44,10 +44,15 @@ the test harness **drives the real `project up`** under the test surface rather 
 doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role context (`project init
 --also-role`, § X); and long-running roles run through the `service` command (§ AA). It is code-check- and
 real-run-validated: `cabal test all` (226), `cabal build all --ghc-options=-Werror`, fourmolu/hlint on the
-demo, and the Python gate are green, and the **full `project up` lifecycle + `test run all` (`3/3 passed`,
-incl. the Playwright e2e lifted into the VM frame) run end-to-end on both Incus/Linux (2026-06-18) and a 16
-GiB Apple-Silicon host (2026-06-20)** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via the
-dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). The two formerly-noted
+demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
+Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via
+the dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). `test run all`
+reports **`3/3 passed` on Apple-Silicon/Lima (2026-06-20)** (incl. the Playwright e2e lifted into the VM
+frame). On **native Incus/Linux** the lifecycle completes (HTTP 200 verified in-VM) and the VM-lifted
+`e2e-tabs` case passes, but the two host-frame reachability assertions (`pristine-bootstrap` / `web-build`)
+are not reachable from the host because Incus — unlike Lima — does not forward the guest NodePort to host
+`localhost`, so `test run all` is **`1/3` there today** (a tracked follow-up, see
+[phase-17](phase-17-chain-driven-test-and-context-introspection.md)). The two formerly-noted
 follow-ups are now **delivered**: `test.dhall` is a reflected record carrying per-test resource overrides
 (`TestConfig`, written by `test init`, read by `test run`), and the demo's SPA is described as typed Dhall
 data (the `demoWebApp` schema-gen artifact). The only remaining aspirational item is generating the SPA's
@@ -56,6 +61,18 @@ source *from* that spec (full SPA codegen), tracked as a vision note in
 `cluster` / `config init` / `context create` verbs, the demo `vm` / `incus` / `web` verbs, the
 `ProjectCommand` extension, the harness bring-up mirror, and the budget-doubling VM sizing are superseded
 ([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
+The **generic-project-model** correction (phase 19, § BB) is **newly reopened and documentation-only**.
+`hostbootstrap-core` is to become a generic library with **no hardcoded defaults**, parameterized over a
+project's own config type (`ProjectSpec cfg tcfg`): defaults live only in a project-owned `psInit`, `project
+init` and the test harness share that one builder (DRY), the harness **generates** the run's `<project>.dhall`
+from a thin `test.dhall` override, and a pure `SecretRef` vocabulary keeps a secrets-strict consumer's
+production configs plaintext-free. Phases 4, 8, 10, 15, and 17 are reopened (`Active`) because their `Done`
+scope assumed core-owned defaults, a fixed universal config type, and a `test`-reuses-existing-config flow;
+phase 19 (`Planned`) owns the work and the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). See
+[phase-19-generic-project-model.md](phase-19-generic-project-model.md) and
+[generic_project_model](../documents/architecture/generic_project_model.md).
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -70,21 +87,22 @@ for the component inventory.
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
-| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
+| 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Active |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
 | 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
-| 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
+| 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Active |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
-| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
+| 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
 | 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |
-| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Done |
+| 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Active |
 | 18 | [Service runtime command](phase-18-service-runtime-command.md) | Done |
+| 19 | [Generic project model and no core defaults](phase-19-generic-project-model.md) | Planned |
 
 ## Governance
 

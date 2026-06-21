@@ -100,8 +100,12 @@ Reduce the Python CLI to the thin bootstrapper and base-image operator surface.
 
 - The CLI exposes `doctor`, `build`, `run`, and `base`.
 - `run` and `build` drive the host-native binary build path.
-- `base` drives the operator-directed base-image build/publish path.
-- `prereqs.py` carries only the residual fail-fast host minimum checks.
+- `base` drives the operator-directed base-image build/publish path; on Linux it measures host CPU/RAM
+  (`hostbootstrap/resources.py`), refuses below a floor, and applies docker `--memory`/`--cpus` caps plus a
+  host-sized `cabal -j` to the base-image build container (a build-phase limit, not a project cordon — § O).
+- `prereqs.py` carries only the residual fail-fast host minimum checks; the Linux minimums are Ubuntu 24.04
+  + passwordless sudo + hardware virtualization (Intel VT-x / AMD-V plus a usable `/dev/kvm`), `linux-gpu`
+  additionally the NVIDIA container runtime.
 
 #### Validation
 

@@ -100,6 +100,7 @@ DEVELOPMENT_PLAN/
 ├── phase-16-project-lifecycle-command.md
 ├── phase-17-chain-driven-test-and-context-introspection.md
 ├── phase-18-service-runtime-command.md
+├── phase-19-generic-project-model.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -236,7 +237,9 @@ Dhall; the trigger is the one Python step that runs **after** the binary exists 
 Python, so a usable default config is always present without the user running `config init` by hand. Those
 **fail-fast host minimums are the only hard
 prerequisites in the entire system** — the irreducible host floor the wrapper cannot itself install (OS
-version, passwordless sudo, Xcode CLT, Homebrew as the toolchain root); **every other host dependency the
+version, passwordless sudo, Xcode CLT + Homebrew as the Apple toolchain root, and on Linux hardware
+virtualization: Intel VT-x / AMD-V plus a usable `/dev/kvm` the nested VM providers need); **every other
+host dependency the
 binary needs is installed by the `ensure` suite (§ L) when the binary runs, so the binary is never
 blocked by something merely absent.** The bootstrapper does **not** ensure Docker and does **not** build
 the project container — those are not pre-binary necessities; the project binary, once running, ensures
@@ -296,8 +299,14 @@ with defense in depth: a Dhall-time `assert` (`Budget/fitsWithin`) at render, th
 `verifyBudget`/`fitsBudget` before bring-up, and the applied wall at runtime — a sized Lima VM on Apple
 Silicon, a sized Incus VM on Linux (§ U), the applied `docker update` kind-node cap, or `docker run` caps
 (one-shot). All VM/node sizing is emitted by **one** canonical quantity parser/argument builder in
-`hostbootstrap-core` and applied by the **project binary**; the Python bootstrapper does **not** ensure
-Docker or cordon (§ M), so there is no second budget interpreter.
+`hostbootstrap-core` and applied by the **project binary**, the sole interpreter of **project** budgets;
+the Python bootstrapper does **not** ensure Docker or cordon a project's VM/cluster (§ M), so there is no
+second interpreter of the project budget. The **one** exception is the maintainer base-image build:
+`hostbootstrap base build` measures host CPU/RAM (`hostbootstrap/resources.py`) and applies docker
+`--memory`/`--cpus` caps (plus a host-sized `cabal -j`) to the base-image **build container** — a
+build-phase limit on the warm-store compile, **not** a project runtime cordon and **not** an interpreter of
+any `<project>.dhall` budget (see
+[base_image.md](../documents/engineering/base_image.md#host-sized-warm-store-build-budget)).
 Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a quota'd hostPath
 on Linux), since `docker update` has no storage flag. The budget flows from the local host config into
 child config projections, then into both the spinup cordon and the binary-generated configs.
@@ -580,3 +589,48 @@ the service. A project's long-running workload is therefore a service variant re
 command, not a per-project verb (the former demo `web serve` / `web bridge` verbs are dissolved — `web
 serve` → `service run` (`Web` variant); `web bridge` → the build-image chain step; see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
+### BB. Generic Project Model and No Core Defaults
+
+`hostbootstrap-core` is a **library of pure shapes plus the lift algebra and the harness**; it owns **no
+default config values and no fixed config type**. The reusable substrate is the compositional lift
+(`BinaryContext`, `childContext`, the `Step`/frame graph, `ProviderKind`) and the test engine — **not** the
+config record. This contract reopens the surfaces in Phase 19
+([phase-19-generic-project-model.md](phase-19-generic-project-model.md)); the superseded surfaces are
+listed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+- **No core defaults.** `defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and the
+  `initAction` flag defaults are removed. The **only** place defaults live is a **project-supplied** init
+  builder.
+- **Explicit, fail-fast configs.** Every `<project>.dhall` and `test.dhall` field is mandatory; a missing
+  field fails the strict Dhall decode **before any side effect** (no `//`-merge, no `fromMaybe` in decode).
+- **Generic over the config type.** The extension contract is `ProjectSpec cfg tcfg`, parameterized over a
+  project's config type `cfg` (its `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core
+  couples to `cfg` **only** through the lift authority — `cfg -> BinaryContext` and
+  `BinaryContext -> cfg -> cfg`. `ProjectConfig` / `Resources` / `DeployConfig` become the demo's concrete
+  instance, not core types.
+- **The resource budget is a provider concern (refines § O).** Budget/VM-cordoning is a field of a
+  project's `cfg` carried by a provider lift (the demo's Lima/Incus wall), **not** a universal config
+  field. A secrets-strict, RKE2/EKS-sized consumer carries no VM budget at all. § O's "one ceiling = the VM
+  wall" remains the contract **for projects whose `cfg` declares a VM budget**; it is not imposed on every
+  `cfg`.
+- **DRY init.** A single project-owned `psInit :: InitArgs -> cfg` is the only default-bearing function;
+  `project init` calls it and the harness reuses it (never by shelling `project init`). `psTestInit ::
+  InitArgs -> tcfg` builds a complete, valid `test.dhall`.
+- **`test.dhall` is a thin override and the harness generates the run's config (closes the § Z drift).**
+  `test run` reads `test.dhall`, refuses if a `<project>.dhall` exists or a production cluster is running,
+  builds the config via `psTestConfig :: tcfg -> IO cfg` (reusing `psInit`; `IO` so a project can read
+  extra inputs such as a `test-secrets.dhall`), writes `<project>.dhall`, runs the real `project up`,
+  asserts, `project destroy`, then deletes the **generated** `<project>.dhall` and the self-created
+  `.test_data` — keeping `test.dhall`. `test init` does **not** require a pre-existing `<project>.dhall`.
+- **Generic secrets shape.** Core offers a pure `SecretRef = < Vault | TransitKey | Prompt | TestPlaintext >`
+  vocabulary projects embed in `cfg`, making "no plaintext secrets in a production `<project>.dhall`"
+  type-level. Core never resolves secrets; a project's `psTestConfig` swaps `Vault` pointers for
+  `TestPlaintext` read from its own `test-secrets.dhall`.
+
+The canonical design home is
+[generic_project_model](../documents/architecture/generic_project_model.md); the secrets seam is
+[secrets.md](../documents/engineering/secrets.md). § P (fixed command surface), § W (single
+representation / harness drives the chain), § X (binary context), § Y (the lifecycle command), and § Z (the
+chain-driven test surface) are unchanged in shape — this section makes the **types** they thread generic
+and removes core-owned defaults.

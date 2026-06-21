@@ -26,6 +26,22 @@
 - Downstream binaries do not read the host config directly; they consume the budget projection in their
   own sibling `<project>.dhall`.
 
+## Current Status
+
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the resource
+budget / VM cordon is a PROVIDER concern carried by a project's own `cfg`, not a core-universal field. A
+secrets-strict, RKE2/EKS-sized consumer that deploys to an existing cluster carries no VM budget at all,
+so § O's "one ceiling = the VM wall" rule applies only to projects whose `cfg` declares a VM budget. See
+the [generic_project_model.md](../architecture/generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
+Concretely, the core default budget `4/8/20` cannot bootstrap the demo — the demo's `deploy-VM` gate
+requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19 the default moves into the
+project-owned `psInit` and the demo's `psInit` returns its real budget. See
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+
 ## The Budget Field
 
 The resource budget is a `resources` record in the host-level project config described in

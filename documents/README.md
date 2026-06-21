@@ -30,6 +30,11 @@ defers to it rather than re-deriving it. The command surface is summarized in
   fractal bootstrap (the Python bootstrapper is the metal-frame instance of provision → build-pb →
   handoff), and the deploy ≡ business-logic unification (one algebra for deployment and runtime business
   logic).
+- [architecture/generic_project_model.md](architecture/generic_project_model.md) — the **target**
+  generic project model (§ BB, phase 19): `hostbootstrap-core` owns no hardcoded defaults and is
+  parameterized over a project's own config type (`ProjectSpec cfg tcfg`); `project init` and the harness
+  share one project-owned `psInit` (DRY); the harness generates the run's `<project>.dhall` from a thin
+  `test.dhall` override; a pure `SecretRef` vocabulary keeps secrets-strict configs plaintext-free.
 - [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
   place" binary-context contract: a sibling `<project>.dhall` is parameters + context + witness, the
   read-only `context` command introspects and visualizes the frame, and each frame fails fast on handoff
@@ -54,6 +59,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
+- [engineering/secrets.md](engineering/secrets.md) — the **target** `SecretRef` vocabulary (no plaintext
+  secrets in a production `<project>.dhall`) and the `test-secrets` seam a secrets-strict consumer injects
+  test secrets through (§ BB, phase 19); core never resolves secrets.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model, the
   topology frames that drive the recursive chain (each pb verifies its frame), and the rule that rich
   schemas are binary-generated artifacts.

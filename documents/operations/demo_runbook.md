@@ -26,12 +26,26 @@
 - `project up` / `project down` / `project destroy` drive the chain, `context` visualizes it, and
   `test run all` validates the surface by **driving the same `project up`** under a test config. The deploy
   is **one** representation: the `[Step]` chain. `project up` stands up a persistent stack; `test run all`
-  reuses that chain (write a test `<project>.dhall` → `project up` → assert → `project destroy`, one
-  `project up` per distinct test config), with no separate per-case bring-up.
+  reuses that chain (today it drives `project up` against the **existing** `<project>.dhall` → assert →
+  `project destroy`; the per-case config-write path was removed). Generating the run's config from a thin
+  `test.dhall` override is the [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) target.
+  There is no separate per-case bring-up.
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
 
 ## Current Status
+
+Two facts about the harness as it ships today, ahead of
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md):
+
+- **Config handling.** `test run all` REUSES the existing config: `demoTestUp` drives `project up` against
+  the pre-existing `.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was
+  removed. Generating the run's config from a thin `test.dhall` override (then deleting it on teardown) is
+  the phase-19 target.
+- **Substrate parity.** On Apple-Silicon/Lima `test run all` is `3/3` (2026-06-20). On native Incus/Linux
+  it is `1/3` today: only the VM-lifted `e2e-tabs` passes, because `pristine-bootstrap` / `web-build` curl
+  `localhost:30080` from the harness/metal frame, which Incus — unlike Lima — does NOT forward from the
+  guest NodePort. This is a tracked follow-up.
 
 The operator surface below (`project init|up|down|destroy`, read-only `context`, `test init` /
 `test run <suite>|all`) and the recursive interpreter that walks the demo's `chain :: ProjectConfig ->

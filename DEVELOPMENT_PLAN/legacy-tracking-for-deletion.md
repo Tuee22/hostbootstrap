@@ -10,9 +10,27 @@
 
 ## Pending
 
-No pending cleanup obligations. The unified-harness / fixed-surface / resource-SSoT correction
-(development_plan_standards § W, § O, § P, § AA) has landed in code; the surfaces it superseded are
-recorded under **Removed Surfaces** below. (An empty `Pending` section is valid — see **Rules**.)
+The generic-project-model correction (development_plan_standards § BB) is **documentation-only** so far —
+these surfaces still exist in code and are scheduled for removal by
+[phase-19-generic-project-model.md](phase-19-generic-project-model.md):
+
+- **`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig`** in
+  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, and the
+  `fromMaybe (cpu defaultResources)` / `value (memory defaultResources)` / `value (storage
+  defaultResources)` flag defaults in `HostBootstrap.Command.initAction` — core owns no default config
+  values under § BB. Replacement: a project-supplied `psInit :: InitArgs -> cfg`. Owning phase: phase-19,
+  sprint 19.1. Replacement design: `documents/architecture/generic_project_model.md`.
+- **The fixed universal `ProjectConfig` / `Resources` / `DeployConfig` types as core types**
+  (`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`) — under § BB these become the demo's
+  concrete `cfg`/`tcfg`, and `ProjectSpec` is parameterized as `ProjectSpec cfg tcfg` coupled to `cfg` only
+  via `cfg -> BinaryContext` + `BinaryContext -> cfg -> cfg`. Owning phase: phase-19, sprint 19.2.
+- **The `test init` reads-existing-config / `test run` reuses-existing-config flow** — `runTestInit`
+  (`HostBootstrap.Command`) requires and copies `resources cfg` from a pre-existing `<project>.dhall`, and
+  the demo's `demoTestUp` (`demo/src/HostBootstrapDemo/Commands.hs`) drives `project up` against that
+  pre-existing config, so `TestConfig.testResources` is read and printed but never applied. Under § BB / § Z
+  the harness **generates** the run's `<project>.dhall` from `test.dhall` via `psTestConfig` and deletes it
+  on teardown. Owning phase: phase-19, sprint 19.3. Replacement design:
+  `documents/architecture/harness_workflow.md`.
 
 ## Retained Current Surfaces
 
@@ -20,7 +38,8 @@ These surfaces are intentionally present and are not cleanup obligations.
 
 - **`hostbootstrap/prereqs.py`** — the Python host-prerequisite checks retained for the pre-binary
   bootstrapper. The fail-fast host minimums are the irreducible pre-binary subset (Linux: Ubuntu 24.04 +
-  passwordless sudo, `linux-gpu` additionally the NVIDIA container runtime; Apple: passwordless sudo +
+  passwordless sudo + hardware virtualization (Intel VT-x / AMD-V plus a usable `/dev/kvm`), `linux-gpu`
+  additionally the NVIDIA container runtime; Apple: passwordless sudo +
   Xcode CLT + Homebrew), dispatched by substrate alone. Richer host logic lives in Haskell
   `HostBootstrap.HostPrereqs` plus the `ensure` reconcilers.
 - **Demo VM/provider chain-step IO** (`runVmEnsure` / `runVmUp` / `runVmBootstrap` /

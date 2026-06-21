@@ -34,6 +34,21 @@ The schema is topology-aware. Runtime context includes an execution topology, `c
 witnesses so illegal states such as "VM project container command running on the host Docker daemon" fail
 before side effects.
 
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the config TYPE
+is project-defined, not the fixed `ProjectConfig`. Every field is mandatory and a missing field fails the
+strict decode; defaults live ONLY in the project-owned `psInit`, never in core. Secret-bearing fields use
+the pure `SecretRef = <Vault|TransitKey|Prompt|TestPlaintext>` vocabulary (see [secrets.md](secrets.md))
+so a secrets-strict consumer's production configs stay plaintext-free and core never resolves a secret.
+See the [generic_project_model.md](../architecture/generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
+This is why defaults must live in `psInit`: the core default budget `4/8/20` cannot bootstrap the demo
+(its `deploy-VM` gate requires `6/10/80`, `demoFullLifecycleResources`), so under phase-19 the demo's
+project-owned `psInit` returns its real budget rather than inheriting a core default. See
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+
 ## File Location
 
 The lookup rule is intentionally singular:

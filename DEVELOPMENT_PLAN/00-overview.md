@@ -45,9 +45,21 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 (§ X); and long-running roles run through the new `service` command (§ AA). The correction is **complete —
 all of phases 10, 13, 14, 15, 16, 17, and 18 are `Done`**: the code is code-check-validated (`cabal test
 all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
-lifecycle + `test run all` (`3/3 passed`) is real-run-validated end-to-end on both Incus/Linux (2026-06-18)
-and a 16 GiB Apple-Silicon host (2026-06-20)**. Dependencies are **forward-only** — no earlier phase is
+lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
+`test run all` reports **`3/3 passed` on Apple-Silicon/Lima (2026-06-20)**; on **native Incus/Linux** the
+lifecycle completes (HTTP 200 in-VM) and the VM-lifted `e2e-tabs` passes, but the two host-frame
+reachability assertions (`pristine-bootstrap` / `web-build`) are unreachable from the host because Incus
+does not forward the guest NodePort to host `localhost`, so it is **`1/3` there today** (tracked in
+[phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
 blocked by a later one; the core cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
+
+The **generic-project-model** correction (phase 19, § BB) is **newly reopened and documentation-only**:
+`hostbootstrap-core` is to own **no hardcoded defaults** and become parameterized over a project's own
+config type (`ProjectSpec cfg tcfg`), with defaults living only in a project-owned `psInit`, `project init`
+and the harness sharing that one builder, the harness **generating** the run's `<project>.dhall` from a thin
+`test.dhall` override, and a pure `SecretRef` vocabulary for secrets-strict consumers. Phases 4, 8, 10, 15,
+and 17 are reopened (`Active`); phase 19 (`Planned`) owns the work and the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Phase Responsibilities
 
@@ -80,8 +92,9 @@ Phase 11.
 
 Phase 4 owns the project-local `<project>.dhall` schema and the composable command tree. `ProjectConfig`
 validates project identity against the Cabal-derived name and carries Dockerfile inputs, resources, deploy
-knobs, runtime context, and child-projection defaults. It is `Done`: the command tree is migrated to the
-new surface — `config init` -> `project init` (Python trigger updated), `cluster` -> `project up|down|destroy`,
+knobs, runtime context, and child-projection defaults. It is `Active` — **reopened by phase 19** (§ BB):
+`ProjectConfig`'s core-owned defaults and its status as a fixed universal type are superseded by the
+project-owned `psInit` and the generic `ProjectSpec cfg tcfg`. The command-tree migration is done: the new surface — `config init` -> `project init` (Python trigger updated), `cluster` -> `project up|down|destroy`,
 `context create` -> the `context-init` chain step, and `config show|schema|render|path` folded into the
 read-only `context` command (core `cabal test` green; the recursive interpreter it surfaces is phase-16).
 
@@ -114,7 +127,9 @@ consumer repository wiring is tracked in those repositories.
 Phase 8 owns binary-generated Dhall: the reusable `Core.dhall` vocabulary, `HostBootstrap.Config.Vocab`,
 `HostBootstrap.Dhall.Gen`, the `ConfigArtifact` registry, `config schema`, static `config render`,
 `config init`, and child projection helpers. The four extension streams are CLI append, Dhall vocabulary
-embed, schema-registry concat, and harness seams. It is `Done`.
+embed, schema-registry concat, and harness seams. It is `Active` — **reopened by phase 19** (§ BB): `ProjectSpec`
+is parameterized as `ProjectSpec cfg tcfg` with the project-owned `psInit` / `psTestInit` / `psTestConfig`
+seams and a pure `SecretRef` vocabulary.
 
 ### Phase 9 — Applied budget cordon and one canonical parser
 
@@ -133,7 +148,10 @@ case-local setup failure handling. The four run-models are `OneShot`, `HostNativ
 drive the real `project up` under the test surface (one `project up` per distinct test config) instead of
 standing up isolated per-case clusters via `Seams` — the harness owns no second bring-up path (§ W) — and
 owns the run's `.test_data` lifecycle under a self-created-only delete-guard. Real-run-validated by
-`test run all` reporting `3/3 passed` (2026-06-20).
+`test run all` reporting `3/3 passed` (2026-06-20). It is `Active` — **reopened by phase 19** (§ BB): the
+harness must **generate** the run's `<project>.dhall` from the `test.dhall` override via the project-owned
+`psTestConfig` (reusing `psInit`) and delete the generated config on teardown, rather than driving
+`project up` against a pre-existing config.
 
 ### Phase 11 — incus first-class host-provider
 
@@ -185,7 +203,10 @@ authorized for the requested command, or missing required topology witnesses. It
 generated by `project init --also-role` via `Context.addRole`), context relationships are pure compositional
 lifts, and child configs are generated from parameters **forwarded from the parent** (§ X); `context` stays
 read-only and uniform over all configs. The realigned contract (`context` introspection, `config init` ->
-`project init`, `validateRuntimeContext`, multi-role generation) is built and validated.
+`project init`, `validateRuntimeContext`, multi-role generation) is built and validated. It is `Active` —
+**reopened by phase 19** (§ BB): the binary-context coupling becomes the generic `cfg -> BinaryContext`
+accessor on `ProjectSpec cfg tcfg`, so the gate is expressed over a project-defined config type rather than
+the fixed `ProjectConfig`.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -208,7 +229,9 @@ command that renders the global lift composition with the current frame highligh
 a `<project>.dhall` exists; refuse if a production cluster is running), uses `.test_data` (never `.data`)
 under the L0 self-created-only delete-guard (`withSelfCreatedTestData`), and `context` is read-only and
 uniform over all `<project>.dhall`s (§ Z, § X). Real-run-validated by `test run all` reporting `3/3 passed`
-(2026-06-20).
+(2026-06-20). It is `Active` — **reopened by phase 19** (§ BB): `test.dhall` becomes a thin override and
+`test run` **generates** the run's `<project>.dhall` from it via the project-owned `psTestConfig`, closing
+the § Z code-vs-contract drift where the demo reuses a pre-existing config.
 
 ### Phase 18 — Service runtime command
 
@@ -222,6 +245,18 @@ entrypoint is `service run`, its config delivered by a ConfigMap overriding the 
 `<project>.dhall` (§ AA). It is `Done`: the command, registry, and demo `web serve` → `service run web`
 migration landed in code and are **real-run-validated** — the live demo's web pod runs `service run web` and
 serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19).
+
+### Phase 19 — generic project model and no core defaults
+
+Phase 19 makes `hostbootstrap-core` a generic library with **no hardcoded defaults**, parameterized over a
+project's own config type. `ProjectSpec cfg tcfg` couples core to `cfg` only through the lift authority
+(`cfg -> BinaryContext`, `BinaryContext -> cfg -> cfg`); defaults live only in a project-owned `psInit`,
+which `project init` and the harness both reuse (DRY); `test.dhall` is a thin override and the harness
+**generates** the run's `<project>.dhall` from it (`psTestConfig`), then deletes the generated config and
+self-created `.test_data` on teardown (closing the § Z code-vs-contract drift); and a pure `SecretRef`
+vocabulary keeps a secrets-strict consumer's production configs plaintext-free (§ BB). It is `Planned`
+(documentation-only); it reopens phases 4, 8, 10, 15, and 17, which become `Active` because their `Done`
+scope assumed core-owned defaults, a fixed universal config type, and a `test`-reuses-existing-config flow.
 
 ## Dependency edges
 
@@ -240,6 +275,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-16 (reopens/builds on 4, 5, 14, 15; the project lifecycle command + the [Step] interpreter + the fixed surface)
   phase-17 (builds on 16, 10; the test surface that drives project up + the read-only context command)
   phase-18 (builds on 15, 16; the service runtime command + the service-handler registry) ← Done; service run web real-run-validated in the demo
+  phase-19 (reopens 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config) -- Planned, documentation-only
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

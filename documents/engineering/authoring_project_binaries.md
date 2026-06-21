@@ -127,6 +127,16 @@ generates the PureScript types folds into the build-image step) and its VM/provi
 `project up` lift sequence, and `test run all` **drives that same `project up`** under a test config rather
 than standing up a separate per-case cluster.
 
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) a project supplies
+the generic `ProjectSpec cfg tcfg` seams — `psInit` (the only place defaults live), `psTestInit`,
+`psTestConfig`, and the config/test Dhall codecs plus the two lift accessors (`cfg -> BinaryContext` and
+`BinaryContext -> cfg -> cfg`). `project init` and the test harness share `psInit` (DRY), so the same
+defaults render the production config and seed each test run. See the
+[generic_project_model.md](../architecture/generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
 ## See also
 
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the

@@ -162,3 +162,13 @@ no unit-file rendering tests or real service-manager integration tests.
   cluster, the 8-pod production Harbor (NodePort 30500), the project image pushed to the in-cluster
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
   `project destroy` tear it down with host `.data` preserved.
+
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test init`
+writes `test.dhall` (a thin override) WITHOUT requiring a pre-existing `<project>.dhall`. `test run` then
+GENERATES the run's `<project>.dhall` via the project-owned `psTestConfig` (reusing `psInit`), drives the
+real `project up`, asserts the live stack, runs `project destroy`, and finally deletes the generated
+`<project>.dhall` plus the `.test_data` it created this run while keeping the authored `test.dhall`. See
+the [generic_project_model.md](../architecture/generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).

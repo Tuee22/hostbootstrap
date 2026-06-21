@@ -256,12 +256,23 @@ the project image; `context inspect` renders the topology with the current frame
 budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod
 production Harbor (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
 pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
-it down with host `.data` preserved. This is validated end-to-end on both substrates: Incus/Linux
-(2026-06-18) and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
+it down with host `.data` preserved. This is validated end-to-end on both substrates: Incus/Linux and a
+16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
 (see [harbor](../engineering/harbor.md)). The decoupled `test run all` drives that **same** `project up`
-under the test surface and reports `3/3 passed` (reachability + the Playwright e2e lifted into the VM
-frame). This document is the canonical statement of the model the validated build ships.
+under the test surface and reports `3/3 passed` on Apple-Silicon/Lima (2026-06-20) — reachability + the
+Playwright e2e lifted into the VM frame. On native Incus/Linux the full `project up` lifecycle runs
+end-to-end and the VM-lifted `e2e-tabs` case passes, but the two host-frame reachability assertions
+(`pristine-bootstrap` / `web-build` curl `localhost:30080` from the harness/metal frame) aren't reachable
+from the host because Incus — unlike Lima — does not forward the guest NodePort, so `test run all` is
+`1/3` there today; this is a tracked code follow-up ([phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) / phase-17). This document is the canonical statement of the model the validated build ships.
+
+The harness's config handling is being reconciled with the §W single-representation rule above. **Today** `test run all` REUSES the existing config: `demoTestUp` drives `project up` against the pre-existing
+`.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was DELETED. Generating
+the run's config from a thin `test.dhall` override (via `psTestConfig`, reusing `psInit`) and deleting it
+on teardown is the **phase-19** (generic project model) target, tracked in `legacy-tracking-for-deletion.md`
+Pending. See [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
+[generic_project_model.md](generic_project_model.md).
 
 ## Foundational Principles
 

@@ -9,7 +9,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `HostBootstrap.Config.Schema` provides the in-process Haskell decoder/encoder for the project-local
 `<project>.dhall` shape: project settings, Dockerfile/build inputs, resource budget, deploy knobs, and the
@@ -30,6 +30,14 @@ surfaced tree is `project init|up|down|destroy` / read-only `context` / `test in
 (plus hidden-debug `ensure`), validated by `cabal test` (core green) and the migrated Python trigger.
 
 ## Remaining Work
+
+**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
+development_plan_standards § BB): `ProjectConfig`'s core-owned defaults
+(`defaultResources`/`defaultDeployConfig`/`defaultProjectConfig`) and its status as a fixed universal type
+are superseded — defaults move to a project-owned `psInit :: InitArgs -> cfg`, and the config type becomes
+project-defined under the generic `ProjectSpec cfg tcfg`.
+This is documentation-only target work; the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
 None. The command tree is migrated to the new surface (Sprint 4.2): `config init` -> `project init` (with
 the Python trigger migrated), `cluster` -> `project up|down|destroy`, `context create` -> the `context-init`

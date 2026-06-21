@@ -138,6 +138,13 @@ bring-up path, § W), then tearing the stack down with `project destroy` (host `
 harness's per-case assertions run in the frame appropriate to each (reachability from the harness frame, the
 e2e lifted into the VM via the self-reference lift, § U).
 
+The `3/3` is on **Apple-Silicon/Lima**, where Lima forwards the guest NodePort to host `localhost`. On
+**native Incus/Linux** the lifecycle completes end-to-end (HTTP 200 verified in-VM) and the VM-lifted
+`e2e-tabs` passes, but `pristine-bootstrap` / `web-build` assert `localhost:30080` from the **harness
+frame**, which Incus does not forward from the guest — so `test run all` is **`1/3` there today**. Lifting
+those two assertions into the VM frame (like `e2e-tabs`) to reach `3/3` on Incus is a tracked follow-up in
+[phase-17](phase-17-chain-driven-test-and-context-introspection.md).
+
 **Real-run validation on the 16 GiB Apple-Silicon host (2026-06-19/20), with the operator Docker Hub login
 in place — the full `project up` lifecycle completes end-to-end (exit 0):** the live persistent stack
 serves **HTTP 200** at `localhost:30080` (`/api/budget` returns the `fitsBudget` view, `cpu=6 memory=10`

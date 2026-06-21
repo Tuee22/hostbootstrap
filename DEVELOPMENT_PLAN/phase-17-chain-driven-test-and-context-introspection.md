@@ -12,7 +12,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened (2026-06-19) and closed (2026-06-20)**: `test run` drives the real `project up`, enforces the two
 fail-fast safety preconditions, uses the L0 `.test_data` self-created-only delete-guard, and deletes only
@@ -36,6 +36,22 @@ engine the split surface invokes (§ W).
 persistent stack is owned by [phase-16](phase-16-project-lifecycle-command.md).
 
 ## Remaining Work
+
+**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
+development_plan_standards § BB): `test.dhall` becomes a thin override and `test run` GENERATES the run's
+`<project>.dhall` from it via the project-owned `psTestConfig`, closing the § Z code-vs-contract drift
+where the demo reuses a pre-existing config; `test init` no longer requires a pre-existing `<project>.dhall`.
+This is documentation-only target work; the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
+
+**Native-Linux test parity (code follow-up).** `test run all` reports `3/3 passed` on Apple-Silicon/Lima
+but **`1/3` on native Incus/Linux**: `pristine-bootstrap` / `web-build` assert `localhost:30080` from the
+**harness frame**, and Incus — unlike Lima — does not forward the guest NodePort to host `localhost`, so
+only the VM-lifted `e2e-tabs` reaches the in-cluster service. Lift those two reachability assertions into
+the VM frame (reusing the self-reference lift, § U, the way `e2e-tabs` already does) — or have the demo's
+deploy-VM step add an Incus proxy device forwarding host `:30080` → guest — so the suite is `3/3` on both
+providers. The live stack itself is healthy on Incus (the chain's `expose-port` verifies HTTP 200 in-VM);
+this is purely an assertion-frame fix.
 
 Make the test surface **drive** `project up` and enforce the safety contract
 (development_plan_standards § Z).

@@ -10,8 +10,16 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: All phases (0-18) are `Done`. The **unified-harness / fixed-surface / resource-SSoT** correction
-> (phases 10/13/14/15/16/17/18) is complete — code-check-validated and real-run-validated end-to-end (the
+> Note: Phases 0-18 landed `Done`; the **generic-project-model** correction (phase 19, § BB) newly reopens
+> phases 4, 8, 10, 15, and 17 (`Active`) as **documentation-only** target work — `hostbootstrap-core` is to
+> own **no hardcoded defaults** and become parameterized over a project's own config type (`ProjectSpec cfg
+> tcfg`), with `project init` and the harness sharing one project-owned `psInit`, the harness **generating**
+> the run's `<project>.dhall` from a thin `test.dhall` override, and a pure `SecretRef` vocabulary for
+> secrets-strict consumers (see [phase-19-generic-project-model.md](phase-19-generic-project-model.md)). The
+> module rows below describe the **current concrete** surface (the demo's `ProjectConfig`); phase 19 makes
+> the **types** generic without changing the fixed command tree. The **unified-harness / fixed-surface /
+> resource-SSoT** correction (phases 10/13/14/15/16/17/18) is complete — code-check-validated and
+> real-run-validated end-to-end (the
 > full `project up` lifecycle + `test run all` `3/3 passed` on both Incus/Linux and a 16 GiB Apple-Silicon
 > host, 2026-06-20). The
 > command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` — no per-project
@@ -110,6 +118,14 @@ it only triggers the binary's idempotent `config init --if-missing` after the bu
 exists. The built project binary creates the file through `<project> config init`, prints its schema/help,
 and reads it before normal command dispatch.
 
+> Under § BB (phase 19, target), the config **type** is **project-defined** (`ProjectSpec cfg tcfg`), not
+> the fixed `ProjectConfig` below: `hostbootstrap-core` owns no default values, every field is mandatory and
+> fails the strict decode if omitted, defaults live only in a project-owned `psInit`, and secret fields use
+> the pure `SecretRef` vocabulary so a production config is plaintext-free
+> ([secrets.md](../documents/engineering/secrets.md)). The field families below are the **demo's** concrete
+> `ProjectConfig`; the resource envelope in particular is a provider concern carried by a project's `cfg`,
+> not a universal field (§ BB refines § O).
+
 | Field family | Read by | Purpose |
 |--------------|---------|---------|
 | Project identity | project binary | derived project name, source root, binary name, and config version |
@@ -191,7 +207,11 @@ not by the Python layer.
 The **project binary** verifies the active `<project>.dhall` resource envelope and applies the cordon: on
 Apple demo VM workloads run behind a Lima VM; Incus host-provider workflows use `incusSizingArgs`
 at the VM wall on native Linux; `cluster up` applies kind
-node resource limits. The Python bootstrapper does not cordon. `cluster up` runs the `verifyBudget`
+node resource limits. The Python bootstrapper does not cordon a project's VM or cluster. The one exception
+is the maintainer base-image build: `hostbootstrap base build` measures host CPU/RAM
+(`hostbootstrap/resources.py`) and applies docker `--memory`/`--cpus` caps plus a host-sized `cabal -j` to
+the base-image **build container** — a build-phase limit on the warm-store compile, not a project runtime
+cordon (see `documents/engineering/base_image.md`). `cluster up` runs the `verifyBudget`
 spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
 before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
 spare host capacity per substrate (resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on

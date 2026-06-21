@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened (2026-06-19) and closed (2026-06-20)** for the explicit-context / multi-role /
 forwarded-parameter refinements: each `<project>.dhall` carries an explicit context; a config may declare
@@ -43,6 +43,13 @@ sprints (15.3, 15.4, 15.5) are `Done`; the effectful wiring of the `context-init
 gate into the recursive `project up` apply is owned by phase-16.
 
 ## Remaining Work
+
+**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
+development_plan_standards § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext`
+accessor on `ProjectSpec cfg tcfg`, so the command gate is expressed over a project-defined config type
+rather than the fixed `ProjectConfig`.
+This is documentation-only target work; the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
 Refine the binary-context contract to the explicit-context / multi-role / forwarded-parameter model
 (development_plan_standards § X).

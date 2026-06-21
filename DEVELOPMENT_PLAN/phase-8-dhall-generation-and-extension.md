@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The binary-generated rich tiers are implemented: `HostBootstrap.Config.Vocab` mirrors the reusable
 `Core.dhall` vocabulary; `HostBootstrap.Dhall.Gen` carries the `ConfigArtifact` registry whose
@@ -28,6 +28,13 @@ reflected `ProjectConfig` type, and pure projection helpers derive narrower chil
 config. This phase is `Done`.
 
 ## Remaining Work
+
+**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
+development_plan_standards § BB): `ProjectSpec` is parameterized as `ProjectSpec cfg tcfg` over a project's
+own config/test-config types, with the project-owned `psInit` / `psTestInit` / `psTestConfig` seams and a
+pure `SecretRef` vocabulary added to the Dhall-generation surface.
+This is documentation-only target work; the superseded surfaces are listed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
 None. Phase 13 applies these helpers to the worked demo, and Phase 15 wires normal command gating to the
 context section inside `<project>.dhall`.

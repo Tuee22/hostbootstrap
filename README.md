@@ -69,20 +69,18 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 [`documents/engineering/registry_credentials.md`](documents/engineering/registry_credentials.md)). See
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
-> **Current state.** Phases 0–15 are built and validated end to end by a real Apple Silicon Lima run
-> (`3/3 passed`, including the Playwright e2e case), as recorded in
-> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md). The host-native bootstrapper, the
-> self-reference lift primitive, the single-representation demo deploy, and the project-local
+> **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
+> "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
+> `chain :: RootConfig -> [Step]` interpreter described above — are **implemented and real-run-validated**.
+> On Apple Silicon (Lima) the demo reports `3/3 passed`, including the Playwright e2e case; on native Linux
+> (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
+> the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
 > writes no Dhall; lifted runtime containers receive parent-mounted configs with topology frames and
 > witnesses.
 >
-> The "chain is the project" refactor — the recursive `project init|up|down|destroy` lifecycle command and
-> the `chain :: RootConfig -> [Step]` interpreter described above — is the **target architecture and is in
-> progress, not yet implemented**. Phases 4, 5, 10, 13, 14, and 15 are reopened (`Active`) and phases 16–17
-> are added to carry it (see
-> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)). Today's implemented command surface is the
-> flat verbs — `ensure`, `config`, `context create`, `cluster`, `test`, plus the demo's `vm`/`deploy`.
+> The chain work is `Done`; the only currently-reopened work is **phase-19 (the generic project model)**.
+> See [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -94,7 +92,8 @@ project binary it is built **host-native**; it is not baked into the base image.
 The Python bootstrapper does only what must run **before any project binary exists** — a short,
 fail-fast sequence:
 
-1. **Assert host minimums.** On Linux: Ubuntu 24.04 and passwordless `sudo`. On Apple: passwordless
+1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
+   (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
    `sudo`, the Xcode Command Line Tools, and Homebrew. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
 2. **Ensure the host build toolchain.** The prerequisites needed to build the binary host-native — on
@@ -163,6 +162,16 @@ context fields carrying the role and command authority:
 }
 ```
 
+> **Target direction — the generic project model (phase 19, § BB).** The shape above is the **demo's**
+> config. `hostbootstrap-core` is to own **no hardcoded defaults** and become parameterized over a
+> project's own config type — `ProjectSpec cfg tcfg` — coupled to core only through the lift authority
+> (`cfg -> BinaryContext`). Defaults live only in a project-owned `psInit`, which `project init` and the
+> test harness share (DRY); `test.dhall` is a thin override the harness uses to **generate** the run's
+> `<project>.dhall`; and a pure `SecretRef` vocabulary keeps a secrets-strict consumer's production configs
+> plaintext-free. This is documentation-only target work — see
+> [`documents/architecture/generic_project_model.md`](documents/architecture/generic_project_model.md) and
+> [`DEVELOPMENT_PLAN/phase-19-generic-project-model.md`](DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+
 The project value is also the command name. The `resources` budget is the host-level ceiling that the
 project binary projects into child configs and enforces through cordons. Before bring-up the binary
 verifies that budget against spare host capacity resolved per substrate — resolved `sysctl` on Apple
@@ -218,10 +227,10 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a project
 binary. The fixed `project`/`test`/`service`/`context`/`check-code` surface, the harness driving the real
-`project up`, and the `service` command are **implemented and code-check-validated** (the `ProjectCommand`
+`project up`, and the `service` command are **implemented and real-run-validated** (the `ProjectCommand`
 extension point and the demo `vm`/`incus`/`web` verbs are removed; `service` + its registry exist; the
-harness drives `project up`); their **closing gate is the real demo run**, which needs operator-only
-prerequisites (a host Docker Hub login + a republished `arm64` base). See
+harness drives `project up`). Full multi-arch republish and Harbor remain operator-scale steps that need
+operator-only prerequisites (a host Docker Hub login + a republished `arm64` base). See
 [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md) and the "Current state" note in the Architecture
 section above. See
 [`documents/architecture/hostbootstrap_core_library.md`](documents/architecture/hostbootstrap_core_library.md)
@@ -304,21 +313,19 @@ cluster" path. The doctrine is stated canonically in
 
 > **Status.** This `[Step]` chain interpreted by `project up` is implemented and real-run-validated: a
 > single `project up` brings up the cordon VM, runs the host-native build and the project-image build in the
-> VM, and stands up kind → Harbor → the web service on the VM's Docker. The **reopened** work is the
-> unified-harness / fixed-surface / resource-SSoT correction (see
-> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)): the demo's test seams drive that same
-> `project up` under a test config (rather than a separate per-case cluster), the budget-doubling VM sizing
-> collapses to budget = VM wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima
-> run reported `3/3 passed` including the Playwright e2e case; the Incus real-run remains a historical
-> Linux validation point. The migration of that hand-written chain to a core-interpreted `[Step]` value is
-> tracked under the reopened phases and phases 16–17.
+> VM, and stands up kind → Harbor → the web service on the VM's Docker. The unified-harness / fixed-surface
+> / resource-SSoT correction has **landed**: the demo's test seams drive that same `project up` under a test
+> config (rather than a separate per-case cluster), the budget-doubling VM sizing collapses to budget = VM
+> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reported `3/3 passed`
+> including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
+> end. The only currently-reopened work is **phase-19 (the generic project model)** — see
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up
 
 Build and exec the demo binary host-native through the Python bootstrapper, from the demo project root —
 the same workflow every consumer follows (assert host minimums → ensure the host toolchain → build into
-`./.build/` → exec). In the **target** shape the whole lifecycle is the recursive `project` command over
-the demo's chain:
+`./.build/` → exec). The whole lifecycle is the recursive `project` command over the demo's chain:
 
 ```bash
 cd demo
@@ -331,9 +338,7 @@ hostbootstrap run -- test run all           # root-gated suite against the live 
 hostbootstrap run -- project destroy        # stop then delete; host .data preserved
 ```
 
-That `project`/`context`/`test run` surface is the **target**; today the demo drives the flat verbs
-(`config init`, `config show/schema/render`, `deploy --dry-run`, `deploy`, `vm`) — see
-[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md). To build and run the binary directly against
+To build and run the binary directly against
 the local core (no bootstrapper), use Cabal with the demo's own workspace:
 
 ```bash
@@ -368,8 +373,11 @@ carries two test layers:
   config and `.test_data` it created. The per-case assertions (`pristine-bootstrap` a live cluster,
   `e2e-tabs` the project image's base-provided Playwright runtime against the in-cluster webservice via its
   NodePort, `web-build` the `spago`/`esbuild` bundle) run on the **VM's** Docker, in the frame each needs.
-  This is the **target** surface; the harness recast onto `project up` is tracked as reopened, real-run-gated
-  work — see [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
+  The harness recast onto `project up` is **implemented**. On **native Incus/Linux** the two host-frame
+  reachability assertions (`pristine-bootstrap`/`web-build`) are not reachable from the host because Incus —
+  unlike Lima — does not forward the guest NodePort to host `localhost`, so today only the VM-lifted
+  `e2e-tabs` passes there; on Apple Silicon/Lima all `3/3` pass. This is a tracked follow-up — see
+  [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md):
 
   ```bash
   cd demo

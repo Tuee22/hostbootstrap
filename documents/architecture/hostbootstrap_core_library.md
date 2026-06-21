@@ -41,6 +41,16 @@ production Harbor registry, the project image pushed to the in-cluster registry,
 serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
 `.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
 
+Target (reopened, documentation-only): under
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the extension
+contract becomes the generic `ProjectSpec cfg tcfg`, parameterized over a project's own config type `cfg`
+(its `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core then owns no fixed config
+type and no default values — it couples to `cfg` only through `cfg -> BinaryContext` and
+`BinaryContext -> cfg -> cfg`, while the surfaced command tree (`ensure`, `context`, `project`, `test`,
+`check-code`) stays fixed. See the [generic_project_model.md](generic_project_model.md) design,
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
 ## Module Surface
 
 The library namespace is `HostBootstrap.*`. The set below is indicative of the surface consumers depend
