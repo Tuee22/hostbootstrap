@@ -8,9 +8,8 @@ to consult.
 
 Per ``documents/engineering/prerequisites.md`` the minimums are:
 
-* **Linux** — Ubuntu 24.04 + passwordless sudo + hardware virtualization
-  (Intel VT-x / AMD-V enabled and a usable ``/dev/kvm``); ``linux-gpu``
-  additionally verifies the NVIDIA container runtime is registered with Docker.
+* **Linux** — Ubuntu 24.04 + passwordless sudo; ``linux-gpu`` additionally
+  verifies the NVIDIA container runtime is registered with Docker.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
 """
 
@@ -73,58 +72,6 @@ def _check_ubuntu_2404() -> None:
     if distro_id != "ubuntu" or version_id != "24.04":
         raise PrereqError(
             f"Linux substrates require Ubuntu 24.04; got ID={distro_id!r} VERSION_ID={version_id!r}"
-        )
-
-
-def _kvm_accessible() -> bool:
-    """Whether ``/dev/kvm`` is usable — directly, or as root via passwordless sudo.
-
-    Direct read/write access (the invoking user is in the ``kvm`` group) is the
-    fast path. Otherwise, because passwordless sudo is an asserted prerequisite
-    and hostbootstrap's privileged work runs as root, a successful
-    ``sudo -n`` read/write probe is sufficient: it confirms the device is real and
-    functional, and the user's ``kvm``-group membership is reconciled later (like
-    ``docker``-group access), not gated here.
-    """
-    if os.access("/dev/kvm", os.R_OK | os.W_OK):
-        return True
-    if os.geteuid() == 0 or not _have("sudo"):
-        return False
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "sh", "-c", "test -r /dev/kvm && test -w /dev/kvm"],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
-
-def _check_virtualization_enabled() -> None:
-    cpuinfo = Path("/proc/cpuinfo")
-    if not cpuinfo.is_file():
-        raise PrereqError("cannot read /proc/cpuinfo to verify hardware virtualization")
-    flags: set[str] = set()
-    for line in cpuinfo.read_text().splitlines():
-        if line.startswith(("flags", "Features")):
-            flags.update(line.partition(":")[2].split())
-    if "vmx" not in flags and "svm" not in flags:
-        raise PrereqError(
-            "hardware virtualization (Intel VT-x / AMD-V) is not enabled. "
-            "Enable it in your BIOS/UEFI firmware settings before re-running."
-        )
-    kvm = Path("/dev/kvm")
-    if not kvm.exists():
-        raise PrereqError(
-            "/dev/kvm is missing. Load the kvm kernel module "
-            "(modprobe kvm_intel or kvm_amd) before re-running."
-        )
-    if not _kvm_accessible():
-        raise PrereqError(
-            "/dev/kvm exists but is not usable, even via sudo. Ensure the kvm "
-            "module is loaded and the device is functional before re-running."
         )
 
 
@@ -198,8 +145,6 @@ async def _run_linux(substrate: Substrate) -> DoctorResult:
     messages.append("Ubuntu 24.04: OK")
     _check_passwordless_sudo()
     messages.append("passwordless sudo: OK")
-    _check_virtualization_enabled()
-    messages.append("hardware virtualization: OK")
 
     if substrate.name is SubstrateName.LINUX_GPU:
         _check_nvidia_runtime()

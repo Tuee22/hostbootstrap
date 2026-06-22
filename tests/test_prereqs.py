@@ -91,99 +91,6 @@ def test_ubuntu_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         prereqs._check_ubuntu_2404()
 
 
-def _patch_cpuinfo_kvm(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    cpuinfo_text: str | None,
-    kvm_exists: bool,
-) -> None:
-    real_path = Path
-    cpuinfo = tmp_path / "cpuinfo"
-    if cpuinfo_text is not None:
-        cpuinfo.write_text(cpuinfo_text, encoding="utf-8")
-    elif cpuinfo.exists():
-        cpuinfo.unlink()
-    kvm = tmp_path / "kvm"
-    if kvm_exists:
-        kvm.write_text("", encoding="utf-8")
-    elif kvm.exists():
-        kvm.unlink()
-
-    def _fake_path(value: str) -> Path:
-        if value == "/proc/cpuinfo":
-            return cpuinfo
-        if value == "/dev/kvm":
-            return kvm
-        return real_path(value)
-
-    monkeypatch.setattr(prereqs, "Path", _fake_path)
-
-
-def test_kvm_accessible(monkeypatch: pytest.MonkeyPatch) -> None:
-    # In the kvm group: direct access, no sudo round-trip.
-    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: True)
-    assert prereqs._kvm_accessible()
-
-    # No direct access, but root (via passwordless sudo) can read/write it.
-    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: False)
-    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
-    monkeypatch.setattr(prereqs.subprocess, "run", lambda cmd, **kw: _completed(cmd))
-    assert prereqs._kvm_accessible()
-
-    # Sudo works but root can't access it either -> not usable.
-    monkeypatch.setattr(prereqs.subprocess, "run", lambda cmd, **kw: _completed(cmd, returncode=1))
-    assert not prereqs._kvm_accessible()
-
-    # Already root and still no access -> not usable (no sudo round-trip).
-    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 0)
-    assert not prereqs._kvm_accessible()
-
-    # Non-root but sudo missing -> cannot verify -> not usable.
-    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    assert not prereqs._kvm_accessible()
-
-    # Sudo present but exec fails -> not usable.
-    monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
-
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("noexec")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
-    assert not prereqs._kvm_accessible()
-
-
-def test_virtualization_enabled_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(prereqs, "_kvm_accessible", lambda: True)
-
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text="flags : fpu vme vmx\n", kvm_exists=True)
-    prereqs._check_virtualization_enabled()
-
-    # AMD svm flag is equally accepted (here via an arm-style Features line).
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text="Features : fp svm\n", kvm_exists=True)
-    prereqs._check_virtualization_enabled()
-
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text=None, kvm_exists=True)
-    with pytest.raises(prereqs.PrereqError, match="cannot read /proc/cpuinfo"):
-        prereqs._check_virtualization_enabled()
-
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text="flags : fpu vme\n", kvm_exists=True)
-    with pytest.raises(prereqs.PrereqError, match="VT-x / AMD-V"):
-        prereqs._check_virtualization_enabled()
-
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text="flags : vmx\n", kvm_exists=False)
-    with pytest.raises(prereqs.PrereqError, match="/dev/kvm is missing"):
-        prereqs._check_virtualization_enabled()
-
-    # cpu virt present and device exists, but unusable even via sudo.
-    _patch_cpuinfo_kvm(monkeypatch, tmp_path, cpuinfo_text="flags : vmx\n", kvm_exists=True)
-    monkeypatch.setattr(prereqs, "_kvm_accessible", lambda: False)
-    with pytest.raises(prereqs.PrereqError, match="not usable"):
-        prereqs._check_virtualization_enabled()
-
-
 def test_macos_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(prereqs.platform, "machine", lambda: "arm64")
@@ -270,16 +177,14 @@ async def test_run_linux_cpu_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_virtualization_enabled", lambda: calls.append("virt"))
     monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
 
     result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_CPU, "amd64"))
 
-    assert calls == ["ubuntu", "sudo", "virt"]
+    assert calls == ["ubuntu", "sudo"]
     assert result.messages == (
         "Ubuntu 24.04: OK",
         "passwordless sudo: OK",
-        "hardware virtualization: OK",
     )
 
 
@@ -287,13 +192,11 @@ async def test_run_linux_gpu_checks_nvidia_runtime(monkeypatch: pytest.MonkeyPat
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_virtualization_enabled", lambda: calls.append("virt"))
     monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
 
     result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_GPU, "amd64"))
 
-    assert calls == ["ubuntu", "sudo", "virt", "nvidia"]
-    assert "hardware virtualization: OK" in result.messages
+    assert calls == ["ubuntu", "sudo", "nvidia"]
     assert "NVIDIA container runtime: OK" in result.messages
 
 

@@ -37,13 +37,6 @@ The Python bootstrapper asserts, fail-fast:
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
-- **Hardware virtualization.** Intel VT-x / AMD-V must be enabled (a `vmx`/`svm` flag in
-  `/proc/cpuinfo`) **and** `/dev/kvm` must exist and be usable — directly by the invoking user, or, since
-  passwordless sudo is already required, by root via `sudo -n` (the device is real and functional;
-  `kvm`-group membership for your user is reconciled later, like `docker`-group access, not gated here).
-  The nested VM providers (`ensure incus`/`lima`) need KVM, so the bootstrapper refuses early with
-  remediation guidance (enable virtualization in BIOS/UEFI; `modprobe kvm_intel`/`kvm_amd`) rather than
-  failing deep inside a provider.
 
 Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions it, starts the daemon,
 grants the invoking user `docker` socket access for future login sessions, applies an immediate socket
