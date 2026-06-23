@@ -25,3 +25,12 @@ test("GET /api/budget returns the fitsBudget view", async ({ request }) => {
   expect(body.fits).toBe(true);
   expect(body.cpu).toBe(6);
 });
+
+// The polymorphic e2e (Sprint 20.4): the SPA's #message element renders the
+// config-driven message the harness's active variant deployed. EXPECTED_MESSAGE is
+// passed per-variant by `assertE2EInVM`, so the same spec proves both variants
+// ("Hello, world!" and "Hello, Universe!") really are config-driven end to end.
+test("the SPA renders the config-driven message", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#message")).toHaveText(process.env.EXPECTED_MESSAGE!);
+});

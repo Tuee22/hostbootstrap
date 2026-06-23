@@ -39,7 +39,7 @@ import Control.Exception.Safe (try)
 import Data.Char (isDigit)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
-import HostBootstrap.Config.Schema (Resources (..))
+import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Sysctl), absExePath)
@@ -134,8 +134,8 @@ multiplier unit = case unit of
     k n = 1024 ^ (n :: Integer)
     d n = 1000 ^ (n :: Integer)
 
--- | Resolve a project-local @resources@ block into a canonical byte budget.
-budgetFromResources :: Resources -> Either String ResourceBudget
+-- | Resolve a resource envelope into a canonical byte budget.
+budgetFromResources :: ResourceEnvelope -> Either String ResourceBudget
 budgetFromResources r = do
   mem <- parseQuantity (memory r)
   sto <- parseQuantity (storage r)
@@ -169,7 +169,7 @@ verifyBudget b cap
 -- | The spare-capacity preflight as a single fail-fast gate: parse the budget,
 -- then verify it against resolved spare host capacity. Pure (the IO that resolves
 -- capacity is 'resolveHostCapacity').
-preflightBudget :: Resources -> HostCapacity -> Either String ()
+preflightBudget :: ResourceEnvelope -> HostCapacity -> Either String ()
 preflightBudget r cap = budgetFromResources r >>= \b -> verifyBudget b cap
 
 -- | Prove a concurrent pod set fits within the (vocabulary) budget — the Haskell
@@ -188,7 +188,7 @@ fitsBudget b pods
 -- (the canonical arg-builder; the Python bootstrapper does not size VMs).
 -- Memory and disk are rounded up to whole GiB (Colima's unit); CPU is the whole
 -- core count. Storage is cordoned here via @--disk@.
-colimaSizingArgs :: String -> Resources -> Either String [String]
+colimaSizingArgs :: String -> ResourceEnvelope -> Either String [String]
 colimaSizingArgs project r = do
   b <- budgetFromResources r
   pure
@@ -204,7 +204,7 @@ colimaSizingArgs project r = do
     ]
 
 -- | The Lima VM sizing flags derived from the same canonical resource parser.
-limaSizingArgs :: Resources -> Either String [String]
+limaSizingArgs :: ResourceEnvelope -> Either String [String]
 limaSizingArgs r = do
   b <- budgetFromResources r
   pure
@@ -222,7 +222,7 @@ limaSizingArgs r = do
 -- @docker update@ flag, so it is omitted here and cordoned per-substrate
 -- elsewhere (Colima @--disk@, incus @root,size@, a quota'd hostPath on bare
 -- Linux).
-kindNodeCordonArgs :: String -> Resources -> Either String [String]
+kindNodeCordonArgs :: String -> ResourceEnvelope -> Either String [String]
 kindNodeCordonArgs clusterName r = do
   b <- budgetFromResources r
   pure
@@ -240,7 +240,7 @@ kindNodeCordonArgs clusterName r = do
 -- @limits.memory@, and @root,size@. Unlike @docker update@, incus cordons
 -- storage at the VM wall, so storage **is** included here (via @root,size@). The
 -- form is a list of @incus@ config arguments the caller applies to the VM.
-incusSizingArgs :: Resources -> Either String [String]
+incusSizingArgs :: ResourceEnvelope -> Either String [String]
 incusSizingArgs r = do
   b <- budgetFromResources r
   pure

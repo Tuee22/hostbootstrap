@@ -23,12 +23,14 @@ module HostBootstrap.Cluster.Lifecycle
 where
 
 import Control.Monad (forM_)
+import Data.Text (Text)
+import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon
   ( kindNodeCordonArgs,
     preflightBudget,
     resolveHostCapacity,
   )
-import HostBootstrap.Config.Schema (Resources)
+import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind))
@@ -111,17 +113,17 @@ statusReport plan live =
 -- that must sequence other steps between cluster creation and the chart (e.g.
 -- stand up an in-cluster registry and push the image the chart pulls) calls
 -- 'clusterCreate' and 'deployChart' as separate chain steps instead.
-clusterUp :: HostConfig -> ClusterPlan -> Resources -> IO ()
+clusterUp :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
 clusterUp cfg plan resources = do
   clusterCreate cfg plan resources
-  deployChart cfg plan
+  deployChart cfg plan []
 
 -- | Create the cordoned kind cluster (idempotent), **without** the chart: run the
 -- spare-capacity preflight, create the kind cluster if absent, then apply the
 -- budget cordon (fail-closed). The applied cordon sits **after** @kind create@ so
 -- workloads never schedule against an un-cordoned node. Split out from 'clusterUp'
 -- so a chain can interleave registry setup / image push before 'deployChart'.
-clusterCreate :: HostConfig -> ClusterPlan -> Resources -> IO ()
+clusterCreate :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
 clusterCreate cfg plan resources = do
   resolvedCapacity <- resolveHostCapacity cfg
   case resolvedCapacity >>= preflightBudget resources of
@@ -165,24 +167,45 @@ clusterCreate cfg plan resources = do
 -- workload, or it deploys via another path such as @harbor install@) gets a clean
 -- kind + cordon bring-up with the deploy skipped — that is "no deploy requested",
 -- not a swallowed failure.
-deployChart :: HostConfig -> ClusterPlan -> IO ()
-deployChart cfg plan = do
+--
+-- @extraValues@ is a generic, project-supplied @[(KEY, VALUE)]@ passed to helm as
+-- one @--set-string KEY=VALUE@ per pair, so a project can template its chart from
+-- live config (e.g. the served message) without the core knowing the keys. The
+-- core stays generic: it forwards the pairs verbatim.
+deployChart :: HostConfig -> ClusterPlan -> [(Text, Text)] -> IO ()
+deployChart cfg plan extraValues = do
   hasChart <- doesDirectoryExist chartPath
   if hasChart
     then do
       -- @--wait@ so the chart's pods are Ready before the step returns — a
       -- following expose/readiness step (or a lifting parent) then sees a live
       -- service, not a still-scheduling one.
-      release <- runTool cfg Helm ["upgrade", "--install", clusterName plan, chartPath, "--wait", "--timeout", "8m"]
+      release <-
+        runTool
+          cfg
+          Helm
+          ( ["upgrade", "--install", clusterName plan, chartPath, "--wait", "--timeout", "8m"]
+              ++ concatMap setStringArg extraValues
+          )
       requireStep "helm upgrade --install" release
     else putStrLn ("cluster up: no chart at ./" ++ chartPath ++ "; skipping deploy (kind + cordon only)")
   where
     chartPath = "chart"
+    setStringArg (key, value) = ["--set-string", T.unpack key ++ "=" ++ helmEscape (T.unpack value)]
+    -- helm @--set-string@ treats commas as value separators (and backslash as its
+    -- escape), so a value like "Hello, world!" would split into "Hello" + " world!"
+    -- (a key with no value). Escape each literal comma and backslash so the value
+    -- reaches the chart intact.
+    helmEscape = concatMap esc
+      where
+        esc ',' = "\\,"
+        esc '\\' = "\\\\"
+        esc c = [c]
 
 -- | Apply the Linux kind-node cordon: @docker update@ the budget caps onto the
 -- resolved control-plane container, fail-closed. On Apple the per-project Colima
 -- VM is the cordon (sized by @ensure docker@), so there is no kind-node cap.
-applyLinuxCordon :: HostConfig -> ClusterPlan -> Resources -> IO ()
+applyLinuxCordon :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
 applyLinuxCordon cfg plan resources
   | isLinux (hcSubstrate cfg) =
       case kindNodeCordonArgs (clusterName plan) resources of

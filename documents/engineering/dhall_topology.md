@@ -117,6 +117,13 @@ Children never reach back to read the parent's host config. See
 | Rich project/deploy Dhall | Runtime/deploy records composed from the reusable vocabulary | The project binary | The project binary |
 | Per-case test-harness Dhall | One typed value per test case | The project binary / test harness | The project binary / test harness |
 
+The host-root and child configs share one **canonical location**: the executable's sibling
+`<project>.dhall` (`siblingProjectConfigPath` — e.g. `.build/<project>.dhall` beside the host binary). The
+host root is written and read at that one path, and each descent mints its child at the same sibling rule in
+its own frame. The values a config carries are the project's own: under the generic-project-model target
+defaults live ONLY in the project's `psInit`, never in core, so the on-disk config is a complete value the
+project (not the core) defines.
+
 ## Rich And Test Dhall
 
 The rich project/deploy Dhall and per-case test-harness Dhall are artifacts the project binary emits,

@@ -5,7 +5,7 @@ module CordonSpec (tests) where
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Cluster.Cordon
-import HostBootstrap.Config.Schema (Resources (..))
+import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Sysctl), mkAbsExe)
@@ -21,8 +21,8 @@ gib = 1024 ^ (3 :: Integer)
 mib :: Integer
 mib = 1024 ^ (2 :: Integer)
 
-demoResources :: Resources
-demoResources = Resources {cpu = 4, memory = "8GiB", storage = "20GiB"}
+demoResources :: ResourceEnvelope
+demoResources = ResourceEnvelope {cpu = 4, memory = "8GiB", storage = "20GiB"}
 
 tests :: TestTree
 tests =
@@ -84,7 +84,7 @@ capacitySourceCases =
         @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
     testCase "apple sysctl core count can satisfy a matching N-core budget" $
       preflightBudget
-        (Resources {cpu = 10, memory = "8GiB", storage = "20GiB"})
+        (ResourceEnvelope {cpu = 10, memory = "8GiB", storage = "20GiB"})
         (HostCapacity 10 (16 * gib) petabyte)
         @?= Right (),
     testCase "live apple-silicon sysctl read resolves positive capacity" $ do
@@ -132,7 +132,7 @@ sizingCases =
       colimaSizingArgs "demo" demoResources
         @?= Right ["start", "--profile", "demo", "--cpu", "4", "--memory", "8", "--disk", "20"],
     testCase "colima handles the bare 8Gi form" $
-      colimaSizingArgs "demo" (Resources {cpu = 2, memory = "8Gi", storage = "20Gi"})
+      colimaSizingArgs "demo" (ResourceEnvelope {cpu = 2, memory = "8Gi", storage = "20Gi"})
         @?= Right ["start", "--profile", "demo", "--cpu", "2", "--memory", "8", "--disk", "20"],
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources

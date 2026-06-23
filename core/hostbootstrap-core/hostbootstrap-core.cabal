@@ -46,8 +46,8 @@ library
       HostBootstrap.Chain
       HostBootstrap.Registry
       HostBootstrap.RoleLifecycle
-      HostBootstrap.Container
       HostBootstrap.Context
+      HostBootstrap.Config.Class
       HostBootstrap.Config.Schema
       HostBootstrap.Config.Vocab
       HostBootstrap.Dhall.Gen
@@ -85,6 +85,7 @@ test-suite hostbootstrap-core-test
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
+      Fixture
       CLISpec
       SubstrateSpec
       HostToolSpec
@@ -102,7 +103,6 @@ test-suite hostbootstrap-core-test
       ChainSpec
       RegistrySpec
       RoleLifecycleSpec
-      ContainerSpec
       DocValidatorSpec
   build-depends:
       base >=4.18 && <5

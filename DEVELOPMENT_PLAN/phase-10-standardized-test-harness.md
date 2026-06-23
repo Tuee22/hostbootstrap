@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
@@ -37,16 +37,16 @@ configuration** the engine writes a test-specific `<project>.dhall`, runs `proje
 self-reference lift, § U), and tears the stack down with `project destroy`. There is **one `project up` per
 distinct test config**, and the engine owns **no second cluster-bring-up path** — it reuses the core pure
 functional logic (the case matrix, the budget-slicing cores, the run-model selection, the delete-guard) and
-the chain production uses. This phase is reopened for that engine recast; the remaining work is real-run-gated.
+the chain production uses. The engine recast to drive the real `project up` landed in code and is real-run-validated (`test run all` reports `3/3 passed`).
 
 ## Remaining Work
 
-**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
-development_plan_standards § BB): the harness must GENERATE the run's `<project>.dhall` from the
-`test.dhall` override via the project-owned `psTestConfig` (reusing `psInit`) and delete the generated
-config on teardown, rather than driving `project up` against a pre-existing config.
-This is documentation-only target work; the superseded surfaces are listed in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
+[Phase 19](phase-19-generic-project-model.md) builds **forward** on the harness (the generic project
+model, § BB): it *generates* the run's `<project>.dhall` from the `test.dhall` override via the
+project-owned `psTestConfig` (reusing `psInit`) and deletes the generated config on teardown. The
+superseded `test`-reuses-existing-config flow is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase is
+not reopened.**
 
 The split command surface (`test init` / `test run <suite>|all`) and the pure harness cores (the case
 matrix, `sliceBudget`, `selectRunModel`, `guardTestDelete`, the data-preserving `teardown` partition, the

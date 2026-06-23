@@ -36,6 +36,18 @@ let RunModel = < OneShot | HostNative | HostDaemon | Cluster >
 
 let ClusterProfile = < Production | Test : Text >
 
+-- A typed pointer to a secret's *source* — never the secret material itself.
+-- `Vault` names a KV path + field; `TransitKey` a Vault Transit key name;
+-- `Prompt` a label the caller resolves interactively; `TestPlaintext` an
+-- inline literal used only in test configs. This is a pure shape — the core
+-- carries no Vault dependency.
+let SecretRef =
+      < Vault : { mount : Text, path : Text, field : Text }
+      | TransitKey : Text
+      | Prompt : Text
+      | TestPlaintext : Text
+      >
+
 let Weight = Natural
 
 -- a <= b, without the Prelude.
@@ -114,6 +126,7 @@ in  { Resources
     , Substrate
     , RunModel
     , ClusterProfile
+    , SecretRef
     , Weight
     , lessThanEqual
     , divFloor

@@ -2,7 +2,6 @@ module Main (main) where
 
 import qualified CLISpec
 import qualified ChainSpec
-import qualified ContainerSpec
 import qualified ContextSpec
 import qualified CordonSpec
 import qualified DhallGenSpec
@@ -44,6 +43,5 @@ main = do
             , ChainSpec.tests
             , RegistrySpec.tests
             , RoleLifecycleSpec.tests
-            , ContainerSpec.tests
             , docTests
             ]

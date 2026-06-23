@@ -9,7 +9,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Config.Schema` provides the in-process Haskell decoder/encoder for the project-local
 `<project>.dhall` shape: project settings, Dockerfile/build inputs, resource budget, deploy knobs, and the
@@ -19,8 +19,8 @@ command tree, and `runHostBootstrapCLI` extends that tree with project commands 
 [Phase 8](phase-8-dhall-generation-and-extension.md); the command gate that reads sibling `<project>.dhall`
 before normal dispatch lives in [Phase 15](phase-15-binary-context-config.md).
 
-The phase is reopened because the command tree's contract changed under the "the chain is the project"
-model (see [development_plan_standards.md § Y, § Z](development_plan_standards.md)). The surfaced core tree
+The command tree's contract changed under the "the chain is the project"
+model (see [development_plan_standards.md § Y, § Z](development_plan_standards.md)); that migration landed and is validated. The surfaced core tree
 is no longer the flat `config` verbs plus `ensure`; it is the recursive lifecycle command
 `project init|up|down|destroy`, the read-only `context` introspection command, `test init|run`, and
 `check-code`. The schema/decoder sprints (4.1, 4.3, 4.4) built a still-valid project-local `<project>.dhall`
@@ -31,13 +31,12 @@ surfaced tree is `project init|up|down|destroy` / read-only `context` / `test in
 
 ## Remaining Work
 
-**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
-development_plan_standards § BB): `ProjectConfig`'s core-owned defaults
-(`defaultResources`/`defaultDeployConfig`/`defaultProjectConfig`) and its status as a fixed universal type
-are superseded — defaults move to a project-owned `psInit :: InitArgs -> cfg`, and the config type becomes
-project-defined under the generic `ProjectSpec cfg tcfg`.
-This is documentation-only target work; the superseded surfaces are listed in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
+[Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
+model, § BB): it generalizes the config type to a project-defined `cfg` under `ProjectSpec cfg tcfg` and
+moves defaults to a project-owned `psInit`. The superseded core-owned sub-surfaces
+(`defaultResources`/`defaultDeployConfig`/`defaultProjectConfig` and the fixed universal type) are recorded
+in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase
+is not reopened.**
 
 None. The command tree is migrated to the new surface (Sprint 4.2): `config init` -> `project init` (with
 the Python trigger migrated), `cluster` -> `project up|down|destroy`, `context create` -> the `context-init`

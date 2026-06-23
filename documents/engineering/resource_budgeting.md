@@ -53,6 +53,11 @@ The resource budget is a `resources` record in the host-level project config des
 }
 ```
 
+The `4/8/20` above is an **illustrative shape**, not a default: core ships no default budget. The demo's
+own `psInit` default is `6/10/80` (its `deploy-VM` gate, `demoFullLifecycleResources`, requires it), and
+each project's `psInit` supplies its own budget. See the [Current Status](#current-status) note and
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+
 - `cpu` — whole cores reserved for the project's substrate.
 - `memory` — memory ceiling for the project's substrate.
 - `storage` — disk budget for the project's substrate (image layers, cluster data, build outputs).

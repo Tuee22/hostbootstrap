@@ -6,9 +6,16 @@ import Control.Exception (finally, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import HostBootstrap.CLI (runBareHostBootstrapCLI)
+import qualified Fixture
+import HostBootstrap.CLI (
+    ProjectSpec,
+    projectSpec,
+    runBareHostBootstrapCLI,
+    runHostBootstrapCLI,
+ )
 import qualified HostBootstrap.Config.Schema as Schema
 import HostBootstrap.Context
+import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite))
 import System.Directory (removeFile)
 import System.Environment (withArgs)
 import System.Exit (ExitCode (ExitFailure))
@@ -50,6 +57,24 @@ testRequirement =
         , requiredCommandClass = TestWorkflowCommand
         , requiredCapabilities = [DockerSocket, KindNetwork]
         }
+
+-- | A fixture-backed project spec for the CLI-driving tests: the init builders
+-- write/read a concrete 'Fixture.ProjectConfig' shape (so a written config
+-- decodes back), and the suite is a trivial passing one (these tests never run
+-- @test run@).
+fixtureSpec :: String -> ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+fixtureSpec progName =
+    projectSpec
+        passingSuite
+        (pure ())
+        []
+        (Fixture.projectInit (T.pack progName))
+        (const (Fixture.defaultTestConfig ["ok", "all"] (Fixture.Resources 4 "8GiB" "20GiB")))
+        (const (pure [(T.pack "default", Fixture.defaultProjectConfig (T.pack progName) "/workspace/demo" HostOrchestrator)]))
+
+passingSuite :: TestSuite
+passingSuite =
+    TestSuite (pure (Right ())) (\_ -> pure ()) [Case "ok" 1 False] (\_ _ -> pure Pass) (\_ -> pure ())
 
 tests :: TestTree
 tests =
@@ -227,11 +252,11 @@ tests =
         , testCase "normal CLI commands run when the sibling project config authorizes them" $ do
             let projectName = "demo-cli-context"
             path <- Schema.siblingProjectConfigPath projectName
-            let cfg = Schema.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+            let cfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
             ( do
                     Schema.writeProjectConfigFile path cfg
                     result <-
-                        try (withArgs ["check-code"] (runBareHostBootstrapCLI (T.unpack projectName))) ::
+                        try (withArgs ["check-code"] (runHostBootstrapCLI (T.unpack projectName) (fixtureSpec (T.unpack projectName)))) ::
                             IO (Either ExitCode ())
                     result @?= Right ()
                 )
@@ -259,14 +284,33 @@ tests =
                     , "--ha-replicas"
                     , "3"
                     ]
-                    (runBareHostBootstrapCLI "demo")
-                decoded <- Schema.decodeProjectConfigFile path
-                let Schema.ProjectConfig cfgDockerfile cfgResources cfgContext cfgDeploy = decoded
+                    (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                decoded <- Fixture.decodeProjectConfigFile path
+                let Fixture.ProjectConfig cfgDockerfile cfgResources cfgContext cfgDeploy = decoded
                 cfgDockerfile @?= "demo/docker/Dockerfile"
-                cfgResources @?= Schema.Resources 6 "10GiB" "80GiB"
-                cfgDeploy @?= Schema.DeployConfig 3
+                cfgResources @?= Fixture.Resources 6 "10GiB" "80GiB"
+                cfgDeploy @?= Fixture.DeployConfig 3
                 contextKind cfgContext @?= ImageBuildContainer
                 sourceRoot cfgContext @?= "/workspace/demo"
+        , testCase "project init supplies the project defaults for omitted knobs" $
+            withSystemTempDirectory "hostbootstrap-config-init-defaults" $ \dir -> do
+                let path = dir </> "demo.dhall"
+                withArgs
+                    [ "project"
+                    , "init"
+                    , "--output"
+                    , path
+                    , "--source-root"
+                    , "/workspace/demo"
+                    ]
+                    (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
+                decoded <- Fixture.decodeProjectConfigFile path
+                let Fixture.ProjectConfig cfgDockerfile cfgResources _ cfgDeploy = decoded
+                -- The fixture's projectInit defaults: cpu 4 / 8GiB / 20GiB,
+                -- haReplicas 1, dockerfile docker/Dockerfile (none came from flags).
+                cfgDockerfile @?= "docker/Dockerfile"
+                cfgResources @?= Fixture.Resources 4 "8GiB" "20GiB"
+                cfgDeploy @?= Fixture.DeployConfig 1
         , testCase "project init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
                 let path = dir </> "demo.dhall"
@@ -280,13 +324,13 @@ tests =
                         , root
                         ]
                 -- Absent: --if-missing writes the default config.
-                withArgs (initArgs "/workspace/demo") (runBareHostBootstrapCLI "demo")
+                withArgs (initArgs "/workspace/demo") (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
                 before <- TIO.readFile path
-                Schema.ProjectConfig _ _ ctx0 _ <- Schema.decodeProjectConfigFile path
+                Fixture.ProjectConfig _ _ ctx0 _ <- Fixture.decodeProjectConfigFile path
                 sourceRoot ctx0 @?= "/workspace/demo"
                 -- Present: --if-missing is a no-op even with a different source-root, so the
                 -- user-owned file is left byte-for-byte untouched.
-                withArgs (initArgs "/somewhere/else") (runBareHostBootstrapCLI "demo")
+                withArgs (initArgs "/somewhere/else") (runHostBootstrapCLI "demo" (fixtureSpec "demo"))
                 after <- TIO.readFile path
                 after @?= before
         ]

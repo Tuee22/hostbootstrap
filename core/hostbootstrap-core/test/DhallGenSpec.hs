@@ -8,7 +8,8 @@ import Control.Exception (SomeException, try)
 import Data.List (find)
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Config.Schema (projectConfigSchemaText)
+import qualified Dhall.Core
+import Fixture (projectConfigSchemaText)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Dhall.Gen
   ( ConfigArtifact (..),
@@ -40,7 +41,8 @@ tests =
     "DhallGenSpec"
     [ testGroup "Core.dhall budget helpers" budgetCases,
       testGroup "reflected schemas + registry" registryCases,
-      testGroup "config render round-trip + budget assert" renderCases
+      testGroup "config render round-trip + budget assert" renderCases,
+      testGroup "SecretRef vocabulary anti-drift + round-trip" secretRefCases
     ]
 
 artifact :: T.Text -> ConfigArtifact
@@ -101,6 +103,46 @@ renderCases =
       let badText = deployConfigText (corePath root) (V.Budget 2 4 20) [V.PodResources 3 1 2 1 2]
       result <- try (Dhall.inputExpr badText >> pure ()) :: IO (Either SomeException ())
       assertBool "over-budget deploy is rejected" (either (const True) (const False) result)
+  ]
+
+secretRefCases :: [TestTree]
+secretRefCases =
+  [ testCase "the SecretRef Haskell mirror reflects to Core.dhall's SecretRef" $ withRoot $ \root -> do
+      -- Anti-drift: the reflected union type the @ToDhall SecretRef@ encoder
+      -- injects to must be judgmentally equal to @Core.dhall@'s @SecretRef@.
+      reflected <- Dhall.inputExpr (reflectedSchema @V.SecretRef)
+      core <- Dhall.inputExpr ("(" <> corePath root <> ").SecretRef")
+      assertBool
+        ( "reflected SecretRef\n  "
+            <> T.unpack (Dhall.Core.pretty (Dhall.Core.normalize reflected))
+            <> "\ndiffers from Core.dhall SecretRef\n  "
+            <> T.unpack (Dhall.Core.pretty (Dhall.Core.normalize core))
+        )
+        (Dhall.Core.judgmentallyEqual reflected core),
+    testCase "a Vault SecretRef encodes to Dhall and decodes back unchanged" $ do
+      let v = V.Vault (V.VaultRef "secret" "app/db" "password")
+      decoded <- Dhall.input (Dhall.auto :: Dhall.Decoder V.SecretRef) (renderValue v)
+      decoded @?= v,
+    testCase "a TestPlaintext SecretRef encodes to Dhall and decodes back unchanged" $ do
+      let v = V.TestPlaintext "hunter2"
+      decoded <- Dhall.input (Dhall.auto :: Dhall.Decoder V.SecretRef) (renderValue v)
+      decoded @?= v,
+    testCase "the TransitKey and Prompt alternatives round-trip too" $ do
+      let tk = V.TransitKey "app-signing-key"
+          pr = V.Prompt "database password"
+      dtk <- Dhall.input (Dhall.auto :: Dhall.Decoder V.SecretRef) (renderValue tk)
+      dpr <- Dhall.input (Dhall.auto :: Dhall.Decoder V.SecretRef) (renderValue pr)
+      dtk @?= tk
+      dpr @?= pr,
+    testCase "a SecretRef value decodes against Core.dhall's SecretRef type" $ withRoot $ \root -> do
+      -- The rendered value, annotated with the *Core.dhall* type (not the
+      -- reflected one), still type-checks and decodes — proving the shared shape.
+      let v = V.Vault (V.VaultRef "secret" "app/db" "password")
+      decoded <-
+        Dhall.input
+          (Dhall.auto :: Dhall.Decoder V.SecretRef)
+          (renderValue v <> " : (" <> corePath root <> ").SecretRef")
+      decoded @?= v
   ]
 
 budgetCases :: [TestTree]

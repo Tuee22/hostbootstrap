@@ -43,6 +43,19 @@ shape are unit-tested; the IO drivers run `kind`/`Helm` through the `HostTool` e
 semantics are shared so a project does not re-implement cluster orchestration; its chain selects a
 profile and supplies the chart, and the core interprets the step.
 
+The chart-deploy action takes a **generic project extra-values** parameter so a project can forward its own
+config fields into the chart without core learning the field:
+
+```haskell
+deployChart :: HostConfig -> ClusterPlan -> [(Text, Text)] -> IO ()
+```
+
+The `[(Text, Text)]` is an opaque set of Helm values core forwards verbatim into the chart's ConfigMap;
+core never interprets the keys. The demo forwards its `message` field this way (`[("message", "Hello,
+world!")]`), so the chart templates `message` into the web service's ConfigMap and the `serveWeb` handler
+reads it from its delivered config — a project-extended field reaching the workload with no core-owned
+slot.
+
 ## `project up`: Fail-Closed, Idempotent Bring-Up
 
 A cluster step under `project up` is **fail-closed** and **idempotent** (reconcile-to-running). Its
@@ -111,14 +124,16 @@ distinct from production clusters. This isolation lets the test harness stand up
 down clusters per case without endangering production data; the never-delete-data invariant still
 applies to `.test_data` within a case's lifecycle.
 
-`test run all` **drives** the persistent `project up` rather than being a separate bring-up: per distinct
-test config the harness runs `project up` under a test-written `<project>.dhall` (the Test profile, under
-`.test_data`), asserts the live stack, and tears it down with `project destroy`. Two fail-fast
-preconditions protect production — the harness refuses if a `<project>.dhall` already exists or if a
+`test run all` **drives** the persistent `project up` rather than being a separate bring-up: for each
+config variant the suite declares, the harness generates that variant's `<project>.dhall` (the Test
+profile, under `.test_data`), runs `project up`, asserts the live stack, and tears it down with `project
+destroy` before the next variant — the demo runs two variants (`"Hello, world!"`, `"Hello, Universe!"`).
+Two fail-fast preconditions protect production — the harness refuses if a config already exists at the
+executable sibling `siblingProjectConfigPath` (`.build/<project>.dhall`, not the project root) or if a
 **production cluster is running** (never touch production state) — and it deletes only the `.test_data` and
-config it created this run. The production kind cluster is cordoned to a **slice within the VM wall** (the
-budget = VM wall, cluster = slice rule, [resource_budgeting](resource_budgeting.md)), never the full
-budget. *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)* See
+generated config it created this run. The production kind cluster is cordoned to a **slice within the VM
+wall** (the budget = VM wall, cluster = slice rule, [resource_budgeting](resource_budgeting.md)), never the
+full budget. *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)* See
 [testing](testing.md).
 
 ## Current Status
@@ -135,7 +150,10 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   `HostBootstrap.Cluster.Lifecycle` and the chain-step actions invoke them. The never-delete-`.data`
   invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
   through its `demoChain :: ProjectConfig -> [Step]` value
-  (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle.
+  (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle. Under the
+  generic-project-model target, `deployChart` carries the `[(Text, Text)]` extra-values param so the demo
+  forwards its `message` field into the chart ConfigMap (see [schema](schema.md) and
+  [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
   in-cluster Harbor registry (NodePort 30500), the project image pushed to that registry, and the web

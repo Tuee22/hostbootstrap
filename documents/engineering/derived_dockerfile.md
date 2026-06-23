@@ -13,8 +13,9 @@
   [build and run model](../architecture/build_and_run_model.md)).
 - The reference container is `FROM ${BASE_IMAGE}` → build + install the project
   binary (reusing the warm store) → create the image-build sibling
-  `<project>.dhall` → `RUN <project> check-code` → web build (`<project> web bridge` →
-  `spago build` → `esbuild`) → tini ENTRYPOINT.
+  `<project>.dhall` → `RUN <project> check-code` → web build (`spago build` → `esbuild`
+  over the bridge-generated sources the build-image step's `writeBridge` invocation
+  staged into the context) → tini ENTRYPOINT.
 - The in-Dockerfile `check-code` step is a **build-time gate**: an image with
   style or lint violations cannot be produced. See
   [code check doctrine](code_check_doctrine.md).
@@ -49,9 +50,11 @@ RUN <project> project init --role image-build-container --output /usr/local/bin/
 # 3. The mandatory code-check gate.
 RUN <project> check-code
 
-# 4. The web build.
-RUN <project> web bridge \
-    && cd web \
+# 4. The web build. The bridge codegen is re-homed into the build-image chain
+#    step's `writeBridge` invocation, which runs BEFORE this image build and
+#    stages the generated PureScript sources into the build context — there is no
+#    `web bridge` verb. The Dockerfile only compiles and bundles them.
+RUN cd web \
     && spago build \
     && esbuild --bundle --minify --outfile=public/app.js src/index.js
 
@@ -97,10 +100,12 @@ build so a failing check stops the build early.
 
 The web build follows the gate, in three ordered steps:
 
-1. `<project> web bridge` — generate the PureScript types from the `warp`/`wai` webservice's API types
-   via `purescript-bridge`. The demo's `BudgetView` Haskell type feeds both JSON and the
-   generated PureScript, so the front-end types cannot drift from the API. See
-   [purescript](../languages/purescript.md).
+1. `writeBridge` — generate the PureScript types from the `warp`/`wai` webservice's API types via
+   `purescript-bridge`. This is **not** a `web bridge` verb (the command surface is fixed): it is the
+   build-image chain step's `writeBridge` invocation, which runs before the image build and stages the
+   generated sources into the build context. The demo's `BudgetView` Haskell type feeds both JSON and the
+   generated PureScript — and carries the `message` field — so the front-end types cannot drift from the
+   API. See [purescript](../languages/purescript.md).
 2. `spago build` — compile the Halogen SPA (Overview / Budget / Status tabs)
    against the generated types.
 3. `esbuild --bundle --minify` — bundle the compiled output into the served
@@ -123,7 +128,7 @@ The ordering is load-bearing and every derived project preserves it:
 | 2 | Build + install the binary | The web build and the gate both need the installed binary. |
 | 3 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
 | 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
-| 5 | bridge step (PureScript-bridge) → `spago build` → `esbuild` | Types must exist before `spago`; the bundle is the last artifact. |
+| 5 | `spago build` → `esbuild` over the `writeBridge`-staged sources | The build-image step's `writeBridge` invocation staged the PureScript types into the context before this build; `spago` compiles them and the bundle is the last artifact. |
 | 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
 
 This is the reference shape; see [derived project standards](derived_project_standards.md)

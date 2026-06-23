@@ -59,7 +59,7 @@ import HostBootstrap.Cluster.Cordon (
     limaSizingArgs,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
-import HostBootstrap.Config.Schema (ProjectConfig (..), Resources (..), projectConfigFromContext, withSiblingProjectConfigContext, writeProjectConfigFile)
+import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
@@ -87,6 +87,12 @@ import HostBootstrap.Step (
     projectStep,
  )
 import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, renderArch, substrateArch)
+import HostBootstrapDemo.Config (
+    ProjectConfig (..),
+    Resources (..),
+    envelopeOfResources,
+    projectConfigFromContext,
+ )
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
@@ -253,7 +259,7 @@ mintContainerConfig _ = demoConfigContext Context.ContextCreationCommand [] $ \p
     -- /workspace/demo@ + @WORKDIR@), NOT the VM's @/tmp/hostbootstrap/demo@ — the
     -- container-frame steps @cd@ here for @./chart@ etc.
     let containerCtx = Context.deriveContainerContext ctx (T.pack containerSourceRoot)
-        containerCfg = projectConfigFromContext (dockerfile parentCfg) (deploy parentCfg) containerCtx
+        containerCfg = projectConfigFromContext (dockerfile parentCfg) (deploy parentCfg) (message parentCfg) containerCtx
     createDirectoryIfMissing True (takeDirectory vmRuntimeContainerConfigPath)
     writeProjectConfigFile vmRuntimeContainerConfigPath containerCfg
     putStrLn ("context-init: minted project-container config at " ++ vmRuntimeContainerConfigPath)
@@ -280,7 +286,7 @@ deployKindAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
     -- full budget — the budget is used once, as the VM wall (cordon #1).
     slice <- either die pure (clusterSliceOfBudget (resourcesFromContext ctx))
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) slice)
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (envelopeOfResources slice))
 
 {- | The default Harbor admin credential the demo installs Harbor with and logs in
 as to push (the in-cluster registry is a demo fixture, not a secret store).
@@ -393,10 +399,17 @@ waitHarborLogin cfg n = do
         Right (ExitSuccess, _, _) -> pure True
         _ -> threadDelay 5000000 >> waitHarborLogin cfg (n - 1)
 
+{- | @deploy-chart@: install the web chart pod, templating the chart's embedded
+config from the live config's served @message@ (Sprint 20.2). The message is
+forwarded to helm as the generic @demoMessage@ extra-value; the ConfigMap template
+interpolates it into the pod's mounted @<project>.dhall@, so @service run web@
+reads the same message the host config carried, end to end.
+-}
 deployChartAction :: HostConfig -> IO ()
-deployChartAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
+deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx))
+    let extraValues = [("demoMessage", message projectCfg)]
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
 
 exposeAction :: HostConfig -> IO ()
 exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
@@ -456,7 +469,7 @@ it. The budget is **never** added to itself — there is no budget-sized VM
 -}
 clusterSliceOfBudget :: Resources -> Either String Resources
 clusterSliceOfBudget r = do
-    b <- budgetFromResources r
+    b <- budgetFromResources (envelopeOfResources r)
     let sliceCpu = if budgetCpu b > 1 then budgetCpu b - 1 else 1
         sliceMem = max 2 (gibibytes (budgetMemoryBytes b) - 4)
         sliceStore = max 10 (gibibytes (budgetStorageBytes b) - 40)
@@ -467,12 +480,14 @@ clusterSliceOfBudget r = do
             (T.pack (show sliceStore ++ "GiB"))
         )
 
-{- | A case's live environment: the resolved host config and the **VM frame**
-lift context, so every assertion reaches the live persistent stack @project up@
-brought up by folding its probe into the frame where the NodePort is published
-(the VM) — correct on both Lima and Incus via the self-reference lift (§ U).
+{- | A case's live environment: the resolved host config, the **VM frame** lift
+context (so every assertion reaches the live persistent stack @project up@ brought
+up by folding its probe into the frame where the NodePort is published — the VM —
+correct on both Lima and Incus via the self-reference lift, § U), and the active
+variant's expected @message@ (Sprint 20.3), which the polymorphic Playwright
+asserts the SPA renders.
 -}
-data CaseEnv = CaseEnv HostConfig LiftContext
+data CaseEnv = CaseEnv HostConfig LiftContext T.Text
 
 {- | The demo's **stack-driven** test suite (development_plan_standards § W, § Z):
 it drives the **real** @project up@ under a test config and asserts against the
@@ -499,9 +514,15 @@ demoTestSafety :: IO (Either String ())
 demoTestSafety = do
     cfg <- resolveHostConfig
     root <- getCurrentDirectory
+    -- The production-config existence precondition checks the **executable
+    -- sibling** <project>.dhall (the path the harness generates the run config
+    -- at), not the cwd — so `test run` refuses to overwrite a real config but
+    -- correctly generates its own. The running-cluster precondition still keys
+    -- off the cwd-rooted production plan.
+    cfgPath <- siblingProjectConfigPath (T.pack demoProject)
     let prodPlan = resolvePlan demoProject root Production
     testSafetyPreconditions
-        (root </> "hostbootstrap-demo.dhall")
+        cfgPath
         (clusterIsRunning cfg prodPlan)
 
 -- | Whether a cluster of the plan's name is already running on the host's kind.
@@ -515,15 +536,17 @@ clusterIsRunning cfg plan = do
 {- | Bring the test stack up by driving the **real** @project up@ (the same chain
 interpreter production uses, § W) through the binary's self-reference (§ U), then
 resolve the assertion env (the live Production stack the cases assert against).
-One @project up@ per suite.
+One @project up@ per variant; the variant @label@ (its expected served message) is
+threaded into the 'CaseEnv' so the assertions can check the SPA renders it (Sprint
+20.3).
 -}
-demoTestUp :: IO CaseEnv
-demoTestUp = do
+demoTestUp :: T.Text -> IO CaseEnv
+demoTestUp label = do
     self <- getExecutablePath
-    putStrLn "test run: bringing the stack up via the real `project up`"
+    putStrLn ("test run: bringing the stack up via the real `project up` (variant message=" ++ T.unpack label ++ ")")
     runSelfOrDie self ["project", "up"]
     cfg <- resolveHostConfig
-    pure (CaseEnv cfg (demoVMFrameContext (hcSubstrate cfg)))
+    pure (CaseEnv cfg (demoVMFrameContext (hcSubstrate cfg)) label)
 
 {- | Tear the test stack down by driving @project destroy@ (best-effort, so a
 partial stack always tears down; host @.data@ is preserved by the lifecycle, § O).
@@ -542,10 +565,10 @@ frame is the VM on every provider, all three pass on both Lima and Incus without
 any provider-specific assertion code.
 -}
 demoAssert :: CaseEnv -> Case -> IO CaseResult
-demoAssert (CaseEnv cfg frame) c = case caseId c of
+demoAssert (CaseEnv cfg frame expectedMessage) c = case caseId c of
     "pristine-bootstrap" -> assertReachable cfg frame "http://localhost:30080/api/budget" "the in-cluster webservice"
     "web-build" -> assertReachable cfg frame "http://localhost:30080/app.js" "the esbuild SPA bundle"
-    "e2e-tabs" -> assertE2EInVM cfg frame
+    "e2e-tabs" -> assertE2EInVM cfg frame expectedMessage
     other -> pure (Fail ("unknown demo case: " ++ other))
 
 {- | Reachability assertion: poll the endpoint from @frame@ (the VM frame, where
@@ -558,13 +581,18 @@ assertReachable cfg frame url what = do
 
 {- | The Playwright e2e, lifted into @frame@ (the VM) via a raw @bash -lc@ leaf:
 run the base-provided Playwright from a container on the VM host network against
-the NodePort the VM publishes on its own @localhost@. Captures the result rather
-than dying, so a failure is a case 'Fail' (not a crashed matrix).
+the NodePort the VM publishes on its own @localhost@. The variant's
+@expectedMessage@ is passed as @-e EXPECTED_MESSAGE@ (Sprint 20.4), so the
+polymorphic spec asserts the SPA's @#message@ element renders the config-driven
+message for this variant. Captures the result rather than dying, so a failure is a
+case 'Fail' (not a crashed matrix).
 -}
-assertE2EInVM :: HostConfig -> LiftContext -> IO CaseResult
-assertE2EInVM cfg frame = do
+assertE2EInVM :: HostConfig -> LiftContext -> T.Text -> IO CaseResult
+assertE2EInVM cfg frame expectedMessage = do
     let script =
-            "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e NODE_PATH="
+            "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e EXPECTED_MESSAGE="
+                ++ shellQuote (T.unpack expectedMessage)
+                ++ " -e NODE_PATH="
                 ++ baseNodeModulesPath
                 ++ " "
                 ++ demoProjectImage
@@ -796,7 +824,7 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
                     putStrLn ("vm up: Lima instance " ++ limaName vm ++ " already exists; ensuring it is started (idempotent)")
                     bestEffortTool cfg Lima ["start", limaName vm] ("vm up: starting existing " ++ limaName vm)
                 else do
-                    sizing <- either die pure (limaSizingArgs lifecycleResources)
+                    sizing <- either die pure (limaSizingArgs (envelopeOfResources lifecycleResources))
                     let argv = LimaVM.startVMArgs vm (sizing ++ ["--vm-type", "vz"])
                     putStrLn ("vm up: launching Lima instance " ++ limaName vm ++ " (cordon #1: the VM is the wall, sized to the budget) " ++ show sizing)
                     runOrDie cfg Lima argv
@@ -810,7 +838,7 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
                     putStrLn ("vm up: incus instance " ++ vmName vm ++ " already exists; ensuring it is started (idempotent)")
                     bestEffortTool cfg Incus (startVMArgs vm) ("vm up: starting existing " ++ vmName vm)
                 else do
-                    sizing <- either die pure (incusSizingArgs lifecycleResources)
+                    sizing <- either die pure (incusSizingArgs (envelopeOfResources lifecycleResources))
                     let argv = createVMArgs vm (concatMap toLaunchFlag sizing)
                     putStrLn ("vm up: launching " ++ vmName vm ++ " (cordon #1: the VM is the wall, sized to the budget) " ++ show sizing)
                     runOrDie cfg Incus argv
@@ -840,8 +868,8 @@ incusInstanceExists cfg vm = do
 
 requireDemoLifecycleResources :: Resources -> Either String ()
 requireDemoLifecycleResources actualResources = do
-    actual <- budgetFromResources actualResources
-    required <- budgetFromResources demoFullLifecycleResources
+    actual <- budgetFromResources (envelopeOfResources actualResources)
+    required <- budgetFromResources (envelopeOfResources demoFullLifecycleResources)
     let shortages =
             concat
                 [ shortage "cpu" show budgetCpu actual required
@@ -971,6 +999,7 @@ writeAndCopyVMConfig cfg provider parentCfg ctx = do
             projectConfigFromContext
                 (dockerfile parentCfg)
                 (deploy parentCfg)
+                (message parentCfg)
                 (Context.deriveVMContextWithProvider providerKind ctx (T.pack (vmRepoRoot </> "demo")))
     createDirectoryIfMissing True (hostRoot </> ".build")
     writeProjectConfigFile localPath vmCfg

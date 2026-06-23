@@ -4,7 +4,7 @@ module IncusSpec (tests) where
 
 import Data.Either (isLeft)
 import HostBootstrap.Cluster.Cordon (incusSizingArgs)
-import HostBootstrap.Config.Schema (Resources (..))
+import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Incus
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -64,6 +64,6 @@ readinessCases =
 sizingCases :: [TestTree]
 sizingCases =
   [ testCase "incus sizing cordons cpu/memory/storage at the VM wall" $
-      incusSizingArgs (Resources {cpu = 6, memory = "10GiB", storage = "40GiB"})
+      incusSizingArgs (ResourceEnvelope {cpu = 6, memory = "10GiB", storage = "40GiB"})
         @?= Right ["limits.cpu=6", "limits.memory=10GiB", "root,size=40GiB"]
   ]

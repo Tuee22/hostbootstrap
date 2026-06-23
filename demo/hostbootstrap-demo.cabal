@@ -30,6 +30,7 @@ executable hostbootstrap-demo
   ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
   other-modules:
       HostBootstrapDemo.Commands
+      HostBootstrapDemo.Config
       HostBootstrapDemo.Web.Api
       HostBootstrapDemo.Web.Server
       HostBootstrapDemo.Web.Bridge
@@ -48,3 +49,20 @@ executable hostbootstrap-demo
     , text
     , wai
     , warp
+
+test-suite hostbootstrap-demo-test
+  import: warnings
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test, src
+  main-is: Spec.hs
+  other-modules:
+      ConfigSpec
+      HostBootstrapDemo.Config
+      HostBootstrapDemo.Container
+  build-depends:
+      base >=4.18 && <5
+    , dhall
+    , hostbootstrap-core
+    , tasty
+    , tasty-hunit
+    , text

@@ -18,15 +18,18 @@ module HostBootstrapDemo.Web.Api (
 where
 
 import Data.Aeson (FromJSON, ToJSON)
+import Data.Text (Text)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (fitsBudget)
 import qualified HostBootstrap.Config.Vocab as V
 
-{- | The webservice's one view: the demo budget, the concurrent web-pod
-footprint, and the fits-within verdict.
+{- | The webservice's one view: the config-driven served @message@ (the worked
+example, Sprint 20.1), the demo budget, the concurrent web-pod footprint, and the
+fits-within verdict.
 -}
 data BudgetView = BudgetView
-    { cpu :: Int
+    { message :: Text
+    , cpu :: Int
     , memory :: Int
     , storage :: Int
     , podReplicas :: Int
@@ -47,13 +50,15 @@ demoBudget = V.Budget 6 10 80
 demoPods :: [V.PodResources]
 demoPods = [V.PodResources 2 1 1 1 2]
 
-{- | The canonical budget view: the fits verdict is the real 'fitsBudget' result,
-so @GET /api/budget@ agrees with the bring-up cordon.
+{- | The canonical budget view, parameterized by the config-driven served
+@message@ (Sprint 20.1): the fits verdict is the real 'fitsBudget' result, so
+@GET /api/budget@ agrees with the bring-up cordon.
 -}
-budgetView :: BudgetView
-budgetView =
+budgetView :: Text -> BudgetView
+budgetView msg =
     BudgetView
-        { cpu = fromIntegral demoBudget.cpu
+        { message = msg
+        , cpu = fromIntegral demoBudget.cpu
         , memory = fromIntegral demoBudget.memory
         , storage = fromIntegral demoBudget.storage
         , podReplicas = 2

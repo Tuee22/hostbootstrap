@@ -22,4 +22,6 @@ The `hostbootstrap-demo` worked consumer (`demo/`) uses this toolchain for its
 web build: the build-image bridge step generates PureScript types from the `warp`/`wai` webservice's API
 types via `purescript-bridge`, then `spago build` + `esbuild` bundle the Halogen SPA. The web
 build runs while `project up` builds the project image, so the live `spago build` +
-`esbuild` bundle is exercised as part of standing up the persistent stack.
+`esbuild` bundle is exercised as part of standing up the persistent stack. The
+bridge-generated `BudgetView` carries the demo's `message` field, so the SPA
+`#message` element cannot drift from the API type it renders.

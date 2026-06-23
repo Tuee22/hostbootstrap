@@ -40,7 +40,10 @@ builds the binary **host-native**, for the host it will run on:
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
 requires the sibling `./.build/<project>.dhall`: the root host-orchestrator config the built binary
-mints for itself (the `project init` surface, see [Current Status](#current-status)).
+mints for itself (the `project init` surface, see [Current Status](#current-status)). Immediately after
+the build that config is normally **absent** — Python does not create or trigger it — so a normal command
+run before `project init` **fails fast** (exit 1); `project init` (or the harness, which generates the
+config) is what brings it into existence.
 
 ## Why `./.build/` Is Always Present
 
@@ -130,11 +133,13 @@ serving step is a service role run via `service run` — a **leaf-frame pod entr
 command and handler registry.
 
 The test harness is **not** a separate cluster-standup path: it **drives the real `project up`**. The
-harness writes a test `<project>.dhall`, runs `project up`, asserts in-frame via the self-reference lift,
-then runs `project destroy` — one `project up` per distinct test config, never an isolated per-case
-cluster via a separate seam path. Because it drives the same `project up`, the `Cluster` model comes up
-wherever that `project up` runs, on the Docker the running process sees — see
-[composition_methodology](composition_methodology.md) for the single-representation rule.
+harness **generates** a test `<project>.dhall` (functionally, via the project's own builder — never
+shelling the CLI), runs `project up`, asserts in-frame via the self-reference lift, then runs
+`project destroy`. A suite may declare more than one config variant, and the harness stands each up and
+tears it down in turn (the demo runs two), never an isolated per-case cluster via a separate seam path.
+Because it drives the same `project up`, the `Cluster` model comes up wherever that `project up` runs, on
+the Docker the running process sees — see [composition_methodology](composition_methodology.md) for the
+single-representation rule.
 
 ## Deploy Is a Persistent Stack
 
@@ -154,9 +159,10 @@ The lifecycle verbs are split so the persistent stack has explicit stop and dele
 `.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
 frame is still up, then stops or deletes on ascent (the VM stopped last); it is best-effort and
 idempotent, tolerating a partial stack. The test harness validates the live stack by **driving the same
-`project up`** (writing a test `<project>.dhall`, running `project up`, asserting in-frame, then
-`project destroy`), using durable test storage `.test_data` and never touching `.data` — see
-[harness_workflow](harness_workflow.md).
+`project up`** (generating a test `<project>.dhall` functionally, running `project up`, asserting in-frame
+with the assertion polymorphic over the active variant's `EXPECTED_MESSAGE`, then `project destroy`),
+iterating over each config variant the suite declares (the demo runs two), using durable test storage
+`.test_data` and never touching `.data` — see [harness_workflow](harness_workflow.md).
 
 ## The VM Provider Parameterization
 

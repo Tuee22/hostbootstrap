@@ -5,22 +5,23 @@ module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
 import qualified Data.Text as T
-import HostBootstrap.Config.Schema
+import Fixture
   ( DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
-    TestConfig (..),
     decodeProjectConfigFile,
     decodeProjectConfigText,
     decodeTestConfigText,
     defaultProjectConfig,
     defaultTestConfig,
     deriveProjectConfigForKind,
-    parseConfigRole,
-    projectConfigSnapshotHash,
     renderProjectConfig,
-    renderProjectConfigSnapshotLog,
     renderTestConfig,
+  )
+import HostBootstrap.Config.Schema
+  ( parseConfigRole,
+    projectConfigSnapshotHash,
+    renderProjectConfigSnapshotLog,
     validateProjectConfigForProject,
   )
 import HostBootstrap.Context

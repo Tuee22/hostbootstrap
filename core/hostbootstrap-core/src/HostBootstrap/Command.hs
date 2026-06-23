@@ -1,8 +1,20 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+
 {- | The core @optparse-applicative@ command tree.
 
 'coreCommands' is the list of core subcommand entries
 ('HostBootstrap.CLI.runHostBootstrapCLI' merges it with project commands).
 'allReconcilers' is the concrete reconciler set the @ensure@ group dispatches.
+
+The command tree is **generic over a project's config type** ('ProjectCfg'): it
+never names a concrete config record. It decodes/encodes the sibling config via
+@FromDhall@/@ToDhall@, reaches the embedded context through 'cfgContext', and
+obtains a concrete config solely from the project-owned builders ('psInit' /
+'psTestInit' / 'psTestConfig') threaded in from the spec — the **only** place
+config defaults live.
 -}
 module HostBootstrap.Command (
     coreCommands,
@@ -11,10 +23,11 @@ module HostBootstrap.Command (
 )
 where
 
+import Control.Exception.Safe (finally)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate)
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Dhall
 import HostBootstrap.Chain (renderChain, runChainFromFrame)
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
@@ -23,23 +36,11 @@ import HostBootstrap.Cluster.Lifecycle (
     clusterDown,
     resolvePlan,
  )
+import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..), projectCfgSchemaText)
 import HostBootstrap.Config.Schema (
-    DeployConfig (..),
-    ProjectConfig (..),
-    Resources (..),
-    TestConfig (..),
-    decodeTestConfigFile,
-    defaultTestConfig,
-    writeTestConfigFile,
     configRoleNames,
-    decodeProjectConfigFile,
-    defaultDeployConfig,
-    defaultResources,
     parseConfigRole,
     projectConfigFileName,
-    projectConfigForRole,
-    projectConfigSchemaText,
-    renderProjectConfigSummary,
     siblingProjectConfigPath,
     withSiblingProjectConfigContext,
     writeProjectConfigFile,
@@ -59,14 +60,15 @@ import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Tart as Tart
-import HostBootstrap.Harness (TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection, testSuiteCaseIds)
+import HostBootstrap.Harness (ConfigVariant (..), TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Lift (LiftContext, currentSelfRef)
 import HostBootstrap.Service (ServiceRegistry, lookupServiceHandler, serviceRun, serviceVariantNames)
 import HostBootstrap.Step (Step, StepFrame)
 import HostBootstrap.Substrate (detect)
+import Numeric.Natural (Natural)
 import Options.Applicative
-import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
+import System.Directory (doesFileExist, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
@@ -95,30 +97,38 @@ coreCommandNames = ["ensure", "context", "project", "test", "service", "check-co
 
 {- | The core subcommands every @hostbootstrap@-derived binary exposes. The
 project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
-cases run under @test@ (not a per-noun subcommand).
+cases run under @test@ (not a per-noun subcommand). The project's config builders
+('psInit' / 'psTestInit' / 'psTestConfig') are threaded in too: @init@ writes via
+'psInit', @test init@ writes via 'psTestInit', and @test run@ generates the run
+config via 'psTestConfig'.
 -}
 coreCommands ::
+    forall cfg tcfg.
+    (ProjectCfg cfg, Dhall.FromDhall tcfg, Dhall.ToDhall tcfg) =>
     String ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
     ServiceRegistry ->
-    (ProjectConfig -> [Step]) ->
-    (ProjectConfig -> StepFrame -> LiftContext) ->
-    (ProjectConfig -> Bool -> IO ()) ->
+    (cfg -> [Step]) ->
+    (cfg -> StepFrame -> LiftContext) ->
+    (cfg -> Bool -> IO ()) ->
+    (InitArgs -> cfg) ->
+    (InitArgs -> tcfg) ->
+    (tcfg -> IO [(T.Text, cfg)]) ->
     [Mod CommandFields (IO ())]
-coreCommands progName projectArtifacts suite checkCode services chain frameCtx teardown =
-    [ ensureCommandWith (gate progName Context.EnsureCommand []) allReconcilers
-    , contextCommand progName projectArtifacts
-    , projectCommandGroup progName chain frameCtx teardown
-    , testCommand progName suite
-    , serviceCommandGroup progName services
-    , checkCodeCommand progName checkCode
+coreCommands progName projectArtifacts suite checkCode services chain frameCtx teardown initBuilder testInit testConfig =
+    [ ensureCommandWith (gate @cfg progName Context.EnsureCommand []) allReconcilers
+    , contextCommand @cfg progName projectArtifacts initBuilder
+    , projectCommandGroup progName chain frameCtx teardown initBuilder
+    , testCommand @cfg @tcfg progName suite initBuilder testInit testConfig
+    , serviceCommandGroup progName services initBuilder
+    , checkCodeCommand @cfg progName checkCode
     ]
 
-gate :: String -> Context.CommandClass -> [Context.Capability] -> IO () -> IO ()
+gate :: forall cfg. (ProjectCfg cfg) => String -> Context.CommandClass -> [Context.Capability] -> IO () -> IO ()
 gate progName commandClass caps body =
-    withSiblingProjectConfigContext (T.pack progName) commandClass caps (\_ _ -> body)
+    withSiblingProjectConfigContext (T.pack progName) commandClass caps (\(_ :: cfg) _ -> body)
 
 {- | The @test@ verb: select over the project's case matrix and print the report
 card. @test all@ runs the whole matrix; @test \<case\>@ runs the single case
@@ -126,9 +136,23 @@ with that id (an unknown id fails fast, listing the valid ids). The bare binary
 reaches this through the explicit bare entrypoint; a project supplies its
 non-empty matrix and seams as the 'TestSuite' threaded through
 'HostBootstrap.CLI.runHostBootstrapCLI'.
+
+@test init@ writes the project's test config via 'psTestInit' (it needs **no**
+pre-existing project config — a bootstrap entrypoint). @test run@ reads that test
+config, builds the run's project config via 'psTestConfig', writes it as the
+sibling @<project>.dhall@, drives the suite against the live stack, then deletes
+the **generated** config (keeping the test config).
 -}
-testCommand :: String -> TestSuite -> Mod CommandFields (IO ())
-testCommand progName suite =
+testCommand ::
+    forall cfg tcfg.
+    (ProjectCfg cfg, Dhall.FromDhall tcfg, Dhall.ToDhall tcfg) =>
+    String ->
+    TestSuite ->
+    (InitArgs -> cfg) ->
+    (InitArgs -> tcfg) ->
+    (tcfg -> IO [(T.Text, cfg)]) ->
+    Mod CommandFields (IO ())
+testCommand progName suite _initBuilder testInit testConfig =
     command
         "test"
         ( info
@@ -141,7 +165,7 @@ testCommand progName suite =
             "init"
             ( info
                 (pure runTestInit)
-                (progDesc "Write test.dhall next to the project config (requires an existing project config)")
+                (progDesc "Write test.dhall next to the project config (needs no pre-existing project config)")
             )
     testRunCmd =
         command
@@ -155,40 +179,65 @@ testCommand progName suite =
             ( metavar "SUITE"
                 <> help ("test suite to run, or `" ++ allCasesSelector ++ "` for the whole matrix")
             )
-    -- The test surface gates as 'TestWorkflowCommand', the class permitted in
-    -- every frame that hosts the standardized harness (the orchestration frames
-    -- and the TestHarness frame), so @test run@ runs wherever the kind tooling
-    -- lives — directly on a host that has it, or lifted into the VM/container.
-    -- @test init@ needs the project config's resources to seed the test-config
-    -- override, so it gates with the config in hand (not the discarding 'gate').
-    runTestInit = withSiblingProjectConfigContext (T.pack progName) Context.TestWorkflowCommand [] $ \cfg _ctx -> do
+    -- @test init@ writes the project's test config from defaults (no flags, no
+    -- pre-existing project config required): the project's 'psTestInit'
+    -- interprets the same defaultless 'InitArgs' the harness uses.
+    runTestInit = do
         path <- testDhallPath progName
-        let tc = defaultTestConfig (map T.pack (testSuiteCaseIds suite ++ [allCasesSelector])) (resources cfg)
-        writeTestConfigFile path tc
+        let tc = testInit defaultInitArgs
+        writeProjectConfigFile path tc
         putStrLn ("test init: wrote " ++ path)
-    runTestRun selector = gate progName Context.TestWorkflowCommand [] $ do
-        path <- testDhallPath progName
-        exists <- doesFileExist path
-        unless exists (die ("test run: missing " ++ path ++ "; run `" ++ progName ++ " test init` first"))
-        -- Read the test-config overrides (§ Z): the resources the test stack runs
-        -- at, projected from test.dhall. A project's bring-up honours them; the demo
-        -- runs at its declared budget (its test resources equal its config's).
-        tc <- decodeTestConfigFile path
-        let r = testResources tc
-        putStrLn
-            ( "test run: test-config resources cpu="
-                ++ show (cpu r)
-                ++ " memory="
-                ++ T.unpack (memory r)
-                ++ " storage="
-                ++ T.unpack (storage r)
-            )
-        outcome <- runSuiteSelection suite selector
+    -- @test run@ gates as 'TestWorkflowCommand'. It does NOT load a sibling
+    -- project config (the harness generates it); the gate here is the test
+    -- config's existence precondition plus the suite's own safety preconditions.
+    runTestRun selector = do
+        tpath <- testDhallPath progName
+        exists <- doesFileExist tpath
+        unless exists (die ("test run: missing " ++ tpath ++ "; run `" ++ progName ++ " test init` first"))
+        tc <- Dhall.inputFile Dhall.auto tpath :: IO tcfg
+        -- The run config is generated from the test config: a NON-EMPTY list of
+        -- labeled variants. Each variant writes its own sibling <project>.dhall
+        -- before bring-up and deletes it after teardown, so the harness drives a
+        -- full teardown + spin-up between variants.
+        cfgPath <- siblingProjectConfigPath (T.pack progName)
+        labeledCfgs <- testConfig tc
+        when (null labeledCfgs) (die "test run: the project generated no test-config variants")
+        let variantFor (label, cfg) =
+                ConfigVariant
+                    { variantLabel = label
+                    , variantWithConfig = \body -> do
+                        writeProjectConfigFile cfgPath cfg
+                        putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack label ++ ")")
+                        body `finally` removeGeneratedConfig cfgPath
+                    }
+        outcome <- runSuiteSelection suite (map variantFor labeledCfgs) selector
         case outcome of
             Left err -> die err
             Right report -> do
                 putStr (reportCard report)
                 unless (allPassed report) (die "test: one or more cases failed")
+    removeGeneratedConfig cfgPath = do
+        present <- doesFileExist cfgPath
+        when present (removeFile cfgPath)
+
+-- | The defaultless @init@ flag bundle the @test init@ / harness path uses: no
+-- output/source-root/role overrides, so the project's builder supplies all
+-- defaults.
+defaultInitArgs :: InitArgs
+defaultInitArgs =
+    InitArgs
+        { role = Context.HostOrchestrator
+        , alsoRoles = []
+        , output = Nothing
+        , sourceRoot = Nothing
+        , mCpu = Nothing
+        , memory = Nothing
+        , storage = Nothing
+        , dockerfile = Nothing
+        , haReplicas = Nothing
+        , force = False
+        , ifMissing = False
+        }
 
 -- | The per-project @test.dhall@ path: a sibling of the project config (the
 -- @test run@ gate, § Z).
@@ -197,16 +246,15 @@ testDhallPath progName = do
     cfgPath <- siblingProjectConfigPath (T.pack progName)
     pure (takeDirectory cfgPath </> (progName ++ ".test.dhall"))
 
-
 {- | The @check-code@ verb: the fail-fast image-build quality gate. Its body is
 supplied by the project spec (or by the explicit bare-core entrypoint).
 -}
-checkCodeCommand :: String -> IO () -> Mod CommandFields (IO ())
+checkCodeCommand :: forall cfg. (ProjectCfg cfg) => String -> IO () -> Mod CommandFields (IO ())
 checkCodeCommand progName checkCode =
     command
         "check-code"
         ( info
-            (pure (gate progName Context.CheckCodeCommand [] checkCode))
+            (pure (gate @cfg progName Context.CheckCodeCommand [] checkCode))
             (progDesc "Run the project's fail-fast code-check gate (project-defined body)")
         )
 
@@ -215,8 +263,14 @@ the absorbed read-only config-inspection surfaces (@show@ / @schema@ / @render@ 
 @path@). Child-config creation is the @context-init@ chain step inside @project
 up@, not a @context@ subcommand; config generation is @project init@.
 -}
-contextCommand :: String -> [ConfigArtifact] -> Mod CommandFields (IO ())
-contextCommand progName projectArtifacts =
+contextCommand ::
+    forall cfg.
+    (ProjectCfg cfg) =>
+    String ->
+    [ConfigArtifact] ->
+    (InitArgs -> cfg) ->
+    Mod CommandFields (IO ())
+contextCommand progName projectArtifacts _initBuilder =
     command
         "context"
         ( info
@@ -239,11 +293,11 @@ contextCommand progName projectArtifacts =
             "show"
             ( info
                 (showAction <$> fileArg progName)
-                (progDesc "Decode a <project>.dhall and print its fields")
+                (progDesc "Decode a <project>.dhall and print its composition")
             )
     showAction path = do
-        cfg <- decodeProjectConfigFile path
-        putStr (renderProjectConfigSummary cfg)
+        cfg <- Dhall.inputFile Dhall.auto path :: IO cfg
+        putStr (Context.renderComposition (cfgContext cfg))
 
     schemaCmd =
         command
@@ -253,11 +307,7 @@ contextCommand progName projectArtifacts =
                 (progDesc "Print the Dhall schema the binary's decoders accept (the in-scope artifact union)")
             )
     schemaAction =
-        putStrLn $
-            T.unpack $
-                schemaUnion artifacts
-                    <> T.pack "\n\n-- projectConfig\n"
-                    <> projectConfigSchemaText
+        putStrLn $ T.unpack $ schemaUnion artifacts
 
     renderCmd =
         command
@@ -289,66 +339,71 @@ contextCommand progName projectArtifacts =
             )
     runInspect = do
         path <- siblingProjectConfigPath (T.pack progName)
-        ProjectConfig _ _ ctx _ <- decodeProjectConfigFile path
-        putStr (Context.renderComposition ctx)
+        cfg <- Dhall.inputFile Dhall.auto path :: IO cfg
+        putStr (Context.renderComposition (cfgContext cfg))
 
 {- | The @init@ parser shared by @project init@ (§ Y) and @service init@ (§ AA):
 write a project-local @<project>.dhall@ without requiring an existing config (a
 bootstrap entrypoint). @defaultRole@ selects the role the generated config
 declares when @--role@ is not given (@host-orchestrator@ for @project init@,
-@cluster-service@ for @service init@). Python triggers @project init@
+@cluster-service@ for @service init@). The flags carry **no** core default values
+(the project's 'psInit' supplies every omitted default), so the parser yields a
+defaultless 'InitArgs' which 'psInit' interprets. Python triggers @project init@
 idempotently after the host-native build (§ M).
 -}
-initParserInfo :: String -> String -> ParserInfo (IO ())
-initParserInfo progName defaultRole =
+initParserInfo ::
+    forall cfg.
+    (ProjectCfg cfg) =>
+    String ->
+    String ->
+    (InitArgs -> cfg) ->
+    ParserInfo (IO ())
+initParserInfo progName defaultRole initBuilder =
     info
         ( initAction
             <$> optional outputOpt
             <*> roleOpt
             <*> optional initSourceRootOpt
-            <*> dockerfileOpt
+            <*> optional dockerfileOpt
             <*> optional initCpuOpt
-            <*> memoryOpt
-            <*> storageOpt
+            <*> optional memoryOpt
+            <*> optional storageOpt
             <*> optional haReplicasOpt
             <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
             <*> switch (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
             <*> many alsoRoleOpt
         )
-        (progDesc "Write a default project-local <project>.dhall without requiring an existing config")
+        (progDesc "Write a project-local <project>.dhall without requiring an existing config")
   where
-    initAction moutput roleName mroot cfgDockerfile mcpu cfgMemory cfgStorage mha force ifMissing alsoRoles = do
-        role <- either die pure (parseConfigRole roleName)
+    initAction moutput roleName mroot mDockerfile mcpu mMemory mStorage mha forceFlag ifMissingFlag alsoRolesRaw = do
+        roleKind <- either die pure (parseConfigRole roleName)
         -- A config may declare more than one role (§ X): the primary --role plus
         -- any --also-role grants (e.g. a project authority that is also a service
         -- authority). Each grant unions the role's command classes + capabilities.
-        extraRoles <- mapM (either die pure . parseConfigRole) alsoRoles
-        root <- maybe getCurrentDirectory pure mroot
-        output <- maybe defaultProjectConfigPath pure moutput
-        let cfgResources =
-                Resources
-                    { cpu = fromMaybe (cpu defaultResources) mcpu
-                    , memory = T.pack cfgMemory
-                    , storage = T.pack cfgStorage
+        extraRoles <- mapM (either die pure . parseConfigRole) alsoRolesRaw
+        let args =
+                InitArgs
+                    { role = roleKind
+                    , alsoRoles = extraRoles
+                    , output = moutput
+                    , sourceRoot = mroot
+                    , mCpu = mcpu
+                    , memory = T.pack <$> mMemory
+                    , storage = T.pack <$> mStorage
+                    , dockerfile = T.pack <$> mDockerfile
+                    , haReplicas = mha
+                    , force = forceFlag
+                    , ifMissing = ifMissingFlag
                     }
-            cfgDeploy = DeployConfig{haReplicas = fromMaybe (haReplicas defaultDeployConfig) mha}
-            baseCfg =
-                projectConfigForRole
-                    (T.pack progName)
-                    (T.pack progName)
-                    (T.pack root)
-                    (T.pack cfgDockerfile)
-                    cfgResources
-                    cfgDeploy
-                    role
-            cfg = baseCfg{context = foldr Context.addRole (context baseCfg) extraRoles}
-        exists <- doesFileExist output
-        if exists && ifMissing && not force
-            then putStrLn ("config init: " ++ output ++ " already present")
+            cfg = initBuilder args
+        outPath <- maybe defaultProjectConfigPath pure moutput
+        exists <- doesFileExist outPath
+        if exists && ifMissingFlag && not forceFlag
+            then putStrLn ("config init: " ++ outPath ++ " already present")
             else do
-                when (exists && not force) $
-                    die ("config init: " ++ output ++ " already exists (pass --force to overwrite)")
-                writeProjectConfigFile output cfg
+                when (exists && not forceFlag) $
+                    die ("config init: " ++ outPath ++ " already exists (pass --force to overwrite)")
+                writeProjectConfigFile outPath cfg
     defaultProjectConfigPath = do
         exe <- getExecutablePath
         pure (takeDirectory exe </> progName ++ ".dhall")
@@ -377,9 +432,7 @@ initParserInfo progName defaultRole =
         strOption
             ( long "dockerfile"
                 <> metavar "PATH"
-                <> value "docker/Dockerfile"
-                <> showDefault
-                <> help "project Dockerfile path recorded in the generated config"
+                <> help "project Dockerfile path recorded in the generated config (project default when omitted)"
             )
     initSourceRootOpt =
         strOption
@@ -388,25 +441,21 @@ initParserInfo progName defaultRole =
                 <> help "source root recorded in the generated context; defaults to the current directory"
             )
     initCpuOpt =
-        option auto (long "cpu" <> metavar "N" <> help "CPU resource budget")
+        option auto (long "cpu" <> metavar "N" <> help "CPU resource budget (project default when omitted)") :: Parser Natural
     memoryOpt =
         strOption
             ( long "memory"
                 <> metavar "TEXT"
-                <> value (T.unpack (memory defaultResources))
-                <> showDefault
-                <> help "memory resource budget"
+                <> help "memory resource budget (project default when omitted)"
             )
     storageOpt =
         strOption
             ( long "storage"
                 <> metavar "TEXT"
-                <> value (T.unpack (storage defaultResources))
-                <> showDefault
-                <> help "storage resource budget"
+                <> help "storage resource budget (project default when omitted)"
             )
     haReplicasOpt =
-        option auto (long "ha-replicas" <> metavar "N" <> help "HA replica count recorded in deploy settings")
+        option auto (long "ha-replicas" <> metavar "N" <> help "HA replica count recorded in deploy settings (project default when omitted)") :: Parser Natural
 
 {- | The @project@ lifecycle command (§ Y): @init@ writes the root config, then
 the recursive interpreter brings the chain @up@ / @down@ / @destroy@. @project up
@@ -416,12 +465,15 @@ stops services/clusters/VMs without deleting them; @project destroy@ deletes
 everything spun up while preserving host @.data@.
 -}
 projectCommandGroup ::
+    forall cfg.
+    (ProjectCfg cfg) =>
     String ->
-    (ProjectConfig -> [Step]) ->
-    (ProjectConfig -> StepFrame -> LiftContext) ->
-    (ProjectConfig -> Bool -> IO ()) ->
+    (cfg -> [Step]) ->
+    (cfg -> StepFrame -> LiftContext) ->
+    (cfg -> Bool -> IO ()) ->
+    (InitArgs -> cfg) ->
     Mod CommandFields (IO ())
-projectCommandGroup progName chain frameCtx teardown =
+projectCommandGroup progName chain frameCtx teardown initBuilder =
     command
         "project"
         ( info
@@ -429,7 +481,7 @@ projectCommandGroup progName chain frameCtx teardown =
             (progDesc "Project lifecycle: init the root config, then interpret the chain (up/down/destroy)")
         )
   where
-    pInit = command "init" (initParserInfo progName "host-orchestrator")
+    pInit = command "init" (initParserInfo progName "host-orchestrator" initBuilder)
     pUp =
         command
             "up"
@@ -453,7 +505,7 @@ projectCommandGroup progName chain frameCtx teardown =
     -- ClusterService / Daemon / ImageBuildContainer leaves, where a recursive
     -- @project up@ must not run (§ X).
     runUp dryRun =
-        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \rootCfg ctx ->
+        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \(rootCfg :: cfg) ctx ->
             if dryRun
                 then putStr (renderChain (chain rootCfg))
                 else applyChain rootCfg ctx
@@ -472,12 +524,12 @@ projectCommandGroup progName chain frameCtx teardown =
     -- the host-side cluster reconciler is a no-op there and the VM teardown is the
     -- effective one.
     runDown =
-        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \rootCfg ctx -> do
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(rootCfg :: cfg) ctx -> do
             cfg <- hostConfig
             withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx))
             teardown rootCfg False
     runDestroy =
-        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \rootCfg ctx -> do
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(rootCfg :: cfg) ctx -> do
             cfg <- hostConfig
             withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx))
             teardown rootCfg True
@@ -485,7 +537,7 @@ projectCommandGroup progName chain frameCtx teardown =
 {- | The @service@ lifecycle command (§ AA): the third DSL-driven core command,
 for a project's long-running roles (the @HostDaemon@/service run-model). @init@
 writes a service-configured @<project>.dhall@; @schema@ prints the service config
-schema (reflected from the decoder, § Q) and the registered variants; @run
+schema (the in-scope artifact union, § Q) and the registered variants; @run
 \<variant\>@ runs the selected role. There is **no @service down@** — a service's
 lifetime is owned by its Kubernetes controller and torn down by @project
 destroy@ (§ Y).
@@ -497,8 +549,14 @@ role (the 'Context.ServiceCommand' class, which only the @cluster-service@ /
 missing config — fails fast. It then dispatches on the variant; an unknown
 variant or an empty registry fails fast.
 -}
-serviceCommandGroup :: String -> ServiceRegistry -> Mod CommandFields (IO ())
-serviceCommandGroup progName registry =
+serviceCommandGroup ::
+    forall cfg.
+    (ProjectCfg cfg) =>
+    String ->
+    ServiceRegistry ->
+    (InitArgs -> cfg) ->
+    Mod CommandFields (IO ())
+serviceCommandGroup progName registry initBuilder =
     command
         "service"
         ( info
@@ -506,7 +564,7 @@ serviceCommandGroup progName registry =
             (progDesc "Service lifecycle: init the service config, print the schema, run a long-running role")
         )
   where
-    sInit = command "init" (initParserInfo progName "cluster-service")
+    sInit = command "init" (initParserInfo progName "cluster-service" initBuilder)
     sSchema =
         command
             "schema"
@@ -532,10 +590,10 @@ serviceCommandGroup progName registry =
             [] -> putStrLn "  (none registered)"
             names -> mapM_ (\n -> putStrLn ("  " ++ n)) names
         putStrLn ""
-        putStrLn "-- projectConfig"
-        putStrLn (T.unpack projectConfigSchemaText)
+        putStrLn "-- <project>.dhall (service-config schema, reflected from the decoder)"
+        putStrLn (T.unpack (projectCfgSchemaText @cfg))
     runServiceRun variant =
-        gate progName Context.ServiceCommand [] $
+        gate @cfg progName Context.ServiceCommand [] $
             case lookupServiceHandler variant registry of
                 Just handler -> serviceRun handler
                 Nothing ->
@@ -569,4 +627,3 @@ fileArg progName =
 planForContext :: Context.BinaryContext -> ClusterPlan
 planForContext ctx =
     resolvePlan (T.unpack (Context.project ctx)) (T.unpack (Context.sourceRoot ctx)) Production
-

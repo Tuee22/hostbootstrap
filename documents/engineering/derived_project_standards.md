@@ -66,7 +66,12 @@ artifacts feed the inherited `context` introspection registry. The bare `hostboo
 without an active local config to write the root `<project>.dhall`; every other normal command loads that
 config and fails fast when it is missing or when the command is not valid for the declared frame. There is
 no Python-owned `hostbootstrap.dhall`; resource, context, and witness settings live in the binary-owned
-root config, and child configs are minted by the context-init step inside `project up`.
+root config, and child configs are minted by the context-init step inside `project up`. Under the
+generic-project-model target a project supplies a `ProjectSpec cfg tcfg` whose `psInit` is the **only**
+place default config values live — core ships no defaults — so a project owns both its config type and its
+defaults, and `project init` and the test harness share that one builder (see
+[authoring_project_binaries](authoring_project_binaries.md) and
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
 `runHostBootstrapCLI "hostbootstrap-demo" (withChain demoChain (... (projectSpec demoCommands (TestSuite

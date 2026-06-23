@@ -14,6 +14,7 @@ import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrame
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
 import HostBootstrapDemo.Commands (demoArtifacts, demoChain, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
+import HostBootstrapDemo.Config (demoInit, demoTestConfig, demoTestInit)
 import System.Exit (die)
 
 main :: IO ()
@@ -38,7 +39,7 @@ main =
                         demoTeardown
                         ( withServices
                             demoServices
-                            (projectSpec demoTestSuite demoCheckCode demoArtifacts)
+                            (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)
                         )
                     )
                 )

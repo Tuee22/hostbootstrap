@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 {- | The fixed @optparse-applicative@ command tree and the generic entrypoints
 project binaries use to extend it.
 
@@ -8,7 +11,9 @@ tree (@project@ / @test@ / @service@ / @context@ / @check-code@, plus the hidden
 tools**, not a CLI topology, so a project never adds a command. A project extends
 the core only through the parallel extension streams carried by 'ProjectSpec':
 its lift chain ('withChain'), its Dhall-vocabulary artifacts, its test suite, its
-service-handler registry ('withServices'), and its @check-code@ action.
+service-handler registry ('withServices'), its @check-code@ action, and the
+project-owned config builders ('psInit' / 'psTestInit' / 'psTestConfig') — the
+**only** place config defaults live, since the core ships none.
 
 A project binary calls 'runHostBootstrapCLI' with a 'ProjectSpec'. The entrypoint
 validates the extension points (a non-empty test suite, no duplicate test
@@ -19,7 +24,7 @@ base image) uses the separate 'runBareHostBootstrapCLI'. See
 @documents/architecture/hostbootstrap_core_library.md@.
 -}
 module HostBootstrap.CLI (
-    ProjectSpec,
+    ProjectSpec (..),
     projectSpec,
     withChain,
     withFrameContext,
@@ -32,9 +37,13 @@ where
 
 import Control.Monad (join)
 import Data.List (group, intercalate, sort)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import Dhall (FromDhall, ToDhall)
+import GHC.Generics (Generic)
 import HostBootstrap.Command (coreCommands)
-import HostBootstrap.Config.Schema (ProjectConfig)
+import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..))
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact (..), coreArtifacts)
 import HostBootstrap.Harness (TestSuite, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
 import HostBootstrap.Lift (LiftContext, localContext)
@@ -43,47 +52,82 @@ import HostBootstrap.Step (Step, StepFrame)
 import Options.Applicative
 import System.Exit (die)
 
-{- | A derived project's required extension points. There are no per-project
-commands: the surface is fixed (§ P). A project supplies its runtime test suite,
-code-check action, schema artifact delta, lift chain, per-frame lift context,
-chain-frame teardown, and service-handler registry. The bare core binary uses
-'runBareHostBootstrapCLI' instead.
+{- | A derived project's required extension points, generic over the project's
+config type @cfg@ and the project's test-config type @tcfg@. There are no
+per-project commands: the surface is fixed (§ P). A project supplies its runtime
+test suite, code-check action, schema artifact delta, lift chain, per-frame lift
+context, chain-frame teardown, service-handler registry, and the project-owned
+config builders ('psInit' / 'psTestInit' / 'psTestConfig'). The bare core binary
+uses 'runBareHostBootstrapCLI' instead.
 -}
-data ProjectSpec = ProjectSpec
+data ProjectSpec cfg tcfg = ProjectSpec
     { psTestSuite :: TestSuite
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
     , psServices :: ServiceRegistry
-    , psChain :: ProjectConfig -> [Step]
-    , psFrameContext :: ProjectConfig -> StepFrame -> LiftContext
+    , psChain :: cfg -> [Step]
+    , psFrameContext :: cfg -> StepFrame -> LiftContext
     , -- | The chain-frame teardown the @project down@ / @project destroy@
       -- lifecycle runs after the recursive cluster teardown: stop (@False@) or
       -- delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
       -- and idempotent; the never-delete-@.data@ invariant (§ O) is the cluster
       -- teardown's responsibility. Attach with 'withTeardown'.
-      psTeardown :: ProjectConfig -> Bool -> IO ()
+      psTeardown :: cfg -> Bool -> IO ()
+    , -- | The **only** default-bearing function: interpret the parsed @init@
+      -- flags into a concrete project config, supplying the project's defaults
+      -- for any omitted knob. Drives @project init@ / @service init@.
+      psInit :: InitArgs -> cfg
+    , -- | Interpret the parsed @init@ flags into the project's test config
+      -- (@test init@) — needs no pre-existing project config.
+      psTestInit :: InitArgs -> tcfg
+    , -- | Build the run's labeled project-config variants from the test config
+      -- (@test run@): a **non-empty** list of @(label, cfg)@ the harness loops
+      -- over, generating the sibling config, driving the stack, and tearing it
+      -- down once per variant. The label is the variant's expected message
+      -- (threaded into the per-variant assertion env).
+      psTestConfig :: tcfg -> IO [(T.Text, cfg)]
     }
 
-{- | Build a project spec. The project's lift chain (§ Y), per-frame lift-context
-builder, chain-frame teardown, and service registry default to empty/local;
-attach them with 'withChain' / 'withFrameContext' / 'withTeardown' / 'withServices'.
+{- | Build a project spec from the required streams (the test suite, code-check
+action, schema-artifact delta) plus the project-owned config builders. The
+project's lift chain (§ Y), per-frame lift-context builder, chain-frame teardown,
+and service registry default to empty/local; attach them with 'withChain' /
+'withFrameContext' / 'withTeardown' / 'withServices'.
 -}
-projectSpec :: TestSuite -> IO () -> [ConfigArtifact] -> ProjectSpec
-projectSpec suite check arts =
-    ProjectSpec suite check arts emptyServiceRegistry (const []) (const (const localContext)) (\_ _ -> pure ())
+projectSpec ::
+    TestSuite ->
+    IO () ->
+    [ConfigArtifact] ->
+    (InitArgs -> cfg) ->
+    (InitArgs -> tcfg) ->
+    (tcfg -> IO [(T.Text, cfg)]) ->
+    ProjectSpec cfg tcfg
+projectSpec suite check arts initBuilder testInit testConfig =
+    ProjectSpec
+        { psTestSuite = suite
+        , psCheckCode = check
+        , psArtifacts = arts
+        , psServices = emptyServiceRegistry
+        , psChain = const []
+        , psFrameContext = const (const localContext)
+        , psTeardown = \_ _ -> pure ()
+        , psInit = initBuilder
+        , psTestInit = testInit
+        , psTestConfig = testConfig
+        }
 
 {- | Attach the project's lift chain: a pure function from the root
 @<project>.dhall@ config to the ordered @[Step]@ the core @project@ lifecycle
 interprets (§ Y). The chain is the project's primary deploy contribution.
 -}
-withChain :: (ProjectConfig -> [Step]) -> ProjectSpec -> ProjectSpec
+withChain :: (cfg -> [Step]) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withChain f spec = spec{psChain = f}
 
 {- | Attach the per-frame lift-context builder the recursive interpreter uses to
 cross into a nested frame — the project supplies the provider VM/container
 identity for each frame (§ U).
 -}
-withFrameContext :: (ProjectConfig -> StepFrame -> LiftContext) -> ProjectSpec -> ProjectSpec
+withFrameContext :: (cfg -> StepFrame -> LiftContext) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withFrameContext f spec = spec{psFrameContext = f}
 
 {- | Attach the project's chain-frame teardown: how @project down@ (stop, @False@)
@@ -93,7 +137,7 @@ teardown (which preserves host @.data@, § O), so the outermost frame — the VM
 stopped or deleted last. Best-effort and idempotent: a missing frame is not an
 error, so a partial stack always tears down.
 -}
-withTeardown :: (ProjectConfig -> Bool -> IO ()) -> ProjectSpec -> ProjectSpec
+withTeardown :: (cfg -> Bool -> IO ()) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withTeardown f spec = spec{psTeardown = f}
 
 {- | Attach the project's service-handler registry (one of the extension streams,
@@ -101,19 +145,49 @@ withTeardown f spec = spec{psTeardown = f}
 registry may be empty (not every project ships a service); the fixed @service@
 surface is unchanged either way.
 -}
-withServices :: ServiceRegistry -> ProjectSpec -> ProjectSpec
+withServices :: ServiceRegistry -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withServices svcs spec = spec{psServices = svcs}
 
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
 -}
-runHostBootstrapCLI :: String -> ProjectSpec -> IO ()
+runHostBootstrapCLI ::
+    (ProjectCfg cfg, FromDhall tcfg, ToDhall tcfg) =>
+    String ->
+    ProjectSpec cfg tcfg ->
+    IO ()
 runHostBootstrapCLI progName spec = do
     either die pure (validateProjectSpec spec)
-    runCLI progName (psArtifacts spec) (psTestSuite spec) (psCheckCode spec) (psServices spec) (psChain spec) (psFrameContext spec) (psTeardown spec)
+    runCLI
+        progName
+        (psArtifacts spec)
+        (psTestSuite spec)
+        (psCheckCode spec)
+        (psServices spec)
+        (psChain spec)
+        (psFrameContext spec)
+        (psTeardown spec)
+        (psInit spec)
+        (psTestInit spec)
+        (psTestConfig spec)
+
+{- | The bare core binary's trivial project config: a newtype over the universal
+'Context.BinaryContext'. It carries no project fields (no resources, no
+Dockerfile, no deploy), so the bare binary type-checks against the generic spec
+without inventing a project config shape. The @init@/@test@ builders below give
+it the minimal behaviour the bare surface needs.
+-}
+newtype BareConfig = BareConfig {bareContext :: Context.BinaryContext}
+    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+instance ProjectCfg BareConfig where
+    cfgContext = bareContext
+    cfgWithContext ctx _ = BareConfig ctx
 
 {- | Run the bare core binary. This is the only supported path that intentionally
-has no project artifacts, an empty test matrix, and no service registry.
+has no project artifacts, an empty test matrix, and no service registry. Its
+config builders interpret the parsed @init@ flags into a 'BareConfig' (just the
+derived context) and a trivial test config (the bare binary ships no test cases).
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName =
@@ -126,21 +200,64 @@ runBareHostBootstrapCLI progName =
         (const [])
         (const (const localContext))
         (\_ _ -> pure ())
+        bareInit
+        (const ())
+        (const (pure [(T.pack "bare", bareInit defaultBareArgs)]))
+  where
+    defaultBareArgs =
+        InitArgs
+            { role = Context.HostOrchestrator
+            , alsoRoles = []
+            , output = Nothing
+            , sourceRoot = Nothing
+            , mCpu = Nothing
+            , memory = Nothing
+            , storage = Nothing
+            , dockerfile = Nothing
+            , haReplicas = Nothing
+            , force = False
+            , ifMissing = False
+            }
+    bareInit args =
+        let baseCtx =
+                Context.contextForKind
+                    (T.pack progName)
+                    (T.pack progName)
+                    (T.pack (fromMaybe "." (sourceRoot args)))
+                    Context.defaultResourceEnvelope
+                    (role args)
+         in BareConfig (foldr Context.addRole baseCtx (alsoRoles args))
 
 runCLI ::
+    (ProjectCfg cfg, FromDhall tcfg, ToDhall tcfg) =>
     String ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
     ServiceRegistry ->
-    (ProjectConfig -> [Step]) ->
-    (ProjectConfig -> StepFrame -> LiftContext) ->
-    (ProjectConfig -> Bool -> IO ()) ->
+    (cfg -> [Step]) ->
+    (cfg -> StepFrame -> LiftContext) ->
+    (cfg -> Bool -> IO ()) ->
+    (InitArgs -> cfg) ->
+    (InitArgs -> tcfg) ->
+    (tcfg -> IO [(T.Text, cfg)]) ->
     IO ()
-runCLI progName projectArtifacts testSuite checkCode services chain frameCtx teardown =
+runCLI progName projectArtifacts testSuite checkCode services chain frameCtx teardown initBuilder testInit testConfig =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
-    allCommands = coreCommands progName projectArtifacts testSuite checkCode services chain frameCtx teardown
+    allCommands =
+        coreCommands
+            progName
+            projectArtifacts
+            testSuite
+            checkCode
+            services
+            chain
+            frameCtx
+            teardown
+            initBuilder
+            testInit
+            testConfig
     opts =
         info
             (parser <**> helper)
@@ -155,7 +272,7 @@ runCLI progName projectArtifacts testSuite checkCode services chain frameCtx tea
     parser :: Parser (IO ())
     parser = hsubparser (mconcat allCommands)
 
-validateProjectSpec :: ProjectSpec -> Either String ()
+validateProjectSpec :: ProjectSpec cfg tcfg -> Either String ()
 validateProjectSpec spec
     | testSuiteCaseCount (psTestSuite spec) == 0 =
         Left "project test suite is empty; use runBareHostBootstrapCLI only for the bare core binary"

@@ -73,11 +73,19 @@ host-level binary with no sibling `<project>.dhall`, and writes the host-orchest
 frame with no parent:
 
 ```sh
-<project> project init --cpu 4 --memory 8 --storage 20 --ha-replicas 2
+<project> project init --cpu 6 --memory 10 --storage 80 --ha-replicas 1
 ```
 
-The written `ProjectConfig` shape carries the Dockerfile path, the editable resource budget, the deploy
-knobs, and the root context authority (a single host-orchestrator frame). The rendered Dhall hoists the
+The values it writes are NOT core defaults: `project init` calls the project-owned `psInit` to render a
+fully-populated config, then layers any flag overrides on top. The flags are optional precisely because
+`psInit` already supplies every field — core ships no default config values, so the no-flag invocation
+renders the project's own defaults (for the demo, `6/10/80`, `haReplicas = 1`, `docker/Dockerfile`,
+`message = "Hello, world!"`). The shared builder lives in one place; see *The Shared Value-Free Builder*
+below.
+
+The written config shape carries the Dockerfile path, the editable resource budget, the deploy
+knobs, any project-extended field (the demo's `message`), and the root context authority (a single
+host-orchestrator frame). The rendered Dhall hoists the
 repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass` unions into top-level
 `let` bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and standalone — no imports,
 decodable in-process. Optional structural variation (for example, skip the VM and descend straight to
@@ -85,6 +93,21 @@ Docker) is a flag on this root config, so `chain rootCfg` stays a pure function 
 
 The root config is the user's editable surface. The chain reads it once at the top frame; every deeper
 frame's config is **derived**, not hand-edited.
+
+## The Shared Value-Free Builder
+
+A single pure builder under `psInit` — `projectConfigForRole` / `buildInitConfig` — is the only place
+default config values live. Three callers share it: `project init` (renders the root config, then layers
+flag overrides), `test init` (writes the thin `test.dhall` override), and the test harness (generates each
+run's `<project>.dhall` via the project-owned `psTestConfig`, which reuses `psInit`). The harness builds
+its config **functionally**, by calling that builder in-process — it never shells out to `<project>
+project init`. Sharing one builder is what keeps the production config and every test run rendered from the
+same defaults (DRY), with no second source of truth.
+
+The on-disk config is normally **absent** after a build: nothing creates it as a side effect of building
+the binary, and Python does not initialize or trigger config creation. A normal command fails fast (exit 1)
+when its sibling `<project>.dhall` is missing; the config exists only after an explicit `project init` or
+after the harness generates one for a run. There is no auto-init backstop.
 
 ## The Context-Init Step: Minting Child `<project>.dhall`
 

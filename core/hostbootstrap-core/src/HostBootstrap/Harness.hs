@@ -1,5 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The one standardized, Dhall-driven test harness.
@@ -25,6 +26,7 @@ module HostBootstrap.Harness (
     testSuiteCaseIds,
     testSuiteCaseCount,
     allCasesSelector,
+    ConfigVariant (..),
     runSuiteSelection,
     testSafetyPreconditions,
     RunModel (..),
@@ -275,8 +277,10 @@ The fields, in order:
   1. the two hard fail-fast safety preconditions (§ Z): @Right ()@ to proceed,
      @Left reason@ to refuse before any side effect — built with
      'testSafetyPreconditions';
-  2. /bring up/: write the test-specific @<project>.dhall@ and drive @project up@,
-     then resolve the assertion @env@ (one @project up@ per distinct test config);
+  2. /bring up/: given the active variant's label, drive @project up@ against
+     the variant's already-written @<project>.dhall@, then resolve the assertion
+     @env@ (one @project up@ per variant). The label is the variant's expected
+     message, threaded into the assertion env;
   3. the 'Case' matrix the assertions cover;
   4. the per-case assertion against the live stack (reusing the self-reference
      lift, § U);
@@ -289,7 +293,7 @@ data TestSuite
   = forall env.
     TestSuite
       (IO (Either String ()))
-      (IO env)
+      (T.Text -> IO env)
       [Case]
       (env -> Case -> IO CaseResult)
       (env -> IO ())
@@ -298,7 +302,7 @@ data TestSuite
 trivial bring-up over no cases, so @test run all@ renders @0/0 passed@.
 -}
 emptySuite :: TestSuite
-emptySuite = TestSuite (pure (Right ())) (pure ()) [] (\_ _ -> pure Pass) (\_ -> pure ())
+emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (\_ -> pure ())
 
 {- | The case ids in a suite. Used by the CLI layer to reject accidental empty or
 duplicate project suites before command dispatch.
@@ -316,6 +320,17 @@ a case @all@.
 -}
 allCasesSelector :: String
 allCasesSelector = "all"
+
+{- | One labeled test-config variant the command layer supplies to
+'runSuiteSelection': the variant label (its expected message, threaded into the
+suite's bring-up) and the rank-2 bracket that writes that variant's generated
+@<project>.dhall@ before bring-up and removes it after teardown. A newtype (not a
+bare tuple) so the @forall@ bracket needs no impredicativity.
+-}
+data ConfigVariant = ConfigVariant
+    { variantLabel :: T.Text
+    , variantWithConfig :: forall a. IO a -> IO a
+    }
 
 {- | The two hard fail-fast safety preconditions checked before any test runs
 (development_plan_standards § Z), so a test never interferes with production:
@@ -341,17 +356,33 @@ testSafetyPreconditions configPath productionClusterRunning = do
           else Right ()
 
 {- | Resolve a @test run@ selector against a suite, enforce the safety
-preconditions, bring the test stack up (drive @project up@), run the chosen
-case(s)' assertions against it, and guarantee teardown (drive @project destroy@)
-via 'finally'. 'allCasesSelector' runs the whole matrix; any other value runs the
-single case with that id; an unknown id is a 'Left' naming the valid case ids
-plus @all@, so the inherited @test run@ verb can fail fast. A refused safety
-precondition is a 'Left' and **no stack is brought up**. The per-case loop reuses
-'runMatrix' (the live stack is the shared, already-up env), so the harness owns
-no second bring-up path (§ W).
+preconditions, then **loop over the labeled config variants** the command layer
+supplies — for each variant: generate the run config, bring the test stack up
+(drive @project up@), run the chosen case(s)' assertions against it (with the
+variant label available), tear it down (drive @project destroy@), and delete the
+generated config — full teardown + spin-up between variants. 'allCasesSelector'
+runs the whole matrix; any other value runs the single case with that id; an
+unknown id is a 'Left' naming the valid case ids plus @all@, so the inherited
+@test run@ verb can fail fast. A refused safety precondition is a 'Left' and **no
+stack is brought up and no config is generated**. The per-case loop reuses
+'runMatrix' (the live stack is the shared, already-up env), so the harness owns no
+second bring-up path (§ W).
+
+Each @(label, withGeneratedConfig)@ bracket is supplied by the command layer (it
+holds the project's 'tcfg' / @psTestConfig@): it writes that variant's generated
+run config as the sibling @<project>.dhall@ before bring-up and removes it after
+teardown. The brackets run **after** the safety precondition (which refuses if a
+production config already exists), so the harness only ever generates and removes
+a config of its own making. The safety precondition is checked **once** up front;
+the per-variant reports are aggregated into one 'Report', each row labeled with
+its variant.
 -}
-runSuiteSelection :: TestSuite -> String -> IO (Either String Report)
-runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) selector =
+runSuiteSelection ::
+  TestSuite ->
+  [ConfigVariant] ->
+  String ->
+  IO (Either String Report)
+runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants selector =
   case chosenCases of
     Left err -> pure (Left err)
     Right chosen -> do
@@ -361,12 +392,18 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) selector 
         -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
         -- the self-created-only delete-guard, so the run's durable storage is
         -- isolated and a `.test_data` (or `.data`) the run did not create is never
-        -- removed.
+        -- removed. Each variant's run config is generated inside its
+        -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
+        -- brought up against it; the variant reports are concatenated.
         Right () -> withSelfCreatedTestData testDataRoot $ do
-          env <- bringUp
-          report <- runMatrix (assertSeams env) chosen `finally` tearDown env
-          pure (Right report)
+          variantReports <- mapM (runVariant chosen) variants
+          pure (Right (Report (concatMap reportResults variantReports)))
   where
+    runVariant chosen (ConfigVariant label withGeneratedConfig) =
+      withGeneratedConfig $ do
+        env <- bringUp label
+        report <- runMatrix (assertSeams env) chosen `finally` tearDown env
+        pure (labelReport label report)
     chosenCases
       | selector == allCasesSelector = Right cases
       | otherwise = case filter ((== selector) . caseId) cases of
@@ -381,6 +418,10 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) selector 
           seamRun = assertCase,
           seamTeardown = \_ _ -> pure ()
         }
+    -- Prefix each case id with the variant label so the aggregated report card
+    -- attributes every row to the variant it ran under.
+    labelReport label (Report rs) =
+      Report [("[" ++ T.unpack label ++ "] " ++ cid, r) | (cid, r) <- rs]
     unknown =
       "unknown test case "
         ++ show selector

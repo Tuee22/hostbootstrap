@@ -88,10 +88,21 @@ has two conceptual sections:
 
 | Section | Owner | Purpose |
 |---|---|---|
-| Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags |
+| Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags, and any project-extended field (the demo's `message`) |
 | Runtime context | `hostbootstrap-core` / project binary | current local authority: identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, resource envelope, child-context rules |
 
-A host-level config has the same top-level shape as the generated `ProjectConfig` schema:
+The decode is **strict and total**: every field in the project's config type is mandatory, so a missing
+field fails the `FromDhall` decode. The decoder never `//`-merges a partial value against a default and
+never `fromMaybe`s a missing field into a fallback at decode time — there is no decode-time optionality.
+Defaults are not a property of the schema; they live ONLY in the project-owned `psInit`, which renders a
+fully-populated value that `project init` writes and the test harness seeds (see
+[config_generation.md](config_generation.md) and the
+[generic_project_model.md](../architecture/generic_project_model.md) design). The on-disk config a normal
+command reads is therefore a complete value, not a sparse override.
+
+A host-level config has the same top-level shape as the project's config type (for the demo, the demoted
+`ProjectConfig` schema). A project may add its own mandatory fields with no core change: the demo carries a
+`message : Text` field its web service renders, shown below.
 
 ```dhall
 let ContextKind =
@@ -136,6 +147,7 @@ let CommandClass =
 
 in  { dockerfile = "docker/Dockerfile"
     , resources = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+    , message = "Hello, world!"
     , context =
       { project = "hostbootstrap-demo"
       , binary = "hostbootstrap-demo"
@@ -183,6 +195,13 @@ in  { dockerfile = "docker/Dockerfile"
 The exact generated value is owned by the binary. Use `<project> project init` for a valid default and
 `<project> context schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
 schema in project docs.
+
+The `message : Text` field is a worked example of a project-extended field flowing all the way to the
+workload, with no core-owned slot: `<project>.dhall` carries `message`, the chart's `deploy-chart` step
+forwards it into the web service's ConfigMap, the `serveWeb` handler reads its delivered config, the API's
+`BudgetView.message` carries it across the `purescript-bridge` round-trip, and the SPA renders it into its
+`#message` element. It is a mandatory field on the demo's OWN config type — core owns no project-specific
+field and ships no generic extra slot.
 
 ## Default Generation
 

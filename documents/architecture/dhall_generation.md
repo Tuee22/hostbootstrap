@@ -81,8 +81,13 @@ command.
 ## Root Init And The Context-Init Step
 
 The root `<project>.dhall` is minted by `project init`: it writes the host-orchestrator root config (no
-parent frame) with optional `--cpu/--memory/--storage/--ha-replicas` parameters and fails fast unless run
-by a fresh host-level binary with no sibling `.dhall`. The default frame is the host orchestrator.
+parent frame), layering optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's
+defaults, and fails fast unless run by a fresh host-level binary with no sibling `.dhall`. The default
+frame is the host orchestrator. Defaults are **not** core values — they live in the project's `psInit`
+builder, which `project init`, `test init`, and the harness all share. A project may carry its own typed
+Parameters-layer fields on `cfg`: the demo's mandatory `message : Text` (its `psInit` default
+`"Hello, world!"`) is one such field, rendered into the root `<project>.dhall` and read by the `Web`
+service.
 
 Child configs are **projections, not copies**, and they are minted by a **context-init step** the
 recursive interpreter runs inside `project up` at each frame boundary, before handing off `pb project up`
@@ -150,7 +155,8 @@ context-init projection that realize this, and
 ## Current Status
 
 The built binary exposes the Dhall surface through the `project` chain. `project init` renders the root
-config from root parameters only — `--cpu/--memory/--storage/--ha-replicas`. The **context-init step**
+config by layering the optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's
+`psInit` defaults (core ships none). The **context-init step**
 that the recursive `project up` interpreter runs at each frame boundary mints the child projections at
 the VM/container/service boundaries (Dockerfiles bake the narrow `image-build-container` config so
 build-time commands run during the image build). The read-only `context` command introspects the sibling

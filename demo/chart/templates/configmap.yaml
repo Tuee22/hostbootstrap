@@ -121,4 +121,5 @@ data:
             , childContextKinds = [] : List ContextKind
             }
         , deploy = { haReplicas = {{ .Values.replicas }} }
+        , message = "{{ .Values.demoMessage }}"
         }

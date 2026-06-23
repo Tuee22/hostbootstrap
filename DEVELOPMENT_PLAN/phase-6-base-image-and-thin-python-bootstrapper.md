@@ -17,10 +17,16 @@ project builds its own binary **host-native**. The project container the binary 
 accelerated by the warm Cabal store. The Python CLI exposes `doctor` / `build` / `run` / `update` /
 `base`, and `bootstrap.py` follows the thin pre-binary boundary (§ M, § N): derive the project from the
 single Cabal file, assert host minimums, ensure the host build toolchain, build the binary host-native on
-every substrate, trigger the binary's idempotent `config init --if-missing`, and exec. Docker, the
+every substrate, and exec it (the binary owns config init — see the forward-pointer below). Docker, the
 project-container build, VM sizing, cordoning, and Dhall read/write are project-binary responsibilities.
 The `core.freeze` / `daemon.freeze` layering is owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
+
+Forward-pointer: the bootstrapper's post-build `config init --if-missing` auto-init is dropped under the
+generic project model — Python builds the host-native binary and execs it without triggering config
+creation, and the binary fails fast when no sibling `<project>.dhall` exists. That removal is owned by
+[phase-19-generic-project-model.md](phase-19-generic-project-model.md) (Sprint 19.5) and tracked in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 Sprint 6.5 adds the explicit `hostbootstrap update` command that reinstalls the pipx-managed Python
 bootstrapper from the canonical VCS source. That command is not automatic and does not become a

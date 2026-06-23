@@ -24,6 +24,13 @@ Playwright run across chromium/firefox/webkit lifted into the VM frame) — driv
 tearing down with `project destroy` (host `.data` preserved). See `## Remaining Work` for the validated
 detail.
 
+Forward-pointer: the demo's config-driven `message` worked example — the demo's `cfg` gains a
+`message : Text` field that flows `<project>.dhall` → the chart ConfigMap → the web service → the SPA, plus
+the two-variant run (`"Hello, world!"` then `"Hello, Universe!"`, full teardown + spin-up between) and the
+polymorphic Playwright `e2e-tabs` spec — is owned by
+[phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md). It is
+additive; this phase's validated shape is unchanged.
+
 The earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
 demo's deploy is now the contributed `demoChain :: ProjectConfig -> [Step]` value (plus `demoFrameContext` /
 `demoTeardown`) interpreted by the core `project up`, which stood up the full live persistent stack — the

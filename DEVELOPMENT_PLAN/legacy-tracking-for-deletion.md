@@ -10,27 +10,9 @@
 
 ## Pending
 
-The generic-project-model correction (development_plan_standards § BB) is **documentation-only** so far —
-these surfaces still exist in code and are scheduled for removal by
-[phase-19-generic-project-model.md](phase-19-generic-project-model.md):
-
-- **`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig`** in
-  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, and the
-  `fromMaybe (cpu defaultResources)` / `value (memory defaultResources)` / `value (storage
-  defaultResources)` flag defaults in `HostBootstrap.Command.initAction` — core owns no default config
-  values under § BB. Replacement: a project-supplied `psInit :: InitArgs -> cfg`. Owning phase: phase-19,
-  sprint 19.1. Replacement design: `documents/architecture/generic_project_model.md`.
-- **The fixed universal `ProjectConfig` / `Resources` / `DeployConfig` types as core types**
-  (`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`) — under § BB these become the demo's
-  concrete `cfg`/`tcfg`, and `ProjectSpec` is parameterized as `ProjectSpec cfg tcfg` coupled to `cfg` only
-  via `cfg -> BinaryContext` + `BinaryContext -> cfg -> cfg`. Owning phase: phase-19, sprint 19.2.
-- **The `test init` reads-existing-config / `test run` reuses-existing-config flow** — `runTestInit`
-  (`HostBootstrap.Command`) requires and copies `resources cfg` from a pre-existing `<project>.dhall`, and
-  the demo's `demoTestUp` (`demo/src/HostBootstrapDemo/Commands.hs`) drives `project up` against that
-  pre-existing config, so `TestConfig.testResources` is read and printed but never applied. Under § BB / § Z
-  the harness **generates** the run's `<project>.dhall` from `test.dhall` via `psTestConfig` and deletes it
-  on teardown. Owning phase: phase-19, sprint 19.3. Replacement design:
-  `documents/architecture/harness_workflow.md`.
+No pending cleanup obligations. The generic-project-model correction
+(development_plan_standards § BB) has **landed** (phase-19, 2026-06-23); its three former entries
+moved to **Removed Surfaces** below. An empty `Pending` section is valid (see **Rules**).
 
 ## Retained Current Surfaces
 
@@ -55,9 +37,34 @@ These surfaces are intentionally present and are not cleanup obligations.
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
-- **Flat `config init` top-level verb** — config generation is now `project init`; the Python bootstrapper
-  triggers `project init --if-missing` after the host-native build (the shared init parser is reused).
-  Owning phase: phase-4.
+- **Core-owned config defaults** (`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` in
+  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, plus the `fromMaybe (cpu
+  defaultResources)` / `value (memory defaultResources)` / `value (storage defaultResources)` flag
+  defaults in `HostBootstrap.Command.initAction`) — removed 2026-06-23 by the phase-19 genericization.
+  `hostbootstrap-core` owns **no** default config values: defaults live only in a project-owned `psInit`
+  (`psInit :: InitArgs -> cfg`), which `project init` (layering optional flag overrides) and the harness
+  both reuse. Owning phase: phase-19, sprint 19.1.
+- **The fixed universal `ProjectConfig` / `Resources` / `DeployConfig` / `TestConfig` types as core types**
+  (`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`) — removed 2026-06-23 by the phase-19
+  genericization. Core owns no config type: `ProjectSpec` is parameterized as `ProjectSpec cfg tcfg`,
+  coupled to a project's own config type only via `cfg -> BinaryContext` + `BinaryContext -> cfg -> cfg`
+  (the `ProjectCfg`/`cfgContext` authority); the universal types became the demo's concrete `cfg`/`tcfg`.
+  **Rejected alternative (recorded as rejected, not a cleanup obligation):** a core-owned generic
+  `extra : Map Text Text` slot on a universal config type — rejected because core owns no project-specific
+  field and no generic extra slot. Owning phase: phase-19, sprint 19.2.
+- **The `test init` reads-existing-config / `test run` reuses-existing-config flow** (`runTestInit` in
+  `HostBootstrap.Command` copying `resources cfg` from a pre-existing `<project>.dhall`; the demo's
+  `demoTestUp` driving `project up` against that pre-existing config) — removed 2026-06-23 by the phase-19
+  genericization. The harness now **generates** the run's `<project>.dhall` via the project-owned
+  `psTestConfig` (reusing `psInit`, never shelling the CLI), runs the real `project up`, asserts, `project
+  destroy`, then deletes the generated config and self-created `.test_data` (keeping `test.dhall`);
+  `test init` requires no pre-existing `<project>.dhall`, the fail-fast existence precondition checks
+  `siblingProjectConfigPath`, and a suite may declare more than one config variant. Owning phase: phase-19,
+  sprint 19.3.
+- **Flat `config init` top-level verb** — config generation is now `project init` (the shared init parser
+  is reused). The Python bootstrapper does **not** trigger it: it builds the host-native binary and execs
+  it, and the binary fails fast when no sibling `<project>.dhall` exists (the former post-build auto-init
+  trigger is removed — see **The Python config auto-init trigger** below). Owning phase: phase-4.
 - **Flat `cluster up|down|delete|status` top-level verb** — superseded by `project up` / `project down` /
   `project destroy`; the `clusterDown` / `clusterDelete` reconcilers remain, invoked by the lifecycle
   command. Owning phase: phase-4.
@@ -89,6 +96,13 @@ a plan update creates a new current owner for it.
   reads or writes Dhall.
 - **Python host-context writer in `hostbootstrap/bootstrap.py`** — the built project binary owns
   sibling `<project>.dhall` initialization and child projection.
+- **The Python config auto-init trigger** (the post-build `project init --if-missing` in
+  `hostbootstrap/bootstrap.py`) — the bootstrapper built the binary then triggered its idempotent config
+  init so a default `<project>.dhall` always existed. Removed (2026-06-23, phase-19 sprint 19.5): Python
+  builds the host-native binary and execs it; it does not initialize or trigger config creation, and a
+  normal command fails fast (exit 1) when no sibling `<project>.dhall` exists — the config is created by an
+  explicit `project init` or generated by the test harness (`psTestConfig`). Owning phase: phase-19,
+  sprint 19.5.
 - **`StaticBase` compatibility API in `HostBootstrap.Config.Schema`** (`StaticBase`,
   `decodeStaticBaseText`, `decodeStaticBaseFile`, `renderStaticBase`) — the current API is
   `ProjectConfig`, `decodeProjectConfigText`/`File`, `renderProjectConfig`, `project init`, and the
@@ -102,9 +116,10 @@ a plan update creates a new current owner for it.
 - **`core/hostbootstrap-core/example/Main.hs` and the `hostbootstrap-example` executable** — the
   worked consumer is `demo/`.
 - **Pre-binary container orchestration in `hostbootstrap/bootstrap.py`** — Python asserts host
-  minimums, ensures the host build toolchain, builds the project binary host-native, initializes config
-  if missing, and execs the binary. Docker ensure, container builds, VM sizing, and cluster operations
-  belong to the project binary.
+  minimums, ensures the host build toolchain, builds the project binary host-native, and execs the
+  binary; it does **not** initialize config (the binary fails fast when no sibling `<project>.dhall`
+  exists — see **The Python config auto-init trigger** above). Docker ensure, container builds, VM
+  sizing, and cluster operations belong to the project binary.
 - **Legacy pipx `#egg=hostbootstrap` install/update specs** — downstream install and update guidance
   uses the direct VCS requirement form
   `hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@main`. Reintroducing `#egg`

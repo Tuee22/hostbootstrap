@@ -17,6 +17,8 @@ module HostBootstrap.Config.Vocab
     PodResources (..),
     KindNode (..),
     Mount (..),
+    SecretRef (..),
+    VaultRef (..),
   )
 where
 
@@ -59,4 +61,26 @@ data Mount = Mount
     target :: Text,
     readOnly :: Bool
   }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | The @Vault@ alternative's payload: a KV mount, path, and field naming
+-- where the secret *source* lives. Mirrors the @Vault@ record carried by
+-- @Core.dhall@ @SecretRef@.
+data VaultRef = VaultRef
+  { mount :: Text,
+    path :: Text,
+    field :: Text
+  }
+  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | A typed pointer to a secret's source — never the secret material itself.
+-- A pure shape with no Vault dependency. Dhall encodes this sum type as a union
+-- keyed by constructor name, so it mirrors @Core.dhall@ @SecretRef@ exactly:
+-- @Vault@ carries the @{ mount, path, field }@ record, the other three carry
+-- 'Text'.
+data SecretRef
+  = Vault VaultRef
+  | TransitKey Text
+  | Prompt Text
+  | TestPlaintext Text
   deriving (Eq, Show, Generic, FromDhall, ToDhall)

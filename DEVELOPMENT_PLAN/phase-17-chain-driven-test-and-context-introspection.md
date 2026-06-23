@@ -12,7 +12,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 **Reopened (2026-06-19) and closed (2026-06-20)**: `test run` drives the real `project up`, enforces the two
 fail-fast safety preconditions, uses the L0 `.test_data` self-created-only delete-guard, and deletes only
@@ -37,12 +37,12 @@ persistent stack is owned by [phase-16](phase-16-project-lifecycle-command.md).
 
 ## Remaining Work
 
-**Reopened by [phase 19](phase-19-generic-project-model.md)** (the generic-project-model correction,
-development_plan_standards § BB): `test.dhall` becomes a thin override and `test run` GENERATES the run's
-`<project>.dhall` from it via the project-owned `psTestConfig`, closing the § Z code-vs-contract drift
-where the demo reuses a pre-existing config; `test init` no longer requires a pre-existing `<project>.dhall`.
-This is documentation-only target work; the superseded surfaces are listed in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
+[Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
+model, § BB): `test.dhall` becomes a thin override and `test run` *generates* the run's `<project>.dhall`
+from it via the project-owned `psTestConfig`, and `test init` no longer requires a pre-existing
+`<project>.dhall`. The superseded `test`-reuses-existing-config flow is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase is
+not reopened.**
 
 **Native-Linux test parity — DONE (2026-06-21).** `test run all` now reports **`3/3 passed` on native
 Incus/Linux** as well as Apple-Silicon/Lima. The fix generalized the self-reference lift's leaf

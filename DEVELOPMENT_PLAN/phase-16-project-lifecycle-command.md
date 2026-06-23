@@ -44,6 +44,12 @@ contributes `demoChain :: ProjectConfig -> [Step]` + `demoFrameContext` + `demoT
 `web` (load-bearing) and `vm` / `incus` (debug-hatch) verbs (see
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
+Forward-pointer: under the generic project model, `project init` sources its defaults from the
+project-supplied `psInit` (core owns no default config values) and layers optional flag overrides over
+them. That parameterization is owned by
+[phase-19-generic-project-model.md](phase-19-generic-project-model.md); the `project init|up|down|destroy`
+surface this phase shipped is unchanged.
+
 ## Remaining Work
 
 Close the command surface to the fixed core set and make `hostbootstrap-core` a **library of composable

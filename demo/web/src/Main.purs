@@ -50,10 +50,17 @@ render :: forall m. State -> H.ComponentHTML Action () m
 render st =
   HH.div_
     [ HH.h1_ [ HH.text "hostbootstrap-demo" ]
+    , HH.p [ HP.id "message" ] [ HH.text message ]
     , HH.div [ HP.id "tabs" ] (map tabButton [ Overview, Budget, Status ])
     , HH.div [ HP.id "content" ] [ content ]
     ]
   where
+  -- The config-driven served message (Sprint 20.1), rendered in a stable shell
+  -- element the polymorphic Playwright asserts EXPECTED_MESSAGE against. Empty
+  -- until the budget view loads.
+  message = case st.budget of
+    Nothing -> ""
+    Just bv -> (unwrap bv).message
   tabButton t =
     HH.button
       [ HP.class_ (HH.ClassName "tab"), HE.onClick \_ -> Select t ]

@@ -5,6 +5,7 @@ module HarnessSpec (tests) where
 
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (find, isInfixOf)
+import qualified Data.Text as T
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Cluster.Lifecycle (ClusterProfile (TestCase))
 import HostBootstrap.Harness
@@ -99,22 +100,39 @@ matrixCases =
 suiteCases :: [TestTree]
 suiteCases =
   [ testCase "emptySuite `all` renders 0/0 passed" $ do
-      outcome <- runSuiteSelection emptySuite allCasesSelector
+      outcome <- runSuiteSelection emptySuite [oneVariant] allCasesSelector
       case outcome of
         Right report -> assertBool "report card shows 0/0" ("0/0 passed" `isInfixOf` reportCard report)
         Left err -> assertFailure ("expected Right, got Left " ++ err),
-    testCase "`all` runs the whole matrix" $ do
-      outcome <- runSuiteSelection twoCaseSuite allCasesSelector
+    testCase "`all` runs the whole matrix (rows labeled by variant)" $ do
+      outcome <- runSuiteSelection twoCaseSuite [oneVariant] allCasesSelector
       case outcome of
-        Right (Report rs) -> map fst rs @?= ["a", "b"]
+        Right (Report rs) -> map fst rs @?= ["[v0] a", "[v0] b"]
         Left err -> assertFailure ("expected Right, got Left " ++ err),
     testCase "a named case runs only that case" $ do
-      outcome <- runSuiteSelection twoCaseSuite "b"
+      outcome <- runSuiteSelection twoCaseSuite [oneVariant] "b"
       case outcome of
-        Right (Report rs) -> map fst rs @?= ["b"]
+        Right (Report rs) -> map fst rs @?= ["[v0] b"]
         Left err -> assertFailure ("expected Right, got Left " ++ err),
+    testCase "two variants loop with full teardown + spin-up, aggregating labeled rows" $ do
+      events <- newIORef []
+      let record e = modifyIORef' events (e :)
+          suite =
+            TestSuite
+              (pure (Right ()))
+              (\label -> record ("up:" ++ T.unpack label) >> pure label)
+              [Case "a" 1 False]
+              (\label _ -> record ("assert:" ++ T.unpack label) >> pure Pass)
+              (\label -> record ("down:" ++ T.unpack label))
+      outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
+      seen <- reverse <$> readIORef events
+      case outcome of
+        Right (Report rs) -> map fst rs @?= ["[v0] a", "[v1] a"]
+        Left err -> assertFailure ("expected Right, got Left " ++ err)
+      -- Each variant fully completes (up -> assert -> down) before the next starts.
+      seen @?= ["up:v0", "assert:v0", "down:v0", "up:v1", "assert:v1", "down:v1"],
     testCase "an unknown case fails fast, listing the valid ids and `all`" $ do
-      outcome <- runSuiteSelection twoCaseSuite "nope"
+      outcome <- runSuiteSelection twoCaseSuite [oneVariant] "nope"
       case outcome of
         Left err ->
           assertBool
@@ -123,15 +141,17 @@ suiteCases =
         Right _ -> assertFailure "expected Left for an unknown case"
   ]
   where
-    -- A stack-driven suite (trivial bring-up, passing assertions) — exercises
+    -- A stack-driven suite (label-aware bring-up, passing assertions) — exercises
     -- `runSuiteSelection`'s case selection over the new TestSuite shape.
     twoCaseSuite =
       TestSuite
         (pure (Right ()))
-        (pure ())
+        pure
         [Case "a" 1 False, Case "b" 1 False]
         (\_ _ -> pure Pass)
         (\_ -> pure ())
+    variant label = ConfigVariant (T.pack label) id
+    oneVariant = variant "v0"
 
 guardCases :: [TestTree]
 guardCases =

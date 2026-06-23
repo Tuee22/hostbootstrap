@@ -16,6 +16,11 @@ where
 
 import Data.Aeson (encode)
 import qualified Data.ByteString.Lazy as LBS
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified HostBootstrap.Config.Schema as Schema
+import qualified HostBootstrap.Context as Context
+import HostBootstrapDemo.Config (ProjectConfig (message))
 import HostBootstrapDemo.Web.Api (budgetView)
 import Network.HTTP.Types (hContentType, status200, status404)
 import Network.Wai (Application, pathInfo, responseFile, responseLBS)
@@ -27,13 +32,14 @@ import Network.Wai.Handler.Warp (run)
 bundlePath :: FilePath
 bundlePath = "web/public/app.js"
 
-{- | The @wai@ application: the budget JSON endpoint, the SPA shell, the bundled
-Halogen app, and a 404.
+{- | The @wai@ application, parameterized by the config-driven served @message@
+(Sprint 20.1): the budget JSON endpoint (which carries the message), the SPA
+shell, the bundled Halogen app, and a 404.
 -}
-app :: Application
-app req respond = case pathInfo req of
+app :: Text -> Application
+app msg req respond = case pathInfo req of
     ["api", "budget"] ->
-        respond (responseLBS status200 [(hContentType, "application/json")] (encode budgetView))
+        respond (responseLBS status200 [(hContentType, "application/json")] (encode (budgetView msg)))
     ["app.js"] ->
         respond (responseFile status200 [(hContentType, "application/javascript")] bundlePath Nothing)
     [] ->
@@ -59,9 +65,19 @@ indexHtml =
         \</html>\n"
 
 {- | Serve the webservice on the incus host (the Playwright @baseURL@). Binds all
-interfaces so the container-side Playwright run can reach the host.
+interfaces so the container-side Playwright run can reach the host. Reads its own
+mounted @<project>.dhall@ via the core generic loader (the cluster-service config
+the ConfigMap delivers) and serves the config-driven @message@ from it (Sprint
+20.1), so the served value is whatever the active config carries.
 -}
 serveWeb :: Int -> IO ()
 serveWeb port = do
-    putStrLn ("web serve: listening on http://0.0.0.0:" ++ show port ++ " (GET /api/budget, GET /)")
-    run port app
+    cfg <-
+        Schema.requireSiblingProjectConfig
+            (T.pack "hostbootstrap-demo")
+            Context.ServiceCommand
+            [] ::
+            IO ProjectConfig
+    let msg = message cfg
+    putStrLn ("web serve: listening on http://0.0.0.0:" ++ show port ++ " (GET /api/budget, GET /); message=" ++ T.unpack msg)
+    run port (app msg)

@@ -76,8 +76,11 @@ representation living in config.
 | Allowed command classes | which command families are valid in this context |
 | Resource envelope | the budget slice or cordon this context is inside |
 
-Project-specific logic may extend the value, but it must never make a child reach back to the parent's
-config or treat a missing config as implicit authority. A context's relationship to the others lives in the
+Project-specific logic may extend the value with its own **Parameters-layer** fields, but it must never
+make a child reach back to the parent's config or treat a missing config as implicit authority. The demo's
+`message : Text` is exactly such a project-extended Parameters-layer field — a typed, mandatory field on
+the demo's **own** config type (not a core slot, and in particular not a generic `extra : Map Text Text`)
+that the `Web` service reads and renders. A context's relationship to the others lives in the
 pure execution-topology frame graph (the compositional lifts), not implicitly in the command line; the
 read-only `context` command renders that graph uniformly for **every** `<project>.dhall`, whatever roles it
 declares.
@@ -207,9 +210,12 @@ next binary becomes meaningful. The context-init step is a core step kind in the
 algebra in [hostbootstrap_core_library](hostbootstrap_core_library.md)):
 
 1. Python derives `<project>` from the Cabal file, builds `./.build/<project>`, and execs the requested
-   command. It writes no Dhall; it is the metal-frame instance of the fractal bootstrap.
+   command. It writes no Dhall and does **not** initialize config; it is the metal-frame instance of the
+   fractal bootstrap.
 2. `project init` writes the **root** `<project>.dhall` (host orchestrator, no parent) carrying the
-   user-owned parameters. It runs only on a fresh host-level binary with no sibling `.dhall`.
+   user-owned parameters. It runs only on a fresh host-level binary with no sibling `.dhall`. Because
+   Python never creates config, a normal command run before `project init` finds no sibling config and
+   **fails fast** (exit 1) per the gate above — the binary owns its Dhall.
 3. During `project up`, a context-init step in a host or VM frame **generates** the **child** frame's
    `<project>.dhall` from passed parameters — some supplied at the frame and some **forwarded from the
    parent context's `<project>.dhall`** — before handing off into it. A child config is a parameterized
@@ -241,11 +247,15 @@ therefore serves image-build, ad-hoc runtime, and service contexts while each co
 exactly one local file.
 
 The test harness obeys the same authority rules without a distinct lifted "TestHarness" path: `test run`
-runs the **real `project up`** under a test-written root config, so its assertions execute in the normal
-host/VM/container frames the chain mints. Two preconditions protect production before any test runs — the
-harness refuses if a `<project>.dhall` already exists (it would overwrite a real config) or if a production
-cluster is running (it would touch production state) — and it deletes only the config and `.test_data` it
-created this run.
+runs the **real `project up`** under a harness-generated root config, so its assertions execute in the
+normal host/VM/container frames the chain mints. A suite may declare **more than one config variant**; the
+harness stands each up, asserts, and tears it down in turn (the demo runs `message = "Hello, world!"` then
+`message = "Hello, Universe!"`, with the `message` flowing `<project>.dhall` → chart `ConfigMap` → the
+`Web` service → the SPA `#message`, and the Playwright e2e-tabs assertion polymorphic over the exported
+`EXPECTED_MESSAGE`). Two preconditions protect production before any test runs — the harness refuses if the
+executable-sibling `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall`) already
+exists (it would overwrite a real config) or if a production cluster is running (it would touch production
+state) — and it deletes only the generated config and `.test_data` it created this run.
 
 ## Config Snapshot And Daemons
 

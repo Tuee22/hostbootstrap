@@ -27,9 +27,10 @@
 This document defines the **target** generic model. The current implementation is concrete: core owns
 `defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and a fixed `ProjectConfig` type, and
 the test harness drives `project up` against the **pre-existing** `<project>.dhall` rather than generating
-it. The generalization is reopened, documentation-only work tracked in
-[phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and the
-superseded surfaces are listed in
+it. The generalization is **in-progress, real-run-gated code work** under
+[phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) (Active) — it
+generalizes the config surfaces phases 4/8/10/15/17 delivered without reopening them — and the superseded
+surfaces are listed in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
@@ -48,6 +49,35 @@ engine:
 The resource budget and VM cordon are a **provider** concern carried by a project's `cfg` — not a field
 every consumer config must have. A secrets-strict, RKE2/EKS-sized consumer (`~/prodbox`) carries no VM
 budget at all; the demo carries `Resources { cpu, memory, storage }`.
+
+A field a project's workload reads and renders is likewise a field of **its own** `cfg`, never a core slot.
+The demo's `cfg` carries a mandatory `message : Text` (its `psInit` default `"Hello, world!"`) that flows
+`<project>.dhall` → the chart `ConfigMap` → the `Web` service (whose `service run` handler reads its config)
+→ `BudgetView.message` → the SPA `#message`. Core owns no project-specific field, and in particular **no
+generic `extra : Map Text Text` slot**: a map would re-couple core to a demo concern, and its lookup is a
+runtime `Maybe`, reintroducing exactly the decode-time optionality the strict-decode contract removes. A
+typed `message : Text` on the demo's own `cfg` stays mandatory and strict-decoded.
+
+> **WRONG** — a generic core escape hatch the project writes through:
+>
+> ```haskell
+> -- core
+> data ProjectConfig = ProjectConfig { …, extra :: Map Text Text }  -- demo stuffs "message" here
+> -- web handler
+> message = fromMaybe "" (Map.lookup "message" (extra cfg))  -- runtime Maybe; "" when absent
+> ```
+>
+> This re-couples core to a demo concern, makes the message optional at decode time, and is deleted by the
+> very phase that moves `cfg` out of core.
+>
+> **RIGHT** — `message` is a typed mandatory field on the demo's own `cfg`:
+>
+> ```haskell
+> -- demo (cfg leaves core)
+> data DemoConfig = DemoConfig { resources :: Resources, …, message :: Text }
+> -- web handler
+> message = message cfg   -- mandatory, strict-decoded, no lookup
+> ```
 
 ## The extension contract: `ProjectSpec cfg tcfg`
 
@@ -76,12 +106,21 @@ generic.
 
 ## DRY init and the harness-generated config
 
-`project init` and `test run` build the project config the **same** way — through `psInit` — so the init
-default and the test config can never drift:
+`psInit` is realized as one concrete, value-free builder, `projectConfigForRole`, that is the **single**
+shared call site for all three config-producing paths — `project init`, `test init`, and the harness's
+run-config generation. Each path passes its own `InitArgs` (flag overrides for `project init`, the
+`test.dhall` override for the harness) into the same `projectConfigForRole`, so the demo's defaults live in
+exactly one place and never drift. Critically, the harness builds its config **functionally — it calls
+`projectConfigForRole` directly and never shells the CLI** (`project init`); shelling out would reintroduce
+a second path that could drift from the in-process builder.
+
+`project init`, `test init`, and `test run` build the project config the **same** way — through
+`projectConfigForRole` under `psInit` — so the init default and the test config can never drift:
 
 ```text
-project init  : InitArgs --psInit--> cfg ---write---> <project>.dhall
-test run      : test.dhall --psTestConfig (reuses psInit + applies overrides)--> cfg
+project init  : InitArgs --projectConfigForRole (psInit)--> cfg ---write---> <project>.dhall
+test init     : InitArgs --projectConfigForRole (psInit)--> tcfg --write--> test.dhall  (no pre-existing <project>.dhall needed)
+test run      : test.dhall --psTestConfig (reuses projectConfigForRole + applies overrides)--> cfg
                   --write--> <project>.dhall --project up--> assert --project destroy-->
                   delete generated <project>.dhall + self-created .test_data   (keep test.dhall)
 ```
@@ -109,8 +148,9 @@ for the secrets seam.
 > **RIGHT** — one project-owned builder feeds init, the gate, and the test config:
 >
 > ```haskell
-> psInit args = DemoConfig { resources = demoBudget, … }   -- the one place the budget lives
-> -- deploy-VM reads cfg.resources; test run derives cfg from test.dhall via psTestConfig (reusing psInit)
+> psInit args = DemoConfig { resources = demoBudget, message = "Hello, world!", … }   -- the one place defaults live
+> -- deploy-VM reads cfg.resources; the Web handler renders cfg.message;
+> -- test run derives cfg from test.dhall via psTestConfig (reusing projectConfigForRole / psInit)
 > ```
 
 ## Cross-references

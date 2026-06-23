@@ -34,7 +34,7 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). |
+| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). It owns **no default config values** — defaults live in a project's `psInit`. |
 | L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
 | L2 | `jitML`, `infernix` | L1 | App-level step kinds, vocabulary, and artifacts on top of the daemon substrate. |
 
@@ -134,9 +134,11 @@ the context-init step inside `project up`, deriving from the active local config
 
 The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
 its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` surface.
-The harness **drives the real `project up`** under a test config (one `project up` per distinct test
-config; write a test `<project>.dhall` → `project up` → assert in-frame → `project destroy`); it owns no
-second cluster-bring-up path. The standardized-test-harness phase
+The harness **drives the real `project up`**: it **generates** the run's `<project>.dhall` functionally via
+the project's own `psTestConfig` (reusing the project-owned `psInit` builder, never shelling the CLI),
+runs `project up`, asserts in-frame, then `project destroy`; it owns no second cluster-bring-up path. A
+suite may carry **more than one config variant** (the demo's two-message run); the harness stands each up,
+asserts, and tears it down in turn. The standardized-test-harness phase
 ([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) owns the harness.
 
 ### Stream 5 — Service Handlers
@@ -163,8 +165,9 @@ statement of the contract lives in
 The reusable surface is the chain stream and the recursive `project` interpreter this document
 describes, exercised end-to-end on real hardware:
 
-- Stream 1 is the single contributed `chain :: ProjectConfig -> [Step]` value walked by the recursive
-  `project up` interpreter and threaded through `ProjectSpec` (the demo's
+- Stream 1 is the single contributed chain value walked by the recursive `project up` interpreter and
+  threaded through `ProjectSpec`. Under the generic model (§ BB) the chain is `chain :: cfg -> [Step]` over
+  a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` (the demo's
   `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The core ships
   the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
   deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-harbor, push-image)
@@ -178,7 +181,7 @@ describes, exercised end-to-end on real hardware:
   `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
   renders and projections surface through the read-only `context` command and the context-init step.
   Stream 4 surfaces through `test init` and `test run`, which drive the standardized harness over the
-  demo's case matrix independently of `project up`.
+  demo's case matrix; the harness generates each config variant and drives the real `project up`.
 
 `DEVELOPMENT_PLAN/` owns the closure criteria for the extension-stream contract; reconcile any status claim
 here to it rather than treating this document as a parallel status authority.

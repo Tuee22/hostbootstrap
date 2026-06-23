@@ -35,11 +35,13 @@ the chain that `project up` interprets: `project up` stands the persistent stack
 drives an independent test engine whose cases bring up their own isolated kind clusters. The surface
 is two subcommands:
 
-- `test init` requires an existing `<project>.dhall` (the root config the chain is a pure function of)
-  and writes the sibling `<project>.test.dhall`. `<project>.test.dhall` carries test-specific
-  configuration — the suite vocabulary, per-suite budgets, and any fixtures the matrix needs —
-  separate from the deploy parameters in `<project>.dhall`. It fails fast unless invoked on the root
-  frame with a project config present.
+- `test init` writes the sibling `<project>.test.dhall` and needs **no** pre-existing `<project>.dhall`.
+  `<project>.test.dhall` is a thin override — the suite vocabulary, the config variants the matrix
+  declares, per-suite budgets, and any fixtures the matrix needs — separate from the deploy parameters in
+  `<project>.dhall`. The harness later turns each variant into a full run config functionally via the
+  project-owned `psTestConfig` (which reuses the same value-free `psInit` builder as `project init`), so
+  `test init` does not depend on a production config already existing. It fails fast unless invoked on the
+  root frame.
 - `test run <suite>` runs the single named suite over the standardized engine and prints its report
   card; `test run all` runs every suite, with `all` reserved by the verb (a project may not name a
   suite `all`). Both are root-only: they fail fast, listing the valid suite names and `all`, when
@@ -68,18 +70,25 @@ The `test` surface runs through the **project binary**, against the runtime — 
 ## The Harness Drives The Chain, It Is Not A Parallel Chain
 
 The harness **drives the real `project up`** rather than re-expressing bring-up. It is the **one**
-representation of the test path because it *is* the deploy chain, run under a test config: per distinct test
-config the harness writes a test-specific `<project>.dhall`, runs `project up` over the project's own chain
+representation of the test path because it *is* the deploy chain, run under a generated config. A suite may
+declare **more than one config variant**; the harness stands each variant up, asserts, and tears it down in
+turn. Per variant it **generates** the run's `<project>.dhall` functionally via the project-owned
+`psTestConfig` (reusing the same `psInit` builder as `project init` — never shelling the CLI), runs
+`project up` over the project's own chain
 (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
 in the frame appropriate to each (reusing the self-reference lift — e.g. a Playwright assertion as a
 container on the kind network in the VM frame, outside the cluster), and tears the stack down with
-`project destroy`. There is no separate `seamSetup` that stands a cluster up a second way, so the test and
-deploy resource models cannot drift.
+`project destroy` before moving to the next variant. The demo runs **two** variants — `"Hello, world!"`
+then `"Hello, Universe!"` — with a full teardown and spin-up between, so the `message` field's whole
+flow is exercised twice. There is no separate `seamSetup` that stands a cluster up a second way, so the
+test and deploy resource models cannot drift.
 
-Two **hard fail-fast safety preconditions** run before any test: the harness refuses if a `<project>.dhall`
-already exists (never overwrite a production config) or if a production cluster is running (never touch
-production state). Durable test storage is `.test_data` (never `.data`); teardown deletes only the config
-and `.test_data` the harness created this run. The canonical model — the lift chain as the project, the
+Two **hard fail-fast safety preconditions** run before any test: the harness refuses if a config already
+exists at the executable-sibling `siblingProjectConfigPath` (the `.build/<project>.dhall` it is about to
+write, not the project root) so it never overwrites a production config, or if a production cluster is
+running (never touch production state). Durable test storage is `.test_data` (never `.data`); teardown
+deletes only the generated config and the `.test_data` the harness created this run, while keeping the
+authored `test.dhall`. The canonical model — the lift chain as the project, the
 recursive interpreter, and the harness as a driver of that chain — lives in
 [../architecture/composition_methodology.md](../architecture/composition_methodology.md); this document
 defers to it rather than re-deriving it.
@@ -99,13 +108,17 @@ suite stays hermetic:
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - **Project-local Dhall config** — decoding/generating `<project>.dhall` and `<project>.test.dhall`,
-  including project settings, runtime context authority, the suite vocabulary, and rejection of
-  malformed values. See [schema.md](schema.md).
+  including project settings, runtime context authority, the suite vocabulary, the per-variant config the
+  harness renders via `psTestConfig`, the demo's project-extended `message` field, and rejection of
+  malformed values (every field mandatory, strict decode). See [schema.md](schema.md).
 - **Cluster lifecycle** — kind/Helm command sequences and the never-delete-`.data` invariant. See
   [cluster_lifecycle.md](cluster_lifecycle.md).
 - **Harness driver** — `HarnessSpec` asserts the per-case profile/path derivation, that teardown runs
   on a failing case body, that `guardTestDelete` rejects a non-prefixed name, and that `sliceBudget`
-  keeps the concurrent slices within budget (with an indivisible case running at concurrency 1).
+  keeps the concurrent slices within budget (with an indivisible case running at concurrency 1). The
+  Playwright `e2e-tabs` spec is **polymorphic**: it reads `EXPECTED_MESSAGE` from the environment and
+  asserts whichever `message` the active deployment set into its `#message` element, so the same spec
+  validates both demo variants.
 - **Documentation validator** — `HostBootstrap.DocValidator` exercised by `DocValidatorSpec`,
   asserting required metadata lines, broad-doctrine structure, relative-link resolution, and the
   phase-plan `## Documentation Requirements` retention.
@@ -155,9 +168,10 @@ no unit-file rendering tests or real service-manager integration tests.
   contributes its `Web` service variant and its VM/provider IO as chain steps. The Python bootstrapper
   suite and the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
 - The `test init` / `test run <suite>|all` split is gated to the root frame and backed by a sibling
-  `<project>.test.dhall`. `test run all` **drives the real `project up`** under a test config (one per
-  distinct test config), asserts the live stack, and tears it down — it reuses the chain rather than
-  standing up a separate per-case cluster. The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
+  `<project>.test.dhall`. `test run all` **drives the real `project up`** under a generated config —
+  one full up → assert → `project destroy` per declared config variant — asserts the live stack, and
+  tears it down between variants, reusing the chain rather than standing up a separate per-case cluster.
+  The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
   across the composed frame stack: on Incus/Linux a single `project up` stands up the cordoned kind
   cluster, the 8-pod production Harbor (NodePort 30500), the project image pushed to the in-cluster
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
@@ -165,10 +179,14 @@ no unit-file rendering tests or real service-manager integration tests.
 
 Target (reopened, documentation-only): under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test init`
-writes `test.dhall` (a thin override) WITHOUT requiring a pre-existing `<project>.dhall`. `test run` then
-GENERATES the run's `<project>.dhall` via the project-owned `psTestConfig` (reusing `psInit`), drives the
-real `project up`, asserts the live stack, runs `project destroy`, and finally deletes the generated
-`<project>.dhall` plus the `.test_data` it created this run while keeping the authored `test.dhall`. See
+writes `test.dhall` (a thin override) WITHOUT requiring a pre-existing `<project>.dhall`. For each config
+variant the suite declares, `test run` GENERATES that variant's `<project>.dhall` via the project-owned
+`psTestConfig` (reusing `psInit`), checks the fail-fast existence precondition at the executable sibling
+`siblingProjectConfigPath` (`.build/<project>.dhall`, not the project root), drives the real `project up`,
+asserts the live stack — with the Playwright spec reading `EXPECTED_MESSAGE` to assert whichever `message`
+the variant set — runs `project destroy`, and finally deletes the generated `<project>.dhall` plus the
+`.test_data` it created this run while keeping the authored `test.dhall`. The demo declares two variants
+(`"Hello, world!"`, `"Hello, Universe!"`). See
 the [generic_project_model.md](../architecture/generic_project_model.md) design,
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).

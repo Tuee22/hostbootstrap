@@ -61,7 +61,8 @@ is run in production and in tests.
 
 - `service run` is a **leaf-frame pod entrypoint**, not an orchestrator. It runs exactly one long-running
   role inside the pod it was deployed into. It **fails fast** unless the active `<project>.dhall` declares
-  a service role with a valid variant.
+  a service role with a valid variant. The service handler **reads its effective config** and renders it
+  (the demo's `Web` handler serves `cfg.message` to the SPA `#message`).
 - Multiple service types are expressed as a Dhall **`ServiceType` ADT**; `service run` resolves the
   declared variant against a **service-handler registry** (each variant maps to one handler) and runs that
   handler. There is **no `service down`** — a service's lifetime is the pod's lifetime, and teardown is

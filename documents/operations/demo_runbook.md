@@ -38,10 +38,14 @@
 Two facts about the harness as it ships today, ahead of
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md):
 
-- **Config handling.** `test run all` REUSES the existing config: `demoTestUp` drives `project up` against
-  the pre-existing `.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was
-  removed. Generating the run's config from a thin `test.dhall` override (then deleting it on teardown) is
-  the phase-19 target.
+- **Config handling.** The harness owns the run's config and its `.test_data` root: it generates the
+  `hostbootstrap-demo.dhall` from the thin `test.dhall` override **functionally**, through the
+  project-owned `psTestConfig` (which reuses `psInit`), never by shelling the CLI, drives the real
+  `project up` → asserts → `project destroy`, then deletes the generated config and the `.test_data` it
+  created (keeping `test.dhall`). It iterates that over more than one config **variant** — the demo runs
+  two, `"Hello, world!"` then `"Hello, Universe!"`, with a full teardown and spin-up between. The fail-fast
+  existence precondition checks the executable-sibling `siblingProjectConfigPath`
+  (`.build/<project>.dhall`), not the project root.
 - **Substrate parity.** `test run all` is **`3/3` on both** Apple-Silicon/Lima (2026-06-20) and native
   Incus/Linux (2026-06-21). All three cases run in the **VM frame**: each reachability check is a pure probe
   folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl
@@ -92,7 +96,7 @@ service variant run by `service run`):
 | Lift chain | the demo contributes `chain :: ProjectConfig -> [Step]` (its steps appended, never shadowing core's) | `project up`; `project up --dry-run` renders `chain rootCfg` |
 | Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (a `demoWeb` pod footprint and the `demoWebApp` SPA-as-typed-Dhall spec) | `context render --artifact demoWeb` / `--artifact demoWebApp` |
 | Test harness | `demoCases` + per-case assertions in the stack-driven `demoTestSuite` (it drives the real `project up`/`project destroy`, no separate per-case bring-up) | `test run all` |
-| Service handlers | `demoServices` registers the `web` variant (`serveWeb`), threaded via `withServices` | `service run web` (the chart pod's entrypoint) |
+| Service handlers | `demoServices` registers the `web` variant (`serveWeb`, which reads its delivered config to render the demo's `message`), threaded via `withServices` | `service run web` (the chart pod's entrypoint) |
 | Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `context schema` / `project init` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case `runMatrix` loop and the
@@ -112,6 +116,7 @@ its `.dhall` describes or fails fast (see
 ```text
 { dockerfile = "docker/Dockerfile"
 , resources = { cpu = 6, memory = "10GiB", storage = "80GiB" }
+, message = "Hello, world!"
 , context =
   { project = "hostbootstrap-demo"
   , binary = "hostbootstrap-demo"
@@ -124,7 +129,10 @@ its `.dhall` describes or fails fast (see
 }
 ```
 
-The `resources` block is the demo's one budget ceiling. The chain's context-init steps carry the relevant
+The `resources` block is the demo's one budget ceiling. The `message` field is a field on the demo's
+**own** config type — core owns no project-specific field and no generic extra slot — and it flows
+`hostbootstrap-demo.dhall` → the chart `ConfigMap` → the `Web` service (which reads its config) →
+`BudgetView.message` → the SPA `#message`. The chain's context-init steps carry the relevant
 envelope down to the VM, project-container, and service frames. The Dockerfile bakes an image-build
 `/usr/local/bin/hostbootstrap-demo.dhall`; the context-init step inside the chain mints the
 VM-project-container config mounted over that path for the in-container frame; and the chart mounts a
@@ -146,7 +154,7 @@ copy refuse commands that do not belong to its frame.
 | VM (`vm-orchestrator-1`) | fresh Linux host: build the host-native binary and the project container, then mint the project-container child config and hand off `project up` |
 | Image-build container | Dockerfile-time `check-code` and config/code generation only |
 | Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, Harbor, the pushed image, the web chart pod, and the verified NodePort |
-| Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant) under a ConfigMap-delivered service-role config |
+| Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant), reading its ConfigMap-delivered service-role config and surfacing its `message` field into the served SPA |
 
 ## Lifecycle ownership
 
@@ -191,7 +199,7 @@ pod, and the verified NodePort:
 | deploy-kind | `vm-project-container-2` | **cordon #2** — bring up the persistent kind cluster (Production profile) on the VM's Docker |
 | deploy-harbor | `vm-project-container-2` | install the in-cluster Harbor registry (NodePort 30500) |
 | push-image | `vm-project-container-2` | load the project image into kind and push it to Harbor |
-| deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080) |
+| deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
 ## Operator surface
@@ -222,12 +230,16 @@ The operator drives the chain through the `project` lifecycle.
   [harbor](../engineering/harbor.md) for the in-cluster registry, and
   [cluster lifecycle](../engineering/cluster_lifecycle.md) for the fail-closed `clusterUp` reconciler the
   `deploy-kind` step drives.
-- **`test run all`** — root-gated, needs `test.dhall` (written by `test init`). Drives `runMatrix` over the
-  demo's case matrix; `all` is always a suite; a single case runs with `test run <case>`. Per distinct test
-  config the harness writes a test `hostbootstrap-demo.dhall`, runs the real `project up`, asserts in-frame,
-  and tears down with `project destroy` — it reuses the deploy chain rather than standing up a separate
-  per-case cluster. Two fail-fast preconditions run first: refuse if a `hostbootstrap-demo.dhall` exists or
-  if a production cluster is running; teardown removes only the config and `.test_data` it created.
+- **`test run all`** — needs `test.dhall` (written by `test init`; `test init` needs no pre-existing
+  `hostbootstrap-demo.dhall`). Drives `runMatrix` over the demo's case matrix; `all` is always a suite; a
+  single case runs with `test run <case>`. A suite may declare more than one config **variant**: the harness
+  generates each variant's `hostbootstrap-demo.dhall` functionally (via `psTestConfig`, reusing `psInit` —
+  never shelling the CLI), runs the real `project up`, asserts in-frame, and tears the stack down with
+  `project destroy`, standing each variant up / asserting / tearing down in turn (the demo runs two,
+  `"Hello, world!"` then `"Hello, Universe!"`, with full teardown and spin-up between). Two fail-fast
+  preconditions run first: refuse if a sibling `.build/hostbootstrap-demo.dhall` exists (the
+  `siblingProjectConfigPath`, not the project root) or if a production cluster is running; teardown removes
+  only the generated config and the `.test_data` it created.
 - **`project down`** — stop the VM (the cluster stops with it), delete nothing.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
@@ -237,18 +249,20 @@ The operator drives the chain through the `project` lifecycle.
 ## Feature-to-harness-case table
 
 `test run all` drives `runMatrix` over the demo's case matrix — the standardized harness, which **drives
-the real `project up`** under a test config rather than being a separate bring-up. Per distinct test config
-the harness writes a test `hostbootstrap-demo.dhall` (the Test profile, data under `./.test_data/`), runs
-`project up`, and tears the stack down with `project destroy` (guaranteed through `finally`); each
-`demoCases` case asserts a distinct slice of the live stack in the frame appropriate to it (e.g. the
-`e2e-tabs` Playwright assertion as a container on the kind network in the VM frame, outside the cluster).
+the real `project up`** under a test config rather than being a separate bring-up. Per config **variant**
+the harness **generates** the `hostbootstrap-demo.dhall` functionally (via `psTestConfig`, reusing `psInit`
+— never shelling the CLI; the Test profile, data under `./.test_data/`), runs `project up`, and tears the
+stack down with `project destroy` (guaranteed through `finally`); each `demoCases` case asserts a distinct
+slice of the live stack in the frame appropriate to it (e.g. the `e2e-tabs` Playwright assertion as a
+container on the kind network in the VM frame, outside the cluster). The demo declares two variants and the
+harness stands each up / asserts / tears down in turn.
 *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)*
 
 | Harness case | Feature demonstrated |
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (the deploy-VM provider / deploy-VM / build-pb steps): the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
-| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
 
 ## Three builds vs the standard host-native build
 

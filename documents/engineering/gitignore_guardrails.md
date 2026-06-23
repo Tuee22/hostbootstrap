@@ -40,6 +40,10 @@ Every project that adopts hostbootstrap must keep these out of git:
   running and must **never** be deleted by cluster teardown; the
   never-delete-`.data` invariant is owned by `hostbootstrap-core`'s
   cluster-lifecycle semantics (see [cluster_lifecycle.md](cluster_lifecycle.md)).
+* `.test_data/` — the test harness's durable test root, written by `test run`
+  in place of `.data/` so the suite never touches production state. The harness
+  creates it per run and deletes only the `.test_data` it created (see
+  [cluster_lifecycle.md](cluster_lifecycle.md) and [testing.md](testing.md)).
 
 The repo's [`.gitignore`](../../.gitignore) covers all of the above for
 hostbootstrap itself; downstream projects mirror the same pattern.

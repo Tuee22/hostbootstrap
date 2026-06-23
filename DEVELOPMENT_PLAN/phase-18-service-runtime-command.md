@@ -20,6 +20,12 @@ runs `args: ["service","run","web"]` and serves **HTTP 200** at `localhost:30080
 Apple-Silicon host ([phase-13](phase-13-hostbootstrap-demo.md)), reading its ConfigMap-delivered
 cluster-service config. No remaining work.
 
+Forward-pointer: the demo's worked example has the `web` service handler (`serveWeb`) read its config and
+render the demo's `message` field through `BudgetView.message` to the SPA. That config-driven message
+plumbing is owned by
+[phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md); the fixed
+`service init|schema|run` surface this phase shipped is unchanged.
+
 `service` is **new core scope** — there had never been a `service` command; the demo's long-running web
 workload ran through the load-bearing `web serve` verb. This phase adds the generic command so a
 project's long-running roles are reached through the fixed surface (development_plan_standards § AA), not a
