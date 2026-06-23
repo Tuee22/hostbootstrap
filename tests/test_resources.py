@@ -55,7 +55,9 @@ def test_detect_reads_meminfo_and_affinity(
         "EmptyRow:\n"
         "DirectMap: notnum kB\n",
     )
-    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    monkeypatch.setattr(
+        resources.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False
+    )
 
     res = resources.detect_host_resources()
     assert res == resources.HostResources(
@@ -71,7 +73,7 @@ def test_detect_meminfo_without_available_falls_back_to_total(
     monkeypatch.setattr(resources.platform, "system", lambda: "Linux")
     monkeypatch.setattr(resources.sys, "platform", "linux")
     _patch_proc(monkeypatch, tmp_path, "MemTotal:       16384 kB\n")
-    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: {0})
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: {0}, raising=False)
 
     res = resources.detect_host_resources()
     assert res is not None

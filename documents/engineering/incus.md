@@ -65,9 +65,9 @@ the narrower tool-level lift. See
 `ensure incus` (`HostBootstrap.Ensure.Incus`) is a **cross-substrate reconciler**: its applicability
 predicate is `appliesTo = isAppleSilicon || isLinux`, true on both Apple silicon and Linux. It spans
 both substrate families because the supported provider is Colima-backed on Apple or native on Linux.
-The reconciler runs as a chain step within `project up` — the VM frame's provider must reach "usable"
-(VM capability plus egress) before the chain descends into it — and the standalone `ensure incus`
-subcommand is a hidden debug surface.
+The reconciler runs as an `ensure-incus` chain step within `project up` — the VM frame's provider must
+reach "usable" (VM capability plus egress) before the chain descends into it. There is no standalone
+`ensure incus` command.
 
 It follows the standard probe-first, idempotent install-and-verify contract:
 
@@ -107,7 +107,7 @@ own `$PATH`. The host side of that single dispatch — the host `incus` — reso
 
 ## VM Lifecycle As Chain Steps
 
-The incus VM is the native-Linux VM frame of the chain (`chain :: ProjectConfig -> [Step]`, the single
+The incus VM is the native-Linux VM frame of the chain (`chain :: cfg -> [Step]`, the single
 ordered representation; see [composition_methodology](../architecture/composition_methodology.md),
 the canonical home of the model). The VM's bring-up is a **core step kind** the recursive interpreter
 runs, and its stop/delete are interpreter teardown operations:

@@ -40,6 +40,7 @@ import HostBootstrapDemo.Config (
     demoInit,
     deriveProjectConfigForKind,
     projectConfigForRole,
+    renderDhallText,
     renderProjectConfig,
     renderProjectConfigSummary,
     renderTestConfig,
@@ -81,6 +82,9 @@ tests =
             let tc = defaultTestConfig ["pristine-bootstrap", "all"] (Resources 6 "10GiB" "80GiB")
             decoded <- decodeTestConfigText (renderTestConfig tc)
             decoded @?= tc
+        , testCase "Dhall text literal rendering escapes chart-injected strings" $
+            renderDhallText "Hello, \"Dhall\"\\world"
+                @?= "\"Hello, \\\"Dhall\\\"\\\\world\""
         , testCase "a malformed config fails with a typed error" $ do
             result <- try (decodeProjectConfigText "{ dockerfile = \"x\" }") :: IO (Either SomeException ProjectConfig)
             case result of

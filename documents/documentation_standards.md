@@ -175,13 +175,18 @@ runs through the project's canonical code-check. It verifies:
 - required structure for the broad doctrine docs (the `documents/architecture/` suite carries a
   `## TL;DR` or `## Executive Summary`)
 - governed root-document metadata lines (`Status`, `Supersedes`, `Canonical homes`, purpose)
-- relative link resolution for governed docs, governed root docs, and phase-plan docs
+- relative link resolution for governed docs, governed root docs, and phase-plan docs; external URLs,
+  pure anchors, and placeholder-shaped targets are intentionally skipped
 - root `README.md` references to both `documents/` and `DEVELOPMENT_PLAN/`
 - `DEVELOPMENT_PLAN/` phase documents retaining their `## Documentation Requirements` section
 - lowercase `snake_case` file naming under `documents/` (only `README.md` is exempt)
 - the canonical `documents/` taxonomy: every top-level category is one of
   `architecture`, `engineering`, `operations`, `languages` (the declared
   `allowedTaxonomy` set)
+
+The validator checks that `**Referenced by**:` exists and that forward links resolve. It does not enforce
+backlink reciprocity mechanically; when a backlink is stale, correct either the metadata or the forward
+link in the same documentation change.
 
 The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
 `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported

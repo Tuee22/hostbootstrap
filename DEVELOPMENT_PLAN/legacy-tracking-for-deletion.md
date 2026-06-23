@@ -31,6 +31,10 @@ These surfaces are intentionally present and are not cleanup obligations.
 - **Demo web role + bridge IO** (`serveWeb` / `writeBridge`) — `serveWeb` is retained as the `web`
   'ServiceHandler' in `demoServices` (`service run web`), and `writeBridge` is retained as the bridge
   codegen the build-image chain step runs before the image build. Only the `web` verb was removed.
+- **`core/hostbootstrap-core/dhall/example.dhall`** — retained as a live project-config fixture decoded
+  by `SchemaSpec` and guarded against renderer drift. The reflected `context schema` /
+  `config_schema.dhall` output is the schema source of truth; this fixture is an example value, not a
+  hand-maintained type.
 
 ## Removed Surfaces
 
@@ -72,6 +76,11 @@ a plan update creates a new current owner for it.
   inside `project up`; the `context` command is now read-only introspection (`inspect` / `show` /
   `schema` / `render` / `path`), absorbing the former `config show|schema|render` inspection surfaces.
   Owning phase: phase-4.
+- **Standalone `ensure <tool>` top-level command** — removed by the
+  [Phase 21](phase-21-documentation-code-consistency-reconciliation.md) command-surface reconciliation.
+  `ensure` is a library of idempotent reconciler primitives composed as `ensure-*` chain steps; the fixed
+  user-facing command surface is `project`, `test`, `service`, `context`, and `check-code`, with no hidden
+  commands. Owning phase: phase-3.
 - **Demo `deploy` / `harbor` / `role` verbs and the Op-based `HostBootstrapDemo.Chain`** — the demo has one
   canonical deploy: the contributed `demoChain :: ProjectConfig -> [Step]` value
   (`demo/src/HostBootstrapDemo/Commands.hs`) interpreted recursively by the core `project up`. The
@@ -88,9 +97,10 @@ a plan update creates a new current owner for it.
 - **Direct host/container fallback for VM-scoped kind workflows** — VM-project-container workflows require
   a VM-orchestrator ancestor and runtime witnesses before dispatch. Local smokes require an explicit local
   test-harness context.
-- **Static-base Dhall fixtures** (`core/hostbootstrap-core/dhall/Type.dhall` and
-  `core/hostbootstrap-core/dhall/example.dhall`) — the current schema is project-local
-  `<project>.dhall`, decoded through `ProjectConfig`.
+- **`core/hostbootstrap-core/dhall/Type.dhall`** — deleted by
+  [Phase 21](phase-21-documentation-code-consistency-reconciliation.md). The reflected `context schema` /
+  `config_schema.dhall` output is the schema source of truth; a hand-maintained type file only drifts.
+  Owning phase: phase-8.
 - **Python Dhall provisioning** (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`, and
   `hostbootstrap/dhall/package.dhall`) — Python derives the project name from the Cabal file and never
   reads or writes Dhall.

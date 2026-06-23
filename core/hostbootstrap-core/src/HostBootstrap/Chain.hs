@@ -1,6 +1,6 @@
 -- | The recursive/fractal chain interpreter (development_plan_standards § U, § Y).
 --
--- A project's deploy is the pure @chain :: ProjectConfig -> [Step]@ value (see
+-- A project's deploy is the pure @chain :: cfg -> [Step]@ value (see
 -- 'HostBootstrap.Step'); this module interprets that @[Step]@ across the composed
 -- frame stack. @project up@ runs the steps belonging to the /current/ frame, then
 -- hands off @project up@ into the next frame, where the nested binary runs the

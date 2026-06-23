@@ -12,7 +12,7 @@
 ## TL;DR
 
 - `.dhall` carries **parameters + context + witness**, never the chain. The lift chain
-  (`chain :: ProjectConfig -> [Step]`) is code and is the project's identity; the `.dhall` is the typed data
+  (`chain :: cfg -> [Step]`) is code and is the project's identity; the `.dhall` is the typed data
   a binary reads to learn *which frame it is in* and *what budget it may spend*. The
   [composition_methodology](composition_methodology.md) is the canonical home of that model; this doc
   describes the Dhall it consumes and emits.
@@ -34,11 +34,11 @@
 ## Three Roles Of `.dhall`: Parameters, Context, Witness
 
 A `.dhall` value is the typed data a binary reads — it is **not** the lift chain, which lives in Haskell
-as `chain :: ProjectConfig -> [Step]`. Each `.dhall` plays three roles:
+as `chain :: cfg -> [Step]`. Each `.dhall` plays three roles:
 
 | Role | What it carries | Read for |
 |------|-----------------|----------|
-| Parameters | the root resource knobs | the chain is a pure function of these, so `chain rootCfg` is fully determined by the root `.dhall` |
+| Parameters | the root resource knobs | the chain is a pure function of these, so `chain cfg` is fully determined by the project `.dhall` |
 | Context | the binary's `topologyFrames` + `currentFrame` — its position in the global lift composition | the binary reasons about which segment of the chain it owns |
 | Witness | the `runtimeWitnesses` a binary must verify locally before acting | per-frame fail-fast on handoff: a binary that cannot witness its declared frame exits non-zero |
 
@@ -168,5 +168,5 @@ tests. The parameters/context/witness data model is the `binary_context_config` 
 A single `project up` on Incus/Linux interprets `demoChain :: ProjectConfig -> [Step]` across the
 three-frame fractal descent and stands up the live persistent stack: the cordoned kind cluster, the
 in-cluster Harbor registry, the project image pushed to that registry, and the web chart pod serving
-`localhost:30080`. `project down` stops it and `project destroy` deletes it, both preserving durable host
-`.data`. The schema and example surfaces are introspection under the read-only `context` command.
+`localhost:30080`. `project down` deletes kind compute and stops the VM while preserving durable host
+`.data`; `project destroy` deletes the VM too. The schema and example surfaces are introspection under the read-only `context` command.

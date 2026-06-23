@@ -66,9 +66,10 @@ Specifically:
   `deploy-kind` / `deploy-chart` step kinds, and teardown becomes the descent-then-ascent stop/delete the
   `project` lifecycle interpreter performs over the chain (§ Y). The pure `resolvePlan`, `teardown`,
   `statusReport`, and cordon cores remain the implementation those steps call; they are not rewritten.
-- Split bring-down into two distinct capabilities: `project down` **stops** services/clusters/VMs without
-  deleting them, and `project destroy` stops then deletes everything spun up. The old `cluster down`
-  collapsed stop and delete; `project down` is the new stop-without-delete surface.
+- Split bring-down into two distinct capabilities: `project down` stops provider VMs but deletes kind
+  clusters while preserving durable state, and `project destroy` stops then deletes everything spun up.
+  The old `cluster down` collapsed lifecycle framing; the current cluster frame uses delete-on-down
+  because kind has no reliable stop/restart contract.
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`; the
   durable host `.data` path is never placed in any removal set (§ O).
 - The `project` lifecycle command, its step interpreters, and the stop-without-delete capability are **not
@@ -148,12 +149,13 @@ command-surface contract they hang off.
 - Re-express the kind/Helm bring-up as the `deploy-kind` / `deploy-chart` chain steps under `project up`,
   and the teardown as the `project` lifecycle interpreter's descent-then-ascent over the chain, replacing
   the standalone `cluster up`/`down`/`delete` verb group (§ Y).
-- Split the single `cluster down` (which collapsed stop and delete) into `project down` (stop the cluster
-  without deleting it — the new stop-without-delete capability) and `project destroy` (stop then delete).
-  The never-delete-`.data` invariant holds across both, with `.data` never in any removal set (§ O).
+- Split the single `cluster down` lifecycle into `project down` (delete the kind cluster while preserving
+  durable state; VM frames stop without delete) and `project destroy` (stop then delete everything spun
+  up). The never-delete-`.data` invariant holds across both, with `.data` never in any removal set (§ O).
 - **Done (code-check):** the `project` lifecycle interpreter ships and the flat `cluster up|down|delete`
   verbs are removed from the core tree (`coreCommandNames`). The teardown split is implemented and
-  **real-run-validated** — `project down` stops, `project destroy` deletes, both preserving host `.data`
+  **real-run-validated** — `project down` tears down kind compute and stops the VM, `project destroy`
+  deletes, both preserving host `.data`
   (§ O). The kind/Helm bring-up is re-expressed as the demo's `deploy-kind` (`clusterCreate`) /
   `deploy-chart` (`deployChart`) container-frame chain steps under `project up` (the core `clusterUp` split
   into exported `clusterCreate` + `deployChart`). **Remaining (real-run-gated, § C):** the container-frame
@@ -199,10 +201,10 @@ forward; what changes is where their read-only output surfaces.
   under the read-only `context` command, which renders the global lift composition with the current frame
   highlighted (§ Z). `cluster status` performed no mutation, so this is a relocation of the read-only
   surface, not a behavior change in the renderer.
-- The `context` introspection command is **not yet implemented**; the code still exposes `cluster status`.
-  New work owned by [Phase 16](phase-16-project-lifecycle-command.md) (with the introspection contract from
-  [Phase 15](phase-15-binary-context-config.md)); the dissolved `cluster status` verb is recorded
-  `Pending` in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- The `context` introspection command is implemented and the code no longer exposes a standalone
+  `cluster status` verb. That relocation is owned by [Phase 16](phase-16-project-lifecycle-command.md)
+  (with the introspection contract from [Phase 15](phase-15-binary-context-config.md)); the dissolved
+  `cluster status` verb is recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ### Sprint 5.4: Fail-closed `cluster up` and the in-container path [Done]
 

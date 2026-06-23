@@ -41,7 +41,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
   [`documents/engineering/self_update.md`](documents/engineering/self_update.md).
 
 A project's deploy is **not a sequence of noun verbs** — it is a pure value. Each project contributes a
-`chain :: RootConfig -> [Step]` function, and that `[Step]` **is the project's identity**: the ordered
+`chain :: cfg -> [Step]` function, and that `[Step]` **is the project's identity**: the ordered
 list of host-management and workload steps that bring the project up. There is one representation of that
 work (single representation, §W). The single lifecycle command `<binary> project init|up|down|destroy`
 **interprets the chain recursively**. Each frame transition is the same **fractal bootstrap** — provision
@@ -71,7 +71,7 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 
 > **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
 > "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
-> `chain :: RootConfig -> [Step]` interpreter described above — are **implemented and real-run-validated**.
+> `chain :: cfg -> [Step]` interpreter described above — are **implemented and real-run-validated**.
 > On Apple Silicon (Lima) the demo reports `3/3 passed`, including the Playwright e2e case; on native Linux
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
@@ -80,8 +80,9 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > witnesses.
 >
 > The chain work is `Done`; **phase-19 (the generic project model)** and **phase-20 (the config-driven demo
-> worked example)** are both implemented and `Done` — with phase-20 closed, **all phases (0 through 20) are
-> `Done`**. See [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
+> worked example)** and **phase-21 (documentation/code consistency reconciliation)** are implemented and
+> `Done` — with phase-21 closed, **all phases (0 through 21) are `Done`**. See
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -224,15 +225,14 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 | Command | What it does |
 |---|---|
 | `<binary> project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fail-fast unless a fresh host-level binary with no sibling `.dhall`; the target shape layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults) |
-| `<binary> project up` | Recursively interpret `chain rootCfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
-| `<binary> project down` | Stop the services/clusters/VMs the chain spun up (incus/limactl **stop**) without deleting anything |
+| `<binary> project up` | Recursively interpret `chain cfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
+| `<binary> project down` | Stop service/VM frames and tear down kind clusters while preserving durable host state (`.data`) |
 | `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
 | `<binary> test init` | Write `test.dhall` (the case matrix + config overrides) using the same value-free builder as `project init`; needs no pre-existing `<project>.dhall` |
 | `<binary> test run <suite>\|all` | Root-gated; per distinct test config, drives the real `project up` under a test-written `.dhall`, asserts in-frame, then `project destroy`; two fail-fast safety preconditions (refuse if a sibling `.build/<project>.dhall` exists — checked at `siblingProjectConfigPath`, not the project root — or a production cluster is running); uses `.test_data` |
 | `<binary> service init\|schema\|run` | Run a long-running role: `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT, fail-fast unless the config declares a service role + variant; no `service down` (the controller owns lifetime) |
 | `<binary> context` | Read-only: introspect **any** sibling `.dhall` uniformly and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
 | `<binary> check-code` | Run the inherited code-check surface; failed checks exit non-zero |
-| `<binary> ensure <tool>` | **Hidden debug** surface that reconciles a single host dependency (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`); normally invoked as a chain step within `project up` |
 
 These core verbs behave identically whether invoked through the bare `hostbootstrap` binary or a project
 binary. The fixed `project`/`test`/`service`/`context`/`check-code` surface, the harness driving the real
@@ -281,7 +281,7 @@ pipx install --force /path/to/hostbootstrap
 ## Demo App
 
 [`demo/`](demo/) is `hostbootstrap-demo`, the worked consumer of `hostbootstrap-core`. It consumes the
-core directly (L0-direct, like `mcts`) and contributes its own `chain :: RootConfig -> [Step]` value plus
+core directly (L0-direct, like `mcts`) and contributes its own `demoChain :: ProjectConfig -> [Step]` value plus
 the step actions, test suites, and Dhall vocabulary that go with it, so the **demo's deploy is its chain**
 — interpreted by the single `project up` lifecycle command rather than a tree of noun verbs. It is the
 end-to-end exercise of the extension-stream additive extension contract: the lift chain (`[Step]` = core host
@@ -328,7 +328,8 @@ cluster" path. The doctrine is stated canonically in
 > wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reported `3/3 passed`
 > including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
-> both implemented and `Done` — all phases (0 through 20) are `Done`; see
+> both implemented and `Done`; phase-21 reconciles the documentation/code drift, so all phases
+> (0 through 21) are `Done`; see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up
@@ -341,7 +342,7 @@ the same workflow every consumer follows (assert host minimums → ensure the ho
 cd demo
 hostbootstrap run -- project init \
   --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1
-hostbootstrap run -- project up --dry-run   # renders chain rootCfg without running it
+hostbootstrap run -- project up --dry-run   # renders chain cfg without running it
 hostbootstrap run -- project up             # interprets the chain recursively, brings up the stack
 hostbootstrap run -- context                # render the lift composition, current frame highlighted
 hostbootstrap run -- test run all           # root-gated suite against the live project up stack

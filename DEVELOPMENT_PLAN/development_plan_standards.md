@@ -102,6 +102,7 @@ DEVELOPMENT_PLAN/
 ├── phase-18-service-runtime-command.md
 ├── phase-19-generic-project-model.md
 ├── phase-20-config-driven-demo-worked-example.md
+├── phase-21-documentation-code-consistency-reconciliation.md
 └── legacy-tracking-for-deletion.md
 ```
 
@@ -206,14 +207,15 @@ the doctrine governs host invocation).
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) is owned by `hostbootstrap-core`.
 **The purpose of the `ensure` suite is that the project binary is never blocked by a host dependency
 that simply isn't installed.** Each host dependency is an idempotent `ensure` reconciler — a
-host-applicability predicate plus a reconcile action — exposed as an optparse subcommand
-(`ensure docker`, `ensure colima`, `ensure lima`, `ensure cuda`, `ensure homebrew`, `ensure ghc`,
-`ensure tart`, `ensure incus`). A reconcile action **installs** the dependency if absent and is a verified no-op if
+host-applicability predicate plus a reconcile action — exposed to projects as library primitives
+(`ensureDocker`, `ensureColima`, `ensureLima`, `ensureCuda`, `ensureHomebrew`, `ensureGhc`,
+`ensureTart`, `ensureIncus`) and as `ensure-*` step kinds composed into the lift chain. There is no
+top-level `ensure` command and there are no hidden commands. A reconcile action **installs** the dependency if absent and is a verified no-op if
 present (install-and-verify, not check-only), so an absent-but-installable dependency is **installed,
 never a hard stop**. The **only** hard fail-fast surface in the entire system is the Python wrapper's
 host minimums (§ M) — the irreducible host floor that cannot be auto-installed. The *one* fail-fast
 inside the `ensure` suite is a reconciler run on the **wrong host** (an applicability misuse, e.g.
-`ensure tart` on Linux) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
+the Tart reconciler on Linux) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
 an absent dependency; the two must never be conflated. `ensure incus` is the first reconciler applicable
 on **both** apple-silicon and linux — on Apple it prepares the Colima-backed Incus provider for explicit
 Incus workflows, and on Linux it initializes the native daemon that encapsulates a fresh linux host (§ U).
@@ -222,8 +224,7 @@ kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cl
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
 (`daemon-substrate`) contributes via the extension-stream merge (§ T). The `ensure` reconcilers are normally
-invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs; the standalone
-`ensure <tool>` subcommand is retained only as a hidden debug surface. A provider reconciler reaches a
+invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs. A provider reconciler reaches a
 **usable** provider, not merely an installed binary — on Linux `ensure incus` also ensures the VM
 capability (machine emulator + UEFI firmware) and the bridge egress a fresh VM needs to reach the network.
 
@@ -322,7 +323,7 @@ surfaces the **same** tree: the three DSL-driven commands `project init|up|down|
 introspection command and `check-code`. There are **no per-project verbs**: `hostbootstrap-core` is a
 **library of composable tools** (step kinds, reconcilers, the self-reference lift, service handlers), not a
 CLI topology, so a project never adds a command. A project extends the core only through the
-**extension streams** carried by `ProjectSpec`: its **lift chain** (`chain :: RootConfig -> [Step]`, § Y),
+**extension streams** carried by `ProjectSpec`: its **lift chain** (`chain :: cfg -> [Step]`, § Y),
 the **Dhall vocabulary**, the **schema-gen** `ConfigArtifact` registry, the **test seams** (a non-empty
 test suite), and the **service handlers** (the `ServiceType` registry, possibly empty, § AA) — alongside
 the project `check-code` action. The entrypoint validates those extension points before parser
@@ -379,7 +380,7 @@ harness, however, are `hostbootstrap`-**owned** contracts that downstream refact
 fixed (§ P) and is **not** an extension point. The reusable surface is a three-level Cabal library
 hierarchy: `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes
 L0 directly. Each level adds only its delta to the **parallel extension streams**, one additive merge idiom
-each: the **lift chain** (`chain :: RootConfig -> [Step]` — the level below's host-management step kinds
+each: the **lift chain** (`chain :: cfg -> [Step]` — the level below's host-management step kinds
 with the project's own step kinds appended, interleaved and interpreted by the core `project` lifecycle,
 § Y); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen**
 `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test-harness** `Seams`
@@ -427,7 +428,7 @@ fragment(s), so cache-hit and version-pinning track the hierarchy.
 ### W. Single Representation And The Harness That Drives The Chain
 
 An operation has exactly **one** representation. A project's deploy is its **lift chain** — a pure
-`chain :: RootConfig -> [Step]` value that *is* the project's identity; `project up` is its interpreter and
+`chain :: cfg -> [Step]` value that *is* the project's identity; `project up` is its interpreter and
 `--dry-run` renders the same value apply executes (§ Y). There is no second hand-written orchestration path
 beside the chain — and the test harness is not one. The standardized test harness
 (`HostBootstrap.Harness`) **drives the real `project up`** rather than re-expressing bring-up: per distinct
@@ -506,7 +507,7 @@ forwarded parameters, and keeps `context` read-only.
 
 ### Y. Project Lifecycle Command And The Step Chain
 
-A project's deploy is a pure value — its **lift chain**, `chain :: RootConfig -> [Step]` — interpreted by
+A project's deploy is a pure value — its **lift chain**, `chain :: cfg -> [Step]` — interpreted by
 the core lifecycle command `project`. The chain shape is **code**: it is the project's identity and the one
 representation of its deployment (§ W). The sibling `<project>.dhall` carries **parameters + context +
 witness**, never the chain shape; a copy of the binary verifies it is in the frame its `<project>.dhall`
@@ -523,9 +524,10 @@ parameters.
   then for the next nested frame provision it, build/install the pb in it, and hand off `pb project up`
   (the fractal bootstrap, § U). It is **idempotent** (reconcile-to-running); `--dry-run` renders the pure
   chain without acting.
-- `project down` — stop services / clusters / VMs without deleting them (incus/Lima **stop**, not
-  destroy); recurse in while each frame is still up, then stop on ascent. Best-effort and idempotent so a
-  partial stack always tears down.
+- `project down` — stop service controllers and provider VMs without deleting durable host state. VM
+  frames use the provider **stop** operation (incus/Lima **stop**, not destroy); at the kind-cluster frame,
+  `down` deletes the kind cluster while preserving `.data`, because kind has no reliable stop/restart
+  contract. Best-effort and idempotent so a partial stack always tears down.
 - `project destroy` — `down`, then delete everything that was spun up. Durable host `.data` is **always
   preserved** (the never-delete-`.data` invariant, § O).
 
@@ -626,10 +628,11 @@ listed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
   InitArgs -> tcfg` builds a complete, valid `test.dhall`.
 - **`test.dhall` is a thin override and the harness generates the run's config (closes the § Z drift).**
   `test run` reads `test.dhall`, refuses if a `<project>.dhall` exists or a production cluster is running,
-  builds the config via `psTestConfig :: tcfg -> IO cfg` (reusing `psInit`; `IO` so a project can read
-  extra inputs such as a `test-secrets.dhall`), writes `<project>.dhall`, runs the real `project up`,
-  asserts, `project destroy`, then deletes the **generated** `<project>.dhall` and the self-created
-  `.test_data` — keeping `test.dhall`. `test init` does **not** require a pre-existing `<project>.dhall`.
+  builds labeled config variants via `psTestConfig :: tcfg -> IO [(Text, cfg)]` (reusing `psInit`; `IO`
+  so a project can read extra inputs such as a `test-secrets.dhall`), writes each variant's
+  `<project>.dhall`, runs the real `project up`, asserts, `project destroy`, then deletes the
+  **generated** `<project>.dhall` and the self-created `.test_data` — keeping `test.dhall`. `test init`
+  does **not** require a pre-existing `<project>.dhall`.
 - **Generic secrets shape.** Core offers a pure `SecretRef = < Vault | TransitKey | Prompt | TestPlaintext >`
   vocabulary projects embed in `cfg`, making "no plaintext secrets in a production `<project>.dhall`"
   type-level. Core never resolves secrets; a project's `psTestConfig` swaps `Vault` pointers for

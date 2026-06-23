@@ -280,9 +280,11 @@ def run(project_root: Path, args: tuple[str, ...]) -> None:
     is_flag=True,
     help="Check the installed VCS commit against the remote ref without updating.",
 )
-def update_cli(ref: str, spec: str | None, check_only: bool) -> None:
+@click.pass_context
+def update_cli(ctx: click.Context, ref: str, spec: str | None, check_only: bool) -> None:
     """Explicitly update the pipx-installed Python bootstrapper."""
-    if spec is not None and ref != self_update.DEFAULT_REF:
+    ref_was_explicit = ctx.get_parameter_source("ref") is not click.core.ParameterSource.DEFAULT
+    if spec is not None and ref_was_explicit:
         raise click.ClickException("`--spec` cannot be combined with `--ref`.")
     if check_only and spec is not None:
         raise click.ClickException("`--check` cannot be combined with `--spec`.")

@@ -15,7 +15,7 @@
   `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2). `mcts` and `hostbootstrap-demo` consume L0
   directly.
 - A project extends core only through additive **streams**, one merge idiom each: the **lift chain**
-  (`chain :: ProjectConfig -> [Step]`, core + project steps), the **Dhall vocabulary**, the
+  (`chain :: cfg -> [Step]`, core + project steps), the **Dhall vocabulary**, the
   **schema-gen** `ConfigArtifact` registry, the **test seams** `Seams`, and the **service handlers**
   (the `ServiceType` variants `service run` resolves). The command surface itself is never a stream.
 - A project's primary contribution is its lift **chain value** plus its service handlers — never a new
@@ -59,7 +59,7 @@ lower surface is preserved verbatim.
 ### Stream 1 — The Lift Chain
 
 The first stream is the project's lift **chain**: an ordered `[Step]` value
-(`chain :: ProjectConfig -> [Step]`) that the core's recursive `project up` interpreter walks frame by
+(`chain :: cfg -> [Step]`) that the core's recursive `project up` interpreter walks frame by
 frame. A level merges by contributing its own step kinds into that single list; the core's
 host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
 deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
@@ -71,13 +71,14 @@ stream describes only the additive merge.
 The chain is threaded into the generic entrypoint through `ProjectSpec`:
 
 ```haskell
-runHostBootstrapCLI progName (projectSpec chain testSuite checkCode artifacts)
+runHostBootstrapCLI progName projectSpec
 ```
 
-The core command surface (`project init|up|down|destroy`, `context`, `test init|run`, `check-code`)
+The core command surface (`project init|up|down|destroy`, `test init|run`, `service init|schema|run`,
+`context`, `check-code`)
 behaves identically whether invoked through the bare `hostbootstrap` binary or through any project
-binary, except that project binaries must supply their non-empty `chain`, test suite, `check-code`
-action, and artifact delta in `ProjectSpec`. See
+binary, except that project binaries must supply their non-empty `chain`, test suite, service handlers,
+`check-code` action, config builders, and artifact delta in `ProjectSpec`. See
 [hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project
 contributes named step kinds, so a project cannot silently shadow a core step kind or a core
 top-level verb.

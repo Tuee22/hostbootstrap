@@ -22,6 +22,10 @@ Staging, committing, and pushing are reserved for the human user. An agent may e
 read-only Git commands (`git status`, `git diff`, `git log`, `git blame`), and propose commit
 messages or PR descriptions in chat — but it must not perform the staging or commit itself.
 
+If a workflow step appears to require a commit (for example, a CI check that runs against `HEAD`
+rather than the working tree), stop and ask the user to perform the commit. Do not work around the
+rule.
+
 ## No manual log files
 
 Do not create manual log files anywhere in the working tree, and **never create a file with a `.log`

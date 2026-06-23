@@ -26,14 +26,14 @@ is governed by the sibling runtime config file, [`<project>.dhall`](schema.md).
 The binary's primary contribution is **not** a set of noun verbs — it is a value:
 
 ```haskell
-chain :: ProjectConfig -> [Step]
+chain :: cfg -> [Step]
 ```
 
 an ordered list of `Step`s the core interprets. The shape of that list **is** the project's identity
 (single representation, see [composition_methodology § single representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
 host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
-(deploy-harbor, push-image, …). `project up` recursively interprets `chain rootCfg` from the current frame
+(deploy-harbor, push-image, …). `project up` recursively interprets `chain cfg` from the current frame
 and hands off `pb project up` into the next frame; `project up --dry-run` renders the chain plan without
 executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
 verifies it is in the frame its `.dhall` describes, or fails fast.
@@ -99,7 +99,7 @@ Each level extends the same **parallel extension streams**, one additive merge i
 
 | Stream | Merge idiom | Rule |
 |--------|-------------|------|
-| **the lift chain** | append `Step`s into `chain :: ProjectConfig -> [Step]` | core ships host-management step kinds; a level appends its own step kinds; host and workload steps interleave, never shadow |
+| **the lift chain** | append `Step`s into `chain :: cfg -> [Step]` | core ships host-management step kinds; a level appends its own step kinds; host and workload steps interleave, never shadow |
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
 | **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test run` verb |
@@ -249,16 +249,17 @@ runtime the parent's context-init step mounts or materializes the role-specific 
 ## Status
 
 The binary surface **is** the `project` chain, validated end-to-end on real hardware. The core command
-tree is exactly `ensure`, `context`, `project`, `test`, `check-code`:
+tree is exactly `project`, `test`, `service`, `context`, and `check-code`:
 
-- `chain :: ProjectConfig -> [Step]` is interpreted by the recursive `project init|up|down|destroy`
+- `chain :: cfg -> [Step]` is interpreted by the recursive `project init|up|down|destroy`
   commands.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, and `path`/`show`/`schema`/`render` inspect and describe the project-local config.
 - `test init` writes `test.dhall`; `test run <suite>|all` runs a suite, or the whole matrix with `all`,
   from the root frame.
+- `service init|schema|run` runs long-running roles as leaf-frame service handlers.
 - `check-code` runs the project's fail-fast code-check gate.
-- `ensure <tool>` is a surfaced verb that reconciles a single host dependency; `project up` also invokes the reconcilers as `ensure-*` chain steps.
+- `ensure` is a reconciler library, not a command; `project up` invokes reconcilers as `ensure-*` chain steps.
 
 The demo's deploy is the contributed `demoChain :: ProjectConfig -> [Step]` value in
 `demo/src/HostBootstrapDemo/Commands.hs` — a list of `Step` the core interprets across the 3-frame fractal

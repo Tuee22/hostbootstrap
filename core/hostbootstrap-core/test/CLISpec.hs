@@ -14,6 +14,7 @@ import HostBootstrap.CLI (
     withChain,
     withServices,
  )
+import HostBootstrap.Command (coreCommandNames)
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
@@ -59,6 +60,8 @@ tests =
                 try (withArgs ["--help"] (runHostBootstrapCLI "empty-suite" (specWith emptySuiteFixture (pure ()) []))) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
+        , testCase "core command surface has five user-facing verbs and no ensure command" $
+            coreCommandNames @?= ["context", "project", "test", "service", "check-code"]
         , testCase "project specs reject duplicate service variants" $ do
             let dup =
                     withServices

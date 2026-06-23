@@ -50,7 +50,7 @@ variant, in turn — so the demo's two messages each get their own fresh stack:
    `projectConfigForRole` (the same value-free builder `project init` uses), applying the variant's
    `test.dhall` overrides through `psTestConfig`, and write it next to the executable. The harness never
    shells `project init`.
-3. **`project up`** — interpret the project's own `chain :: ProjectConfig -> [Step]` recursively across the
+3. **`project up`** — interpret the project's own `chain :: cfg -> [Step]` recursively across the
    composed frame stack, exactly as a production deploy does.
 4. **Assertions** — run that variant's case bodies against the live stack, each in the frame appropriate to
    it (reusing the self-reference lift, [§ U](../../DEVELOPMENT_PLAN/development_plan_standards.md)).

@@ -108,6 +108,10 @@ def test_update_rejects_conflicting_options() -> None:
     assert result.exit_code != 0
     assert "cannot be combined" in result.output
 
+    default_ref_result = CliRunner().invoke(cli.main, ["update", "--spec", "/work", "--ref", "main"])
+    assert default_ref_result.exit_code != 0
+    assert "cannot be combined" in default_ref_result.output
+
     check_result = CliRunner().invoke(cli.main, ["update", "--check", "--spec", "/work"])
     assert check_result.exit_code != 0
     assert "cannot be combined" in check_result.output

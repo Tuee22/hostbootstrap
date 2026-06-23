@@ -136,7 +136,10 @@ let Capability = < HostTools | IncusProvider | DockerSocket | ContainerRuntime |
 
 let CommandClass =
       < EnsureCommand
-      | ContextInspectionCommand
+      | ConfigInspectionCommand
+      | ConfigGenerationCommand
+      | ContextCreationCommand
+      | ClusterLifecycleCommand
       | TestWorkflowCommand
       | CheckCodeCommand
       | HostOrchestratorCommand
@@ -173,7 +176,10 @@ in  { dockerfile = "docker/Dockerfile"
       , capabilities = [ Capability.HostTools, Capability.IncusProvider ]
       , allowedCommandClasses =
         [ CommandClass.EnsureCommand
-        , CommandClass.ContextInspectionCommand
+        , CommandClass.ConfigInspectionCommand
+        , CommandClass.ConfigGenerationCommand
+        , CommandClass.ContextCreationCommand
+        , CommandClass.ClusterLifecycleCommand
         , CommandClass.TestWorkflowCommand
         , CommandClass.CheckCodeCommand
         , CommandClass.HostOrchestratorCommand

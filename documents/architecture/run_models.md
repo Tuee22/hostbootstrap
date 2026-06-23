@@ -15,14 +15,15 @@
   it from a `RunModelKey { keyTopology, keyHostNative }` that collapses the full
   `(verb × detected-substrate × library-layer × generated-topology)` key.
 - The **selection happens within `project up`'s step interpretation.** A binary's identity is its lift
-  chain `chain :: ProjectConfig -> [Step]`; `project up` interprets that `[Step]` recursively, and the
+  chain `chain :: cfg -> [Step]`; `project up` interprets that `[Step]` recursively, and the
   run-model is the shape a given compute step takes once its topology and substrate are known. The
   chain is the canonical model — see [composition_methodology](composition_methodology.md).
 - The **generated topology is the spine**: `ClusterTopology → Cluster`, `DaemonTopology → HostDaemon`,
   and `ContainerOnly →` `HostNative` when a host-native build is in force, else `OneShot`.
 - **Deploy is a persistent stack.** `project up` stands up a long-lived stack and keeps it running
-  (services, clusters, VMs stay up); `project down` stops it and `project destroy` deletes it, both
-  preserving `.data`. `test run all` is the separate test surface, decoupled from deploy.
+  (services, clusters, VMs stay up); `project down` deletes kind compute and stops VM frames, and
+  `project destroy` deletes everything spun up, both preserving `.data`. `test run all` is the separate
+  test surface, decoupled from deploy.
 - The `HostDaemon` model is reached operationally through the **`service` command**: `service run` is a
   **leaf-frame pod entrypoint** (not an orchestrator) that runs one long-running role, and it is deployed
   into the cluster by `project up`'s `deploy-chart` step. The role and its variant come from a Dhall
@@ -81,7 +82,7 @@ sub-commands.
 The run-model is not a top-level mode the operator picks. It is the shape a **compute step** takes when
 `project up` interprets the lift chain and reaches a step whose topology and substrate are now known.
 
-- A binary's identity is its chain value `chain :: ProjectConfig -> [Step]` — an ordered list of steps that
+- A binary's identity is its chain value `chain :: cfg -> [Step]` — an ordered list of steps that
   interleaves core host-management step kinds (deploy-VM, ensure-X, copy-source, build-pb, build-image,
   context-init, deploy-kind, deploy-chart, expose-port) with the project's own step kinds (deploy-harbor,
   push-image, …). This ordered `[Step]` is the extension-stream's **lift chain** (stream 1); see
@@ -93,7 +94,7 @@ The run-model is not a top-level mode the operator picks. It is the shape a **co
   shapes** a step can resolve to; the chain decides *which* steps run and in what frame, and selection
   decides *how* each compute step executes.
 
-The chain is the canonical representation of the project; `project up --dry-run` renders `chain rootCfg`
+The chain is the canonical representation of the project; `project up --dry-run` renders `chain cfg`
 without acting. The chain shape itself lives in [composition_methodology](composition_methodology.md),
 which this document defers to; here we only define the four models a compute step resolves to.
 
@@ -174,7 +175,7 @@ Dhall vocabulary, schema-gen, test seams, and service handlers), never by adding
 
 The four run-models and `selectRunModel` are exercised by the core tests; selection consumes the
 generated topology plus detected substrate, reached through the recursive `project up` interpreter over
-an explicit `chain :: ProjectConfig -> [Step]` value. In the demo, the deploy sequence is the
+an explicit `chain :: cfg -> [Step]` value. In the demo, the deploy sequence is the
 `demoChain :: ProjectConfig -> [Step]` value in `demo/src/HostBootstrapDemo/Commands.hs`, interpreted
 recursively by `project up`; `web serve` resolves to `service run` (`Web` variant) and `web bridge` to
 the build-image step.
@@ -182,8 +183,8 @@ the build-image step.
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster (kind
 `extraPortMappings` publish NodePorts to the VM localhost) → the production Harbor registry (NodePort
 30500) → the project image pushed to the in-cluster registry → the web chart pod at `localhost:30080`
-serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` stops the stack
-without deleting it and `project destroy` deletes it, both preserving host `.data`. The test harness
+serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` deletes kind
+compute and stops the VM while preserving host `.data`; `project destroy` deletes the VM too. The test harness
 drives this same `project up`: it writes a test `<project>.dhall`, refuses to run if a `<project>.dhall`
 already exists or a production cluster is running, runs `project up`, asserts in-frame via the
 self-reference lift, then runs `project destroy` (deleting only what it created this run) — using

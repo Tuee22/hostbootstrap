@@ -5,8 +5,8 @@
 **Referenced by**: [documents-index](../README.md), [resource_budgeting](resource_budgeting.md), [dhall_topology](dhall_topology.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [testing](testing.md)
 
 > **Purpose**: Define the kind/Helm cluster-lifecycle semantics `hostbootstrap-core` provides as
-> chain steps under `project up`/`project down`/`project destroy`, including the
-> stop-without-delete capability, the never-delete-`.data` invariant, and the
+> chain steps under `project up`/`project down`/`project destroy`, including kind
+> teardown-on-down with durable-state preservation, the never-delete-`.data` invariant, and the
 > production-versus-test profile concept.
 
 ## TL;DR
@@ -14,8 +14,9 @@
 - Cluster bring-up and teardown are **chain steps**. The core ships `deploy-kind`-class step kinds
   that the recursive `project up`/`project down`/`project destroy` interpreter runs at the container
   frame, where the chain bottoms out into `kubectl`/`helm`/`kind` leaves.
-- `project up` brings the cluster to *running* (idempotent, fail-closed). `project down` **stops**
-  the cluster without deleting it. `project destroy` stops, then deletes the cluster and its compute.
+- `project up` brings the cluster to *running* (idempotent, fail-closed). At the kind-cluster frame,
+  `project down` deletes the kind cluster while preserving durable state. `project destroy` also deletes
+  the kind cluster and its compute.
 - The lifecycle never deletes a cluster's `.data` directory: persistent state survives bring-up,
   stop, and teardown.
 - A cluster runs under one of two profiles. The production profile uses `.data` and a fixed cluster
@@ -27,7 +28,7 @@
 
 ## Cluster Steps In The Chain
 
-The chain is the project: `chain :: ProjectConfig -> [Step]` is one ordered representation the recursive
+The chain is the project: `chain :: cfg -> [Step]` is one ordered representation the recursive
 interpreter walks (see [composition_methodology](../architecture/composition_methodology.md), the
 canonical home of the model). Cluster lifecycle is expressed as **step kinds** in that chain.
 `hostbootstrap-core` contributes the cluster step kinds (`deploy-kind`-class steps plus the chart
@@ -74,13 +75,13 @@ container frame the recursive interpreter reaches — not host tools (see
 [composition_methodology](../architecture/composition_methodology.md) and
 [development_plan_standards § L](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
 
-## `project down`: Stop Without Delete
+## `project down`: Delete Kind, Preserve State
 
-`project down` **stops** the running cluster and its services without deleting anything. The cluster's
-compute is paused so the host reclaims resources, while the cluster definition, its `.data`, and its
-derived paths are left in place so the next `project up` resumes the same cluster rather than recreating
-it. `down` recurses *in* (the frame is still up) and stops on ascent, mirroring how VM `down` stops the
-VM without destroying it (see [incus](incus.md), [lima](lima.md)).
+`project down` deletes the running kind cluster and its services while preserving durable state. Kind does
+not provide a reliable stop/restart contract for the cluster frame, so `down` uses `kind delete cluster`
+for compute and keeps the `.data` and derived paths in place. The next `project up` recreates the kind
+cluster from the chain. VM frames are different: they use provider stop-without-delete (`incus stop` /
+`limactl stop`) on ascent after the inner cluster teardown (see [incus](incus.md), [lima](lima.md)).
 
 Stop steps use the best-effort `reportStep`, which logs a failed step without aborting the rest of the
 descent, so a partial stack is tolerated and the operation stays idempotent.
@@ -97,10 +98,10 @@ tolerating a partially-up stack and staying idempotent.
 
 ## The Never-Delete-`.data` Invariant
 
-Neither stop (`down`) nor teardown (`destroy`) deletes a cluster's data directory.
+Neither `down` nor `destroy` deletes a cluster's data directory.
 
 - Production state lives in `.data`.
-- Stopping a cluster (`down`), or tearing it down with `destroy` and recreating it with a later
+- Deleting the kind cluster on `down`, or tearing it down with `destroy` and recreating it with a later
   `up`, preserves the data directory so persistent state survives the cluster's lifecycle.
 
 - **WRONG**: a teardown step removes the data directory along with the cluster. This is wrong because
@@ -141,8 +142,8 @@ full budget. *(Target; the harness recast is reopened, real-run-gated — phase-
 The cluster-lifecycle semantics described above are real-run-validated end-to-end on real hardware.
 
 - **Behavior**: cluster bring-up and teardown are chain steps the recursive `project up`/`project
-  down`/`project destroy` interpreter runs, with `down` stopping the cluster without deleting it and
-  `destroy` deleting it. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional;
+  down`/`project destroy` interpreter runs, with `down` deleting the kind cluster while preserving durable
+  state and `destroy` deleting it too. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional;
   the stop and teardown steps are best-effort. Read-only state is reported through `context inspect`,
   which renders the lift composition with the current frame marked, reports whether the resolved cluster
   is live alongside the preserved `.data` and derived paths, and never mutates state. The

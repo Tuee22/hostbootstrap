@@ -11,7 +11,7 @@
 > command tree projects extend.
 
 > Note: Phases 0-20 landed `Done`; the **generic-project-model** work (phase 19, § BB) is `Done` —
-> code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
+> phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.
 > Phases 4, 8, 10, 15, and 17 stay `Done` with forward-pointers. `hostbootstrap-core` owns **no hardcoded
 > defaults** and is parameterized over a project's own config type (`ProjectSpec cfg tcfg`), with `project
@@ -26,7 +26,10 @@
 > [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
 > [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md)). The
 > module rows below describe the **current concrete** surface (the demo's `ProjectConfig`); phase 19 makes
-> the **types** generic without changing the fixed command tree. The **unified-harness / fixed-surface /
+> the **types** generic without changing the fixed command tree. [Phase 21](phase-21-documentation-code-consistency-reconciliation.md) (`Done`) reconciles the docs and
+> small code surfaces to that current state: no standalone `ensure` command, generic `chain :: cfg ->
+> [Step]`, deleted `Type.dhall`, retained `example.dhall`, and kind delete-on-down with durable-state
+> preservation. The **unified-harness / fixed-surface /
 > resource-SSoT** correction (phases 10/13/14/15/16/17/18) is complete — code-check-validated and
 > real-run-validated end-to-end (the
 > full `project up` lifecycle + `test run all` `3/3 passed` on both Incus/Linux and a 16 GiB Apple-Silicon
@@ -43,8 +46,11 @@
 > frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` / `base` pre-binary
 > bootstrapper plus the explicit `update` pipx self-update surface, and `hostbootstrap-core` is the reusable
 > library consumed through `runHostBootstrapCLI progName projectSpec`. The single-representation rule is part
-> of the supported architecture: a project's deploy is its one pure `chain :: RootConfig -> [Step]` value
+> of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
+>
+> **Current suite SSoT:** `core 239 + demo 14` static Haskell `testCase` definitions; run the core suite
+> with `cabal test` from `core/` and the demo suite with `cabal test` from `demo/`.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -58,7 +64,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
 | `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
 | `HostBootstrap.Substrate` | 2 | yes | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) |
-| `HostBootstrap.Ensure` | 3 | yes | the `Reconciler` value type and the `ensure` subcommand wiring |
+| `HostBootstrap.Ensure` | 3 | yes | the `Reconciler` value type and library runner used by `ensure-*` chain steps |
 | `HostBootstrap.Ensure.Docker` | 3 | yes | `ensure docker` reconciler |
 | `HostBootstrap.Ensure.Colima` | 3 | yes | `ensure colima` reconciler |
 | `HostBootstrap.Ensure.Cuda` | 3 | yes | `ensure cuda` reconciler |
@@ -104,7 +110,8 @@ See [development_plan_standards.md § K](development_plan_standards.md).
 ## Ensure reconcilers and host applicability
 
 Each host dependency is an idempotent `ensure` reconciler: a host-applicability predicate plus a
-reconcile action, exposed as an optparse subcommand. A reconciler run on the wrong host fails fast
+reconcile action, exposed to projects as a library primitive and composed into `ensure-*` chain steps.
+There is no top-level `ensure` command and no hidden command surface. A reconciler run on the wrong host fails fast
 with a one-line diagnostic and a non-zero exit. See
 [development_plan_standards.md § L](development_plan_standards.md).
 
@@ -164,7 +171,7 @@ Every normal command must fail fast with exit code 1 when the sibling config is 
 another project, claims unavailable capabilities, or does not authorize the requested command. Help,
 version, `project init`, and the read-only `context` introspection command (which absorbs
 `config show` / `config schema` / `config path` / static `config render`) are the bootstrap/inspection
-exceptions (target § Z; today these are the flat `config` / `context create` verbs). Daemons read one immutable config snapshot at startup, log the config
+exceptions (§ Z); the flat `config` and `context create` verbs are removed. Daemons read one immutable config snapshot at startup, log the config
 path and hash, and do not live-reload by default.
 
 ## Thin Python bootstrapper surface
@@ -272,12 +279,11 @@ See
 
 | Core verb group (target) | Phase | Implemented | Source |
 |-----------------|-------|-------------|--------|
-| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply + VM stop-without-delete real-run-validated end-to-end; subsumes `config init`, `cluster`, `context create` |
+| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply real-run-validated end-to-end; `down` stops VM frames and deletes kind clusters while preserving durable state; subsumes `config init`, `cluster`, `context create` |
 | `context` (read-only introspection) | 15, 16 | yes | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
 | `test init\|run <suite\|all>` | 10, 17 | yes | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
 | `service init\|schema\|run` | 18 | yes | long-running roles (`HostDaemon`/service run-model); `service run` is a leaf-frame pod entrypoint dispatched over a project-contributed `ServiceType` ADT; no `service down` (§ AA) |
 | `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
-| `ensure <tool>` (hidden debug; incl. `incus`) | 3, 11 | yes | the `ensure` reconcilers, normally invoked as chain steps within `project up` |
 
 The flat orchestration verbs (`config init`, `cluster up|down|delete|status`, `context create
 vm|container|service`) are **removed** — `config init` -> `project init`, `cluster` ->

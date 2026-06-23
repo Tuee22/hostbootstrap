@@ -13,7 +13,7 @@ material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
 The model is **the lift chain is the project**. A project binary's identity is its
-`chain :: ProjectConfig -> [Step]` value; `project up` is a recursive interpreter that runs the current
+`chain :: cfg -> [Step]` value; `project up` is a recursive interpreter that runs the current
 frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
 [architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc
 defers to it rather than re-deriving it. The command surface is summarized in
@@ -23,7 +23,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 - [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md) — the
   `hostbootstrap-core` Haskell library: module surface, the `Step` algebra a project extends with its
-  chain, and the `project`/`context`/`test`/`check-code` command tree project binaries build on.
+  chain, and the `project`/`test`/`service`/`context`/`check-code` command tree project binaries build on.
 - [architecture/composition_methodology.md](architecture/composition_methodology.md) — the **canonical
   home of the chain-is-the-project model**: the `[Step]` chain as the single representation, `project up`
   as the recursive/fractal interpreter of the self-reference lift across `Local | InVM | InContainer`,
@@ -73,24 +73,23 @@ defers to it rather than re-deriving it. The command surface is summarized in
   business-logic shapes) consumers compose their chain from.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
   step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
-  `chain :: ProjectConfig -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.
+  `chain :: cfg -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
-  contract and the fail-fast-on-wrong-host CLIs; reconcilers run as chain steps within `project up`,
-  and standalone `ensure <tool>` is a hidden debug surface.
+  contract; reconcilers are library primitives that run as `ensure-*` chain steps within `project up`.
 - [engineering/resource_budgeting.md](engineering/resource_budgeting.md) — the resource budget,
   verify-spare-resources, and Colima/kind cordoning.
 - [engineering/applied_cordon.md](engineering/applied_cordon.md) — budget-as-ceiling enforcement: the
   one canonical parser, the three rings, and the per-substrate storage cordon.
 - [engineering/incus.md](engineering/incus.md) — the `incus` host-provider axis: the `HostTarget`
   parameterization, `ensure incus`, and the VM lifecycle expressed as core chain steps (deploy-VM under
-  `project up`, stop-without-delete under `project down`, delete under `project destroy`) plus
+  `project up`, provider-VM stop under `project down`, delete under `project destroy`) plus
   `incus exec` dispatch and the sizing cordon; the worked demo uses Lima, not Incus, for the Apple
   Silicon pristine VM.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
-  as chain steps under `project up`/`project down`/`project destroy` (including stop-without-delete), the
-  never-delete-`.data` invariant, and production-vs-test profiles.
+  as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
+  while preserving durable state.
 - [engineering/base_image.md](engineering/base_image.md) — the base image contents.
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
   semantics.
@@ -128,8 +127,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 ## Command Surface
 
-The core command tree is exactly `ensure`, `context`, `project`, `test`, and `check-code`. The recursive
-`project init|up|down|destroy` lifecycle interprets the project's `chain :: ProjectConfig -> [Step]` value
+The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
+and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command. The recursive
+`project init|up|down|destroy` lifecycle interprets the project's `chain :: cfg -> [Step]` value
 across the three-frame descent: `project up` runs the current frame's steps then hands `pb project up` to
 the next frame, standing up the live persistent stack; `project down` / `project destroy` tear it down
 while preserving host `.data`.

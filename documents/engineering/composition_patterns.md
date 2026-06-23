@@ -6,7 +6,7 @@
 
 > **Purpose**: A cookbook of reusable composition shapes — frame topologies, step kinds, and
 > business-logic shapes — so a downstream author can recognize their workflow and express it as the
-> `chain :: ProjectConfig -> [Step]` value a self-referential project binary interprets.
+> `chain :: cfg -> [Step]` value a self-referential project binary interprets.
 
 ## TL;DR
 
@@ -66,7 +66,7 @@ interpreter. The canonical home for this doctrine is
 [composition_methodology § The Self-Reference Lift](../architecture/composition_methodology.md#the-recursive-project-up-interpreter);
 the cookbook summary:
 
-- **`chain :: ProjectConfig -> [Step]`.** The whole project topology is one flat, ordered list of steps,
+- **`chain :: cfg -> [Step]`.** The whole project topology is one flat, ordered list of steps,
   computed purely from the root parameters. `--dry-run` renders exactly this value.
 - **Fractal descent.** Each frame boundary is the same move: *provision the frame → build/install the
   pb in it → hand off `pb project up`*. The interpreter runs the current frame's steps, then re-invokes
@@ -149,7 +149,7 @@ Reused across shapes and step kinds:
   ascent (the VM stopped last); best-effort and idempotent, tolerating a partial stack; never-delete-
   `.data`, name-prefix delete-guards, and resource-class lifecycle ownership (per-run / long-lived /
   operational); see [cluster_lifecycle](cluster_lifecycle.md).
-- **Plan→Apply** — `project up --dry-run` renders `chain rootCfg` (the planned step sequence) before
+- **Plan→Apply** — `project up --dry-run` renders `chain cfg` (the planned step sequence) before
   the mutating apply.
 - **Substrate multiplexing** — the same pure chain parameterized over `(model × substrate)` under one
   control-plane contract.
@@ -171,7 +171,7 @@ primitive uses provider-backed folds for Incus and Lima and a topology-aware bin
 reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
-The `chain :: ProjectConfig -> [Step]` value, the recursive `project up` interpreter, the core Step
+The `chain :: cfg -> [Step]` value, the recursive `project up` interpreter, the core Step
 algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
 compose end-to-end: a single `project up` on Incus/Linux stands up the live persistent stack — a
 cordoned kind cluster, the production Harbor, the project image pushed to the in-cluster registry, and

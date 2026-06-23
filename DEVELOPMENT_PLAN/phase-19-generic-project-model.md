@@ -84,10 +84,11 @@ The full statement is [development_plan_standards.md § BB](development_plan_sta
 - **`test.dhall` is a thin override** (`tcfg`): mandatory test fields (suite selection, the `.test_data`
   durable dir) plus only the config overrides a test needs.
 - **The harness generates and owns the run's config.** `test run` reads `test.dhall`, refuses if a sibling
-  `.build/<project>.dhall` exists or a production cluster is running, builds the config via
-  `psTestConfig :: tcfg -> IO cfg` (reusing `psInit`; `IO` so a project can read extra inputs such as a
-  `test-secrets.dhall`), writes `<project>.dhall`, runs `project up`, asserts, `project destroy`, then
-  deletes the **generated** `<project>.dhall` and self-created `.test_data` (keeping `test.dhall`).
+  `.build/<project>.dhall` exists or a production cluster is running, builds labeled config variants via
+  `psTestConfig :: tcfg -> IO [(Text, cfg)]` (reusing `psInit`; `IO` so a project can read extra inputs
+  such as a `test-secrets.dhall`), writes each variant's `<project>.dhall`, runs `project up`, asserts,
+  `project destroy`, then deletes the **generated** `<project>.dhall` and self-created `.test_data`
+  (keeping `test.dhall`).
 - **Generic secrets shape.** Core offers a pure `SecretRef` union projects may embed in `cfg`; "no
   plaintext secrets in a production `<project>.dhall`" becomes type-level. Core never resolves secrets — a
   project's `psTestConfig` swaps `Vault` pointers for `TestPlaintext` read from its own `test-secrets.dhall`.
@@ -169,7 +170,7 @@ demo's own cfg in [phase-20](phase-20-config-driven-demo-worked-example.md). Ver
 
 #### Objective
 
-Add `psInit :: InitArgs -> cfg`, `psTestInit :: InitArgs -> tcfg`, and `psTestConfig :: tcfg -> IO cfg`;
+Add `psInit :: InitArgs -> cfg`, `psTestInit :: InitArgs -> tcfg`, and `psTestConfig :: tcfg -> IO [(Text, cfg)]`;
 flip `test run` to *generate* the run's `<project>.dhall` from `test.dhall` via `psTestConfig` (reusing
 `psInit`) and delete the generated config + self-created `.test_data` on teardown (closing the § Z
 code-vs-contract drift). Fix the harness existence precondition to check the executable-sibling

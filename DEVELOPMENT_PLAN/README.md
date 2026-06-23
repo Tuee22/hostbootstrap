@@ -32,7 +32,7 @@ witnesses. Each project binary reads a sibling `<project>.dhall`; host, VM, imag
 container, and service copies use the same filename rule while authority lives inside the file content.
 
 The command topology is the **chain-is-the-project** model: a project's deploy is a pure
-`chain :: RootConfig -> [Step]` value interpreted **recursively** by one `project init|up|down|destroy`
+`chain :: cfg -> [Step]` value interpreted **recursively** by one `project init|up|down|destroy`
 lifecycle command, with a read-only `context` introspection command and a `test` surface (see
 [development_plan_standards.md § Y/§ Z](development_plan_standards.md) and
 [composition_methodology](../documents/architecture/composition_methodology.md)). Each frame transition is
@@ -46,8 +46,8 @@ the test harness **drives the real `project up`** under the test surface rather 
 (§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (no
 doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role context (`project init
 --also-role`, § X); and long-running roles run through the `service` command (§ AA). It is code-check- and
-real-run-validated: `cabal test all` (226), `cabal build all --ghc-options=-Werror`, fourmolu/hlint on the
-demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
+real-run-validated: `cabal test all` (226, phase-close snapshot), `cabal build all --ghc-options=-Werror`,
+fourmolu/hlint on the demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
 Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via
 the dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). `test run all`
 reports **`3/3 passed` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux (2026-06-21): every
@@ -64,7 +64,7 @@ source *from* that spec (full SPA codegen), tracked as a vision note in
 `ProjectCommand` extension, the harness bring-up mirror, and the budget-doubling VM sizing are superseded
 ([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 
-The **generic-project-model** work (phase 19, § BB) is **`Done`** — code-check-validated (core 237 + demo
+The **generic-project-model** work (phase 19, § BB) is **`Done`** — phase-close code-check-validated (core 237 + demo
 13) and real-run-validated 2026-06-23 (test run all 3/3 from a harness-generated config) — and builds
 **forward**: it reopened, undid, or reversed no earlier phase. `hostbootstrap-core` is a generic library
 with **no hardcoded defaults**, parameterized over a project's own config type (`ProjectSpec cfg tcfg`):
@@ -77,11 +77,18 @@ stay `Done` with forward-pointers; phase 19 (`Done`) owns the work and the super
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Phase 20 (`Done`) is the
 config-driven demo worked example built on top of the generic model: it adds the demo's own `message`
 field (config→web→SPA), a two-variant run, and a polymorphic Playwright assertion, with **no core change** —
-code-check-validated (core 238 + demo 13) and real-run-validated 2026-06-23 (`test run all` `6/6` across the
-two message variants with full teardown between). With phase 20 `Done`, **all phases (0 through 20) are
-`Done`**. See [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
-[phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md), and
-[generic_project_model](../documents/architecture/generic_project_model.md).
+phase-close code-check-validated (core 238 + demo 13) and real-run-validated 2026-06-23 (`test run all` `6/6` across the
+two message variants with full teardown between). Phase 21 (`Done`) records the documentation/code
+consistency reconciliation: the standalone `ensure` command is removed, `chain :: cfg -> [Step]` is
+standardized, `Type.dhall` is deleted, and cluster-down prose matches kind delete-on-down with durable
+state preserved. With phase 21 `Done`, **all phases (0 through 21) are `Done`**. See
+[phase-19-generic-project-model.md](phase-19-generic-project-model.md),
+[phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md),
+[phase-21-documentation-code-consistency-reconciliation.md](phase-21-documentation-code-consistency-reconciliation.md),
+and [generic_project_model](../documents/architecture/generic_project_model.md).
+
+The current Haskell suite count is tracked in
+[system-components.md](system-components.md): `core 239 + demo 14` static `testCase` definitions.
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -113,6 +120,7 @@ for the component inventory.
 | 18 | [Service runtime command](phase-18-service-runtime-command.md) | Done |
 | 19 | [Generic project model and no core defaults](phase-19-generic-project-model.md) | Done |
 | 20 | [Config-driven demo worked example and multi-variant harness](phase-20-config-driven-demo-worked-example.md) | Done |
+| 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Done |
 
 ## Governance
 

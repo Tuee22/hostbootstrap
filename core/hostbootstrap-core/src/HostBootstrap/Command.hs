@@ -5,9 +5,9 @@
 
 {- | The core @optparse-applicative@ command tree.
 
-'coreCommands' is the list of core subcommand entries
-('HostBootstrap.CLI.runHostBootstrapCLI' merges it with project commands).
-'allReconcilers' is the concrete reconciler set the @ensure@ group dispatches.
+'coreCommands' is the list of fixed core subcommand entries every derived
+binary exposes. 'allReconcilers' is the concrete reconciler library projects
+compose into @ensure-*@ chain steps.
 
 The command tree is **generic over a project's config type** ('ProjectCfg'): it
 never names a concrete config record. It decodes/encodes the sibling config via
@@ -51,7 +51,7 @@ import HostBootstrap.Dhall.Gen (
     coreArtifacts,
     schemaUnion,
  )
-import HostBootstrap.Ensure (Reconciler, ensureCommandWith)
+import HostBootstrap.Ensure (Reconciler)
 import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.Docker as Docker
@@ -73,8 +73,8 @@ import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
 
-{- | The concrete @ensure@ reconcilers (the six host-tool reconcilers plus the
-cross-substrate host-provider @ensure incus@).
+{- | The concrete @ensure@ reconciler library (eight host-configuration
+primitives, including the cross-substrate host-provider @ensure incus@).
 -}
 allReconcilers :: [Reconciler]
 allReconcilers =
@@ -88,12 +88,11 @@ allReconcilers =
     , Incus.reconciler
     ]
 
-{- | The top-level core command names. Project binaries append project commands
-under distinct names; 'HostBootstrap.CLI' rejects a project command that would
-shadow one of these.
+{- | The top-level core command names. The surface is fixed and closed; projects
+extend behavior through the 'ProjectSpec' streams, not new verbs.
 -}
 coreCommandNames :: [String]
-coreCommandNames = ["ensure", "context", "project", "test", "service", "check-code"]
+coreCommandNames = ["context", "project", "test", "service", "check-code"]
 
 {- | The core subcommands every @hostbootstrap@-derived binary exposes. The
 project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
@@ -118,8 +117,7 @@ coreCommands ::
     (tcfg -> IO [(T.Text, cfg)]) ->
     [Mod CommandFields (IO ())]
 coreCommands progName projectArtifacts suite checkCode services chain frameCtx teardown initBuilder testInit testConfig =
-    [ ensureCommandWith (gate @cfg progName Context.EnsureCommand []) allReconcilers
-    , contextCommand @cfg progName projectArtifacts initBuilder
+    [ contextCommand @cfg progName projectArtifacts initBuilder
     , projectCommandGroup progName chain frameCtx teardown initBuilder
     , testCommand @cfg @tcfg progName suite initBuilder testInit testConfig
     , serviceCommandGroup progName services initBuilder
@@ -348,17 +346,18 @@ bootstrap entrypoint). @defaultRole@ selects the role the generated config
 declares when @--role@ is not given (@host-orchestrator@ for @project init@,
 @cluster-service@ for @service init@). The flags carry **no** core default values
 (the project's 'psInit' supplies every omitted default), so the parser yields a
-defaultless 'InitArgs' which 'psInit' interprets. Python triggers @project init@
-idempotently after the host-native build (§ M).
+defaultless 'InitArgs' which 'psInit' interprets. Python does not trigger this
+surface; it builds the host-native binary and execs it (§ M).
 -}
 initParserInfo ::
     forall cfg.
     (ProjectCfg cfg) =>
     String ->
     String ->
+    String ->
     (InitArgs -> cfg) ->
     ParserInfo (IO ())
-initParserInfo progName defaultRole initBuilder =
+initParserInfo progName commandLabel defaultRole initBuilder =
     info
         ( initAction
             <$> optional outputOpt
@@ -399,10 +398,10 @@ initParserInfo progName defaultRole initBuilder =
         outPath <- maybe defaultProjectConfigPath pure moutput
         exists <- doesFileExist outPath
         if exists && ifMissingFlag && not forceFlag
-            then putStrLn ("config init: " ++ outPath ++ " already present")
+            then putStrLn (commandLabel ++ ": " ++ outPath ++ " already present")
             else do
                 when (exists && not forceFlag) $
-                    die ("config init: " ++ outPath ++ " already exists (pass --force to overwrite)")
+                    die (commandLabel ++ ": " ++ outPath ++ " already exists (pass --force to overwrite)")
                 writeProjectConfigFile outPath cfg
     defaultProjectConfigPath = do
         exe <- getExecutablePath
@@ -459,10 +458,11 @@ initParserInfo progName defaultRole initBuilder =
 
 {- | The @project@ lifecycle command (§ Y): @init@ writes the root config, then
 the recursive interpreter brings the chain @up@ / @down@ / @destroy@. @project up
---dry-run@ renders the pure @chain rootCfg@ plan (the single representation, § W);
+--dry-run@ renders the pure @chain cfg@ plan (the single representation, § W);
 @project up@ interprets it recursively from the current frame; @project down@
-stops services/clusters/VMs without deleting them; @project destroy@ deletes
-everything spun up while preserving host @.data@.
+stops service/VM frames and tears down kind clusters while preserving durable
+host @.data@; @project destroy@ deletes everything spun up while preserving host
+@.data@.
 -}
 projectCommandGroup ::
     forall cfg.
@@ -481,7 +481,7 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
             (progDesc "Project lifecycle: init the root config, then interpret the chain (up/down/destroy)")
         )
   where
-    pInit = command "init" (initParserInfo progName "host-orchestrator" initBuilder)
+    pInit = command "init" (initParserInfo progName "project init" "host-orchestrator" initBuilder)
     pUp =
         command
             "up"
@@ -492,7 +492,7 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     pDown =
         command
             "down"
-            (info (pure runDown) (progDesc "Stop services/clusters/VMs without deleting them; preserve host .data"))
+            (info (pure runDown) (progDesc "Stop service/VM frames and tear down kind clusters; preserve host .data"))
     pDestroy =
         command
             "destroy"
@@ -505,15 +505,15 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     -- ClusterService / Daemon / ImageBuildContainer leaves, where a recursive
     -- @project up@ must not run (§ X).
     runUp dryRun =
-        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \(rootCfg :: cfg) ctx ->
+        withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \(projectCfg :: cfg) ctx ->
             if dryRun
-                then putStr (renderChain (chain rootCfg))
-                else applyChain rootCfg ctx
-    applyChain rootCfg ctx = do
+                then putStr (renderChain (chain projectCfg))
+                else applyChain projectCfg ctx
+    applyChain projectCfg ctx = do
         cfg <- hostConfig
         self <- currentSelfRef ("/usr/local/bin/" ++ progName)
         let current = T.unpack (Context.currentFrame ctx)
-        result <- runChainFromFrame cfg self (frameCtx rootCfg) current (chain rootCfg)
+        result <- runChainFromFrame cfg self (frameCtx projectCfg) current (chain projectCfg)
         either die pure result
 
     -- Teardown runs the cluster-lifecycle reconciler (clusterDown / clusterDelete,
@@ -524,15 +524,15 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     -- the host-side cluster reconciler is a no-op there and the VM teardown is the
     -- effective one.
     runDown =
-        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(rootCfg :: cfg) ctx -> do
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
             withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx))
-            teardown rootCfg False
+            teardown projectCfg False
     runDestroy =
-        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(rootCfg :: cfg) ctx -> do
+        withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
             withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx))
-            teardown rootCfg True
+            teardown projectCfg True
 
 {- | The @service@ lifecycle command (§ AA): the third DSL-driven core command,
 for a project's long-running roles (the @HostDaemon@/service run-model). @init@
@@ -564,7 +564,7 @@ serviceCommandGroup progName registry initBuilder =
             (progDesc "Service lifecycle: init the service config, print the schema, run a long-running role")
         )
   where
-    sInit = command "init" (initParserInfo progName "cluster-service" initBuilder)
+    sInit = command "init" (initParserInfo progName "service init" "cluster-service" initBuilder)
     sSchema =
         command
             "schema"

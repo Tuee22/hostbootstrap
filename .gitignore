@@ -14,6 +14,7 @@ target/
 build/
 .build/
 .data/
+.test_data/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

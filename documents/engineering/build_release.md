@@ -70,10 +70,10 @@ hostbootstrap base build --flavor cpu --arch amd64
 WRONG:
 
 ```sh
-hostbootstrap base push --flavor cpu --arch amd64
+docker push docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64
 ```
 
-Standalone push is not supported. Publishing always goes through the cold
+Standalone push is not supported by the hostbootstrap workflow. Publishing always goes through the cold
 `build-and-push` path so the registry copy matches the just-built local layers.
 
 RIGHT:

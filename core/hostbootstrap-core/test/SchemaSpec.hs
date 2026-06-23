@@ -196,8 +196,10 @@ decodeFixture = do
       let path = root </> "core" </> "hostbootstrap-core" </> "dhall" </> "example.dhall"
       exists <- doesFileExist path
       assertBool ("fixture exists: " ++ path) exists
+      contents <- readFile path
       decoded <- decodeProjectConfigFile path
       decoded @?= expected
+      T.stripEnd (T.pack contents) @?= T.stripEnd (renderProjectConfig expected)
 
 toText :: String -> T.Text
 toText = T.pack

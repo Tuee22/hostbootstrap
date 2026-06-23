@@ -6,9 +6,10 @@ project binaries use to extend it.
 
 The command surface is **fixed and closed** (development_plan_standards § P):
 every project binary — and the bare @hostbootstrap@ binary — surfaces the same
-tree (@project@ / @test@ / @service@ / @context@ / @check-code@, plus the hidden
-@ensure@ debug surface). @hostbootstrap-core@ is a **library of composable
-tools**, not a CLI topology, so a project never adds a command. A project extends
+tree: @project@, @test@, @service@, @context@, and @check-code@. There are no
+hidden commands. @hostbootstrap-core@ is a **library of composable tools**,
+including the @ensure@ reconciler primitives a project runs as @ensure-*@ chain
+steps, not a CLI topology, so a project never adds a command. A project extends
 the core only through the parallel extension streams carried by 'ProjectSpec':
 its lift chain ('withChain'), its Dhall-vocabulary artifacts, its test suite, its
 service-handler registry ('withServices'), its @check-code@ action, and the

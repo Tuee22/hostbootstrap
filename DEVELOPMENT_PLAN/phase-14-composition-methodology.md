@@ -31,7 +31,7 @@ typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded li
 
 The single-representation doctrine is part of the methodology: one operation has one representation. The
 methodology is **recast** around the **"chain is the project"** model: a project's deploy is its **lift
-chain** — a pure `chain :: RootConfig -> [Step]` value that *is* the project's identity (§ W) — and that
+chain** — a pure `chain :: cfg -> [Step]` value that *is* the project's identity (§ W) — and that
 `[Step]` chain is the single representation. `composition_methodology.md` (the canonical home) and
 `composition_patterns.md` present `project up` as the recursive/fractal interpreter of that chain and the
 Python bootstrapper as the metal-frame instance of the fractal bootstrap, with an honest `## Current Status`
@@ -88,7 +88,7 @@ operations across contexts through the extension-stream merge without L0 changes
 Document the composable-operation algebra, the self-reference lift, the deploy ≡ business-logic
 unification, the foundational principles, and the L0/L1/L2 layering, and rewrite § U from the two-case
 `HostTarget` to the n-level lift. **Recast** the methodology around the chain-is-the-project model: the
-self-reference lift becomes the recursive `project up` interpreter of a pure `chain :: RootConfig ->
+self-reference lift becomes the recursive `project up` interpreter of a pure `chain :: cfg ->
 [Step]` value, with fractal bootstrap (provision -> build pb -> hand off `pb project up`) at every frame
 and the Python bootstrapper as the metal-frame instance.
 
@@ -114,12 +114,12 @@ yet present it as the recursive `project up` chain interpreter. The chain-is-the
 open work:
 
 - Recast `composition_methodology.md` (the **canonical home** of the model) so the self-reference lift is
-  presented as the recursive `project up` interpreter of the pure `chain :: RootConfig -> [Step]` value;
+  presented as the recursive `project up` interpreter of the pure `chain :: cfg -> [Step]` value;
   state chain-is-the-project; document fractal bootstrap (each frame transition = provision -> build pb ->
   hand off `pb project up`, with the Python bootstrapper as the metal-frame instance, § M); and frame the
   single-representation doctrine (§ W) as the `[Step]` chain being THE representation.
 - Update `composition_patterns.md` to carry the chain/Step pattern + recursive interpreter as the
-  canonical cookbook; align `authoring_project_binaries.md` so a consumer authors its `chain :: RootConfig
+  canonical cookbook; align `authoring_project_binaries.md` so a consumer authors its `chain :: cfg
   -> [Step]` (plus step actions, test suite, artifacts, Dhall vocabulary) rather than noun verbs.
 - Add a `## Current Status` to the recast docs separating the **built** lift primitive
   (`HostBootstrap.Lift`) from the **target** `project` lifecycle command and `[Step]`-chain interpreter
@@ -199,7 +199,7 @@ The single-representation doctrine is documented, but it is framed around the de
 single lift sequence whose only lifted compute step is `test all` (`inContainer img (inVM vm
 localContext)`). The chain-is-the-project recast changes that contract:
 
-- Restate the single representation as the pure `chain :: RootConfig -> [Step]` value (§ W, § Y): `project
+- Restate the single representation as the pure `chain :: cfg -> [Step]` value (§ W, § Y): `project
   up` is its recursive interpreter and `--dry-run` renders the same value apply executes. There is no
   second hand-written orchestration path beside the chain — the deploy sequence the demo carries today is
   superseded by the `[Step]` chain the core interprets.

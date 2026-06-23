@@ -6,7 +6,7 @@
 -- | De-duplicate the repeated vocabulary unions in generated Dhall.
 --
 -- The @ToDhall@-derived renderer inlines a union type's full declaration at
--- every constructor site, so a generated @<project>.dhall@ repeats the 7-way
+-- every constructor site, so a generated @<project>.dhall@ repeats the 8-way
 -- @ContextKind@, 8-way @Capability@, and 11-way @CommandClass@ unions many times
 -- over. This module post-processes the embedded Dhall AST before pretty-printing:
 -- each repeated union is bound once in a top-level @let@ and its inline

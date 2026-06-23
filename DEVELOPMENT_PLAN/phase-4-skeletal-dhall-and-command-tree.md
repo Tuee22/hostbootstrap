@@ -21,13 +21,13 @@ before normal dispatch lives in [Phase 15](phase-15-binary-context-config.md).
 
 The command tree's contract changed under the "the chain is the project"
 model (see [development_plan_standards.md § Y, § Z](development_plan_standards.md)); that migration landed and is validated. The surfaced core tree
-is no longer the flat `config` verbs plus `ensure`; it is the recursive lifecycle command
-`project init|up|down|destroy`, the read-only `context` introspection command, `test init|run`, and
-`check-code`. The schema/decoder sprints (4.1, 4.3, 4.4) built a still-valid project-local `<project>.dhall`
+is no longer the flat `config` verbs plus an `ensure` command; it is the recursive lifecycle command
+`project init|up|down|destroy`, `test init|run`, `service init|schema|run`, the read-only `context`
+introspection command, and `check-code`. The schema/decoder sprints (4.1, 4.3, 4.4) built a still-valid project-local `<project>.dhall`
 shape and stay `Done`; the command-tree sprint (4.2) is now complete — the flat `config init` / `cluster` /
 `context create` verbs are removed, the read-only `config` inspection folded into `context`, and the
-surfaced tree is `project init|up|down|destroy` / read-only `context` / `test init|run` / `check-code`
-(plus hidden-debug `ensure`), validated by `cabal test` (core green) and the migrated Python trigger.
+surfaced tree is `project init|up|down|destroy` / `test init|run` / `service init|schema|run` /
+read-only `context` / `check-code`, validated by `cabal test` (core green) and the migrated Python trigger.
 
 ## Remaining Work
 
@@ -41,7 +41,7 @@ is not reopened.**
 None. The command tree is migrated to the new surface (Sprint 4.2): `config init` -> `project init` (with
 the Python trigger migrated), `cluster` -> `project up|down|destroy`, `context create` -> the `context-init`
 chain step, and `config show|schema|render|path` folded into the read-only `context` command. A project's
-primary `ProjectSpec` contribution is its `chain :: RootConfig -> [Step]` value (threaded via `withChain`).
+primary `ProjectSpec` contribution is its `chain :: cfg -> [Step]` value (threaded via `withChain`).
 The recursive interpreter and `[Step]` algebra that this tree surfaces are owned by
 [Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
@@ -55,8 +55,8 @@ project binary, not Python. Normal commands read the sibling config through the 
 local config become `help`, `version`, `project init`, and the read-only `context` introspection command
 (which absorbs the former `config schema` / `config show FILE` / `config path` / static `config render`
 surfaces, § X). The composable tree projects extend surfaces the `project init|up|down|destroy`,
-`context`, `test init|run`, and `check-code` core verbs, and a project's primary contribution is its
-**lift chain** value (`chain :: RootConfig -> [Step]`), not noun verbs.
+`test init|run`, `service init|schema|run`, `context`, and `check-code` core verbs, and a project's primary contribution is its
+**lift chain** value (`chain :: cfg -> [Step]`), not noun verbs.
 
 ## Sprints
 
@@ -64,7 +64,7 @@ surfaces, § X). The composable tree projects extend surfaces the `project init|
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`core/hostbootstrap-core/dhall/Type.dhall`, `core/hostbootstrap-core/dhall/example.dhall`
+`core/hostbootstrap-core/dhall/example.dhall`
 **Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
 `system-components.md`
 
@@ -75,7 +75,7 @@ by config inspection, default generation, and command gating.
 
 #### Deliverables
 
-- The project-local schema fixture in `core/hostbootstrap-core/dhall/Type.dhall`.
+- The reflected schema emitted by `context schema` / `config_schema.dhall` is the source of truth.
 - The canonical decode fixture in `core/hostbootstrap-core/dhall/example.dhall`.
 - `HostBootstrap.Config.Schema` decoding, rendering, writing, and summarizing `ProjectConfig`.
 - Resource, deploy, and runtime-context fields available to the project binary.
@@ -101,22 +101,19 @@ None.
 #### Objective
 
 Land `HostBootstrap.Command` — the core optparse command tree — and confirm `runHostBootstrapCLI progName
-projectSpec` extends it with validated project extension points (the project's lift chain, the inherited
-test hook, the inherited `check-code` hook, and project config artifacts). The current implementation
-composes `ensure <tool>` and the flat project-local `config` verbs and validates named `ProjectCommand`
-deltas; the **target** tree surfaces the `project init|up|down|destroy`, read-only `context`,
-`test init|run`, and `check-code` verbs, and a project's primary contribution becomes its
-`chain :: RootConfig -> [Step]` value rather than noun verbs (§ P, § Y).
+projectSpec` extends it with validated project extension points (the project's lift chain, inherited
+test hook, service handlers, inherited `check-code` hook, and project config artifacts). The current tree
+surfaces `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, read-only `context`,
+and `check-code`; a project's primary contribution is its `chain :: cfg -> [Step]` value rather than noun
+verbs (§ P, § Y). The `ensure` reconcilers are library primitives composed as `ensure-*` chain steps.
 
 #### Command Surface
 
-- `hostbootstrap ensure <tool>` — the Phase 3 reconcilers, retained only as a hidden debug surface;
-  reconcilers are normally invoked as chain steps within `project up` (§ L, § Y).
-- Target surfaced core tree: `project init|up|down|destroy`, read-only `context`, `test init|run`,
-  `check-code` (§ Y, § Z). The flat `config show|schema|render|path` verbs fold into `project init` /
-  `context`.
+- Surfaced core tree: `project init|up|down|destroy`, `test init|run`, `service init|schema|run`,
+  read-only `context`, and `check-code` (§ Y, § Z, § AA). The flat `config show|schema|render|path` verbs
+  fold into `project init` / `context`.
 - A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to contribute its lift chain (plus
-  any residual project verbs that may never shadow a core verb); the bare `hostbootstrap` binary
+  service/test/schema extension streams, never new verbs); the bare `hostbootstrap` binary
   (`hostbootstrap-core`'s own executable) uses `runBareHostBootstrapCLI`.
 
 #### Deliverables
@@ -129,18 +126,15 @@ deltas; the **target** tree surfaces the `project init|up|down|destroy`, read-on
 
 #### Validation
 
-- (Current) `hostbootstrap --help` shows the composed flat core tree (`ensure`, `config`); the worked
-  `hostbootstrap-demo` binary (`demo/`) shows the core verbs plus its own appended demo verbs
-  (`incus`/`vm`/`harbor`/`web`).
-- (Target) `--help` shows `project`, `context`, `test`, `check-code`; the demo contributes a chain value
-  rather than noun verbs.
+- `--help` shows `project`, `test`, `service`, `context`, and `check-code`; the demo contributes a chain
+  value rather than noun verbs.
 
 #### Remaining Work
 
-None. The surfaced core tree is `project init|up|down|destroy`, the read-only `context` command (absorbing
-`show` / `schema` / `render` / `path`), `test init|run`, and `check-code`, with `ensure <tool>` retained as
-a hidden debug surface. `config init` is migrated to `project init` (the Python trigger updated), and a
-project's primary `ProjectSpec` contribution is its `chain :: RootConfig -> [Step]` value (threaded via
+None. The surfaced core tree is `project init|up|down|destroy`, `test init|run`,
+`service init|schema|run`, the read-only `context` command (absorbing
+`show` / `schema` / `render` / `path`), and `check-code`. `config init` is migrated to `project init` (the Python trigger updated), and a
+project's primary `ProjectSpec` contribution is its `chain :: cfg -> [Step]` value (threaded via
 `withChain` / `withFrameContext`). The recursive `project up` interpreter and the `[Step]` algebra this tree
 surfaces are owned by [Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded
 in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
@@ -149,19 +143,19 @@ in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed S
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`core/hostbootstrap-core/dhall/Type.dhall`, `core/hostbootstrap-core/test/SchemaSpec.hs`
+`core/hostbootstrap-core/dhall/example.dhall`, `core/hostbootstrap-core/test/SchemaSpec.hs`
 **Docs to update**: `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`
 
 #### Objective
 
-Keep the committed schema fixture aligned with the Haskell `ProjectConfig` decoder and the generated
-schema emitted by the binary.
+Keep the committed example fixture aligned with the project config decoder and the reflected schema
+emitted by the binary.
 
 #### Deliverables
 
-- `Type.dhall` describes the project-local record shape consumed by `ProjectConfig`.
+- `context schema` describes the reflected project-local record shape consumed by the project's `cfg`.
 - `SchemaSpec` round-trips rendered defaults and the canonical fixture through the Haskell decoder.
-- Generated schema output includes the reflected `ProjectConfig` surface.
+- Generated schema output includes the reflected project-local config surface.
 
 #### Validation
 

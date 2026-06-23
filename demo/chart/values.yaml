@@ -6,13 +6,15 @@ image:
   tag: local
   pullPolicy: IfNotPresent
 
-replicas: 1
+# Rendered into the embedded Dhall config. The demo's `deploy-chart` step
+# overrides this with the live config's `deploy.haReplicas`.
+haReplicas: 1
 
 # The config-driven worked example the webservice serves (Sprint 20.1/20.2). The
 # demo's `deploy-chart` step overrides this with the live config's message via
-# `--set-string demoMessage=...`; this default is the value used when the chart is
-# installed without the override.
-demoMessage: "Hello, world!"
+# `--set-string demoMessage=...`; the value must already be a valid Dhall Text
+# literal because it is injected into the embedded project config.
+demoMessage: "\"Hello, world!\""
 
 service:
   # The in-cluster service port (the webservice binds :8080) and the NodePort the

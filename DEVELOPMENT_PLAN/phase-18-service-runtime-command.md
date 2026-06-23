@@ -38,9 +38,10 @@ green, fourmolu/hlint clean on the demo):
   role action), `lookupServiceHandler`, `serviceVariantNames`, and `duplicateServiceVariants`; the registry
   may be empty.
 - `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` on the core tree
-  (`coreCommandNames` = `ensure` / `context` / `project` / `test` / `service` / `check-code`); there is **no
-  `service down`**. `service run <variant>` gates as `Context.ServiceCommand` (the leaf-frame service-role
-  gate) then dispatches on the variant; an unknown variant or empty registry fails fast.
+  (`coreCommandNames` = `context` / `project` / `test` / `service` / `check-code`); there is **no
+  `service down`** and no hidden command surface. `service run <variant>` gates as `Context.ServiceCommand`
+  (the leaf-frame service-role gate) then dispatches on the variant; an unknown variant or empty registry
+  fails fast.
 - `HostBootstrap.CLI` threads the registry through `ProjectSpec` (`withServices`) alongside the other
   extension streams; the entrypoint rejects duplicate service variants.
 - The demo registers the `web` variant (`demoServices`, `serveWeb`) and its chart pod's entrypoint is

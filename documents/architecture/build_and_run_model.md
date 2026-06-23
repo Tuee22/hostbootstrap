@@ -21,8 +21,8 @@
   **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, each a
   derived fact of the step being interpreted.
 - `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
-  leaving the VM, cluster, and services up. `project down` stops them; `project destroy` deletes them.
-  `.data` is preserved across both.
+  leaving the VM, cluster, and services up. `project down` deletes kind compute and stops VM frames;
+  `project destroy` deletes everything spun up. `.data` is preserved across both.
 - The build/run model is the canonical home for **host-native build mechanics**; the chain model itself
   is owned by [composition_methodology](composition_methodology.md), which this doc defers to.
 
@@ -117,7 +117,7 @@ detected substrate and the generated topology, never declared in Dhall. The cano
 in [run_models](run_models.md); this section states only *when* the selection happens.
 
 `project up` recursively interprets the lift chain — an ordered `[Step]` produced
-by the project's `chain :: ProjectConfig -> [Step]` value (the demo's `demoChain`). Each step that runs
+by the project's `chain :: cfg -> [Step]` value (the demo's `demoChain`). Each step that runs
 compute selects its run-model from the facts in force at that step, **inside the interpretation of the
 chain**:
 
@@ -153,7 +153,7 @@ The lifecycle verbs are split so the persistent stack has explicit stop and dele
 | Verb | Effect | `.data` |
 |------|--------|---------|
 | `project up` | Reconcile the chain to running; leave the persistent stack up. | preserved |
-| `project down` | Stop services / clusters / VMs (provider **stop**, e.g. `incus stop` / `limactl stop`); delete nothing. | preserved |
+| `project down` | Delete kind clusters and stop provider VMs (e.g. `incus stop` / `limactl stop`); preserve durable state. | preserved |
 | `project destroy` | Stop, then delete everything spun up. | preserved |
 
 `.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
@@ -219,7 +219,7 @@ kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) �
 `localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
 preserved.
 
-- **The `project` chain:** a single `chain :: ProjectConfig -> [Step]` value the core interprets,
+- **The `project` chain:** a single `chain :: cfg -> [Step]` value the core interprets,
   driven by `project init|up|down|destroy`, a read-only `context` introspection command that treats every
   `<project>.dhall` uniformly, the `service` command (`service run` runs one long-running role), and the
   `test` harness. Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are real;
@@ -228,7 +228,7 @@ preserved.
   `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`; the demo's
   `web serve` resolves to `service run` (`Web` variant) and `web bridge` to the build-image step, both
   extensions of core via the service-handler and lift-chain streams rather than new verbs. `project down`
-  stops the VM without deleting it.
+  deletes kind compute and stops VM frames while preserving durable state.
 - **The chain steps:** `project up` interprets the chain across three frames. The metal frame runs
   `deploy-VM` (ensure the provider, launch the budget-sized VM) and `build-pb` (the host-native binary
   build plus the project-image build in the VM), then hands off into the VM. The in-VM frame runs

@@ -159,14 +159,14 @@ and no-side-effect command gating.
 
 #### Objective
 
-Keep the Python bootstrapper outside Dhall ownership while still ensuring a default local config exists
-after the host-native binary build.
+Keep the Python bootstrapper outside Dhall ownership. The host-native binary owns config creation; Python
+builds and execs it without creating or triggering a default local config.
 
 #### Deliverables
 
 - Python derives the project name from the Cabal file and writes no Dhall.
-- After building `./.build/<project>` host-native, Python triggers
-  `<project> config init --if-missing`; the binary creates the default sibling `<project>.dhall`.
+- After building `./.build/<project>` host-native, Python execs the requested command without triggering
+  config initialization. A user creates the sibling `<project>.dhall` explicitly with `<project> project init`.
 - The project binary owns decoding, rendering, validation, and command gating for the local config.
 
 #### Validation
@@ -333,7 +333,7 @@ built:
   `config init --role image-build-container --output /usr/local/bin/<project>.dhall` to the equivalent
   `project init`-family form, still baked before `check-code`.
 - The `deploy --dry-run` rendering of the single lift sequence becomes `project up --dry-run`, which
-  renders the pure `chain rootCfg` `[Step]` value through the gate; the sibling `<project>.dhall` carries
+  renders the pure `chain cfg` `[Step]` value through the gate; the sibling `<project>.dhall` carries
   parameters + context + witness and never the chain shape.
 
 The `project init` / `project up --dry-run` surface that re-expresses these renames is **new work owned by

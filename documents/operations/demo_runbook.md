@@ -13,7 +13,7 @@
 - `demo/` is the worked consumer `hostbootstrap-demo`: an L0-direct binary (it consumes
   `hostbootstrap-core` directly, like `mcts`), integration mode 2
   (`source-repository-package` + `runHostBootstrapCLI`). See [run models](../architecture/run_models.md).
-- The demo's identity is its **lift chain** — `chain :: ProjectConfig -> [Step]`, a single ordered value
+- The demo's identity is its **lift chain** — `chain :: cfg -> [Step]`, a single ordered value
   the core interprets. The demo contributes that chain (plus its step actions, harness cases, and Dhall
   vocabulary) through `ProjectSpec`. The canonical statement of the chain-is-the-project model lives in
   [composition_methodology](../architecture/composition_methodology.md); this runbook walks the
@@ -64,10 +64,10 @@ VM and builds the pb and image in it; the in-VM `vm-orchestrator-1` mints the pr
 config and hands off; the in-container `vm-project-container-2` stands up the persistent stack
 (deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port). Each frame's binary runs only
 its own segment, then hands off `project up` one level down. `project up` ends at a live webservice on
-`localhost:30080`. `project down` stops the VM and `project destroy` deletes it; both preserve host
-`.data`.
+`localhost:30080`. `project down` deletes the kind cluster and stops the VM while preserving host `.data`;
+`project destroy` deletes the VM too.
 
-The core command tree is exactly `ensure`, `context`, `project`, `test`, and `check-code`. Cluster
+The core command tree is exactly `project`, `test`, `service`, `context`, and `check-code`. Cluster
 bring-up is the `deploy-kind` / `deploy-chart` chain steps; `project init` writes the root config;
 `context` carries the read-only `show` / `schema` / `render` introspection; and `context-init` is the
 chain step that mints a child config. The demo contributes its long-running web role as a `service` variant
@@ -93,7 +93,7 @@ service variant run by `service run`):
 
 | Stream | How the demo extends it | Observable through |
 |---|---|---|
-| Lift chain | the demo contributes `chain :: ProjectConfig -> [Step]` (its steps appended, never shadowing core's) | `project up`; `project up --dry-run` renders `chain rootCfg` |
+| Lift chain | the demo contributes `chain :: cfg -> [Step]` (its steps appended, never shadowing core's) | `project up`; `project up --dry-run` renders `chain cfg` |
 | Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (a `demoWeb` pod footprint and the `demoWebApp` SPA-as-typed-Dhall spec) | `context render --artifact demoWeb` / `--artifact demoWebApp` |
 | Test harness | `demoCases` + per-case assertions in the stack-driven `demoTestSuite` (it drives the real `project up`/`project destroy`, no separate per-case bring-up) | `test run all` |
 | Service handlers | `demoServices` registers the `web` variant (`serveWeb`, which reads its delivered config to render the demo's `message`), threaded via `withServices` | `service run web` (the chart pod's entrypoint) |
@@ -211,7 +211,7 @@ The operator drives the chain through the `project` lifecycle.
   `--cpu/--memory/--storage/--ha-replicas` set the budget.
 - **`context`** — read-only introspection (`inspect` / `path` / `show` / `schema` / `render`): introspect
   the sibling `.dhall` and render the global lift composition with the current frame highlighted.
-  `project up --dry-run` renders `chain rootCfg` as the pure `[Step]` plan without running it.
+  `project up --dry-run` renders `chain cfg` as the pure `[Step]` plan without running it.
 - **`project up`** — recursively interpret the chain from the current frame and
   hand off `project up` into each next frame; idempotent (reconcile-to-running). On the metal
   `host-orchestrator-0` frame it walks deploy-VM provider → deploy-VM (cordon #1) → build-pb in VM
@@ -240,7 +240,7 @@ The operator drives the chain through the `project` lifecycle.
   preconditions run first: refuse if a sibling `.build/hostbootstrap-demo.dhall` exists (the
   `siblingProjectConfigPath`, not the project root) or if a production cluster is running; teardown removes
   only the generated config and the `.test_data` it created.
-- **`project down`** — stop the VM (the cluster stops with it), delete nothing.
+- **`project down`** — delete the kind cluster, stop the VM, and preserve host `.data`.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
   up inside it. Host `.data` is **preserved** (the never-delete-`.data` invariant). Teardown is

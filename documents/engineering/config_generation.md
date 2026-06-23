@@ -11,7 +11,7 @@
 
 ## TL;DR
 
-- The chain `chain :: ProjectConfig -> [Step]` is **code** — it is the project's identity and the single
+- The chain `chain :: cfg -> [Step]` is **code** — it is the project's identity and the single
   representation of the lift sequence. The `.dhall` is **parameters + context + witness**, never the
   chain shape. The canonical home of that model is
   [composition_methodology](../architecture/composition_methodology.md); this doc defers to it and
@@ -89,7 +89,7 @@ host-orchestrator frame). The rendered Dhall hoists the
 repeated `ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass` unions into top-level
 `let` bindings (`HostBootstrap.Dhall.Hoist`) so the file stays compact and standalone — no imports,
 decodable in-process. Optional structural variation (for example, skip the VM and descend straight to
-Docker) is a flag on this root config, so `chain rootCfg` stays a pure function of the root parameters.
+Docker) is a flag on this project config, so `chain cfg` stays a pure function of the project parameters.
 
 The root config is the user's editable surface. The chain reads it once at the top frame; every deeper
 frame's config is **derived**, not hand-edited.

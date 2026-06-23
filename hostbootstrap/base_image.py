@@ -2,7 +2,7 @@
 
 This module is the source of truth for every value the logic-free
 ``docker/basecontainer.Dockerfile`` consumes. The CLI's ``base build`` /
-``base push`` commands call into the helpers here.
+``base build-and-push`` commands call into the helpers here.
 
 Tag scheme (single-arch, no manifest lists; §4):
 

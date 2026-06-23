@@ -57,7 +57,7 @@ The sibling `<project>.dhall` carries three layers in one typed value:
 | **Context** | the parent frame's context-init step | this binary's place in the topology: identity, frames, current frame, capabilities, allowed command classes, resource envelope |
 | **Witness** | the parent frame's context-init step | locally checkable facts (`runtimeWitnesses`) that let this binary prove it really is in the declared frame |
 
-The `.dhall` never encodes the lift chain itself. The chain is `chain :: ProjectConfig -> [Step]` — a Haskell
+The `.dhall` never encodes the lift chain itself. The chain is `chain :: cfg -> [Step]` — a Haskell
 value, the project's single representation (see [composition_methodology](composition_methodology.md)).
 Structural variation (for example, skipping the VM frame to go straight to a Docker frame) is a parameter
 flag on the **root** `.dhall`, so the chain stays a pure function of root parameters rather than a second

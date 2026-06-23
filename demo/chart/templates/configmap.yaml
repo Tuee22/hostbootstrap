@@ -120,6 +120,6 @@ data:
             , resourceEnvelope = { cpu = 6, memory = "10GiB", storage = "80GiB" }
             , childContextKinds = [] : List ContextKind
             }
-        , deploy = { haReplicas = {{ .Values.replicas }} }
-        , message = "{{ .Values.demoMessage }}"
+        , deploy = { haReplicas = {{ .Values.haReplicas }} }
+        , message = {{ .Values.demoMessage }}
         }

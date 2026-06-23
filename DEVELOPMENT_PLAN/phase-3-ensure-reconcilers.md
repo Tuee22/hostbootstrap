@@ -5,22 +5,21 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-2-host-tools-and-config.md](phase-2-host-tools-and-config.md), [phase-4-skeletal-dhall-and-command-tree.md](phase-4-skeletal-dhall-and-command-tree.md)
 
 > **Purpose**: Land each host dependency as an idempotent `ensure` reconciler with a
-> host-applicability predicate and a reconcile action, exposed as an optparse subcommand that fails
-> fast on the wrong host.
+> host-applicability predicate and a reconcile action, exposed as library primitives and `ensure-*`
+> chain steps that fail fast on the wrong host.
 
 ## Phase Status
 
 **Status**: Done
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
-the fail-fast `runReconciler`, the generic `ensure <tool>` dispatcher, and the shared
+the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
 `installAndVerify` probe-first install-and-verify driver. The reconciler set (`docker`, `colima`,
 `lima`, `cuda`, `homebrew`, `ghc`, `tart`, and the cross-substrate `incus`) carries its applicability
 predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
-toolkit on linux), unit-tested without invoking the package manager. They are wired into the command
-tree (on this `linux-gpu` host `ensure colima` fails fast while `ensure docker`/`ensure cuda`/`ensure
-incus` install-and-verify). `ensure incus` is owned by
+toolkit on linux), unit-tested without invoking the package manager. They are composed into project
+chains as `ensure-*` steps; wrong-host applicability still fails fast before side effects. `ensure incus` is owned by
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). This phase is `Done` (see
 [development_plan_standards.md § L](development_plan_standards.md)).
 
@@ -32,14 +31,14 @@ GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the extensi
 
 Implement the substrate-and-ensure-reconciler contract (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
-idempotent value carrying a host-applicability predicate and a reconcile action, exposed as an
-optparse subcommand: `ensure docker`, `ensure colima`, `ensure lima`, `ensure cuda`, `ensure homebrew`,
-`ensure ghc`, `ensure tart`, and `ensure incus`. A reconciler
+idempotent value carrying a host-applicability predicate and a reconcile action. Projects compose the
+concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-lima`, `ensure-cuda`,
+`ensure-homebrew`, `ensure-ghc`, `ensure-tart`, and `ensure-incus` chain steps. A reconciler
 invoked on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
 
 ## Sprints
 
-### Sprint 3.1: Reconciler abstraction + ensure subcommand wiring [Done]
+### Sprint 3.1: Reconciler abstraction + library runner [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`
@@ -48,22 +47,21 @@ invoked on a host its predicate rejects fails fast with a one-line diagnostic an
 #### Objective
 
 Land `HostBootstrap.Ensure` — the `Reconciler` value type (applicability predicate + idempotent
-reconcile action) and the generic `ensure <tool>` optparse subcommand dispatcher that fails fast on
-the wrong host.
+reconcile action) and the `runEnsure`/`runReconciler` library runners that fail fast on the wrong host.
 
 #### Reconciler Contract
 
 - `data Reconciler = Reconciler { reconcilerName :: String, reconcilerSummary :: String, appliesTo ::
   Substrate -> Bool, requirement :: String, reconcile :: HostConfig -> IO () }` — the host-applicability
-  predicate (`appliesTo`) and the idempotent `reconcile` action, plus the subcommand name, the optparse
-  summary, and the human-readable applicability used in the wrong-host diagnostic.
+  predicate (`appliesTo`) and the idempotent `reconcile` action, plus the stable reconciler name, summary,
+  and human-readable applicability used in the wrong-host diagnostic.
 - Running an inapplicable reconciler prints a one-line diagnostic and exits non-zero before any
   side effect.
 - `reconcile` is idempotent: a second run on a satisfied host is a no-op.
 
 #### Deliverables
 
-- `HostBootstrap.Ensure` with the `Reconciler` type and the `ensure` command group.
+- `HostBootstrap.Ensure` with the `Reconciler` type and library runners.
 - The fail-fast-on-wrong-host behavior with a non-zero exit and single-line message.
 
 #### Validation
@@ -76,7 +74,7 @@ the wrong host.
 
 None.
 
-### Sprint 3.2: The six reconcilers [Done]
+### Sprint 3.2: The concrete reconcilers [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
@@ -86,27 +84,26 @@ None.
 
 #### Objective
 
-Land the six concrete reconcilers as `ensure` subcommands.
+Land the concrete reconcilers as library values.
 
 #### Deliverables
 
-| Subcommand | Module | Applicable hosts |
+| Reconciler step | Module | Applicable hosts |
 |------------|--------|------------------|
-| `ensure docker` | `HostBootstrap.Ensure.Docker` | all substrates |
-| `ensure colima` | `HostBootstrap.Ensure.Colima` | `apple-silicon` |
-| `ensure cuda` | `HostBootstrap.Ensure.Cuda` | `linux-gpu` |
-| `ensure homebrew` | `HostBootstrap.Ensure.Homebrew` | `apple-silicon` |
-| `ensure ghc` | `HostBootstrap.Ensure.Ghc` | `apple-silicon` |
-| `ensure tart` | `HostBootstrap.Ensure.Tart` | `apple-silicon` (build-only) |
+| `ensure-docker` | `HostBootstrap.Ensure.Docker` | all substrates |
+| `ensure-colima` | `HostBootstrap.Ensure.Colima` | `apple-silicon` |
+| `ensure-cuda` | `HostBootstrap.Ensure.Cuda` | `linux-gpu` |
+| `ensure-homebrew` | `HostBootstrap.Ensure.Homebrew` | `apple-silicon` |
+| `ensure-ghc` | `HostBootstrap.Ensure.Ghc` | `apple-silicon` |
+| `ensure-tart` | `HostBootstrap.Ensure.Tart` | `apple-silicon` (build-only) |
 
 - Each reconciler resolves its tools through `HostBootstrap.HostTool` (no `$PATH` bare names).
 - Each carries the correct applicability predicate from the table above.
 
 #### Validation
 
-- `hostbootstrap ensure <tool>` is idempotent on a satisfied host and fails fast on the wrong host
-  (verified on the development `linux-gpu` host: `ensure docker`/`ensure cuda` no-op, `ensure colima`
-  exits 1).
+- `EnsureSpec` verifies idempotent/right-host action behavior and wrong-host fail-fast behavior without
+  requiring a top-level `ensure` command.
 - `cabal build all` succeeds.
 
 #### Remaining Work
@@ -158,9 +155,9 @@ None.
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the concrete subcommands, and
+- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the concrete library values, and
   the fail-fast-on-wrong-host behavior.
 
 **Cross-references to add:**
-- `system-components.md` keeps the ensure-reconciler table aligned with the implemented subcommands.
+- `system-components.md` keeps the ensure-reconciler table aligned with the implemented library values.
 - `legacy-tracking-for-deletion.md` records obsolete compatibility surfaces.

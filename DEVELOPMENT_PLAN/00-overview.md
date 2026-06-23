@@ -35,7 +35,7 @@ witnesses, and command predicates fail before side effects when the binary is no
 declared frame.
 
 The command topology is the **chain-is-the-project** model: the orchestration verbs collapse into a single
-recursive `project init|up|down|destroy` lifecycle that interprets a pure `chain :: RootConfig -> [Step]`
+recursive `project init|up|down|destroy` lifecycle that interprets a pure `chain :: cfg -> [Step]`
 value, `context` is a read-only introspection command, and `test` is decoupled from deploy (see
 [development_plan_standards.md § Y/§ Z](development_plan_standards.md)).
 
@@ -89,8 +89,8 @@ substrates are `apple-silicon`, `linux-cpu`, and `linux-gpu`. It is `Done`.
 ### Phase 3 — ensure reconcilers
 
 Phase 3 owns the install-and-verify `ensure` suite. Each host dependency is an idempotent reconciler with
-a host-applicability predicate and reconcile action, exposed as an optparse subcommand. A wrong-host
-invocation fails fast with a one-line diagnostic. It is `Done`; the `ensure incus` reconciler is owned by
+a host-applicability predicate and reconcile action, exposed as library primitives and `ensure-*` chain
+steps. A wrong-host invocation fails fast with a one-line diagnostic. It is `Done`; the `ensure incus` reconciler is owned by
 Phase 11.
 
 ### Phase 4 — project-local Dhall and command tree
@@ -218,10 +218,11 @@ project-defined config type rather than the fixed `ProjectConfig`.
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
 Phase 16 owns the `project init|up|down|destroy` lifecycle command and the `Step` algebra it interprets.
-A project's deploy is a pure `chain :: RootConfig -> [Step]` value; `project up` interprets it recursively
+A project's deploy is a pure `chain :: cfg -> [Step]` value; `project up` interprets it recursively
 (run the current frame's steps, then provision → build the pb → hand off `pb project up` into the next
 frame — the fractal bootstrap), is idempotent, and renders the pure chain under `--dry-run`. `project
-down` stops without deleting; `project destroy` deletes but preserves `.data`. The `Step` algebra, the
+down` stops VM frames and deletes kind clusters while preserving durable state; `project destroy` deletes
+but preserves `.data`. The `Step` algebra, the
 recursive interpreter, and the `project` command are built and real-run-validated (2026-06-18). It is
 `Done`: the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
@@ -263,7 +264,7 @@ which `project init` and the harness both reuse (DRY); `test.dhall` is a thin ov
 self-created `.test_data` on teardown (closing the § Z code-vs-contract drift); a pure `SecretRef`
 vocabulary keeps a secrets-strict consumer's production configs plaintext-free; and the Python bootstrapper
 no longer initializes config (Sprint 19.5 — Python builds the host-native binary and execs it, the binary
-owning its Dhall and failing fast when no sibling config exists) (§ BB). It is `Done` (code-check-validated — core 237
+owning its Dhall and failing fast when no sibling config exists) (§ BB). It is `Done` (phase-close code-check-validated — core 237
 + demo 13 — and real-run-validated 2026-06-23: test run all 3/3 from a harness-generated config); it
 reopened no earlier phase. It owns the generic model and the Python auto-init removal.
 
@@ -276,10 +277,21 @@ reads its config) -> `BudgetView.message` -> the SPA `#message`. Core owns no pr
 generic extra slot. The harness runs **two** config variants (`"Hello, world!"` then `"Hello, Universe!"`)
 with full teardown and spin-up between, and the Playwright e2e-tabs spec is **polymorphic** — it reads
 `EXPECTED_MESSAGE` and asserts whichever message the active deployment set. It is `Done`
-(code-check-validated — core 238 + demo 13 — and real-run-validated 2026-06-23: `test run all` `6/6`
+(phase-close code-check-validated — core 238 + demo 13 — and real-run-validated 2026-06-23: `test run all` `6/6`
 across two message variants with full teardown between + polymorphic e2e) and builds **forward** on the
 demo (phase 13), the `service` command (phase 18), and phase 19; it reopened nothing. See
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md).
+
+### Phase 21 — documentation/code consistency reconciliation
+
+Phase 21 owns the repo-wide reconciliation after the phase-18 service command and phase-19 generic project
+model refactors. It removes the stale standalone `ensure <tool>` command from the surfaced core tree while
+retaining the reconciler library as `ensure-*` chain steps, standardizes the abstract chain signature as
+`chain :: cfg -> [Step]`, deletes the stale `Type.dhall` fixture, retains and guards `example.dhall`, and
+aligns cluster lifecycle prose with implemented kind behavior (`project down` deletes kind clusters while
+preserving durable state; provider VMs stop). It is `Done`; the transient `REMEDIATION_PLAN.md` is
+superseded by [phase-21-documentation-code-consistency-reconciliation.md](phase-21-documentation-code-consistency-reconciliation.md)
+and the legacy ledger.
 
 ## Dependency edges
 
@@ -300,6 +312,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-18 (builds on 15, 16; the service runtime command + the service-handler registry) ← Done; service run web real-run-validated in the demo
   phase-19 (builds forward on 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config, Python auto-init removal) -- Done
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
+  phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

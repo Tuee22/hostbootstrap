@@ -1,5 +1,4 @@
--- | The @Reconciler@ value type and the generic @ensure <tool>@ subcommand
--- dispatcher.
+-- | The @Reconciler@ value type and runner used by @ensure-*@ chain steps.
 --
 -- A reconciler is an idempotent value: a host-applicability predicate plus a
 -- reconcile action (see @development_plan_standards.md § L@). Running a
@@ -14,8 +13,6 @@ module HostBootstrap.Ensure
     diagnostic,
     runReconciler,
     runEnsure,
-    ensureCommand,
-    ensureCommandWith,
     toolPresent,
     runTool,
     runToolWithStdin,
@@ -31,7 +28,6 @@ import Data.Maybe (isJust)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool, absExePath, toolCommandName)
 import HostBootstrap.Substrate (Substrate, detect, renderSubstrateName, substrateName)
-import Options.Applicative
 import System.Exit (ExitCode (..), die, exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (readProcessWithExitCode)
@@ -78,7 +74,7 @@ runReconciler r cfg = case decide r (hcSubstrate cfg) of
   Right act -> act cfg
 
 -- | Detect the substrate, resolve the host configuration, and run a reconciler.
--- The action wired behind each @ensure <tool>@ subcommand.
+-- Chain steps and project-owned action seams call this directly.
 runEnsure :: Reconciler -> IO ()
 runEnsure r = do
   detected <- detect
@@ -87,28 +83,6 @@ runEnsure r = do
     Right sub -> do
       cfg <- buildHostConfig sub
       runReconciler r cfg
-
--- | The generic @ensure@ command group, built from a list of reconcilers. The
--- caller (the core command tree) supplies the concrete reconcilers.
-ensureCommand :: [Reconciler] -> Mod CommandFields (IO ())
-ensureCommand = ensureCommandWith id
-
--- | Like 'ensureCommand', with a caller-supplied action wrapper. Core uses this
--- to run the binary-context gate before dispatching a reconciler while tests and
--- library callers can keep the plain command surface.
-ensureCommandWith :: (IO () -> IO ()) -> [Reconciler] -> Mod CommandFields (IO ())
-ensureCommandWith wrap reconcilers =
-  command
-    "ensure"
-    ( info
-        (hsubparser (mconcat (map toSub reconcilers)))
-        (progDesc "Ensure a host dependency is present (idempotent; fails fast on the wrong host)")
-    )
-  where
-    toSub r =
-      command
-        (reconcilerName r)
-        (info (pure (wrap (runEnsure r))) (progDesc (reconcilerSummary r)))
 
 -- | A single install step: a resolved host tool run with arguments. The step is
 -- a pure, inspectable value so the substrate-branched install plan can be

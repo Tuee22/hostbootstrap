@@ -1,6 +1,6 @@
 -- | The 'Step' algebra: the lift-chain stream's reuse unit (development_plan_standards § T, § Y).
 --
--- A project's deploy is a pure @chain :: RootConfig -> [Step]@ value (see
+-- A project's deploy is a pure @chain :: cfg -> [Step]@ value (see
 -- 'HostBootstrap.Chain'); each 'Step' is one composable action a binary runs and
 -- reports inside one execution frame. @hostbootstrap-core@ ships the
 -- host-management step kinds ('StepKind'); a project contributes its own kinds
@@ -146,7 +146,7 @@ chainFrames steps = go [] (map stepFrame steps)
 deployVMStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
 deployVMStep label frame = Step label frame DeployVM
 
--- | An @ensure <tool>@ step (the reconciler invoked in the chain, § L).
+-- | An @ensure-*@ step (a reconciler invoked in the chain, § L).
 ensureStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
 ensureStep tool label frame = Step label frame (EnsureTool tool)
 

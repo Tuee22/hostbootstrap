@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-- The chain shape is **code**: `chain :: ProjectConfig -> [Step]` is the project's identity, owned by the
+- The chain shape is **code**: `chain :: cfg -> [Step]` is the project's identity, owned by the
   project binary and interpreted recursively by `project up`. It is not in any `.dhall`.
 - `.dhall` carries **parameters + context + witness**, never the shape. The sibling `<project>.dhall`
   parameterizes the chain (budgets, ports, replicas, optional structural flags) and declares the
@@ -28,14 +28,14 @@
 
 ## The Chain Is Code; The Dhall Is Parameters
 
-The recursive lift chain is a Haskell value, `chain :: ProjectConfig -> [Step]`, and it **is** the
+The recursive lift chain is a Haskell value, `chain :: cfg -> [Step]`, and it **is** the
 project — its single representation (see
 [composition_methodology](../architecture/composition_methodology.md)). The sibling `<project>.dhall`
 does not encode that chain. It supplies three things and nothing more:
 
 | Concern | What it carries | Used for |
 |---|---|---|
-| **Parameters** | project/user settings: Dockerfile path, resource budget, ports, HA replicas, feature flags, and any optional structural flag (e.g. skip the VM and go straight to Docker) | inputs to `chain rootCfg`, so the chain stays a pure function of root params |
+| **Parameters** | project/user settings: Dockerfile path, resource budget, ports, HA replicas, feature flags, and any optional structural flag (e.g. skip the VM and go straight to Docker) | inputs to `chain cfg`, so the chain stays a pure function of root params |
 | **Context** | the topology frame the binary occupies: `topologyFrames`, `currentFrame`, command/capability/resource authority | naming the binary's segment of the recursive descent |
 | **Witness** | locally checkable runtime witnesses for the current frame | proving the process is actually in the frame it claims |
 
@@ -145,7 +145,7 @@ and the binary verifies its frame before side effects. The core command surface 
 interpreted by `project up`. The demo also contributes its `Web` service variant (run by `service run`)
 and its VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.
 
-The model this document describes is the recursive `project` chain: `chain :: ProjectConfig -> [Step]`
+The model this document describes is the recursive `project` chain: `chain :: cfg -> [Step]`
 interpreted by `project up`, with `project init` writing the root config, the context-init step minting
 child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
 stands up the live persistent stack — a cordoned kind cluster, the full 8-pod production Harbor, the

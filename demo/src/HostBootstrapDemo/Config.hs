@@ -23,6 +23,7 @@ module HostBootstrapDemo.Config (
     TestConfig (..),
 
     -- * Render / decode
+    renderDhallText,
     renderProjectConfig,
     decodeProjectConfigText,
     decodeProjectConfigFile,
@@ -125,6 +126,11 @@ vocabulary unions into top-level @let@ bindings.
 -}
 renderProjectConfig :: ProjectConfig -> Text
 renderProjectConfig = Hoist.renderHoisted Context.vocabUnions
+
+-- | Render a Dhall @Text@ literal using Dhall's own encoder.
+renderDhallText :: Text -> Text
+renderDhallText value =
+    Dhall.Core.pretty (embed (Dhall.inject :: Encoder Text) value)
 
 -- | Decode a project-local config from Dhall source text.
 decodeProjectConfigText :: Text -> IO ProjectConfig

@@ -5,13 +5,13 @@
 **Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [binary_context_config](binary_context_config.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
 
 > **Purpose**: Define the foundational composition model of `hostbootstrap-core` — a project *is* its
-> lift chain (`chain :: ProjectConfig -> [Step]`), `project up` is the recursive/fractal interpreter that
+> lift chain (`chain :: cfg -> [Step]`), `project up` is the recursive/fractal interpreter that
 > descends the topology one frame at a time, and that single `[Step]` value is the one representation of
 > both deployment and runtime business logic.
 
 ## TL;DR
 
-- **The chain is the project.** A project binary's identity is the value `chain :: ProjectConfig -> [Step]`
+- **The chain is the project.** A project binary's identity is the value `chain :: cfg -> [Step]`
   — an ordered list of host-management and workload steps. The chain is code, it is the single
   representation (§W), and `project up --dry-run` renders exactly that value.
 - **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
@@ -38,7 +38,7 @@ The foundational unit is a composable **step**: an action a binary runs and repo
 frame. The whole project is the ordered list of those steps:
 
 ```haskell
-chain :: ProjectConfig -> [Step]
+chain :: cfg -> [Step]
 ```
 
 `ProjectConfig` is derived purely from the root `<project>.dhall` parameters, so the chain is a pure
@@ -82,11 +82,12 @@ local host. `project up` is the recursive interpreter of the chain over that sta
 | `InContainer` | `docker run <image> project up` | the project container's `ENTRYPOINT` (the `pb`) |
 
 `project up` is idempotent — it reconciles toward the running stack — and restartable from any frame, so a
-partial descent resumes cleanly. `project up --dry-run` renders `chain rootCfg` without effects.
-`project down` stops services/clusters/VMs (`incus`/`limactl` **stop**) and deletes nothing; `project
-destroy` stops then deletes everything the chain spun up. **Teardown recurses in** while each frame is
-still up, then stops/deletes on the ascent (the VM is stopped last); it is best-effort and idempotent,
-tolerating a partial stack, and `.data` is always preserved (the core invariant). See
+partial descent resumes cleanly. `project up --dry-run` renders `chain cfg` without effects.
+`project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
+VMs use `incus`/`limactl` **stop**, while kind clusters use `kind delete cluster`. `project destroy` stops
+then deletes everything the chain spun up. **Teardown recurses in** while each frame is still up, then
+stops/deletes on the ascent (the VM is stopped last); it is best-effort and idempotent, tolerating a
+partial stack, and `.data` is always preserved (the core invariant). See
 [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 
 - **WRONG**: a project threads an explicit "execution context" parameter through every reconciler and
@@ -244,10 +245,10 @@ demo contributes its deploy as the pure value `demoChain :: ProjectConfig -> [St
 VM/provider IO as chain steps.
 
 `project init|up|down|destroy` is the recursive lifecycle interpreter driven by the
-`chain :: ProjectConfig -> [Step]` value: `project up` descends the 3-frame fractal topology
-(`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`), `project down` stops services,
-clusters, and VMs (incus/Lima **stop**) without deleting, and `project destroy` deletes them — both
-preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
+`chain :: cfg -> [Step]` value: `project up` descends the 3-frame fractal topology
+(`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`), `project down` stops service/VM
+frames and deletes kind clusters while preserving durable state, and `project destroy` deletes the
+provisioned compute frames — both preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
 standardized harness. `context-init` mints the child `<project>.dhall`; `deploy-kind`/`deploy-chart`
 bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
@@ -324,4 +325,4 @@ from these primitives, never baked into L0.
 - [composition_patterns](../engineering/composition_patterns.md) — the cookbook of shapes that instantiate
   this model.
 - [authoring_project_binaries](../engineering/authoring_project_binaries.md) — how a consumer authors its
-  `chain :: ProjectConfig -> [Step]`.
+  `chain :: cfg -> [Step]`.

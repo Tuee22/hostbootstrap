@@ -51,11 +51,11 @@ vocabulary use, the service-handler registry (`demoServices`), and the stack-dri
 
 This phase is reopened for the **"the chain is the project"** migration (§ Y, § T). The demo's worked
 shape is the proving ground for the chain-is-code model: a project's primary CLI contribution is its
-**lift chain** value (`chain :: RootConfig -> [Step]`, interpreted by the core `project` lifecycle), not
+**lift chain** value (`chain :: cfg -> [Step]`, interpreted by the core `project` lifecycle), not
 the noun verbs the demo ships today. The single-representation invariant (§ W) is unchanged — what
 changes is the **representation**: the hand-written `demoDeployChain` and its small interpreter in
 `demo/src/HostBootstrapDemo/Chain.hs`, together with the demo's `vm`/`deploy`/`incus`/`harbor`/`web`/`role`
-noun verbs in `Commands.hs`, become a `chain :: RootConfig -> [Step]` value the **core** `Step`
+noun verbs in `Commands.hs`, become a `chain :: cfg -> [Step]` value the **core** `Step`
 interpreter runs, plus the demo's contributed workload step actions. The target shape is described below
 as what is being built; the `project up`/`project down`/`project destroy` interpreter it depends on is
 owned by phase-16, so this phase tracks the demo's side of the migration as **remaining work**, not as a
@@ -105,7 +105,7 @@ The demo's noun-verb deploy shape (the `demo deploy` lift sequence above, the `v
 verbs, the hand-written `demoDeployChain` and its interpreter in `Chain.hs`, the `runMatrix` harness, the
 four runtime `hostbootstrap-demo.dhall` configs, and both VM providers) is **implemented and validated**.
 What is **not yet built** is the migration of that shape onto the core `Step` interpreter: the demo does
-not yet contribute a `chain :: RootConfig -> [Step]` value, and there is no `project up`/`project down`/`project destroy`
+not yet contribute a `chain :: cfg -> [Step]` value, and there is no `project up`/`project down`/`project destroy`
 surface — the core `project` lifecycle command that interprets the chain is owned by phase-16, and the
 demo's migration onto it is the remaining work below. Do **not** read this phase as claiming the `project`
 command or the chain-as-`[Step]` representation is shipped.
@@ -482,7 +482,7 @@ the target context.
 The self-reference lift (`HostBootstrap.Lift`) the demo composes its chain on stays valid and is reused by
 the migrated chain. What this sprint's contract changes under the new model: the demo's chain is no longer
 a hand-composed `liftSubcommand` fold wired behind the `demo deploy` noun verb — it becomes a
-`chain :: RootConfig -> [Step]` value the core `project` interpreter folds onto `liftSubcommand` at each
+`chain :: cfg -> [Step]` value the core `project` interpreter folds onto `liftSubcommand` at each
 frame transition (provision the frame → build/install the pb → hand off `pb project up`, § Y). Migrate the
 metal → VM → container composition from the demo's bespoke chain assembly to core step kinds so the lift
 fold is performed by the interpreter, not by demo orchestration code. The interpreter is **new work owned
@@ -562,7 +562,7 @@ prints the planned operation/argv sequence without effect, while apply runs it v
 
 This sprint reified the demo deploy chain as a pure data value with a **demo-local** interpreter
 (`HostBootstrapDemo.Chain`) behind the `demo deploy [--dry-run]` noun verb. The new model moves that
-representation up into the core: the chain becomes a `chain :: RootConfig -> [Step]` value over **core**
+representation up into the core: the chain becomes a `chain :: cfg -> [Step]` value over **core**
 step kinds, and the interpreter that renders `--dry-run` and runs apply is the core `project` lifecycle
 command (`project up --dry-run` renders the same chain apply executes, § Y/§ W), not a demo-local
 `renderPlan`. Migrate the demo's pure chain value off the bespoke `Chain.hs` interpreter onto the core
@@ -651,7 +651,7 @@ The single-representation collapse this sprint achieved (one canonical lift sequ
 compute step is `test all`, harness unchanged as the one lift target) **stays the invariant** under the
 new model — the single-representation doctrine (§ W) is unchanged. What changes is the **carrier** of that
 single representation: the canonical sequence is no longer a hand-written `Chain.hs` value behind
-`demo deploy`, it is the `chain :: RootConfig -> [Step]` value the core `project` interpreter runs. Migrate
+`demo deploy`, it is the `chain :: cfg -> [Step]` value the core `project` interpreter runs. Migrate
 the canonical sequence (`vm ensure` → `vm up` → `vm pristine-bootstrap` → lifted `test all` → `vm down`)
 to core step kinds (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, the
 lifted-`test`/run-leaf step, deploy-VM-down) plus the demo's contributed steps, so the one representation
@@ -677,26 +677,26 @@ distinction lives inside the file content rather than the filename.
 
 #### Deliverables
 
-- Host default config generated by `hostbootstrap-demo config init` as
+- Host default config generated by `hostbootstrap-demo project init` as
   `demo/.build/hostbootstrap-demo.dhall`, with Dockerfile path and budget in the project-local config.
 - VM-local config projected before the in-VM bootstrap/binary exec.
 - Image-build config baked by the Dockerfile at `/usr/local/bin/hostbootstrap-demo.dhall` through
-  `hostbootstrap-demo config init --role image-build-container`; runtime VM-project-container configs are
+  `hostbootstrap-demo project init --role image-build-container`; runtime VM-project-container configs are
   parent-generated and mounted over that path for lifted workflows.
 - Service/daemon config generated or mounted during cluster bring-up for any `web serve` or role-daemon
   pod; the chart mounts a service-role `hostbootstrap-demo.dhall`.
 
 #### Validation
 
-- `hostbootstrap-demo --help`, `config init`, and normal missing-config failure behavior are covered.
+- `hostbootstrap-demo --help`, `project init`, and normal missing-config failure behavior are covered.
 - Demo dry-run output shows the same single lift sequence through the project-local config gate.
 - Real-run validation repeats the lightweight demo path enough to prove host, VM, container, and
   service contexts are each using their own sibling `hostbootstrap-demo.dhall`.
 - Current validation: `cabal build all` from `demo/` passes; `helm template hostbootstrap-demo demo/chart`
-  renders the service config mount; `cabal run hostbootstrap-demo -- config init --role host-orchestrator
+  renders the service config mount; `cabal run hostbootstrap-demo -- project init --role host-orchestrator
   --source-root /home/matt/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB
   --storage 80GiB --ha-replicas 1 --force` creates the host config; and `cabal run hostbootstrap-demo --
-  deploy --dry-run` renders the single lift sequence through the gate.
+  project up --dry-run` renders the single lift sequence through the gate.
 
 #### Remaining Work
 

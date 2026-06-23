@@ -69,7 +69,7 @@ standing up the real secret store. That is a **project-specific** file — for e
 }
 ```
 
-The project's `psTestConfig :: tcfg -> IO cfg` (see
+The project's `psTestConfig :: tcfg -> IO [(Text, cfg)]` (see
 [generic_project_model.md](../architecture/generic_project_model.md)) reads it and substitutes
 `TestPlaintext` for the `Vault` pointers when building the test-time `<project>.dhall`:
 

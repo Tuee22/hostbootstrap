@@ -88,11 +88,14 @@ import HostBootstrap.Step (
  )
 import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, renderArch, substrateArch)
 import HostBootstrapDemo.Config (
+    DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
     envelopeOfResources,
     projectConfigFromContext,
+    renderDhallText,
  )
+import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
@@ -408,7 +411,10 @@ reads the same message the host config carried, end to end.
 deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    let extraValues = [("demoMessage", message projectCfg)]
+    let extraValues =
+            [ ("demoMessage", renderDhallText (message projectCfg))
+            , ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
+            ]
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
 
 exposeAction :: HostConfig -> IO ()
@@ -968,14 +974,12 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
             ++ " /usr/local/bin/hostbootstrap-demo.dhall"
         )
     vmStep
-        "ensure docker in the VM (install + start the daemon) — prerequisite for build #3"
-        ("cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && .build/hostbootstrap-demo ensure docker")
+        "install Docker in the VM (install + start the daemon) — prerequisite for build #3"
+        "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq docker.io acl && sudo systemctl enable --now docker && sudo setfacl -m u:$(id -un):rw /var/run/docker.sock && docker info >/dev/null"
     let buildImageScript =
-            "cd "
-                ++ shellQuote vmRepoRoot
-                ++ " && docker build -f demo/docker/Dockerfile --build-arg BASE_IMAGE="
-                ++ demoBaseImage cfg
-                ++ " -t hostbootstrap-demo:local ."
+            "cd " ++ shellQuote vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
+        repoRootCfg =
+            parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
     case mAuth of
         Just auth -> do
             putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
@@ -1099,6 +1103,9 @@ shellQuote s = "'" ++ concatMap quoteChar s ++ "'"
   where
     quoteChar '\'' = "'\\''"
     quoteChar c = [c]
+
+dockerCommand :: [String] -> String
+dockerCommand args = unwords (map shellQuote ("docker" : args))
 
 {- | The demo's chain-frame teardown for @project down@ / @project destroy@. The
 metal frame's only provisioned resource is the VM, so @down@ (@False@) /stops/ it

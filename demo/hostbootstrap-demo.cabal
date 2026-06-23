@@ -31,6 +31,7 @@ executable hostbootstrap-demo
   other-modules:
       HostBootstrapDemo.Commands
       HostBootstrapDemo.Config
+      HostBootstrapDemo.Container
       HostBootstrapDemo.Web.Api
       HostBootstrapDemo.Web.Server
       HostBootstrapDemo.Web.Bridge
