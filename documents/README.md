@@ -42,8 +42,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
   thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
-  build/run model, Tart as build-only, `./.build/`, and why the binary (not the bootstrapper) builds
-  the project container.
+  build/run model, the headless host-build pattern (CUDA-on-Windows), `./.build/`, and why the binary
+  (not the bootstrapper) builds the project container.
 - [architecture/library_hierarchy.md](architecture/library_hierarchy.md) — the three additive Cabal
   library levels (L0◄L1◄L2) and the extension streams every level composes additively (lift chain, Dhall
   vocabulary, schema-gen, test seams, service handlers), over a fixed command surface that is never a stream.
@@ -87,6 +87,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
   Silicon pristine VM.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
+- [engineering/wsl2.md](engineering/wsl2.md) — the **target** Windows WSL2 host-provider VM, the peer of
+  Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` imports a pristine `Ubuntu-24.04` distro
+  and the same `deploy-VM` / `project down` (stop-without-delete) / `project destroy` lifecycle steps
+  drive it.
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
   as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
   while preserving durable state.

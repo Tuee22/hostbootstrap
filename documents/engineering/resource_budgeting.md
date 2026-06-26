@@ -19,8 +19,8 @@
 - A test config may override the budget (e.g. smaller resources); `test run` projects the override into the
   test `<project>.dhall` it writes, then drives the same sizing path as deploy.
 - The project binary verifies the active context has the spare budget available before proceeding, then
-  applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on Linux, Colima for
-  direct Apple Docker workloads), a kind-node cap, or a container cap.
+  applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on Linux, WSL2 on
+  Windows, Colima for direct Apple Docker workloads), a kind-node cap, or a container cap.
 - The ceiling is enforced by three rings (compile, bring-up, runtime). The applied detail lives in
   [applied_cordon](applied_cordon.md).
 - Downstream binaries do not read the host config directly; they consume the budget projection in their
@@ -116,6 +116,7 @@ bootstrapper.
 |-----------|---------------------|
 | `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM is the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
 | `linux-cpu` / `linux-gpu` | A kind-node cap applied during cluster bring-up: `docker update --cpus --memory --memory-swap` on the control-plane container, capping the cluster's consumption to the declared budget. |
+| `windows-cpu` / `windows-gpu` | A dedicated WSL2 `Ubuntu-24.04` distro sized to `cpu` / `memory` / `storage` via the provider (the `wsl` CLI `--memory` / `--cpu` plus `.wslconfig`); the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. Storage is cordoned at that VM boundary via the distro's vhdx. *(Target.)* |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows may use the per-project
 Colima VM; on Linux it is the kind-node cap applied during cluster bring-up, after `kind create` and

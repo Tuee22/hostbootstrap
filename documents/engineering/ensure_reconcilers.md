@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md)
+**Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md), [wsl2](wsl2.md)
 
 > **Purpose**: Define the `ensure` reconciler contract — idempotent host-dependency reconcilers that
 > the lift chain invokes as `ensure-X` steps inside `project up`, install-and-verify, and fail fast on
@@ -29,22 +29,22 @@
 - The **only** hard fail-fast in the whole system is the Python wrapper's host minimums (the
   irreducible host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
   (Docker, Incus, the NVIDIA container toolkit, …) is installed by a reconciler when its step runs. The
-  *one* fail-fast inside a reconciler is a **wrong-host misuse** (e.g. a Tart reconciler step on Linux) — an
-  operator error, not an absent dependency.
+  *one* fail-fast inside a reconciler is a **wrong-host misuse** (e.g. an `ensure-cudawin` step reached
+  on linux-cpu) — an operator error, not an absent dependency.
 
 ## Reconciler Contract
 
 A reconciler is a value, not a free function, and carries two parts:
 
 - a **host-applicability predicate** over the detected substrate (`apple-silicon`, `linux-cpu`,
-  `linux-gpu`); and
+  `linux-gpu`, `windows-cpu`, `windows-gpu`); and
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
 
 Idempotence is required: running a reconciler when the host is already in the desired state is a
 successful no-op. A **missing** dependency is **never** a hard stop for the frame — the reconcile
 action installs it (see *Install-and-Verify* below). Running a reconciler on a host where the
 applicability predicate is false is a fail-fast error, not a quiet skip — this surfaces operator
-mistakes (for example, an `ensure-tart` step reached on Linux) instead of hiding them. That wrong-host
+mistakes (for example, an `ensure-cudawin` step reached on linux-cpu) instead of hiding them. That wrong-host
 fail-fast is the **only** fail-fast a reconciler performs, and it is a misuse signal, not an
 absent-dependency signal; the only other hard prerequisites in the system are the Python wrapper's host
 minimums (see [prerequisites](prerequisites.md)).
@@ -90,7 +90,8 @@ down by `brew`) is discoverable by the next step. Homebrew formula steps are wri
 `brew install <formula>` commands; Homebrew's installed-formula no-op behavior is the idempotent
 path. The install plan is a **pure** function of the substrate — Homebrew formulae on
 `apple-silicon`; `apt-get`/`ghcup`/the NVIDIA container toolkit on Linux — so it is unit-tested
-without invoking the package manager; the IO driver is exercised during real bootstrap runs.
+without invoking the package manager (`winget` packages back the Windows install plans); the IO driver
+is exercised during real bootstrap runs.
 
 | Reconciler | Probe ("usable") | Install plan (per substrate) |
 |------------|------------------|------------------------------|
@@ -100,7 +101,8 @@ without invoking the package manager; the IO driver is exercised during real boo
 | `cuda` | `nvidia-smi -L` reports a GPU and Docker has the `nvidia` runtime | linux-gpu: install `nvidia-container-toolkit`, `nvidia-ctk runtime configure`, restart Docker (the kernel driver is a precondition, not auto-installed). |
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
-| `tart` | `tart` resolved | Apple: `brew install cirruslabs/cli/tart`. |
+| `cudawin` | `nvcc -V` resolves and the NVIDIA driver reports a GPU on the Windows host | windows-gpu: `winget install` the NVIDIA Windows driver, the CUDA Toolkit (`Nvidia.CUDA`), and the MSVC C++ build tools (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host compiler). |
+| `wsl2` | the WSL2 feature is enabled and the base `Ubuntu-24.04` distro is registered (usable) | windows: enable WSL2 + Virtual Machine Platform (`wsl --install --no-distribution`), then `wsl --import` a pristine `Ubuntu-24.04` distro; a first enable may require a host reboot. |
 | `incus` | VM-capable **and** reachable (usable): Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
 
 ## Provider Reconcilers Reach "Usable"
@@ -134,7 +136,8 @@ leave the substrate reachable, the lift's job is to carry the credential.
 | `ensure-cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
 | `ensure-homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so the step verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
-| `ensure-tart` | `apple-silicon` | Errors on Linux: Tart hosts a build-only macOS VM for Swift/Metal artifacts; it has no Linux meaning. |
+| `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: readies the Windows host CUDA build stack (driver + CUDA Toolkit + MSVC) for the headless host build; it has no meaning off a Windows GPU host. |
+| `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables the WSL2 feature and imports the pristine `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
 | `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
 `ensure-incus` is the **first cross-substrate reconciler** — its applicability predicate spans both
@@ -158,8 +161,8 @@ non-zero exit, so the decision is testable without exiting the process. When a r
 - **WRONG**: a reconciler reached on a non-applicable substrate prints nothing and exits `0`. This is
   wrong because it masks an operator error and lets a build proceed against an environment that cannot
   satisfy it.
-- **RIGHT**: the reconciler prints `ensure tart: not applicable on linux-cpu (requires apple-silicon)`
-  and exits non-zero when the `ensure-tart` chain step is reached on the wrong substrate.
+- **RIGHT**: the reconciler prints `ensure cudawin: not applicable on linux-cpu (requires windows-gpu)`
+  and exits non-zero when the `ensure-cudawin` chain step is reached on the wrong substrate.
 
 ## One Invocation Surface
 
@@ -171,6 +174,18 @@ the frame its step is reached in, sequenced alongside the other core and project
 `expose-port`).
 
 The concrete reconciler set is still centralized as `allReconcilers` (the `docker`, `colima`, `cuda`,
-`homebrew`, `ghc`, `tart`, `lima`, and cross-substrate `incus` reconcilers), and project-owned actions can
-call `runEnsure` directly when they need one reconciler in a specific scripted seam. That remains a library
-call, not a surfaced command.
+`cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus` reconcilers), and project-owned
+actions can call `runEnsure` directly when they need one reconciler in a specific scripted seam. That
+remains a library call, not a surfaced command.
+
+## Current Status
+
+The Apple Silicon and Linux reconcilers above are the running set. The **Windows** entries —
+`windows-cpu`/`windows-gpu` substrate detection, `ensure-cudawin` (the headless host-build CUDA stack),
+and `ensure-wsl2` (the Windows VM frame) — are **target**, owned by the reopened development-plan phases
+([phase 2](../../DEVELOPMENT_PLAN/phase-2-host-tools-and-config.md),
+[phase 3](../../DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md),
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)). The former `ensure-tart` reconciler
+is dropped from this contract; its **code** removal is pending the phase-3 retirement sprint and is
+tracked in
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).

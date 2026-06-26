@@ -85,8 +85,9 @@ Record the L2 consumer adoption contract without adding `hostbootstrap`-side imp
 
 - `infernix` (see https://github.com/Tuee22/infernix) consumes host-management surfaces from
   `hostbootstrap-core`.
-- `jitML` (see https://github.com/Tuee22/jitML) keeps Swift/Metal as Tart build-only work while reusing
-  CUDA and cluster logic from the shared hierarchy.
+- `jitML` (see https://github.com/Tuee22/jitML) keeps Swift/Metal as headless host-build-only work
+  (the bare-host Metal bridge, no build VM) while reusing CUDA and cluster logic from the shared
+  hierarchy.
 - No `hostbootstrap`-side code obligation beyond keeping the core surface stable.
 
 #### Validation

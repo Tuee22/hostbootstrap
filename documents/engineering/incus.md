@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [ensure reconcilers](ensure_reconcilers.md), [applied cordon](applied_cordon.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [ensure reconcilers](ensure_reconcilers.md), [applied cordon](applied_cordon.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
 
 > **Purpose**: Describe the `incus` host-provider axis — the typed `HostTarget` that parameterizes
 > every linux-host operation by `Local` or `InVM`, the `ensure incus` cross-substrate reconciler, the
@@ -34,7 +34,7 @@
 
 A linux-host operation runs against one of two **host targets**: the local host, or an incus VM
 running on the local host. This is a distinct axis from substrate. Substrate (`apple-silicon`,
-`linux-cpu`, `linux-gpu`) describes what the machine *is*; the host target describes *which* machine
+`linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) describes what the machine *is*; the host target describes *which* machine
 the operation runs on. An incus VM is itself a `linux-cpu` or `linux-gpu` machine — the axes compose,
 they do not collapse. `incus` is likewise not a fifth run-model: the host target sits underneath the
 four run-models in [run models](../architecture/run_models.md). The parameterization detail — every
@@ -44,6 +44,12 @@ linux-host operation runs against `Local` or `InVM` with no per-call branching �
 The worked demo uses native Incus to encapsulate a fresh Linux host on Linux. On Apple Silicon, the
 worked demo uses Lima for that pristine VM; `ensure incus` serves explicit Incus workflows and
 remote/provider work. Where neither flow applies, the local host is the default target.
+
+On Windows the structural peer is WSL2: `ensure wsl2` plays the same VM-frame host-provider role on
+Windows that `ensure incus` plays on Linux (and `ensure lima` on Apple Silicon), bringing up a pristine
+`Ubuntu-24.04` guest the chain descends into. WSL2 is its **own** provider, **not** incus-on-Windows —
+so `ensure incus` applicability stays `apple-silicon || linux` and never extends to Windows. See
+[wsl2](wsl2.md).
 
 On macOS, `incus` is a client; the Incus daemon runs on Linux. The supported Apple-silicon local
 provider is therefore Colima's Incus runtime, started as the named profile `incus`

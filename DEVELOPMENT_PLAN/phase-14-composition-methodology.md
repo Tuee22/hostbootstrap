@@ -44,6 +44,12 @@ complete topology, current frame, and runtime witnesses needed for a binary to f
 execution context, and the worked demo lifts the whole `test all` workflow as the single representation
 into the project container in the managed Lima VM (`3/3 passed`, including Playwright e2e; see Sprint 14.4).
 
+Forward-pointer: the **composition pattern #7** re-anchor — from a build-only VM to the **headless host
+build** (build on the bare host, stage the artifact into the cluster, never run the workload in a build VM),
+whose first worked instance is the Windows `ensure cudawin` CUDA host build — is owned by
+[phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md) (Sprint 3.4). The canonical cookbook home is
+`composition_patterns.md`.
+
 ## Remaining Work
 
 Recast the single-representation doctrine (§ W) so the standardized test harness **reuses the chain** — it

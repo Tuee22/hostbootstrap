@@ -99,6 +99,7 @@ Each substrate cordons storage where it can:
 |-----------|----------------|
 | Apple | Lima or Colima `--disk` (the VM's sized disk) |
 | incus VM | `root,size` on the incus instance |
+| WSL2 VM | The distro's vhdx at the VM wall, sized with `.wslconfig` plus the `wsl` CLI `--memory` / `--cpu`, all drawn from the one `parseQuantity` *(Target.)* |
 | Bare Linux | A quota'd hostPath plus image garbage collection |
 
 On Linux, `incusSizingArgs resources` emits the `limits.cpu`, `limits.memory`, and `root,size` config

@@ -10,9 +10,15 @@
 
 ## Pending
 
-No pending cleanup obligations. The generic-project-model correction
-(development_plan_standards § BB) has **landed** (phase-19, 2026-06-23); its three former entries
-moved to **Removed Surfaces** below. An empty `Pending` section is valid (see **Rules**).
+The documentation has re-anchored to the headless host-build pattern and dropped Tart from its prose,
+but the Tart **code** still exists pending the phase-3 retirement sprint. When that sprint lands, move
+both entries below to **Removed Surfaces** in the same change (see **Rules**).
+
+- **The `ensure-tart` reconciler and `HostBootstrap.Ensure.Tart` module** (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs`; the `Tart` import + `allReconcilers` entry in `Command.hs:62/86`; the `Tart` constructor + `toolCommandName Tart = "tart"` in `HostTool.hs:37/61`; the exposed-module in `hostbootstrap-core.cabal:38`; the import + reconciler-name + `appliesTo` + `installSteps` cases in `test/EnsureSpec.hs`; the `Tart` entry in `test/HostToolSpec.hs`) — removed when Windows joined as the third metal substrate and the headless host-build pattern replaced Tart's build-VM shape. Tart was core-only and latent (registered in `allReconcilers`, absent from every demo chain); infernix and jitML already bypassed it for a headless host bridge. Replacement: the `ensure-cudawin` reconciler (`core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`), templated on the living Ghc/Colima build-tool reconcilers (see `documents/engineering/ensure_reconcilers.md`). Owning phase: phase-3, sprint 3.y.
+- **Composition pattern #7 as a build-only VM (the `ensure tart` shape)** — the entry in `documents/engineering/composition_patterns.md`, plus its echoes in `DEVELOPMENT_PLAN/development_plan_standards.md` §N ("Tart is build-only on Apple…") and §L (`ensureTart` primitive + "the Tart reconciler on Linux" wrong-host example) — removed by the phase-3 re-anchoring. Replacement: pattern #7 "Headless host build for platform-locked artifacts" — build on the bare host (no VM), stage into the cluster, never run the workload in a VM — with CUDA-on-Windows (`ensure-cudawin`) as its first worked instance (see `documents/engineering/composition_patterns.md`, `documents/architecture/composition_methodology.md`). Owning phase: phase-3, sprint 3.x.
+
+The earlier generic-project-model correction (development_plan_standards § BB) landed in phase-19
+(2026-06-23); its three former entries are in **Removed Surfaces** below.
 
 ## Retained Current Surfaces
 

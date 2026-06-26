@@ -62,6 +62,22 @@ Substrate is detected, never declared (see [schema.md](schema.md)).
 Python derives the project name from the Cabal file and does not evaluate Dhall, so Linux/arm64 support
 does not depend on a Python-provisioned Dhall binary.
 
+### Windows adds no base flavor
+
+The Windows substrates (`windows-cpu` / `windows-gpu`) add **no** new base-image flavor. On Windows the
+project container always runs Linux **inside** the WSL2 `Ubuntu-24.04` guest, so container-build-time
+substrate detection sees `linux-cpu` or `linux-gpu` and resolves the existing `cpu` / `cuda` tag for the
+guest's arch exactly as a native-Linux host would. WSL2 is the host-provider VM that supplies that Linux
+guest (see [wsl2.md](wsl2.md)); it changes which VM the container runs in, not which image it is built
+`FROM`.
+
+The host-native Windows CUDA capability is a **separate concern** and likewise not a base-image flavor:
+it is the headless host-build pattern (composition pattern #7 — build platform-locked artifacts on the
+bare Windows host with `ensure cudawin`, then stage them into the cluster), which produces nvcc artifacts
+on the Windows host rather than inside any container. See
+[composition_patterns.md](composition_patterns.md). The four published tags above remain the complete
+flavor × arch set.
+
 ## What ships in the image
 
 * **No baked `hostbootstrap` binary** — the image bakes no `hostbootstrap` executable. A baked binary

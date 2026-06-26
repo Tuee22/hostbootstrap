@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native**. The project container the binary builds later is
@@ -32,9 +32,19 @@ Sprint 6.5 adds the explicit `hostbootstrap update` command that reinstalls the 
 bootstrapper from the canonical VCS source. That command is not automatic and does not become a
 latest-version gate for `doctor`, `build`, `run`, or `base`.
 
+This phase is **reopened** to add **Windows** as the third metal substrate alongside Apple and Linux: on
+Windows the thin Python bootstrapper asserts the host minimums, ensures the host build toolchain with
+**winget** — the Homebrew-analog pre-binary package manager, brought up by a one-time pipx-via-winget
+install — then builds the native `hostbootstrap.exe` **host-native** and execs it, exactly as the Apple
+path does (§ M, § N). The first `wsl --install` may need a **host reboot**, which the bootstrapper
+detects, instructs the operator about, and exits non-zero on (the structural peer of the Incus
+`NeedsReboot`). That is Sprint 6.6.
+
 ## Remaining Work
 
-None.
+The Windows pre-binary bootstrap and native `.exe` build are the open work — Sprint 6.6 (`[Planned]`).
+The pure command-builders (the winget toolchain branch, the native build/exec argv, the reboot
+classifier) are cabal/pytest-closable; the real-Windows-host run is that sprint's `#### Remaining Work`.
 
 ## Phase Objective
 
@@ -46,7 +56,9 @@ binary exists (see [development_plan_standards.md § M, N](development_plan_stan
 project name from the Cabal file, assert the fail-fast host minimums, ensure the host toolchain
 prerequisites to **build** the binary, build the project binary host-native, and exec it. Ensuring Docker,
 building the project container, initializing/editing Dhall config, and cordoning are left to the project
-binary, once it is running.
+binary, once it is running. This holds on **every** metal substrate — Apple silicon, the Linux family,
+and **Windows** (the third substrate): on Windows the toolchain root is winget and the binary is the
+native `hostbootstrap.exe`, built host-native and execed like its peers (Sprint 6.6).
 
 The Python layer also owns the bootstrapper's own explicit pipx self-update command. That command updates
 the wrapper itself, not any project resource, and therefore stays outside the Haskell `ensure` suite.
@@ -238,13 +250,69 @@ hostbootstrap.test_all -q` passes with 139 tests. The tests cover generated pipx
 subprocess failures, direct URL metadata parsing, unknown local/non-VCS freshness, and read-only remote
 commit comparison seams.
 
+### Sprint 6.6: Windows pre-binary bootstrap and native `.exe` build [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/bootstrap.py` (`toolchain_ensure_steps` Windows branch,
+`native_build_command` / `binary_path` / `exec_argv` for `hostbootstrap.exe`), `hostbootstrap/prereqs.py`
+(Windows host minimums: the winget toolchain root + the WSL2 feature, the `classify_wsl_reboot`
+first-`wsl --install` reboot classifier), `hostbootstrap/cli.py`, `tests/test_bootstrap.py`,
+`tests/test_prereqs.py`, `tests/test_cli.py`
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`,
+`documents/engineering/prerequisites.md`, `documents/engineering/base_image.md`, `system-components.md`
+
+#### Objective
+
+Add **Windows** as the third metal substrate to the thin pre-binary bootstrapper (§ M, § N): on Windows
+assert the host minimums, bring up **winget** as the Homebrew-analog pre-binary package manager, ensure the
+host build toolchain, build the native `hostbootstrap.exe` **host-native**, and exec it — the structural
+peer of the Apple arm64 path — detecting and instructing on the first-`wsl --install` host reboot.
+
+#### Deliverables
+
+- `prereqs.py` treats **winget** as the Windows toolchain root — the **Homebrew-analog** pre-binary package
+  manager — and the wrapper itself reaches a fresh Windows host through a **one-time pipx-via-winget**
+  install (winget installs Python + pipx, pipx installs `hostbootstrap`), the only step that must precede
+  any project binary. winget (plus the virtualization / WSL2 feature the nested WSL2 provider needs) is the
+  irreducible Windows host floor (§ M); every other dependency is install-and-verify by the binary's
+  `ensure` suite (§ L).
+- `toolchain_ensure_steps` gains the **Windows branch** (`winget` → GHC + MSVC), probing each tool first and
+  installing only when absent, alongside the existing Apple (Homebrew → `ghcup` → GHC/Cabal) and Linux
+  (`ghcup` → GHC/Cabal) branches. MSVC is nvcc's and GHC's host C++ compiler on Windows.
+- `native_build_command` / `binary_path` / `exec_argv` build and exec the native **`hostbootstrap.exe`**
+  host-native on Windows exactly as the Apple arm64 peer builds and execs `./.build/<binary>` — no
+  copy-out, no container build (§ N). On native Windows GHC `System.Info.os` is `mingw32`, the substrate
+  the core's conditionalized POSIX-only `unix` dependency targets.
+- A pure classifier (`classify_wsl_reboot`) maps the first-`wsl --install` result to ready / needs-reboot —
+  the **structural peer of the Incus `NeedsReboot`** verdict ([phase-11](phase-11-incus-host-provider.md)
+  Sprint 11.3). On a reboot-required verdict the bootstrapper prints a one-line operator instruction and
+  **exits non-zero** rather than proceeding; the binary's WSL2 host provider (owned by
+  [phase-11](phase-11-incus-host-provider.md)) takes over once the host is rebooted.
+- `run` still does not ensure Docker, build the project container, size a VM, apply a cordon, or evaluate
+  Dhall on Windows; those are project-binary responsibilities (§ M).
+
+#### Validation
+
+- The new pure command-builders (the winget `toolchain_ensure_steps` branch, `native_build_command` /
+  `binary_path` / `exec_argv` for `hostbootstrap.exe`, and `classify_wsl_reboot`) are unit-tested via the
+  mocked subprocess seams (no winget/host mutation); `test_all` stays at **100%** coverage and `check_code`
+  is clean.
+
+#### Remaining Work
+
+Real-Windows-host validation (real-run-gated, § C): the winget toolchain branch, the native-`.exe`
+build/exec argv, the one-time pipx-via-winget bring-up, and the reboot classifier are pytest-closable; the
+live closure — winget installing GHC + MSVC on a bare Windows host, a native `hostbootstrap.exe` built
+host-native and execed, and the first-`wsl --install` reboot detected/instructed/exited-non-zero — is this
+sprint's remaining work on a real Windows host.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/python_haskell_boundary.md` - the thin-bootstrapper vs core ownership
   boundary.
-- `documents/architecture/build_and_run_model.md` - substrate-dependent build/run; Tart build-only;
-  Linux-ELF-cannot-run-on-macOS → Apple host-GHC.
+- `documents/architecture/build_and_run_model.md` - substrate-dependent build/run; the Windows native
+  `hostbootstrap.exe` host-native build; Linux-ELF-cannot-run-on-macOS → Apple host-GHC.
 
 **Engineering docs to create/update:**
 - `documents/engineering/base_image.md` - the warm store and the no-baked-binary rationale.

@@ -180,8 +180,11 @@ substrate:
   **metal-frame instance** of the fractal bootstrap (provision the frame → build/install the pb in it →
   hand off `pb project up`); see
   [python_haskell_boundary](../architecture/python_haskell_boundary.md).
-- Tart, when used on Apple, is build-only (Swift/Metal artifacts copied to `./.build/`) and never a
-  runtime.
+- A platform-locked artifact that cannot be produced inside a container is built on the **bare host**
+  with no build VM (the headless host-build shape, composition pattern #7), then staged into the
+  cluster — never run in a VM. The first worked instance is CUDA-on-Windows (`ensure cudawin`: NVIDIA
+  driver + CUDA Toolkit + MSVC via winget), whose nvcc artifacts are produced on the Windows host and
+  copied out. See [composition_patterns.md](composition_patterns.md).
 
 Building the project **container** is the execed binary's job (its `check-code` gate), not the
 bootstrapper's. A `./.build/<project>` is always present after a successful bootstrap, regardless of

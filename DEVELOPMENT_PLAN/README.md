@@ -27,8 +27,8 @@ also owns the explicit pipx self-update command for the bootstrapper itself.
 
 Phases 0-15 built the host-management substrate, validated by the full real demo lifecycle (a real Apple
 Silicon Lima run reporting `3/3 passed` including the Playwright e2e case): Apple Silicon uses a Lima VM,
-native Linux uses Incus, and the Dhall context model carries explicit execution topology with runtime
-witnesses. Each project binary reads a sibling `<project>.dhall`; host, VM, image-build container, runtime
+native Linux uses Incus, Windows uses WSL2 Ubuntu-24.04 (the Lima/Incus peer), and the Dhall context model
+carries explicit execution topology with runtime witnesses. Each project binary reads a sibling `<project>.dhall`; host, VM, image-build container, runtime
 container, and service copies use the same filename rule while authority lives inside the file content.
 
 The command topology is the **chain-is-the-project** model: a project's deploy is a pure
@@ -81,7 +81,9 @@ phase-close code-check-validated (core 238 + demo 13) and real-run-validated 202
 two message variants with full teardown between). Phase 21 (`Done`) records the documentation/code
 consistency reconciliation: the standalone `ensure` command is removed, `chain :: cfg -> [Step]` is
 standardized, `Type.dhall` is deleted, and cluster-down prose matches kind delete-on-down with durable
-state preserved. With phase 21 `Done`, **all phases (0 through 21) are `Done`**. See
+state preserved. With phase 21 `Done`, phases 0–21 are `Done` **except phases 2, 3, 6, 9, and 11, which are reopened
+(`Active`)** for the Windows third-substrate and Tart-retirement work — Windows joins as the third metal
+substrate (`windows-cpu`/`windows-gpu`), woven into the existing phases, not a new phase. See
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md),
 [phase-21-documentation-code-consistency-reconciliation.md](phase-21-documentation-code-consistency-reconciliation.md),
@@ -101,16 +103,16 @@ for the component inventory.
 |-------|-------|--------|
 | 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
-| 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Done |
-| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
+| 2 | [Host tools and config](phase-2-host-tools-and-config.md) | Active |
+| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
-| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
+| 6 | [Base image and thin Python bootstrapper](phase-6-base-image-and-thin-python-bootstrapper.md) | Active |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
-| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
+| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
-| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |

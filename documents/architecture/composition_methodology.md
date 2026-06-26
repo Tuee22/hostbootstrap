@@ -79,6 +79,7 @@ local host. `project up` is the recursive interpreter of the chain over that sta
 | `Local` (metal) | run directly | the running executable (`getExecutablePath`) |
 | `InVM` via Lima | `limactl shell <instance> -- … project up` | the `pb` the VM descent installed on the Lima VM's `$PATH` |
 | `InVM` via Incus | `incus exec <vm> -- … project up` | the `pb` the VM descent installed on the Incus VM's `$PATH` |
+| `InVM` via WSL2 | `wsl -d <distro> -- … project up` | the `pb` the VM descent installed on the WSL2 Ubuntu-24.04 distro's `$PATH` |
 | `InContainer` | `docker run <image> project up` | the project container's `ENTRYPOINT` (the `pb`) |
 
 `project up` is idempotent — it reconciles toward the running stack — and restartable from any frame, so a
@@ -187,6 +188,12 @@ current frame, required capabilities are declared, and runtime witnesses match t
 host-side `docker run <image> project up` is rejected when the config says `currentFrame =
 "vm-project-container-2"` under a VM parent. See [binary_context_config](binary_context_config.md).
 
+The Windows substrate folds the *same* shape with the WSL2 VM provider: on `windows-cpu`/`windows-gpu`
+the `vm-orchestrator-1` frame carries `topologyProvider = ProviderKind.WSL2VMProvider` (the peer of
+`LimaVMProvider`/`IncusVMProvider`) and the host `pb` hands off with `wsl -d <distro> -- … project up`
+into the Ubuntu-24.04 distro, where the `vm-project-container-2` frame is reached exactly as on the
+Lima/Incus chains — only the provider builders differ. See [wsl2](../engineering/wsl2.md).
+
 ## Deploy ≡ Business-Logic Unification
 
 The same `[Step]` algebra expresses both **deployment** — the *bootstrap* topology that stands a system up
@@ -257,10 +264,12 @@ the project image; `context inspect` renders the topology with the current frame
 budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod
 production Harbor (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
 pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
-it down with host `.data` preserved. This is validated end-to-end on both substrates: Incus/Linux and a
-16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
+it down with host `.data` preserved. This is validated end-to-end on two of the three metal substrates:
+Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
-(see [harbor](../engineering/harbor.md)). The decoupled `test run all` drives that **same** `project up`
+(see [harbor](../engineering/harbor.md)). The **third** metal substrate, Windows (WSL2 on
+`windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is **target**: its end-to-end
+validation is **pending** phase-11 and not yet run on a Windows host (see [wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
 under the test surface and reports `3/3 passed` on **both** Apple-Silicon/Lima (2026-06-20) and native
 Incus/Linux (2026-06-21). Every case — the two reachability checks and the Playwright e2e — runs in the
 **VM frame**: each is a pure probe folded into the VM by the self-reference lift

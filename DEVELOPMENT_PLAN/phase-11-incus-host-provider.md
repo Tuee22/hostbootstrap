@@ -6,11 +6,12 @@
 
 > **Purpose**: Add VM providers as first-class host-provider axes so anything `hostbootstrap` deploys on
 > an unvirtualized linux host it can deploy inside a managed Linux VM, with the same machinery and the
-> same budget cordon. Native Linux uses Incus; Apple Silicon uses a Lima VM for the worked demo.
+> same budget cordon. Native Linux uses Incus; Apple Silicon uses a Lima VM for the worked demo; Windows
+> uses a WSL2 Ubuntu-24.04 distro.
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `incus` is the native Linux host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
 like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler
@@ -19,7 +20,10 @@ parameterizes linux-host operations by `HostTarget = Local | InVM IncusVM`; `Hos
 carries the VM lifecycle argv and `classifyDockerReadiness`; and `incusSizingArgs` uses the canonical
 quantity parser to cordon the VM at the wall
 (`limits.cpu`/`limits.memory`/`root,size`). `incus` is not a substrate and not a fifth run-model; it is a
-supported host-provider layer.
+supported host-provider layer. The **Windows** host-provider peer is **WSL2** — a budget-sized Ubuntu-24.04
+distro reached by `wsl -d <distro> -- …`, the structural peer of the Incus (native Linux) and Lima (Apple
+Silicon) VM providers: Docker, kind, and the workload run **inside the distro** exactly as they do inside
+the Lima/Incus VMs (Sprint 11.7).
 
 `HostBootstrap.Lift` is the subcommand-level self-reference lift. It generalizes the two-case
 `HostTarget = Local | InVM` tool-level lift to an n-level context stack (`Local`, provider-backed `InVM`,
@@ -33,10 +37,23 @@ runtime for the demo VM. The supported Apple path is a Lima VM reached by `limac
 hostbootstrap-demo-vm -- ...`, while native Linux keeps the Incus VM path. The pure Lima argv builder,
 `ensure lima`, and lift fold are implemented and validated through the full demo lifecycle.
 
+This phase is **reopened** again for the **Windows** host-provider peer. WSL2 is the Windows peer of Lima
+(Apple Silicon) and Incus (native Linux): a fresh Ubuntu-24.04 distro reached by `wsl -d <distro> -- …`,
+sized to the budget wall (the `wsl2SizingArgs` `.wslconfig` + vhdx cap from
+[phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md)), running Docker +
+kind + the workload inside the distro exactly as the Lima/Incus VMs do. `HostBootstrap.Wsl2` carries the
+pure argv builders and the host-reboot readiness classifier `classifyWsl2Readiness`,
+`HostBootstrap.Ensure.Wsl2` exposes `ensure wsl2` (windows-cpu + windows-gpu), and `HostBootstrap.Lift`
+folds a provider-backed VM layer through WSL2 into the distro (`wsl -d <distro> -- <inner>`). That is
+Sprint 11.7 (`[Planned]`), which also carries the Windows/WSL2 demo real-run validation.
+
 ## Remaining Work
 
-None. Native Linux remains the Incus provider path; Apple Silicon uses Lima for the worked demo's
-pristine VM path.
+The **Windows WSL2 host provider** is the open work — Sprint 11.7 (`[Planned]`). Native Linux remains the
+Incus provider path and Apple Silicon uses Lima for the worked demo's pristine VM path; WSL2 is the Windows
+peer. The pure `HostBootstrap.Wsl2` argv builders, `classifyWsl2Readiness`, `ensure wsl2`, and the WSL2
+lift fold are cabal-test-closable; the real Windows/WSL2 demo lifecycle is Sprint 11.7's real-run-gated
+remaining work.
 
 ## Phase Objective
 
@@ -229,19 +246,94 @@ demo must not attempt to create an Incus VM on Apple Silicon.
 
 None.
 
+### Sprint 11.7: Windows WSL2 host provider [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Wsl2.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostTool.hs` (the `Wsl` constructor),
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/Wsl2Spec.hs`,
+`core/hostbootstrap-core/test/EnsureSpec.hs`, `core/hostbootstrap-core/test/LiftSpec.hs`
+**Docs to update**: `documents/engineering/wsl2.md`, `documents/engineering/incus.md`,
+`documents/engineering/lima.md`, `documents/operations/demo_runbook.md`, `system-components.md`
+
+#### Objective
+
+Land **WSL2** as the Windows host-provider peer of Lima (Apple Silicon) and Incus (native Linux): the pure
+WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2`, and the
+`HostBootstrap.Lift` fold into a fresh Ubuntu-24.04 distro, so every windows-host operation runs against
+`Local` or the WSL2-backed `InVM` with no per-call branching.
+
+#### Reconciler Contract
+
+- `ensure wsl2` `appliesTo = isWindowsCpu || isWindowsGpu` (applies on windows-cpu **and** windows-gpu);
+  install-and-verify the WSL2 Ubuntu-24.04 distro, probe-first/idempotent. A run on a non-Windows host
+  fails fast with the one-line wrong-host diagnostic (§ L).
+- `classifyWsl2Readiness :: (ExitCode, String, String) -> Ready | NeedsReboot | Unsatisfiable` is the
+  host-reboot verdict — the structural peer of the Incus `classifyDockerReadiness` `NeedsReboot`
+  (Sprint 11.3); a fresh `wsl --install` requiring a host reboot is classified `NeedsReboot` so the caller
+  surfaces the reboot instruction rather than proceeding.
+
+#### Deliverables
+
+- `HostBootstrap.Wsl2`: the pure argv builders `wsl --import <distro> <dir> <tarball>`,
+  `wsl -d <distro> -- <inner>`, `wsl --terminate <distro>`, `wsl --shutdown`, and the name-prefix
+  delete-guarded `wsl --unregister <distro>` (the guarded destroy, reusing the harness `guardTestDelete`
+  idiom), plus `classifyWsl2Readiness`. The distro is sized to the budget wall by `wsl2SizingArgs` (the
+  `.wslconfig` `[wsl2]` memory/processors + vhdx cap), the pure builder
+  [phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md) owns.
+- `HostBootstrap.Ensure.Wsl2` exposes `ensure wsl2` as the windows-cpu + windows-gpu install-and-verify
+  reconciler, wired into `allReconcilers`; `HostTool` gains the `Wsl` constructor
+  (`toolCommandName Wsl = "wsl"`) resolved to an `AbsExe`.
+- `HostBootstrap.Lift` folds a provider-backed VM layer through WSL2 into the Ubuntu-24.04 distro
+  (`wsl -d <distro> -- <inner>`), so a `VM`-then-`Container` stack on Windows folds to
+  `wsl -d <distro> -- docker run --rm <image> <subcmd>` — Docker + kind + the workload run **inside the
+  distro**, exactly as Lima/Incus. The in-distro tool is the distro's own `$PATH` binary reached through
+  the single host `wsl -d` (§ K governs host invocation only).
+
+#### Validation
+
+- `Wsl2Spec` asserts the pure `wsl --import` / `wsl -d <distro> --` / `wsl --terminate` / `wsl --shutdown`
+  argv, the name-prefix-guarded `wsl --unregister` (refusing a non-prefixed distro), and the
+  `classifyWsl2Readiness` branches; `EnsureSpec` asserts `wsl2` applicability (windows-cpu + windows-gpu)
+  and wrong-host fail-fast; `LiftSpec` covers the WSL2 VM fold; `HostToolSpec` covers the `Wsl` constructor.
+  `cabal test all` passes.
+
+#### Remaining Work
+
+Real-Windows/WSL2 validation (real-run-gated, § C): the pure argv builders, `classifyWsl2Readiness`,
+`ensure wsl2` applicability, and the WSL2 lift fold are cabal-test-closable; the live closure — the full
+Windows demo lifecycle (`ensure wsl2` → `wsl --import` + size the Ubuntu-24.04 distro → in-distro
+Docker/kind bring-up → the lifted project-container `test all` reporting `3/3 passed` → guarded
+`wsl --unregister`, host `.data` preserved) — is this sprint's remaining work on a real Windows host.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
+- `documents/engineering/wsl2.md` - **(new)** the Windows WSL2 host provider: `ensure wsl2`, the
+  `wsl --import` / `wsl -d <distro> --` / `wsl --terminate` / `wsl --shutdown` / guarded `wsl --unregister`
+  lifecycle, `classifyWsl2Readiness`, and the `wsl2SizingArgs` budget cordon (the `.wslconfig` + vhdx wall),
+  with a WRONG/RIGHT pair (WRONG: bare `$PATH` `wsl` / unguarded `wsl --unregister`; RIGHT: resolved
+  `AbsExe` / name-prefix-guarded destroy).
 - `documents/engineering/incus.md` - the host-provider axis, the `ensure incus` install, the VM lifecycle
   and `incus exec` dispatch, the reboot reconcile, and the `incusSizingArgs` budget cordon, with a
   WRONG/RIGHT pair (WRONG: bare `$PATH` `incus` / unguarded `incus delete`; RIGHT: resolved `AbsExe` /
   name-prefix-guarded destroy).
-- `documents/engineering/lima.md` - the Apple Silicon Lima VM provider used by the worked demo.
+- `documents/engineering/lima.md` - the Apple Silicon Lima VM provider used by the worked demo,
+  cross-referencing the WSL2 Windows peer (`wsl2.md`).
 
 **Architecture docs to create/update:**
-- `documents/architecture/build_and_run_model.md` - the `HostTarget` parameterization of the run-models.
+- `documents/architecture/build_and_run_model.md` - the `HostTarget` parameterization of the run-models,
+  including the WSL2-backed `InVM` on Windows.
+
+**Operations docs to create/update:**
+- `documents/operations/demo_runbook.md` - the demo's Windows/WSL2 provider path alongside the Lima/Incus
+  paths (provider-parameterized; no demo code change).
 
 **Cross-references to add:**
-- `documents/engineering/ensure_reconcilers.md` adds the `ensure incus` row.
+- `documents/engineering/ensure_reconcilers.md` adds the `ensure incus` and `ensure wsl2` rows.
 - `system-components.md` adds `HostBootstrap.HostTarget`, `HostBootstrap.Incus`, `HostBootstrap.Ensure.Incus`,
-  and the `ensure incus` reconciler row.
+  `HostBootstrap.Wsl2`, `HostBootstrap.Ensure.Wsl2`, the `Wsl` host tool, and the `ensure incus` /
+  `ensure wsl2` reconciler rows.
+- `development_plan_standards.md` § U records WSL2 as the Windows VM-provider peer of Lima/Incus.

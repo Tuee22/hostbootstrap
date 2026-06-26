@@ -101,10 +101,10 @@ suite stays hermetic:
 
 - **Host-tool resolution** — the closed `HostTool` enumeration resolves to absolute paths; tests
   assert resolution and the fail-fast behaviour when a tool is absent.
-- **Substrate detection** — `apple-silicon` / `linux-cpu` / `linux-gpu` classification from recorded
-  host facts.
+- **Substrate detection** — `apple-silicon` / `linux-cpu` / `linux-gpu` / `windows-cpu` / `windows-gpu`
+  classification from recorded host facts.
 - **`ensure` reconcilers** — each reconciler's host-applicability predicate and the command tuples
-  its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Tart. A
+  its reconcile action would emit, asserted without running Docker, Colima, Homebrew, or Ghc. A
   reconciler invoked for the wrong host is tested to fail fast with a non-zero exit. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - **Project-local Dhall config** — decoding/generating `<project>.dhall` and `<project>.test.dhall`,

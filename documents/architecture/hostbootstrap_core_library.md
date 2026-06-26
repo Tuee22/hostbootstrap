@@ -42,6 +42,11 @@ production Harbor registry, the project image pushed to the in-cluster registry,
 serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
 `.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
 
+The Windows surface — the `windows-cpu`/`windows-gpu` substrates, the `HostBootstrap.Wsl2` provider, and
+the `Ensure.CudaWin` / `Ensure.Wsl2` reconcilers — is **target**, owned by the reopened phases (phase-2,
+phase-3, phase-11) and not yet hardware-validated. See [wsl2](../engineering/wsl2.md) and
+[ensure_reconcilers](../engineering/ensure_reconcilers.md).
+
 Current generic model: under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the extension
 contract is the generic `ProjectSpec cfg tcfg`, parameterized over a project's own config type `cfg`
@@ -63,18 +68,19 @@ on; the canonical inventory is tracked in
 
 | Module | Responsibility |
 |--------|----------------|
-| `HostBootstrap.HostTool` | Closed `HostTool` enumeration of external tools resolved to absolute paths; no `$PATH`-resolved bare-command invocation. |
+| `HostBootstrap.HostTool` | Closed `HostTool` enumeration of external tools resolved to absolute paths (including the Windows tools `Winget`, `Nvcc`, and `Wsl`); no `$PATH`-resolved bare-command invocation. |
 | `HostBootstrap.HostConfig` | Typed host configuration: resolved tool paths, detected substrate, and the spare-resource view used for budgeting. |
 | `HostBootstrap.HostPrereqs` | Fail-fast host-minimum checks (the pre-binary subset the thin bootstrapper reclaims). |
-| `HostBootstrap.Substrate` | Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) and host-applicability predicates. |
+| `HostBootstrap.Substrate` | Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) and host-applicability predicates. |
 | `HostBootstrap.Ensure` | The `Reconciler` value type and runner; invoked as the `ensure-*` chain-step library, not exposed as a command. |
-| `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Lima`, `Cuda`, `Homebrew`, `Ghc`, `Tart`); each is an idempotent value with a host-applicability predicate and a reconcile action. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
+| `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Lima`, `Cuda`, `CudaWin`, `Homebrew`, `Ghc`, `Incus`, `Wsl2`); each is an idempotent value with a host-applicability predicate and a reconcile action. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | `HostBootstrap.Step` | The `Step` algebra and the recursive `[Step]` interpreter — the core surface a project extends with its `chain`. Core ships host-management step kinds; the interpreter runs the current frame's steps then lifts `pb project up` into the next frame. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Config.Schema` | Owner for project-local `<project>.dhall` schema surfaces, sibling lookup (`siblingProjectConfigPath`), child projections, and service/daemon config snapshot log metadata. It owns **no default config values** — defaults live in the project's `psInit`. The context-init step mints child `.dhall` through this surface. See [dhall_topology](../engineering/dhall_topology.md). |
 | `HostBootstrap.Context` | Binary-context substrate inside `<project>.dhall`: discover the sibling path, render the topology frames, validate that the running binary occupies the frame its `.dhall` describes, and gate the chain per-frame on handoff. Read-only introspection backs the `context` command. See [binary_context_config](binary_context_config.md). |
 | `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (Colima/Lima VM sizing args and kind node limits). See [resource_budgeting](../engineering/resource_budgeting.md). |
 | `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant, invoked as the deploy-kind / deploy-chart step kinds. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Lima` | Lima VM lifecycle argv builders for the Apple Silicon pristine demo VM (`start`, `shell`, `copy`, guarded `delete`), invoked by the deploy-VM step kind. |
+| `HostBootstrap.Wsl2` | WSL2 VM lifecycle argv builders for the Windows pristine demo distro (`import`, `wsl -d <distro> --`, `terminate`, `shutdown`, guarded `unregister`) plus the `classifyWsl2Readiness` host-reboot classifier, invoked by the deploy-VM step kind. The Windows VM-provider peer of `HostBootstrap.Lima` / Incus. See [wsl2](../engineering/wsl2.md). |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/provider VM/`InContainer`) by invoking the binary again there. The `[Step]` interpreter lifts `pb project up` across each frame boundary through this seam. The pure argv fold is unit-tested. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over a project's `Seams` and case matrix. It **drives the real `project up`**: per config variant it **generates** the run's `<project>.dhall` functionally (via the project's own `psTestConfig`/`projectConfigForRole`, never shelling the CLI), runs `project up` over the project's own chain, runs the case assertions in the appropriate frame (reusing the self-reference lift, with `EXPECTED_MESSAGE` parameterizing the polymorphic assertion), and tears down with `project destroy` through `finally`. A suite may declare more than one variant; each is stood up and torn down in turn. It owns no second cluster-bring-up path; two fail-fast preconditions (refuse if the sibling `siblingProjectConfigPath` config exists or a production cluster is running) and a self-created-only delete-guard protect production. See [harness_workflow](harness_workflow.md). *(Target; the engine recast is real-run-gated — phase-10/17/19/20.)* |
 | `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. No per-project verbs. |
@@ -91,7 +97,7 @@ smart constructor rejects any non-absolute path — so no library or project cod
 `HostBootstrap.HostConfig` is the typed configuration that pairs the detected substrate with the
 resolved tool paths the reconcilers read.
 
-Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) is owned by `HostBootstrap.Substrate`;
+Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) is owned by `HostBootstrap.Substrate`;
 its classification core is pure (`classify`, `parseDockerArch`) with a thin IO wrapper for the platform
 reads and the NVIDIA probe. `HostBootstrap.HostPrereqs` carries the fail-fast host minimums, dispatched
 by substrate, each resolving its tools through the typed configuration. See

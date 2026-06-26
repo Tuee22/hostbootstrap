@@ -113,6 +113,7 @@ let ProviderKind =
       < HostProvider
       | IncusVMProvider
       | LimaVMProvider
+      | WSL2VMProvider
       | DockerContainerProvider
       | KubernetesProvider
       | ExternalProvider
@@ -278,7 +279,7 @@ The worked demo descends through four frames, each reading its own `<project>.dh
 | Context | Role |
 |---|---|
 | Host | metal-side orchestrator: select the VM provider, size and launch the VM, tear it down behind the guard |
-| VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux; re-establish the host-native binary and build the project container |
+| VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux, WSL2 on Windows; re-establish the host-native binary and build the project container |
 | Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`) that stand up the persistent stack |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 

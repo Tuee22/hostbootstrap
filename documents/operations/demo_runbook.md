@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), [binary context](../architecture/binary_context_config.md)
+**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), [binary context](../architecture/binary_context_config.md), [wsl2](../engineering/wsl2.md)
 
 > **Purpose**: Walk an operator through the `hostbootstrap-demo` pristine-host bootstrap — the lift
 > chain the demo contributes, the `project` lifecycle that interprets it, and which harness case proves
@@ -19,7 +19,8 @@
   [composition_methodology](../architecture/composition_methodology.md); this runbook walks the
   demo's instance of it.
 - The headline is a from-zero pristine-host bootstrap performed **inside a managed Linux VM** (Lima on
-  Apple Silicon, Incus on native Linux; the metal host is not pristine): `apt install pipx` →
+  Apple Silicon, Incus on native Linux, and the target WSL2 on Windows; the metal host is not pristine):
+  `apt install pipx` →
   `pipx install` the local hostbootstrap → `hostbootstrap run`. The Python bootstrapper is the
   metal-frame instance of the same fractal pattern (provision the frame → build the binary in it → hand
   off `project up`).
@@ -163,7 +164,7 @@ are the host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `s
 installed, orchestrated, and torn back down by the chain:
 
 - **(a)** the metal-orchestrator binary installs and verifies the **VM provider** (Lima on Apple Silicon,
-  native Incus on Linux);
+  native Incus on Linux, and the target WSL2 on Windows);
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM**
   (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
@@ -192,7 +193,7 @@ pod, and the verified NodePort:
 
 | Step | Frame | What it does |
 |---|---|---|
-| deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima or Incus |
+| deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima, Incus, or the target WSL2 on Windows |
 | deploy-VM | `host-orchestrator-0` | **cordon #1** — launch the budget-sized pristine VM, the wall |
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
 | context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses, then hand off `project up` into the container |
@@ -317,3 +318,14 @@ substrate-specific prerequisites:
   carries no inline token, so the in-VM base pull degrades to an anonymous, rate-limit-prone pull. To
   forward the authenticated pull an operator supplies an inline `auths` token (a `DOCKER_CONFIG` whose
   `config.json` carries a plaintext Docker Hub entry).
+
+## Windows / WSL2 readiness
+
+A full Windows / WSL2 readiness walkthrough — the winget pre-binary toolchain, the native
+`hostbootstrap.exe` host-native build, and `ensure wsl2` importing the pristine `Ubuntu-24.04` distro on
+the third metal substrate — is **pending Windows validation**. It is a **target** owned by
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md); the WSL2 host provider and its
+deploy-VM / `project down` (stop-without-delete) / `project destroy` lifecycle steps are described in
+[wsl2](../engineering/wsl2.md), the Windows peer of the Lima (Apple Silicon) and Incus (native Linux) VM
+providers. Once the Windows substrate is hardware-validated this section gains the substrate-specific
+prerequisites the Apple Silicon walkthrough above lists for Lima.

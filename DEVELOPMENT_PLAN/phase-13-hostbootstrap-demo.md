@@ -80,7 +80,10 @@ host, VM, VM project container, and service/daemon pod.
 The demo covers these supported surfaces:
 
 - `demo vm ensure`, `demo vm up`, and `demo vm down` exercise the selected VM provider and VM budget
-  cordon: Lima on Apple Silicon, native Incus on Linux.
+  cordon: Lima on Apple Silicon, native Incus on Linux, and WSL2 (Ubuntu-24.04) on Windows. The demo is
+  provider-parameterized — the Windows WSL2 provider and its real-run validation are owned by
+  [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 host-provider sprint,
+  with no demo code change.
 - `demo vm pristine-bootstrap` runs the first-run path inside a fresh Ubuntu VM and demonstrates the
   three builds: metal orchestrator, in-VM host-native binary, and in-VM project container.
 - `hostbootstrap-demo test all` runs the standardized harness over `pristine-bootstrap`, `web-build`, and `e2e-tabs`

@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md)
+**Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md), [wsl2](wsl2.md)
 
 > **Purpose**: A cookbook of reusable composition shapes — frame topologies, step kinds, and
 > business-logic shapes — so a downstream author can recognize their workflow and express it as the
@@ -33,7 +33,7 @@ its own segment.
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container →
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
-   Its chain is a **single** ordered `[Step]` — deploy-VM (Lima on Apple Silicon, Incus on Linux) →
+   Its chain is a **single** ordered `[Step]` — deploy-VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
    VM) → context-init in the VM → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port —
    that stands up a live, persistent stack ending at a web service. See
@@ -51,8 +51,11 @@ its own segment.
    host daemon (singleton via a file lock) an in-cluster workload reaches over a message bus, used when
    a capability (an accelerator) is reachable only on the host. The `HostDaemon`
    [run-model](../architecture/run_models.md).
-7. **Build-only VM for platform-locked artifacts** — lift a *build* into an ephemeral VM to produce a
-   platform-specific artifact, copy it out, never run the workload in the VM (the `ensure tart` shape).
+7. **Headless host build for platform-locked artifacts** — build a platform-locked artifact on the bare
+   host (no build VM), stage it into the cluster, never run the workload in a VM — the headless
+   host-bridge shape. First worked instance: CUDA-on-Windows (`ensure cudawin` readies the NVIDIA driver
+   + CUDA Toolkit + MSVC via winget; nvcc artifacts are produced on the Windows host and copied out).
+   See [cuda](../languages/cuda.md) and [ensure_reconcilers](ensure_reconcilers.md).
 8. **GPU cluster variant** — substrate-select a GPU cluster (device-plugin / GPU-aware kind /
    `RuntimeClass`) and pin accelerator-owning pods; the same chains with a GPU node.
 
@@ -167,7 +170,8 @@ The **chain surface** this cookbook describes is the running system: the core co
 `ensure`, `context`, `project`, `test`, `check-code`, and the demo's deploy is the pure value
 `demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), which realizes shape
 2 as one ordered chain that stands up the persistent stack and ends at a live web service. The lift
-primitive uses provider-backed folds for Incus and Lima and a topology-aware binary-context gate. The
+primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, target — see
+[wsl2](wsl2.md)) and a topology-aware binary-context gate. The
 reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 

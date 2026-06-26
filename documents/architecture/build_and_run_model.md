@@ -36,6 +36,7 @@ builds the binary **host-native**, for the host it will run on:
 |-----------|---------------------------|---------------|-----|
 | `linux-cpu` / `linux-gpu` | Host-native (the bootstrapper ensures the host GHC/Cabal toolchain) | On the host | The binary is built directly for the host; no container round-trip. |
 | `apple-silicon` | Host-native (the bootstrapper ensures a host GHC toolchain via Homebrew → `ghcup`) | On the host | A Linux ELF cannot exec on macOS, so the runnable binary must be a native macOS build. |
+| `windows-cpu` / `windows-gpu` | Host-native (the bootstrapper ensures a host GHC toolchain via **winget** — the Homebrew-analog pre-binary package manager — plus MSVC) | On the host | The binary is the native Windows `hostbootstrap.exe` (mingw32 GHC), the peer of the macOS arm64 binary; a Linux ELF cannot exec on Windows. |
 
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch
@@ -77,12 +78,20 @@ than silently reusing deps from a shared user store. This is the host build's st
 distinct from, and shares nothing with, the in-container warm store at `/opt/cache/cabal/` that the
 later project-container build reuses (see [warm_store](../engineering/warm_store.md)).
 
-## Tart Is Build-Only
+## Headless Host Build (Windows CUDA)
 
-Tart hosts a macOS VM used to produce Swift/Metal build artifacts on Apple silicon. Those artifacts
-are copied to `./.build/` and run on the host. No built binary ever runs inside the Tart VM; the VM
-is a build environment, not a runtime. The `ensure tart` reconciler therefore fails fast on Linux —
-see [ensure_reconcilers](../engineering/ensure_reconcilers.md).
+Some build artifacts are platform-locked to the bare host and cannot be produced in a build VM. The
+**headless host build** is the shape for them: build the artifact directly on the bare host, stage it
+into the cluster, and never run the workload in a build VM (composition pattern #7, see
+[composition_patterns](../engineering/composition_patterns.md)). The first worked instance is
+CUDA-on-Windows: the `ensure cudawin` reconciler readies the Windows host CUDA build stack — the NVIDIA
+driver, the CUDA Toolkit, and the MSVC C++ build tools (nvcc's host compiler) — via **winget**, then
+nvcc artifacts are produced on the bare Windows host, copied into `./.build/`, and staged into the
+cluster. No workload ever runs in a build VM; the host is the build environment, not a runtime. The
+`ensure cudawin` reconciler therefore fails fast off a Windows GPU host — see
+[ensure_reconcilers](../engineering/ensure_reconcilers.md) and [cuda](../languages/cuda.md). This is a
+distinct concern from the in-container `linux-gpu` nvidia-container-toolkit path (`ensure cuda`), which
+stays as is.
 
 ## The Project Container Is the Binary's Job
 
@@ -153,7 +162,7 @@ The lifecycle verbs are split so the persistent stack has explicit stop and dele
 | Verb | Effect | `.data` |
 |------|--------|---------|
 | `project up` | Reconcile the chain to running; leave the persistent stack up. | preserved |
-| `project down` | Delete kind clusters and stop provider VMs (e.g. `incus stop` / `limactl stop`); preserve durable state. | preserved |
+| `project down` | Delete kind clusters and stop provider VMs (e.g. `incus stop` / `limactl stop`, or `wsl --shutdown` on Windows); preserve durable state. | preserved |
 | `project destroy` | Stop, then delete everything spun up. | preserved |
 
 `.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
@@ -191,7 +200,9 @@ The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level sel
 (`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
 binary crosses a boundary by invoking its *own* subcommand in the nested context. The Apple Silicon demo
 uses the Lima VM provider (`limactl shell <instance> -- ...`); native Linux uses Incus
-(`incus exec <vm> -- ...`); containers use `docker run --rm`. `project up` is the
+(`incus exec <vm> -- ...`); Windows uses WSL2 Ubuntu-24.04, the Windows VM-provider frame and peer of
+Lima/Incus (`wsl -d <distro> -- ...`, see [wsl2](../engineering/wsl2.md)); containers use
+`docker run --rm`. `project up` is the
 **recursive interpreter** of that lift: it runs the current frame's steps, then hands off
 `<binary> project up` into the next frame, where the child owns its segment and verifies it is in the
 frame its `.dhall` describes. See [composition_methodology](composition_methodology.md).
@@ -203,6 +214,12 @@ per-case cluster path), the service run-model run via `service run` and deployed
 the **budget-is-the-VM-wall / cluster-is-a-slice** resource model with no doubling — is the **target**.
 It is not fully implemented yet; the work spans the reopened phases (phase-10, phase-13, phase-14,
 phase-15, phase-16, phase-17) and new phase-18. The descriptions above are direction, not current state.
+
+The **Windows** substrate is likewise **target**, not validated: `windows-cpu`/`windows-gpu` detection,
+the native `hostbootstrap.exe` (mingw32 GHC) built host-native via winget, the WSL2 Ubuntu-24.04 VM frame
+(`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)), and the headless
+host build's `ensure cudawin` CUDA stack are owned by the reopened phases (phase-2, phase-3, phase-11)
+and are not yet implemented or hardware-validated. Windows is the new shape, not a shipped substrate.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. A project extends core through streams (lift chain, Dhall vocabulary,

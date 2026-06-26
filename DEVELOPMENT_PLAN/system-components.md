@@ -10,7 +10,10 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-20 landed `Done`; the **generic-project-model** work (phase 19, § BB) is `Done` —
+> Note: Phases 0-20 landed `Done`, but the Windows third-substrate work reopens phases 2, 3, 6, 9, and 11
+> (`Done` → `Active`): Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires
+> from the prose, and composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
+> The **generic-project-model** work (phase 19, § BB) is `Done` —
 > phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.
 > Phases 4, 8, 10, 15, and 17 stay `Done` with forward-pointers. `hostbootstrap-core` owns **no hardcoded
@@ -63,14 +66,14 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.HostTool` | 2 | yes | closed `HostTool` enumeration; absolute-path resolution |
 | `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
 | `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
-| `HostBootstrap.Substrate` | 2 | yes | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`) |
+| `HostBootstrap.Substrate` | 2 | yes | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) |
 | `HostBootstrap.Ensure` | 3 | yes | the `Reconciler` value type and library runner used by `ensure-*` chain steps |
 | `HostBootstrap.Ensure.Docker` | 3 | yes | `ensure docker` reconciler |
 | `HostBootstrap.Ensure.Colima` | 3 | yes | `ensure colima` reconciler |
 | `HostBootstrap.Ensure.Cuda` | 3 | yes | `ensure cuda` reconciler |
+| `HostBootstrap.Ensure.CudaWin` | 3 | yes | `ensure cudawin` reconciler (CUDA-on-Windows headless host build; first instance of composition pattern #7) |
 | `HostBootstrap.Ensure.Homebrew` | 3 | yes | `ensure homebrew` reconciler |
 | `HostBootstrap.Ensure.Ghc` | 3 | yes | `ensure ghc` reconciler |
-| `HostBootstrap.Ensure.Tart` | 3 | yes | `ensure tart` reconciler |
 | `HostBootstrap.Ensure.Lima` | 11.6 | yes | `ensure lima` reconciler for the Apple Silicon Lima VM provider |
 | `HostBootstrap.Config.Schema` | 4, 8, 15 | yes | project-local `<project>.dhall` schema/default/projection substrate; sibling project-config discovery and command-gate loading |
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service constructors, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
@@ -90,7 +93,9 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.RoleLifecycle` | 14 | yes | the role-lifecycle skeleton: the `RolePhase` enum + pure `rolePhases` ordering + `RoleSpec`/`runRole` (acquire→serve→drain, drain via `finally`) — the `HostDaemon` substrate L1 builds roles on |
 | `HostBootstrap.Incus` | 11 | yes | incus VM lifecycle argv (`launch`/`exec`/`restart`/`delete`, name-guarded) + `classifyDockerReadiness` |
 | `HostBootstrap.Lima` | 11.6 | yes | Lima VM lifecycle argv for Apple Silicon demo execution (`start`, `shell`, `copy`, `list`, name-guarded `delete`) |
+| `HostBootstrap.Wsl2` | 11 | yes | WSL2 (Ubuntu-24.04) VM lifecycle argv on Windows — the incus/lima host-provider VM peer (`install`/`import`/`exec`/`terminate`, distro-guarded) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
+| `HostBootstrap.Ensure.Wsl2` | 11 | yes | `ensure wsl2` install-and-verify reconciler for the Windows WSL2 host-provider (the incus/lima peer) |
 | `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-validated end-to-end on Incus/Linux and Apple Silicon |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, with the pure `renderChainPlan` dry-run render and `stepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-validated |
@@ -104,7 +109,9 @@ External tools resolve through a closed `HostTool` enumeration to absolute paths
 (`HostBootstrap.HostTool`, Phase 2). No library or project code calls `proc "<bare-command-name>"`
 that resolves through `$PATH`; every invocation reads an absolute path from typed host configuration.
 `Sysctl` is part of this closed enum for Apple-silicon host-capacity reads; it is a host tool, not an
-`ensure` reconciler.
+`ensure` reconciler. On Windows the closed enum adds `Winget` (the Homebrew-analog pre-binary package
+manager), `Nvcc` (CUDA-on-Windows toolchain verification for `ensure cudawin`), and `Wsl` (WSL2
+host-provider control); `Tart` is no longer a member of the enum.
 See [development_plan_standards.md § K](development_plan_standards.md).
 
 ## Ensure reconcilers and host applicability
@@ -120,11 +127,12 @@ with a one-line diagnostic and a non-zero exit. See
 | `ensure docker` | `HostBootstrap.Ensure.Docker` | 3 | all substrates | n/a (universal) |
 | `ensure colima` | `HostBootstrap.Ensure.Colima` | 3 | `apple-silicon` | fail fast, non-zero |
 | `ensure cuda` | `HostBootstrap.Ensure.Cuda` | 3 | `linux-gpu` | fail fast, non-zero |
+| `ensure cudawin` | `HostBootstrap.Ensure.CudaWin` | 3 | `windows-gpu` (CUDA-on-Windows headless host build) | fail fast, non-zero |
 | `ensure homebrew` | `HostBootstrap.Ensure.Homebrew` | 3 | `apple-silicon` | fail fast, non-zero |
 | `ensure ghc` | `HostBootstrap.Ensure.Ghc` | 3 | `apple-silicon` (host-native build path) | fail fast, non-zero |
-| `ensure tart` | `HostBootstrap.Ensure.Tart` | 3 | `apple-silicon` (build-only) | fail fast, non-zero |
 | `ensure lima` | `HostBootstrap.Ensure.Lima` | 11.6 | `apple-silicon` (pristine demo VM provider) | fail fast, non-zero |
 | `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify; Colima-backed on Apple, native daemon on Linux) | fail fast, non-zero |
+| `ensure wsl2` | `HostBootstrap.Ensure.Wsl2` | 11 | `windows-cpu`/`windows-gpu` (install-and-verify; WSL2 Ubuntu-24.04 host-provider, the incus/lima peer) | fail fast, non-zero |
 
 ## Project-local `<project>.dhall` schema
 
@@ -219,7 +227,7 @@ pre-binary dependency is then the **build toolchain**, not Docker (see
 |-----------|--------------|--------------|-------|
 | `apple-silicon` | host-native (Python ensures Homebrew → `ghcup` → GHC/Cabal) | host | a Linux ELF cannot exec on macOS |
 | `linux-cpu`, `linux-gpu` | host-native (Python ensures the host `ghcup` → GHC/Cabal toolchain) | host | no container copy-out |
-| Tart (Apple, build-only) | Tart VM (Swift/Metal artifacts → `./.build/`) | host | no built binary runs inside the Tart VM |
+| `windows-cpu`, `windows-gpu` | host-native (Python ensures winget → `ghcup` → GHC/Cabal mingw32 toolchain, building the native `hostbootstrap.exe`) | host | peer of the Apple-silicon path; a Linux ELF cannot exec on Windows |
 
 A `./.build/<binary>` is always present on the host. The project **container** (the workload image and the
 mandatory code-check quality gate) is built by the **project binary** via Docker, once it is running —

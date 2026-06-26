@@ -23,7 +23,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
 `hostbootstrap` splits host management between a Haskell core and a deliberately small Python layer.
 
 - **`hostbootstrap-core` (Haskell)** owns host-tool resolution, the `ensure` reconcilers
-  (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, `tart`, each fail-fast on the wrong host), substrate
+  (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, each fail-fast on the wrong host), substrate
   detection, the binary-context contract and command gate, cluster-lifecycle semantics with kind resource
   cordoning, and the `optparse-applicative` command tree that project binaries extend through
   `runHostBootstrapCLI progName projectSpec`. See
@@ -52,7 +52,8 @@ VM and project-container frames descending the same way until recursion bottoms 
 running kind/Helm leaves.
 
 The VM hop is provider-backed: on Apple Silicon the demo uses a Lima VM (`limactl shell <instance> -- …`)
-started without Lima-managed containerd, while native Linux uses an Incus VM (`incus exec <vm> -- …`). The
+started without Lima-managed containerd, native Linux uses an Incus VM (`incus exec <vm> -- …`), and on
+Windows (planned) a WSL2 Ubuntu-24.04 distro (`wsl -d <distro> -- …`). The
 project-container hop is `docker run --rm <image> …`, whose `ENTRYPOINT` is the binary. Each descent
 runs the same `project up` interpreter over the same chain.
 
@@ -79,9 +80,12 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > writes no Dhall; lifted runtime containers receive parent-mounted configs with topology frames and
 > witnesses.
 >
-> The chain work is `Done`; **phase-19 (the generic project model)** and **phase-20 (the config-driven demo
-> worked example)** and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done` — with phase-21 closed, **all phases (0 through 21) are `Done`**. See
+> The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
+> worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
+> `Done`. The original scope (phases 0 through 21) is `Done`; **phases 2, 3, 6, 9, and 11 are now reopened
+> (`Active`)** to weave in **Windows as the third metal substrate** (a native `hostbootstrap.exe`, WSL2 as
+> the Lima/Incus peer, and CUDA as a headless host build) and to **retire the latent Tart reconciler** —
+> all currently target work, tracked in
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
@@ -96,10 +100,11 @@ fail-fast sequence:
 
 1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
    (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
-   `sudo`, the Xcode Command Line Tools, and Homebrew. Missing minimums stop the run with a clear
+   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows (target): winget, plus the
+   virtualization / WSL2 feature the nested WSL2 provider needs. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
 2. **Ensure the host build toolchain.** The prerequisites needed to build the binary host-native — on
-   Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux.
+   Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows (target) winget → GHC + MSVC.
 3. **Build the project binary host-native** into `./.build/<project>`. The build is the same on every
    substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
    general host such as Apple silicon.
@@ -121,8 +126,13 @@ Linux ELF cannot exec on a general host such as Apple silicon, so there is no bu
 copy-out path:
 
 - The Python bootstrapper ensures the host toolchain (on Apple, `ghcup` via Homebrew; the equivalent
-  on Linux), builds the binary host-native into `./.build/<project>`, and execs it.
-- **Tart is build-only** on Apple (Swift/Metal build environments) and is never a runtime.
+  on Linux; on Windows (target) winget → GHC + MSVC), builds the binary host-native into
+  `./.build/<project>`, and execs it.
+- **Headless host build for platform-locked artifacts (planned).** On Windows the target shape builds
+  CUDA artifacts on the bare host (`ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC via
+  winget), stages them into the cluster, and never runs the workload in a build VM — composition pattern
+  #7, owned by [phase 3](DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md). See
+  [`documents/engineering/composition_patterns.md`](documents/engineering/composition_patterns.md).
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it
 could not be copied out to every host. Instead the base image warms `hostbootstrap-core`'s
@@ -185,7 +195,7 @@ nested context fields carrying the role and command authority:
 The project value is also the command name. The `resources` budget is the host-level ceiling that the
 project binary projects into child configs and enforces through cordons. Before bring-up the binary
 verifies that budget against spare host capacity resolved per substrate — resolved `sysctl` on Apple
-silicon, `/proc` on Linux. See
+silicon, `/proc` on Linux, and the host APIs on Windows (target). See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
@@ -302,7 +312,7 @@ contributed workload steps, and `project up` interprets it recursively:
 | # | Step | Frame | Role |
 |---|---|---|---|
 | 1 | host-pb | host (metal) | provision the host frame, build the pb, hand off `pb project up` (the Python bootstrapper's metal-frame instance) |
-| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux — the cordon / isolation wall |
+| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux, WSL2 distro on Windows (planned) — the cordon / isolation wall |
 | 3 | copy source + ensure GHC in VM | VM | stage the source into the VM and reconcile the GHC toolchain there |
 | 4 | build pb in VM | VM | build the project binary host-native **in** the VM |
 | 5 | ensure docker in VM | VM | reconcile Docker inside the guest (not supplied by Lima's containerd) |
@@ -328,8 +338,9 @@ cluster" path. The doctrine is stated canonically in
 > wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reported `3/3 passed`
 > including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
-> both implemented and `Done`; phase-21 reconciles the documentation/code drift, so all phases
-> (0 through 21) are `Done`; see
+> both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
+> (phases 0 through 21) is `Done`. Phases 2, 3, 6, 9, and 11 are now reopened (`Active`) for the Windows
+> third-substrate and Tart-retirement work (target); see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up
@@ -435,7 +446,7 @@ This map reflects the implemented shape: the Haskell `hostbootstrap-core` librar
 │   │   │   │                         #   substrate detection, project-local Dhall config,
 │   │   │   │                         #   cluster lifecycle, command tree
 │   │   │   ├── HostTool.hs  HostConfig.hs  HostPrereqs.hs  Substrate.hs
-│   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Cuda, Homebrew, Ghc, Tart
+│   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Cuda, Homebrew, Ghc
 │   │   │   ├── Config/Schema.hs      # project-local Dhall config schema/defaults
 │   │   │   ├── Cluster/              # Lifecycle.hs, Cordon.hs
 │   │   │   ├── Command.hs  CLI.hs    # core command tree + ProjectSpec entrypoint

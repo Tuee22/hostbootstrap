@@ -81,7 +81,8 @@ container frame the recursive interpreter reaches — not host tools (see
 not provide a reliable stop/restart contract for the cluster frame, so `down` uses `kind delete cluster`
 for compute and keeps the `.data` and derived paths in place. The next `project up` recreates the kind
 cluster from the chain. VM frames are different: they use provider stop-without-delete (`incus stop` /
-`limactl stop`) on ascent after the inner cluster teardown (see [incus](incus.md), [lima](lima.md)).
+`limactl stop` / `wsl --shutdown` (WSL2 managed-stop)) on ascent after the inner cluster teardown (see
+[incus](incus.md), [lima](lima.md), [wsl2](wsl2.md)).
 
 Stop steps use the best-effort `reportStep`, which logs a failed step without aborting the rest of the
 descent, so a partial stack is tolerated and the operation stays idempotent.

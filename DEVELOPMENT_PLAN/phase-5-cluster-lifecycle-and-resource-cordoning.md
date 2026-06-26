@@ -260,3 +260,7 @@ hangs off them.
 **Cross-references to add:**
 - `system-components.md` updates the `HostBootstrap.Cluster.*` rows and the resource-cordoning
   section.
+- WSL2 stop-without-delete on ascent (`wsl --terminate` without `wsl --unregister`) and WSL2-VM-boundary
+  cordoning (the `.wslconfig` + vhdx wall) are owned by
+  [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 host-provider sprint —
+  the Windows peer of the Incus/Lima stop-without-delete and VM cordon carried here.

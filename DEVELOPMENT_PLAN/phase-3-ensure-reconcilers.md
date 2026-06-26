@@ -10,18 +10,39 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
 `installAndVerify` probe-first install-and-verify driver. The reconciler set (`docker`, `colima`,
-`lima`, `cuda`, `homebrew`, `ghc`, `tart`, and the cross-substrate `incus`) carries its applicability
+`lima`, `cuda`, `homebrew`, `ghc`, and the cross-substrate `incus`) carries its applicability
 predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
 toolkit on linux), unit-tested without invoking the package manager. They are composed into project
 chains as `ensure-*` steps; wrong-host applicability still fails fast before side effects. `ensure incus` is owned by
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). This phase is `Done` (see
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (see
 [development_plan_standards.md § L](development_plan_standards.md)).
+
+This phase is **reopened** for the Windows substrate. The final reconciler set is
+`docker` / `colima` / `lima` / `cuda` / `cudawin` / `homebrew` / `ghc` / `incus` / `wsl2` — adding the
+Windows CUDA host-build reconciler `ensure cudawin` (this phase, Sprint 3.4) and the Windows WSL2 VM
+reconciler `ensure wsl2` (owned by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)) —
+and **retiring** the latent Tart reconciler (Sprint 3.5). The `ensure cudawin` work re-anchors
+composition pattern #7 to the **headless host build** (build on the bare Windows host, stage into the
+cluster, never run the workload in a build VM); the in-container linux-gpu `ensure cuda`
+(`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit) stays as a different concern.
+
+## Remaining Work
+
+Two `[Planned]` sprints close the reopened Windows surface and the retirement:
+
+- Sprint 3.4 (`[Planned]`) — the Windows CUDA host-build reconciler `ensure cudawin`, which re-anchors
+  composition pattern #7 to the headless host build.
+- Sprint 3.5 (`[Planned]`) — retire the latent Tart reconciler (the leftover code surfaces are tracked
+  in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
+Both pure paths are cabal-test-closable; the real-Windows-GPU-host CUDA build is Sprint 3.4's remaining
+work, and Sprint 3.5 is a pure code-deletion with no real-run gate.
 
 The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
 drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
@@ -33,7 +54,9 @@ Implement the substrate-and-ensure-reconciler contract (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
 idempotent value carrying a host-applicability predicate and a reconcile action. Projects compose the
 concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-lima`, `ensure-cuda`,
-`ensure-homebrew`, `ensure-ghc`, `ensure-tart`, and `ensure-incus` chain steps. A reconciler
+`ensure-cudawin`, `ensure-homebrew`, `ensure-ghc`, `ensure-wsl2`, and `ensure-incus` chain steps
+(`ensure-cudawin` and `ensure-wsl2` are the reopened Windows additions — `ensure-cudawin` owned here,
+`ensure-wsl2` by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). A reconciler
 invoked on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
 
 ## Sprints
@@ -78,7 +101,7 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
-`Colima.hs`, `Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`,
+`Colima.hs`, `Cuda.hs`, `Homebrew.hs`, `Ghc.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
@@ -95,7 +118,6 @@ Land the concrete reconcilers as library values.
 | `ensure-cuda` | `HostBootstrap.Ensure.Cuda` | `linux-gpu` |
 | `ensure-homebrew` | `HostBootstrap.Ensure.Homebrew` | `apple-silicon` |
 | `ensure-ghc` | `HostBootstrap.Ensure.Ghc` | `apple-silicon` |
-| `ensure-tart` | `HostBootstrap.Ensure.Tart` | `apple-silicon` (build-only) |
 
 - Each reconciler resolves its tools through `HostBootstrap.HostTool` (no `$PATH` bare names).
 - Each carries the correct applicability predicate from the table above.
@@ -115,7 +137,7 @@ None.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`InstallStep`,
 `installAndVerify`), `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `Colima.hs`,
-`Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `Tart.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`
+`Cuda.hs`, `Homebrew.hs`, `Ghc.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`, `system-components.md`
 
 #### Objective
@@ -152,12 +174,119 @@ check-only; see [development_plan_standards.md § L](development_plan_standards.
 
 None.
 
+### Sprint 3.4: Windows CUDA host-build reconciler (CudaWin) [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostTool.hs` (the `Winget` / `Nvcc` constructors),
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`,
+`documents/engineering/composition_patterns.md`, `documents/languages/cuda.md`, `system-components.md`
+
+#### Objective
+
+Land `ensure cudawin`, the Windows CUDA **host-build** reconciler, and re-anchor composition pattern #7
+to the headless host build it instantiates.
+
+#### Reconciler Contract
+
+- `ensure cudawin` `appliesTo = isWindowsGpu` (windows-gpu only); the probe is `nvcc -V` resolving and
+  the NVIDIA driver reporting a GPU on the Windows host. A run on `windows-cpu` (or any non-Windows-GPU
+  host) fails fast with the one-line wrong-host diagnostic — an applicability misuse, never an absent
+  dependency (§ L).
+- Install-and-verify via the substrate-branched `installSteps`: `winget install` the NVIDIA Windows
+  driver, the CUDA Toolkit (`Nvidia.CUDA`), and the MSVC C++ build tools
+  (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host compiler). Pure planner, unit-tested without
+  invoking winget.
+
+#### Deliverables
+
+- `HostBootstrap.Ensure.CudaWin` templated on the **living** `HostBootstrap.Ensure.Ghc` /
+  `HostBootstrap.Ensure.Colima` build-tool reconcilers (probe-first `installAndVerify`, pure
+  `installSteps`), wired into `allReconcilers`.
+- `HostBootstrap.HostTool` gains the `Winget` (`toolCommandName Winget = "winget"`) and `Nvcc`
+  (`toolCommandName Nvcc = "nvcc"`) constructors, resolved to `AbsExe` like every host tool.
+- This reconciler is composition pattern #7's first worked instance — a **headless host build**: nvcc
+  artifacts are produced on the bare Windows host and **staged into the cluster**, with **no** workload
+  run in a build VM (§ N). The in-container linux-gpu `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the
+  nvidia-container-toolkit) is unchanged — a different concern that stays.
+
+#### Validation
+
+- `EnsureSpec` asserts `cudawin` applicability (windows-gpu only), the pure winget `installSteps` plan,
+  and wrong-host fail-fast on `windows-cpu`; `HostToolSpec` covers the `Winget` / `Nvcc` constructors.
+  `cabal build all` and `cabal test` pass.
+
+#### Remaining Work
+
+Real-Windows-GPU-host validation (real-run-gated, § C): the applicability, the pure winget plan, and the
+`HostTool` constructors are cabal-test-closable; the live driver — winget installing the driver + CUDA
+Toolkit + MSVC and an nvcc artifact built on the bare host and staged into the cluster — is the
+remaining closure on a real Windows GPU host.
+
+### Sprint 3.5: Retire Tart reconciler [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs` (deleted),
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`, `core/hostbootstrap-core/test/EnsureSpec.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`,
+`documents/engineering/composition_patterns.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`
+
+#### Objective
+
+Delete the latent Tart reconciler now that Windows is the third metal substrate and the headless host
+build (Sprint 3.4) has replaced Tart's build-VM shape. Tart was core-only and latent — registered in
+`allReconcilers` but absent from every demo chain — and the siblings infernix and jitML already bypassed
+it for a headless host bridge.
+
+#### Deliverables
+
+Delete the Tart code surfaces (tracked in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)):
+
+- `HostBootstrap.Ensure.Tart` (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs`);
+- the `Tart` import and the `allReconcilers` entry in `Command.hs` (`Command.hs:62` / `Command.hs:86`);
+- the `Tart` constructor and `toolCommandName Tart = "tart"` in `HostTool.hs`
+  (`HostTool.hs:37` / `HostTool.hs:61`);
+- the exposed-module line in `hostbootstrap-core.cabal` (`hostbootstrap-core.cabal:38`);
+- the import, reconciler-name, `appliesTo`, and `installSteps` cases in `test/EnsureSpec.hs`;
+- the entry in `test/HostToolSpec.hs`.
+
+After deletion the reconciler set is `docker` / `colima` / `lima` / `cuda` / `cudawin` / `homebrew` /
+`ghc` / `incus` / `wsl2`, with no Tart surface anywhere in the tree.
+
+#### Validation
+
+- `cabal build all` and `cabal test` pass with `HostBootstrap.Ensure.Tart` gone and no `Tart`
+  constructor; `EnsureSpec` / `HostToolSpec` no longer reference it; `allReconcilers` no longer lists it.
+  The two Pending entries in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) move to **Removed Surfaces** in the
+  same change.
+
+#### Remaining Work
+
+None once the deletion lands — this is a pure code-deletion sprint with no real-run gate. The prose
+re-anchoring (pattern #7 → headless host build, and the reconciler set dropping the latent build-VM
+reconciler) is already done; this sprint removes the leftover code.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the concrete library values, and
-  the fail-fast-on-wrong-host behavior.
+- `documents/engineering/ensure_reconcilers.md` - the reconciler contract, the concrete library values,
+  and the fail-fast-on-wrong-host behavior, including `ensure cudawin` and the dropped Tart reconciler.
+- `documents/engineering/composition_patterns.md` - pattern #7 re-anchored to the headless host build,
+  with `ensure cudawin` as its first worked instance.
+- `documents/languages/cuda.md` - the Windows CUDA host-build stack (driver + CUDA Toolkit + MSVC via
+  winget) versus the in-container linux-gpu nvidia-container-toolkit.
 
 **Cross-references to add:**
-- `system-components.md` keeps the ensure-reconciler table aligned with the implemented library values.
-- `legacy-tracking-for-deletion.md` records obsolete compatibility surfaces.
+- `system-components.md` keeps the ensure-reconciler table aligned with the implemented library values
+  and adds the `ensure cudawin` row and the `Winget` / `Nvcc` host tools.
+- `legacy-tracking-for-deletion.md` records obsolete compatibility surfaces (the Tart code surfaces).
+- `development_plan_standards.md` § L carries the final reconciler set and the wrong-host CudaWin
+  example.

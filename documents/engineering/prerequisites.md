@@ -12,7 +12,7 @@
 - The Python bootstrapper asserts a **minimal, fail-fast** set of host minimums — only what must hold
   before the project binary can be built. **These minimums are the only hard fail-fast surface in the
   whole system.**
-- Everything beyond those minimums (Docker, Colima, CUDA, Homebrew packages, GHC, Tart, incus) is
+- Everything beyond those minimums (Docker, Colima, CUDA, Homebrew packages, GHC, incus, WSL2, CUDA-on-Windows) is
   **installed by Haskell `ensure` reconcilers** when the binary runs (install-and-verify), so the binary
   is **never blocked by an absent-but-installable dependency**. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
@@ -57,6 +57,37 @@ Homebrew is the channel through which the bootstrapper installs the host GHC/Cab
 precondition rather than something reconciled. (The Docker provider, `ensure colima`, runs later —
 the execed binary owns it, not the pre-binary bootstrapper.)
 
+## Windows Minimums
+
+Windows is the third metal substrate (`windows-cpu` and `windows-gpu`); its Linux workload runs inside a
+WSL2 `Ubuntu-24.04` guest, the structural peer of the Lima (Apple Silicon) and Incus (native Linux) VMs.
+The Python bootstrapper asserts, fail-fast:
+
+- **winget.** The Homebrew-analog pre-binary package manager through which the bootstrapper installs the
+  host GHC/Cabal toolchain needed to build `hostbootstrap.exe` host-native. Its presence is a hard
+  precondition rather than something reconciled, exactly as Homebrew is on Apple.
+- **PowerShell.** The host shell the pre-binary bootstrapper runs in.
+- **WSL2 with Ubuntu 24.04.** The supported Windows substrate runs Docker, kind, and the workload inside
+  a WSL2 `Ubuntu-24.04` distro (detected `linux-cpu` inside the guest). Enabling the WSL2 feature and
+  importing the pristine distro are owned by the exe-side `ensure wsl2` reconciler (the peer of
+  `ensure lima`), not the pre-binary layer; the minimum is that the platform can run WSL2. See
+  [wsl2.md](wsl2.md).
+- **Passwordless sudo inside the WSL2 guest.** Required for the host package and Docker setup the
+  in-distro `ensure` reconcilers perform — the guest-side mirror of the Linux passwordless-sudo minimum.
+
+On `windows-gpu` the host additionally needs the **NVIDIA Windows driver** and the **CUDA Toolkit** for
+the headless host-build CUDA path (`ensure cudawin`, composition pattern #7), distinct from the
+in-container `linux-gpu` toolkit reconciled by `ensure cuda`.
+
+The first `wsl --install` may require a **host reboot** before a distro can launch; the WSL2 provider
+detects the reboot-required state, instructs the operator, and exits non-zero rather than rebooting
+Windows itself (see [wsl2.md](wsl2.md)).
+
+These are the bedrock the Windows bootstrap path needs before it can ensure anything else — the
+structural peer of the Apple Silicon minimums above. The VM provider (`ensure wsl2`) and the host CUDA
+capability (`ensure cudawin`) run later, owned by the execed binary, not the pre-binary bootstrapper.
+*(Target; the Windows substrate is owned by the reopened phases and is not yet hardware-validated.)*
+
 ## Everything Else Is Ensured, Not Required
 
 The following are **not** Python prerequisites; the `ensure` suite **installs** them (install-and-verify)
@@ -72,7 +103,8 @@ host (a misuse), never on mere absence:
 | NVIDIA driver + container toolkit | `ensure cuda` | `linux-gpu` |
 | Homebrew packages | `ensure homebrew` | Apple silicon |
 | Host GHC toolchain | `ensure ghc` | Apple silicon (native host build) |
-| Tart build VM | `ensure tart` | Apple silicon (build-only) |
+| WSL2 pristine VM provider | `ensure wsl2` | Windows (`windows-cpu` / `windows-gpu`) |
+| Headless host-build CUDA (NVIDIA driver + CUDA Toolkit + MSVC via winget) | `ensure cudawin` | `windows-gpu` |
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
 predicate and reconcile action.

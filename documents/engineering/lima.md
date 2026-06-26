@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [demo runbook](../operations/demo_runbook.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [documents-index](../README.md), [demo runbook](../operations/demo_runbook.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
 
 > **Purpose**: Describe the Lima VM provider used on Apple Silicon to represent a pristine Linux
 > environment, and how its lifecycle is expressed through the core `deploy-VM` step kind of the
@@ -94,7 +94,9 @@ the reconciler contract.
 Colima is the Apple Docker-provider path for direct Docker workloads. Incus is the native Linux VM
 provider and an explicit Incus workflow on Apple when a user manages one. On Apple Silicon the chain's
 `deploy-VM` step uses Lima because it represents a pristine Linux VM without requiring Incus nested-VM
-support; on native Linux the same `deploy-VM` step uses the Incus builders.
+support; on native Linux the same `deploy-VM` step uses the Incus builders. On Windows the same
+`deploy-VM` step uses the WSL2 builders — WSL2 is the Windows peer of Lima, the platform's first-class
+Linux VM (see [wsl2](wsl2.md)).
 
 ## Current Status
 
@@ -117,6 +119,7 @@ The VM-provider axis is tracked in the development plan
 - [composition_methodology](../architecture/composition_methodology.md) — canonical home of the chain /
   `[Step]` / recursive-interpreter model this provider plugs into.
 - [incus](incus.md) — the native Linux VM provider that interprets the same `deploy-VM` step kind.
+- [wsl2](wsl2.md) — the Windows VM provider that interprets the same `deploy-VM` step kind.
 - [ensure reconcilers](ensure_reconcilers.md) — the reconciler contract `ensure lima` follows.
 - [demo runbook](../operations/demo_runbook.md) — the demo lifecycle that exercises the Lima VM steps.
 - [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) — the development plan for the
