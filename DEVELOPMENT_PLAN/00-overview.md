@@ -72,10 +72,11 @@ The **Windows third-substrate** work is woven into the existing phases — not a
 and 9 are closed again: Windows joins `apple-silicon`, `linux-cpu`, and `linux-gpu` as
 `windows-cpu`/`windows-gpu` through the Phase-2 pre-binary Haskell toolchain bootstrap and substrate
 detection, the Phase-3 `ensure cudawin` reconciler, and the Phase-9 Windows host-capacity / WSL2 sizing
-surfaces. Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, and
-`ensure wsl2` has reconciled the missing Windows hypervisor launch setting (`hypervisorlaunchtype Auto`);
-the current host still reports `HyperVisorPresent = False`, so the remaining work is reboot-gated real
-Windows/WSL2 provider validation. In the same pass **Tart
+surfaces. Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, WSL2 platform
+readiness is now present after the host reboot (`HyperVisorPresent = True`, default WSL version 2), and
+the live chain reaches the managed Ubuntu-24.04 distro plus the in-distro Docker image build. The
+remaining work is real Windows/WSL2 provider lifecycle closure because repeated WSL/Docker sessions exit
+non-zero during the project image build before `test run all` and `project destroy` validate teardown. In the same pass **Tart
 retires** — it was core-only and latent — and composition pattern #7 **re-anchors to a headless host build**, with `ensure cudawin`
 (CUDA-on-Windows) its first instance.
 
@@ -192,8 +193,9 @@ tool-level dispatch; `HostBootstrap.Lift` handles subcommand-level context stack
 by the Apple Silicon demo path is implemented and validated through the full demo lifecycle. It is
 `Active` (reopened): WSL2 (Ubuntu-24.04) joins as the Windows host-provider VM peer of Lima/Incus,
 depending on Phase 2's Windows substrate detection and pre-binary toolchain bootstrap; `ensure wsl2` has
-reconciled Windows hypervisor launch readiness and the remaining work is the reboot-gated real provider
-lifecycle run.
+reconciled Windows hypervisor launch readiness, the post-reboot host reports WSL2 platform readiness, and
+the remaining work is the real provider lifecycle close after WSL/Docker session loss during the in-distro
+image build.
 
 ### Phase 12 — Layered warm store
 
@@ -341,7 +343,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-19 (builds forward on 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config, Python auto-init removal) -- Done
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
   phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done
-  Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Active: current host still reports HyperVisorPresent = False after hypervisorlaunchtype Auto reconciliation; reboot, then real-run validate
+  Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Active: post-reboot WSL2 platform readiness is present and the live chain reaches the managed distro plus in-distro Docker image build, but repeated WSL/Docker sessions exit non-zero before test run all and project destroy close the lifecycle
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

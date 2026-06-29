@@ -14,9 +14,10 @@
 > 3, and 9. Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires from
 > the prose, and composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
 > Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, and `ensure wsl2` has
-> reconciled the missing Windows hypervisor launch setting (`hypervisorlaunchtype Auto`), but the current
-> host still reports `HyperVisorPresent = False`; the remaining work is reboot-gated real Windows/WSL2
-> provider validation.
+> reconciled WSL2 platform readiness on the post-reboot host (`HyperVisorPresent = True`, default WSL
+> version 2). The live Windows chain reaches the managed Ubuntu-24.04 distro and in-distro Docker image
+> build, but repeated WSL/Docker sessions exit non-zero before `test run all` and `project destroy` close
+> the lifecycle; that real-run provider validation remains open.
 > The **generic-project-model** work (phase 19, § BB) is `Done` —
 > phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.

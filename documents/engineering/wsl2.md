@@ -155,34 +155,31 @@ The WSL2 host provider is the Windows VM frame for the third metal substrate; it
 development plan ([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)). The
 `HostBootstrap.Wsl2` argv builders (including the prefix-guarded `unregister`), the
 `classifyWsl2Readiness` classifier, `HostTool Wsl` System32 resolution, and `ensure wsl2` are
-unit-tested as pure values exactly as their Lima/Incus peers are. Live validation on 2026-06-26 enabled
-the Windows WSL/VMP features, installed `Microsoft.WSL` 2.7.8, and stopped at the required host reboot.
-Follow-up validation on 2026-06-27 found that `C:\Windows\System32\wsl.exe --status` still prints a WSL2
-startup diagnostic saying virtualization is not enabled, but independent host checks disagree:
-`systeminfo.exe` reports `Virtualization Enabled In Firmware: Yes`,
-`Win32_Processor.VirtualizationFirmwareEnabled` is `True`, and DISM reports both
-`Microsoft-Windows-Subsystem-Linux` and `VirtualMachinePlatform` as `Enabled`. `wsl.exe --list --verbose`
-still reports no installed distributions before the project chain runs. A 2026-06-28 probe reproduced the
-same WSL2 startup diagnostic and still found no installed distributions. The demo's binary-owned chain
-selects WSL2 on Windows, composes the managed distro name from the project identity
-(`hostbootstrap-demo-vm`), registers that distro if absent, hands off through `wsl -d <distro> -- ...`,
-stages host files through the distro's `/mnt/<drive>`
-view, and tears down through guarded `wsl --unregister`. A follow-up host probe showed the missing piece is
-OS-level hypervisor launch readiness, not firmware virtualization: `HyperVisorPresent = False` while
-firmware virtualization, VM monitor extensions, SLAT, WSL, and VMP all report present/enabled. The
-2026-06-28 `ensure wsl2` update normalizes NUL-separated `wsl.exe` diagnostics, probes firmware
-virtualization separately, checks `HyperVisorPresent`, resolves `bcdedit`, and sets
-`hypervisorlaunchtype Auto` when the Windows hypervisor is not present. Static validation still passes:
-`cabal test all` from `core/` (`All 253 tests passed`), `cabal build all --ghc-options=-Werror` from
-`core/`, `cabal build all --ghc-options=-Werror` from `demo/`, and
-`poetry run python -m hostbootstrap.check_code`. A rebuilt live `hostbootstrap-demo.exe project up`
-reached the WSL2 provider step, set `hypervisorlaunchtype Auto`, and failed closed with `host reboot
-required after WSL2 hypervisor launch configuration; reboot and retry`. A same-day follow-up probe still
-shows `HyperVisorPresent = False`; `wsl --status` cannot start WSL2, and `wsl --list --verbose` reports
-no installed distributions. `poetry run python -m hostbootstrap.test_all` also passes (`175 passed`).
-Phase 11 remains `Active` until
-the host is rebooted and the Windows VM lifecycle runs end to end through the core `deploy-VM` step kind
-and the recursive `project up` interpreter:
+unit-tested as pure values exactly as their Lima/Incus peers are. Live validation on 2026-06-26 and
+2026-06-28 enabled the Windows WSL/VMP features, installed `Microsoft.WSL`, reconciled
+`hypervisorlaunchtype Auto`, and stopped at the required host reboot. Post-reboot validation on
+2026-06-29 crosses that platform gate: `HyperVisorPresent = True`,
+`Win32_Processor.VirtualizationFirmwareEnabled = True`, `wsl --status` succeeds with default WSL version
+2, and `wsl --list --verbose` can enumerate the managed WSL2 distro.
+
+The demo's binary-owned chain selects WSL2 on Windows, composes the managed distro name from the project
+identity (`hostbootstrap-demo-vm`), registers that Ubuntu-24.04 distro if absent, hands off through
+`wsl -d <distro> -- ...`, stages source/config under `/root/hostbootstrap`, installs the local Python
+bootstrapper through `pipx`, builds the in-distro host-native demo binary, installs Docker in the distro,
+and starts the project image build from `docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64`. One live
+run reached a tagged `hostbootstrap-demo:local` image and a running kind control-plane; the in-Dockerfile
+gate reached pinned `fourmolu`, `hlint` (`No hints`), `cabal -Werror`, `spago build`, and `esbuild`.
+
+Phase 11 remains `Active` because the Windows lifecycle still does not close through `test run all` and
+`project destroy`. Repeated closure attempts lose the WSL/Docker session during the in-distro Docker
+build (`COPY demo` or the following `RUN cp docker/container.cabal.project cabal.project`); the parent
+`wsl -d hostbootstrap-demo-vm -- ...` session exits non-zero or with `Wsl/Service/0x80072746`. A clean
+`wsl --shutdown` recovers the distro and `/root` remains writable, so the open item is real-run provider
+runtime stability, not WSL2 platform readiness. Static validation remains clean: the core and demo Cabal
+test/build gates and `poetry run python -m hostbootstrap.check_code` pass.
+
+Closure requires one Windows VM lifecycle run end to end through the core `deploy-VM` step kind and the
+recursive `project up` interpreter:
 
 - `project up` imports/enters the Ubuntu-24.04 distro, stages the working tree into the guest, builds
   the project binary host-native in the distro, ensures Docker in the distro, builds the project image,

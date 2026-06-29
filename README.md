@@ -83,10 +83,11 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
 > worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
 > `Done`. The original scope (phases 0 through 21) is `Done` except **phase 11**, which remains
-> `Active`: the WSL2 provider is implemented and unit-validated, and `ensure wsl2` has reconciled the
-> missing Windows hypervisor launch setting (`hypervisorlaunchtype Auto`), but the current host still
-> reports `HyperVisorPresent = False`; the remaining work is reboot-gated real Windows/WSL2 provider
-> validation. The Windows third-substrate work for phases
+> `Active`: the WSL2 provider is implemented and unit-validated, the post-reboot host reports WSL2
+> platform readiness (`HyperVisorPresent = True`, default WSL version 2), and the live chain reaches the
+> managed Ubuntu-24.04 distro plus the in-distro Docker image build. The remaining work is real
+> Windows/WSL2 provider lifecycle closure because repeated WSL/Docker sessions exit non-zero before
+> `test run all` and `project destroy` validate teardown. The Windows third-substrate work for phases
 > 2, 3, and 9 is closed: native `hostbootstrap.exe` bootstrap, CUDA as a headless host build, and Windows
 > host-capacity / WSL2 sizing are implemented and validated. This status is tracked in
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
@@ -342,9 +343,9 @@ cluster" path. The doctrine is stated canonically in
 > including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
 > both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
-> (phases 0 through 21) is `Done` except phase 11, which is `Active` for the remaining reboot-gated real
-> WSL2 provider validation after `ensure wsl2` set `hypervisorlaunchtype Auto` while the current host
-> still reports `HyperVisorPresent = False`; see
+> (phases 0 through 21) is `Done` except phase 11, which is `Active` for the remaining real WSL2 provider
+> lifecycle closure: WSL2 platform readiness is present after reboot, but repeated WSL/Docker sessions exit
+> non-zero during the in-distro project image build before `test run all` and `project destroy`; see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up

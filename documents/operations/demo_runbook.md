@@ -19,25 +19,25 @@
   [composition_methodology](../architecture/composition_methodology.md); this runbook walks the
   demo's instance of it.
 - The headline is a from-zero pristine-host bootstrap performed **inside a managed Linux VM** (Lima on
-  Apple Silicon, Incus on native Linux, and the target WSL2 on Windows; the metal host is not pristine):
+  Apple Silicon, Incus on native Linux, and WSL2 on Windows; the metal host is not pristine):
   `apt install pipx` →
   `pipx install` the local hostbootstrap → `hostbootstrap run`. The Python bootstrapper is the
   metal-frame instance of the same fractal pattern (provision the frame → build the binary in it → hand
   off `project up`).
 - `project up` / `project down` / `project destroy` drive the chain, `context` visualizes it, and
-  `test run all` validates the surface by **driving the same `project up`** under a test config. The deploy
-  is **one** representation: the `[Step]` chain. `project up` stands up a persistent stack; `test run all`
-  reuses that chain (today it drives `project up` against the **existing** `<project>.dhall` → assert →
-  `project destroy`; the per-case config-write path was removed). Generating the run's config from a thin
-  `test.dhall` override is the [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) target.
-  There is no separate per-case bring-up.
+  `test run all` validates the surface by **driving the same `project up`** under a generated test config.
+  The deploy is **one** representation: the `[Step]` chain. `project up` stands up a persistent stack;
+  `test run all` reuses that chain, generating each run's `<project>.dhall` from `test.dhall` through the
+  project-owned `psTestConfig`, asserting, then tearing down with `project destroy`. There is no separate
+  per-case bring-up.
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
 
 ## Current Status
 
-Two facts about the harness as it ships today, ahead of
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md):
+The demo's Apple-Silicon/Lima and native Incus/Linux paths are real-run-validated. The Windows/WSL2 path
+is implemented and reaches the live WSL2 VM frame, but Phase 11 remains `Active` until the Windows
+lifecycle closes through `test run all` and `project destroy`.
 
 - **Config handling.** The harness owns the run's config and its `.test_data` root: it generates the
   `hostbootstrap-demo.dhall` from the thin `test.dhall` override **functionally**, through the
@@ -52,6 +52,12 @@ Two facts about the harness as it ships today, ahead of
   folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl
   …`), so it reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to
   the host.
+- **Windows WSL2 status.** Post-reboot validation on 2026-06-29 shows WSL2 platform readiness
+  (`HyperVisorPresent = True`, default WSL version 2). A live Windows `project up` registers/enters
+  `hostbootstrap-demo-vm`, stages the source under `/root/hostbootstrap`, builds the in-distro
+  host-native demo binary, installs Docker, and starts the project image build. The open validation item is
+  runtime stability: repeated WSL/Docker sessions exit non-zero during the in-distro Docker build before
+  `test run all` and `project destroy` can validate the full lifecycle.
 
 The operator surface below (`project init|up|down|destroy`, read-only `context`, `test init` /
 `test run <suite>|all`) and the recursive interpreter that walks the demo's `chain :: ProjectConfig ->

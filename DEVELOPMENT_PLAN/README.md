@@ -86,10 +86,12 @@ state preserved. The Windows third-substrate reopening is now closed for phases 
 Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`) through the Phase-2
 pre-binary Haskell toolchain bootstrap and substrate detection, Phase-3 `ensure cudawin` reconciler,
 and Phase-9 Windows host-capacity / WSL2 sizing surfaces. Phase 11 remains `Active`: the WSL2 provider is
-implemented and unit-validated, and `ensure wsl2` has reconciled the missing Windows hypervisor launch
-setting (`hypervisorlaunchtype Auto`), but the current host still reports `HyperVisorPresent = False`;
-the remaining work is reboot-gated real Windows/WSL2 provider validation. The work is woven into the
-existing phases, not a new phase. See
+implemented and unit-validated, the post-reboot host now reports WSL2 platform readiness
+(`HyperVisorPresent = True`, default WSL version 2), and the live chain reaches the managed
+Ubuntu-24.04 distro plus the in-distro Docker image build. The remaining work is real Windows/WSL2
+provider lifecycle closure because repeated WSL/Docker sessions exit non-zero during the project image
+build before `test run all` and `project destroy` validate teardown. The work is woven into the existing
+phases, not a new phase. See
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md),
 [phase-21-documentation-code-consistency-reconciliation.md](phase-21-documentation-code-consistency-reconciliation.md),
