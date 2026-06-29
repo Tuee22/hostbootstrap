@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -278,4 +279,11 @@ async def bootstrap(
     """Build the project binary host-native, then ``exec`` it with ``args``."""
     await build_binary(spec, project_root=project_root)
     argv = exec_argv(spec, project_root, args)
+    _exec_project_binary(argv)
+
+
+def _exec_project_binary(argv: tuple[str, ...]) -> None:
+    if os.name == "nt":
+        completed = subprocess.run(list(argv), check=False)
+        raise SystemExit(completed.returncode)
     os.execv(argv[0], list(argv))  # pragma: no cover

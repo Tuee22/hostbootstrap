@@ -52,6 +52,7 @@ import HostBootstrap.Service (ServiceRegistry, duplicateServiceVariants, emptySe
 import HostBootstrap.Step (Step, StepFrame)
 import Options.Applicative
 import System.Exit (die)
+import System.IO (hSetEncoding, stderr, stdout, utf8)
 
 {- | A derived project's required extension points, generic over the project's
 config type @cfg@ and the project's test-config type @tcfg@. There are no
@@ -158,6 +159,7 @@ runHostBootstrapCLI ::
     ProjectSpec cfg tcfg ->
     IO ()
 runHostBootstrapCLI progName spec = do
+    configureUtf8Output
     either die pure (validateProjectSpec spec)
     runCLI
         progName
@@ -191,7 +193,8 @@ config builders interpret the parsed @init@ flags into a 'BareConfig' (just the
 derived context) and a trivial test config (the bare binary ships no test cases).
 -}
 runBareHostBootstrapCLI :: String -> IO ()
-runBareHostBootstrapCLI progName =
+runBareHostBootstrapCLI progName = do
+    configureUtf8Output
     runCLI
         progName
         []
@@ -228,6 +231,11 @@ runBareHostBootstrapCLI progName =
                     Context.defaultResourceEnvelope
                     (role args)
          in BareConfig (foldr Context.addRole baseCtx (alsoRoles args))
+
+configureUtf8Output :: IO ()
+configureUtf8Output = do
+    hSetEncoding stdout utf8
+    hSetEncoding stderr utf8
 
 runCLI ::
     (ProjectCfg cfg, FromDhall tcfg, ToDhall tcfg) =>

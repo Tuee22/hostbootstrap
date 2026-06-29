@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -198,6 +199,26 @@ def test_binary_path_and_exec_argv() -> None:
     )
 
 
+def test_windows_exec_project_binary_exits_with_child_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], *, check: bool) -> SimpleNamespace:
+        calls.append(argv)
+        assert check is False
+        return SimpleNamespace(returncode=17)
+
+    monkeypatch.setattr(bootstrap.os, "name", "nt")
+    monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        bootstrap._exec_project_binary(("demo.exe", "project", "up"))
+
+    assert exc.value.code == 17
+    assert calls == [["demo.exe", "project", "up"]]
+
+
 # ---------------------------------------------------------------------------
 # Driver: recorded commands + mocked seams (no Docker, no host mutation)
 # ---------------------------------------------------------------------------
@@ -216,11 +237,11 @@ def _patch_seams(
         doctored.append(detected)
         return bootstrap.prereqs.DoctorResult(detected, ("ok",))
 
-    def _fake_execv(path: str, argv: list[str]) -> None:
-        execed.append([path, *argv[1:]])
+    def _fake_exec_project_binary(argv: tuple[str, ...]) -> None:
+        execed.append(list(argv))
 
     monkeypatch.setattr(bootstrap.prereqs, "run_doctor", _fake_doctor)
-    monkeypatch.setattr(bootstrap.os, "execv", _fake_execv)
+    monkeypatch.setattr(bootstrap, "_exec_project_binary", _fake_exec_project_binary)
 
 
 async def test_bootstrap_linux_builds_host_native_without_writing_dhall(

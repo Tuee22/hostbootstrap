@@ -74,13 +74,16 @@ data CapacityReadSource
   | SysctlKey String
   | WindowsLogicalProcessors
   | WindowsAvailableMemory
+  | WindowsSystemDriveFreeSpace
+  | GenerousStorage
   deriving (Eq, Show)
 
 -- | The substrate-specific host-capacity read plan. Pure so the source mapping
 -- stays unit-tested without executing host tools.
 data CapacityReadPlan = CapacityReadPlan
   { cpuCapacitySource :: CapacityReadSource,
-    memoryCapacitySource :: CapacityReadSource
+    memoryCapacitySource :: CapacityReadSource,
+    storageCapacitySource :: CapacityReadSource
   }
   deriving (Eq, Show)
 
@@ -267,30 +270,32 @@ wsl2SizingArgs r = do
 -- | Select the host-capacity read sources for a detected substrate.
 capacityReadPlan :: Substrate -> CapacityReadPlan
 capacityReadPlan sub = case substrateName sub of
-  AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize")
+  AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") GenerousStorage
   LinuxCpu -> linuxReadPlan
   LinuxGpu -> linuxReadPlan
   WindowsCpu -> windowsReadPlan
   WindowsGpu -> windowsReadPlan
   where
-    linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable
-    windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory
+    linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage
+    windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace
 
--- | Resolve spare host capacity for the preflight. CPU and memory come from the
--- substrate-specific sources selected by 'capacityReadPlan': @sysctl@ on
--- apple-silicon and @/proc@ on linux. Storage is reported generously so it does
--- not false-fail the preflight — the applied storage cordon (Colima @--disk@ /
--- incus @root,size@ / hostPath quota) is the real storage wall. Exercised live
--- during bring-up.
+-- | Resolve spare host capacity for the preflight. CPU, memory, and storage
+-- come from the substrate-specific sources selected by 'capacityReadPlan'.
+-- Linux and Apple storage is still reported generously because their applied VM
+-- cordons own the real wall; Windows reads system-drive free space so WSL2 does
+-- not start a large VHDX-backed build on a disk that cannot satisfy the
+-- declared storage budget.
 resolveHostCapacity :: HostConfig -> IO (Either String HostCapacity)
 resolveHostCapacity cfg = do
   let plan = capacityReadPlan (hcSubstrate cfg)
   cores <- readCores cfg (cpuCapacitySource plan)
   mem <- readAvailableMemory cfg (memoryCapacitySource plan)
+  storageCap <- readAvailableStorage cfg (storageCapacitySource plan)
   pure $ do
     c <- cores
     m <- mem
-    pure (HostCapacity c m petabyte)
+    s <- storageCap
+    pure (HostCapacity c m s)
 
 petabyte :: Integer
 petabyte = 1024 ^ (5 :: Integer)
@@ -335,6 +340,15 @@ readAvailableMemory cfg WindowsAvailableMemory =
   fmap (* 1024) <$> readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
 readAvailableMemory _ source =
   pure (Left ("host capacity: unsupported memory source " ++ show source))
+
+-- | Read available storage from the substrate-selected source, in bytes.
+readAvailableStorage :: HostConfig -> CapacityReadSource -> IO (Either String Integer)
+readAvailableStorage _ GenerousStorage =
+  pure (Right petabyte)
+readAvailableStorage cfg WindowsSystemDriveFreeSpace =
+  readPowerShellPositiveInteger cfg "(Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')).Free"
+readAvailableStorage _ source =
+  pure (Left ("host capacity: unsupported storage source " ++ show source))
 
 readPowerShellPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
 readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of

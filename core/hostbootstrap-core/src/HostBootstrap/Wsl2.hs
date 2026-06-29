@@ -7,6 +7,7 @@ module HostBootstrap.Wsl2
     normalizeWslText,
     wslReportsNoInstalledDistributions,
     wslReportsVirtualizationDisabled,
+    wslInstallArgs,
     wslImportArgs,
     wslExecArgs,
     wslTerminateArgs,
@@ -55,6 +56,10 @@ normalizeWslText =
 bcdeditHypervisorLaunchArgs :: [String]
 bcdeditHypervisorLaunchArgs =
   ["/set", "hypervisorlaunchtype", "auto"]
+
+wslInstallArgs :: String -> String -> [String]
+wslInstallArgs distro vhdSize =
+  ["--install", "-d", "Ubuntu-24.04", "--name", distro, "--no-launch", "--vhd-size", vhdSize]
 
 wslImportArgs :: String -> FilePath -> FilePath -> [String]
 wslImportArgs distro installDir tarball =

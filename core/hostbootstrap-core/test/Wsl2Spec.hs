@@ -22,6 +22,8 @@ tests =
           wslReportsVirtualizationDisabled (ExitSuccess, utf16ish "WSL2 is unable to start since virtualization is not enabled", ""),
       testCase "pure lifecycle argv builders" $ do
         bcdeditHypervisorLaunchArgs @?= ["/set", "hypervisorlaunchtype", "auto"]
+        wslInstallArgs "hostbootstrap-demo" "80GB"
+          @?= ["--install", "-d", "Ubuntu-24.04", "--name", "hostbootstrap-demo", "--no-launch", "--vhd-size", "80GB"]
         wslImportArgs "hostbootstrap-demo" "C:\\hb\\wsl" "ubuntu.tar"
           @?= ["--import", "hostbootstrap-demo", "C:\\hb\\wsl", "ubuntu.tar", "--version", "2"]
         wslExecArgs "hostbootstrap-demo" ["hostbootstrap-demo", "project", "up"]

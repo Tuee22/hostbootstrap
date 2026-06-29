@@ -59,6 +59,8 @@ import HostBootstrap.Cluster.Cordon (
     gibibytes,
     incusSizingArgs,
     limaSizingArgs,
+    preflightBudget,
+    resolveHostCapacity,
     wsl2SizingArgs,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
@@ -846,6 +848,8 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
     provider <- demoVMProvider cfg
     let lifecycleResources = resourcesFromContext ctx
     either die pure (requireDemoLifecycleResources lifecycleResources)
+    resolvedCapacity <- resolveHostCapacity cfg
+    either die pure (resolvedCapacity >>= preflightBudget (envelopeOfResources lifecycleResources))
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
@@ -882,8 +886,10 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
             exists <- wsl2DistroExists cfg vm
             unless exists $ do
                 sizing <- either die pure (wsl2SizingArgs (envelopeOfResources lifecycleResources))
+                budget <- either die pure (budgetFromResources (envelopeOfResources lifecycleResources))
+                let vhdSize = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
                 putStrLn ("vm up: registering WSL2 distro " ++ Wsl2.wsl2Distro vm ++ " (cordon #1: the VM is the wall, sizing " ++ show sizing ++ ")")
-                runOrDie cfg Wsl ["--install", "-d", "Ubuntu-24.04", "--name", Wsl2.wsl2Distro vm, "--no-launch"]
+                runOrDie cfg Wsl (Wsl2.wslInstallArgs (Wsl2.wsl2Distro vm) vhdSize)
             putStrLn ("vm up: waiting for " ++ Wsl2.wsl2Distro vm ++ " to answer")
             waitWsl2VM cfg vm 60
             putStrLn ("vm up: " ++ Wsl2.wsl2Distro vm ++ " is up")

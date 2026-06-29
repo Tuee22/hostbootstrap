@@ -73,20 +73,25 @@ verifyCases =
 
 capacitySourceCases :: [TestTree]
 capacitySourceCases =
-  [ testCase "apple-silicon reads CPU and memory from sysctl" $
+    [ testCase "apple-silicon reads CPU and memory from sysctl" $
       capacityReadPlan (Substrate AppleSilicon Arm64)
-        @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize"),
+        @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") GenerousStorage,
     testCase "linux-cpu reads CPU and memory from procfs" $
       capacityReadPlan (Substrate LinuxCpu Amd64)
-        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage,
     testCase "linux-gpu reads CPU and memory from procfs" $
       capacityReadPlan (Substrate LinuxGpu Amd64)
-        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
-    testCase "windows substrates read CPU and memory from PowerShell/CIM" $ do
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage,
+    testCase "windows substrates read CPU, memory, and storage from PowerShell/CIM" $ do
       capacityReadPlan (Substrate WindowsCpu Amd64)
-        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace
       capacityReadPlan (Substrate WindowsGpu Amd64)
-        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory,
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace,
+    testCase "windows storage shortage fails before WSL2 VHDX pressure" $
+      leftHas "storage" $
+        preflightBudget
+          (ResourceEnvelope {cpu = 6, memory = "10GiB", storage = "80GiB"})
+          (HostCapacity 16 (12 * gib) (40 * gib)),
     testCase "apple sysctl core count can satisfy a matching N-core budget" $
       preflightBudget
         (ResourceEnvelope {cpu = 10, memory = "8GiB", storage = "20GiB"})
