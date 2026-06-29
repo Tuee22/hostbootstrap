@@ -20,11 +20,11 @@
 
 ## Current Status
 
-This is the **target** secrets vocabulary, reopened in
-[phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md). It is not
-yet in `hostbootstrap-core`; the demo carries no secrets. The pattern is documented here because the
-generic project model ([generic_project_model.md](../architecture/generic_project_model.md)) must be
-flexible enough to host a secrets-strict consumer such as `~/prodbox` before that consumer migrates.
+The pure `SecretRef` vocabulary is implemented in `hostbootstrap-core` and phase 19 is `Done`. It is
+mirrored in `Core.dhall` and `HostBootstrap.Config.Vocab`, with anti-drift and round-trip tests. The demo
+does not need secrets, but the generic project model
+([generic_project_model.md](../architecture/generic_project_model.md)) can host a secrets-strict consumer
+such as `~/prodbox`; resolving secrets remains that consumer's responsibility.
 
 ## The `SecretRef` vocabulary
 

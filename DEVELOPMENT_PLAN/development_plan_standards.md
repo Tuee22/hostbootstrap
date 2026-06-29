@@ -554,9 +554,9 @@ The test surface **drives the real `project up`** rather than re-expressing brin
 test engine; it owns the case matrix, the per-case assertions, and the test-config parameters, never a
 second cluster-bring-up path.
 
-- `test init` — runs only when a sibling `project` config already exists; writes the per-project
-  `test.dhall` (the test DSL — the case matrix plus config overrides such as resources or secrets to pass
-  through to the normal binary).
+- `test init` — writes the per-project `test.dhall` (the test DSL — the case matrix plus config
+  overrides such as resources or secrets to pass through to the normal binary) without requiring a
+  pre-existing sibling `<project>.dhall`.
 - `test run <suite>|all` — runs one or more suites; `all` is always a suite. It is **root-only** and fails
   fast without a `test.dhall` or from any non-root context. For each **distinct test configuration**
   (cases sharing a config share one stack; a case needing different resources/secrets declares a different

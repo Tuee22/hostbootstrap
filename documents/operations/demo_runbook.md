@@ -170,7 +170,7 @@ are the host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `s
 installed, orchestrated, and torn back down by the chain:
 
 - **(a)** the metal-orchestrator binary installs and verifies the **VM provider** (Lima on Apple Silicon,
-  native Incus on Linux, and the target WSL2 on Windows);
+  native Incus on Linux, and WSL2 on Windows, whose full lifecycle closure remains phase-11 Active);
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM**
   (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
@@ -199,7 +199,7 @@ pod, and the verified NodePort:
 
 | Step | Frame | What it does |
 |---|---|---|
-| deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima, Incus, or the target WSL2 on Windows |
+| deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima, Incus, or WSL2 on Windows |
 | deploy-VM | `host-orchestrator-0` | **cordon #1** — launch the budget-sized pristine VM, the wall |
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
 | context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses, then hand off `project up` into the container |

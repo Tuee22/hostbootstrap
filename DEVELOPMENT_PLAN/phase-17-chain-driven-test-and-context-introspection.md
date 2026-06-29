@@ -90,8 +90,8 @@ resources before running (round-trip unit-tested, tracked in
 
 Land the chain-driven test surface and the read-only composition-introspection command:
 
-- A `test init` command that runs only when a sibling project config already exists and writes the
-  per-project `test.dhall` (which may carry test-specific configuration), mirroring `project init`.
+- A `test init` command that writes the per-project `test.dhall` (which may carry test-specific
+  configuration) without requiring a pre-existing sibling `<project>.dhall`.
 - A `test run <suite>|all` command that runs one or more named test suites — where `all` is always a suite
   — is **root-only**, and **fails fast** when invoked without a `test.dhall` or from any non-root context.
 - The test surface is **decoupled** from deploy: `project up` brings up a **persistent** stack and
@@ -108,7 +108,7 @@ Land the chain-driven test surface and the read-only composition-introspection c
 
 ## Sprints
 
-### Sprint 17.1: `test init` writer gated on an existing project config [Done]
+### Sprint 17.1: `test init` writer [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
@@ -116,15 +116,15 @@ Land the chain-driven test surface and the read-only composition-introspection c
 
 #### Objective
 
-Add a `test init` command that mirrors `project init`: it runs only when a sibling project config already
-exists and writes the per-project `test.dhall`, which may carry test-specific configuration over the
-project's reusable Dhall vocabulary.
+Add a `test init` command that writes the per-project `test.dhall`, which may carry test-specific
+configuration over the project's reusable Dhall vocabulary. Phase 19 later removed the pre-existing
+`<project>.dhall` requirement, so this bootstrap path now works from a clean slate.
 
 #### Deliverables
 
 - A `test init` subcommand on the surfaced core command tree
-  ([development_plan_standards.md § P, § Z](development_plan_standards.md)) that fails fast unless a sibling
-  `<project>.dhall` already exists, then writes `test.dhall` next to it.
+  ([development_plan_standards.md § P, § Z](development_plan_standards.md)) that writes `test.dhall` next
+  to the executable-sibling config path without requiring a production `<project>.dhall`.
 - A `test.dhall` schema and writer reflected from the harness's decoder types so the schema cannot drift,
   carrying any test-specific configuration alongside the project's reusable Dhall vocabulary
   ([development_plan_standards.md § Q](development_plan_standards.md)).

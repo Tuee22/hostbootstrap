@@ -24,13 +24,12 @@
 
 ## Current Status
 
-This document defines the **target** generic model. The current implementation is concrete: core owns
-`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and a fixed `ProjectConfig` type, and
-the test harness drives `project up` against the **pre-existing** `<project>.dhall` rather than generating
-it. The generalization is **in-progress, real-run-gated code work** under
-[phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) (Active) — it
-generalizes the config surfaces phases 4/8/10/15/17 delivered without reopening them — and the superseded
-surfaces are listed in
+This generic model is implemented and phase 19 is `Done`. `hostbootstrap-core` owns no
+`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and no fixed `ProjectConfig` type;
+projects supply `ProjectSpec cfg tcfg`, `psInit`, `psTestInit`, and `psTestConfig`. `test init` writes a
+thin `test.dhall` without a pre-existing production config, and `test run` generates each run's
+`<project>.dhall`, drives the real `project up`, then removes the generated config on teardown. The
+superseded concrete-config and pre-existing-config flows are listed in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 

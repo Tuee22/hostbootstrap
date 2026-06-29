@@ -114,6 +114,23 @@ tests =
                 result @?= Left (ExitFailure 1)
                 )
                 `finally` removeFile testPath
+        , testCase "test run refuses to overwrite an existing sibling project config" $ do
+            cfgPath <- Schema.siblingProjectConfigPath "cli-test-existing"
+            let testPath = takeDirectory cfgPath </> "cli-test-existing.test.dhall"
+                spec = specWith passingSuite (pure ()) []
+            ( do
+                _ <-
+                    try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                        IO (Either ExitCode ())
+                Schema.writeProjectConfigFile
+                    cfgPath
+                    (Fixture.defaultProjectConfig "cli-test-existing" "/workspace/demo" HostOrchestrator)
+                result <-
+                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                )
+                `finally` (removeFile testPath >> removeFile cfgPath)
         , testCase "service schema lists variants without a config" $ do
             let spec = withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) [])
             result <-

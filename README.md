@@ -104,11 +104,11 @@ fail-fast sequence:
 
 1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
    (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
-   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows (target): winget. Missing minimums stop the run with a clear
+   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows: winget. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
 2. **Ensure the host Haskell build toolchain and package index.** The prerequisites needed to build the
    binary host-native — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows
-   (target) winget-rooted GHCup → GHC/Cabal; then `cabal update`.
+   winget-rooted GHCup → GHC/Cabal; then `cabal update`.
 3. **Build the project binary host-native** into `./.build/<binary>`. The build is the same on every
    substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
    general host such as Apple silicon.
@@ -130,9 +130,9 @@ Linux ELF cannot exec on a general host such as Apple silicon, so there is no bu
 copy-out path:
 
 - The Python bootstrapper ensures the host Haskell toolchain and Cabal package index (on Apple, `ghcup`
-  via Homebrew; the equivalent on Linux; on Windows (target) winget-rooted GHCup → GHC/Cabal), builds the binary host-native into
+  via Homebrew; the equivalent on Linux; on Windows winget-rooted GHCup → GHC/Cabal), builds the binary host-native into
   `./.build/<binary>`, and execs it.
-- **Headless host build for platform-locked artifacts (planned).** On Windows the target shape builds
+- **Headless host build for platform-locked artifacts.** On Windows the implemented shape builds
   CUDA artifacts on the bare host (`ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC via
   winget), stages them into the cluster, and never runs the workload in a build VM — composition pattern
   #7, owned by [phase 3](DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md). See
@@ -199,7 +199,7 @@ nested context fields carrying the role and command authority:
 The project value is also the command name. The `resources` budget is the host-level ceiling that the
 project binary projects into child configs and enforces through cordons. Before bring-up the binary
 verifies that budget against spare host capacity resolved per substrate — resolved `sysctl` on Apple
-silicon, `/proc` on Linux, and the host APIs on Windows (target). See
+silicon, `/proc` on Linux, and the host APIs on Windows. See
 [`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
 
 ## CLI Surface
@@ -238,7 +238,7 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 
 | Command | What it does |
 |---|---|
-| `<binary> project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fail-fast unless a fresh host-level binary with no sibling `.dhall`; the target shape layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults) |
+| `<binary> project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fail-fast unless a fresh host-level binary with no sibling `.dhall`; layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults) |
 | `<binary> project up` | Recursively interpret `chain cfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
 | `<binary> project down` | Stop service/VM frames and tear down kind clusters while preserving durable host state (`.data`) |
 | `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |

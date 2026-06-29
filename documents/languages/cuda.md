@@ -65,7 +65,8 @@ The two paths contrast explicitly:
   `ensure cudawin` (driver + CUDA Toolkit + MSVC via winget); the artifact is staged into the cluster
   and nothing GPU-bound runs in a build VM.
 
-This Windows host-build path is **target** — phase-owned, not yet validated on Windows hardware. The
+This Windows host-build path is implemented as the `ensure cudawin` headless host-build surface. The
 Windows VM frame it sits beside (Docker, kind, and the in-cluster workload) is the
 [wsl2](../engineering/wsl2.md) host provider, the Windows peer of the Lima and Incus VM providers; the
-headless host build is deliberately *outside* that VM.
+headless host build is deliberately *outside* that VM. Full Windows/WSL2 lifecycle closure remains tracked
+in phase 11.

@@ -60,14 +60,13 @@ for the full rule set every derived project follows, including the canonical
 `cabal.project` template and the linking/optimisation policy in
 [engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md).
 
-## Native Windows build (target)
+## Native Windows Build
 
 Building `hostbootstrap-core` **host-native on Windows** — the native `hostbootstrap.exe`, the peer of
 the macOS arm64 binary — uses the native (mingw32) Windows GHC, which reports
-`System.Info.os == "mingw32"` rather than `"linux"` or `"darwin"`. The library currently depends on the
-POSIX-only `unix` package, so a host-native Windows build requires **conditionalizing the `unix`
-dependency at its three call sites** (and the matching `build-depends` guard) so the mingw32 build
-compiles without it. This is **target** work, owned by the Windows substrate phases and not yet validated
-on a Windows host. Which layer owns the native binary versus the thin Python bootstrapper that builds and
-execs it is the
+`System.Info.os == "mingw32"` rather than `"linux"` or `"darwin"`. The POSIX-only `unix` dependency is
+conditionalized at its call sites (and with the matching `build-depends` guard) so the mingw32 build can
+compile without it. This is implemented as part of the Windows substrate work; the remaining Windows
+open item is WSL2 provider lifecycle closure, tracked in phase 11. Which layer owns the native binary
+versus the thin Python bootstrapper that builds and execs it is the
 [python_haskell_boundary](../architecture/python_haskell_boundary.md).

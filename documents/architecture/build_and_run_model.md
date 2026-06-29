@@ -209,17 +209,16 @@ frame its `.dhall` describes. See [composition_methodology](composition_methodol
 
 ## Current Status
 
-The reconciled behavior here — the harness **driving the real `project up`** (rather than a separate
-per-case cluster path), the service run-model run via `service run` and deployed by `deploy-chart`, and
-the **budget-is-the-VM-wall / cluster-is-a-slice** resource model with no doubling — is the **target**.
-It is not fully implemented yet; the work spans the reopened phases (phase-10, phase-13, phase-14,
-phase-15, phase-16, phase-17) and new phase-18. The descriptions above are direction, not current state.
+The reconciled behavior here is implemented: the harness **drives the real `project up`** rather than a
+separate per-case cluster path, the service run-model runs via `service run` and is deployed by
+`deploy-chart`, and the resource model is **budget-is-the-VM-wall / cluster-is-a-slice** with no doubling.
+Those surfaces are closed in the development plan.
 
-The **Windows** substrate is likewise **target**, not validated: `windows-cpu`/`windows-gpu` detection,
-the native `hostbootstrap.exe` (mingw32 GHC) built host-native via winget, the WSL2 Ubuntu-24.04 VM frame
-(`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)), and the headless
-host build's `ensure cudawin` CUDA stack are owned by the reopened phases (phase-2, phase-3, phase-11)
-and are not yet implemented or hardware-validated. Windows is the new shape, not a shipped substrate.
+The **Windows** substrate is partially closed. `windows-cpu`/`windows-gpu` detection, native
+`hostbootstrap.exe` host-native build via winget-rooted GHCup, and the headless host build's `ensure
+cudawin` CUDA stack are implemented and validated at the code/unit level. The WSL2 Ubuntu-24.04 VM frame
+(`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)) remains phase-11
+`Active` until the real Windows/WSL2 lifecycle closes through `test run all` and `project destroy`.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. A project extends core through streams (lift chain, Dhall vocabulary,

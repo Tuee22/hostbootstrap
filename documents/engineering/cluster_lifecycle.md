@@ -153,7 +153,7 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
   through its `demoChain :: ProjectConfig -> [Step]` value
   (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle. Under the
-  generic-project-model target, `deployChart` carries the `[(Text, Text)]` extra-values param so the demo
+  implemented generic project model, `deployChart` carries the `[(Text, Text)]` extra-values param so the demo
   forwards its `message` field into the chart ConfigMap (see [schema](schema.md) and
   [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —

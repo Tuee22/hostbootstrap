@@ -104,14 +104,13 @@ current noun-verb shape.
 
 ## Current Status
 
-The demo's noun-verb deploy shape (the `demo deploy` lift sequence above, the `vm`/`incus`/`harbor`/`web`/`role`
-verbs, the hand-written `demoDeployChain` and its interpreter in `Chain.hs`, the `runMatrix` harness, the
-four runtime `hostbootstrap-demo.dhall` configs, and both VM providers) is **implemented and validated**.
-What is **not yet built** is the migration of that shape onto the core `Step` interpreter: the demo does
-not yet contribute a `chain :: cfg -> [Step]` value, and there is no `project up`/`project down`/`project destroy`
-surface — the core `project` lifecycle command that interprets the chain is owned by phase-16, and the
-demo's migration onto it is the remaining work below. Do **not** read this phase as claiming the `project`
-command or the chain-as-`[Step]` representation is shipped.
+The demo's old noun-verb deploy shape is superseded. The current demo contributes
+`demoChain :: ProjectConfig -> [Step]`, interpreted by the fixed `project up` / `project down` /
+`project destroy` surface. The former `vm` / `incus` / `harbor` / `web` / `role` verbs and the separate
+hand-written deploy interpreter are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), not current surface area. The demo's
+stack-driven `TestSuite` drives the real `project up` under generated configs and tears down with
+`project destroy`; `service run` owns the long-running web role.
 
 ## Remaining Work
 

@@ -195,11 +195,14 @@ testCommand progName suite _initBuilder testInit testConfig =
         exists <- doesFileExist tpath
         unless exists (die ("test run: missing " ++ tpath ++ "; run `" ++ progName ++ " test init` first"))
         tc <- Dhall.inputFile Dhall.auto tpath :: IO tcfg
+        cfgPath <- siblingProjectConfigPath (T.pack progName)
+        cfgExists <- doesFileExist cfgPath
+        when cfgExists $
+            die ("test run: a production config already exists at " ++ cfgPath ++ "; refusing to overwrite it")
         -- The run config is generated from the test config: a NON-EMPTY list of
         -- labeled variants. Each variant writes its own sibling <project>.dhall
         -- before bring-up and deletes it after teardown, so the harness drives a
         -- full teardown + spin-up between variants.
-        cfgPath <- siblingProjectConfigPath (T.pack progName)
         labeledCfgs <- testConfig tc
         when (null labeledCfgs) (die "test run: the project generated no test-config variants")
         let variantFor (label, cfg) =

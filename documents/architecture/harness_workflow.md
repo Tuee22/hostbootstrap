@@ -156,16 +156,11 @@ slice before bring-up.
 ## Current Status
 
 The `project up`-driven harness, the two preconditions, the self-created-only delete-guard, and `web
-serve` → `service run` are the **target** model. The `HostBootstrap.Harness` `runMatrix` loop, the report
-aggregation, and the data-preserving teardown are exercised by the core test suite. The remaining surface
-— harness-generated configs, the multi-variant loop, and the polymorphic message assertion — is
-**in-progress, real-run-gated code work** tracked in
-[phase-10](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md),
-[phase-17](../../DEVELOPMENT_PLAN/phase-17-chain-driven-test-and-context-introspection.md),
-[phase-19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) (the generic builder and
-harness-generated config), and
-[phase-20](../../DEVELOPMENT_PLAN/phase-20-config-driven-demo-worked-example.md) (the demo two-variant run
-and polymorphic Playwright).
+serve` → `service run` are implemented. The `HostBootstrap.Harness` `runMatrix` loop, report aggregation,
+data-preserving teardown, harness-generated configs, multi-variant loop, and polymorphic message assertion
+are exercised by the core and demo tests and closed in
+[phase-19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
+[phase-20](../../DEVELOPMENT_PLAN/phase-20-config-driven-demo-worked-example.md).
 
 Under [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test run`
 does not drive `project up` against a pre-existing config. Instead it GENERATES the run's `<project>.dhall`

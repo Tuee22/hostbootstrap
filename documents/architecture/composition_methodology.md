@@ -268,8 +268,10 @@ it down with host `.data` preserved. This is validated end-to-end on two of the 
 Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
 (see [harbor](../engineering/harbor.md)). The **third** metal substrate, Windows (WSL2 on
-`windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is **target**: its end-to-end
-validation is **pending** phase-11 and not yet run on a Windows host (see [wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
+`windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is implemented through platform readiness
+and the managed Ubuntu-24.04 distro / in-distro Docker image build, but full end-to-end lifecycle closure
+remains phase-11 `Active` until `test run all` and `project destroy` validate teardown on Windows (see
+[wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
 under the test surface and reports `3/3 passed` on **both** Apple-Silicon/Lima (2026-06-20) and native
 Incus/Linux (2026-06-21). Every case — the two reachability checks and the Playwright e2e — runs in the
 **VM frame**: each is a pure probe folded into the VM by the self-reference lift
@@ -279,11 +281,12 @@ representation as `project up` (one fold places any leaf — a self-subcommand h
 probe — into the correct frame). This document is the canonical statement of the model the validated build
 ships.
 
-The harness's config handling is being reconciled with the §W single-representation rule above. **Today** `test run all` REUSES the existing config: `demoTestUp` drives `project up` against the pre-existing
-`.build/<project>.dhall`, and the per-case "write a test `<project>.dhall`" path was DELETED. Generating
-the run's config from a thin `test.dhall` override (via `psTestConfig`, reusing `psInit`) and deleting it
-on teardown is the **phase-19** (generic project model) target, tracked in `legacy-tracking-for-deletion.md`
-Pending. See [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
+The harness's config handling is reconciled with the §W single-representation rule above. `test run all`
+reads the thin `test.dhall`, generates each run's `<project>.dhall` via `psTestConfig` (reusing `psInit`),
+drives `project up` against that generated config, and deletes the generated config on teardown. The
+pre-existing-config flow is removed and recorded in
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
+[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
 [generic_project_model.md](generic_project_model.md).
 
 ## Foundational Principles

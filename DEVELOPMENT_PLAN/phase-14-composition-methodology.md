@@ -127,9 +127,9 @@ open work:
 - Update `composition_patterns.md` to carry the chain/Step pattern + recursive interpreter as the
   canonical cookbook; align `authoring_project_binaries.md` so a consumer authors its `chain :: cfg
   -> [Step]` (plus step actions, test suite, artifacts, Dhall vocabulary) rather than noun verbs.
-- Add a `## Current Status` to the recast docs separating the **built** lift primitive
-  (`HostBootstrap.Lift`) from the **target** `project` lifecycle command and `[Step]`-chain interpreter
-  (phase-16, not yet implemented). Do **not** present `project` as implemented.
+- Add a `## Current Status` to the recast docs. That status now reports both the built lift primitive
+  (`HostBootstrap.Lift`) and the implemented `project` lifecycle command / `[Step]`-chain interpreter;
+  phase 16 closed the interpreter after this docs recast.
 - DocValidator must continue to pass (metadata block, TL;DR on the architecture doc, resolving relative
   links, taxonomy). This is a docs-only recast; the interpreter build is phase-16.
 

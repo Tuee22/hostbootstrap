@@ -160,12 +160,11 @@ topology), so the model is always derived.
 
 ## Current Status
 
-The new behavior described above — the `service`-command service run-model (leaf-frame `service run`
-entrypoint, `ServiceType` ADT + service-handler registry, deploy via `deploy-chart` with a ConfigMap
-override, no `service down`) and the harness that **drives the real `project up`** rather than standing up
-isolated per-case clusters — is the **target**. It is not yet fully implemented; the reconciliation
-spans the reopened phases (phase-10, phase-13, phase-14, phase-15, phase-16, phase-17) and new phase-18.
-Treat the sections above as the direction of travel, not a claim of current state.
+The behavior described above is implemented. The `service`-command service run-model uses a leaf-frame
+`service run` entrypoint, a `ServiceType` ADT plus service-handler registry, deploy via `deploy-chart` with
+a ConfigMap override, and no `service down`. The harness **drives the real `project up`** under generated
+test configs rather than standing up isolated per-case clusters. The reconciliation that spanned phases
+10, 13, 14, 15, 16, 17, 18, 19, and 20 is closed in the development plan.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. `project init|up|down|destroy` drives the lifecycle; `service run`

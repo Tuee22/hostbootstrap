@@ -30,7 +30,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   fractal bootstrap (the Python bootstrapper is the metal-frame instance of provision → build-pb →
   handoff), and the deploy ≡ business-logic unification (one algebra for deployment and runtime business
   logic).
-- [architecture/generic_project_model.md](architecture/generic_project_model.md) — the **target**
+- [architecture/generic_project_model.md](architecture/generic_project_model.md) — the implemented
   generic project model (§ BB, phase 19): `hostbootstrap-core` owns no hardcoded defaults and is
   parameterized over a project's own config type (`ProjectSpec cfg tcfg`); `project init` and the harness
   share one project-owned `psInit` (DRY); the harness generates the run's `<project>.dhall` from a thin
@@ -59,7 +59,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 - [engineering/schema.md](engineering/schema.md) — the project-local `<project>.dhall` schema that
   every project binary reads beside itself.
-- [engineering/secrets.md](engineering/secrets.md) — the **target** `SecretRef` vocabulary (no plaintext
+- [engineering/secrets.md](engineering/secrets.md) — the implemented `SecretRef` vocabulary (no plaintext
   secrets in a production `<project>.dhall`) and the `test-secrets` seam a secrets-strict consumer injects
   test secrets through (§ BB, phase 19); core never resolves secrets.
 - [engineering/dhall_topology.md](engineering/dhall_topology.md) — the three-tier Dhall model, the
@@ -87,7 +87,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   Silicon pristine VM.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
-- [engineering/wsl2.md](engineering/wsl2.md) — the **target** Windows WSL2 host-provider VM, the peer of
+- [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of
   Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` prepares WSL2 platform readiness, then the
   project chain registers its own named `Ubuntu-24.04` distro and the same `deploy-VM` / `project down`
   (stop-without-delete) / `project destroy` lifecycle steps drive it.
