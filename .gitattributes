@@ -1,0 +1,56 @@
+# Repository line-ending policy.
+# Canonical storage is LF for all text; Windows scripts use CRLF.
+# This file is authoritative — do not rely on per-machine core.autocrlf.
+
+* text=auto
+
+# Source code
+*.hs     text eol=lf
+*.cabal  text eol=lf
+*.project text eol=lf
+*.dhall  text eol=lf
+*.purs   text eol=lf
+*.py     text eol=lf
+*.pyi    text eol=lf
+*.ts     text eol=lf
+*.js     text eol=lf
+
+# Docs / data / config
+*.md     text eol=lf
+*.txt    text eol=lf
+*.toml   text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.ini    text eol=lf
+*.cfg    text eol=lf
+*.xml    text eol=lf
+*.config text eol=lf
+*.sh     text eol=lf
+*.bash   text eol=lf
+
+# Extensionless / specially-named text files
+LICENSE        text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+.dockerignore  text eol=lf
+*Dockerfile    text eol=lf
+hie.yaml       text eol=lf
+
+# Windows-only scripts (forward-looking; none tracked yet)
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+
+# Binary safeguards (defensive; none tracked yet)
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary

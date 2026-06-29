@@ -37,6 +37,19 @@ accident, and duplicate output the harness already retains. If you encounter a s
 working tree (for example a leftover `deploy.log`), delete it. If a run genuinely needs a persisted
 artifact, ask the user where it should live rather than dropping a log into the repo.
 
+## Line endings
+
+The repository's canonical line ending for all text files is **LF**. Windows-specific scripts
+(`.bat`, `.cmd`, `.ps1`) use **CRLF**. The policy is defined by [`.gitattributes`](.gitattributes)
+(with [`.editorconfig`](.editorconfig) as the editor-level companion), which is **authoritative** —
+do not rely on per-machine `core.autocrlf` for correct behavior.
+
+- New source files use LF; new Windows scripts use CRLF.
+- Agents must not intentionally change line endings.
+- If a file appears changed only because of CRLF/LF conversion, **investigate before committing**
+  rather than staging the churn.
+- Avoid commits that consist only of accidental line-ending churn.
+
 ## Scope
 
 `hostbootstrap` is a dual-language repository: a Haskell `hostbootstrap-core` library plus a thin
