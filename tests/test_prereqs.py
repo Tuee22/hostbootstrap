@@ -16,8 +16,11 @@ def _completed(
     *,
     returncode: int = 0,
     stdout: str = "",
+    stderr: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr="")
+    return subprocess.CompletedProcess(
+        args=args, returncode=returncode, stdout=stdout, stderr=stderr
+    )
 
 
 def _patch_os_release(
@@ -49,10 +52,10 @@ def test_have_uses_path_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_passwordless_sudo_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 0, raising=False)
     prereqs._check_passwordless_sudo()
 
-    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 501)
+    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 501, raising=False)
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
     with pytest.raises(prereqs.PrereqError, match="sudo is required"):
         prereqs._check_passwordless_sudo()
@@ -173,6 +176,15 @@ def test_nvidia_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_nvidia_runtime()
 
 
+def test_winget_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "winget")
+    prereqs._check_winget()
+
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
+    with pytest.raises(prereqs.PrereqError, match="winget"):
+        prereqs._check_winget()
+
+
 async def test_run_linux_cpu_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
@@ -218,9 +230,21 @@ async def test_run_apple_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+async def test_run_windows_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(prereqs, "_check_winget", lambda: calls.append("winget"))
+
+    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
+
+    assert calls == ["winget"]
+    assert result.messages == ("winget: OK",)
+    assert not result.reboot_required
+
+
 async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatch) -> None:
     linux = Substrate(SubstrateName.LINUX_CPU, "amd64")
     apple = Substrate(SubstrateName.APPLE_SILICON, "arm64")
+    windows = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
     calls: list[str] = []
 
     async def _linux(_sub: Substrate) -> prereqs.DoctorResult:
@@ -231,12 +255,18 @@ async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatc
         calls.append("apple")
         return prereqs.DoctorResult(apple, ("apple",))
 
+    async def _windows(_sub: Substrate) -> prereqs.DoctorResult:
+        calls.append("windows")
+        return prereqs.DoctorResult(windows, ("windows",))
+
     monkeypatch.setattr(prereqs, "_run_linux", _linux)
     monkeypatch.setattr(prereqs, "_run_apple", _apple)
+    monkeypatch.setattr(prereqs, "_run_windows", _windows)
 
     assert (await prereqs.run_doctor(linux)).messages == ("linux",)
     assert (await prereqs.run_doctor(apple)).messages == ("apple",)
-    assert calls == ["linux", "apple"]
+    assert (await prereqs.run_doctor(windows)).messages == ("windows",)
+    assert calls == ["linux", "apple", "windows"]
 
 
 def test_run_doctor_sync_wraps_async(monkeypatch: pytest.MonkeyPatch) -> None:

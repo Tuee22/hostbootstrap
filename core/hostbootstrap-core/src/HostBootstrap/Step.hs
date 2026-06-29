@@ -61,7 +61,7 @@ data StepFrame = StepFrame
 -- 'ProjectStep' seam for project-contributed kinds. Pure and renderable, so a
 -- chain renders without acting.
 data StepKind
-  = -- | provision a provider VM (Lima on Apple Silicon, Incus on Linux)
+  = -- | provision a provider VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)
     DeployVM
   | -- | run an @ensure@ reconciler as a chain step (§ L); carries the tool name
     EnsureTool String

@@ -39,9 +39,7 @@ def test_detect_missing_meminfo_returns_none(
     assert resources.detect_host_resources() is None
 
 
-def test_detect_reads_meminfo_and_affinity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_detect_reads_meminfo_and_affinity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(resources.platform, "system", lambda: "Linux")
     # Pin sys.platform so the Linux affinity branch runs deterministically on any
     # test host (it gates on sys.platform == "linux"; see detect_host_resources).
@@ -55,9 +53,7 @@ def test_detect_reads_meminfo_and_affinity(
         "EmptyRow:\n"
         "DirectMap: notnum kB\n",
     )
-    monkeypatch.setattr(
-        resources.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False
-    )
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False)
 
     res = resources.detect_host_resources()
     assert res == resources.HostResources(

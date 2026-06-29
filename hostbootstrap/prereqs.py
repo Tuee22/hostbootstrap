@@ -2,7 +2,7 @@
 
 The thin bootstrapper asserts only what must hold before any project binary can
 be built or run; everything richer (Docker, Colima, CUDA, Homebrew packages,
-GHC, Tart) is ensured by Haskell ``ensure`` reconcilers. ``run_doctor``
+GHC, WSL2) is ensured by Haskell ``ensure`` reconcilers. ``run_doctor``
 dispatches by the detected :class:`Substrate` alone — there is no project model
 to consult.
 
@@ -11,6 +11,8 @@ Per ``documents/engineering/prerequisites.md`` the minimums are:
 * **Linux** — Ubuntu 24.04 + passwordless sudo; ``linux-gpu`` additionally
   verifies the NVIDIA container runtime is registered with Docker.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
+* **Windows** — winget as the package-manager root for the host build toolchain.
+  WSL2 is a provider dependency owned by the built binary's ``ensure wsl2`` path.
 """
 
 from __future__ import annotations
@@ -42,7 +44,8 @@ def _have(cmd: str) -> bool:
 
 
 def _check_passwordless_sudo() -> None:
-    if os.geteuid() == 0:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
         return
     if not _have("sudo"):
         raise PrereqError("sudo is required but not installed")
@@ -126,6 +129,13 @@ def _check_nvidia_runtime() -> None:
         )
 
 
+def _check_winget() -> None:
+    if not _have("winget"):
+        raise PrereqError(
+            "winget is required on Windows. Install App Installer from Microsoft Store, then re-run."
+        )
+
+
 async def _run_apple(substrate: Substrate) -> DoctorResult:
     messages: list[str] = []
     _check_macos_arm64()
@@ -153,9 +163,18 @@ async def _run_linux(substrate: Substrate) -> DoctorResult:
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 
+async def _run_windows(substrate: Substrate) -> DoctorResult:
+    messages: list[str] = []
+    _check_winget()
+    messages.append("winget: OK")
+    return DoctorResult(substrate=substrate, messages=tuple(messages))
+
+
 async def run_doctor(substrate: Substrate) -> DoctorResult:
     if substrate.name is SubstrateName.APPLE_SILICON:
         return await _run_apple(substrate)
+    if substrate.is_windows:
+        return await _run_windows(substrate)
     return await _run_linux(substrate)
 
 

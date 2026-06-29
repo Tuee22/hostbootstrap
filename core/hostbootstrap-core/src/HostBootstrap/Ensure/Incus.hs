@@ -31,9 +31,10 @@ import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo))
 import HostBootstrap.Substrate
   ( Substrate,
-    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu),
+    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu),
     isAppleSilicon,
     isLinux,
+    renderSubstrateName,
     substrateName,
   )
 import System.Environment (getEnvironment)
@@ -100,6 +101,10 @@ installSteps sub = case substrateName sub of
       ]
   LinuxCpu -> Right linuxSteps
   LinuxGpu -> Right linuxSteps
+  WindowsCpu ->
+    Left ("incus is not the Windows host-provider; use the WSL2 provider on " ++ renderSubstrateName WindowsCpu)
+  WindowsGpu ->
+    Left ("incus is not the Windows host-provider; use the WSL2 provider on " ++ renderSubstrateName WindowsGpu)
   where
     linuxSteps =
       [ InstallStep Sudo ["apt-get", "install", "-y", "incus"],

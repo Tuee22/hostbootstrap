@@ -1,3 +1,6 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- | The closed enumeration of external tools and their absolute-path
 -- resolution.
 --
@@ -18,8 +21,9 @@ module HostBootstrap.HostTool
   )
 where
 
-import System.Directory (findExecutable)
-import System.FilePath (isAbsolute)
+import Control.Exception (IOException, catch)
+import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
+import System.FilePath (isAbsolute, (</>))
 
 -- | The closed set of external tools @hostbootstrap-core@ resolves.
 data HostTool
@@ -33,8 +37,12 @@ data HostTool
   | Helm
   | Kind
   | NvidiaSmi
+  | Nvcc
+  | PowerShell
+  | Bcdedit
   | Sysctl
-  | Tart
+  | Winget
+  | Wsl
   | Sudo
   | XcodeSelect
   | Incus
@@ -57,8 +65,12 @@ toolCommandName Kubectl = "kubectl"
 toolCommandName Helm = "helm"
 toolCommandName Kind = "kind"
 toolCommandName NvidiaSmi = "nvidia-smi"
+toolCommandName Nvcc = "nvcc"
+toolCommandName PowerShell = "powershell.exe"
+toolCommandName Bcdedit = "bcdedit"
 toolCommandName Sysctl = "sysctl"
-toolCommandName Tart = "tart"
+toolCommandName Winget = "winget"
+toolCommandName Wsl = "wsl"
 toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"
 toolCommandName Incus = "incus"
@@ -80,8 +92,41 @@ mkAbsExe fp
 -- an absolute path when the command is found on the search path; the result is
 -- re-validated through 'mkAbsExe' so a non-absolute hit is rejected.
 discover :: HostTool -> IO (Maybe AbsExe)
+#ifdef mingw32_HOST_OS
+discover Wsl = firstExisting ["C:\\Windows\\System32\\wsl.exe"]
+discover Bcdedit = firstExisting ["C:\\Windows\\System32\\bcdedit.exe"]
+#endif
 discover tool = do
   found <- findExecutable (toolCommandName tool)
-  pure $ case found of
-    Nothing -> Nothing
-    Just fp -> either (const Nothing) Just (mkAbsExe fp)
+  case found of
+    Just fp -> pure (either (const Nothing) Just (mkAbsExe fp))
+    Nothing -> discoverFallback tool
+
+discoverFallback :: HostTool -> IO (Maybe AbsExe)
+#ifdef mingw32_HOST_OS
+discoverFallback Nvcc = discoverWindowsNvcc
+discoverFallback _ = pure Nothing
+
+discoverWindowsNvcc :: IO (Maybe AbsExe)
+discoverWindowsNvcc = do
+  let root = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA"
+  exists <- doesDirectoryExist root
+  if not exists
+    then pure Nothing
+    else do
+      versions <- safeListDirectory root
+      firstExisting [root </> version </> "bin" </> "nvcc.exe" | version <- reverse versions]
+#else
+discoverFallback _ = pure Nothing
+#endif
+
+safeListDirectory :: FilePath -> IO [FilePath]
+safeListDirectory path = listDirectory path `catch` \(_ :: IOException) -> pure []
+
+firstExisting :: [FilePath] -> IO (Maybe AbsExe)
+firstExisting [] = pure Nothing
+firstExisting (path : paths) = do
+  exists <- doesFileExist path
+  if exists
+    then pure (either (const Nothing) Just (mkAbsExe path))
+    else firstExisting paths

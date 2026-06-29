@@ -53,7 +53,7 @@ running kind/Helm leaves.
 
 The VM hop is provider-backed: on Apple Silicon the demo uses a Lima VM (`limactl shell <instance> -- …`)
 started without Lima-managed containerd, native Linux uses an Incus VM (`incus exec <vm> -- …`), and on
-Windows (planned) a WSL2 Ubuntu-24.04 distro (`wsl -d <distro> -- …`). The
+Windows a WSL2 Ubuntu-24.04 distro (`wsl -d <distro> -- …`). The
 project-container hop is `docker run --rm <image> …`, whose `ENTRYPOINT` is the binary. Each descent
 runs the same `project up` interpreter over the same chain.
 
@@ -82,10 +82,13 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 >
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
 > worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done`. The original scope (phases 0 through 21) is `Done`; **phases 2, 3, 6, 9, and 11 are now reopened
-> (`Active`)** to weave in **Windows as the third metal substrate** (a native `hostbootstrap.exe`, WSL2 as
-> the Lima/Incus peer, and CUDA as a headless host build) and to **retire the latent Tart reconciler** —
-> all currently target work, tracked in
+> `Done`. The original scope (phases 0 through 21) is `Done` except **phase 11**, which remains
+> `Active`: the WSL2 provider is implemented and unit-validated, and `ensure wsl2` has reconciled the
+> missing Windows hypervisor launch setting (`hypervisorlaunchtype Auto`), but the current host still
+> reports `HyperVisorPresent = False`; the remaining work is reboot-gated real Windows/WSL2 provider
+> validation. The Windows third-substrate work for phases
+> 2, 3, and 9 is closed: native `hostbootstrap.exe` bootstrap, CUDA as a headless host build, and Windows
+> host-capacity / WSL2 sizing are implemented and validated. This status is tracked in
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
@@ -100,12 +103,12 @@ fail-fast sequence:
 
 1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
    (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
-   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows (target): winget, plus the
-   virtualization / WSL2 feature the nested WSL2 provider needs. Missing minimums stop the run with a clear
+   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows (target): winget. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
-2. **Ensure the host build toolchain.** The prerequisites needed to build the binary host-native — on
-   Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows (target) winget → GHC + MSVC.
-3. **Build the project binary host-native** into `./.build/<project>`. The build is the same on every
+2. **Ensure the host Haskell build toolchain and package index.** The prerequisites needed to build the
+   binary host-native — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows
+   (target) winget-rooted GHCup → GHC/Cabal; then `cabal update`.
+3. **Build the project binary host-native** into `./.build/<binary>`. The build is the same on every
    substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
    general host such as Apple silicon.
 4. **Exec the binary**, forwarding the requested command. If the command needs config and
@@ -125,9 +128,9 @@ The host binary is built **host-native** on every substrate — the same way eve
 Linux ELF cannot exec on a general host such as Apple silicon, so there is no build-in-container,
 copy-out path:
 
-- The Python bootstrapper ensures the host toolchain (on Apple, `ghcup` via Homebrew; the equivalent
-  on Linux; on Windows (target) winget → GHC + MSVC), builds the binary host-native into
-  `./.build/<project>`, and execs it.
+- The Python bootstrapper ensures the host Haskell toolchain and Cabal package index (on Apple, `ghcup`
+  via Homebrew; the equivalent on Linux; on Windows (target) winget-rooted GHCup → GHC/Cabal), builds the binary host-native into
+  `./.build/<binary>`, and execs it.
 - **Headless host build for platform-locked artifacts (planned).** On Windows the target shape builds
   CUDA artifacts on the bare host (`ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC via
   winget), stages them into the cluster, and never runs the workload in a build VM — composition pattern
@@ -312,7 +315,7 @@ contributed workload steps, and `project up` interprets it recursively:
 | # | Step | Frame | Role |
 |---|---|---|---|
 | 1 | host-pb | host (metal) | provision the host frame, build the pb, hand off `pb project up` (the Python bootstrapper's metal-frame instance) |
-| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux, WSL2 distro on Windows (planned) — the cordon / isolation wall |
+| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux, WSL2 distro on Windows — the cordon / isolation wall |
 | 3 | copy source + ensure GHC in VM | VM | stage the source into the VM and reconcile the GHC toolchain there |
 | 4 | build pb in VM | VM | build the project binary host-native **in** the VM |
 | 5 | ensure docker in VM | VM | reconcile Docker inside the guest (not supplied by Lima's containerd) |
@@ -339,8 +342,9 @@ cluster" path. The doctrine is stated canonically in
 > including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
 > both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
-> (phases 0 through 21) is `Done`. Phases 2, 3, 6, 9, and 11 are now reopened (`Active`) for the Windows
-> third-substrate and Tart-retirement work (target); see
+> (phases 0 through 21) is `Done` except phase 11, which is `Active` for the remaining reboot-gated real
+> WSL2 provider validation after `ensure wsl2` set `hypervisorlaunchtype Auto` while the current host
+> still reports `HyperVisorPresent = False`; see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up

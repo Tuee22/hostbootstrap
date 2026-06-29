@@ -102,7 +102,7 @@ is exercised during real bootstrap runs.
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
 | `cudawin` | `nvcc -V` resolves and the NVIDIA driver reports a GPU on the Windows host | windows-gpu: `winget install` the NVIDIA Windows driver, the CUDA Toolkit (`Nvidia.CUDA`), and the MSVC C++ build tools (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host compiler). |
-| `wsl2` | the WSL2 feature is enabled and the base `Ubuntu-24.04` distro is registered (usable) | windows: enable WSL2 + Virtual Machine Platform (`wsl --install --no-distribution`), then `wsl --import` a pristine `Ubuntu-24.04` distro; a first enable may require a host reboot. |
+| `wsl2` | firmware virtualization is present, the Windows hypervisor can launch, and WSL2 platform readiness is usable | windows: install `Microsoft.WSL`, enable WSL2 + Virtual Machine Platform (`wsl --install --no-distribution`), ensure Windows hypervisor launch readiness (`hypervisorlaunchtype auto` or equivalent verified state), and set default WSL version 2; feature or boot-state changes return `NeedsReboot`. A project-owned `deploy-VM` step registers that project's own named Ubuntu-24.04 distro. |
 | `incus` | VM-capable **and** reachable (usable): Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
 
 ## Provider Reconcilers Reach "Usable"
@@ -137,7 +137,7 @@ leave the substrate reachable, the lift's job is to carry the credential.
 | `ensure-homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so the step verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: readies the Windows host CUDA build stack (driver + CUDA Toolkit + MSVC) for the headless host build; it has no meaning off a Windows GPU host. |
-| `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables the WSL2 feature and imports the pristine `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
+| `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP, reconciles Windows hypervisor launch readiness, and registers the `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
 | `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
 `ensure-incus` is the **first cross-substrate reconciler** — its applicability predicate spans both
@@ -180,12 +180,9 @@ remains a library call, not a surfaced command.
 
 ## Current Status
 
-The Apple Silicon and Linux reconcilers above are the running set. The **Windows** entries —
-`windows-cpu`/`windows-gpu` substrate detection, `ensure-cudawin` (the headless host-build CUDA stack),
-and `ensure-wsl2` (the Windows VM frame) — are **target**, owned by the reopened development-plan phases
-([phase 2](../../DEVELOPMENT_PLAN/phase-2-host-tools-and-config.md),
-[phase 3](../../DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md),
-[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)). The former `ensure-tart` reconciler
-is dropped from this contract; its **code** removal is pending the phase-3 retirement sprint and is
-tracked in
+The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-validated.
+Windows substrate detection and `ensure-cudawin` are closed in phases 2 and 3. The Windows VM-provider
+reconciler `ensure-wsl2` is implemented but remains Phase 11 `Active` for the OS-level hypervisor-launch
+readiness branch and the real WSL2 provider lifecycle run. The former `ensure-tart` reconciler is dropped
+from this contract and tracked as removed in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).

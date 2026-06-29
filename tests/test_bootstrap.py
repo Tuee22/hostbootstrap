@@ -12,11 +12,13 @@ from hostbootstrap.substrate import Substrate, SubstrateName
 APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
 LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, "amd64")
 LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, "amd64")
+WINDOWS_CPU = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
 
 
 def _project(project_root: Path) -> bootstrap.ProjectBuildSpec:
     return bootstrap.ProjectBuildSpec(
         project="demo",
+        executable="demo",
         cabal_file=project_root / "demo.cabal",
     )
 
@@ -28,10 +30,19 @@ def _project(project_root: Path) -> bootstrap.ProjectBuildSpec:
 
 def test_discover_project_derives_name_from_single_cabal_file(tmp_path: Path) -> None:
     cabal = tmp_path / "hostbootstrap-demo.cabal"
-    cabal.touch()
+    cabal.write_text(
+        """
+name: hostbootstrap-demo
+
+executable hostbootstrap
+  main-is: Main.hs
+""".strip(),
+        encoding="utf-8",
+    )
 
     assert bootstrap.discover_project(tmp_path) == bootstrap.ProjectBuildSpec(
         project="hostbootstrap-demo",
+        executable="hostbootstrap",
         cabal_file=cabal,
     )
 
@@ -46,6 +57,31 @@ def test_discover_project_rejects_multiple_cabal_files(tmp_path: Path) -> None:
     (tmp_path / "b.cabal").touch()
 
     with pytest.raises(bootstrap.ProjectDiscoveryError, match="multiple .cabal files"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_rejects_missing_executable_stanza(tmp_path: Path) -> None:
+    (tmp_path / "demo.cabal").write_text("name: demo\n", encoding="utf-8")
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="no executable stanza"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_rejects_multiple_executable_stanzas(tmp_path: Path) -> None:
+    (tmp_path / "demo.cabal").write_text(
+        """
+name: demo
+
+executable first
+  main-is: First.hs
+
+executable second
+  main-is: Second.hs
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="multiple executable stanzas"):
         bootstrap.discover_project(tmp_path)
 
 
@@ -85,23 +121,66 @@ def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
     )
 
 
+def test_toolchain_ensure_steps_windows() -> None:
+    assert bootstrap.toolchain_ensure_steps(WINDOWS_CPU) == (
+        bootstrap.ToolchainStep(
+            probe=(bootstrap._WINDOWS_GHCUP, "--version"),
+            install=(
+                bootstrap._POWERSHELL,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                bootstrap._GHCUP_WINDOWS_BOOTSTRAP,
+            ),
+        ),
+        bootstrap.ToolchainStep(
+            probe=(bootstrap._WINDOWS_GHCUP, "whereis", "ghc", "9.12.4"),
+            install=(bootstrap._WINDOWS_GHCUP, "install", "ghc", "9.12.4", "--set"),
+        ),
+        bootstrap.ToolchainStep(
+            probe=(bootstrap._WINDOWS_GHCUP, "whereis", "cabal"),
+            install=(bootstrap._WINDOWS_GHCUP, "install", "cabal", "--set"),
+        ),
+    )
+
+
+def test_windows_toolchain_env_prepends_installed_tool_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap.os, "name", "nt")
+    monkeypatch.setenv("PATH", "C:/existing")
+
+    env = bootstrap._toolchain_env()
+
+    assert env["PATH"].startswith("C:\\ghcup\\bin;C:\\cabal\\bin;")
+    assert env["PATH"].endswith("C:/existing")
+
+
 def test_native_build_command() -> None:
     spec = _project(Path("/proj"))
+    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_build_command(spec, Path("/proj")) == (
-        "cabal",
+        cabal,
         "--store-dir",
-        "/proj/.build/cabal-store",
+        str(Path("/proj") / ".build/cabal-store"),
         "build",
         "exe:demo",
     )
 
 
+def test_cabal_update_command() -> None:
+    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
+    assert bootstrap.cabal_update_command() == (cabal, "update")
+
+
 def test_native_listbin_command() -> None:
     spec = _project(Path("/proj"))
+    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_listbin_command(spec, Path("/proj")) == (
-        "cabal",
+        cabal,
         "--store-dir",
-        "/proj/.build/cabal-store",
+        str(Path("/proj") / ".build/cabal-store"),
         "list-bin",
         "exe:demo",
     )
@@ -109,9 +188,10 @@ def test_native_listbin_command() -> None:
 
 def test_binary_path_and_exec_argv() -> None:
     spec = _project(Path("/proj"))
-    assert bootstrap.binary_path(spec, Path("/proj")) == Path("/proj/.build/demo")
+    expected = Path("/proj") / ".build" / ("demo.exe" if bootstrap.os.name == "nt" else "demo")
+    assert bootstrap.binary_path(spec, Path("/proj")) == expected
     assert bootstrap.exec_argv(spec, Path("/proj"), ("play", "--seed", "7")) == (
-        "/proj/.build/demo",
+        str(expected),
         "play",
         "--seed",
         "7",
@@ -132,9 +212,9 @@ def _patch_seams(
 ) -> None:
     monkeypatch.setattr(bootstrap.substrate, "detect", lambda: sub)
 
-    async def _fake_doctor(detected: Substrate) -> object:
+    async def _fake_doctor(detected: Substrate) -> bootstrap.prereqs.DoctorResult:
         doctored.append(detected)
-        return None
+        return bootstrap.prereqs.DoctorResult(detected, ("ok",))
 
     def _fake_execv(path: str, argv: list[str]) -> None:
         execed.append([path, *argv[1:]])
@@ -159,12 +239,13 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert (tmp_path / ".build").is_dir()
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
-    assert execed == [[str(tmp_path / ".build/demo"), "play"]]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "play"]]
 
 
 async def test_build_binary_builds_without_exec_or_dhall(
@@ -185,6 +266,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
     assert recorded_commands == [
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
@@ -206,11 +288,12 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path)
 
-    assert recorded_commands[-2:] == [
+    assert recorded_commands[-3:] == [
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert execed == [[str(tmp_path / ".build/demo")]]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path))]]
 
 
 async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
@@ -230,10 +313,11 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "--help"]]
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +342,11 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert execed == [[str(tmp_path / ".build/demo"), "play"]]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "play"]]
 
 
 async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
@@ -283,10 +368,11 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
         ("ghcup", "install", "cabal", "--set"),
+        bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
-    assert execed == [[str(tmp_path / ".build/demo"), "--help"]]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "--help"]]
 
 
 # ---------------------------------------------------------------------------

@@ -1,15 +1,28 @@
+{-# LANGUAGE CPP #-}
+
 module LifecycleSpec (tests) where
 
 import Data.List (isInfixOf)
 import HostBootstrap.Cluster.Lifecycle
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
+rootPath :: FilePath
+rootPath = rootDir </> "demo"
+
+rootDir :: FilePath
+#ifdef mingw32_HOST_OS
+rootDir = "C:\\srv"
+#else
+rootDir = "/srv"
+#endif
+
 prod :: ClusterPlan
-prod = resolvePlan "demo" "/srv/demo" Production
+prod = resolvePlan "demo" rootPath Production
 
 test1 :: ClusterPlan
-test1 = resolvePlan "demo" "/srv/demo" (TestCase "case1")
+test1 = resolvePlan "demo" rootPath (TestCase "case1")
 
 tests :: TestTree
 tests =
@@ -24,14 +37,14 @@ tests =
 
 planCases :: [TestTree]
 planCases =
-  [ testCase "production: fixed name and .data path" $ do
+    [ testCase "production: fixed name and .data path" $ do
       clusterName prod @?= "demo"
-      dataPath prod @?= "/srv/demo/.data"
-      derivedPaths prod @?= ["/srv/demo/.cluster/demo"],
+      dataPath prod @?= rootPath </> ".data"
+      derivedPaths prod @?= [rootPath </> ".cluster" </> "demo"],
     testCase "test: per-case isolated name and path" $ do
       clusterName test1 @?= "demo-test-case1"
-      dataPath test1 @?= "/srv/demo/.test_data/case1"
-      derivedPaths test1 @?= ["/srv/demo/.cluster/demo-test-case1"]
+      dataPath test1 @?= rootPath </> ".test_data" </> "case1"
+      derivedPaths test1 @?= [rootPath </> ".cluster" </> "demo-test-case1"]
   ]
 
 hostPortCases :: [TestTree]
@@ -74,7 +87,7 @@ statusCases =
       let report = statusReport prod True
       assertBool "names the cluster" ("demo" `isInfixOf` report)
       assertBool "marks it running" ("(running)" `isInfixOf` report)
-      assertBool "shows preserved .data" ("/srv/demo/.data (preserved)" `isInfixOf` report),
+      assertBool "shows preserved .data" (((rootPath </> ".data") ++ " (preserved)") `isInfixOf` report),
     testCase "absent cluster reports (absent), still preserving .data" $ do
       let report = statusReport prod False
       assertBool "marks it absent" ("(absent)" `isInfixOf` report)

@@ -137,9 +137,12 @@ def test_installed_vcs_source_wraps_missing_distribution(
 
 
 def test_parse_ls_remote_skips_peeled_tag_line() -> None:
-    assert self_update.parse_ls_remote(
-        "d" * 40 + " refs/tags/v1^{}\n" + "c" * 40 + " refs/heads/main\n"
-    ) == "c" * 40
+    assert (
+        self_update.parse_ls_remote(
+            "d" * 40 + " refs/tags/v1^{}\n" + "c" * 40 + " refs/heads/main\n"
+        )
+        == "c" * 40
+    )
     with pytest.raises(self_update.SelfUpdateError, match="remote ref"):
         self_update.parse_ls_remote("")
 

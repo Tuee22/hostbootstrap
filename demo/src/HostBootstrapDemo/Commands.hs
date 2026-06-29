@@ -40,6 +40,7 @@ module HostBootstrapDemo.Commands (
     demoTestSuite,
     demoVM,
     demoLimaVM,
+    demoManagedVMName,
     demoGuardPrefix,
 )
 where
@@ -47,6 +48,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (finally)
 import Control.Monad (unless)
+import Data.Char (isAsciiUpper)
 import Data.List (intercalate, isPrefixOf, isSuffixOf)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
@@ -57,6 +59,7 @@ import HostBootstrap.Cluster.Cordon (
     gibibytes,
     incusSizingArgs,
     limaSizingArgs,
+    wsl2SizingArgs,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
 import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
@@ -66,11 +69,12 @@ import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
 import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin)
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as EnsureLima
+import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo, Wsl), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs, startVMArgs, stopVMArgs)
-import HostBootstrap.Lift (ContainerLift (..), LiftContext, LiftLeaf (..), inContainer, inLimaVM, inVM, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ContainerLift (..), LiftContext, LiftLeaf (..), inContainer, inLimaVM, inVM, inWsl2VM, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as LimaVM
 import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
@@ -86,7 +90,9 @@ import HostBootstrap.Step (
     exposePortStep,
     projectStep,
  )
-import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, renderArch, substrateArch)
+import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch)
+import HostBootstrap.Wsl2 (Wsl2VM (..))
+import qualified HostBootstrap.Wsl2 as Wsl2
 import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
@@ -201,7 +207,7 @@ own segment, then hands off @project up@ one level down via 'demoFrameContext'.
 demoChain :: ProjectConfig -> [Step]
 demoChain _ =
     -- host-orchestrator-0 (metal): provision the VM, build the pb (#2) + image (#3) in it.
-    [ deployVMStep "ensure the VM provider (Lima on Apple Silicon, Incus on Linux)" demoMetalFrame (const runVmEnsure)
+    [ deployVMStep "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (const runVmEnsure)
     , deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const runVmUp)
     , buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (const runVmBootstrap)
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
@@ -249,6 +255,7 @@ providers — § U).
 demoVMFrameContext :: Substrate -> LiftContext
 demoVMFrameContext sub
     | isAppleSilicon sub = inLimaVM demoLimaVM localContext
+    | isWindows sub = inWsl2VM demoWsl2VM localContext
     | otherwise = inVM demoVM localContext
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): mint the project-container
@@ -259,7 +266,7 @@ container, just before the @docker run … project up@ handoff. Idempotent.
 mintContainerConfig :: HostConfig -> IO ()
 mintContainerConfig _ = demoConfigContext Context.ContextCreationCommand [] $ \parentCfg ctx -> do
     -- The container's source root is @/workspace/demo@ (the Dockerfile's @COPY demo
-    -- /workspace/demo@ + @WORKDIR@), NOT the VM's @/tmp/hostbootstrap/demo@ — the
+    -- /workspace/demo@ + @WORKDIR@), NOT the VM's @/root/hostbootstrap/demo@ — the
     -- container-frame steps @cd@ here for @./chart@ etc.
     let containerCtx = Context.deriveContainerContext ctx (T.pack containerSourceRoot)
         containerCfg = projectConfigFromContext (dockerfile parentCfg) (deploy parentCfg) (message parentCfg) containerCtx
@@ -641,20 +648,28 @@ when a project-local spec imports @\@playwright/test@ without a local
 baseNodeModulesPath :: String
 baseNodeModulesPath = "/opt/build/node/global/lib/node_modules"
 
-{- | The managed demo VM: a name carrying the delete-guard prefix and the
-pristine @ubuntu/24.04@ image the from-zero bootstrap starts from.
+{- | The managed demo VM name is composed from the project identity. All
+providers use the same name, and destructive teardown is guarded by the project
+name prefix, so hostbootstrap-demo never targets a user's unrelated VM or WSL2
+distro.
 -}
+demoManagedVMName :: String
+demoManagedVMName = demoProject ++ "-vm"
+
 demoVM :: IncusVM
-demoVM = IncusVM "hostbootstrap-demo-vm" "images:ubuntu/24.04"
+demoVM = IncusVM demoManagedVMName "images:ubuntu/24.04"
 
 demoLimaVM :: LimaVM
-demoLimaVM = LimaVM "hostbootstrap-demo-vm"
+demoLimaVM = LimaVM demoManagedVMName
+
+demoWsl2VM :: Wsl2VM
+demoWsl2VM = Wsl2VM demoManagedVMName
 
 {- | The name-prefix delete-guard for the demo's VM namespace; @vm down@ will
 only destroy a VM/profile whose name starts with this.
 -}
 demoGuardPrefix :: String
-demoGuardPrefix = "hostbootstrap-demo"
+demoGuardPrefix = demoProject
 
 {- | The demo's service-handler registry (§ AA): the long-running @web@ role
 @service run web@ dispatches to (the former @web serve@ verb). The @service run@
@@ -682,19 +697,25 @@ resolveHostConfig = do
 data DemoVMProvider
     = AppleLimaVM LimaVM
     | LinuxIncusVM IncusVM
+    | WindowsWsl2VM Wsl2VM
 
 demoVMProvider :: HostConfig -> IO DemoVMProvider
 demoVMProvider cfg
     | isAppleSilicon (hcSubstrate cfg) = pure (AppleLimaVM demoLimaVM)
     | isLinux (hcSubstrate cfg) = pure (LinuxIncusVM demoVM)
+    | isWindows (hcSubstrate cfg) = pure (WindowsWsl2VM demoWsl2VM)
     | otherwise = die "vm: unsupported substrate"
 
 demoVMName :: DemoVMProvider -> String
 demoVMName (AppleLimaVM vm) = limaName vm
 demoVMName (LinuxIncusVM vm) = vmName vm
+demoVMName (WindowsWsl2VM vm) = Wsl2.wsl2Distro vm
 
 vmRepoRoot :: FilePath
-vmRepoRoot = "/tmp/hostbootstrap"
+vmRepoRoot = "/root/hostbootstrap"
+
+vmDemoRoot :: FilePath
+vmDemoRoot = vmRepoRoot ++ "/demo"
 
 {- | Where the project source lives inside the project container (the Dockerfile's
 @COPY demo /workspace/demo@ + @WORKDIR@). The container-frame chain steps run
@@ -716,6 +737,7 @@ runInDemoVMStdin cfg provider script input =
     case provider of
         AppleLimaVM vm -> runOrDieStdin cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script]) input
         LinuxIncusVM vm -> runOrDieStdin cfg Incus (execVMArgs vm ["bash", "-lc", script]) input
+        WindowsWsl2VM vm -> runOrDieStdin cfg Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) ["bash", "-lc", script]) input
 
 {- | Run a resolved host tool, streaming its stdout and dying with the captured
 stderr on a non-zero exit.
@@ -803,11 +825,16 @@ Linux. The IO behind the dissolved @vm ensure@ verb.
 runVmEnsure :: IO ()
 runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
     cfg <- resolveHostConfig
-    if isAppleSilicon (hcSubstrate cfg)
-        then do
-            runEnsure EnsureLima.reconciler
-            putStrLn "vm ensure: Apple Silicon uses a Lima VM (no Incus nested VM)"
-        else ensureIncusProvider
+    case () of
+        _
+            | isAppleSilicon (hcSubstrate cfg) -> do
+                runEnsure EnsureLima.reconciler
+                putStrLn "vm ensure: Apple Silicon uses a Lima VM (no Incus nested VM)"
+            | isLinux (hcSubstrate cfg) -> ensureIncusProvider
+            | isWindows (hcSubstrate cfg) -> do
+                runEnsure EnsureWsl2.reconciler
+                putStrLn "vm ensure: Windows uses a WSL2 Ubuntu-24.04 distro"
+            | otherwise -> die "vm ensure: unsupported substrate"
 
 {- | @demo vm up@: read the active context envelope, derive the VM sizing from
 the one canonical parser, and launch the VM cordoned to it (cordon #1). Apple
@@ -851,6 +878,15 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
             putStrLn ("vm up: waiting for the " ++ vmName vm ++ " guest agent to come up")
             waitVMAgent cfg vm 60
             putStrLn ("vm up: " ++ vmName vm ++ " is up")
+        WindowsWsl2VM vm -> do
+            exists <- wsl2DistroExists cfg vm
+            unless exists $ do
+                sizing <- either die pure (wsl2SizingArgs (envelopeOfResources lifecycleResources))
+                putStrLn ("vm up: registering WSL2 distro " ++ Wsl2.wsl2Distro vm ++ " (cordon #1: the VM is the wall, sizing " ++ show sizing ++ ")")
+                runOrDie cfg Wsl ["--install", "-d", "Ubuntu-24.04", "--name", Wsl2.wsl2Distro vm, "--no-launch"]
+            putStrLn ("vm up: waiting for " ++ Wsl2.wsl2Distro vm ++ " to answer")
+            waitWsl2VM cfg vm 60
+            putStrLn ("vm up: " ++ Wsl2.wsl2Distro vm ++ " is up")
   where
     toLaunchFlag a
         | "root," `isPrefixOf` a = ["-d", a]
@@ -870,6 +906,14 @@ incusInstanceExists cfg vm = do
     r <- runTool cfg Incus ["list", "--format", "csv", "-c", "n"]
     pure $ case r of
         Right (ExitSuccess, out, _) -> vmName vm `elem` lines out
+        _ -> False
+
+-- | Whether a WSL2 distro of this name already exists.
+wsl2DistroExists :: HostConfig -> Wsl2VM -> IO Bool
+wsl2DistroExists cfg vm = do
+    r <- runTool cfg Wsl ["--list", "--quiet"]
+    pure $ case r of
+        Right (ExitSuccess, out, _) -> Wsl2.wsl2Distro vm `elem` words (Wsl2.normalizeWslText out)
         _ -> False
 
 requireDemoLifecycleResources :: Resources -> Either String ()
@@ -923,8 +967,16 @@ waitLimaVM cfg vm n = do
         Right (ExitSuccess, _, _) -> pure ()
         _ -> threadDelay 2000000 >> waitLimaVM cfg vm (n - 1)
 
+waitWsl2VM :: HostConfig -> Wsl2VM -> Int -> IO ()
+waitWsl2VM _ vm 0 = die ("vm up: " ++ Wsl2.wsl2Distro vm ++ " did not become ready")
+waitWsl2VM cfg vm n = do
+    r <- runTool cfg Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) ["true"])
+    case r of
+        Right (ExitSuccess, _, _) -> pure ()
+        _ -> threadDelay 2000000 >> waitWsl2VM cfg vm (n - 1)
+
 {- | @demo vm pristine-bootstrap@: the from-zero first-run flow inside the VM
-(the project source is staged at @/tmp/hostbootstrap@; see the runbook).
+(the project source is staged at @/root/hostbootstrap@; see the runbook).
 Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
 pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
 @hostbootstrap run@ — which asserts the host minimums, ensures the toolchain,
@@ -963,8 +1015,11 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
         "pipx install the local hostbootstrap CLI"
         ("pipx install --force " ++ shellQuote vmRepoRoot)
     vmStep
-        "hostbootstrap run (build #2: the demo binary, host-native in the VM)"
-        (". \"$HOME/.ghcup/env\"; export PATH=\"$HOME/.local/bin:$PATH\"; cd " ++ shellQuote (vmRepoRoot ++ "/demo") ++ " && hostbootstrap run -- context schema")
+        "hostbootstrap build (build #2: the demo binary, host-native in the VM)"
+        ( "export PATH=/root/.ghcup/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; cd "
+            ++ shellQuote (vmRepoRoot ++ "/demo")
+            ++ " && hostbootstrap build && test -x .build/hostbootstrap-demo"
+        )
     vmStep
         "install the in-VM pb + its sibling vm-orchestrator-1 config at /usr/local/bin (the metal->VM handoff SelfRef path)"
         ( "sudo install -m 0755 "
@@ -994,24 +1049,25 @@ writeAndCopyVMConfig :: HostConfig -> DemoVMProvider -> ProjectConfig -> Context
 writeAndCopyVMConfig cfg provider parentCfg ctx = do
     let hostRoot = T.unpack (Context.sourceRoot ctx)
         localPath = hostRoot </> ".build" </> "hostbootstrap-demo.vm.dhall"
-        remotePath = vmRepoRoot </> "demo" </> ".build" </> "hostbootstrap-demo.dhall"
+        remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
         providerKind =
             case provider of
                 AppleLimaVM _ -> Context.LimaVMProvider
                 LinuxIncusVM _ -> Context.IncusVMProvider
+                WindowsWsl2VM _ -> Context.Wsl2VMProvider
         vmCfg =
             projectConfigFromContext
                 (dockerfile parentCfg)
                 (deploy parentCfg)
                 (message parentCfg)
-                (Context.deriveVMContextWithProvider providerKind ctx (T.pack (vmRepoRoot </> "demo")))
+                (Context.deriveVMContextWithProvider providerKind ctx (T.pack vmDemoRoot))
     createDirectoryIfMissing True (hostRoot </> ".build")
     writeProjectConfigFile localPath vmCfg
     runInDemoVM
         cfg
         provider
         ( "mkdir -p "
-            ++ shellQuote (vmRepoRoot </> "demo" </> ".build")
+            ++ shellQuote (vmDemoRoot ++ "/.build")
             ++ " && sudo mkdir -p /run/hostbootstrap"
             ++ " && printf %s "
             ++ shellQuote (demoVMName provider)
@@ -1027,12 +1083,12 @@ demoBaseImage :: HostConfig -> String
 demoBaseImage cfg =
     "docker.io/tuee22/hostbootstrap:basecontainer-cpu-" ++ renderArch (substrateArch (hcSubstrate cfg))
 
-{- | Stage the project working tree into the VM at @/tmp/hostbootstrap@ — the
-source @pipx install@ and the in-VM @hostbootstrap run@ build from. The host
+{- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
+source @pipx install@ and the in-VM @hostbootstrap build@ build from. The host
 working tree (uncommitted changes included) is tarred minus build/VCS
 artifacts, pushed as a single file (@pushFileArgs@), and extracted in the VM.
 Without this step the from-zero bootstrap has nothing to install — the runbook
-documents the source as "staged at @/tmp/hostbootstrap@", and this is where
+documents the source as "staged at @/root/hostbootstrap@", and this is where
 that staging happens.
 -}
 stageSource :: HostConfig -> DemoVMProvider -> FilePath -> IO ()
@@ -1085,6 +1141,8 @@ stageSource cfg provider sourceRoot = do
             AppleLimaVM vm -> do
                 runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
                 runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
+            WindowsWsl2VM _ ->
+                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf " ++ shellQuote (windowsPathToWslMount tarball) ++ " -C " ++ shellQuote vmRepoRoot)
         )
         `finally` removeFile tarball
 
@@ -1093,6 +1151,30 @@ copyFileToDemoVM cfg provider localPath remotePath =
     case provider of
         LinuxIncusVM vm -> runOrDie cfg Incus (pushFileArgs vm localPath remotePath)
         AppleLimaVM vm -> runOrDie cfg Lima (LimaVM.copyToVMArgs vm localPath remotePath)
+        WindowsWsl2VM _ ->
+            runInDemoVM
+                cfg
+                provider
+                ( "mkdir -p "
+                    ++ shellQuote (takeDirectory remotePath)
+                    ++ " && cp "
+                    ++ shellQuote (windowsPathToWslMount localPath)
+                    ++ " "
+                    ++ shellQuote remotePath
+                )
+
+windowsPathToWslMount :: FilePath -> FilePath
+windowsPathToWslMount path =
+    case path of
+        drive : ':' : rest ->
+            "/mnt/" ++ [toLowerAscii drive] ++ map slash rest
+        _ -> map slash path
+  where
+    slash '\\' = '/'
+    slash c = c
+    toLowerAscii c
+        | isAsciiUpper c = toEnum (fromEnum c + 32)
+        | otherwise = c
 
 isSuffixOfPath :: FilePath -> FilePath -> Bool
 isSuffixOfPath suffix path =
@@ -1129,6 +1211,10 @@ demoTeardown _ destroyVM = do
             | destroyVM -> guardedDelete cfg Incus name (destroyVMArgs demoGuardPrefix vm)
             | otherwise ->
                 bestEffortTool cfg Incus (stopVMArgs vm) ("project down: stopping " ++ name)
+        WindowsWsl2VM vm
+            | destroyVM -> guardedDelete cfg Wsl name (Wsl2.wslUnregisterArgs demoGuardPrefix (Wsl2.wsl2Distro vm))
+            | otherwise ->
+                bestEffortTool cfg Wsl (Wsl2.wslTerminateArgs (Wsl2.wsl2Distro vm)) ("project down: terminating WSL2 distro " ++ name)
   where
     guardedDelete cfg tool name =
         either die (\argv -> bestEffortTool cfg tool argv ("project destroy: deleting " ++ name))
@@ -1155,7 +1241,7 @@ harborEndpoint = "localhost:30500"
 container at the binary's sibling-config path.
 -}
 vmRuntimeContainerConfigPath :: FilePath
-vmRuntimeContainerConfigPath = "/tmp/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall"
+vmRuntimeContainerConfigPath = "/root/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall"
 
 -- | The container frame's topology id (the @vm-project-container-2@ witness).
 containerRuntimeFrameId :: String

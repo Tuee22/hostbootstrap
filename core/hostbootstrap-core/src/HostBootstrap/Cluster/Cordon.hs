@@ -27,6 +27,7 @@ module HostBootstrap.Cluster.Cordon
     fitsBudget,
     colimaSizingArgs,
     limaSizingArgs,
+    wsl2SizingArgs,
     kindNodeCordonArgs,
     incusSizingArgs,
     resolveHostCapacity,
@@ -42,7 +43,7 @@ import qualified Data.Text as T
 import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Sysctl), absExePath)
+import HostBootstrap.HostTool (HostTool (PowerShell, Sysctl), absExePath)
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), renderSubstrateName, substrateName)
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
@@ -71,6 +72,8 @@ data CapacityReadSource
   = ProcCpuinfo
   | ProcMemAvailable
   | SysctlKey String
+  | WindowsLogicalProcessors
+  | WindowsAvailableMemory
   deriving (Eq, Show)
 
 -- | The substrate-specific host-capacity read plan. Pure so the source mapping
@@ -249,14 +252,29 @@ incusSizingArgs r = do
       "root,size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GiB"
     ]
 
+-- | The WSL2 wall derived from the one canonical parser: .wslconfig CPU/memory
+-- settings plus the storage cap the WSL2 provider applies to the distro VHDX.
+wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
+wsl2SizingArgs r = do
+  b <- budgetFromResources r
+  pure
+    [ "[wsl2]",
+      "processors=" ++ show (budgetCpu b),
+      "memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",
+      "vhdx-size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GB"
+    ]
+
 -- | Select the host-capacity read sources for a detected substrate.
 capacityReadPlan :: Substrate -> CapacityReadPlan
 capacityReadPlan sub = case substrateName sub of
   AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize")
   LinuxCpu -> linuxReadPlan
   LinuxGpu -> linuxReadPlan
+  WindowsCpu -> windowsReadPlan
+  WindowsGpu -> windowsReadPlan
   where
     linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable
+    windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory
 
 -- | Resolve spare host capacity for the preflight. CPU and memory come from the
 -- substrate-specific sources selected by 'capacityReadPlan': @sysctl@ on
@@ -293,6 +311,9 @@ readCores _ ProcCpuinfo = do
                 else Left "host capacity: no processors found in /proc/cpuinfo"
         Left e -> Left ("host capacity: failed to read /proc/cpuinfo: " ++ displayException e)
 readCores cfg (SysctlKey key) = fmap (fmap fromInteger) (readSysctlPositiveInteger cfg key)
+readCores cfg WindowsLogicalProcessors =
+  fmap (fmap fromInteger) $
+    readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors"
 readCores _ source =
   pure (Left ("host capacity: unsupported CPU source " ++ show source))
 
@@ -310,8 +331,33 @@ readAvailableMemory _ ProcMemAvailable = do
           Nothing -> Left "host capacity: MemAvailable not found in /proc/meminfo"
         Left e -> Left ("host capacity: failed to read /proc/meminfo: " ++ displayException e)
 readAvailableMemory cfg (SysctlKey key) = readSysctlPositiveInteger cfg key
+readAvailableMemory cfg WindowsAvailableMemory =
+  fmap (* 1024) <$> readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
 readAvailableMemory _ source =
   pure (Left ("host capacity: unsupported memory source " ++ show source))
+
+readPowerShellPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
+readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of
+  Nothing ->
+    pure $ Left ("host capacity: powershell.exe is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
+  Just exe -> do
+    result <-
+      try (readProcessWithExitCode (absExePath exe) ["-NoProfile", "-Command", expr] "") ::
+        IO (Either SomeException (ExitCode, String, String))
+    pure $ case result of
+      Right (ExitSuccess, out, _) ->
+        parsePositiveInteger ("powershell " ++ expr) (T.unpack (T.strip (T.pack out)))
+      Right (ExitFailure n, _, err) ->
+        Left
+          ( "host capacity: powershell "
+              ++ expr
+              ++ " failed (exit "
+              ++ show n
+              ++ "): "
+              ++ T.unpack (T.strip (T.pack err))
+          )
+      Left e ->
+        Left ("host capacity: failed to run powershell " ++ expr ++ ": " ++ displayException e)
 
 readSysctlPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
 readSysctlPositiveInteger cfg key = do

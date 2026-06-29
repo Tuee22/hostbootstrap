@@ -121,7 +121,9 @@ async def test_build_forces_classic_builder_only_with_resource_caps(
 
     monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
 
-    plain = docker_ops.BuildSpec(dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={})
+    plain = docker_ops.BuildSpec(
+        dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}
+    )
     capped = docker_ops.BuildSpec(
         dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}, memory="1g", cpus="2"
     )

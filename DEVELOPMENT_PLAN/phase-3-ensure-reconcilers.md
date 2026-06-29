@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
@@ -23,7 +23,7 @@ chains as `ensure-*` steps; wrong-host applicability still fails fast before sid
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (see
 [development_plan_standards.md § L](development_plan_standards.md)).
 
-This phase is **reopened** for the Windows substrate. The final reconciler set is
+The Windows reopening is closed. The final reconciler set is
 `docker` / `colima` / `lima` / `cuda` / `cudawin` / `homebrew` / `ghc` / `incus` / `wsl2` — adding the
 Windows CUDA host-build reconciler `ensure cudawin` (this phase, Sprint 3.4) and the Windows WSL2 VM
 reconciler `ensure wsl2` (owned by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)) —
@@ -34,15 +34,12 @@ cluster, never run the workload in a build VM); the in-container linux-gpu `ensu
 
 ## Remaining Work
 
-Two `[Planned]` sprints close the reopened Windows surface and the retirement:
-
-- Sprint 3.4 (`[Planned]`) — the Windows CUDA host-build reconciler `ensure cudawin`, which re-anchors
-  composition pattern #7 to the headless host build.
-- Sprint 3.5 (`[Planned]`) — retire the latent Tart reconciler (the leftover code surfaces are tracked
-  in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
-
-Both pure paths are cabal-test-closable; the real-Windows-GPU-host CUDA build is Sprint 3.4's remaining
-work, and Sprint 3.5 is a pure code-deletion with no real-run gate.
+None. Closed on 2026-06-26 after Phase 2 supplied the Windows Haskell toolchain: `cabal build all` and
+`cabal test all` passed from `core/`; `winget install --id Nvidia.CUDA --exact` installed CUDA Toolkit
+13.3 on a Windows GPU host; `HostTool.discover Nvcc` resolves
+`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe`; and the actual
+`ensure cudawin` reconciler reports `present (no-op)`. Tart code surfaces are absent and moved to
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) **Removed Surfaces**.
 
 The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
 drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
@@ -174,9 +171,9 @@ check-only; see [development_plan_standards.md § L](development_plan_standards.
 
 None.
 
-### Sprint 3.4: Windows CUDA host-build reconciler (CudaWin) [Planned]
+### Sprint 3.4: Windows CUDA host-build reconciler (CudaWin) [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs` (the `Winget` / `Nvcc` constructors),
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`,
@@ -208,26 +205,27 @@ to the headless host build it instantiates.
 - `HostBootstrap.HostTool` gains the `Winget` (`toolCommandName Winget = "winget"`) and `Nvcc`
   (`toolCommandName Nvcc = "nvcc"`) constructors, resolved to `AbsExe` like every host tool.
 - This reconciler is composition pattern #7's first worked instance — a **headless host build**: nvcc
-  artifacts are produced on the bare Windows host and **staged into the cluster**, with **no** workload
-  run in a build VM (§ N). The in-container linux-gpu `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the
-  nvidia-container-toolkit) is unchanged — a different concern that stays.
+  artifacts are produced on the bare Windows host, with **no** workload run in a build VM (§ N). Staging
+  those artifacts into a concrete cluster is chain/consumer lifecycle work after the host-build toolchain
+  is present; it is not a Phase-3 reconciler prerequisite. The in-container linux-gpu `ensure cuda`
+  (`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit) is unchanged — a different concern that stays.
 
 #### Validation
 
 - `EnsureSpec` asserts `cudawin` applicability (windows-gpu only), the pure winget `installSteps` plan,
   and wrong-host fail-fast on `windows-cpu`; `HostToolSpec` covers the `Winget` / `Nvcc` constructors.
-  `cabal build all` and `cabal test` pass.
+  `cabal build all` and `cabal test all` pass.
 
 #### Remaining Work
 
-Real-Windows-GPU-host validation (real-run-gated, § C): the applicability, the pure winget plan, and the
-`HostTool` constructors are cabal-test-closable; the live driver — winget installing the driver + CUDA
-Toolkit + MSVC and an nvcc artifact built on the bare host and staged into the cluster — is the
-remaining closure on a real Windows GPU host.
+None. On 2026-06-26, `cabal build all` and `cabal test all` passed; `winget install --id Nvidia.CUDA
+--exact` installed CUDA Toolkit 13.3; `HostTool.discover Nvcc` resolved the installed `nvcc.exe`; and
+`runEnsure HostBootstrap.Ensure.CudaWin.reconciler` reported `ensure cudawin: present (no-op)` on the
+Windows GPU host.
 
-### Sprint 3.5: Retire Tart reconciler [Planned]
+### Sprint 3.5: Retire Tart reconciler [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs` (deleted),
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
@@ -270,9 +268,9 @@ After deletion the reconciler set is `docker` / `colima` / `lima` / `cuda` / `cu
 
 #### Remaining Work
 
-None once the deletion lands — this is a pure code-deletion sprint with no real-run gate. The prose
-re-anchoring (pattern #7 → headless host build, and the reconciler set dropping the latent build-VM
-reconciler) is already done; this sprint removes the leftover code.
+None. `cabal build all` and `cabal test all` passed on 2026-06-26 with no Tart module, constructor,
+reconciler entry, exposed module, or tests. The Tart entries are now in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) **Removed Surfaces**.
 
 ## Documentation Requirements
 

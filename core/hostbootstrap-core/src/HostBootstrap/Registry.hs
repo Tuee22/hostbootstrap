@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP #-}
 
 -- | Docker Hub registry credentials as an /effect-only/, non-serialisable
 -- capability — never represented in Dhall, never persisted, never logged.
@@ -58,12 +59,16 @@ import qualified Data.Text.Encoding as TE
 import System.Directory
   ( doesFileExist,
     getHomeDirectory,
-    getTemporaryDirectory,
     removePathForcibly,
   )
+#ifndef mingw32_HOST_OS
+import System.Directory (getTemporaryDirectory)
+#endif
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
+#ifndef mingw32_HOST_OS
 import System.Posix.Temp (mkdtemp)
+#endif
 
 -- | An opaque Docker Hub credential: a minimal @config.json@ carrying only the
 -- Docker Hub auth entries. The constructor is intentionally /not/ exported, there
@@ -184,8 +189,12 @@ withEphemeralDockerConfig payload action =
   bracket acquire release (const action)
   where
     acquire = do
+#ifdef mingw32_HOST_OS
+      dir <- fail "withForwardedRegistryAuth requires POSIX temporary-directory permissions; Windows registry forwarding is not supported yet"
+#else
       base <- getTemporaryDirectory
       dir <- mkdtemp (base </> "hb-registry-")
+#endif
       writeFile (dir </> "config.json") (T.unpack payload)
       previous <- lookupEnv "DOCKER_CONFIG"
       setEnv "DOCKER_CONFIG" dir

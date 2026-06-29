@@ -3,10 +3,11 @@
 module LiftSpec (tests) where
 
 import qualified HostBootstrap.Config.Vocab as V
-import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima))
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Lift
+import HostBootstrap.Wsl2 (Wsl2VM (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 
@@ -25,6 +26,9 @@ vm = IncusVM "demo-vm" "images:ubuntu/24.04"
 
 limaVM :: LimaVM
 limaVM = LimaVM "demo-vm"
+
+wslVM :: Wsl2VM
+wslVM = Wsl2VM "hostbootstrap-demo"
 
 sockMount :: V.Mount
 sockMount = V.Mount {V.source = "/var/run/docker.sock", V.target = "/var/run/docker.sock", V.readOnly = False}
@@ -55,6 +59,9 @@ foldCases =
     testCase "InLimaVM dispatches limactl shell with the in-VM binary path" $
       foldLift self (inLimaVM limaVM localContext) sub
         @?= DispatchTool Lima ["shell", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
+    testCase "InWsl2VM dispatches wsl -d with the in-VM binary path" $
+      foldLift self (inWsl2VM wslVM localContext) sub
+        @?= DispatchTool Wsl ["-d", "hostbootstrap-demo", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
     testCase "InContainer dispatches docker run (ENTRYPOINT is the binary, no self token)" $
       foldLift self (inContainer container localContext) sub
         @?= DispatchTool
@@ -101,6 +108,23 @@ foldCases =
             "demo:local",
             "cluster",
             "up"
+          ],
+    testCase "WSL2 VM-then-container nests: wsl -d distro -- docker run --rm img sub" $
+      foldLift self (inContainer container (inWsl2VM wslVM localContext)) sub
+        @?= DispatchTool
+          Wsl
+          [ "-d",
+            "hostbootstrap-demo",
+            "--",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "--network=host",
+            "demo:local",
+            "cluster",
+            "up"
           ]
   ]
 
@@ -119,6 +143,11 @@ foldLeafCases =
         @?= DispatchTool
           Lima
           ["shell", "demo-vm", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
+    testCase "reachLeaf in a WSL2 VM folds to wsl -d -- curl …" $
+      foldLeaf (inWsl2VM wslVM localContext) (reachLeaf "http://localhost:30080/api/budget")
+        @?= DispatchTool
+          Wsl
+          ["-d", "hostbootstrap-demo", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
     testCase "a raw bash -lc leaf folds into the VM frame verbatim" $
       foldLeaf (inVM vm localContext) (RawCmd ["bash", "-lc", "echo hi"])
         @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],

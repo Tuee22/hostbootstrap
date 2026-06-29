@@ -18,6 +18,7 @@ import qualified RoleLifecycleSpec
 import qualified SchemaSpec
 import qualified StepSpec
 import qualified SubstrateSpec
+import qualified Wsl2Spec
 import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
@@ -38,6 +39,7 @@ main = do
             , HarnessSpec.tests
             , IncusSpec.tests
             , LimaSpec.tests
+            , Wsl2Spec.tests
             , LiftSpec.tests
             , StepSpec.tests
             , ChainSpec.tests

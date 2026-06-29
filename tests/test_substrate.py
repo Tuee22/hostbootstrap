@@ -54,6 +54,20 @@ def test_detect_linux_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     assert substrate.detect() == substrate.Substrate(SubstrateName.LINUX_GPU, "arm64")
 
 
+def test_detect_windows_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(substrate, "_has_nvidia_gpu", lambda: False)
+    assert substrate.detect() == substrate.Substrate(SubstrateName.WINDOWS_CPU, "amd64")
+
+
+def test_detect_windows_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(substrate, "_has_nvidia_gpu", lambda: True)
+    assert substrate.detect() == substrate.Substrate(SubstrateName.WINDOWS_GPU, "amd64")
+
+
 def test_detect_unknown_system(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Plan9")
     with pytest.raises(RuntimeError):
@@ -63,11 +77,15 @@ def test_detect_unknown_system(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_substrate_properties() -> None:
     apple = substrate.Substrate(SubstrateName.APPLE_SILICON, "arm64")
     gpu = substrate.Substrate(SubstrateName.LINUX_GPU, "amd64")
+    windows_gpu = substrate.Substrate(SubstrateName.WINDOWS_GPU, "amd64")
 
     assert apple.is_apple_silicon
     assert not apple.is_linux
     assert gpu.is_linux
     assert gpu.has_gpu
+    assert windows_gpu.is_windows
+    assert not windows_gpu.is_linux
+    assert windows_gpu.has_gpu
 
 
 def test_has_nvidia_gpu_from_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

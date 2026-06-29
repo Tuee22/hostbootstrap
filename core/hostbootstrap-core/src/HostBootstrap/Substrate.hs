@@ -1,8 +1,7 @@
 -- | Substrate detection.
 --
--- Three frozen substrates — @apple-silicon@, @linux-cpu@, @linux-gpu@ — describe
--- the host detected at runtime; projects do not declare a substrate matrix in
--- Python-owned config.
+-- Supported substrates describe the host detected at runtime; projects do not
+-- declare a substrate matrix in Python-owned config.
 -- The classification core ('classify', 'parseDockerArch') is pure; 'detect'
 -- wraps it with the platform reads and NVIDIA probe. Ported from the Python
 -- @hostbootstrap/substrate.py@.
@@ -14,6 +13,7 @@ module HostBootstrap.Substrate
     renderArch,
     isAppleSilicon,
     isLinux,
+    isWindows,
     hasGpu,
     parseDockerArch,
     classify,
@@ -31,8 +31,8 @@ import System.Exit (ExitCode (..))
 import qualified System.Info as Info
 import System.Process (readProcessWithExitCode)
 
--- | The three supported host substrates.
-data SubstrateName = AppleSilicon | LinuxCpu | LinuxGpu
+-- | The supported host substrates.
+data SubstrateName = AppleSilicon | LinuxCpu | LinuxGpu | WindowsCpu | WindowsGpu
   deriving (Eq, Show)
 
 -- | Docker-style architecture.
@@ -51,6 +51,8 @@ renderSubstrateName :: SubstrateName -> String
 renderSubstrateName AppleSilicon = "apple-silicon"
 renderSubstrateName LinuxCpu = "linux-cpu"
 renderSubstrateName LinuxGpu = "linux-gpu"
+renderSubstrateName WindowsCpu = "windows-cpu"
+renderSubstrateName WindowsGpu = "windows-gpu"
 
 renderArch :: Arch -> String
 renderArch Amd64 = "amd64"
@@ -62,8 +64,11 @@ isAppleSilicon = (== AppleSilicon) . substrateName
 isLinux :: Substrate -> Bool
 isLinux s = substrateName s `elem` [LinuxCpu, LinuxGpu]
 
+isWindows :: Substrate -> Bool
+isWindows s = substrateName s `elem` [WindowsCpu, WindowsGpu]
+
 hasGpu :: Substrate -> Bool
-hasGpu = (== LinuxGpu) . substrateName
+hasGpu s = substrateName s `elem` [LinuxGpu, WindowsGpu]
 
 -- | Map a host machine string (e.g. from @uname -m@ / 'System.Info.arch') to a
 -- Docker-style architecture. Pure.
@@ -92,6 +97,8 @@ classify osName rawArch gpu = do
             )
     "linux" ->
       Right (Substrate (if gpu then LinuxGpu else LinuxCpu) arch)
+    "mingw32" ->
+      Right (Substrate (if gpu then WindowsGpu else WindowsCpu) arch)
     other -> Left ("unsupported host platform: " ++ other)
 
 -- | Detect the host substrate by reading the platform and probing for an NVIDIA

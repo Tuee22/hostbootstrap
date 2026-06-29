@@ -1,8 +1,7 @@
 """Substrate detection.
 
-Three frozen substrates — *apple-silicon*, *linux-cpu*, *linux-gpu* — describe
-the host detected at runtime; projects do not declare a substrate matrix in the
-Python bootstrapper.
+Frozen substrates describe the host detected at runtime; projects do not
+declare a substrate matrix in the Python bootstrapper.
 Detection is pure: it reads the platform and a small set of files
 (``/proc/driver/nvidia/version`` etc.) and returns one frozen value. No side
 effects.
@@ -23,6 +22,8 @@ class SubstrateName(StrEnum):
     APPLE_SILICON = "apple-silicon"
     LINUX_CPU = "linux-cpu"
     LINUX_GPU = "linux-gpu"
+    WINDOWS_CPU = "windows-cpu"
+    WINDOWS_GPU = "windows-gpu"
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,12 @@ class Substrate:
         return self.name in {SubstrateName.LINUX_CPU, SubstrateName.LINUX_GPU}
 
     @property
+    def is_windows(self) -> bool:
+        return self.name in {SubstrateName.WINDOWS_CPU, SubstrateName.WINDOWS_GPU}
+
+    @property
     def has_gpu(self) -> bool:
-        return self.name is SubstrateName.LINUX_GPU
+        return self.name in {SubstrateName.LINUX_GPU, SubstrateName.WINDOWS_GPU}
 
 
 _DOCKER_ARCH: Final[dict[str, str]] = {
@@ -103,4 +108,9 @@ def detect() -> Substrate:
         if _has_nvidia_gpu():
             return Substrate(SubstrateName.LINUX_GPU, arch)
         return Substrate(SubstrateName.LINUX_CPU, arch)
+    if system == "Windows":
+        arch = _docker_arch()
+        if _has_nvidia_gpu():
+            return Substrate(SubstrateName.WINDOWS_GPU, arch)
+        return Substrate(SubstrateName.WINDOWS_CPU, arch)
     raise RuntimeError(f"unsupported host platform: {system}")

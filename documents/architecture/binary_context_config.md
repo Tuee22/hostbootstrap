@@ -113,7 +113,7 @@ let ProviderKind =
       < HostProvider
       | IncusVMProvider
       | LimaVMProvider
-      | WSL2VMProvider
+      | Wsl2VMProvider
       | DockerContainerProvider
       | KubernetesProvider
       | ExternalProvider

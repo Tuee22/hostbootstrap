@@ -5,9 +5,9 @@ The Python layer does only what must run *before any project binary exists*
 
 1. derive the project name from the project's single Cabal file;
 2. assert the fail-fast host minimums;
-3. ensure the host build toolchain (Homebrew -> ``ghcup`` -> GHC/Cabal on Apple
-   silicon; ``ghcup`` -> GHC/Cabal on Linux) -- the prerequisites to *build* the
-   binary;
+3. ensure the host Haskell build toolchain and package index (Homebrew -> ``ghcup``
+   -> GHC/Cabal on Apple silicon; ``ghcup`` -> GHC/Cabal on Linux; winget-rooted
+   GHCup -> GHC/Cabal on Windows) -- the prerequisites to *build* the binary;
 4. build the project binary **host-native** at ``./.build/<project>`` on every
    substrate;
 5. ``exec`` the binary, handing control to ``hostbootstrap-core``'s command tree
@@ -22,6 +22,7 @@ and applying the budget cordon are the project binary's job once it is running.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from .substrate import Substrate, SubstrateName
 _BREW: str = "brew"
 _GHCUP: str = "ghcup"
 _CABAL: str = "cabal"
+_POWERSHELL: str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 # The family-pinned GHC every project's ``cabal.project`` selects.
 GHC_VERSION: str = "9.12.4"
@@ -43,6 +45,21 @@ _BUILD_DIR: str = ".build"
 
 # The host-native cabal package store, kept repo-local under ./.build/.
 _STORE_DIR: str = f"{_BUILD_DIR}/cabal-store"
+
+_WINDOWS_TOOLCHAIN_PATHS: tuple[Path, ...] = (
+    Path("C:/ghcup/bin"),
+    Path("C:/cabal/bin"),
+)
+_WINDOWS_GHCUP: str = r"C:\ghcup\bin\ghcup.exe"
+_WINDOWS_CABAL: str = r"C:\ghcup\bin\cabal.exe"
+_GHCUP_WINDOWS_BOOTSTRAP: str = (
+    "New-Item -ItemType Directory -Force C:/ghcup/bin | Out-Null; "
+    "$ghcup = 'C:/ghcup/bin/ghcup.exe'; "
+    "if ((Test-Path $ghcup) -and ((Get-Item $ghcup).Length -gt 0)) { exit 0 }; "
+    "Invoke-WebRequest "
+    "https://downloads.haskell.org/ghcup/0.2.6.2/x86_64-mingw64-ghcup-0.2.6.2.exe "
+    "-OutFile $ghcup"
+)
 
 
 class ProjectDiscoveryError(RuntimeError):
@@ -54,11 +71,12 @@ class ProjectBuildSpec:
     """The only project facts Python needs before the binary exists."""
 
     project: str
+    executable: str
     cabal_file: Path
 
 
 def discover_project(project_root: Path) -> ProjectBuildSpec:
-    """Derive the project name from the single ``*.cabal`` file in *project_root*."""
+    """Derive the project and executable names from the single Cabal file."""
     cabal_files = sorted(path for path in project_root.glob("*.cabal") if path.is_file())
     if not cabal_files:
         raise ProjectDiscoveryError(f"no .cabal file found in {project_root}")
@@ -66,7 +84,29 @@ def discover_project(project_root: Path) -> ProjectBuildSpec:
         names = ", ".join(path.name for path in cabal_files)
         raise ProjectDiscoveryError(f"multiple .cabal files found in {project_root}: {names}")
     cabal_file = cabal_files[0]
-    return ProjectBuildSpec(project=cabal_file.stem, cabal_file=cabal_file)
+    return ProjectBuildSpec(
+        project=cabal_file.stem,
+        executable=_discover_executable(cabal_file),
+        cabal_file=cabal_file,
+    )
+
+
+def _discover_executable(cabal_file: Path) -> str:
+    """Return the single executable stanza name from *cabal_file*."""
+    executables: list[str] = []
+    for raw_line in cabal_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("--"):
+            continue
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "executable":
+            executables.append(parts[1])
+    if not executables:
+        raise ProjectDiscoveryError(f"no executable stanza found in {cabal_file}")
+    if len(executables) > 1:
+        names = ", ".join(executables)
+        raise ProjectDiscoveryError(f"multiple executable stanzas found in {cabal_file}: {names}")
+    return executables[0]
 
 
 # ---------------------------------------------------------------------------
@@ -83,14 +123,15 @@ class ToolchainStep(NamedTuple):
 
 def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
     """The host build-toolchain ensure steps (§ N), run before the build."""
+    ghcup = _WINDOWS_GHCUP if sub.is_windows else _GHCUP
     ghcup_steps = (
         ToolchainStep(
-            probe=(_GHCUP, "whereis", "ghc", GHC_VERSION),
-            install=(_GHCUP, "install", "ghc", GHC_VERSION, "--set"),
+            probe=(ghcup, "whereis", "ghc", GHC_VERSION),
+            install=(ghcup, "install", "ghc", GHC_VERSION, "--set"),
         ),
         ToolchainStep(
-            probe=(_GHCUP, "whereis", "cabal"),
-            install=(_GHCUP, "install", "cabal", "--set"),
+            probe=(ghcup, "whereis", "cabal"),
+            install=(ghcup, "install", "cabal", "--set"),
         ),
     )
     if sub.name is SubstrateName.APPLE_SILICON:
@@ -101,39 +142,73 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
             ),
             *ghcup_steps,
         )
+    if sub.is_windows:
+        return (
+            ToolchainStep(
+                probe=(_WINDOWS_GHCUP, "--version"),
+                install=(
+                    _POWERSHELL,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    _GHCUP_WINDOWS_BOOTSTRAP,
+                ),
+            ),
+            *ghcup_steps,
+        )
     return ghcup_steps
 
 
 def native_build_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
     """Build the project binary host-native, in place."""
+    cabal = _WINDOWS_CABAL if os.name == "nt" else _CABAL
     return (
-        _CABAL,
+        cabal,
         "--store-dir",
         str(project_root / _STORE_DIR),
         "build",
-        f"exe:{spec.project}",
+        f"exe:{spec.executable}",
     )
+
+
+def cabal_update_command() -> tuple[str, ...]:
+    """Refresh Cabal's package index before the first host-native build."""
+    cabal = _WINDOWS_CABAL if os.name == "nt" else _CABAL
+    return (cabal, "update")
 
 
 def native_listbin_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
     """Print the built exe's path under ``dist-newstyle/``."""
+    cabal = _WINDOWS_CABAL if os.name == "nt" else _CABAL
     return (
-        _CABAL,
+        cabal,
         "--store-dir",
         str(project_root / _STORE_DIR),
         "list-bin",
-        f"exe:{spec.project}",
+        f"exe:{spec.executable}",
     )
 
 
 def binary_path(spec: ProjectBuildSpec, project_root: Path) -> Path:
     """The single stable ``./.build/<project>`` location every consumer execs."""
-    return project_root / _BUILD_DIR / spec.project
+    suffix = ".exe" if os.name == "nt" else ""
+    return project_root / _BUILD_DIR / f"{spec.executable}{suffix}"
 
 
 def exec_argv(spec: ProjectBuildSpec, project_root: Path, args: tuple[str, ...]) -> tuple[str, ...]:
     """The argv handed to ``os.execv``: the built binary plus trailing args."""
     return (str(binary_path(spec, project_root)), *args)
+
+
+def _toolchain_env() -> dict[str, str]:
+    """Environment that sees tools installed during this bootstrap invocation."""
+    env = dict(os.environ)
+    if os.name == "nt":
+        existing = env.get("PATH", "")
+        prefix = os.pathsep.join(str(path) for path in _WINDOWS_TOOLCHAIN_PATHS)
+        env["PATH"] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +222,18 @@ async def _assert_minimums(sub: Substrate) -> None:
 
 async def _already_present(probe: tuple[str, ...]) -> bool:
     """Whether *probe* reports its tool present."""
-    try:
-        result = await process.run(probe, quiet=True)
-    except FileNotFoundError:
-        return False
-    return result.ok
+    for _attempt in range(6):
+        try:
+            result = await process.run(probe, quiet=True, env=_toolchain_env())
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 32:
+                await asyncio.sleep(5)
+                continue
+            raise
+        return result.ok
+    return False
 
 
 async def _ensure_toolchain(sub: Substrate) -> None:
@@ -159,15 +241,21 @@ async def _ensure_toolchain(sub: Substrate) -> None:
     for step in toolchain_ensure_steps(sub):
         if await _already_present(step.probe):
             continue
-        await process.run_checked(step.install)
+        await process.run_checked(step.install, env=_toolchain_env())
 
 
 async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
     """Build the binary host-native and copy it to ``./.build/<project>``."""
     binary_path(spec, project_root).parent.mkdir(parents=True, exist_ok=True)
-    await process.run_checked(native_build_command(spec, project_root), cwd=project_root)
+    await process.run_checked(cabal_update_command(), cwd=project_root, env=_toolchain_env())
+    await process.run_checked(
+        native_build_command(spec, project_root), cwd=project_root, env=_toolchain_env()
+    )
     located = await process.run_checked(
-        native_listbin_command(spec, project_root), cwd=project_root, quiet=True
+        native_listbin_command(spec, project_root),
+        cwd=project_root,
+        quiet=True,
+        env=_toolchain_env(),
     )
     shutil.copy2(Path(located.stdout.strip()), binary_path(spec, project_root))
 

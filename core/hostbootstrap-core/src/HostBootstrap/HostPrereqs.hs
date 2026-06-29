@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- | Fail-fast host-minimum checks.
 --
 -- These are the typed host minimums dispatched by substrate, ported from the
@@ -32,7 +34,9 @@ import HostBootstrap.Substrate
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
+#ifndef mingw32_HOST_OS
 import System.Posix.User (getEffectiveUserID)
+#endif
 import System.Process (readProcessWithExitCode)
 
 -- | A host prerequisite is missing or misconfigured.
@@ -56,11 +60,16 @@ checkHostMinimums cfg =
       ]
     LinuxCpu -> linuxChecks
     LinuxGpu -> linuxChecks ++ [("NVIDIA container runtime", checkNvidiaRuntime cfg)]
+    WindowsCpu -> windowsChecks
+    WindowsGpu -> windowsChecks
   where
     linuxChecks =
       [ ("Ubuntu 24.04", checkUbuntu2404),
         ("passwordless sudo", checkPasswordlessSudo cfg),
         ("Docker daemon reachable", checkDockerReachable cfg)
+      ]
+    windowsChecks =
+      [ ("Windows host floor", pure (Right ()))
       ]
 
 -- | Run labelled checks in order, stopping at the first failure (fail-fast).
@@ -86,6 +95,20 @@ checkAppleSubstrate cfg =
 
 checkPasswordlessSudo :: HostConfig -> IO (Either PrereqError ())
 checkPasswordlessSudo cfg = do
+#ifdef mingw32_HOST_OS
+  case resolveMaybe cfg Sudo of
+    Nothing -> pure (Left (PrereqError "sudo is required but not installed"))
+    Just sudo -> do
+      result <- runTool sudo ["-n", "true"]
+      pure $ case result of
+        Right (ExitSuccess, _, _) -> Right ()
+        Right _ ->
+          Left
+            ( PrereqError
+                "passwordless sudo is required. Add a NOPASSWD entry for your user in /etc/sudoers.d/ before re-running."
+            )
+        Left err -> Left err
+#else
   euid <- getEffectiveUserID
   if euid == 0
     then pure (Right ())
@@ -101,6 +124,7 @@ checkPasswordlessSudo cfg = do
                   "passwordless sudo is required. Add a NOPASSWD entry for your user in /etc/sudoers.d/ before re-running."
               )
           Left err -> Left err
+#endif
 
 checkDockerReachable :: HostConfig -> IO (Either PrereqError ())
 checkDockerReachable cfg = case resolveMaybe cfg Docker of

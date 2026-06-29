@@ -11,12 +11,13 @@ import HostBootstrap.Command (allReconcilers)
 import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, runReconciler)
 import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
+import qualified HostBootstrap.Ensure.CudaWin as CudaWin
 import qualified HostBootstrap.Ensure.Docker as Docker
 import qualified HostBootstrap.Ensure.Ghc as Ghc
 import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as EIncus
 import qualified HostBootstrap.Ensure.Lima as Lima
-import qualified HostBootstrap.Ensure.Tart as Tart
+import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
@@ -24,10 +25,12 @@ import System.Exit (ExitCode (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
-apple, cpu, gpu :: Substrate
+apple, cpu, gpu, winCpu, winGpu :: Substrate
 apple = Substrate AppleSilicon Arm64
 cpu = Substrate LinuxCpu Amd64
 gpu = Substrate LinuxGpu Amd64
+winCpu = Substrate WindowsCpu Amd64
+winGpu = Substrate WindowsGpu Amd64
 
 findR :: String -> Reconciler
 findR name = case filter ((== name) . reconcilerName) allReconcilers of
@@ -46,25 +49,27 @@ tests =
 
 applicabilityCases :: [TestTree]
 applicabilityCases =
-  [ testCase "the eight reconcilers are present (incl. cross-substrate incus)" $
+  [ testCase "the nine reconcilers are present (incl. cross-substrate incus and wsl2)" $
       map reconcilerName allReconcilers
-        @?= ["docker", "colima", "cuda", "homebrew", "ghc", "tart", "lima", "incus"],
+        @?= ["docker", "colima", "cuda", "cudawin", "homebrew", "ghc", "lima", "incus", "wsl2"],
     testCase "docker applies to every substrate" $
-      map (appliesTo (findR "docker")) [apple, cpu, gpu] @?= [True, True, True],
+      map (appliesTo (findR "docker")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, True, True, True, True],
     testCase "incus applies to apple AND linux (the first cross-substrate reconciler)" $
-      map (appliesTo (findR "incus")) [apple, cpu, gpu] @?= [True, True, True],
+      map (appliesTo (findR "incus")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, True, True, False, False],
     testCase "colima applies to apple-silicon only" $
-      map (appliesTo (findR "colima")) [apple, cpu, gpu] @?= [True, False, False],
+      map (appliesTo (findR "colima")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, False, False, False, False],
     testCase "cuda applies to linux-gpu only" $
-      map (appliesTo (findR "cuda")) [apple, cpu, gpu] @?= [False, False, True],
+      map (appliesTo (findR "cuda")) [apple, cpu, gpu, winCpu, winGpu] @?= [False, False, True, False, False],
+    testCase "cudawin applies to windows-gpu only" $
+      map (appliesTo (findR "cudawin")) [apple, cpu, gpu, winCpu, winGpu] @?= [False, False, False, False, True],
     testCase "homebrew applies to apple-silicon only" $
       map (appliesTo (findR "homebrew")) [apple, cpu, gpu] @?= [True, False, False],
     testCase "ghc applies to apple-silicon only" $
       map (appliesTo (findR "ghc")) [apple, cpu, gpu] @?= [True, False, False],
-    testCase "tart applies to apple-silicon only" $
-      map (appliesTo (findR "tart")) [apple, cpu, gpu] @?= [True, False, False],
     testCase "lima applies to apple-silicon only" $
-      map (appliesTo (findR "lima")) [apple, cpu, gpu] @?= [True, False, False]
+      map (appliesTo (findR "lima")) [apple, cpu, gpu] @?= [True, False, False],
+    testCase "wsl2 applies to Windows only" $
+      map (appliesTo (findR "wsl2")) [apple, cpu, gpu, winCpu, winGpu] @?= [False, False, False, True, True]
   ]
 
 decideCases :: [TestTree]
@@ -109,10 +114,18 @@ installPlanCases =
       Colima.installSteps apple
         @?= Right [InstallStep Brew ["install", "colima"], InstallStep Colima ["start"]]
       assertBool "colima Left on linux-cpu" (isLeft (Colima.installSteps cpu)),
-    testCase "tart: brew install cirruslabs/cli/tart on apple" $
-      Tart.installSteps apple @?= Right [InstallStep Brew ["install", "cirruslabs/cli/tart"]],
     testCase "lima: brew install lima on apple" $
       Lima.installSteps apple @?= Right [InstallStep Brew ["install", "lima"]],
+    testCase "wsl2: winget WSL, platform enablement, and WSL2 default on Windows" $ do
+      Wsl2.installSteps winCpu
+        @?= Right
+          [ InstallStep Winget ["install", "--id", "Microsoft.WSL", "--exact", "--accept-package-agreements", "--accept-source-agreements"],
+            InstallStep Wsl ["--install", "--no-distribution"],
+            InstallStep Wsl ["--set-default-version", "2"]
+          ]
+      Wsl2.powerShellBoolArgs "(Get-ComputerInfo -Property HyperVisorPresent).HyperVisorPresent"
+        @?= ["-NoProfile", "-Command", "(Get-ComputerInfo -Property HyperVisorPresent).HyperVisorPresent"]
+      assertBool "wsl2 Left on linux-cpu" (isLeft (Wsl2.installSteps cpu)),
     testCase "ghc: brew ghcup then ghcup install ghc on apple" $
       Ghc.installSteps apple
         @?= Right [InstallStep Brew ["install", "ghcup"], InstallStep Ghcup ["install", "ghc"]],
@@ -137,6 +150,17 @@ installPlanCases =
             InstallStep Sudo ["systemctl", "restart", "docker"]
           ]
       assertBool "cuda Left on linux-cpu" (isLeft (Cuda.installSteps cpu)),
+    testCase "cudawin: winget installs CUDA Toolkit and MSVC on windows-gpu only" $ do
+      CudaWin.installSteps winGpu
+        @?= Right
+          [ InstallStep
+              Winget
+              ["install", "--id", "Nvidia.CUDA", "--exact", "--accept-package-agreements", "--accept-source-agreements"],
+            InstallStep
+              Winget
+              ["install", "--id", "Microsoft.VisualStudio.2022.BuildTools", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
+          ]
+      assertBool "cudawin Left on windows-cpu" (isLeft (CudaWin.installSteps winCpu)),
     testCase "incus: Colima-backed provider on apple, native daemon on linux" $ do
       EIncus.installSteps apple
         @?= Right

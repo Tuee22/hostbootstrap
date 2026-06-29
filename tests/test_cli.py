@@ -17,6 +17,7 @@ LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
 def _project() -> bootstrap.ProjectBuildSpec:
     return bootstrap.ProjectBuildSpec(
         project="proj",
+        executable="proj",
         cabal_file=Path("/proj/proj.cabal"),
     )
 
@@ -108,7 +109,9 @@ def test_update_rejects_conflicting_options() -> None:
     assert result.exit_code != 0
     assert "cannot be combined" in result.output
 
-    default_ref_result = CliRunner().invoke(cli.main, ["update", "--spec", "/work", "--ref", "main"])
+    default_ref_result = CliRunner().invoke(
+        cli.main, ["update", "--spec", "/work", "--ref", "main"]
+    )
     assert default_ref_result.exit_code != 0
     assert "cannot be combined" in default_ref_result.output
 
@@ -530,9 +533,7 @@ def test_base_build_threads_budget_into_build_spec(monkeypatch: pytest.MonkeyPat
 
     result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu", "--arch", "amd64"])
     assert result.exit_code == 0, result.output
-    assert captured and all(
-        isinstance(budget, cli.resources.BuildBudget) for budget in captured
-    )
+    assert captured and all(isinstance(budget, cli.resources.BuildBudget) for budget in captured)
 
 
 def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -708,9 +709,7 @@ def test_self_check_nonzero_raises_click_exception(
         cli._run_self_check_or_abort(tmp_path)
 
 
-def test_self_check_rejects_non_repo_root(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_self_check_rejects_non_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def _fake_run(*_a: object, **_kw: object) -> object:
         raise AssertionError("subprocess.run must not be reached without pyproject.toml")
 

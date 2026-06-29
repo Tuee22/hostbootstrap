@@ -82,6 +82,11 @@ capacitySourceCases =
     testCase "linux-gpu reads CPU and memory from procfs" $
       capacityReadPlan (Substrate LinuxGpu Amd64)
         @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable,
+    testCase "windows substrates read CPU and memory from PowerShell/CIM" $ do
+      capacityReadPlan (Substrate WindowsCpu Amd64)
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory
+      capacityReadPlan (Substrate WindowsGpu Amd64)
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory,
     testCase "apple sysctl core count can satisfy a matching N-core budget" $
       preflightBudget
         (ResourceEnvelope {cpu = 10, memory = "8GiB", storage = "20GiB"})
@@ -137,6 +142,9 @@ sizingCases =
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],
+    testCase "wsl2 sizing emits .wslconfig and vhdx wall settings" $
+      wsl2SizingArgs demoResources
+        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "vhdx-size=20GB"],
     testCase "applied Linux cordon targets the control-plane with budget caps" $
       kindNodeCordonArgs "demo-test-case1" demoResources
         @?= Right

@@ -88,9 +88,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/wsl2.md](engineering/wsl2.md) — the **target** Windows WSL2 host-provider VM, the peer of
-  Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` imports a pristine `Ubuntu-24.04` distro
-  and the same `deploy-VM` / `project down` (stop-without-delete) / `project destroy` lifecycle steps
-  drive it.
+  Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` prepares WSL2 platform readiness, then the
+  project chain registers its own named `Ubuntu-24.04` distro and the same `deploy-VM` / `project down`
+  (stop-without-delete) / `project destroy` lifecycle steps drive it.
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
   as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
   while preserving durable state.

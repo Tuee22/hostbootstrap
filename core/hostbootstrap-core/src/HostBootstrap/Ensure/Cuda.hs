@@ -22,7 +22,6 @@ import HostBootstrap.HostTool (HostTool (Docker, NvidiaSmi, Sudo))
 import HostBootstrap.Substrate
   ( Substrate,
     SubstrateName (LinuxGpu),
-    hasGpu,
     renderSubstrateName,
     substrateName,
   )
@@ -33,7 +32,7 @@ reconciler =
   Reconciler
     { reconcilerName = "cuda",
       reconcilerSummary = "Ensure the NVIDIA driver and Docker runtime (linux-gpu)",
-      appliesTo = hasGpu,
+      appliesTo = \sub -> substrateName sub == LinuxGpu,
       requirement = "linux-gpu",
       reconcile = \cfg ->
         if not (toolPresent cfg NvidiaSmi)

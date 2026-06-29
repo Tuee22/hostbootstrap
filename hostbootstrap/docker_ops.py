@@ -65,8 +65,8 @@ def build_command(spec: BuildSpec) -> tuple[str, ...]:
     if spec.cpus is not None:
         quota = int(float(spec.cpus) * _CPU_PERIOD_US)
         cmd.extend(["--cpu-period", str(_CPU_PERIOD_US), "--cpu-quota", str(quota)])
-    cmd.extend(["--file", str(spec.dockerfile)])
-    cmd.append(str(spec.context))
+    cmd.extend(["--file", spec.dockerfile.as_posix()])
+    cmd.append(spec.context.as_posix())
     return tuple(cmd)
 
 

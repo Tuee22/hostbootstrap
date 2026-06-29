@@ -189,7 +189,7 @@ host-side `docker run <image> project up` is rejected when the config says `curr
 "vm-project-container-2"` under a VM parent. See [binary_context_config](binary_context_config.md).
 
 The Windows substrate folds the *same* shape with the WSL2 VM provider: on `windows-cpu`/`windows-gpu`
-the `vm-orchestrator-1` frame carries `topologyProvider = ProviderKind.WSL2VMProvider` (the peer of
+the `vm-orchestrator-1` frame carries `topologyProvider = ProviderKind.Wsl2VMProvider` (the peer of
 `LimaVMProvider`/`IncusVMProvider`) and the host `pb` hands off with `wsl -d <distro> -- … project up`
 into the Ubuntu-24.04 distro, where the `vm-project-container-2` frame is reached exactly as on the
 Lima/Incus chains — only the provider builders differ. See [wsl2](../engineering/wsl2.md).

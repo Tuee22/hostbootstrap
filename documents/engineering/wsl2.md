@@ -13,8 +13,8 @@
 - The Windows VM provider is WSL2, reached through the resolved `HostTool Wsl`
   (`toolCommandName Wsl = "wsl"`). It is the third metal substrate's VM frame — the structural peer of
   Lima on Apple Silicon and Incus on native Linux.
-- `ensure wsl2` enables the WSL2 / Virtual Machine Platform feature and imports a pristine
-  `Ubuntu-24.04` distro when absent. It runs as part of the `deploy-VM` bring-up inside `project up`.
+- `ensure wsl2` enables the WSL2 / Virtual Machine Platform feature and verifies WSL2 platform readiness.
+  The project-owned VM step registers that project's own named `Ubuntu-24.04` distro when absent.
 - `HostBootstrap.Wsl2` owns pure argv builders for `wsl --import`, `wsl -d <distro> --`,
   `wsl --terminate`, guarded `wsl --unregister`, and the `wsl --shutdown` managed-stop
   (stop-without-delete).
@@ -30,7 +30,7 @@
 ## Provider Contract
 
 WSL2 is the Windows VM provider for the pristine Linux host. The chain provisions a named
-`Ubuntu-24.04` distro, stages the working tree into the guest, builds the project binary in the distro,
+`Ubuntu-24.04` distro derived from the project identity (for the demo, `hostbootstrap-demo-vm`), stages the working tree into the guest, builds the project binary in the distro,
 ensures Docker in the distro, builds the project image, and runs the workload against the distro's
 Docker daemon. Each of those is a [`Step`](../architecture/composition_methodology.md), and the WSL2
 provider supplies the VM-level steps of that chain.
@@ -38,7 +38,10 @@ provider supplies the VM-level steps of that chain.
 The pure command shapes are:
 
 ```text
+winget install --id Microsoft.WSL --exact  # install the WSL package when absent
 wsl --install --no-distribution            # enable WSL2 + Virtual Machine Platform (may require a host reboot)
+bcdedit /set hypervisorlaunchtype auto     # ensure the Windows hypervisor is allowed to launch
+wsl --install Ubuntu-24.04 --name <project>-vm  # project-owned distro registration when absent
 wsl --set-default-version 2
 wsl --import <distro> <install-dir> <rootfs.tar.gz> --version 2
 wsl -d <distro> -- <command>
@@ -65,9 +68,11 @@ can launch. A pure classifier reduces a `wsl --status` / install result to a ver
 classifyWsl2Readiness :: (ExitCode, String, String) -> Ready | NeedsReboot | Unsatisfiable
 ```
 
-- the feature is enabled and a distro can launch → `Ready`;
-- the feature was just enabled and Windows reports a restart is required → `NeedsReboot`;
-- virtualization is unavailable / the feature cannot be enabled → `Unsatisfiable`.
+- firmware virtualization is present, OS features and hypervisor launch state are ready, and a distro can
+  launch → `Ready`;
+- WSL/VMP features or Windows hypervisor boot state were just changed, or Windows reports a restart is
+  required → `NeedsReboot`;
+- firmware/CPU virtualization is unavailable, or the OS feature cannot be enabled → `Unsatisfiable`.
 
 Unlike the Incus in-VM reboot loop (which reboots the *guest* with `incus restart`), a WSL2
 `NeedsReboot` is a **host** reboot: the reconciler prints a clear instruction and exits non-zero so the
@@ -109,12 +114,19 @@ provider's contribution to it.
 ## `ensure wsl2`
 
 `ensure wsl2` (`HostBootstrap.Ensure.Wsl2`) is the install-and-verify reconciler for the provider: it
-probes the WSL2 feature and the base distro, enables the feature and imports a pristine `Ubuntu-24.04`
-distro when absent, and re-verifies. It applies on `windows-cpu` and `windows-gpu`
+probes firmware virtualization, Windows feature state, Windows hypervisor launch readiness, and
+`wsl --status`. Firmware virtualization is a host-floor fact: if the
+CPU/firmware support is absent, the reconciler reports `Unsatisfiable` because the project binary cannot
+change BIOS/UEFI state. OS-level readiness is reconciler-owned: when absent, it installs the
+`Microsoft.WSL` package, enables the WSL2 / Virtual Machine Platform feature, ensures the Windows
+hypervisor is configured to launch (for example `hypervisorlaunchtype auto` or an equivalent verified
+state), sets WSL default version 2, and then re-verifies. It applies on `windows-cpu` and `windows-gpu`
 (`appliesTo = isWindows`) and fails fast on a wrong host. It runs as part of the `deploy-VM` bring-up in
-`project up`, ahead of the first `wsl -d <distro> -- …`. On a host that has never enabled WSL2 it can
-return the `NeedsReboot` verdict described above. See [ensure reconcilers](ensure_reconcilers.md) for
-the reconciler contract.
+`project up`, ahead of the project-owned distro registration. The project VM step then registers its own
+named Ubuntu-24.04 distro (`wsl --install Ubuntu-24.04 --name <project>-vm`) if absent and enters it with
+`wsl -d <distro> -- …`. On a host that has never enabled WSL2 or whose hypervisor boot state was changed,
+it can return the `NeedsReboot` verdict described above. See [ensure reconcilers](ensure_reconcilers.md)
+for the reconciler contract.
 
 ## winget And The Pre-Binary Frame
 
@@ -139,12 +151,38 @@ WSL2 VM. See [ensure reconcilers](ensure_reconcilers.md) and
 
 ## Current Status
 
-The WSL2 host provider is the **target** Windows VM frame for the third metal substrate; it is owned by
-the development plan ([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)) and is not yet
-implemented or hardware-validated on a Windows host. When it lands, the `HostBootstrap.Wsl2` argv
-builders (including the prefix-guarded `unregister`), the `classifyWsl2Readiness` classifier, and
-`ensure wsl2` are unit-tested as pure values exactly as their Lima/Incus peers are, and the Windows VM
-lifecycle runs through the core `deploy-VM` step kind and the recursive `project up` interpreter:
+The WSL2 host provider is the Windows VM frame for the third metal substrate; it is owned by the
+development plan ([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)). The
+`HostBootstrap.Wsl2` argv builders (including the prefix-guarded `unregister`), the
+`classifyWsl2Readiness` classifier, `HostTool Wsl` System32 resolution, and `ensure wsl2` are
+unit-tested as pure values exactly as their Lima/Incus peers are. Live validation on 2026-06-26 enabled
+the Windows WSL/VMP features, installed `Microsoft.WSL` 2.7.8, and stopped at the required host reboot.
+Follow-up validation on 2026-06-27 found that `C:\Windows\System32\wsl.exe --status` still prints a WSL2
+startup diagnostic saying virtualization is not enabled, but independent host checks disagree:
+`systeminfo.exe` reports `Virtualization Enabled In Firmware: Yes`,
+`Win32_Processor.VirtualizationFirmwareEnabled` is `True`, and DISM reports both
+`Microsoft-Windows-Subsystem-Linux` and `VirtualMachinePlatform` as `Enabled`. `wsl.exe --list --verbose`
+still reports no installed distributions before the project chain runs. A 2026-06-28 probe reproduced the
+same WSL2 startup diagnostic and still found no installed distributions. The demo's binary-owned chain
+selects WSL2 on Windows, composes the managed distro name from the project identity
+(`hostbootstrap-demo-vm`), registers that distro if absent, hands off through `wsl -d <distro> -- ...`,
+stages host files through the distro's `/mnt/<drive>`
+view, and tears down through guarded `wsl --unregister`. A follow-up host probe showed the missing piece is
+OS-level hypervisor launch readiness, not firmware virtualization: `HyperVisorPresent = False` while
+firmware virtualization, VM monitor extensions, SLAT, WSL, and VMP all report present/enabled. The
+2026-06-28 `ensure wsl2` update normalizes NUL-separated `wsl.exe` diagnostics, probes firmware
+virtualization separately, checks `HyperVisorPresent`, resolves `bcdedit`, and sets
+`hypervisorlaunchtype Auto` when the Windows hypervisor is not present. Static validation still passes:
+`cabal test all` from `core/` (`All 253 tests passed`), `cabal build all --ghc-options=-Werror` from
+`core/`, `cabal build all --ghc-options=-Werror` from `demo/`, and
+`poetry run python -m hostbootstrap.check_code`. A rebuilt live `hostbootstrap-demo.exe project up`
+reached the WSL2 provider step, set `hypervisorlaunchtype Auto`, and failed closed with `host reboot
+required after WSL2 hypervisor launch configuration; reboot and retry`. A same-day follow-up probe still
+shows `HyperVisorPresent = False`; `wsl --status` cannot start WSL2, and `wsl --list --verbose` reports
+no installed distributions. `poetry run python -m hostbootstrap.test_all` also passes (`175 passed`).
+Phase 11 remains `Active` until
+the host is rebooted and the Windows VM lifecycle runs end to end through the core `deploy-VM` step kind
+and the recursive `project up` interpreter:
 
 - `project up` imports/enters the Ubuntu-24.04 distro, stages the working tree into the guest, builds
   the project binary host-native in the distro, ensures Docker in the distro, builds the project image,

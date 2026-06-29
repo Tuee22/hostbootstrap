@@ -74,7 +74,7 @@ validateRepo root = do
   planFiles <- listMarkdown (root </> "DEVELOPMENT_PLAN")
   let rootDocs = map (root </>) ["README.md", "AGENTS.md", "CLAUDE.md"]
       phaseDocs = filter isPhaseDoc planFiles
-      architectureDocs = filter (("documents/architecture/" `isInfixOf`) . normalise) docFiles
+      architectureDocs = filter (isUnderDirectory (root </> "documents" </> "architecture")) docFiles
   metaV <- concatMapM (checkGovernedMeta root) docFiles
   rootV <- concatMapM (checkRootDoc root) rootDocs
   broadV <- concatMapM (checkBroadDoctrine root) architectureDocs
@@ -317,3 +317,9 @@ trimStart = dropWhile (`elem` (" \t" :: String))
 
 concatMapM :: (Monad m) => (a -> m [b]) -> [a] -> m [b]
 concatMapM f xs = concat <$> mapM f xs
+
+isUnderDirectory :: FilePath -> FilePath -> Bool
+isUnderDirectory parent child =
+  let prefix = normalise parent
+      candidate = normalise child
+   in prefix `isPrefixOf` candidate

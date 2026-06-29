@@ -74,6 +74,20 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
           "- z"
         ]
     )
+  -- A well-formed architecture doc that intentionally omits TL;DR / Executive
+  -- Summary, so the broad-doctrine structure check fires directly.
+  writeFile
+    (root </> "documents" </> "architecture" </> "no_summary.md")
+    ( unlines
+        [ "# No Summary",
+          "**Status**: Authoritative source",
+          "**Supersedes**: N/A",
+          "**Referenced by**: x",
+          "> **Purpose**: y",
+          "## Current Status",
+          "- z"
+        ]
+    )
   -- A documents/ category outside the canonical taxonomy.
   createDirectoryIfMissing True (root </> "documents" </> "reference")
   violations <- validateRepo root

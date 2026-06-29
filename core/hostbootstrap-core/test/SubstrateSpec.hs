@@ -34,6 +34,10 @@ classifyCases =
       classify "linux" "x86_64" True @?= Right (Substrate LinuxGpu Amd64),
     testCase "linux aarch64 no gpu -> linux-cpu arm64" $
       classify "linux" "aarch64" False @?= Right (Substrate LinuxCpu Arm64),
+    testCase "mingw32 x86_64 no gpu -> windows-cpu" $
+      classify "mingw32" "x86_64" False @?= Right (Substrate WindowsCpu Amd64),
+    testCase "mingw32 x86_64 gpu -> windows-gpu" $
+      classify "mingw32" "x86_64" True @?= Right (Substrate WindowsGpu Amd64),
     testCase "unknown platform rejected" $
       isLeft (classify "windows" "x86_64" False) @?= True
   ]
@@ -46,9 +50,12 @@ predicateCases =
     testCase "linux-gpu is linux with gpu" $ do
       let s = Substrate LinuxGpu Amd64
       (isAppleSilicon s, isLinux s, hasGpu s) @?= (False, True, True),
+    testCase "windows-gpu is not linux and has gpu" $ do
+      let s = Substrate WindowsGpu Amd64
+      (isAppleSilicon s, isLinux s, hasGpu s) @?= (False, False, True),
     testCase "render names" $
-      map renderSubstrateName [AppleSilicon, LinuxCpu, LinuxGpu]
-        @?= ["apple-silicon", "linux-cpu", "linux-gpu"]
+      map renderSubstrateName [AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu]
+        @?= ["apple-silicon", "linux-cpu", "linux-gpu", "windows-cpu", "windows-gpu"]
   ]
 
 isLeft :: Either a b -> Bool

@@ -54,12 +54,13 @@ import HostBootstrap.Dhall.Gen (
 import HostBootstrap.Ensure (Reconciler)
 import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
+import qualified HostBootstrap.Ensure.CudaWin as CudaWin
 import qualified HostBootstrap.Ensure.Docker as Docker
 import qualified HostBootstrap.Ensure.Ghc as Ghc
 import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as Lima
-import qualified HostBootstrap.Ensure.Tart as Tart
+import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
 import HostBootstrap.Harness (ConfigVariant (..), TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Lift (LiftContext, currentSelfRef)
@@ -81,11 +82,12 @@ allReconcilers =
     [ Docker.reconciler
     , Colima.reconciler
     , Cuda.reconciler
+    , CudaWin.reconciler
     , Homebrew.reconciler
     , Ghc.reconciler
-    , Tart.reconciler
     , Lima.reconciler
     , Incus.reconciler
+    , Wsl2.reconciler
     ]
 
 {- | The top-level core command names. The surface is fixed and closed; projects

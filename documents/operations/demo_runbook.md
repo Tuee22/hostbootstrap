@@ -322,8 +322,9 @@ substrate-specific prerequisites:
 ## Windows / WSL2 readiness
 
 A full Windows / WSL2 readiness walkthrough — the winget pre-binary toolchain, the native
-`hostbootstrap.exe` host-native build, and `ensure wsl2` importing the pristine `Ubuntu-24.04` distro on
-the third metal substrate — is **pending Windows validation**. It is a **target** owned by
+`hostbootstrap.exe` host-native build, `ensure wsl2` platform readiness, and the project-owned
+`Ubuntu-24.04` distro named from the project identity on the third metal substrate — is **pending Windows
+validation**. It is a **target** owned by
 [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md); the WSL2 host provider and its
 deploy-VM / `project down` (stop-without-delete) / `project destroy` lifecycle steps are described in
 [wsl2](../engineering/wsl2.md), the Windows peer of the Lima (Apple Silicon) and Incus (native Linux) VM

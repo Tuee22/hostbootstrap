@@ -1,37 +1,46 @@
-# Phase 2: Host Tools and Config
+# Phase 2: Host Floor, Tools, and Config
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-1-hostbootstrap-core-scaffolding.md](phase-1-hostbootstrap-core-scaffolding.md), [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md)
 
-> **Purpose**: Lift infernix's `HostTools` / `HostConfig` / `HostPrereqs` trio and substrate
-> detection into `HostBootstrap.*`, establishing closed-enumeration host-tool resolution and typed
-> substrate detection as the foundation the reconcilers build on.
+> **Purpose**: Establish the host floor needed before Haskell validation can run, then lift infernix's
+> `HostTools` / `HostConfig` / `HostPrereqs` trio and substrate detection into `HostBootstrap.*`,
+> establishing closed-enumeration host-tool resolution and typed substrate detection as the foundation
+> the reconcilers build on.
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-`HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and
-`HostBootstrap.Substrate` are implemented and unit-tested. Host-tool resolution goes through the
-closed `HostTool` enumeration to absolute paths (the `AbsExe` newtype makes a bare command name
-unrepresentable), and substrate detection has a pure classification core. The Python bootstrapper keeps
-only the residual pre-binary host minimum checks required before a project binary exists.
+The pre-binary Python host floor and build-toolchain bootstrap, `HostBootstrap.HostTool`,
+`HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and `HostBootstrap.Substrate` are implemented and
+unit-tested. Phase 2 owns the cross-language bootstrap dependency that makes the phase order coherent:
+on a fresh host, `hostbootstrap build` first asserts only the irreducible pre-binary floor and ensures the
+host Haskell build toolchain and Cabal package index, so `cabal build all` / `cabal test` can validate the
+Haskell library without depending on a later phase. Host-tool resolution then goes through the closed `HostTool` enumeration to
+absolute paths (the `AbsExe` newtype makes a bare command name unrepresentable), and substrate detection
+has a pure classification core.
 
-This phase is **reopened** to add **Windows as the third metal substrate**: native Windows GHC sees
+The Windows reopening is closed: native Windows GHC sees
 `System.Info.os == "mingw32"`, so `HostBootstrap.Substrate` gains `windows-cpu` / `windows-gpu`
 classification (gpu when the NVIDIA CUDA stack is present) and the core's POSIX-only `unix` dependency
 is conditionalized at its three call sites so the binary builds host-native on Windows (§ L, § N).
 
 ## Remaining Work
 
-Windows substrate detection is the open work — Sprint 2.3 (`[Planned]`). The pure classification and the
-conditionalized `unix` dependency are cabal-test-closable; the real-Windows-host detection run is that
-sprint's `#### Remaining Work`.
+None. Closed on 2026-06-26 on native Windows: `poetry run python -m hostbootstrap.check_code`,
+`poetry run python -m hostbootstrap.test_all` (175 tests), `poetry run hostbootstrap build --project-root
+core/hostbootstrap-core` (built `.build/hostbootstrap.exe` after GHCup/GHC/Cabal and `cabal update`),
+`cabal build all` from `core/`, and `cabal test all` from `core/` (251 tests). The host reports an NVIDIA
+GeForce RTX 3090, covering the real Windows GPU host substrate. WSL2 is intentionally not a Phase-2
+pre-binary gate; it is installed/reconciled later by the built binary's Phase-11 `ensure wsl2` provider
+path.
 
 ## Phase Objective
 
-Lift the host trio from [`infernix`](https://github.com/Tuee22/infernix) — the source of
+Establish the pre-binary host floor and build-toolchain bootstrap, then lift the host trio from
+[`infernix`](https://github.com/Tuee22/infernix) — the source of
 `HostTools` / `HostConfig` / `HostPrereqs` — into `HostBootstrap.*`, and move substrate detection
 (`apple-silicon`, `linux-cpu`, `linux-gpu`, and — added when the phase reopened — `windows-cpu` /
 `windows-gpu`) into typed Haskell. Establish the host-tool-resolution
@@ -39,6 +48,48 @@ doctrine: a closed `HostTool` enumeration resolved to absolute paths, with no `$
 command names (see [development_plan_standards.md § K](development_plan_standards.md)).
 
 ## Sprints
+
+### Sprint 2.0: Pre-binary host floor and build-toolchain bootstrap [Done]
+
+**Status**: Done
+**Implementation**: `hostbootstrap/bootstrap.py`, `hostbootstrap/prereqs.py`,
+`hostbootstrap/substrate.py`, `tests/test_bootstrap.py`, `tests/test_prereqs.py`,
+`tests/test_substrate.py`
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`,
+`documents/architecture/build_and_run_model.md`, `documents/engineering/prerequisites.md`,
+`system-components.md`
+
+#### Objective
+
+Make the repository's numerical development order self-contained on a fresh host: before any Haskell
+phase needs `cabal`, the Python bootstrapper can assert the irreducible pre-binary host floor, install or
+expose the host Haskell build toolchain, refresh Cabal's package index, and build the native project binary.
+
+#### Deliverables
+
+- `hostbootstrap build` / `hostbootstrap run` assert only the irreducible pre-binary floor: Apple
+  Silicon has Xcode CLT + Homebrew, Linux has the OS/sudo floor, and Windows has `winget` as the
+  package-manager root. WSL2 is not a pre-binary gate.
+- `toolchain_ensure_steps` ensures the Haskell build toolchain before `cabal` is needed: Homebrew ->
+  GHCup/GHC/Cabal on Apple, GHCup/GHC/Cabal on Linux, and winget-rooted GHCup/GHC/Cabal on Windows.
+- `_build_native` refreshes the Cabal package index (`cabal update`) before the first host-native build
+  so a fresh host is not blocked by a missing Hackage package list.
+- The built binary owns all post-binary host management: Docker, CUDA, WSL2/Incus/Lima providers,
+  project containers, Dhall, cluster lifecycle, and resource cordons.
+
+#### Validation
+
+- Python pure seams and command builders are covered by `tests/test_bootstrap.py`,
+  `tests/test_prereqs.py`, and `tests/test_substrate.py`.
+- `poetry run python -m hostbootstrap.check_code` passes.
+- `poetry run python -m hostbootstrap.test_all` passes.
+- Live Windows closure: `hostbootstrap build --project-root core/hostbootstrap-core` installs or exposes
+  the Windows Haskell toolchain and builds the native `hostbootstrap.exe`.
+
+#### Remaining Work
+
+None. `poetry run hostbootstrap build --project-root core/hostbootstrap-core` passed on 2026-06-26 and
+produced `core/hostbootstrap-core/.build/hostbootstrap.exe`.
 
 ### Sprint 2.1: HostTool resolution + HostConfig [Done]
 
@@ -107,9 +158,9 @@ Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootst
 
 None.
 
-### Sprint 2.3: Windows substrate detection [Planned]
+### Sprint 2.3: Windows substrate detection [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (the conditionalized `unix` dependency),
 `core/hostbootstrap-core/test/SubstrateSpec.hs`
@@ -130,29 +181,26 @@ apple-silicon and the Linux family, and the core builds host-native on native Wi
   resolver build on Windows; `unix` is dropped from the Windows build and the affected modules take the
   Windows-safe path under `mingw32`.
 - `windows-cpu` / `windows-gpu` join the substrate enumeration the reconcilers (§ L) and the host
-  prerequisites branch on; the Windows host floor is winget (§ M), asserted by the Python bootstrapper.
+  prerequisites branch on; the Windows pre-binary floor/toolchain bootstrap is owned by Sprint 2.0.
 
 #### Validation
 
 - `SubstrateSpec` covers the `windows-cpu` / `windows-gpu` branches through the pure `classify` core
-  (mingw32 + the GPU-present discriminator); `cabal build all` and `cabal test` pass with the `unix`
+  (mingw32 + the GPU-present discriminator); `cabal build all` and `cabal test all` pass with the `unix`
   dependency conditionalized out of the Windows build.
 
 #### Remaining Work
 
-Real-Windows-host validation (real-run-gated, § C): the pure classification and the conditionalized
-`unix` dependency are cabal-test-closable, but observing `windows-cpu` / `windows-gpu` detection and a
-host-native `hostbootstrap.exe` build on a real Windows host is this sprint's remaining closure (the
-build/exec path is owned by [phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md),
-the reconcilers by [phase-3-ensure-reconcilers.md](phase-3-ensure-reconcilers.md)).
+None. `cabal build all` and `cabal test all` passed from `core/` on 2026-06-26 on native Windows; the
+host's NVIDIA GeForce RTX 3090 covers the real Windows GPU host.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/hostbootstrap_core_library.md` - adds the host-tool-resolution doctrine and
   the substrate-detection ownership statement.
-- `documents/architecture/python_haskell_boundary.md` - records the Windows pre-binary host floor
-  (winget as the toolchain root) feeding the `windows-cpu` / `windows-gpu` substrate.
+- `documents/architecture/python_haskell_boundary.md` - records the pre-binary host floor and
+  toolchain bootstrap that makes Haskell validation available before later phases run.
 
 **Engineering docs to create/update:**
 - `documents/engineering/prerequisites.md` - records the fail-fast host minimums and the move of

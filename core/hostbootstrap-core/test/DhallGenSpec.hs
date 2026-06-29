@@ -21,13 +21,21 @@ import HostBootstrap.Dhall.Gen
   )
 import HostBootstrap.DocValidator (findRepoRoot)
 import System.Directory (getCurrentDirectory)
-import System.FilePath ((</>))
+import System.FilePath (makeRelative, normalise, (</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
--- | The absolute path of @Core.dhall@, usable as a Dhall import in test source.
-corePath :: FilePath -> T.Text
-corePath root = T.pack (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
+-- | A relative @Core.dhall@ import, rendered with Dhall's portable '/' separators.
+corePath :: FilePath -> IO T.Text
+corePath root = do
+  cwd <- getCurrentDirectory
+  let rel = makeRelative cwd (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
+      slashy = map (\c -> if c == '\\' then '/' else c) (normalise rel)
+      importPath =
+        if "." `T.isPrefixOf` T.pack slashy
+          then slashy
+          else "./" ++ slashy
+  pure (T.pack importPath)
 
 withRoot :: (FilePath -> IO ()) -> IO ()
 withRoot k = do
@@ -95,12 +103,14 @@ renderCases =
       renderValue v @?= rendered,
     testCase "an in-budget deploy config type-checks (carries the fitsWithin assert)" $ withRoot $ \root -> do
       -- budget cpu=4 mem=8; pods replicas=2 × (cpuLimit=1, memoryLimit=2) = cpu 2, mem 4 → fits.
-      let okText = deployConfigText (corePath root) (V.Budget 4 8 20) [V.PodResources 2 1 1 1 2]
+      cp <- corePath root
+      let okText = deployConfigText cp (V.Budget 4 8 20) [V.PodResources 2 1 1 1 2]
       _ <- Dhall.inputExpr okText
       pure (),
     testCase "an over-budget deploy config fails to type-check (the assert fires)" $ withRoot $ \root -> do
       -- budget cpu=2; pods replicas=3 × cpuLimit=2 = cpu 6 → over → assert False === True fails.
-      let badText = deployConfigText (corePath root) (V.Budget 2 4 20) [V.PodResources 3 1 2 1 2]
+      cp <- corePath root
+      let badText = deployConfigText cp (V.Budget 2 4 20) [V.PodResources 3 1 2 1 2]
       result <- try (Dhall.inputExpr badText >> pure ()) :: IO (Either SomeException ())
       assertBool "over-budget deploy is rejected" (either (const True) (const False) result)
   ]
@@ -111,7 +121,8 @@ secretRefCases =
       -- Anti-drift: the reflected union type the @ToDhall SecretRef@ encoder
       -- injects to must be judgmentally equal to @Core.dhall@'s @SecretRef@.
       reflected <- Dhall.inputExpr (reflectedSchema @V.SecretRef)
-      core <- Dhall.inputExpr ("(" <> corePath root <> ").SecretRef")
+      cp <- corePath root
+      core <- Dhall.inputExpr ("(" <> cp <> ").SecretRef")
       assertBool
         ( "reflected SecretRef\n  "
             <> T.unpack (Dhall.Core.pretty (Dhall.Core.normalize reflected))
@@ -138,47 +149,52 @@ secretRefCases =
       -- The rendered value, annotated with the *Core.dhall* type (not the
       -- reflected one), still type-checks and decodes — proving the shared shape.
       let v = V.Vault (V.VaultRef "secret" "app/db" "password")
+      cp <- corePath root
       decoded <-
         Dhall.input
           (Dhall.auto :: Dhall.Decoder V.SecretRef)
-          (renderValue v <> " : (" <> corePath root <> ").SecretRef")
+          (renderValue v <> " : (" <> cp <> ").SecretRef")
       decoded @?= v
   ]
 
 budgetCases :: [TestTree]
 budgetCases =
   [ testCase "Budget/fitsWithin accepts an under-budget pod set" $ withRoot $ \root -> do
+      cp <- corePath root
       ok <-
         Dhall.input
           Dhall.bool
           ( "let C = "
-              <> corePath root
+              <> cp
               <> " in C.fitsWithin { cpu = 4, memory = 8, storage = 20 }"
               <> " [ { replicas = 2, cpuRequest = 1, cpuLimit = 1, memoryRequest = 1, memoryLimit = 2 } ]"
           )
       ok @?= True,
     testCase "Budget/fitsWithin rejects an over-budget pod set" $ withRoot $ \root -> do
+      cp <- corePath root
       ok <-
         Dhall.input
           Dhall.bool
           ( "let C = "
-              <> corePath root
+              <> cp
               <> " in C.fitsWithin { cpu = 2, memory = 4, storage = 20 }"
               <> " [ { replicas = 3, cpuRequest = 1, cpuLimit = 2, memoryRequest = 1, memoryLimit = 4 } ]"
           )
       ok @?= False,
     testCase "Budget/split divides proportionally by weight (floor)" $ withRoot $ \root -> do
+      cp <- corePath root
       parts <-
         Dhall.input
           (Dhall.list Dhall.auto)
-          ("let C = " <> corePath root <> " in C.split { cpu = 10, memory = 20, storage = 40 } [ 1, 1 ]") ::
+          ("let C = " <> cp <> " in C.split { cpu = 10, memory = 20, storage = 40 } [ 1, 1 ]") ::
           IO [V.Budget]
       parts @?= [V.Budget 5 10 20, V.Budget 5 10 20],
     testCase "Budget/split floors uneven weights and stays within budget" $ withRoot $ \root -> do
+      cp <- corePath root
       parts <-
         Dhall.input
           (Dhall.list Dhall.auto)
-          ("let C = " <> corePath root <> " in C.split { cpu = 7, memory = 7, storage = 7 } [ 1, 2 ]") ::
+          ("let C = " <> cp <> " in C.split { cpu = 7, memory = 7, storage = 7 } [ 1, 2 ]") ::
           IO [V.Budget]
       -- 7*1/3 = 2 (floor), 7*2/3 = 4 (floor); the floors never exceed the budget.
       parts @?= [V.Budget 2 2 2, V.Budget 4 4 4]

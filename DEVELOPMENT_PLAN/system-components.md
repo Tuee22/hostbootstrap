@@ -10,9 +10,13 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-20 landed `Done`, but the Windows third-substrate work reopens phases 2, 3, 6, 9, and 11
-> (`Done` → `Active`): Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires
-> from the prose, and composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
+> Note: Phases 0-20 landed `Done`, and the Windows third-substrate reopening is now closed for phases 2,
+> 3, and 9. Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires from
+> the prose, and composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
+> Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, and `ensure wsl2` has
+> reconciled the missing Windows hypervisor launch setting (`hypervisorlaunchtype Auto`), but the current
+> host still reports `HyperVisorPresent = False`; the remaining work is reboot-gated real Windows/WSL2
+> provider validation.
 > The **generic-project-model** work (phase 19, § BB) is `Done` —
 > phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.
@@ -46,8 +50,8 @@
 > component surfaces, their owning phases, and whether the repository implements them. Runtime authority is
 > a sibling `<project>.dhall` for each host, VM, container, and service/daemon copy of a binary, with role
 > and command permissions inside the file content, including provider-backed topology frames, a current
-> frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` / `base` pre-binary
-> bootstrapper plus the explicit `update` pipx self-update surface, and `hostbootstrap-core` is the reusable
+> frame, and runtime witnesses. The Python CLI is the thin `doctor` / `build` / `run` / `base` surface
+> consuming Phase 2's pre-binary bootstrap plus the explicit `update` pipx self-update surface, and `hostbootstrap-core` is the reusable
 > library consumed through `runHostBootstrapCLI progName projectSpec`. The single-representation rule is part
 > of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
@@ -110,8 +114,9 @@ External tools resolve through a closed `HostTool` enumeration to absolute paths
 that resolves through `$PATH`; every invocation reads an absolute path from typed host configuration.
 `Sysctl` is part of this closed enum for Apple-silicon host-capacity reads; it is a host tool, not an
 `ensure` reconciler. On Windows the closed enum adds `Winget` (the Homebrew-analog pre-binary package
-manager), `Nvcc` (CUDA-on-Windows toolchain verification for `ensure cudawin`), and `Wsl` (WSL2
-host-provider control); `Tart` is no longer a member of the enum.
+manager), `Nvcc` (CUDA-on-Windows toolchain verification for `ensure cudawin`), `Wsl` (WSL2
+host-provider control), and `Bcdedit` (Windows hypervisor launch reconciliation for `ensure wsl2`);
+`Tart` is no longer a member of the enum.
 See [development_plan_standards.md § K](development_plan_standards.md).
 
 ## Ensure reconcilers and host applicability
@@ -132,7 +137,7 @@ with a one-line diagnostic and a non-zero exit. See
 | `ensure ghc` | `HostBootstrap.Ensure.Ghc` | 3 | `apple-silicon` (host-native build path) | fail fast, non-zero |
 | `ensure lima` | `HostBootstrap.Ensure.Lima` | 11.6 | `apple-silicon` (pristine demo VM provider) | fail fast, non-zero |
 | `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify; Colima-backed on Apple, native daemon on Linux) | fail fast, non-zero |
-| `ensure wsl2` | `HostBootstrap.Ensure.Wsl2` | 11 | `windows-cpu`/`windows-gpu` (install-and-verify; WSL2 Ubuntu-24.04 host-provider, the incus/lima peer) | fail fast, non-zero |
+| `ensure wsl2` | `HostBootstrap.Ensure.Wsl2` | 11 | `windows-cpu`/`windows-gpu` (install-and-verify; WSL2 platform readiness for the incus/lima peer; project VM steps register the project-named Ubuntu-24.04 distro) | fail fast, non-zero |
 
 ## Project-local `<project>.dhall` schema
 
@@ -190,7 +195,7 @@ The Python bootstrapper's surface is only what must run before any project binar
 | Step | Responsibility |
 |------|----------------|
 | 1 | assert the fail-fast host minimums |
-| 2 | ensure the host toolchain prerequisites needed to **build** the binary (Homebrew → `ghcup` → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux) |
+| 2 | ensure the host Haskell toolchain prerequisites and Cabal package index needed to **build** the binary (Homebrew → `ghcup` → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux; winget-rooted GHCup → GHC/Cabal on Windows; then `cabal update`) |
 | 3 | derive the project name from the Cabal file and build the project binary **host-native** (every substrate) |
 | 4 | exec the binary |
 
@@ -205,13 +210,18 @@ current `hostbootstrap/bootstrap.py` derives the project name from the Cabal fil
 binary and execs it; it does not initialize or trigger config creation and writes no Dhall itself
 (phase 19 Sprint 19.5).
 
+The pre-binary floor/toolchain bootstrap is owned by Phase 2 so it can make `cabal` available before any
+Haskell phase validation gate runs. Firmware virtualization is a host-floor fact. WSL2 feature activation,
+Windows hypervisor launch readiness, distro registration, and provider usability are not Python
+pre-binary gates; they are reconciled by the built binary through Phase 11.
+
 The Python CLI command surface is:
 
 | Command | Phase | Implemented | Purpose |
 |---------|-------|-------------|---------|
-| `hostbootstrap doctor` | 6 | yes | detect the host and assert the fail-fast host minimums |
-| `hostbootstrap build` | 6 | yes | build the project binary host-native into `./.build/` without execing it |
-| `hostbootstrap run` | 6 | yes | build idempotently, then exec the project binary |
+| `hostbootstrap doctor` | 2, 6 | yes | detect the host and assert the Phase-2 fail-fast host minimums |
+| `hostbootstrap build` | 2, 6 | yes | consume the Phase-2 toolchain bootstrap and build the project binary host-native into `./.build/` without execing it |
+| `hostbootstrap run` | 2, 6 | yes | consume the Phase-2 toolchain bootstrap, build idempotently, then exec the project binary |
 | `hostbootstrap base build` | 6 | yes | cold-rebuild base image tags locally |
 | `hostbootstrap base build-and-push` | 6 | yes | cold-rebuild and publish base image tags when the operator explicitly requests it |
 | `hostbootstrap update` | 6.5 | yes | explicit pipx self-update of the Python bootstrapper; no automatic latest-version gate |
@@ -314,7 +324,7 @@ demoArtifacts`), the harness (`hostbootstrap-demo test run all` → `runMatrix` 
 per test config, bound to the inherited `test` verb), and the service handlers (the demo's `Web` service
 variant run by `service run`). The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall`
 files (host, VM, container on the VM, and cluster-service pod, the last delivered by a ConfigMap). The chain
-drives the live surface — the provider-aware VM axis (Lima on Apple Silicon, Incus on Linux), applied budget
+drives the live surface — the provider-aware VM axis (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows), applied budget
 cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-code` gate
 (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA served by `service run`, and
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that

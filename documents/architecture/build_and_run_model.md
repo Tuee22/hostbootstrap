@@ -36,7 +36,7 @@ builds the binary **host-native**, for the host it will run on:
 |-----------|---------------------------|---------------|-----|
 | `linux-cpu` / `linux-gpu` | Host-native (the bootstrapper ensures the host GHC/Cabal toolchain) | On the host | The binary is built directly for the host; no container round-trip. |
 | `apple-silicon` | Host-native (the bootstrapper ensures a host GHC toolchain via Homebrew → `ghcup`) | On the host | A Linux ELF cannot exec on macOS, so the runnable binary must be a native macOS build. |
-| `windows-cpu` / `windows-gpu` | Host-native (the bootstrapper ensures a host GHC toolchain via **winget** — the Homebrew-analog pre-binary package manager — plus MSVC) | On the host | The binary is the native Windows `hostbootstrap.exe` (mingw32 GHC), the peer of the macOS arm64 binary; a Linux ELF cannot exec on Windows. |
+| `windows-cpu` / `windows-gpu` | Host-native (the bootstrapper ensures a host GHC toolchain via GHCup, with **winget** as the Homebrew-analog pre-binary package-manager floor) | On the host | The binary is the native Windows `hostbootstrap.exe` (mingw32 GHC), the peer of the macOS arm64 binary; a Linux ELF cannot exec on Windows. |
 
 In all cases the result is a `./.build/<binary>` host executable. Consumers and the test harness run
 `./.build/<binary>`; they never reach into a container to run the host binary. Normal command dispatch

@@ -42,10 +42,10 @@ production Harbor registry, the project image pushed to the in-cluster registry,
 serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
 `.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
 
-The Windows surface — the `windows-cpu`/`windows-gpu` substrates, the `HostBootstrap.Wsl2` provider, and
-the `Ensure.CudaWin` / `Ensure.Wsl2` reconcilers — is **target**, owned by the reopened phases (phase-2,
-phase-3, phase-11) and not yet hardware-validated. See [wsl2](../engineering/wsl2.md) and
-[ensure_reconcilers](../engineering/ensure_reconcilers.md).
+The Windows surface splits by responsibility: the `windows-cpu`/`windows-gpu` substrates and
+`Ensure.CudaWin` are implemented and validated on a real Windows GPU host, while the
+`HostBootstrap.Wsl2` provider and `Ensure.Wsl2` remain the Phase-11 real-run gate. See
+[wsl2](../engineering/wsl2.md) and [ensure_reconcilers](../engineering/ensure_reconcilers.md).
 
 Current generic model: under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the extension

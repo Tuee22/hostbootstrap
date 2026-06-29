@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- | The @Reconciler@ value type and runner used by @ensure-*@ chain steps.
 --
 -- A reconciler is an idempotent value: a host-applicability predicate plus a
@@ -24,9 +26,14 @@ where
 import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
 import Control.Monad (foldM)
+import Data.Char (toLower)
+import Data.List (isInfixOf)
 import Data.Maybe (isJust)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
-import HostBootstrap.HostTool (HostTool, absExePath, toolCommandName)
+import HostBootstrap.HostTool (HostTool (Winget, Wsl), absExePath, toolCommandName)
+#ifdef mingw32_HOST_OS
+import HostBootstrap.HostTool (HostTool (PowerShell))
+#endif
 import HostBootstrap.Substrate (Substrate, detect, renderSubstrateName, substrateName)
 import System.Exit (ExitCode (..), die, exitWith)
 import System.IO (hPutStrLn, stderr)
@@ -127,21 +134,47 @@ installAndVerify name probe plan cfg0 = do
     runStep cfg (InstallStep tool args) = do
       result <- runTool cfg tool args
       case result of
-        Right (ExitSuccess, _, _) -> buildHostConfig (hcSubstrate cfg)
-        Right (ExitFailure n, _, errOut) ->
-          die
-            ( "ensure "
-                ++ name
-                ++ ": install step `"
-                ++ toolCommandName tool
-                ++ " "
-                ++ unwords args
-                ++ "` failed (exit "
-                ++ show n
-                ++ ") "
-                ++ errOut
-            )
+        Right (ExitSuccess, out, errOut)
+          | wslNeedsReboot tool (out ++ errOut) ->
+              die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
+          | otherwise -> buildHostConfig (hcSubstrate cfg)
+        Right (ExitFailure n, out, errOut)
+          | wslNeedsReboot tool (out ++ errOut) ->
+              die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
+          | wslInstallNeedsReboot tool args n ->
+              die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
+          | wingetAlreadyInstalled tool args (out ++ errOut) -> buildHostConfig (hcSubstrate cfg)
+          | otherwise ->
+              die
+                ( "ensure "
+                    ++ name
+                    ++ ": install step `"
+                    ++ toolCommandName tool
+                    ++ " "
+                    ++ unwords args
+                    ++ "` failed (exit "
+                    ++ show n
+                    ++ ") "
+                    ++ errOut
+                )
         Left err -> die ("ensure " ++ name ++ ": " ++ err)
+
+    wingetAlreadyInstalled tool args output =
+      tool == Winget
+        && take 1 args == ["install"]
+        && ( "Found an existing package already installed" `isInfixOf` output
+               || "No available upgrade found" `isInfixOf` output
+           )
+
+    wslNeedsReboot tool output =
+      tool == Wsl
+        && let lower = map toLower output
+            in "reboot" `isInfixOf` lower || "restart" `isInfixOf` lower
+
+    wslInstallNeedsReboot tool args exitCode =
+      tool == Wsl
+        && exitCode == -1
+        && "--install" `elem` args
 
 -- | Whether a host tool is resolved in the configuration.
 toolPresent :: HostConfig -> HostTool -> Bool
@@ -159,6 +192,9 @@ runTool cfg t args = runToolWithStdin cfg t args ""
 -- travels on, and it is consumed by the wrapped command (see
 -- 'HostBootstrap.Registry.dockerAuthStdinWrapper').
 runToolWithStdin :: HostConfig -> HostTool -> [String] -> String -> IO (Either String (ExitCode, String, String))
+#ifdef mingw32_HOST_OS
+runToolWithStdin cfg Wsl args input = runWslThroughPowerShell cfg args input
+#endif
 runToolWithStdin cfg t args input = case resolveMaybe cfg t of
   Nothing -> pure (Left (toolCommandName t ++ " not found on this host"))
   Just exe -> do
@@ -166,3 +202,23 @@ runToolWithStdin cfg t args input = case resolveMaybe cfg t of
     pure $ case (result :: Either SomeException (ExitCode, String, String)) of
       Right ok -> Right ok
       Left err -> Left ("could not exec " ++ absExePath exe ++ ": " ++ show err)
+
+#ifdef mingw32_HOST_OS
+runWslThroughPowerShell :: HostConfig -> [String] -> String -> IO (Either String (ExitCode, String, String))
+runWslThroughPowerShell cfg args input =
+  case (resolveMaybe cfg PowerShell, resolveMaybe cfg Wsl) of
+    (Nothing, _) -> pure (Left (toolCommandName PowerShell ++ " not found on this host"))
+    (_, Nothing) -> pure (Left (toolCommandName Wsl ++ " not found on this host"))
+    (Just ps, Just wsl) -> do
+      let command = unwords ("&" : map psQuote (absExePath wsl : args)) ++ "; exit $LASTEXITCODE"
+      result <- try (readProcessWithExitCode (absExePath ps) ["-NoProfile", "-Command", command] input)
+      pure $ case (result :: Either SomeException (ExitCode, String, String)) of
+        Right ok -> Right ok
+        Left err -> Left ("could not exec " ++ absExePath wsl ++ " through " ++ absExePath ps ++ ": " ++ show err)
+
+psQuote :: String -> String
+psQuote s = "'" ++ concatMap escape s ++ "'"
+  where
+    escape '\'' = "''"
+    escape c = [c]
+#endif

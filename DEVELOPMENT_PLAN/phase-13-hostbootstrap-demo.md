@@ -211,7 +211,7 @@ project-container build.
 The demo is also the worked proof that **hostbootstrap owns the lifecycle of every resource** and that
 the **only fail-fast dependencies are the Python wrapper's host minimums**. The full a→f owned lifecycle
 (see [demo_runbook.md](../documents/operations/demo_runbook.md)): (a) the metal binary reconciles the VM
-provider (Lima on Apple Silicon, Incus on Linux); (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
+provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows); (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
 installs Docker and builds the project container; (d) the project container spins up the kind cluster and
 deploys the webservice; (e) the project image's base-provided Playwright runtime runs e2e against it from
 a container on the VM; (f) hostbootstrap spins everything back down, preserving `.data`. Nothing in

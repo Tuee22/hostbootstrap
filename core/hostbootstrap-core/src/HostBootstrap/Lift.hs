@@ -27,6 +27,7 @@ module HostBootstrap.Lift
     localContext,
     inVM,
     inLimaVM,
+    inWsl2VM,
     inContainer,
 
     -- * Self-reference
@@ -55,11 +56,13 @@ import HostBootstrap.Config.Vocab (Mount)
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.Ensure (runTool, runToolWithStdin)
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandName)
 import HostBootstrap.Incus (IncusVM, execVMArgs)
 import HostBootstrap.Lima (LimaVM)
 import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Registry (RegistryAuth, registryAuthEnvVar, registryConfigPayload)
+import HostBootstrap.Wsl2 (Wsl2VM)
+import qualified HostBootstrap.Wsl2 as Wsl2
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode)
 import System.Process (readProcessWithExitCode)
@@ -77,7 +80,7 @@ data ContainerLift = ContainerLift
   deriving (Eq, Show)
 
 -- | One context-boundary layer: a VM provider or a container.
-data LiftLayer = ViaVM IncusVM | ViaLimaVM LimaVM | ViaContainer ContainerLift
+data LiftLayer = ViaVM IncusVM | ViaLimaVM LimaVM | ViaWsl2VM Wsl2VM | ViaContainer ContainerLift
   deriving (Eq, Show)
 
 -- | A stack of context layers, outermost-first. The empty stack is the local
@@ -96,6 +99,10 @@ inVM vm (LiftContext ls) = LiftContext (ls ++ [ViaVM vm])
 -- | Nest a Lima VM as the new innermost layer.
 inLimaVM :: LimaVM -> LiftContext -> LiftContext
 inLimaVM vm (LiftContext ls) = LiftContext (ls ++ [ViaLimaVM vm])
+
+-- | Nest a WSL2 distro as the new innermost layer.
+inWsl2VM :: Wsl2VM -> LiftContext -> LiftContext
+inWsl2VM vm (LiftContext ls) = LiftContext (ls ++ [ViaWsl2VM vm])
 
 -- | Nest a container as the new innermost layer (a container is terminal).
 inContainer :: ContainerLift -> LiftContext -> LiftContext
@@ -195,12 +202,14 @@ foldLeaf (LiftContext layers) leaf = build layers
     build [] = leafLocalDispatch leaf
     build (ViaVM vm : rest) = DispatchTool Incus (execVMArgs vm (insideVM rest))
     build (ViaLimaVM vm : rest) = DispatchTool Lima (Lima.shellVMArgs vm (insideVM rest))
+    build (ViaWsl2VM vm : rest) = DispatchTool Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) (insideVM rest))
     build (ViaContainer c : _) = DispatchTool Docker (containerRunArgs c (leafContainerInner leaf))
 
     -- The argv to run inside a VM, given the remaining inner layers.
     insideVM [] = leafInVMArgv leaf
     insideVM (ViaVM vm : rest) = toolCommandName Incus : execVMArgs vm (insideVM rest)
     insideVM (ViaLimaVM vm : rest) = toolCommandName Lima : Lima.shellVMArgs vm (insideVM rest)
+    insideVM (ViaWsl2VM vm : rest) = toolCommandName Wsl : Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) (insideVM rest)
     insideVM (ViaContainer c : _) = toolCommandName Docker : containerRunArgs c (leafContainerInner leaf)
 
 -- | Fold a context stack and a subcommand of /this binary/ into the host
@@ -268,6 +277,7 @@ liftSubcommandWithAuth cfg (Just auth) self ctx sub =
   case liftLayers ctx of
     [ViaLimaVM vm, ViaContainer c] -> forward Lima (Lima.shellVMArgs vm) c
     [ViaVM vm, ViaContainer c] -> forward Incus (execVMArgs vm) c
+    [ViaWsl2VM vm, ViaContainer c] -> forward Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm)) c
     _ -> liftSubcommand cfg self ctx sub
   where
     forward tool vmShell c =

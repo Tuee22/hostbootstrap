@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -70,7 +71,9 @@ import System.Directory (doesFileExist, findExecutable)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
+#ifndef mingw32_HOST_OS
 import System.Posix.Files (FileStatus, getFileStatus, isSocket)
+#endif
 
 -- | A build-time placeholder for bootstrap-only config initialization surfaces
 -- that run before a parent context is available. Normal derived contexts carry
@@ -128,6 +131,7 @@ data ProviderKind
   = HostProvider
   | IncusVMProvider
   | LimaVMProvider
+  | Wsl2VMProvider
   | DockerContainerProvider
   | KubernetesProvider
   | ExternalProvider
@@ -640,12 +644,16 @@ checkRuntimeWitness witness =
           then Right ()
           else failed ("missing file " ++ name)
     WitnessUnixSocket -> do
+#ifdef mingw32_HOST_OS
+      pure $ failed ("unix socket witnesses are not supported on Windows: " ++ name)
+#else
       result <- try (getFileStatus name) :: IO (Either SomeException FileStatus)
       pure $ case result of
         Right status
           | isSocket status -> Right ()
         Right _ -> failed ("not a unix socket " ++ name)
         Left err -> failed ("missing unix socket " ++ name ++ ": " ++ firstLine (show err))
+#endif
     WitnessEnvEquals -> do
       actual <- lookupEnv name
       pure $ case actual of
@@ -661,7 +669,9 @@ checkRuntimeWitness witness =
   where
     name = T.unpack (witnessName witness)
     failed detail = Left (ContextRuntimeWitnessFailed witness detail)
+#ifndef mingw32_HOST_OS
     firstLine = takeWhile (/= '\n')
+#endif
 
 -- | Load and validate a context file.
 readAndValidateContextFile :: FilePath -> ContextRequirement -> IO (Either BinaryContextError BinaryContext)

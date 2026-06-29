@@ -49,7 +49,7 @@ async def _drain(
         chunk = await stream.readline()
         if not chunk:
             return
-        text = chunk.decode("utf-8", errors="replace")
+        text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
         sink_lines.append(text)  # captured raw, unprefixed
         mirror.write(prefix + text)  # live mirror is labelled when a prefix is given
         mirror.flush()

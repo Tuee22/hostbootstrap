@@ -269,7 +269,7 @@ workload-extension seam (§ T, § Y).
 
 #### Deliverables
 
-- The demo contributes its chain value — host-pb → deploy VM (Lima on Apple Silicon, Incus on Linux) →
+- The demo contributes its chain value — host-pb → deploy VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows) →
   copy source + ensure GHC in the VM → build pb in the VM → ensure Docker in the VM → build the project
   image → deploy kind → deploy harbor → launch the webservice → expose the NodePort to the host — as a
   `[Step]` value, interleaving core host-management steps with the demo's own deploy-harbor / launch-web /
@@ -287,9 +287,10 @@ workload-extension seam (§ T, § Y).
   fail-fast.
 - `cabal build all` from `demo/` passes; the in-image fourmolu/hlint and `check-code` gates pass for the
   demo.
-- A real-run-gated `project up` on a supported host (Lima on Apple Silicon, Incus on Linux) brings up the
-  persistent stack and a follow-on `test run all` validates it (the decoupled test surface, § Z,
-  phase-17).
+- A real-run-gated `project up` on a closed provider path (Lima on Apple Silicon, Incus on Linux) brings
+  up the persistent stack and a follow-on `test run all` validates it (the decoupled test surface, § Z,
+  phase-17). The Windows WSL2 provider follows the same chain shape but its real provider closure remains
+  Phase 11 Sprint 11.7 work.
 
 #### Remaining Work
 

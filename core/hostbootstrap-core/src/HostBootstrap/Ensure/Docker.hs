@@ -22,8 +22,9 @@ import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Sudo))
 import HostBootstrap.Substrate
   ( Substrate,
-    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu),
+    SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu),
     isLinux,
+    renderSubstrateName,
     substrateName,
   )
 import System.Environment (getEnvironment)
@@ -80,6 +81,10 @@ installSteps sub = case substrateName sub of
     Left "on Apple silicon Docker is provided by the per-project Colima VM; run `ensure colima` first"
   LinuxCpu -> Right linuxSteps
   LinuxGpu -> Right linuxSteps
+  WindowsCpu ->
+    Left ("docker is reconciled by the Windows WSL2 host-provider path, not `ensure docker` on " ++ renderSubstrateName WindowsCpu)
+  WindowsGpu ->
+    Left ("docker is reconciled by the Windows WSL2 host-provider path, not `ensure docker` on " ++ renderSubstrateName WindowsGpu)
   where
     linuxSteps =
       [ InstallStep Sudo ["apt-get", "install", "-y", "docker.io", "acl"],

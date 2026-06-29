@@ -1,23 +1,23 @@
-# Phase 6: Base Image and Thin Python Bootstrapper
+# Phase 6: Base Image and Python CLI Surface
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-5-cluster-lifecycle-and-resource-cordoning.md](phase-5-cluster-lifecycle-and-resource-cordoning.md), [phase-7-consumer-migration.md](phase-7-consumer-migration.md)
 
 > **Purpose**: Warm `hostbootstrap-core`'s dependencies into the base image (no `hostbootstrap`
-> binary is baked), and shrink the Python layer to the pre-binary bootstrapper that derives the project
-> name from the Cabal file, ensures the host build toolchain, builds the binary host-native, and execs it.
+> binary is baked), and expose the thin Python CLI surface that consumes Phase 2's pre-binary
+> build-toolchain bootstrap to build the binary host-native and exec it.
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native**. The project container the binary builds later is
 accelerated by the warm Cabal store. The Python CLI exposes `doctor` / `build` / `run` / `update` /
-`base`, and `bootstrap.py` follows the thin pre-binary boundary (§ M, § N): derive the project from the
-single Cabal file, assert host minimums, ensure the host build toolchain, build the binary host-native on
-every substrate, and exec it (the binary owns config init — see the forward-pointer below). Docker, the
+`base`, and consumes Phase 2's thin pre-binary boundary (§ M, § N): derive the project from the single
+Cabal file, assert host minimums, ensure the host build toolchain, build the binary host-native on every
+substrate, and exec it (the binary owns config init — see the forward-pointer below). Docker, the
 project-container build, VM sizing, cordoning, and Dhall read/write are project-binary responsibilities.
 The `core.freeze` / `daemon.freeze` layering is owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
@@ -32,33 +32,25 @@ Sprint 6.5 adds the explicit `hostbootstrap update` command that reinstalls the 
 bootstrapper from the canonical VCS source. That command is not automatic and does not become a
 latest-version gate for `doctor`, `build`, `run`, or `base`.
 
-This phase is **reopened** to add **Windows** as the third metal substrate alongside Apple and Linux: on
-Windows the thin Python bootstrapper asserts the host minimums, ensures the host build toolchain with
-**winget** — the Homebrew-analog pre-binary package manager, brought up by a one-time pipx-via-winget
-install — then builds the native `hostbootstrap.exe` **host-native** and execs it, exactly as the Apple
-path does (§ M, § N). The first `wsl --install` may need a **host reboot**, which the bootstrapper
-detects, instructs the operator about, and exits non-zero on (the structural peer of the Incus
-`NeedsReboot`). That is Sprint 6.6.
+Windows does not reopen this phase. The Windows host floor, winget-driven Haskell toolchain bootstrap, and
+native `hostbootstrap.exe` build validation are owned by Phase 2 so they precede all Haskell-gated work.
+WSL2 is not pre-binary work; it is owned by Phase 11's provider reconciler.
 
 ## Remaining Work
 
-The Windows pre-binary bootstrap and native `.exe` build are the open work — Sprint 6.6 (`[Planned]`).
-The pure command-builders (the winget toolchain branch, the native build/exec argv, the reboot
-classifier) are cabal/pytest-closable; the real-Windows-host run is that sprint's `#### Remaining Work`.
+None.
 
 ## Phase Objective
 
 Complete the inversion. The base image warms the `hostbootstrap-core` dependencies into the frozen
 Cabal store and bakes **no** `hostbootstrap` binary (a Linux ELF cannot run on Apple silicon, so it
 could not be copied out to every host; every project builds its own binary host-native instead). The
-Python layer shrinks to the pre-binary bootstrapper that does only what must run before any project
-binary exists (see [development_plan_standards.md § M, N](development_plan_standards.md)): derive the
-project name from the Cabal file, assert the fail-fast host minimums, ensure the host toolchain
-prerequisites to **build** the binary, build the project binary host-native, and exec it. Ensuring Docker,
-building the project container, initializing/editing Dhall config, and cordoning are left to the project
-binary, once it is running. This holds on **every** metal substrate — Apple silicon, the Linux family,
-and **Windows** (the third substrate): on Windows the toolchain root is winget and the binary is the
-native `hostbootstrap.exe`, built host-native and execed like its peers (Sprint 6.6).
+Python CLI surface consumes Phase 2's pre-binary bootstrap (see
+[development_plan_standards.md § M, N](development_plan_standards.md)): derive the project name from the
+Cabal file, assert the fail-fast host minimums, ensure the host toolchain prerequisites to **build** the
+binary, build the project binary host-native, and exec it. Ensuring Docker, building the project
+container, initializing/editing Dhall config, provider setup, and cordoning are left to the project
+binary, once it is running.
 
 The Python layer also owns the bootstrapper's own explicit pipx self-update command. That command updates
 the wrapper itself, not any project resource, and therefore stays outside the Haskell `ensure` suite.
@@ -250,61 +242,50 @@ hostbootstrap.test_all -q` passes with 139 tests. The tests cover generated pipx
 subprocess failures, direct URL metadata parsing, unknown local/non-VCS freshness, and read-only remote
 commit comparison seams.
 
-### Sprint 6.6: Windows pre-binary bootstrap and native `.exe` build [Planned]
+### Sprint 6.6: Consume the Phase-2 Windows bootstrap in the CLI surface [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/bootstrap.py` (`toolchain_ensure_steps` Windows branch,
 `native_build_command` / `binary_path` / `exec_argv` for `hostbootstrap.exe`), `hostbootstrap/prereqs.py`
-(Windows host minimums: the winget toolchain root + the WSL2 feature, the `classify_wsl_reboot`
-first-`wsl --install` reboot classifier), `hostbootstrap/cli.py`, `tests/test_bootstrap.py`,
+(Windows host minimums: winget only), `hostbootstrap/cli.py`, `tests/test_bootstrap.py`,
 `tests/test_prereqs.py`, `tests/test_cli.py`
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`,
 `documents/engineering/prerequisites.md`, `documents/engineering/base_image.md`, `system-components.md`
 
 #### Objective
 
-Add **Windows** as the third metal substrate to the thin pre-binary bootstrapper (§ M, § N): on Windows
-assert the host minimums, bring up **winget** as the Homebrew-analog pre-binary package manager, ensure the
-host build toolchain, build the native `hostbootstrap.exe` **host-native**, and exec it — the structural
-peer of the Apple arm64 path — detecting and instructing on the first-`wsl --install` host reboot.
+Keep the CLI surface uniform on Windows while consuming Phase 2's pre-binary bootstrap. Phase 6 owns the
+`doctor` / `build` / `run` command wiring and the no-baked-binary/base-image inversion; Phase 2 owns the
+host-floor/toolchain bootstrap that makes the native `.exe` build possible.
 
 #### Deliverables
 
-- `prereqs.py` treats **winget** as the Windows toolchain root — the **Homebrew-analog** pre-binary package
-  manager — and the wrapper itself reaches a fresh Windows host through a **one-time pipx-via-winget**
-  install (winget installs Python + pipx, pipx installs `hostbootstrap`), the only step that must precede
-  any project binary. winget (plus the virtualization / WSL2 feature the nested WSL2 provider needs) is the
-  irreducible Windows host floor (§ M); every other dependency is install-and-verify by the binary's
-  `ensure` suite (§ L).
-- `toolchain_ensure_steps` gains the **Windows branch** (`winget` → GHC + MSVC), probing each tool first and
-  installing only when absent, alongside the existing Apple (Homebrew → `ghcup` → GHC/Cabal) and Linux
-  (`ghcup` → GHC/Cabal) branches. MSVC is nvcc's and GHC's host C++ compiler on Windows.
+- `prereqs.py` treats **winget** as the Windows pre-binary package-manager root. The wrapper itself reaches
+  a fresh Windows host through a one-time pipx-via-winget install (winget installs Python + pipx, pipx
+  installs `hostbootstrap`), the only step that must precede any project binary.
+- `toolchain_ensure_steps` consumes Phase 2's **Windows branch** (winget-rooted GHCup → GHC/Cabal),
+  probing each tool first and installing only when absent, alongside the existing Apple (Homebrew →
+  `ghcup` → GHC/Cabal) and Linux (`ghcup` → GHC/Cabal) branches. MSVC belongs to the binary-owned
+  `ensure cudawin` reconciler, where nvcc needs a host C++ compiler.
 - `native_build_command` / `binary_path` / `exec_argv` build and exec the native **`hostbootstrap.exe`**
   host-native on Windows exactly as the Apple arm64 peer builds and execs `./.build/<binary>` — no
   copy-out, no container build (§ N). On native Windows GHC `System.Info.os` is `mingw32`, the substrate
   the core's conditionalized POSIX-only `unix` dependency targets.
-- A pure classifier (`classify_wsl_reboot`) maps the first-`wsl --install` result to ready / needs-reboot —
-  the **structural peer of the Incus `NeedsReboot`** verdict ([phase-11](phase-11-incus-host-provider.md)
-  Sprint 11.3). On a reboot-required verdict the bootstrapper prints a one-line operator instruction and
-  **exits non-zero** rather than proceeding; the binary's WSL2 host provider (owned by
-  [phase-11](phase-11-incus-host-provider.md)) takes over once the host is rebooted.
+- WSL2 is intentionally absent from the Python pre-binary gate. The binary's WSL2 host provider is owned
+  by [phase-11](phase-11-incus-host-provider.md) and may classify a host reboot there.
 - `run` still does not ensure Docker, build the project container, size a VM, apply a cordon, or evaluate
   Dhall on Windows; those are project-binary responsibilities (§ M).
 
 #### Validation
 
-- The new pure command-builders (the winget `toolchain_ensure_steps` branch, `native_build_command` /
-  `binary_path` / `exec_argv` for `hostbootstrap.exe`, and `classify_wsl_reboot`) are unit-tested via the
-  mocked subprocess seams (no winget/host mutation); `test_all` stays at **100%** coverage and `check_code`
-  is clean.
+- The command wiring and pure command-builders are unit-tested via mocked subprocess seams (no winget/host
+  mutation); `test_all` and `check_code` are clean.
 
 #### Remaining Work
 
-Real-Windows-host validation (real-run-gated, § C): the winget toolchain branch, the native-`.exe`
-build/exec argv, the one-time pipx-via-winget bring-up, and the reboot classifier are pytest-closable; the
-live closure — winget installing GHC + MSVC on a bare Windows host, a native `hostbootstrap.exe` built
-host-native and execed, and the first-`wsl --install` reboot detected/instructed/exited-non-zero — is this
-sprint's remaining work on a real Windows host.
+None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetry run python -m
+hostbootstrap.test_all` passes. Live Windows toolchain/bootstrap validation is Phase 2; WSL2 real-run
+validation is Phase 11.
 
 ## Documentation Requirements
 

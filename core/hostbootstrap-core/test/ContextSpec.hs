@@ -19,7 +19,7 @@ import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSui
 import System.Directory (removeFile)
 import System.Environment (withArgs)
 import System.Exit (ExitCode (ExitFailure))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -91,8 +91,9 @@ tests =
                     , "   . vm-orchestrator-1  [LimaVMProvider / VMOrchestrator]  (parent: host-orchestrator-0)"
                     , "  -> vm-project-container-2  [DockerContainerProvider / VMProjectContainer]  (parent: vm-orchestrator-1)"
                     ]
-        , testCase "projectConfigPathForExecutable uses the executable directory" $
-            Schema.projectConfigPathForExecutable "demo" "/tmp/bin/demo" @?= "/tmp/bin/demo.dhall"
+        , testCase "projectConfigPathForExecutable uses the executable directory" $ do
+            let exe = "/tmp/bin/demo"
+            Schema.projectConfigPathForExecutable "demo" exe @?= takeDirectory exe </> "demo.dhall"
         , testCase "readContextFile reports a missing file" $
             withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
                 let path = dir </> "context.dhall"

@@ -10,12 +10,7 @@
 
 ## Pending
 
-The documentation has re-anchored to the headless host-build pattern and dropped Tart from its prose,
-but the Tart **code** still exists pending the phase-3 retirement sprint. When that sprint lands, move
-both entries below to **Removed Surfaces** in the same change (see **Rules**).
-
-- **The `ensure-tart` reconciler and `HostBootstrap.Ensure.Tart` module** (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs`; the `Tart` import + `allReconcilers` entry in `Command.hs:62/86`; the `Tart` constructor + `toolCommandName Tart = "tart"` in `HostTool.hs:37/61`; the exposed-module in `hostbootstrap-core.cabal:38`; the import + reconciler-name + `appliesTo` + `installSteps` cases in `test/EnsureSpec.hs`; the `Tart` entry in `test/HostToolSpec.hs`) — removed when Windows joined as the third metal substrate and the headless host-build pattern replaced Tart's build-VM shape. Tart was core-only and latent (registered in `allReconcilers`, absent from every demo chain); infernix and jitML already bypassed it for a headless host bridge. Replacement: the `ensure-cudawin` reconciler (`core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`), templated on the living Ghc/Colima build-tool reconcilers (see `documents/engineering/ensure_reconcilers.md`). Owning phase: phase-3, sprint 3.y.
-- **Composition pattern #7 as a build-only VM (the `ensure tart` shape)** — the entry in `documents/engineering/composition_patterns.md`, plus its echoes in `DEVELOPMENT_PLAN/development_plan_standards.md` §N ("Tart is build-only on Apple…") and §L (`ensureTart` primitive + "the Tart reconciler on Linux" wrong-host example) — removed by the phase-3 re-anchoring. Replacement: pattern #7 "Headless host build for platform-locked artifacts" — build on the bare host (no VM), stage into the cluster, never run the workload in a VM — with CUDA-on-Windows (`ensure-cudawin`) as its first worked instance (see `documents/engineering/composition_patterns.md`, `documents/architecture/composition_methodology.md`). Owning phase: phase-3, sprint 3.x.
+None.
 
 The earlier generic-project-model correction (development_plan_standards § BB) landed in phase-19
 (2026-06-23); its three former entries are in **Removed Surfaces** below.
@@ -47,6 +42,12 @@ These surfaces are intentionally present and are not cleanup obligations.
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
+- **The `ensure-tart` reconciler and `HostBootstrap.Ensure.Tart` module** (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs`; the `Tart` import + `allReconcilers` entry in `Command.hs`; the `Tart` constructor + `toolCommandName Tart = "tart"` in `HostTool.hs`; the exposed-module in `hostbootstrap-core.cabal`; the import + reconciler-name + `appliesTo` + `installSteps` cases in `test/EnsureSpec.hs`; the `Tart` entry in `test/HostToolSpec.hs`) — removed when Windows joined as the third metal substrate and the headless host-build pattern replaced Tart's build-VM shape. Tart was core-only and latent. Replacement: the `ensure-cudawin` reconciler. Owning phase: phase-3, sprint 3.5; validated 2026-06-26 by `cabal build all` and `cabal test all`.
+- **Composition pattern #7 as a build-only VM (the `ensure tart` shape)** — removed by the phase-3
+  re-anchoring. Replacement: pattern #7 "Headless host build for platform-locked artifacts" — build on the
+  bare host, stage into the cluster through the project chain, never run the workload in a VM — with
+  CUDA-on-Windows (`ensure-cudawin`) as its first worked instance. Owning phase: phase-3, sprint 3.5;
+  validated 2026-06-26 by `cabal build all` and `cabal test all`.
 - **Core-owned config defaults** (`defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` in
   `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, plus the `fromMaybe (cpu
   defaultResources)` / `value (memory defaultResources)` / `value (storage defaultResources)` flag

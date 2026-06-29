@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module HostToolSpec (tests) where
@@ -30,7 +31,7 @@ tests =
 absExeCases :: [TestTree]
 absExeCases =
   [ testCase "absolute path accepted, preserved" $
-      fmap absExePath (mkAbsExe "/usr/bin/docker") @?= Right "/usr/bin/docker",
+      fmap absExePath (mkAbsExe dockerPath) @?= Right dockerPath,
     testCase "bare command name rejected" $
       isLeft (mkAbsExe "docker") @?= True,
     testCase "relative path rejected" $
@@ -43,17 +44,17 @@ enumCases =
       assertBool "names are bare commands" $
         all (\t -> let n = toolCommandName t in not (null n) && '/' `notElem` n) allHostTools,
     testCase "the closed set covers the documented tools" $
-      assertBool "docker/colima/lima/cuda/ghc/homebrew/tart resolvable as constructors" $
+      assertBool "docker/colima/lima/cuda/cudawin/ghc/homebrew resolvable as constructors" $
         all
           (`elem` allHostTools)
-          [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Sysctl, Tart, Sudo, XcodeSelect]
+          [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Nvcc, PowerShell, Bcdedit, Sysctl, Winget, Wsl, Sudo, XcodeSelect]
   ]
 
 resolutionCases :: [TestTree]
 resolutionCases =
   [ testCase "resolve returns the configured absolute path" $ do
       exe <- resolve cfg Docker
-      absExePath exe @?= "/usr/bin/docker"
+      absExePath exe @?= dockerPath
       assertBool "resolved path is absolute" (isAbsolute (absExePath exe)),
     testCase "resolveMaybe is Nothing for an unconfigured tool" $
       resolveMaybe cfg Helm @?= Nothing,
@@ -66,16 +67,45 @@ resolutionCases =
       assertBool "all configured paths absolute" $
         all (isAbsolute . absExePath) (Map.elems (hcToolPaths cfg))
   ]
+    ++ windowsResolutionCases
   where
     cfg =
       HostConfig
         { hcSubstrate = Substrate LinuxCpu Amd64,
           hcToolPaths =
             Map.fromList
-              [ (Docker, mustAbs "/usr/bin/docker"),
-                (Sudo, mustAbs "/usr/bin/sudo")
+              [ (Docker, mustAbs dockerPath),
+                (Sudo, mustAbs sudoPath)
               ]
         }
+
+windowsResolutionCases :: [TestTree]
+#ifdef mingw32_HOST_OS
+windowsResolutionCases =
+  [ testCase "Windows WSL discovery prefers the System32 executable over the app alias" $ do
+      discovered <- discover Wsl
+      fmap absExePath discovered @?= Just "C:\\Windows\\System32\\wsl.exe",
+    testCase "Windows bcdedit discovery resolves the System32 executable" $ do
+      discovered <- discover Bcdedit
+      fmap absExePath discovered @?= Just "C:\\Windows\\System32\\bcdedit.exe"
+  ]
+#else
+windowsResolutionCases = []
+#endif
+
+#ifdef mingw32_HOST_OS
+dockerPath :: FilePath
+dockerPath = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"
+
+sudoPath :: FilePath
+sudoPath = "C:\\Windows\\System32\\sudo.exe"
+#else
+dockerPath :: FilePath
+dockerPath = "/usr/bin/docker"
+
+sudoPath :: FilePath
+sudoPath = "/usr/bin/sudo"
+#endif
 
 osReleaseCases :: [TestTree]
 osReleaseCases =

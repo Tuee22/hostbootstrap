@@ -33,13 +33,15 @@ library
       HostBootstrap.Ensure.Docker
       HostBootstrap.Ensure.Colima
       HostBootstrap.Ensure.Cuda
+      HostBootstrap.Ensure.CudaWin
       HostBootstrap.Ensure.Homebrew
       HostBootstrap.Ensure.Ghc
-      HostBootstrap.Ensure.Tart
       HostBootstrap.Ensure.Incus
       HostBootstrap.Ensure.Lima
+      HostBootstrap.Ensure.Wsl2
       HostBootstrap.Incus
       HostBootstrap.Lima
+      HostBootstrap.Wsl2
       HostBootstrap.HostTarget
       HostBootstrap.Lift
       HostBootstrap.Step
@@ -69,7 +71,9 @@ library
     , process
     , safe-exceptions
     , text
-    , unix
+  if !os(windows)
+    build-depends:
+        unix
 
 executable hostbootstrap
   import: warnings
@@ -98,6 +102,7 @@ test-suite hostbootstrap-core-test
       HarnessSpec
       IncusSpec
       LimaSpec
+      Wsl2Spec
       LiftSpec
       StepSpec
       ChainSpec

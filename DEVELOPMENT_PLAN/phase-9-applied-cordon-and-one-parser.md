@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
 builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
@@ -32,14 +32,14 @@ peer of the Apple `sysctl` and Linux `/proc` reads), and the one canonical `pars
 sizing the WSL2 Ubuntu-24.04 distro at the budget wall (the `.wslconfig` `[wsl2]` memory/processors plus the
 vhdx storage cap, § O). Phase-9 **owns** this pure builder;
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 host provider
-**consumes** it. That is Sprint 9.6 (`[Planned]`).
+**consumes** it. Sprint 9.6 is closed; Phase 11 owns applying it to a real WSL2 distro.
 
 ## Remaining Work
 
-The Windows host-capacity read and the pure `wsl2SizingArgs` sizing builder are the open work — Sprint 9.6
-(`[Planned]`). Both pure paths are cabal-test-closable; the real-Windows-host capacity read and the applied
-WSL2 `.wslconfig` + vhdx cap sizing a real distro at the wall are real-run-gated and consumed by
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md).
+None. Closed on 2026-06-26: `cabal build all` and `cabal test all` passed from `core/`; the live Windows
+host-capacity read returned positive CPU and memory capacity through the PowerShell/CIM branch; and
+`CordonSpec` covers `wsl2SizingArgs` from the one canonical parser. Applying the `.wslconfig` + VHDX wall
+to a real distro is Phase 11 provider validation, not a Phase 9 blocker.
 
 ## Phase Objective
 
@@ -187,9 +187,9 @@ Linux.
 
 None.
 
-### Sprint 9.6: Windows host capacity and WSL2 sizing args [Planned]
+### Sprint 9.6: Windows host capacity and WSL2 sizing args [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
 (`resolveHostCapacity` Windows branch, `wsl2SizingArgs`),
 `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`,
@@ -226,10 +226,10 @@ budget is an enforced ceiling on Windows exactly as on Apple/Linux.
 
 #### Remaining Work
 
-Real-Windows-host validation (real-run-gated, § C): the Windows capacity mapping and the pure
-`wsl2SizingArgs` builder are cabal-test-closable; the live closure — a real `windows-cpu` / `windows-gpu`
-capacity read and the applied `.wslconfig` + vhdx cap sizing a real WSL2 distro at the wall — is consumed
-and validated by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 sprint.
+None. `cabal build all` and `cabal test all` passed on 2026-06-26, and the live Windows host-capacity read
+returned `Right (HostCapacity {spareCpu = 16, ...})` through the PowerShell/CIM branch. The real WSL2
+distro application of the generated `.wslconfig` + VHDX cap is consumed and validated by
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 sprint.
 
 ## Documentation Requirements
 
