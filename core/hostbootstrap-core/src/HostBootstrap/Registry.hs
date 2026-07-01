@@ -190,7 +190,14 @@ withEphemeralDockerConfig payload action =
   where
     acquire = do
 #ifdef mingw32_HOST_OS
-      dir <- fail "withForwardedRegistryAuth requires POSIX temporary-directory permissions; Windows registry forwarding is not supported yet"
+      -- This branch materialises the transient DOCKER_CONFIG on the frame that
+      -- *consumes* a forwarded credential — which is always the in-VM /Linux/
+      -- container binary, never the Windows metal host. On Windows the host only
+      -- *discovers* the credential and pipes it over stdin ('dockerAuthStdinWrapper',
+      -- which runs in the WSL2 Linux shell); it never sets HOSTBOOTSTRAP_REGISTRY_AUTH
+      -- for itself, so 'withForwardedRegistryAuth' is a no-op there and this code is
+      -- unreachable. If it ever fires on Windows the env var was set in the wrong frame.
+      dir <- fail "withForwardedRegistryAuth: the ephemeral DOCKER_CONFIG is only consumed inside the in-VM Linux container, never on the Windows metal host (which forwards over stdin); HOSTBOOTSTRAP_REGISTRY_AUTH must not be set on a Windows frame"
 #else
       base <- getTemporaryDirectory
       dir <- mkdtemp (base </> "hb-registry-")

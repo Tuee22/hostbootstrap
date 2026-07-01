@@ -84,7 +84,8 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service constructors, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
-| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/kind-node argv builders, `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware spare-capacity resolution — resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux), and the applied `docker update` kind-node cordon |
+| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/`lima`/`incus`/`wsl2`/kind-node sizing builders (`wsl2SizingArgs` emits the `.wslconfig` `[wsl2]` ceiling with `swap`), `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware — `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux, CIM `NumberOfLogicalProcessors`/`TotalPhysicalMemory` on Windows), and the applied `docker update` kind-node cordon |
+| `HostBootstrap.Substrate.Provider` | 9 | yes | one pure lift per substrate (`SubstrateProvider`, `selectSubstrateProvider`): the per-substrate VM exists/launch/wait/stage/teardown as pure data (the `HostEffect` launch list — `WriteHostFile`/`RestoreHostFile`/`RunHostTool` — folds the WSL2 global `.wslconfig` write + `wsl --shutdown` into the same shape Lima/Incus use), so the consumer's VM lifecycle is a generic interpreter, not hand-branched per substrate |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
@@ -256,8 +257,11 @@ the base-image **build container** — a build-phase limit on the warm-store com
 cordon (see `documents/engineering/base_image.md`). `cluster up` runs the `verifyBudget`
 spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
 before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
-spare host capacity per substrate (resolved `sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on
-Linux). The cluster lifecycle
+host capacity per substrate (`sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on Linux, CIM
+`TotalPhysicalMemory` on Windows — total memory, not volatile free RAM, so a too-small host fails fast).
+On Windows the applied memory/CPU wall is the global `.wslconfig` `[wsl2]` ceiling (WSL2 has no per-distro
+cap), written and applied with `wsl --shutdown` at bring-up via the one pure lift
+(`HostBootstrap.Substrate.Provider`) and restored on teardown. The cluster lifecycle
 never deletes host `.data`. The production-vs-test cluster profile distinction selects fixed names /
 `.data` paths for production and per-case isolated paths for the test profile. See
 `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).

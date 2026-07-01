@@ -118,7 +118,7 @@ for the component inventory.
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
-| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
+| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |

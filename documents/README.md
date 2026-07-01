@@ -90,7 +90,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of
   Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` prepares WSL2 platform readiness, then the
   project chain registers its own named `Ubuntu-24.04` distro and the same `deploy-VM` / `project down`
-  (stop-without-delete) / `project destroy` lifecycle steps drive it.
+  (stop-without-delete) / `project destroy` lifecycle steps drive it; includes the honest WSL2 resource
+  cordon (the global `.wslconfig` ceiling vs. the per-distro VHDX cap).
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
   as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
   while preserving durable state.

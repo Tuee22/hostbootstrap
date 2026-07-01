@@ -1,0 +1,1 @@
+- why is there clutter left on the desktop ? does our ensure code clean up after itself, eg delete installers ? 

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [development plan](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md)
+**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md)
 
 > **Purpose**: Describe how the one declared resource budget becomes an enforced ceiling — one canonical quantity parser, three rings of defense (compile, bring-up, runtime), and a per-substrate storage cordon.
 
@@ -35,7 +35,8 @@ and [resource budgeting](resource_budgeting.md) for the budget field itself.
 ### Why One Parser
 
 One canonical `parseQuantity` decodes every quantity, and one arg-builder family (`colimaSizingArgs`,
-`limaSizingArgs`, `kindNodeCordonArgs`, `incusSizingArgs`) emits the complete argv for every substrate.
+`limaSizingArgs`, `kindNodeCordonArgs`, `incusSizingArgs`, `wsl2SizingArgs`) emits the complete sizing
+for every substrate (an argv for the VM/node providers; the `.wslconfig` `[wsl2]` body for WSL2).
 The Python bootstrapper builds no sizing argv. Because every interpreter is the same parser, the VM
 sizing and the Haskell-verified budget agree, and the one declared number is the one enforced ceiling.
 
@@ -66,12 +67,27 @@ Two pure functions gate bring-up before any substrate is touched:
 - `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` proves the concurrent pod
   set fits the budget.
 
-`resolveHostCapacity cfg` resolves spare capacity **per substrate**: on `apple-silicon` it reads
-`hw.ncpu` and `hw.memsize` via the resolved `HostTool Sysctl`; on `linux-cpu` / `linux-gpu` it reads the
-`/proc/cpuinfo` processor count and `/proc/meminfo` `MemAvailable`. Storage is reported generously (the
-applied storage cordon is the real wall). The IO surface in `clusterCreate` resolves capacity and runs
-`preflightBudget` as a fail-fast preflight; the pure source mapping and live Apple `sysctl` read are
-unit-tested. See [cluster lifecycle](cluster_lifecycle.md).
+`resolveHostCapacity cfg` resolves spare capacity **per substrate** through the pure
+`capacityReadPlan substrate` source mapping:
+
+| Substrate | CPU source | Memory source | Storage source |
+|-----------|-----------|---------------|----------------|
+| `apple-silicon` | `sysctl hw.ncpu` | `sysctl hw.memsize` (**total**) | generous |
+| `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` | `/proc/meminfo` `MemAvailable` | generous |
+| `windows-cpu` / `windows-gpu` | CIM `Win32_ComputerSystem.NumberOfLogicalProcessors` | CIM `Win32_ComputerSystem.TotalPhysicalMemory` (**total**) | system-drive free space |
+
+Two substrates read **total** physical memory (Apple `hw.memsize`, Windows `TotalPhysicalMemory`) rather
+than momentary free/available memory: total is a stable property of the machine, so the preflight is a
+fact about whether the host *can* host a budget-sized VM, not a volatile point-in-time reading. This
+matters most on Windows/WSL2, where there is no per-distro hard memory cap (see the runtime ring): a
+host that cannot fit the budget then fails fast at this ring rather than passing on transient
+post-reboot free RAM and dying inside the build. Linux keeps `MemAvailable` (its applied incus cordon is
+a hard per-VM wall, so the preflight need only be advisory). Storage is reported generously on Apple and
+Linux (their applied VM cordons own the real wall) but read as real system-drive free space on Windows,
+so WSL2 does not begin a large VHDX-backed build on a disk that cannot satisfy the declared storage
+budget. The IO surface in `clusterCreate` resolves capacity and runs `preflightBudget` as a fail-fast
+preflight; the pure source mapping and live Apple `sysctl` read are unit-tested. See
+[cluster lifecycle](cluster_lifecycle.md).
 
 ### Runtime Ring
 
@@ -89,6 +105,17 @@ On Apple, a Lima VM sized by `limaSizingArgs` is the cordon; the per-project Col
 `colimaSizingArgs` is the cordon for direct Docker workflows. In both cases the VM boundary is the first
 cordon, so there is no host-side kind-node cap outside the VM.
 
+On Windows, the WSL2 wall is **honest about what WSL2 can enforce**. Unlike incus `limits.memory` and
+Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the *global*, per-user
+`%UserProfile%\.wslconfig` `[wsl2]` block that sizes the single shared utility VM hosting every distro.
+So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all from the one
+`parseQuantity`; `swap` is sized to the memory budget for OOM headroom), and the WSL2 launch is a
+*list* of effects: write `.wslconfig` (backing up any existing file), `wsl --shutdown` to apply it, then
+register the distro. Because the file is global, teardown restores the backed-up `.wslconfig`. This is a
+weaker guarantee than a hard per-VM cap and the launch is a two-step write-then-shutdown rather than a
+single sized argv — the unified `spLaunch` effect list (one pure lift per substrate) models exactly that
+difference. See [wsl2](wsl2.md) for the provider detail.
+
 ## Per-Substrate Storage Cordon
 
 Storage carries no `docker update` flag, so it is dropped from the `kindNodeCordonArgs` argv. It is
@@ -99,7 +126,7 @@ Each substrate cordons storage where it can:
 |-----------|----------------|
 | Apple | Lima or Colima `--disk` (the VM's sized disk) |
 | incus VM | `root,size` on the incus instance |
-| WSL2 VM | The distro's vhdx at the VM wall, sized with `.wslconfig` plus the `wsl` CLI `--memory` / `--cpu`, all drawn from the one `parseQuantity` *(Target.)* |
+| WSL2 VM | The distro's VHDX, capped per-distro at install via `wsl --install --vhd-size` (from the one `parseQuantity`). Memory/CPU are **not** per-distro on WSL2 — they are the global `.wslconfig` `[wsl2]` utility-VM ceiling (see the runtime ring), not a `wsl --memory`/`--cpu` flag |
 | Bare Linux | A quota'd hostPath plus image garbage collection |
 
 On Linux, `incusSizingArgs resources` emits the `limits.cpu`, `limits.memory`, and `root,size` config
@@ -110,7 +137,11 @@ boundary.
 
 The per-substrate `resolveHostCapacity` described in the bring-up ring reads CPU and memory from the
 substrate-specific sources. The one canonical parser, all three rings, and the per-substrate storage
-cordon are implemented and validated. The development plan for this surface is
+cordon are implemented and validated on Apple/Lima and Linux/Incus. The Windows/WSL2 honest cordon — the
+total-memory preflight predicate and the applied global `.wslconfig` ceiling written and shut down at
+launch — is implemented and unit-tested, with its real-run closure tracked by
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) (Sprint 11.7). The development plan
+for the pure parser/builder surface and the capacity predicate is
 [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 
 ## See Also

@@ -42,6 +42,29 @@ These surfaces are intentionally present and are not cleanup obligations.
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
+- **The hand-branched `DemoVMProvider` sum and its per-substrate lifecycle branches**
+  (`data DemoVMProvider = AppleLimaVM | LinuxIncusVM | WindowsWsl2VM`, `demoVMProvider`, `demoVMName`, and
+  the `case provider of` arms in `runVmUp` / `demoTeardown` / `stageSource` / `copyFileToDemoVM` /
+  `runInDemoVMStdin` plus the duplicate substrate guard in `demoVMFrameContext`, all in
+  `demo/src/HostBootstrapDemo/Commands.hs`; and the `limaInstanceExists` / `incusInstanceExists` /
+  `wsl2DistroExists` / `waitVMAgent` / `waitLimaVM` / `waitWsl2VM` helpers) — removed when the per-substrate
+  VM lifecycle was unified behind one pure lift. Replacement: `HostBootstrap.Substrate.Provider`
+  (`SubstrateProvider`, `selectSubstrateProvider`, the `HostEffect` launch list, and the generic demo
+  interpreters `demoProvider` / `substrateExists` / `substrateWait` / `runEffects`). The chain-step IO
+  (`runVmUp` etc.) is **retained** (see **Retained Current Surfaces**); only the hand-branched dispatch was
+  removed. Owning phase: phase-9, sprint 9.7; validated 2026-06-30 by `cabal test all` (274 tests, incl.
+  `ProviderSpec` byte-for-byte Lima/Incus equivalence) and the demo binary build.
+- **The volatile Windows memory-capacity predicate** (`WindowsAvailableMemory` `CapacityReadSource`
+  reading `Win32_OperatingSystem.FreePhysicalMemory` in
+  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`) — removed because momentary free RAM let
+  the preflight pass on transient post-reboot memory and an undersized host reach the build. Replacement:
+  `WindowsTotalMemory` reading stable `Win32_ComputerSystem.TotalPhysicalMemory` (mirroring Apple
+  `hw.memsize`). Owning phase: phase-9, sprint 9.7; validated 2026-06-30 by `cabal test all` (`CordonSpec`).
+- **The `vhdx-size` line in the WSL2 `.wslconfig` body** (the `"vhdx-size=…GB"` element formerly emitted by
+  `wsl2SizingArgs` in `Cordon.hs`) — removed because `.wslconfig` `[wsl2]` has no `vhdx-size` key; the
+  per-distro VHDX cap is the `wsl --install --vhd-size` flag. Replacement: the `[wsl2]` body now emits
+  `processors`/`memory`/`swap` (swap for OOM headroom) and the storage cap rides the install argv. Owning
+  phase: phase-9, sprint 9.7; validated 2026-06-30 by `cabal test all` (`CordonSpec`).
 - **The `ensure-tart` reconciler and `HostBootstrap.Ensure.Tart` module** (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Tart.hs`; the `Tart` import + `allReconcilers` entry in `Command.hs`; the `Tart` constructor + `toolCommandName Tart = "tart"` in `HostTool.hs`; the exposed-module in `hostbootstrap-core.cabal`; the import + reconciler-name + `appliesTo` + `installSteps` cases in `test/EnsureSpec.hs`; the `Tart` entry in `test/HostToolSpec.hs`) — removed when Windows joined as the third metal substrate and the headless host-build pattern replaced Tart's build-VM shape. Tart was core-only and latent. Replacement: the `ensure-cudawin` reconciler. Owning phase: phase-3, sprint 3.5; validated 2026-06-26 by `cabal build all` and `cabal test all`.
 - **Composition pattern #7 as a build-only VM (the `ensure tart` shape)** — removed by the phase-3
   re-anchoring. Replacement: pattern #7 "Headless host build for platform-locked artifacts" — build on the

@@ -167,9 +167,14 @@ Phase 9 owns the enforced budget ceiling: one canonical `parseQuantity`, shared 
 `verifyBudget` and `fitsBudget`, and the Linux `docker update` kind-node cordon applied by `cluster up`
 after `kind create` and before Helm. `resolveHostCapacity` is substrate-aware: Apple silicon reads
 `sysctl` `hw.ncpu`/`hw.memsize` through the resolved `HostTool Sysctl`, while Linux reads `/proc`.
-It is `Done`: the substrate-aware host-capacity read extends to Windows (`windows-cpu`/`windows-gpu`)
-alongside Apple silicon and Linux, and the WSL2 wall argument builders are pure-tested. Applying that
-wall to a real distro is Phase 11 provider validation.
+It is **`Active`** (reopened 2026-06-30 for Sprint 9.7, the honest WSL2 cordon): the substrate-aware
+host-capacity read extends to Windows (`windows-cpu`/`windows-gpu`) alongside Apple silicon and Linux.
+The Windows predicate now reads stable **total** physical memory (not volatile free RAM), the WSL2
+`wsl2SizingArgs` emits the real `.wslconfig` `[wsl2]` ceiling with `swap` (no invalid `vhdx-size` key;
+storage is the `--vhd-size` install cap), and the per-substrate VM lifecycle is unified behind one pure
+lift (`HostBootstrap.Substrate.Provider`) so the WSL2 `.wslconfig` write + `wsl --shutdown` is a
+first-class effect. Static validation is closed (274 tests, `ProviderSpec` byte-for-byte Lima/Incus);
+applying that wall on a real distro is the real-run item shared with Phase 11 Sprint 11.7.
 
 ### Phase 10 — Standardized test harness and run-models
 

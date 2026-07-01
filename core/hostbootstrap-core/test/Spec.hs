@@ -6,6 +6,7 @@ import qualified ContextSpec
 import qualified CordonSpec
 import qualified DhallGenSpec
 import qualified DocValidatorSpec
+import qualified ProviderSpec
 import qualified EnsureSpec
 import qualified HarnessSpec
 import qualified HostToolSpec
@@ -34,6 +35,7 @@ main = do
             , SchemaSpec.tests
             , DhallGenSpec.tests
             , CordonSpec.tests
+            , ProviderSpec.tests
             , ContextSpec.tests
             , LifecycleSpec.tests
             , HarnessSpec.tests

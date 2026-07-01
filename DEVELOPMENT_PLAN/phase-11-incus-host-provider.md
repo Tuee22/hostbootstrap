@@ -313,9 +313,16 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
 - `HostBootstrap.Wsl2`: the pure argv builders `wsl --import <distro> <dir> <tarball>`,
   `wsl -d <distro> -- <inner>`, `wsl --terminate <distro>`, `wsl --shutdown`, and the name-prefix
   delete-guarded `wsl --unregister <distro>` (the guarded destroy, reusing the harness `guardTestDelete`
-  idiom), plus `classifyWsl2Readiness`. The distro is sized to the budget wall by `wsl2SizingArgs` (the
-  `.wslconfig` `[wsl2]` memory/processors + vhdx cap), the pure builder
-  [phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md) owns.
+  idiom), plus `classifyWsl2Readiness`. The distro is sized to the budget wall by `wsl2SizingArgs`, the
+  pure builder [phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md) owns:
+  the **global** `.wslconfig` `[wsl2]` `processors`/`memory`/`swap` utility-VM ceiling (WSL2 has no
+  per-distro `wsl --memory`/`--cpu`) plus the per-distro `wsl --install --vhd-size` storage cap.
+- **The applied WSL2 wall (honest cordon, Sprint 9.7).** Bring-up writes the `.wslconfig` ceiling and runs
+  `wsl --shutdown` to apply it before registering the distro; this is consumed as the unified
+  `HostBootstrap.Substrate.Provider.spLaunch` effect list (the one pure lift per substrate), and
+  `project destroy` restores the backed-up `.wslconfig`. The demo's VM lifecycle
+  (`runVmUp`/`demoTeardown`/`stageSource`/`copyFileToDemoVM`/`demoVMFrameContext`) is interpreted
+  generically over that provider value, no longer hand-branched per substrate.
 - `HostBootstrap.Ensure.Wsl2` exposes `ensure wsl2` as the windows-cpu + windows-gpu install-and-verify
   reconciler, wired into `allReconcilers`; readiness is WSL2 platform readiness (`wsl --status` without a
   virtualization-disabled diagnostic), while project-owned VM bring-up registers the named Ubuntu-24.04
@@ -334,6 +341,14 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   `hostbootstrap-demo-vm`) and registers it if absent, `demoFrameContext` hands off through `inWsl2VM`,
   source/config staging uses the distro's `/mnt/<drive>/...` view of host files, and `project destroy`
   uses the name-prefix-guarded `wsl --unregister` builder.
+- **Registry credential forwarding on Windows (operator prerequisite, no new code).** Symmetric with the
+  other substrates: with the **standalone Docker CLI** (`docker.exe`, no Docker Desktop) and `docker login`
+  (a Docker Hub PAT, no credential helper), the inline token in `%USERPROFILE%\.docker\config.json` is
+  discovered by `discoverHostRegistryAuth` and forwarded over the existing WSL2 stdin tunnel into build
+  #3's base pull — removing the anonymous rate-limit risk during the Windows lifecycle closure. This
+  reuses the existing forwarding rails unchanged; see
+  [registry_credentials.md](../documents/engineering/registry_credentials.md) and the
+  [demo runbook](../documents/operations/demo_runbook.md) Windows/WSL2 note.
 
 #### Validation
 
@@ -418,13 +433,19 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
 
 #### Remaining Work
 
-Stabilize the Windows/WSL2 Docker runtime enough for the real closure run to finish. The host reboot gate
-is crossed, and the chain reaches the WSL2 distro and in-distro Docker build, but the live run still
-fails before the required `test run all` and `project destroy` validation. Closure requires a successful
-Windows run in which `project up` registers/enters the managed Ubuntu-24.04 distro, brings up in-distro
-Docker/kind, deploys the workload, runs the lifted project-container `test all` reporting the expected
-suite pass count, and `project destroy` tears down through guarded `wsl --unregister` with host `.data`
-preserved.
+Run the real Windows closure to completion. The host reboot gate is crossed, and the chain reaches the
+WSL2 distro and in-distro Docker build. The intermittent `Wsl/Service/0x80072746` (`WSAECONNRESET`)
+session drop during the in-distro Docker build was diagnosed as the WSL2 utility VM being terminated
+under memory pressure because the budget cordon was **computed but never applied** — `wsl2SizingArgs` was
+only logged, never written to `.wslconfig` — so the VM ran at WSL2's ~8 GB default instead of the 10 GiB
+budget on a 16 GB host. Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`, and
+the stable total-memory preflight) addresses that root cause; closure now requires a successful Windows
+run in which `project up` registers/enters the managed Ubuntu-24.04 distro **with the `.wslconfig` ceiling
+applied**, brings up in-distro Docker/kind without a session drop, deploys the workload, runs the lifted
+project-container `test all` reporting the expected suite pass count, and `project destroy` tears down
+through guarded `wsl --unregister` (restoring `.wslconfig`) with host `.data` preserved. If a 16 GB host
+still cannot fit the 10 GiB budget even with the applied ceiling + swap, the fallback decision (accept
+slower swap-backed runs vs. lower the demo's enforced floor) is recorded here from the real run.
 
 This is Phase 11 work only; it does not block the closed Phase 2 bootstrap, Phase 3 CUDA-on-Windows
 reconciler, or Phase 9 Windows capacity/sizing surfaces. Earlier phases provide the host-floor facts and

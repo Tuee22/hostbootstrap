@@ -310,8 +310,12 @@ sizes the VM above the ceiling (that would count the one requirement twice and i
 from its active config and projects narrower resource envelopes into child configs (§ X). It is enforced
 with defense in depth: a Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure
 `verifyBudget`/`fitsBudget` before bring-up, and the applied wall at runtime — a sized Lima VM on Apple
-Silicon, a sized Incus VM on Linux, a sized WSL2 Ubuntu-24.04 distro on Windows (§ U), the applied `docker update` kind-node cap, or `docker run` caps
-(one-shot). All VM/node sizing is emitted by **one** canonical quantity parser/argument builder in
+Silicon, a sized Incus VM on Linux, a WSL2 Ubuntu-24.04 distro on Windows (§ U), the applied
+`docker update` kind-node cap, or `docker run` caps (one-shot). The wall's strength differs by substrate:
+Incus and Lima apply a **hard per-VM** memory/CPU cap, but WSL2 has **no per-distro** memory/CPU cap — its
+memory/CPU wall is the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling sizing the single shared
+utility VM (written and applied with `wsl --shutdown` at bring-up, restored at teardown), with storage a
+per-distro vhdx cap. The cordon is honest about that difference rather than implying parity. All VM/node sizing is emitted by **one** canonical quantity parser/argument builder in
 `hostbootstrap-core` and applied by the **project binary**, the sole interpreter of **project** budgets;
 the Python bootstrapper does **not** ensure Docker or cordon a project's VM/cluster (§ M), so there is no
 second interpreter of the project budget. The **one** exception is the maintainer base-image build:
@@ -320,8 +324,9 @@ second interpreter of the project budget. The **one** exception is the maintaine
 build-phase limit on the warm-store compile, **not** a project runtime cordon and **not** an interpreter of
 any `<project>.dhall` budget (see
 [base_image.md](../documents/engineering/base_image.md#host-sized-warm-store-build-budget)).
-Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a WSL2 `.wslconfig`
-+ vhdx cap on Windows / a quota'd hostPath on Linux), since `docker update` has no storage flag. The budget flows from the local host config into
+Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,size` / a WSL2 per-distro
+vhdx cap via `wsl --install --vhd-size` on Windows / a quota'd hostPath on Linux), since `docker update`
+has no storage flag. The budget flows from the local host config into
 child config projections, then into both the spinup cordon and the binary-generated configs.
 
 ### P. Fixed Command Surface And The Extension Streams

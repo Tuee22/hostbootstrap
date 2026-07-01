@@ -46,10 +46,9 @@ module HostBootstrapDemo.Commands (
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (finally)
-import Control.Monad (unless)
-import Data.Char (isAsciiUpper)
-import Data.List (intercalate, isPrefixOf, isSuffixOf)
+import Control.Exception (SomeException, finally, try)
+import Control.Monad (unless, when)
+import Data.List (intercalate, isSuffixOf)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
@@ -57,11 +56,8 @@ import HostBootstrap.Cluster.Cordon (
     ResourceBudget (..),
     budgetFromResources,
     gibibytes,
-    incusSizingArgs,
-    limaSizingArgs,
     preflightBudget,
     resolveHostCapacity,
-    wsl2SizingArgs,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
 import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
@@ -74,11 +70,10 @@ import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Helm, Incus, Kind, Lima, Sudo, Wsl), toolCommandName)
-import HostBootstrap.Incus (IncusVM (..), createVMArgs, destroyVMArgs, execVMArgs, pushFileArgs, startVMArgs, stopVMArgs)
-import HostBootstrap.Lift (ContainerLift (..), LiftContext, LiftLeaf (..), inContainer, inLimaVM, inVM, inWsl2VM, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Sudo), toolCommandName)
+import HostBootstrap.Incus (IncusVM (..))
+import HostBootstrap.Lift (ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
-import qualified HostBootstrap.Lima as LimaVM
 import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
 import HostBootstrap.Service (ServiceHandler (..), ServiceRegistry)
 import HostBootstrap.Step (
@@ -93,8 +88,19 @@ import HostBootstrap.Step (
     projectStep,
  )
 import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch)
+import HostBootstrap.Substrate.Provider (
+    ExistsProbe (..),
+    HostEffect (..),
+    StagedFile (..),
+    SubstrateProvider (..),
+    VMHandles (..),
+    WaitProbe (..),
+    membersOf,
+    selectSubstrateProvider,
+    stageFileEffects,
+    vmShellArgs,
+ )
 import HostBootstrap.Wsl2 (Wsl2VM (..))
-import qualified HostBootstrap.Wsl2 as Wsl2
 import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
@@ -106,7 +112,7 @@ import HostBootstrapDemo.Config (
 import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
-import System.Directory (createDirectoryIfMissing, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, (</>))
@@ -236,7 +242,7 @@ how the binary in the CURRENT frame descends ONE level into @next@. The metal
 binary's handoff into @vm-orchestrator-1@ folds to the substrate's VM shell —
 @incus exec \<vm\> -- \<pb\> project up@ on Linux, @limactl shell \<vm\> -- \<pb\>
 project up@ on Apple Silicon — selected by the detected 'Substrate' the demo
-threads in from @main@ (the same selection 'demoVMProvider' makes). The in-VM
+threads in from @main@ (the same selection 'demoProvider' makes). The in-VM
 binary's handoff into @vm-project-container-2@ folds to a local @docker run --rm
 \<image\> project up@ (local because that binary already runs inside the VM, so it
 needs no provider). Each binary only ever hands off to its immediate next frame,
@@ -255,10 +261,10 @@ reachability probes run inside the VM, where the NodePort is published, on both
 providers — § U).
 -}
 demoVMFrameContext :: Substrate -> LiftContext
-demoVMFrameContext sub
-    | isAppleSilicon sub = inLimaVM demoLimaVM localContext
-    | isWindows sub = inWsl2VM demoWsl2VM localContext
-    | otherwise = inVM demoVM localContext
+demoVMFrameContext sub =
+    case selectSubstrateProvider sub demoStaticVMHandles of
+        Right sp -> LiftContext [spLiftLayer sp]
+        Left _ -> localContext
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): mint the project-container
 child @<project>.dhall@ (parameters + context + witness, never the chain) from
@@ -696,22 +702,117 @@ resolveHostConfig = do
     detected <- detect
     either die buildHostConfig detected
 
-data DemoVMProvider
-    = AppleLimaVM LimaVM
-    | LinuxIncusVM IncusVM
-    | WindowsWsl2VM Wsl2VM
+{- | The demo's VM handles for every substrate: the per-provider VM identities,
+the delete-guard prefix, and the resolved global @.wslconfig@ path (used only on
+Windows). 'demoStaticVMHandles' is the pure form for the lift-layer selection
+('demoVMFrameContext'); 'demoVMHandles' resolves the real @.wslconfig@ path for
+the lifecycle IO.
+-}
+mkDemoVMHandles :: FilePath -> VMHandles
+mkDemoVMHandles wslConfigPath =
+    VMHandles
+        { vmhIncus = demoVM
+        , vmhLima = demoLimaVM
+        , vmhWsl2 = demoWsl2VM
+        , vmhGuardPrefix = demoGuardPrefix
+        , vmhWslConfigPath = wslConfigPath
+        }
 
-demoVMProvider :: HostConfig -> IO DemoVMProvider
-demoVMProvider cfg
-    | isAppleSilicon (hcSubstrate cfg) = pure (AppleLimaVM demoLimaVM)
-    | isLinux (hcSubstrate cfg) = pure (LinuxIncusVM demoVM)
-    | isWindows (hcSubstrate cfg) = pure (WindowsWsl2VM demoWsl2VM)
-    | otherwise = die "vm: unsupported substrate"
+demoStaticVMHandles :: VMHandles
+demoStaticVMHandles = mkDemoVMHandles ""
 
-demoVMName :: DemoVMProvider -> String
-demoVMName (AppleLimaVM vm) = limaName vm
-demoVMName (LinuxIncusVM vm) = vmName vm
-demoVMName (WindowsWsl2VM vm) = Wsl2.wsl2Distro vm
+demoVMHandles :: IO VMHandles
+demoVMHandles = do
+    home <- getHomeDirectory
+    pure (mkDemoVMHandles (home </> ".wslconfig"))
+
+{- | The one pure lift into the current substrate (Lima on Apple Silicon, Incus
+on Linux, WSL2 on Windows), selected once and interpreted generically by the
+lifecycle helpers below ('substrateExists' / 'runLaunch' / 'substrateWait' /
+'stageSource' / 'demoTeardown'). Replaces the former hand-branched
+@DemoVMProvider@ with the single pure 'SubstrateProvider' value, so per-substrate
+knowledge lives in one place ('selectSubstrateProvider').
+-}
+demoProvider :: HostConfig -> IO SubstrateProvider
+demoProvider cfg = do
+    handles <- demoVMHandles
+    either die pure (selectSubstrateProvider (hcSubstrate cfg) handles)
+
+{- | Run a list of pure host effects, dying on the first failure (the launch /
+staging path). 'WriteHostFile' backs up any existing file once (the global
+@.wslconfig@ is a user file); 'RestoreHostFile' is the teardown inverse.
+-}
+runEffects :: HostConfig -> [HostEffect] -> IO ()
+runEffects cfg = mapM_ go
+  where
+    go (RunHostTool tool args) = runOrDie cfg tool args
+    go (WriteHostFile path content) = writeHostFileWithBackup path content
+    go (RestoreHostFile path) = restoreHostFile path
+
+{- | Run teardown effects best-effort under one intent message: a missing or
+already-stopped VM is not a failure for idempotent teardown.
+-}
+runEffectsBestEffort :: HostConfig -> String -> [HostEffect] -> IO ()
+runEffectsBestEffort cfg intent = mapM_ go
+  where
+    go (RunHostTool tool args) = bestEffortTool cfg tool args intent
+    go (RestoreHostFile path) = restoreHostFile path
+    go (WriteHostFile path content) = writeHostFileWithBackup path content
+
+{- | Write @content@ to @path@, first backing up any existing file to
+@<path>.hostbootstrap-demo.bak@ (once), so the global @.wslconfig@ the WSL2
+cordon writes never clobbers a user's own file irretrievably.
+-}
+writeHostFileWithBackup :: FilePath -> String -> IO ()
+writeHostFileWithBackup path content = do
+    let bak = path ++ ".hostbootstrap-demo.bak"
+    exists <- doesFileExist path
+    bakExists <- doesFileExist bak
+    when (exists && not bakExists) (copyFile path bak)
+    writeFile path content
+    putStrLn ("vm up: wrote the WSL2 resource cordon to " ++ path)
+
+-- | Restore @path@ from its backup (or remove it if there was none), best-effort.
+restoreHostFile :: FilePath -> IO ()
+restoreHostFile path = do
+    let bak = path ++ ".hostbootstrap-demo.bak"
+    bakExists <- doesFileExist bak
+    outcome <-
+        try $
+            if bakExists
+                then renameFile bak path >> pure ("project destroy: restored " ++ path)
+                else do
+                    exists <- doesFileExist path
+                    if exists
+                        then removeFile path >> pure ("project destroy: removed " ++ path)
+                        else pure ""
+    case (outcome :: Either SomeException String) of
+        Right msg -> unless (null msg) (putStrLn msg)
+        Left _ -> pure ()
+
+-- | Probe whether the provider's VM already exists (idempotent reconcile).
+substrateExists :: HostConfig -> SubstrateProvider -> IO Bool
+substrateExists cfg sp =
+    case spExists sp of
+        ExistsProbe tool args membership -> do
+            r <- runTool cfg tool args
+            pure $ case r of
+                Right (ExitSuccess, out, _) -> spVmId sp `elem` membersOf membership out
+                _ -> False
+
+{- | Poll the provider's readiness probe until the VM answers, bounded by @n@
+two-second attempts (the substrate-generic peer of the former per-provider
+@waitVMAgent@ / @waitLimaVM@ / @waitWsl2VM@).
+-}
+substrateWait :: HostConfig -> SubstrateProvider -> Int -> IO ()
+substrateWait _ sp 0 = die ("vm up: " ++ spVmId sp ++ " did not become ready")
+substrateWait cfg sp n =
+    case spWait sp of
+        WaitProbe tool args -> do
+            r <- runTool cfg tool args
+            case r of
+                Right (ExitSuccess, _, _) -> pure ()
+                _ -> threadDelay 2000000 >> substrateWait cfg sp (n - 1)
 
 vmRepoRoot :: FilePath
 vmRepoRoot = "/root/hostbootstrap"
@@ -727,19 +828,18 @@ the @sourceRoot@.
 containerSourceRoot :: FilePath
 containerSourceRoot = "/workspace/demo"
 
-runInDemoVM :: HostConfig -> DemoVMProvider -> String -> IO ()
+runInDemoVM :: HostConfig -> SubstrateProvider -> String -> IO ()
 runInDemoVM cfg provider script = runInDemoVMStdin cfg provider script ""
 
 {- | Like 'runInDemoVM', but pipe @stdin@ to the in-VM @bash -lc@ — the channel a
 forwarded Docker Hub credential travels on (never @argv@). Used to authenticate
 the in-VM base-image pull of build #3 (see 'HostBootstrap.Registry').
 -}
-runInDemoVMStdin :: HostConfig -> DemoVMProvider -> String -> String -> IO ()
+runInDemoVMStdin :: HostConfig -> SubstrateProvider -> String -> String -> IO ()
 runInDemoVMStdin cfg provider script input =
-    case provider of
-        AppleLimaVM vm -> runOrDieStdin cfg Lima (LimaVM.shellVMArgs vm ["bash", "-lc", script]) input
-        LinuxIncusVM vm -> runOrDieStdin cfg Incus (execVMArgs vm ["bash", "-lc", script]) input
-        WindowsWsl2VM vm -> runOrDieStdin cfg Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) ["bash", "-lc", script]) input
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
+        Just (tool, args) -> runOrDieStdin cfg tool args input
+        Nothing -> die ("runInDemoVM: " ++ spVmId provider ++ " is not a VM frame")
 
 {- | Run a resolved host tool, streaming its stdout and dying with the captured
 stderr on a non-zero exit.
@@ -839,88 +939,36 @@ runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ d
             | otherwise -> die "vm ensure: unsupported substrate"
 
 {- | @demo vm up@: read the active context envelope, derive the VM sizing from
-the one canonical parser, and launch the VM cordoned to it (cordon #1). Apple
-Silicon starts a dedicated Lima VM; Linux launches an Incus VM.
+the one canonical parser, and launch the VM cordoned to it (cordon #1). The launch
+is the substrate's pure 'spLaunch' effect list — a single sized argv on Apple
+Silicon (Lima) and Linux (Incus); on Windows it begins by writing the global
+@.wslconfig@ ceiling and @wsl --shutdown@ (the honest WSL2 wall, since WSL2 has no
+per-distro @wsl --memory@/@--cpu@), then registers the distro with its VHDX cap.
 -}
 runVmUp :: IO ()
 runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
     cfg <- resolveHostConfig
-    provider <- demoVMProvider cfg
+    sp <- demoProvider cfg
     let lifecycleResources = resourcesFromContext ctx
+        envelope = envelopeOfResources lifecycleResources
     either die pure (requireDemoLifecycleResources lifecycleResources)
     resolvedCapacity <- resolveHostCapacity cfg
-    either die pure (resolvedCapacity >>= preflightBudget (envelopeOfResources lifecycleResources))
+    either die pure (resolvedCapacity >>= preflightBudget envelope)
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
-    case provider of
-        AppleLimaVM vm -> do
-            exists <- limaInstanceExists cfg vm
-            if exists
-                then do
-                    putStrLn ("vm up: Lima instance " ++ limaName vm ++ " already exists; ensuring it is started (idempotent)")
-                    bestEffortTool cfg Lima ["start", limaName vm] ("vm up: starting existing " ++ limaName vm)
-                else do
-                    sizing <- either die pure (limaSizingArgs (envelopeOfResources lifecycleResources))
-                    let argv = LimaVM.startVMArgs vm (sizing ++ ["--vm-type", "vz"])
-                    putStrLn ("vm up: launching Lima instance " ++ limaName vm ++ " (cordon #1: the VM is the wall, sized to the budget) " ++ show sizing)
-                    runOrDie cfg Lima argv
-            putStrLn ("vm up: waiting for " ++ limaName vm ++ " to answer")
-            waitLimaVM cfg vm 60
-            putStrLn ("vm up: " ++ limaName vm ++ " is up")
-        LinuxIncusVM vm -> do
-            exists <- incusInstanceExists cfg vm
-            if exists
-                then do
-                    putStrLn ("vm up: incus instance " ++ vmName vm ++ " already exists; ensuring it is started (idempotent)")
-                    bestEffortTool cfg Incus (startVMArgs vm) ("vm up: starting existing " ++ vmName vm)
-                else do
-                    sizing <- either die pure (incusSizingArgs (envelopeOfResources lifecycleResources))
-                    let argv = createVMArgs vm (concatMap toLaunchFlag sizing)
-                    putStrLn ("vm up: launching " ++ vmName vm ++ " (cordon #1: the VM is the wall, sized to the budget) " ++ show sizing)
-                    runOrDie cfg Incus argv
-            putStrLn ("vm up: waiting for the " ++ vmName vm ++ " guest agent to come up")
-            waitVMAgent cfg vm 60
-            putStrLn ("vm up: " ++ vmName vm ++ " is up")
-        WindowsWsl2VM vm -> do
-            exists <- wsl2DistroExists cfg vm
-            unless exists $ do
-                sizing <- either die pure (wsl2SizingArgs (envelopeOfResources lifecycleResources))
-                budget <- either die pure (budgetFromResources (envelopeOfResources lifecycleResources))
-                let vhdSize = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
-                putStrLn ("vm up: registering WSL2 distro " ++ Wsl2.wsl2Distro vm ++ " (cordon #1: the VM is the wall, sizing " ++ show sizing ++ ")")
-                runOrDie cfg Wsl (Wsl2.wslInstallArgs (Wsl2.wsl2Distro vm) vhdSize)
-            putStrLn ("vm up: waiting for " ++ Wsl2.wsl2Distro vm ++ " to answer")
-            waitWsl2VM cfg vm 60
-            putStrLn ("vm up: " ++ Wsl2.wsl2Distro vm ++ " is up")
-  where
-    toLaunchFlag a
-        | "root," `isPrefixOf` a = ["-d", a]
-        | otherwise = ["-c", a]
-
--- | Whether a Lima instance of this name already exists (so @vm up@ reconciles instead of re-creating, § Y).
-limaInstanceExists :: HostConfig -> LimaVM -> IO Bool
-limaInstanceExists cfg vm = do
-    r <- runTool cfg Lima ["list", "-q"]
-    pure $ case r of
-        Right (ExitSuccess, out, _) -> limaName vm `elem` lines out
-        _ -> False
-
--- | Whether an incus instance of this name already exists.
-incusInstanceExists :: HostConfig -> IncusVM -> IO Bool
-incusInstanceExists cfg vm = do
-    r <- runTool cfg Incus ["list", "--format", "csv", "-c", "n"]
-    pure $ case r of
-        Right (ExitSuccess, out, _) -> vmName vm `elem` lines out
-        _ -> False
-
--- | Whether a WSL2 distro of this name already exists.
-wsl2DistroExists :: HostConfig -> Wsl2VM -> IO Bool
-wsl2DistroExists cfg vm = do
-    r <- runTool cfg Wsl ["--list", "--quiet"]
-    pure $ case r of
-        Right (ExitSuccess, out, _) -> Wsl2.wsl2Distro vm `elem` words (Wsl2.normalizeWslText out)
-        _ -> False
+    exists <- substrateExists cfg sp
+    if exists
+        then do
+            putStrLn ("vm up: " ++ spVmId sp ++ " already exists; ensuring it is started (idempotent)")
+            runEffectsBestEffort cfg ("vm up: starting existing " ++ spVmId sp) (spStartExisting sp)
+        else do
+            launch <- either die pure (spLaunch sp envelope)
+            putStrLn ("vm up: launching " ++ spVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
+            runEffects cfg launch
+    putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
+    substrateWait cfg sp 60
+    putStrLn ("vm up: " ++ spVmId sp ++ " is up")
 
 requireDemoLifecycleResources :: Resources -> Either String ()
 requireDemoLifecycleResources actualResources = do
@@ -951,36 +999,6 @@ requireDemoLifecycleResources actualResources = do
         | otherwise = []
     showGiB bytes = show (gibibytes bytes) ++ "GiB"
 
-{- | Poll @incus exec <vm> -- true@ until the VM's guest agent answers — an incus
-VM accepts @incus exec@ only once its agent has started (a few seconds after
-launch), so @vm up@ waits here rather than returning a VM that a chained
-@pristine-bootstrap@ (or any immediate @incus exec@) would race. Bounded by @n@
-two-second attempts.
--}
-waitVMAgent :: HostConfig -> IncusVM -> Int -> IO ()
-waitVMAgent _ vm 0 = die ("vm up: " ++ vmName vm ++ " guest agent did not become ready")
-waitVMAgent cfg vm n = do
-    r <- runTool cfg Incus (execVMArgs vm ["true"])
-    case r of
-        Right (ExitSuccess, _, _) -> pure ()
-        _ -> threadDelay 2000000 >> waitVMAgent cfg vm (n - 1)
-
-waitLimaVM :: HostConfig -> LimaVM -> Int -> IO ()
-waitLimaVM _ vm 0 = die ("vm up: " ++ limaName vm ++ " did not become ready")
-waitLimaVM cfg vm n = do
-    r <- runTool cfg Lima (LimaVM.shellVMArgs vm ["true"])
-    case r of
-        Right (ExitSuccess, _, _) -> pure ()
-        _ -> threadDelay 2000000 >> waitLimaVM cfg vm (n - 1)
-
-waitWsl2VM :: HostConfig -> Wsl2VM -> Int -> IO ()
-waitWsl2VM _ vm 0 = die ("vm up: " ++ Wsl2.wsl2Distro vm ++ " did not become ready")
-waitWsl2VM cfg vm n = do
-    r <- runTool cfg Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) ["true"])
-    case r of
-        Right (ExitSuccess, _, _) -> pure ()
-        _ -> threadDelay 2000000 >> waitWsl2VM cfg vm (n - 1)
-
 {- | @demo vm pristine-bootstrap@: the from-zero first-run flow inside the VM
 (the project source is staged at @/root/hostbootstrap@; see the runbook).
 Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
@@ -992,7 +1010,7 @@ exec'ing it (here with @context schema@, so the built binary proves itself).
 runVmBootstrap :: IO ()
 runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- resolveHostConfig
-    provider <- demoVMProvider cfg
+    provider <- demoProvider cfg
     -- Discovered on the metal host (the only place the credential lives); forwarded
     -- into the VM only over stdin for the build #3 base-image pull. 'Nothing' when
     -- the host is not logged in, in which case the pull stays anonymous.
@@ -1045,28 +1063,24 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
         Just auth -> do
             putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
             runInDemoVMStdin cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
-        Nothing ->
+        Nothing -> do
+            putStrLn "pristine-bootstrap: no host Docker Hub login found — build #3 pulls the base anonymously (Docker Hub rate limits may apply). Run `docker login` on the host (the standalone Docker CLI writes an inline token) for an authenticated, forwarded pull."
             vmStep
                 "build #3 — the project container FROM the pulled base (repo-root context, L0-direct; anonymous pull)"
                 buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
-writeAndCopyVMConfig :: HostConfig -> DemoVMProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
+writeAndCopyVMConfig :: HostConfig -> SubstrateProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
 writeAndCopyVMConfig cfg provider parentCfg ctx = do
     let hostRoot = T.unpack (Context.sourceRoot ctx)
         localPath = hostRoot </> ".build" </> "hostbootstrap-demo.vm.dhall"
         remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
-        providerKind =
-            case provider of
-                AppleLimaVM _ -> Context.LimaVMProvider
-                LinuxIncusVM _ -> Context.IncusVMProvider
-                WindowsWsl2VM _ -> Context.Wsl2VMProvider
         vmCfg =
             projectConfigFromContext
                 (dockerfile parentCfg)
                 (deploy parentCfg)
                 (message parentCfg)
-                (Context.deriveVMContextWithProvider providerKind ctx (T.pack vmDemoRoot))
+                (Context.deriveVMContextWithProvider (spProviderKind provider) ctx (T.pack vmDemoRoot))
     createDirectoryIfMissing True (hostRoot </> ".build")
     writeProjectConfigFile localPath vmCfg
     runInDemoVM
@@ -1076,11 +1090,11 @@ writeAndCopyVMConfig cfg provider parentCfg ctx = do
             ++ shellQuote (vmDemoRoot ++ "/.build")
             ++ " && sudo mkdir -p /run/hostbootstrap"
             ++ " && printf %s "
-            ++ shellQuote (demoVMName provider)
+            ++ shellQuote (spVmId provider)
             ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
         )
     copyFileToDemoVM cfg provider localPath remotePath
-    putStrLn ("pristine-bootstrap: copied parent-derived VM config to " ++ demoVMName provider ++ ":" ++ remotePath)
+    putStrLn ("pristine-bootstrap: copied parent-derived VM config to " ++ spVmId provider ++ ":" ++ remotePath)
 
 {- | The published base tag the demo's project container builds @FROM@ — cpu /
 the detected VM architecture. The base is pulled inside the VM by build #3.
@@ -1097,7 +1111,7 @@ Without this step the from-zero bootstrap has nothing to install — the runbook
 documents the source as "staged at @/root/hostbootstrap@", and this is where
 that staging happens.
 -}
-stageSource :: HostConfig -> DemoVMProvider -> FilePath -> IO ()
+stageSource :: HostConfig -> SubstrateProvider -> FilePath -> IO ()
 stageSource cfg provider sourceRoot = do
     cwd <- getCurrentDirectory
     let repoRoot =
@@ -1105,7 +1119,7 @@ stageSource cfg provider sourceRoot = do
                 then sourceRoot ++ "/.."
                 else cwd ++ "/.."
         tarball = repoRoot ++ "/.hostbootstrap-src.tgz"
-    putStrLn ("pristine-bootstrap: staging the project source into " ++ demoVMName provider ++ ":" ++ vmRepoRoot)
+    putStrLn ("pristine-bootstrap: staging the project source into " ++ spVmId provider ++ ":" ++ vmRepoRoot)
     (tc, _, terr) <-
         readProcessWithExitCode
             "tar"
@@ -1140,47 +1154,48 @@ stageSource cfg provider sourceRoot = do
     -- so a failed run never leaves a stale @.hostbootstrap-src.tgz@ in the repo
     -- root. The tarball is guaranteed to exist here (a fatal tar already
     -- 'die'd above), so the unconditional 'removeFile' cannot itself throw.
-    ( case provider of
-            LinuxIncusVM vm -> do
-                runOrDie cfg Incus (pushFileArgs vm tarball "/tmp/hostbootstrap-src.tgz")
-                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
-            AppleLimaVM vm -> do
-                runOrDie cfg Lima (LimaVM.copyToVMArgs vm tarball "/tmp/hostbootstrap-src.tgz")
-                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf /tmp/hostbootstrap-src.tgz -C " ++ shellQuote vmRepoRoot ++ " && rm -f /tmp/hostbootstrap-src.tgz")
-            WindowsWsl2VM _ ->
-                runInDemoVM cfg provider ("rm -rf " ++ shellQuote vmRepoRoot ++ " && mkdir -p " ++ shellQuote vmRepoRoot ++ " && tar -xzf " ++ shellQuote (windowsPathToWslMount tarball) ++ " -C " ++ shellQuote vmRepoRoot)
-        )
-        `finally` removeFile tarball
-
-copyFileToDemoVM :: HostConfig -> DemoVMProvider -> FilePath -> FilePath -> IO ()
-copyFileToDemoVM cfg provider localPath remotePath =
-    case provider of
-        LinuxIncusVM vm -> runOrDie cfg Incus (pushFileArgs vm localPath remotePath)
-        AppleLimaVM vm -> runOrDie cfg Lima (LimaVM.copyToVMArgs vm localPath remotePath)
-        WindowsWsl2VM _ ->
+    -- One staging path for every substrate: place the tarball where the guest can
+    -- read it (a push to @/tmp@ on Lima/Incus; read in place via @/mnt@ on WSL2,
+    -- which emits no host effect), then extract it, removing the temp only when one
+    -- was pushed. The per-substrate difference is the pure 'stageFileEffects' plan.
+    ( do
+            let staged = stageFileEffects (spTransfer provider) tarball "/tmp/hostbootstrap-src.tgz"
+                cleanup = if sfPushedTemp staged then " && rm -f " ++ shellQuote (sfGuestPath staged) else ""
+            runEffects cfg (sfHostEffects staged)
             runInDemoVM
                 cfg
                 provider
-                ( "mkdir -p "
-                    ++ shellQuote (takeDirectory remotePath)
-                    ++ " && cp "
-                    ++ shellQuote (windowsPathToWslMount localPath)
-                    ++ " "
-                    ++ shellQuote remotePath
+                ( "rm -rf "
+                    ++ shellQuote vmRepoRoot
+                    ++ " && mkdir -p "
+                    ++ shellQuote vmRepoRoot
+                    ++ " && tar -xzf "
+                    ++ shellQuote (sfGuestPath staged)
+                    ++ " -C "
+                    ++ shellQuote vmRepoRoot
+                    ++ cleanup
                 )
+        )
+        `finally` removeFile tarball
 
-windowsPathToWslMount :: FilePath -> FilePath
-windowsPathToWslMount path =
-    case path of
-        drive : ':' : rest ->
-            "/mnt/" ++ [toLowerAscii drive] ++ map slash rest
-        _ -> map slash path
-  where
-    slash '\\' = '/'
-    slash c = c
-    toLowerAscii c
-        | isAsciiUpper c = toEnum (fromEnum c + 32)
-        | otherwise = c
+copyFileToDemoVM :: HostConfig -> SubstrateProvider -> FilePath -> FilePath -> IO ()
+copyFileToDemoVM cfg provider localPath remotePath = do
+    -- Lima/Incus push straight to @remotePath@; WSL2 (no host effect) reads the
+    -- file in place via @/mnt@ and copies it in-guest. The split is the pure
+    -- 'stageFileEffects' plan, the same one 'stageSource' uses.
+    let staged = stageFileEffects (spTransfer provider) localPath remotePath
+    runEffects cfg (sfHostEffects staged)
+    unless (sfPushedTemp staged) $
+        runInDemoVM
+            cfg
+            provider
+            ( "mkdir -p "
+                ++ shellQuote (takeDirectory remotePath)
+                ++ " && cp "
+                ++ shellQuote (sfGuestPath staged)
+                ++ " "
+                ++ shellQuote remotePath
+            )
 
 isSuffixOfPath :: FilePath -> FilePath -> Bool
 isSuffixOfPath suffix path =
@@ -1206,24 +1221,16 @@ hard failure, so a partial stack always tears down.
 demoTeardown :: ProjectConfig -> Bool -> IO ()
 demoTeardown _ destroyVM = do
     cfg <- resolveHostConfig
-    provider <- demoVMProvider cfg
-    let name = demoVMName provider
-    case provider of
-        AppleLimaVM vm
-            | destroyVM -> guardedDelete cfg Lima name (LimaVM.deleteVMArgs demoGuardPrefix vm)
-            | otherwise ->
-                bestEffortTool cfg Lima (LimaVM.stopVMArgs vm) ("project down: stopping Lima instance " ++ name)
-        LinuxIncusVM vm
-            | destroyVM -> guardedDelete cfg Incus name (destroyVMArgs demoGuardPrefix vm)
-            | otherwise ->
-                bestEffortTool cfg Incus (stopVMArgs vm) ("project down: stopping " ++ name)
-        WindowsWsl2VM vm
-            | destroyVM -> guardedDelete cfg Wsl name (Wsl2.wslUnregisterArgs demoGuardPrefix (Wsl2.wsl2Distro vm))
-            | otherwise ->
-                bestEffortTool cfg Wsl (Wsl2.wslTerminateArgs (Wsl2.wsl2Distro vm)) ("project down: terminating WSL2 distro " ++ name)
-  where
-    guardedDelete cfg tool name =
-        either die (\argv -> bestEffortTool cfg tool argv ("project destroy: deleting " ++ name))
+    provider <- demoProvider cfg
+    let name = spVmId provider
+    if destroyVM
+        then case spDestroy provider of
+            -- The guard prefix refuses a VM name outside the managed namespace;
+            -- a refusal is a hard error (we will not delete an unguarded VM).
+            Left err -> die err
+            -- WSL2 destroy also restores the global @.wslconfig@ we backed up.
+            Right effs -> runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
+        else runEffectsBestEffort cfg ("project down: stopping " ++ name) (spStop provider)
 
 {- | Run a teardown tool invocation best-effort: announce the intent, then tolerate
 a non-zero exit (a missing or already-stopped VM is not a failure for idempotent

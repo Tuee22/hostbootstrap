@@ -15,7 +15,10 @@
   (cordon #2) is a **slice within it** that fits alongside the VM OS, Docker, and image builds. The budget
   is never added to itself — there is no budget-sized VM "headroom" that sizes the VM above the ceiling
   (that double-counts the one requirement; see
-  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)). On Incus and
+  Lima the wall is a hard per-VM cap; on **WSL2 the memory/CPU wall is the global `.wslconfig` utility-VM
+  ceiling** (WSL2 has no per-distro cap), with storage a per-distro VHDX cap — see
+  [wsl2](wsl2.md) and [applied_cordon](applied_cordon.md).
 - A test config may override the budget (e.g. smaller resources); `test run` projects the override into the
   test `<project>.dhall` it writes, then drives the same sizing path as deploy.
 - The project binary verifies the active context has the spare budget available before proceeding, then
@@ -99,12 +102,18 @@ capacity **per substrate**, so the preflight is a real gate on every supported h
 |-----------|-----------|--------|---------|
 | `apple-silicon` | `sysctl -n hw.ncpu` (logical cores) | `sysctl -n hw.memsize` (total physical RAM) | reported generously |
 | `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` processor count | `/proc/meminfo` `MemAvailable` | reported generously |
+| `windows-cpu` / `windows-gpu` | CIM `Win32_ComputerSystem.NumberOfLogicalProcessors` | CIM `Win32_ComputerSystem.TotalPhysicalMemory` (total physical RAM) | system-drive free space |
 
-Storage is reported generously because the applied storage cordon (Lima/Colima `--disk`, incus `root,size`,
-a quota'd hostPath) is the real storage wall, not the preflight. On Apple, `sysctl` is invoked through
-the resolved `HostTool Sysctl`, preserving the host-tool absolute-path rule. The preflight runs inside
-`clusterCreate` before any substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up
-ring and [cluster_lifecycle](cluster_lifecycle.md) for where it runs.
+Memory is read as **total** physical RAM on Apple and Windows (a stable property of the machine) and as
+`MemAvailable` on Linux. Storage is reported generously on Apple and Linux because their applied storage
+cordon (Lima/Colima `--disk`, incus `root,size`) is the real wall, but is read as real **system-drive
+free space** on Windows so a WSL2 run does not begin a large VHDX-backed build on a disk that cannot hold
+the declared storage budget. The Windows total-memory predicate matters because WSL2 has no per-distro
+memory cap (see Cordoning per Substrate): the preflight must fail fast on a too-small host rather than
+pass on transient free RAM. On Apple, `sysctl` is invoked through the resolved `HostTool Sysctl`,
+preserving the host-tool absolute-path rule. The preflight runs inside `clusterCreate` before any
+substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
+[cluster_lifecycle](cluster_lifecycle.md) for where it runs.
 
 ## Cordoning per Substrate
 
@@ -116,7 +125,7 @@ bootstrapper.
 |-----------|---------------------|
 | `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM is the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
 | `linux-cpu` / `linux-gpu` | A kind-node cap applied during cluster bring-up: `docker update --cpus --memory --memory-swap` on the control-plane container, capping the cluster's consumption to the declared budget. |
-| `windows-cpu` / `windows-gpu` | A dedicated WSL2 `Ubuntu-24.04` distro sized to `cpu` / `memory` / `storage` via the provider (the `wsl` CLI `--memory` / `--cpu` plus `.wslconfig`); the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. Storage is cordoned at that VM boundary via the distro's vhdx. *(Target.)* |
+| `windows-cpu` / `windows-gpu` | A project-owned WSL2 `Ubuntu-24.04` distro, cordoned by the project binary. WSL2 has **no** per-distro memory/CPU cap, so memory/CPU are the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling (`processors` / `memory` / `swap`, written and applied with `wsl --shutdown` at launch, backed up and restored on teardown) that sizes the shared utility VM; storage is a per-distro VHDX cap applied at registration via `wsl --install --vhd-size`. There is no `wsl --memory`/`--cpu` flag. See [wsl2](wsl2.md). |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows may use the per-project
 Colima VM; on Linux it is the kind-node cap applied during cluster bring-up, after `kind create` and

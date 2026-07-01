@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
 builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
@@ -34,12 +34,30 @@ vhdx storage cap, § O). Phase-9 **owns** this pure builder;
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 host provider
 **consumes** it. Sprint 9.6 is closed; Phase 11 owns applying it to a real WSL2 distro.
 
+This phase is **reopened (2026-06-30)** for the **honest WSL2 cordon** correction (Sprint 9.7). The
+earlier Sprint 9.6 builder/predicate had two inaccuracies now that the WSL2 memory model is understood
+precisely: (1) `wsl2SizingArgs` emitted a `vhdx-size` line as if it were a `.wslconfig` key, but
+`.wslconfig` has no such key — the per-distro VHDX cap is the `wsl --install --vhd-size` flag, and the
+`[wsl2]` block is the *global* utility-VM ceiling (there is no per-distro `wsl --memory`/`--cpu`); and
+(2) the Windows `resolveHostCapacity` predicate read volatile `Win32_OperatingSystem.FreePhysicalMemory`,
+so the preflight passed on transient post-reboot free RAM and let an undersized host reach the build. The
+corrected builder emits `[wsl2]` `processors`/`memory`/`swap` (swap for OOM headroom, no `vhdx-size`
+key), the Windows predicate reads stable total `Win32_ComputerSystem.TotalPhysicalMemory`, and the
+per-substrate launch is unified behind one pure lift (`HostBootstrap.Substrate.Provider`,
+`spLaunch :: ResourceEnvelope -> Either String [HostEffect]`) so the WSL2 `.wslconfig` write/`--shutdown`
+is a first-class effect, not a dropped value. See
+[applied_cordon](../documents/engineering/applied_cordon.md) and
+[wsl2](../documents/engineering/wsl2.md).
+
 ## Remaining Work
 
-None. Closed on 2026-06-26: `cabal build all` and `cabal test all` passed from `core/`; the live Windows
-host-capacity read returned positive CPU and memory capacity through the PowerShell/CIM branch; and
-`CordonSpec` covers `wsl2SizingArgs` from the one canonical parser. Applying the `.wslconfig` + VHDX wall
-to a real distro is Phase 11 provider validation, not a Phase 9 blocker.
+Sprint 9.7 (honest WSL2 cordon) is `Active`. Static validation is closed: `cabal build all` and
+`cabal test all` pass from `core/` (274 tests; `CordonSpec` covers the corrected `wsl2SizingArgs` —
+`[wsl2]` + `swap`, no `vhdx-size` — and the `WindowsTotalMemory` capacity source; the new `ProviderSpec`
+locks the unified `selectSubstrateProvider` launch/teardown/transfer effect lists, with Lima/Incus
+byte-for-byte equal to the former argv). The open item is the real-run validation of the applied
+`.wslconfig` wall on a live WSL2 distro, owned jointly with
+[phase-11](phase-11-incus-host-provider.md) Sprint 11.7 (the Windows lifecycle closure).
 
 ## Phase Objective
 
@@ -230,6 +248,55 @@ None. `cabal build all` and `cabal test all` passed on 2026-06-26, and the live 
 returned `Right (HostCapacity {spareCpu = 16, ...})` through the PowerShell/CIM branch. The real WSL2
 distro application of the generated `.wslconfig` + VHDX cap is consumed and validated by
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 sprint.
+
+### Sprint 9.7: Honest WSL2 cordon and one pure lift per substrate [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs` (new),
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (`wsl2SizingArgs`, `WindowsTotalMemory`),
+`demo/src/HostBootstrapDemo/Commands.hs` (generic lifecycle interpreters),
+`core/hostbootstrap-core/test/ProviderSpec.hs` (new), `core/hostbootstrap-core/test/CordonSpec.hs`
+**Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/wsl2.md`,
+`documents/engineering/resource_budgeting.md`, `README.md`, `system-components.md`
+
+#### Objective
+
+Make the WSL2 cordon honest about what WSL2 can enforce, and collapse the per-substrate VM lifecycle to
+one pure lift so the WSL2 difference is data, not a hand-branched special case.
+
+#### Deliverables
+
+- `wsl2SizingArgs` emits the real `.wslconfig` `[wsl2]` body — `processors` / `memory` / `swap` (swap
+  sized to the memory budget for OOM headroom) — and **drops** the invalid `vhdx-size` key (storage is the
+  per-distro `wsl --install --vhd-size` flag, not a `.wslconfig` setting). The `[wsl2]` block is the
+  *global* utility-VM ceiling; WSL2 has no per-distro `wsl --memory`/`--cpu`.
+- The Windows capacity predicate reads **total** physical memory (`WindowsTotalMemory` →
+  `Win32_ComputerSystem.TotalPhysicalMemory`), replacing the volatile `WindowsAvailableMemory`
+  (`FreePhysicalMemory`), so the preflight fails fast on a too-small host instead of passing on transient
+  free RAM (mirrors Apple `hw.memsize`).
+- New core module `HostBootstrap.Substrate.Provider`: one pure `SubstrateProvider` value per substrate
+  (`selectSubstrateProvider`, the lifecycle peer of `capacityReadPlan` / `Lift.foldLeaf`), with launch
+  modelled as a list of `HostEffect` (`WriteHostFile` / `RestoreHostFile` / `RunHostTool`). WSL2's
+  `.wslconfig` write + `wsl --shutdown` is a first-class effect; Lima/Incus carry an empty file-write
+  list. The demo's `runVmUp` / `demoTeardown` / `stageSource` / `copyFileToDemoVM` / `runInDemoVM` /
+  `demoVMFrameContext` collapse to generic interpreters over that value (the former
+  `DemoVMProvider`, the triplicated exists/wait/teardown/stage branches removed).
+- `project destroy` backs up and restores the global `.wslconfig` (never-clobber-user-state).
+
+#### Validation
+
+- `ProviderSpec` asserts the Lima/Incus launch effect lists equal the prior argv **byte-for-byte** (the
+  refactor is behavior-preserving on the validated substrates), the WSL2 launch writes the `.wslconfig`
+  ceiling with `swap` then shuts down then installs with `--vhd-size`, and the guard-prefixed destroy is
+  refused outside the managed namespace. `CordonSpec` covers the corrected `wsl2SizingArgs` and the
+  `WindowsTotalMemory` source. `cabal build all` and `cabal test all` pass from `core/` (274 tests); the
+  demo binary builds.
+
+#### Remaining Work
+
+The applied `.wslconfig` wall on a **live** WSL2 distro — the full `project up` → `test run all` →
+`project destroy` Windows closure — is real-run-gated, jointly with
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) Sprint 11.7.
 
 ## Documentation Requirements
 

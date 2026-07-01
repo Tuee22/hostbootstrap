@@ -181,6 +181,9 @@ the host target is not a fifth run-model. It parameterizes the existing run-mode
 them. The declared resource **budget is the one ceiling — the VM wall**: the VM is sized to the budget,
 and the in-VM cluster is a **slice within that wall**, not a separate budget-sized allocation. There is
 **no budget-sized VM headroom and no doubling** (see [resource_budgeting](../engineering/resource_budgeting.md)).
+The wall is a hard per-VM cap on Incus and Lima; on WSL2 — which has no per-distro cap — it is the global
+`.wslconfig` utility-VM ceiling plus a per-distro VHDX cap (see
+[applied_cordon](../engineering/applied_cordon.md)).
 
 ```haskell
 data HostTarget = Local | InVM IncusVM

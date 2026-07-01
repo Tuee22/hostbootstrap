@@ -29,6 +29,7 @@ library
       HostBootstrap.HostConfig
       HostBootstrap.HostPrereqs
       HostBootstrap.Substrate
+      HostBootstrap.Substrate.Provider
       HostBootstrap.Ensure
       HostBootstrap.Ensure.Docker
       HostBootstrap.Ensure.Colima
@@ -97,6 +98,7 @@ test-suite hostbootstrap-core-test
       SchemaSpec
       DhallGenSpec
       CordonSpec
+      ProviderSpec
       ContextSpec
       LifecycleSpec
       HarnessSpec

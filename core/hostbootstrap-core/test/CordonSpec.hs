@@ -82,11 +82,11 @@ capacitySourceCases =
     testCase "linux-gpu reads CPU and memory from procfs" $
       capacityReadPlan (Substrate LinuxGpu Amd64)
         @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage,
-    testCase "windows substrates read CPU, memory, and storage from PowerShell/CIM" $ do
+    testCase "windows substrates read CPU, total memory, and storage from PowerShell/CIM" $ do
       capacityReadPlan (Substrate WindowsCpu Amd64)
-        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
       capacityReadPlan (Substrate WindowsGpu Amd64)
-        @?= CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace,
+        @?= CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace,
     testCase "windows storage shortage fails before WSL2 VHDX pressure" $
       leftHas "storage" $
         preflightBudget
@@ -147,9 +147,9 @@ sizingCases =
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],
-    testCase "wsl2 sizing emits .wslconfig and vhdx wall settings" $
+    testCase "wsl2 sizing emits the .wslconfig [wsl2] global ceiling with swap (no vhdx-size key)" $
       wsl2SizingArgs demoResources
-        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "vhdx-size=20GB"],
+        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "swap=8GB"],
     testCase "applied Linux cordon targets the control-plane with budget caps" $
       kindNodeCordonArgs "demo-test-case1" demoResources
         @?= Right

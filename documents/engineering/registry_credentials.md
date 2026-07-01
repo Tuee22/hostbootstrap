@@ -71,6 +71,28 @@ the outermost frame and holds the credential; each nested binary knows it may re
 credential and consumes it locally for the duration of its pulls. The credential is never stored at any
 level.
 
+## Where the inline token comes from (per-host login)
+
+Discovery reads an **inline** token only: `dockerHubAuthFromConfig` keeps the `config.json`
+`auths."https://index.docker.io/v1/"` entry **verbatim** — both the `auth` (base64 `username:token`) and
+any `identitytoken` field — and forwards it. It deliberately does **not** resolve credential stores
+(`credsStore`/`credHelpers`) — no `docker-credential-*` helper is ever invoked. So the credential must
+live inline in `config.json`, which is exactly what a plain `docker login` writes **when no credential
+helper is configured**:
+
+- **Linux** and **Windows (standalone Docker CLI, no Docker Desktop)** — a bare `docker.exe`/`docker`
+  with no `credsStore` set writes the token inline on `docker login -u <user>` (paste a Docker Hub
+  **Personal Access Token**). This is the symmetric, zero-configuration path: the same inline shape is
+  discovered and forwarded on both. The Windows CLI is the static binary from
+  `https://download.docker.com/win/static/stable/x86_64/` (no daemon, no Docker Desktop needed — `docker
+  login` is a registry API call). Prefer a PAT over a password: inline is base64, plaintext at rest.
+- **macOS (Docker Desktop → `osxkeychain`)** and **Windows with a helper (`wincred` / Docker Desktop
+  `desktop`)** — the helper stores the secret in the OS keystore, leaving `config.json` with the
+  `docker.io` key but **no** inline `auth`, so discovery yields `Nothing` and pulls run anonymously. The
+  workaround is the `DOCKER_CONFIG` override: point it at a directory whose `config.json` carries a
+  plaintext Docker Hub `auths` entry (a PAT), which `discoverHostRegistryAuth` reads in preference to
+  `~/.docker/config.json`. See the [demo runbook](../operations/demo_runbook.md) per-substrate notes.
+
 ## What is explicitly forbidden
 
 - A credential field, env-reference, or path in any `<project>.dhall`, `ConfigArtifact`, or `HostConfig`.

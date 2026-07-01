@@ -73,7 +73,7 @@ data CapacityReadSource
   | ProcMemAvailable
   | SysctlKey String
   | WindowsLogicalProcessors
-  | WindowsAvailableMemory
+  | WindowsTotalMemory
   | WindowsSystemDriveFreeSpace
   | GenerousStorage
   deriving (Eq, Show)
@@ -255,8 +255,14 @@ incusSizingArgs r = do
       "root,size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GiB"
     ]
 
--- | The WSL2 wall derived from the one canonical parser: .wslconfig CPU/memory
--- settings plus the storage cap the WSL2 provider applies to the distro VHDX.
+-- | The WSL2 wall as a @.wslconfig@ @[wsl2]@ body derived from the one canonical
+-- parser. WSL2's only memory/CPU wall is the /global/ utility-VM ceiling this
+-- file sets (there is no per-distro @wsl --memory@/@--cpu@); the provider writes
+-- it and applies it with @wsl --shutdown@ before the distro boots. @swap@ is sized
+-- to the memory budget for OOM headroom so a budget-fitting build is not killed.
+-- Storage is /not/ a @.wslconfig@ key — the per-distro VHDX cap is applied at
+-- install time via @wsl --install --vhd-size@ (see
+-- 'HostBootstrap.Wsl2.wslInstallArgs'), so it is intentionally absent here.
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs r = do
   b <- budgetFromResources r
@@ -264,7 +270,7 @@ wsl2SizingArgs r = do
     [ "[wsl2]",
       "processors=" ++ show (budgetCpu b),
       "memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",
-      "vhdx-size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GB"
+      "swap=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB"
     ]
 
 -- | Select the host-capacity read sources for a detected substrate.
@@ -277,7 +283,7 @@ capacityReadPlan sub = case substrateName sub of
   WindowsGpu -> windowsReadPlan
   where
     linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage
-    windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsAvailableMemory WindowsSystemDriveFreeSpace
+    windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
 
 -- | Resolve spare host capacity for the preflight. CPU, memory, and storage
 -- come from the substrate-specific sources selected by 'capacityReadPlan'.
@@ -336,8 +342,13 @@ readAvailableMemory _ ProcMemAvailable = do
           Nothing -> Left "host capacity: MemAvailable not found in /proc/meminfo"
         Left e -> Left ("host capacity: failed to read /proc/meminfo: " ++ displayException e)
 readAvailableMemory cfg (SysctlKey key) = readSysctlPositiveInteger cfg key
-readAvailableMemory cfg WindowsAvailableMemory =
-  fmap (* 1024) <$> readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
+-- Windows reads /total/ physical memory (already in bytes), not free: it mirrors
+-- Apple's stable @hw.memsize@ so the preflight is a property of the machine, not a
+-- volatile point-in-time free-RAM reading. A budget-fitting host then fails fast
+-- before the expensive build rather than passing on transient post-reboot free RAM
+-- (see @documents/engineering/applied_cordon.md@).
+readAvailableMemory cfg WindowsTotalMemory =
+  readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"
 readAvailableMemory _ source =
   pure (Left ("host capacity: unsupported memory source " ++ show source))
 

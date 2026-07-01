@@ -200,7 +200,7 @@ pod, and the verified NodePort:
 | Step | Frame | What it does |
 |---|---|---|
 | deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima, Incus, or WSL2 on Windows |
-| deploy-VM | `host-orchestrator-0` | **cordon #1** — launch the budget-sized pristine VM, the wall |
+| deploy-VM | `host-orchestrator-0` | **cordon #1** — launch the budget-sized pristine VM, the wall (a hard per-VM cap on Lima/Incus; on WSL2 the global `.wslconfig` ceiling written + `wsl --shutdown` then the `--vhd-size` distro, see [applied cordon](../engineering/applied_cordon.md)) |
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
 | context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses, then hand off `project up` into the container |
 | deploy-kind | `vm-project-container-2` | **cordon #2** — bring up the persistent kind cluster (Production profile) on the VM's Docker |
@@ -336,3 +336,16 @@ deploy-VM / `project down` (stop-without-delete) / `project destroy` lifecycle s
 [wsl2](../engineering/wsl2.md), the Windows peer of the Lima (Apple Silicon) and Incus (native Linux) VM
 providers. Once the Windows substrate is hardware-validated this section gains the substrate-specific
 prerequisites the Apple Silicon walkthrough above lists for Lima.
+
+- **Forward the registry credential.** Symmetric with the other substrates and code-identical: Windows
+  needs **no Docker Desktop** — install just the standalone Docker **CLI** (`docker.exe`, no daemon: the
+  static zip from `https://download.docker.com/win/static/stable/x86_64/`, or Scoop/Choco; winget ships no
+  CLI-only package) and run `docker login -u <dockerhub-user>`, pasting a Docker Hub **Personal Access
+  Token** as the password. With no credential helper configured (the standalone CLI default), that writes
+  an **inline** token to `%USERPROFILE%\.docker\config.json` under `https://index.docker.io/v1/` — exactly
+  what `discoverHostRegistryAuth` reads and the WSL2 lift forwards over stdin into build #3's base pull, the
+  same inline-token path a bare `docker login` produces on Linux. Without it the base pull degrades to an
+  anonymous, rate-limit-prone pull. Do **not** configure a credential helper
+  (`docker-credential-wincred` + `credsStore`): that stores the token outside `config.json` with no inline
+  entry, so discovery misses it (the macOS keychain has this same limitation — use the `DOCKER_CONFIG`
+  plaintext-`auths` workaround there). See [registry credentials](../engineering/registry_credentials.md).

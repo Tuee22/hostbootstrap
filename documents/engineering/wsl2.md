@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [ensure reconcilers](ensure_reconcilers.md), [incus](incus.md), [lima](lima.md), [demo runbook](../operations/demo_runbook.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [documents-index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [incus](incus.md), [lima](lima.md), [demo runbook](../operations/demo_runbook.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
 
 > **Purpose**: Describe the WSL2 host-provider VM used on Windows to represent a pristine Linux
 > environment — the peer of Lima (Apple Silicon) and Incus (native Linux) — and how its lifecycle is
@@ -41,7 +41,7 @@ The pure command shapes are:
 winget install --id Microsoft.WSL --exact  # install the WSL package when absent
 wsl --install --no-distribution            # enable WSL2 + Virtual Machine Platform (may require a host reboot)
 bcdedit /set hypervisorlaunchtype auto     # ensure the Windows hypervisor is allowed to launch
-wsl --install Ubuntu-24.04 --name <project>-vm  # project-owned distro registration when absent
+wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>  # project-owned distro registration (storage cordon) when absent
 wsl --set-default-version 2
 wsl --import <distro> <install-dir> <rootfs.tar.gz> --version 2
 wsl -d <distro> -- <command>
@@ -110,6 +110,42 @@ and the interpreter selects the provider for the current substrate. The model it
 project, the recursive interpreter, and the single representation — is owned by
 [composition_methodology](../architecture/composition_methodology.md); this document describes the WSL2
 provider's contribution to it.
+
+## Resource Cordon
+
+The `resources` budget (cordon #1, "the VM is the wall") is applied differently on WSL2 than on Lima or
+Incus, and the WSL2 provider is **honest about the difference** rather than pretending parity. Incus
+(`limits.memory`) and Lima (`--memory`) give each VM a hard, per-instance memory/CPU cap. **WSL2 has no
+per-distro memory or CPU cap** — there is no `wsl --memory`/`--cpu`. The only lever is the *global*,
+per-user `%UserProfile%\.wslconfig` `[wsl2]` block, which sizes the **single shared utility VM** that
+hosts every distro on the machine. So the WSL2 wall is two cordons of different strengths:
+
+| Dimension | WSL2 mechanism | Strength |
+|---|---|---|
+| CPU / memory | the global `.wslconfig` `[wsl2]` `processors` / `memory` / `swap` ceiling | global utility-VM ceiling (shared across all distros), not a per-distro wall |
+| storage | per-distro VHDX cap, applied at registration via `wsl --install --vhd-size <GB>` | a real per-distro wall |
+
+`wsl2SizingArgs` (the one canonical builder, fed by `parseQuantity`) emits the `[wsl2]` body:
+`processors` and `memory` from the budget, plus `swap` sized to the memory budget for OOM headroom — so
+a build that fits the budget is not killed by the host reclaiming the under-provisioned utility VM. The
+`.wslconfig` carries **no** `vhdx-size` key (it is not a `.wslconfig` setting); storage is the
+`--vhd-size` install flag instead.
+
+Because `.wslconfig` is global and requires `wsl --shutdown` to take effect, the WSL2 launch is a
+**list of effects**, not a single argv — the structural reason the unified per-substrate lift
+(`SubstrateProvider.spLaunch`) returns `[HostEffect]`:
+
+1. write `%UserProfile%\.wslconfig` with the `[wsl2]` ceiling, **backing up** any pre-existing file to
+   `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably);
+2. `wsl --shutdown` so the new ceiling applies to the next boot;
+3. register the distro with its `--vhd-size` storage cap.
+
+`project destroy` restores the backed-up `.wslconfig` (or removes the one we wrote if there was none).
+The preflight predicate that decides whether the host can satisfy the budget reads **total** physical
+memory on Windows (CIM `Win32_ComputerSystem.TotalPhysicalMemory`), mirroring Apple's stable
+`hw.memsize` — a too-small host fails fast before the expensive build rather than passing on transient
+free RAM. The enforcement mechanics, the three rings, and the per-substrate table are owned by
+[applied_cordon](applied_cordon.md); this section is the WSL2-specific instance.
 
 ## `ensure wsl2`
 

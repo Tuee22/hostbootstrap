@@ -198,9 +198,12 @@ nested context fields carrying the role and command authority:
 
 The project value is also the command name. The `resources` budget is the host-level ceiling that the
 project binary projects into child configs and enforces through cordons. Before bring-up the binary
-verifies that budget against spare host capacity resolved per substrate — resolved `sysctl` on Apple
-silicon, `/proc` on Linux, and the host APIs on Windows. See
-[`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md).
+verifies that budget against host capacity resolved per substrate — `sysctl` (total RAM) on Apple
+silicon, `/proc` on Linux, and PowerShell/CIM (total physical memory) on Windows. On Incus and Lima the
+applied wall is a hard per-VM cap; on WSL2 — which has no per-distro cap — it is the global `.wslconfig`
+utility-VM ceiling (with a per-distro VHDX storage cap). See
+[`documents/engineering/resource_budgeting.md`](documents/engineering/resource_budgeting.md) and
+[`documents/engineering/applied_cordon.md`](documents/engineering/applied_cordon.md).
 
 ## CLI Surface
 
@@ -316,7 +319,7 @@ contributed workload steps, and `project up` interprets it recursively:
 | # | Step | Frame | Role |
 |---|---|---|---|
 | 1 | host-pb | host (metal) | provision the host frame, build the pb, hand off `pb project up` (the Python bootstrapper's metal-frame instance) |
-| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux, WSL2 distro on Windows — the cordon / isolation wall |
+| 2 | deploy VM | host → VM | Lima VM on Apple Silicon, Incus VM on Linux, WSL2 distro on Windows — the isolation wall (a hard per-VM cap on Lima/Incus; the global `.wslconfig` ceiling + per-distro VHDX on WSL2) |
 | 3 | copy source + ensure GHC in VM | VM | stage the source into the VM and reconcile the GHC toolchain there |
 | 4 | build pb in VM | VM | build the project binary host-native **in** the VM |
 | 5 | ensure docker in VM | VM | reconcile Docker inside the guest (not supplied by Lima's containerd) |
