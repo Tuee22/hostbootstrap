@@ -46,7 +46,7 @@ import HostBootstrap.Command (coreCommands)
 import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact (..), coreArtifacts)
-import HostBootstrap.Harness (TestSuite, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.Harness (TestSuite, allCasesSelector, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
 import HostBootstrap.Lift (LiftContext, localContext)
 import HostBootstrap.Service (ServiceRegistry, duplicateServiceVariants, emptyServiceRegistry)
 import HostBootstrap.Step (Step, StepFrame)
@@ -287,6 +287,12 @@ validateProjectSpec spec
         Left "project test suite is empty; use runBareHostBootstrapCLI only for the bare core binary"
     | not (null duplicateCases) =
         Left ("project test case ids are duplicated: " ++ comma duplicateCases)
+    | allCasesSelector `elem` caseIds =
+        Left
+            ( "project test case id '"
+                ++ allCasesSelector
+                ++ "' is reserved (the always-injected whole-matrix selector) and cannot name a case"
+            )
     | not (null shadowedArtifacts) =
         Left ("project artifacts shadow core artifacts: " ++ comma shadowedArtifacts)
     | not (null duplicateArtifacts) =

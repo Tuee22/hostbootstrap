@@ -25,7 +25,7 @@
 
 The Python layer runs *before any project binary exists*, so it can only depend on the host shell
 and a handful of system tools. Its job is to assert the host is bootstrappable, ensure the host build
-toolchain, build the project binary host-native into `./.build/<project>`, and exec it. The fail-fast
+toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The fail-fast
 minimums below are the preconditions for that pre-binary work. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
 project binary (or `hostbootstrap-core`'s own bare binary).
@@ -37,6 +37,9 @@ The Python bootstrapper asserts, fail-fast:
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
+- **Hardware virtualization.** Intel VT-x / AMD-V enabled in firmware with a usable `/dev/kvm`, which
+  the nested VM providers (`ensure incus`) need — a KVM-less host would otherwise pass `doctor` and
+  fail only deep inside VM bring-up.
 
 Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions it, starts the daemon,
 grants the invoking user `docker` socket access for future login sessions, applies an immediate socket
@@ -63,10 +66,11 @@ Windows is the third metal substrate (`windows-cpu` and `windows-gpu`); its Linu
 WSL2 `Ubuntu-24.04` guest, the structural peer of the Lima (Apple Silicon) and Incus (native Linux) VMs.
 The Python bootstrapper asserts, fail-fast:
 
-- **winget.** The Homebrew-analog pre-binary package manager through which the bootstrapper installs the
-  host GHC/Cabal toolchain needed to build `hostbootstrap.exe` host-native. Its presence is a hard
-  precondition rather than something reconciled, exactly as Homebrew is on Apple.
-- **PowerShell.** The host shell the pre-binary bootstrapper runs in.
+- **winget.** The Homebrew-analog pre-binary package manager, asserted present as a hard precondition
+  rather than reconciled (exactly as Homebrew is on Apple). `ensure cudawin` later uses it to install the
+  CUDA Toolkit and MSVC build tools; the host GHC/Cabal toolchain (`ghcup`) is bootstrapped separately by
+  a direct PowerShell download (`Invoke-WebRequest`), not through winget.
+- **PowerShell.** The host shell the pre-binary bootstrapper runs in (it drives the ghcup download).
 
 On `windows-gpu` the host additionally needs the **NVIDIA Windows driver** and the **CUDA Toolkit** for
 the headless host-build CUDA path (`ensure cudawin`, composition pattern #7), distinct from the
@@ -77,7 +81,8 @@ Machine Platform as needed, registers the `Ubuntu-24.04` distro, classifies any 
 state, and then the in-distro Linux frame applies its own Linux minimums. The host CUDA capability
 (`ensure cudawin`) also runs later, owned by the execed binary, not the pre-binary bootstrapper.
 The pre-binary Windows toolchain bootstrap and `ensure cudawin` path are validated on a real Windows
-GPU host; the real WSL2 provider lifecycle remains the Phase-11 gate.
+GPU host, and the real WSL2 provider lifecycle closed the Phase-11 Windows pristine gate (`test run all`
+`6/6`).
 
 ## Everything Else Is Ensured, Not Required
 

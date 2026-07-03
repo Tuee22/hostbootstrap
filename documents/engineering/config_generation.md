@@ -23,7 +23,8 @@
   value.
 - `coreArtifacts` is the L0 registry (`budget`, `podResources`, `kindNode`). A project supplies its
   artifact delta through `ProjectSpec`; the read-only `context` command renders the in-scope registry's
-  schemas and static example renders plus the reflected project-local `ProjectConfig` schema.
+  schemas and static example renders; the reflected project-local `ProjectConfig` schema is printed by
+  `service schema`, not `context`.
 - `project init` writes the **root** `<project>.dhall` — the host-orchestrator config with no parent
   frame, carrying resource budget and deploy knobs. The **context-init step** inside `project up` mints
   each **child** `<project>.dhall` for the next frame just before the chain hands off into it: it narrows
@@ -96,7 +97,8 @@ frame's config is **derived**, not hand-edited.
 
 ## The Shared Value-Free Builder
 
-A single pure builder under `psInit` — `projectConfigForRole` / `buildInitConfig` — is the only place
+A single pure builder under `psInit` — `demoInit` (= `demoInitWithMessage demoDefaultMessage`), which
+delegates to the value-taking `projectConfigForRole` assembler — is the only place
 default config values live. Three callers share it: `project init` (renders the root config, then layers
 flag overrides), `test init` (writes the thin `test.dhall` override), and the test harness (generates each
 run's `<project>.dhall` via the project-owned `psTestConfig`, which reuses `psInit`). The harness builds
@@ -147,8 +149,9 @@ composition (`topologyFrames`/`parentChain`) with the current frame highlighted,
 registry. It mutates nothing — minting child configs is the context-init step's job inside `project up`,
 not a user verb.
 
-The registry surface `context` prints is the transitive union of the in-scope artifacts' schemas, each
-labelled by name, with the reflected project-local `ProjectConfig` schema appended:
+The registry surface `context schema` prints is the transitive union of the in-scope artifacts' schemas
+(`coreArtifacts ++ project artifacts`), each labelled by name — the reflected project-local
+`ProjectConfig` schema is printed by `service schema`, not `context schema`:
 
 ```text
 -- budget
@@ -164,9 +167,6 @@ labelled by name, with the reflected project-local `ProjectConfig` schema append
 
 -- kindNode
 { cpus : Natural, memory : Natural, storage : Natural }
-
--- projectConfig
-{ dockerfile : Text, ... }
 ```
 
 The L0 portion of that schema is guarded by a committed snapshot at

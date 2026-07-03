@@ -241,7 +241,7 @@ selectSubstrateProvider sub h = case substrateName sub of
 -- | Parse a VM-name list out of an existence-probe's stdout per 'Membership'.
 membersOf :: Membership -> String -> [String]
 membersOf LinesMember = lines
-membersOf WslQuietMember = words . Wsl2.normalizeWslText
+membersOf WslQuietMember = Wsl2.wslListDistros
 
 {- | Plan one host→guest file transfer (pure). Lima/Incus push to @dst@; WSL2 reads
 @src@ in place through its @/mnt@ drive mount, so it emits no host effect.

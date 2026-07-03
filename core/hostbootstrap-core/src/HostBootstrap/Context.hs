@@ -284,9 +284,9 @@ deriveVMContextWithProvider provider parent root =
     root
     VMOrchestrator
     provider
-    [HostTools, DockerSocket, ContainerRuntime]
-    [EnsureCommand, ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
-    [VMProjectContainer, ClusterService, Daemon, OneShotJob, TestHarness]
+    (capabilitiesForKind VMOrchestrator)
+    (commandClassesForKind VMOrchestrator)
+    (childKindsForKind VMOrchestrator)
 
 -- | Derive a project-container context from its parent.
 deriveContainerContext :: BinaryContext -> Text -> BinaryContext
@@ -296,9 +296,9 @@ deriveContainerContext parent root =
     root
     VMProjectContainer
     DockerContainerProvider
-    [DockerSocket, ContainerRuntime, KindNetwork]
-    [ConfigInspectionCommand, ConfigGenerationCommand, ContextCreationCommand, ClusterLifecycleCommand, TestWorkflowCommand, CheckCodeCommand, ProjectCommand]
-    [ClusterService, OneShotJob, TestHarness]
+    (capabilitiesForKind VMProjectContainer)
+    (commandClassesForKind VMProjectContainer)
+    (childKindsForKind VMProjectContainer)
 
 -- | Derive a cluster-service context from its parent.
 deriveServiceContext :: BinaryContext -> Text -> BinaryContext

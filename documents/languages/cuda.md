@@ -36,7 +36,10 @@ filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 
 Dynamic resolution always pulls the latest `cudnn-devel-ubuntu24.04` tag. A
 project pinned to an older CUDA must override the resolved base explicitly
-when invoking `hostbootstrap base build-and-push`.
+through the Python build API — `compute_build_args(base_image_override=…)` or
+`with_base_override` in [`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py). The
+`hostbootstrap base build-and-push` CLI exposes only `--flavor`, `--arch`,
+`--context`, and `--sequential`; it carries no base-image override flag.
 
 ## arm64
 
@@ -50,10 +53,12 @@ the base image, and a container reaches the GPU through the `nvidia-container-to
 adds a **distinct, second** path — a **headless host build**, the first worked instance of composition
 pattern #7 (see [composition_patterns](../engineering/composition_patterns.md)).
 
-On a `windows-gpu` host, `ensure cudawin` readies the Windows GPU build toolchain — the NVIDIA Windows
-display driver, the CUDA Toolkit, and the MSVC host compiler — via **winget** (the Homebrew-analog
-pre-binary package manager). `nvcc` then compiles the platform-locked artifact **on the bare Windows
-host**, and the chain stages the produced artifact into the cluster. **No workload runs in a build VM**;
+On a `windows-gpu` host, `ensure cudawin` readies the Windows GPU build toolchain. The NVIDIA Windows
+display driver is a **precondition** — the reconciler fails fast when `nvidia-smi` is absent, so it is
+never auto-installed — while the CUDA Toolkit (`Nvidia.CUDA`) and the MSVC host compiler are installed
+via **winget** (the Homebrew-analog pre-binary package manager). `nvcc` then compiles the platform-locked
+artifact **on the bare Windows host**, and the chain stages the produced artifact into the cluster. **No
+workload runs in a build VM**;
 the build VM is absent by design. This is the headless host-bridge shape: build a platform-locked
 artifact on the metal host, copy it out, and never run the workload there.
 
@@ -62,11 +67,11 @@ The two paths contrast explicitly:
 - **In-container `linux-gpu` (the sections above).** The GPU toolchain is in the base image and the
   workload *runs* in a GPU container through `nvidia-container-toolkit`; readied by `ensure cuda`.
 - **Windows host-build (`windows-gpu`, this section).** nvcc *builds* on the bare Windows host through
-  `ensure cudawin` (driver + CUDA Toolkit + MSVC via winget); the artifact is staged into the cluster
-  and nothing GPU-bound runs in a build VM.
+  `ensure cudawin` (CUDA Toolkit + MSVC via winget; the NVIDIA driver is a required precondition); the
+  artifact is staged into the cluster and nothing GPU-bound runs in a build VM.
 
 This Windows host-build path is implemented as the `ensure cudawin` headless host-build surface. The
 Windows VM frame it sits beside (Docker, kind, and the in-cluster workload) is the
 [wsl2](../engineering/wsl2.md) host provider, the Windows peer of the Lima and Incus VM providers; the
-headless host build is deliberately *outside* that VM. Full Windows/WSL2 lifecycle closure remains tracked
-in phase 11.
+headless host build is deliberately *outside* that VM. The full Windows/WSL2 lifecycle closed in phase 11:
+the Windows lifecycle runs end to end through `test run all` (`6/6`) and `project destroy`.

@@ -42,7 +42,6 @@ The binary extends `hostbootstrap-core`'s command tree rather than re-implementi
 
 ```haskell
 import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain)
-import HostBootstrap.Harness (TestSuite (TestSuite))
 
 main :: IO ()
 main =
@@ -50,11 +49,11 @@ main =
     "app"
     ( withChain
         appChain
-        (projectSpec appCommands (TestSuite appSeams appCases) appCheckCode appArtifacts)
+        (projectSpec appTestSuite appCheckCode appArtifacts appInit appTestInit appTestConfig)
     )
 ```
 
-`projectSpec` takes the project's commands, test suite, code-check action, and schema artifacts;
+`projectSpec` takes the project's test suite, code-check action, schema artifacts, and the project-owned config builders (`psInit` / `psTestInit` / `psTestConfig`);
 `withChain` attaches the lift chain (and `withFrameContext` / `withTeardown` attach the per-frame
 lift-context builder and the chain-frame teardown). `runHostBootstrapCLI progName projectSpec` composes
 the project's chain, test suite, code-check action, and
@@ -74,13 +73,13 @@ defaults, and `project init` and the test harness share that one builder (see
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` calls
-`runHostBootstrapCLI "hostbootstrap-demo" (withChain demoChain (... (projectSpec demoCommands (TestSuite
-demoSeams demoCases) demoCheckCode demoArtifacts)))`. Its `demoChain` contributes the demo's
+`runHostBootstrapCLI "hostbootstrap-demo" (withChain demoChain (... (projectSpec demoTestSuite
+demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)))`. Its `demoChain` contributes the demo's
 host→VM→container→cluster lift (deploy VM, build pb + image in the VM, context-init the project-container
 child config, deploy kind, deploy harbor, push image, deploy chart, expose NodePort) as a single `[Step]`
 the core interprets across the 3-frame fractal descent. `project up` interprets that chain to stand up the
 persistent stack; `context` visualizes the composition; and `test run all` **drives that same `project up`**
-under a test config (one per distinct test config), asserting the live stack with `demoSeams` and tearing it
+under a test config (one per distinct test config), asserting the live stack with `demoTestSuite` and tearing it
 down with `project destroy` — reusing the chain, not a separate per-case cluster.
 
 ## The three-level library hierarchy

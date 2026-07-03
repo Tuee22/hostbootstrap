@@ -273,8 +273,8 @@ overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` ki
 and the managed Ubuntu-24.04 distro / in-distro Docker image build, and full end-to-end lifecycle closure
 landed in phase-11 on 2026-07-01 (`test run all` `6/6` → `project destroy` on Windows; see
 [wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
-under the test surface and reports `3/3 passed` on **both** Apple-Silicon/Lima (2026-06-20) and native
-Incus/Linux (2026-06-21). Every case — the two reachability checks and the Playwright e2e — runs in the
+under the test surface and reports `6/6 passed` (three cases × two message variants) on **both**
+Apple-Silicon/Lima and native Incus/Linux. Every case — the two reachability checks and the Playwright e2e — runs in the
 **VM frame**: each is a pure probe folded into the VM by the self-reference lift
 (`HostBootstrap.Lift.reachLeaf`/`liftLeaf`, the generalized `foldLeaf`), so it reaches the in-cluster
 NodePort whether or not the provider forwards the guest port to the host. This is the same single

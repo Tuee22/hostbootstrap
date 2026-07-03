@@ -25,7 +25,7 @@
   into the next frame.
 - The binary-generated tiers are composed from **three vocabulary layers** — `Core.dhall` (L0),
   `Daemon.dhall` (L1), `App.dhall` (L2) — each embedding the one below (`let C = ./Core.dhall`).
-- The vocabulary **types** (`Budget`, `PodResources`, `KindNode`, `Mount`) are **reflected from the
+- The vocabulary **types** (`Budget`, `PodResources`, `KindNode`, `Mount`, `SecretRef`) are **reflected from the
   Haskell decoders**, so the emitted schema equals the type the decoder accepts and cannot drift.
 - The budget **functions** (`fitsWithin`, `split`) are **hand-written Dhall** in `Core.dhall` and
   drift-controlled by evaluation tests, not reflection. Every generated config carries
@@ -115,7 +115,7 @@ The binary-generated tiers are composed from a three-level Dhall vocabulary that
 `Core.dhall` is the reusable L0 vocabulary. It is **self-contained** — no Prelude import — so it
 evaluates with no network access, both in-process via the Haskell `dhall` library and via
 `dhall-to-json`. It exports the record/union types `Resources`, `Budget`, `PodResources`, `KindNode`,
-`Mount`, `Substrate`, `RunModel`, `ClusterProfile`, and `Weight`, plus the budget functions
+`Mount`, `Substrate`, `RunModel`, `ClusterProfile`, and `SecretRef` (plus the `Weight = Natural` synonym), plus the budget functions
 `fitsWithin` and `split` (also under the aliases `Budget/fitsWithin` and `Budget/split`). Higher
 layers embed it via `let C = ./Core.dhall` and extend it; they never redefine the L0 types (the Dhall
 stream of the extension-stream contract — see [library_hierarchy](library_hierarchy.md)).
@@ -126,7 +126,7 @@ The vocabulary splits into two halves with **different** drift-control disciplin
 nuance of the model:
 
 - **Types are reflected from the decoders — they cannot drift.** The Haskell mirrors in
-  `HostBootstrap.Config.Vocab` (`Budget`, `PodResources`, `KindNode`, `Mount`) derive `FromDhall` and
+  `HostBootstrap.Config.Vocab` (`Budget`, `PodResources`, `KindNode`, `Mount`, `SecretRef`) derive `FromDhall` and
   `ToDhall`. The emitted schema is the `ToDhall` encoder's `declared` field — the exact Dhall type the
   `FromDhall` decoder accepts. Because the printed type *is* the decoder's accepted type, the schema
   cannot diverge from what the binary will read. An anti-drift test asserts each reflected type equals

@@ -105,12 +105,15 @@ import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
+    demoCaseIds,
+    demoDefaultResources,
     envelopeOfResources,
     projectConfigFromContext,
     renderDhallText,
     renderProjectConfig,
  )
 import HostBootstrapDemo.Container (dockerBuildArgs)
+import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
@@ -161,7 +164,7 @@ and the SPA described as typed Dhall data ('demoWebApp').
 -}
 demoArtifacts :: [ConfigArtifact]
 demoArtifacts =
-    [ artifactOf @PodResources "demoWeb" (PodResources 2 1 1 1 2)
+    [ artifactOf @PodResources "demoWeb" demoWebPod
     , artifactOf @WebAppSpec "demoWebApp" demoWebApp
     ]
 
@@ -194,10 +197,7 @@ drives it). The headline @pristine-bootstrap@ case plus the web/e2e cases.
 -}
 demoCases :: [Case]
 demoCases =
-    [ Case "pristine-bootstrap" 1 False
-    , Case "web-build" 1 False
-    , Case "e2e-tabs" 1 False
-    ]
+    [Case (T.unpack i) 1 False | i <- demoCaseIds]
 
 -- | The demo project name (used to resolve per-case cluster plans).
 demoProject :: String
@@ -498,7 +498,7 @@ Docker extraction, so reject them before launching the VM. This is the **one
 ceiling** — the budget — used **once** as the VM wall (§ O).
 -}
 demoFullLifecycleResources :: Resources
-demoFullLifecycleResources = Resources 6 "10GiB" "80GiB"
+demoFullLifecycleResources = demoDefaultResources
 
 {- | The in-VM cluster cordon (cordon #2): a slice **strictly smaller than the
 budget in every dimension** (§ O), leaving the budget-sized VM (cordon #1, the
@@ -1006,8 +1006,15 @@ requireDemoLifecycleResources actualResources = do
             Left $
                 "demo vm up: resource budget too small for full demo lifecycle: "
                     ++ intercalate ", " shortages
-                    ++ "; regenerate the host config with `hostbootstrap run --project-root demo -- project init --role host-orchestrator --output .build/hostbootstrap-demo.dhall --source-root demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1 --force`"
+                    ++ "; regenerate the host config with `hostbootstrap run --project-root demo -- project init --role host-orchestrator --output .build/hostbootstrap-demo.dhall --source-root demo --dockerfile docker/Dockerfile --cpu "
+                    ++ show reqCpu
+                    ++ " --memory "
+                    ++ T.unpack reqMem
+                    ++ " --storage "
+                    ++ T.unpack reqSto
+                    ++ " --ha-replicas 1 --force`"
   where
+    Resources reqCpu reqMem reqSto = demoFullLifecycleResources
     shortage label render field actual required
         | field actual < field required =
             [ label

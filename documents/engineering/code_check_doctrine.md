@@ -37,8 +37,9 @@ The base image enforces its own self-check in two layers:
 * **In-Dockerfile smoke.** After the warm Cabal store is built (the base bakes
   **no** `hostbootstrap` binary — see [base_image.md](base_image.md)), a single
   `RUN` step verifies that `fourmolu` and `hlint` actually start (catching install
-  regressions) and runs them against the warm-store sample source at
-  [`core/warm-deps/core/app/`](../../core/warm-deps/core/app/)
+  regressions) and runs them against the warm-store sample sources at
+  [`core/warm-deps/core/app/`](../../core/warm-deps/core/app/) and
+  [`core/warm-deps/daemon/app/`](../../core/warm-deps/daemon/app/)
   (catching sample drift).
 
 The split is deliberate: the full `hostbootstrap` source tree is **not** copied
@@ -68,7 +69,7 @@ patterns, type-correctness. Tests enforce **behavior**.
 Both must pass, but they live at different layers and have different cost
 profiles. Code-check is fast and deterministic; running it during image build
 shifts enforcement earlier and removes a class of "the container built but is
-broken" outcomes. Tests run through the project binary (`<project> test all` and
+broken" outcomes. Tests run through the project binary (`<project> test run all` and
 equivalents) — they verify the runtime, not the source. Container images expose
 the project binary through a tini-wrapped `ENTRYPOINT`, so the binary receives
 project arguments rather than a raw container command.
@@ -92,7 +93,7 @@ construction. There is no separate "did the lint pass?" question to ask later.
 >
 > No code-check anywhere. A container can be produced from source that fails
 > `proj check-code`. Style violations only surface when someone manually runs
-> `hostbootstrap run test all` — possibly never, in CI shortcuts.
+> `hostbootstrap test run all` — possibly never, in CI shortcuts.
 >
 > **RIGHT**
 >

@@ -154,9 +154,9 @@ verifyBudget b cap
   | budgetCpu b > spareCpu cap =
       Left (overMsg "cpu" (show (budgetCpu b)) (show (spareCpu cap)) "cores")
   | budgetMemoryBytes b > spareMemoryBytes cap =
-      Left (overMsg "memory" (showGiB (budgetMemoryBytes b)) (showGiB (spareMemoryBytes cap)) "GiB")
+      Left (overMsg "memory" (showGiB (budgetMemoryBytes b)) (showGiBFloor (spareMemoryBytes cap)) "GiB")
   | budgetStorageBytes b > spareStorageBytes cap =
-      Left (overMsg "storage" (showGiB (budgetStorageBytes b)) (showGiB (spareStorageBytes cap)) "GiB")
+      Left (overMsg "storage" (showGiB (budgetStorageBytes b)) (showGiBFloor (spareStorageBytes cap)) "GiB")
   | otherwise = Right ()
   where
     overMsg dim want have unit =
@@ -389,10 +389,7 @@ readSysctlPositiveInteger cfg key = do
   value <- readSysctl cfg key
   pure $ do
     raw <- value
-    n <- parsePositiveInteger ("sysctl " ++ key) raw
-    if n > 0
-      then Right n
-      else Left ("host capacity: sysctl " ++ key ++ " returned non-positive value " ++ show n)
+    parsePositiveInteger ("sysctl " ++ key) raw
 
 readSysctl :: HostConfig -> String -> IO (Either String String)
 readSysctl cfg key = case resolveMaybe cfg Sysctl of
@@ -422,7 +419,9 @@ readSysctl cfg key = case resolveMaybe cfg Sysctl of
 
 parsePositiveInteger :: String -> String -> Either String Integer
 parsePositiveInteger label raw = case reads raw of
-  [(n, "")] -> Right n
+  [(n, "")]
+    | n > 0 -> Right n
+    | otherwise -> Left ("host capacity: " ++ label ++ " returned non-positive value " ++ show n)
   _ -> Left ("host capacity: " ++ label ++ " returned non-integer value " ++ show raw)
 
 findMemAvailable :: [String] -> Maybe Integer
@@ -440,3 +439,9 @@ gibibytes bytes = (bytes + gib - 1) `div` gib
 
 showGiB :: Integer -> String
 showGiB = show . gibibytes
+
+-- | Bytes to whole gibibytes rounded DOWN, for the spare-capacity ("have") side
+-- of a budget diagnostic — so a failing check never prints an equal, misleading
+-- "wants N GiB, host has N GiB spare" (the "wants" side rounds up via 'showGiB').
+showGiBFloor :: Integer -> String
+showGiBFloor bytes = show (bytes `div` (1024 ^ (3 :: Integer)))

@@ -58,8 +58,8 @@
    transition stands up the whole stack. See
    [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
-5. **Supply the test suite.** Provide a `Seams`/`Case` matrix (the test stream); `test run <suite>|all`
-   drives `runMatrix` from the root frame, gated on an existing `test.dhall` and needing no pre-existing
+5. **Supply the test suite.** Provide a `TestSuite`/`Case` matrix (the test stream); `test run <suite>|all`
+   drives `runSuiteSelection` from the root frame, gated on an existing `test.dhall` and needing no pre-existing
    `<project>.dhall`. A suite may declare more than one config variant; for each, the harness **generates**
    the run's `<project>.dhall` functionally via the project-owned `psTestConfig` (reusing `psInit`, never
    shelling the CLI), runs the real `project up`, asserts the real workload in-frame, and tears it down with
@@ -138,11 +138,11 @@ generates the PureScript types folds into the build-image step) and its VM/provi
 `project up` lift sequence, and `test run all` **drives that same `project up`** under a test config rather
 than standing up a separate per-case cluster.
 
-Target (reopened, documentation-only): under
+Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) a project supplies
 the generic `ProjectSpec cfg tcfg` seams — `psInit` (the only place defaults live), `psTestInit`,
-`psTestConfig`, and the config/test Dhall codecs plus the two lift accessors (`cfg -> BinaryContext` and
-`BinaryContext -> cfg -> cfg`). The demo's `psInit` carries its own defaults, including `message =
+`psTestConfig`, and the per-frame lift-context resolver `psFrameContext` (`cfg -> StepFrame ->
+LiftContext`). The demo's `psInit` carries its own defaults, including `message =
 "Hello, world!"`, on the demo's OWN config type — core owns no project-specific field and no generic extra
 slot. `project init` and the test harness share `psInit` (DRY), so the same defaults render the production
 config and seed each test run; the harness reuses `psInit` and overrides only the variant under test (for

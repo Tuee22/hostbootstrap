@@ -23,7 +23,8 @@ module HostBootstrap.Command (
 )
 where
 
-import Control.Exception.Safe (finally)
+import Control.Exception (SomeException)
+import Control.Exception.Safe (finally, try)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate)
 import qualified Data.Text as T
@@ -74,8 +75,8 @@ import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
 
-{- | The concrete @ensure@ reconciler library (eight host-configuration
-primitives, including the cross-substrate host-provider @ensure incus@).
+{- | The concrete @ensure@ reconciler library — the host-configuration
+primitives, including the cross-substrate host-provider @incus@ reconciler.
 -}
 allReconcilers :: [Reconciler]
 allReconcilers =
@@ -187,9 +188,9 @@ testCommand progName suite _initBuilder testInit testConfig =
         let tc = testInit defaultInitArgs
         writeProjectConfigFile path tc
         putStrLn ("test init: wrote " ++ path)
-    -- @test run@ gates as 'TestWorkflowCommand'. It does NOT load a sibling
-    -- project config (the harness generates it); the gate here is the test
-    -- config's existence precondition plus the suite's own safety preconditions.
+    -- @test run@ is not context-gated: it does NOT load a sibling project config
+    -- (the harness generates it); its guards are the test config's existence
+    -- precondition plus the suite's own safety preconditions.
     runTestRun selector = do
         tpath <- testDhallPath progName
         exists <- doesFileExist tpath
@@ -299,7 +300,7 @@ contextCommand progName projectArtifacts _initBuilder =
                 (progDesc "Decode a <project>.dhall and print its composition")
             )
     showAction path = do
-        cfg <- Dhall.inputFile Dhall.auto path :: IO cfg
+        cfg <- readContextConfig path
         putStr (Context.renderComposition (cfgContext cfg))
 
     schemaCmd =
@@ -342,8 +343,21 @@ contextCommand progName projectArtifacts _initBuilder =
             )
     runInspect = do
         path <- siblingProjectConfigPath (T.pack progName)
-        cfg <- Dhall.inputFile Dhall.auto path :: IO cfg
+        cfg <- readContextConfig path
         putStr (Context.renderComposition (cfgContext cfg))
+    -- Read-only guarded decode for the @context@ introspection subcommands.
+    -- Unlike the gated command path ('loadSiblingProjectConfig'), @context@
+    -- introspects ANY sibling <project>.dhall uniformly, so this guards the read
+    -- (missing / unreadable / ill-typed) with a one-line diagnostic instead of a
+    -- raw backtrace, and imposes no command-class gate.
+    readContextConfig path = do
+        exists <- doesFileExist path
+        unless exists (die ("context: no config at " ++ path))
+        decoded <- try (Dhall.inputFile Dhall.auto path :: IO cfg)
+        case decoded of
+            Left (e :: SomeException) ->
+                die ("context: failed to decode " ++ path ++ ": " ++ takeWhile (/= '\n') (show e))
+            Right cfg -> pure cfg
 
 {- | The @init@ parser shared by @project init@ (§ Y) and @service init@ (§ AA):
 write a project-local @<project>.dhall@ without requiring an existing config (a

@@ -1,9 +1,10 @@
 -- | The @ensure cudawin@ reconciler: CUDA as a Windows host-build capability.
 --
--- CUDA-on-Windows is build-only in hostbootstrap's model: the driver, CUDA
--- Toolkit, and MSVC are readied on the bare Windows host so nvcc artifacts can
--- be produced and staged into the cluster. The workload does not run in a
--- Windows build VM.
+-- CUDA-on-Windows is build-only in hostbootstrap's model. The NVIDIA driver is a
+-- required precondition (the reconciler fails fast when @nvidia-smi@ is absent);
+-- on top of it the CUDA Toolkit and MSVC build tools are readied on the bare
+-- Windows host so nvcc artifacts can be produced and staged into the cluster. The
+-- workload does not run in a Windows build VM.
 module HostBootstrap.Ensure.CudaWin (reconciler, installSteps) where
 
 import Data.List (isInfixOf)

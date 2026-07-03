@@ -40,14 +40,15 @@ where
 
 import Control.Monad (filterM, foldM)
 import Data.Char (isDigit)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sortOn)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, sortOn)
 import System.Directory
   ( doesDirectoryExist,
     doesFileExist,
     listDirectory,
   )
 import System.FilePath
-  ( makeRelative,
+  ( addTrailingPathSeparator,
+    makeRelative,
     normalise,
     takeDirectory,
     takeExtension,
@@ -79,7 +80,8 @@ validateRepo root = do
   rootV <- concatMapM (checkRootDoc root) rootDocs
   broadV <- concatMapM (checkBroadDoctrine root) architectureDocs
   reqV <- concatMapM (checkDocRequirements root) phaseDocs
-  linkV <- concatMapM (checkLinks root) (docFiles ++ planFiles ++ rootDocs)
+  existingRootDocs <- filterM doesFileExist rootDocs
+  linkV <- concatMapM (checkLinks root) (docFiles ++ planFiles ++ existingRootDocs)
   readmeV <- checkReadmeRefs root
   let namingV = concatMap (checkNaming root) docFiles
   taxonomyV <- checkTaxonomy root
@@ -125,6 +127,13 @@ checkGovernedMeta root file = do
 
 checkRootDoc :: FilePath -> FilePath -> IO [Violation]
 checkRootDoc root file = do
+  exists <- doesFileExist file
+  if not exists
+    then pure [Violation (rrel root file) "required root document is missing"]
+    else checkRootDocPresent root file
+
+checkRootDocPresent :: FilePath -> FilePath -> IO [Violation]
+checkRootDocPresent root file = do
   ls <- readLines file
   let rel = rrel root file
       name = takeFileName file
@@ -158,13 +167,17 @@ checkDocRequirements root file = do
 checkReadmeRefs :: FilePath -> IO [Violation]
 checkReadmeRefs root = do
   let readme = root </> "README.md"
-  contents <- readFile readme
-  let rel = rrel root readme
-  pure $
-    concat
-      [ [Violation rel "root README.md does not reference documents/" | not ("documents/" `isInfixOf` contents)],
-        [Violation rel "root README.md does not reference DEVELOPMENT_PLAN/" | not ("DEVELOPMENT_PLAN/" `isInfixOf` contents)]
-      ]
+      rel = rrel root readme
+  exists <- doesFileExist readme
+  if not exists
+    then pure [Violation rel "required root document is missing"]
+    else do
+      contents <- readFile readme
+      pure $
+        concat
+          [ [Violation rel "root README.md does not reference documents/" | not ("documents/" `isInfixOf` contents)],
+            [Violation rel "root README.md does not reference DEVELOPMENT_PLAN/" | not ("DEVELOPMENT_PLAN/" `isInfixOf` contents)]
+          ]
 
 -- | The canonical top-level categories under @documents/@. A directory outside
 -- this set is a taxonomy violation; adding a category requires updating
@@ -304,7 +317,7 @@ listMarkdown dir = do
       files <- filterM doesFileExist paths
       subdirs <- filterM doesDirectoryExist paths
       nested <- concatMapM listMarkdown subdirs
-      pure (filter ((== ".md") . takeExtension) files ++ nested)
+      pure (sort (filter ((== ".md") . takeExtension) files ++ nested))
 
 rrel :: FilePath -> FilePath -> FilePath
 rrel root = makeRelative (normalise root) . normalise
@@ -320,6 +333,6 @@ concatMapM f xs = concat <$> mapM f xs
 
 isUnderDirectory :: FilePath -> FilePath -> Bool
 isUnderDirectory parent child =
-  let prefix = normalise parent
+  let prefix = addTrailingPathSeparator (normalise parent)
       candidate = normalise child
    in prefix `isPrefixOf` candidate

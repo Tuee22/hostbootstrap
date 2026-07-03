@@ -32,7 +32,7 @@ such as `~/prodbox`; resolving secrets remains that consumer's responsibility.
 SecretRef =
   < Vault : { mount : Text, path : Text, field : Text }   -- a coordinate in a secret store
   | TransitKey : Text                                       -- a named transit/KMS key
-  | Prompt : { name : Text, purpose : Text }               -- resolved by interactive prompt
+  | Prompt : Text                                           -- resolved by interactive prompt
   | TestPlaintext : Text                                    -- test-only inline value; never in production
   >
 ```

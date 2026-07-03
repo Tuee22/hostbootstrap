@@ -136,13 +136,19 @@ def test_installed_vcs_source_wraps_missing_distribution(
         self_update.installed_vcs_source()
 
 
-def test_parse_ls_remote_skips_peeled_tag_line() -> None:
+def test_parse_ls_remote_prefers_peeled_annotated_tag_commit() -> None:
+    # An annotated tag advertises the tag object AND its peeled commit (the
+    # `^{}` line); pip records the peeled commit, so parse_ls_remote must return
+    # it rather than the tag-object SHA.
     assert (
         self_update.parse_ls_remote(
-            "d" * 40 + " refs/tags/v1^{}\n" + "c" * 40 + " refs/heads/main\n"
+            "a" * 40 + " refs/tags/v1\n" + "b" * 40 + " refs/tags/v1^{}\n"
         )
-        == "c" * 40
+        == "b" * 40
     )
+    # A branch head (or lightweight tag) advertises no `^{}` line and already
+    # names a commit, so fall back to it.
+    assert self_update.parse_ls_remote("c" * 40 + " refs/heads/main\n") == "c" * 40
     with pytest.raises(self_update.SelfUpdateError, match="remote ref"):
         self_update.parse_ls_remote("")
 
@@ -166,7 +172,9 @@ def test_remote_commit_invokes_git(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(self_update.subprocess, "run", _run)
 
     assert self_update.remote_commit(ref="main") == "e" * 40
-    assert captured == [["git", "ls-remote", self_update.DEFAULT_REPO_URL, "main"]]
+    assert captured == [
+        ["git", "ls-remote", self_update.DEFAULT_REPO_URL, "main", "main^{}"]
+    ]
 
 
 def test_remote_commit_wraps_missing_git(monkeypatch: pytest.MonkeyPatch) -> None:

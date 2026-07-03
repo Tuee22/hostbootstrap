@@ -132,6 +132,7 @@ launchCases =
     , testCase "only wsl2 needs an explicit reconcile-to-running effect set to empty" $ do
         spStartExisting windows @?= []
         spStartExisting apple @?= [RunHostTool Lima ["start", "demo-vm"]]
+        spStartExisting linux @?= [RunHostTool Incus ["start", "demo-vm"]]
     ]
   where
     isWrite (WriteHostFile _ _) = True
@@ -179,6 +180,9 @@ interpreterCases =
     , testCase "membersOf WslQuietMember strips NULs and splits on whitespace" $
         assertBool "demo-vm is a member" $
             "demo-vm" `elem` membersOf WslQuietMember "Ubuntu-24.04\0\r\ndemo-vm\0\r\n"
+    , testCase "stageFileEffects copies to the guest via limactl on Lima (removed after)" $
+        stageFileEffects (LimaFileTransfer (LimaVM "demo-vm")) "src.tgz" "/tmp/x.tgz"
+            @?= StagedFile [RunHostTool Lima ["copy", "src.tgz", "demo-vm:/tmp/x.tgz"]] "/tmp/x.tgz" True
     , testCase "stageFileEffects pushes to a temp on Incus (removed after)" $
         stageFileEffects (IncusFileTransfer (IncusVM "demo-vm" "images:ubuntu/24.04")) "src.tgz" "/tmp/x.tgz"
             @?= StagedFile [RunHostTool Incus ["file", "push", "src.tgz", "demo-vm/tmp/x.tgz"]] "/tmp/x.tgz" True

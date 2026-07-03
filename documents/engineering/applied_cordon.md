@@ -101,9 +101,11 @@ self-limits instead of swapping past its ceiling. `<clusterName>` is the resolve
 a test cluster (the harness's `project up` under the Test profile) is cordoned the same way — to its slice
 within the VM wall.
 
-On Apple, a Lima VM sized by `limaSizingArgs` is the cordon; the per-project Colima VM sized by
-`colimaSizingArgs` is the cordon for direct Docker workflows. In both cases the VM boundary is the first
-cordon, so there is no host-side kind-node cap outside the VM.
+On Apple, a Lima VM sized by `limaSizingArgs` is the cordon — the substrate lift sizes the Lima VM to
+the budget, so the VM boundary, not a host-side kind-node cap, is the first cordon. The parallel
+`colimaSizingArgs` builder emits a profiled `colima start` argv for direct Docker workflows but is not
+yet wired: the Colima reconciler currently starts an unsized `colima start`, so no code path sizes a Colima VM
+from the budget today.
 
 On Windows, the WSL2 wall is **honest about what WSL2 can enforce**. Unlike incus `limits.memory` and
 Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the *global*, per-user
@@ -139,8 +141,9 @@ The per-substrate `resolveHostCapacity` described in the bring-up ring reads CPU
 substrate-specific sources. The one canonical parser, all three rings, and the per-substrate storage
 cordon are implemented and validated on Apple/Lima and Linux/Incus. The Windows/WSL2 honest cordon — the
 total-memory preflight predicate and the applied global `.wslconfig` ceiling written and shut down at
-launch — is implemented and unit-tested, with its real-run closure tracked by
-[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) (Sprint 11.7). The development plan
+launch — is implemented, unit-tested, and real-run-closed by
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) (Sprint 11.7): a full `project up` →
+`test run all` (`6/6`) → `project destroy` Windows lifecycle, closed 2026-07-01. The development plan
 for the pure parser/builder surface and the capacity predicate is
 [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 

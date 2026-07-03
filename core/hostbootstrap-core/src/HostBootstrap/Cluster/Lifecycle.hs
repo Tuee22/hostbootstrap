@@ -150,7 +150,10 @@ clusterCreate cfg plan resources = do
             | otherwise = []
       created <- runTool cfg Kind (["create", "cluster", "--name", clusterName plan] ++ configArgs)
       requireStep "kind create cluster" created
-    _ -> die "cluster up: kind not available; install kind and retry"
+    Left err ->
+      die ("cluster up: kind not available; install kind and retry\n" ++ err)
+    Right (code, _, err) ->
+      die ("cluster up: `kind get clusters` failed (" ++ show code ++ "): " ++ err)
   -- Always export the kubeconfig — whether the cluster was just created or already
   -- existed (an idempotent re-run, or any container that did not create it) — so
   -- helm/kubectl reach the cluster instead of the localhost:8080 default.

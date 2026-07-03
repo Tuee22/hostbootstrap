@@ -14,7 +14,7 @@
   the `test` surface prints its report card. The mechanics live once in `HostBootstrap.Harness`; the
   app supplies only its case matrix. See
   [../architecture/harness_workflow.md](../architecture/harness_workflow.md).
-- The `test` surface is two root-gated subcommands: `test init` writes the project's
+- The `test` surface is two root-frame subcommands: `test init` writes the project's
   `<project>.test.dhall`, and `test run <suite>|all` runs one named suite (or every suite via the
   reserved `all`).
 - `hostbootstrap-core` (Haskell) carries the bulk of the unit-test surface: host-tool resolution,
@@ -32,20 +32,22 @@
 
 The `test` surface is owned by the root frame — the host orchestrator. It is a separate surface from
 the chain that `project up` interprets: `project up` stands the persistent stack up, and `test run`
-drives an independent test engine whose cases bring up their own isolated kind clusters. The surface
-is two subcommands:
+drives the standardized test engine, which stands that same deploy chain up under a generated config.
+The surface is two subcommands:
 
 - `test init` writes the sibling `<project>.test.dhall` and needs **no** pre-existing `<project>.dhall`.
   `<project>.test.dhall` is a thin override — the suite vocabulary, the config variants the matrix
   declares, per-suite budgets, and any fixtures the matrix needs — separate from the deploy parameters in
   `<project>.dhall`. The harness later turns each variant into a full run config functionally via the
   project-owned `psTestConfig` (which reuses the same value-free `psInit` builder as `project init`), so
-  `test init` does not depend on a production config already existing. It fails fast unless invoked on the
-  root frame.
+  `test init` does not depend on a production config already existing.
 - `test run <suite>` runs the single named suite over the standardized engine and prints its report
   card; `test run all` runs every suite, with `all` reserved by the verb (a project may not name a
-  suite `all`). Both are root-only: they fail fast, listing the valid suite names and `all`, when
-  invoked off the root frame or without a `<project>.test.dhall`.
+  suite `all`). Both require a sibling `<project>.test.dhall`: `test run` fails fast when it is missing
+  (directing you to run `test init` first), and an unknown selector fails fast listing the valid suite
+  names and `all`. Production state is protected by the suite's two safety preconditions — it refuses if
+  a config already exists at the executable sibling or if a production cluster is already running — not
+  by an off-root-frame gate.
 
 Under the hood each suite drives `runMatrix :: Seams env -> [Case] -> IO Report` over that suite's
 case matrix. A project supplies its `Case`s and `Seams` as a non-empty `TestSuite` through
@@ -55,10 +57,12 @@ bare core binary ships no suites, so a bare `test run all` prints `test report: 
 The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` → `seamTeardown`,
 with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never leaked),
 aggregates a `Report`, renders it with `reportCard`, and exits non-zero when `allPassed` is false. The
-driver, the isolated per-case profiles (cluster name `<project>-test-<case>`, data root
-`./.test_data/<case>/`), the mechanical never-touch-production guard (`guardTestDelete`), and
-budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. The default `defaultSeams`
-realize the `OneShot` container run; a cluster suite supplies kind/Helm seams instead. The full
+driver, the self-created-only `.test_data` lifecycle (`withSelfCreatedTestData` over the flat
+`testDataRoot`, `.test_data`), the mechanical never-touch-production guard (`guardTestDelete`), and
+budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. `oneShotSeams` realize the
+`OneShot` container run, while `defaultSeams` is the trivial pass-through for the bare binary's empty
+matrix; a chain-driven suite's cases assert against the shared already-up stack via the harness-built
+`assertSeams` (its `seamSetup` returns that env and its `seamTeardown` is a no-op). The full
 per-case loop, the seam-split, and budget-slicing are documented in
 [../architecture/harness_workflow.md](../architecture/harness_workflow.md); the four run-models the
 `Seams` realize are in [../architecture/run_models.md](../architecture/run_models.md).
@@ -162,12 +166,12 @@ no unit-file rendering tests or real service-manager integration tests.
 
 `DEVELOPMENT_PLAN/` is the implementation-status authority for this command surface.
 
-- The standardized harness (`runMatrix` + `Seams`, the per-case isolation, the delete-guard,
+- The standardized harness (`runMatrix` + `Seams`, the per-variant teardown/spin-up, the delete-guard,
   budget-slicing, and the report card) runs through `cabal test`. The fixed core tree is `project`,
   `test`, `service`, `context`, and `check-code` — the binary carries no per-project verbs; the demo
   contributes its `Web` service variant and its VM/provider IO as chain steps. The Python bootstrapper
   suite and the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
-- The `test init` / `test run <suite>|all` split is gated to the root frame and backed by a sibling
+- The `test init` / `test run <suite>|all` split is a root-frame surface backed by a sibling
   `<project>.test.dhall`. `test run all` **drives the real `project up`** under a generated config —
   one full up → assert → `project destroy` per declared config variant — asserts the live stack, and
   tears it down between variants, reusing the chain rather than standing up a separate per-case cluster.
@@ -177,7 +181,7 @@ no unit-file rendering tests or real service-manager integration tests.
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
   `project destroy` tear it down with host `.data` preserved.
 
-Target (reopened, documentation-only): under
+Implemented under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test init`
 writes `test.dhall` (a thin override) WITHOUT requiring a pre-existing `<project>.dhall`. For each config
 variant the suite declares, `test run` GENERATES that variant's `<project>.dhall` via the project-owned

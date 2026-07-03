@@ -49,15 +49,15 @@ runInTarget cfg (InVM vm) t args =
 rebootDockerToReady :: HostConfig -> IncusVM -> Int -> IO (Either String ())
 rebootDockerToReady cfg vm maxReboots = go maxReboots
   where
-    go n
-      | n < 0 = pure (Left "docker did not become ready within the reboot budget")
-      | otherwise = do
-          probe <- runTool cfg Incus (execVMArgs vm ["docker", "info"])
-          case probe of
-            Left err -> pure (Left err)
-            Right result -> case classifyDockerReadiness result of
-              Ready -> pure (Right ())
-              Unsatisfiable -> pure (Left "docker is not satisfiable in the VM (install failed)")
-              NeedsReboot -> do
+    go n = do
+      probe <- runTool cfg Incus (execVMArgs vm ["docker", "info"])
+      case probe of
+        Left err -> pure (Left err)
+        Right result -> case classifyDockerReadiness result of
+          Ready -> pure (Right ())
+          Unsatisfiable -> pure (Left "docker is not satisfiable in the VM (install failed)")
+          NeedsReboot
+            | n <= 0 -> pure (Left "docker did not become ready within the reboot budget")
+            | otherwise -> do
                 _ <- runTool cfg Incus (rebootVMArgs vm)
                 go (n - 1)

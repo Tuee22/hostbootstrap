@@ -82,51 +82,56 @@ typed `message : Text` on the demo's own `cfg` stays mandatory and strict-decode
 
 ```haskell
 data ProjectSpec cfg tcfg = ProjectSpec
-  { psConfigCodec   :: DhallCodec cfg          -- strict decode + render <project>.dhall
-  , psTestCodec     :: DhallCodec tcfg          -- strict decode + render test.dhall
-  , psBinaryContext :: cfg -> BinaryContext     -- the ONLY universal coupling: frame/role/lift authority
-  , psLiftChild     :: BinaryContext -> cfg -> cfg   -- mint a child-frame cfg (host -> VM -> container)
+  { psTestSuite     :: TestSuite                -- the project's runtime suite (safety, bring-up, [Case], assert, teardown)
+  , psCheckCode     :: IO ()                    -- the project's code-check action
+  , psArtifacts     :: [ConfigArtifact]         -- the project's schema-artifact delta
+  , psServices      :: ServiceRegistry          -- the project's service-handler registry
+  , psChain         :: cfg -> [Step]            -- the project's lift chain
+  , psFrameContext  :: cfg -> StepFrame -> LiftContext
+  , psTeardown      :: cfg -> Bool -> IO ()     -- chain-frame teardown: stop (False) vs delete (True)
   , psInit          :: InitArgs -> cfg          -- the ONLY place defaults live (project-owned)
   , psTestInit      :: InitArgs -> tcfg         -- build a complete, valid test.dhall
-  , psTestConfig    :: tcfg -> IO cfg           -- derive the test-time cfg; reuses psInit (IO for extra inputs)
-  , psChain         :: cfg -> [Step]
-  , psFrameContext  :: cfg -> StepFrame -> LiftContext
-  , psTeardown      :: cfg -> Bool -> IO ()
-  , psServices      :: ServiceRegistry
-  , psArtifacts     :: [ConfigArtifact]
-  , psCheckCode     :: IO ()
-  , psCases         :: [Case]
+  , psTestConfig    :: tcfg -> IO [(Text, cfg)] -- the run's NON-EMPTY list of labeled cfg variants the harness loops over
   }
 ```
 
-Every field a project supplies is pure or project-owned. Core's command tree
+Every field a project supplies is pure or project-owned. The universal coupling to `cfg` is **not** a
+`ProjectSpec` field — it is the project's `ProjectCfg` instance (`cfgContext :: cfg -> BinaryContext` and
+`cfgWithContext :: BinaryContext -> cfg -> cfg`) plus the `FromDhall`/`ToDhall` constraints core uses to
+strict-decode and render `<project>.dhall`. Core's command tree
 (`project`/`test`/`service`/`context`/`check-code`) stays fixed (§ P); only the **types** it threads become
 generic.
 
 ## DRY init and the harness-generated config
 
-`psInit` is realized as one concrete, value-free builder, `projectConfigForRole`, that is the **single**
-shared call site for all three config-producing paths — `project init`, `test init`, and the harness's
-run-config generation. Each path passes its own `InitArgs` (flag overrides for `project init`, the
-`test.dhall` override for the harness) into the same `projectConfigForRole`, so the demo's defaults live in
-exactly one place and never drift. Critically, the harness builds its config **functionally — it calls
-`projectConfigForRole` directly and never shells the CLI** (`project init`); shelling out would reintroduce
-a second path that could drift from the in-process builder.
+`psInit` (the demo's `demoInit`) is the **only** default-bearing builder; it fills every omitted knob with
+the demo's defaults and delegates to one concrete, value-taking assembler, `projectConfigForRole`, that is
+the **single** shared call site for the two `cfg`-producing paths — `project init` and the harness's
+run-config generation (`test run`). Each path passes its own `InitArgs` (flag overrides for `project init`,
+the `test.dhall` override for the harness) through `psInit` into the same `projectConfigForRole`, so the
+demo's defaults live in exactly one place and never drift. (`test init` produces a `tcfg` via `psTestInit`
+— the demo's `defaultTestConfig` — not a `cfg` through `projectConfigForRole`.) Critically, the harness
+builds its config **functionally — it calls `projectConfigForRole` directly and never shells the CLI**
+(`project init`); shelling out would reintroduce a second path that could drift from the in-process builder.
 
-`project init`, `test init`, and `test run` build the project config the **same** way — through
-`projectConfigForRole` under `psInit` — so the init default and the test config can never drift:
+`project init` and `test run` build the project config the **same** way — both through
+`projectConfigForRole` (via `psInit` for `project init` and `psTestConfig` for `test run`, each reusing the
+one `demoInitWithMessage` builder) — so the init default and the harness's run config can never drift:
 
 ```text
 project init  : InitArgs --projectConfigForRole (psInit)--> cfg ---write---> <project>.dhall
-test init     : InitArgs --projectConfigForRole (psInit)--> tcfg --write--> test.dhall  (no pre-existing <project>.dhall needed)
-test run      : test.dhall --psTestConfig (reuses projectConfigForRole + applies overrides)--> cfg
+test init     : InitArgs --psTestInit (defaultTestConfig)--> tcfg --write--> test.dhall  (no pre-existing <project>.dhall needed)
+test run      : test.dhall --psTestConfig (reuses projectConfigForRole + applies overrides)--> [(label, cfg)]  (non-empty; harness loops per variant)
                   --write--> <project>.dhall --project up--> assert --project destroy-->
                   delete generated <project>.dhall + self-created .test_data   (keep test.dhall)
 ```
 
 `psTestConfig` is `IO` so a project can read extra inputs — e.g. a `test-secrets.dhall` — and weave them
-in. The demo's `psTestConfig` is effectively pure (apply the override resources); a secrets-strict
-consumer's reads `test-secrets.dhall` and substitutes `TestPlaintext` for its `Vault` pointers. See
+in, and it returns a **non-empty list of labeled `(label, cfg)` variants** the harness runs one at a time.
+The demo's `psTestConfig` returns two variants (labeled `"Hello, world!"` and `"Hello, Universe!"`, Sprint
+20.3) whose labels are threaded into each variant's assertion env as the expected served message; a
+secrets-strict consumer's reads `test-secrets.dhall` and substitutes `TestPlaintext` for its `Vault`
+pointers. See
 [harness_workflow.md](harness_workflow.md) for the full flow and [secrets.md](../engineering/secrets.md)
 for the secrets seam.
 

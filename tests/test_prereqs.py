@@ -185,18 +185,56 @@ def test_winget_check(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_winget()
 
 
+def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "powershell")
+    prereqs._check_powershell()
+
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
+    with pytest.raises(prereqs.PrereqError, match="PowerShell"):
+        prereqs._check_powershell()
+
+
+def test_hardware_virtualization_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kvm = tmp_path / "kvm"
+    kvm.write_bytes(b"")
+    monkeypatch.setattr(
+        prereqs, "Path", lambda value: kvm if value == "/dev/kvm" else Path(value)
+    )
+
+    # present + read/write -> OK
+    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: True)
+    prereqs._check_hardware_virtualization()
+
+    # present but not accessible -> group-membership hint
+    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: False)
+    with pytest.raises(prereqs.PrereqError, match="not read/write"):
+        prereqs._check_hardware_virtualization()
+
+    # absent -> firmware/kvm-module hint
+    missing = tmp_path / "absent"
+    monkeypatch.setattr(
+        prereqs, "Path", lambda value: missing if value == "/dev/kvm" else Path(value)
+    )
+    with pytest.raises(prereqs.PrereqError, match="/dev/kvm not found"):
+        prereqs._check_hardware_virtualization()
+
+
 async def test_run_linux_cpu_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
+    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
     monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
 
     result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_CPU, "amd64"))
 
-    assert calls == ["ubuntu", "sudo"]
+    assert calls == ["ubuntu", "sudo", "kvm"]
     assert result.messages == (
         "Ubuntu 24.04: OK",
         "passwordless sudo: OK",
+        "hardware virtualization (/dev/kvm): OK",
     )
 
 
@@ -204,11 +242,12 @@ async def test_run_linux_gpu_checks_nvidia_runtime(monkeypatch: pytest.MonkeyPat
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
+    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
     monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
 
     result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_GPU, "amd64"))
 
-    assert calls == ["ubuntu", "sudo", "nvidia"]
+    assert calls == ["ubuntu", "sudo", "kvm", "nvidia"]
     assert "NVIDIA container runtime: OK" in result.messages
 
 
@@ -233,11 +272,12 @@ async def test_run_apple_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_run_windows_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_winget", lambda: calls.append("winget"))
+    monkeypatch.setattr(prereqs, "_check_powershell", lambda: calls.append("powershell"))
 
     result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
 
-    assert calls == ["winget"]
-    assert result.messages == ("winget: OK",)
+    assert calls == ["winget", "powershell"]
+    assert result.messages == ("winget: OK", "PowerShell: OK")
     assert not result.reboot_required
 
 

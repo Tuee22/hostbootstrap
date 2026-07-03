@@ -109,7 +109,7 @@ dockerHubAuthFromConfig raw = do
   value <- A.decode raw
   object <- asObject value
   auths <- KM.lookup "auths" object >>= asObject
-  let hub = KM.filterWithKey (\k _ -> isDockerHubKey k) auths
+  let hub = KM.filterWithKey (\k v -> isDockerHubKey k && hasInlineCredential v) auths
   if KM.null hub
     then Nothing
     else
@@ -118,6 +118,15 @@ dockerHubAuthFromConfig raw = do
   where
     asObject (A.Object o) = Just o
     asObject _ = Nothing
+    -- A Docker Hub entry authenticates only if it carries an inline token. A bare
+    -- @{}@ (the Docker Desktop credential-store default) keeps its token in the OS
+    -- keychain, not here, so forwarding it would authenticate anonymously — treat
+    -- it as "not logged in" ('Nothing') rather than a usable credential.
+    hasInlineCredential (A.Object o) =
+      nonEmptyText (KM.lookup "auth" o) || nonEmptyText (KM.lookup "identitytoken" o)
+    hasInlineCredential _ = False
+    nonEmptyText (Just (A.String s)) = not (T.null s)
+    nonEmptyText _ = False
 
 -- | Discover the host's Docker Hub credential, if the host is logged in. Reads
 -- @$DOCKER_CONFIG/config.json@ (or @~\/.docker\/config.json@) — the host is where

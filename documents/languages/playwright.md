@@ -25,14 +25,16 @@ base-provided package.
 `/root/.npm` is removed after install to keep the image lean.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
-this Playwright runtime through the standardized test harness. The `e2e-tabs` case
-in the harness's case matrix brings up an isolated kind cluster, loads the
-already-built `hostbootstrap-demo:local` project image into it, deploys the web
-chart pod (the pod's entrypoint is the demo binary, which runs `service run` — the
-`Web` variant — to bind the warp/wai webservice on `:8080`), and waits for the cluster's control-plane
-NodePort to serve. It then starts the same project image as a one-off container on
-the kind Docker network. That container sets `BASE_URL` to the control-plane
-node's NodePort (`http://<cluster>-control-plane:30080`), sets `NODE_PATH` to
+this Playwright runtime through the standardized test harness. The shared
+`project up` stack brings up an isolated kind cluster, loads the already-built
+`hostbootstrap-demo:local` project image into it, and deploys the web chart pod
+(the pod's entrypoint is the demo binary, which runs `service run` — the
+`Web` variant — to bind the warp/wai webservice on `:8080`), so the cluster's
+NodePort serves before any case runs. The `e2e-tabs` case in the harness's case
+matrix does not bring up its own stack; it only starts the same project image as
+a one-off container with `--network host` (the VM host network). That container
+sets `BASE_URL` to the NodePort the VM publishes on its own localhost
+(`http://localhost:30080`), sets `NODE_PATH` to
 `/opt/build/node/global/lib/node_modules` as above, and runs `playwright test`
 from `/workspace/demo/playwright`. Its `playwright.config.ts` declares one project
 per engine, so every spec runs on all three browsers the base image installs

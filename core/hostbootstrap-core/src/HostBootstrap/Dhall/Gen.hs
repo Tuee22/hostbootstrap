@@ -9,8 +9,8 @@
 -- deterministic renderer.
 --
 -- Each library level registers its own 'ConfigArtifact's; the command tree
--- concatenates the registry across levels (L0 → L1 → L2), so @config schema@
--- prints the transitive union of in-scope schemas and @config render@
+-- concatenates the registry across levels (L0 → L1 → L2), so @context schema@
+-- prints the transitive union of in-scope schemas and @context render@
 -- materializes static example Dhall for inspection (see @development_plan_standards.md § P, Q, T@).
 -- The schema is reflected via @ToDhall@ — `declared` is the exact Dhall type the
 -- matching @FromDhall@ decoder accepts — and the render is the @ToDhall@ embedding

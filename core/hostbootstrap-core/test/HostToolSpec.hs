@@ -44,7 +44,7 @@ enumCases =
       assertBool "names are bare commands" $
         all (\t -> let n = toolCommandName t in not (null n) && '/' `notElem` n) allHostTools,
     testCase "the closed set covers the documented tools" $
-      assertBool "docker/colima/lima/cuda/cudawin/ghc/homebrew resolvable as constructors" $
+      assertBool "every documented HostTool constructor is in the closed set" $
         all
           (`elem` allHostTools)
           [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Nvcc, PowerShell, Bcdedit, Sysctl, Winget, Wsl, Sudo, XcodeSelect]

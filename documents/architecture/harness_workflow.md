@@ -47,7 +47,8 @@ variant, in turn — so the demo's two messages each get their own fresh stack:
    config could be overwritten), and no production cluster may be running (else a live deployment could be
    disturbed). Either condition fails the run before any side effect; no tests run.
 2. **Generate config** — build the variant's `<project>.dhall` **functionally** via the project's own
-   `projectConfigForRole` (the same value-free builder `project init` uses), applying the variant's
+   `projectConfigForRole` (the same value-taking assembler `project init` reaches through `psInit`),
+   applying the variant's
    `test.dhall` overrides through `psTestConfig`, and write it next to the executable. The harness never
    shells `project init`.
 3. **`project up`** — interpret the project's own `chain :: cfg -> [Step]` recursively across the
@@ -73,8 +74,9 @@ distinction.
 
 The test surface is a **separate command pair**, gated to the **root** (host-orchestrator) frame:
 
-- `test init` writes a `test.dhall` using the same value-free builder (`projectConfigForRole`) as
-  `project init`, so it **needs no pre-existing `<project>.dhall`**. That file is the test DSL — the case
+- `test init` writes a `test.dhall` from the project's own `psTestInit` builder (the demo's
+  `demoTestInit`, seeded from the project's default resources), so it **needs no pre-existing
+  `<project>.dhall`**. That file is the test DSL — the case
   matrix plus thin config overrides (resources, secrets, the message variant) to pass through to the normal
   binary — but it never re-derives the lift chain; the chain is the project's `[Step]` value, owned by
   `project up`.
@@ -83,7 +85,7 @@ The test surface is a **separate command pair**, gated to the **root** (host-orc
   names and `all`.
 
 `all` is reserved by the verb, so a project may not name a suite `all`. A project supplies its `Case`s and
-`Seams` as a non-empty `TestSuite` so the cases run under `test run`, not a per-noun subcommand.
+`assertCase` bodies as a non-empty `TestSuite` so the cases run under `test run`, not a per-noun subcommand.
 
 The surface **drives** deploy rather than duplicating it. `project up` interprets the project chain to
 stand up a persistent stack (VM → project image → kind → harbor → webservice/`service run`, exposed to
@@ -98,13 +100,16 @@ project-specific:
 | Layer | What it owns | Lives in |
 |-------|--------------|----------|
 | L0 driver | The `runMatrix` loop, the preconditions, the `project up`/`project destroy` lifecycle, the self-created-only delete-guard, and report aggregation. | `HostBootstrap.Harness` (core) |
-| Project assertions | The `Seams` record — per-case assertion bodies (`seamRun`) run against the live stack, plus any case-specific setup that is *assertion*, not bring-up. | The project |
+| Project assertions | The `TestSuite`'s `assertCase` field — the per-case assertion bodies run against the live stack, plus any case-specific setup that is *assertion*, not bring-up. (`Seams` is the internal L0 adapter the driver builds, not authored here.) | The project |
 | App matrix | The list of `Case`s and the per-config overrides, packaged as a `TestSuite`. | The app |
 
-`Seams env = { seamSetup, seamRun, seamTeardown }`. The bring-up and teardown a case needs are the **real**
-`project up` / `project destroy` the L0 driver runs, not a project-supplied second path; the project's
-seams carry the **assertions** that prove the live stack, run in the appropriate frame through the
-self-reference lift. The app never re-implements the loop, the preconditions, or the guard.
+A project supplies one `TestSuite` (safety / bringUp / [Case] / assertCase / tearDown), **not** a `Seams`
+value. The bring-up and teardown a case needs are the **real** `project up` / `project destroy` the L0
+driver runs, not a project-supplied second path; `Seams env = { seamSetup, seamRun, seamTeardown }` is the
+internal L0 adapter `runSuiteSelection` constructs (`assertSeams`), with `seamSetup` (`\_ -> pure env`) and
+`seamTeardown` (a no-op) driver-fixed and only `seamRun` bound to the suite's project-authored `assertCase`
+— the **assertions** that prove the live stack, run in the appropriate frame through the self-reference
+lift. The app never re-implements the loop, the preconditions, or the guard.
 
 ## Never-Touch-Production Is Mechanical
 

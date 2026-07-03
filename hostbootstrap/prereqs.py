@@ -8,11 +8,14 @@ to consult.
 
 Per ``documents/engineering/prerequisites.md`` the minimums are:
 
-* **Linux** — Ubuntu 24.04 + passwordless sudo; ``linux-gpu`` additionally
-  verifies the NVIDIA container runtime is registered with Docker.
+* **Linux** — Ubuntu 24.04 + passwordless sudo + hardware virtualization (a
+  usable ``/dev/kvm``, which the nested VM providers need); ``linux-gpu``
+  additionally verifies the NVIDIA container runtime is registered with Docker.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
-* **Windows** — winget as the package-manager root for the host build toolchain.
-  WSL2 is a provider dependency owned by the built binary's ``ensure wsl2`` path.
+* **Windows** — winget (a required precondition, used by ``ensure cudawin``; the
+  GHC/Cabal toolchain is PowerShell-bootstrapped, not winget-installed) and Windows
+  PowerShell (which runs the toolchain bootstrap). WSL2 is a provider
+  dependency owned by the built binary's ``ensure wsl2`` path.
 """
 
 from __future__ import annotations
@@ -136,6 +139,32 @@ def _check_winget() -> None:
         )
 
 
+def _check_hardware_virtualization() -> None:
+    """Linux nested-VM providers (incus) require KVM: a usable ``/dev/kvm`` backed
+    by CPU virtualization extensions (Intel VT-x / AMD-V). A host without it passes
+    every other check but fails deep inside VM bring-up, so assert it up front."""
+    kvm = Path("/dev/kvm")
+    if not kvm.exists():
+        raise PrereqError(
+            "/dev/kvm not found; the nested VM providers require hardware "
+            "virtualization (Intel VT-x / AMD-V) enabled in firmware with the kvm "
+            "kernel module loaded."
+        )
+    if not os.access(kvm, os.R_OK | os.W_OK):
+        raise PrereqError(
+            "/dev/kvm is present but not read/write for this user; add your user to "
+            "the 'kvm' group (or grant rw on /dev/kvm) and re-run."
+        )
+
+
+def _check_powershell() -> None:
+    if not _have("powershell"):
+        raise PrereqError(
+            "Windows PowerShell is required to bootstrap the Haskell toolchain but "
+            "was not found on PATH."
+        )
+
+
 async def _run_apple(substrate: Substrate) -> DoctorResult:
     messages: list[str] = []
     _check_macos_arm64()
@@ -155,6 +184,8 @@ async def _run_linux(substrate: Substrate) -> DoctorResult:
     messages.append("Ubuntu 24.04: OK")
     _check_passwordless_sudo()
     messages.append("passwordless sudo: OK")
+    _check_hardware_virtualization()
+    messages.append("hardware virtualization (/dev/kvm): OK")
 
     if substrate.name is SubstrateName.LINUX_GPU:
         _check_nvidia_runtime()
@@ -167,6 +198,8 @@ async def _run_windows(substrate: Substrate) -> DoctorResult:
     messages: list[str] = []
     _check_winget()
     messages.append("winget: OK")
+    _check_powershell()
+    messages.append("PowerShell: OK")
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 

@@ -34,7 +34,7 @@ The schema is topology-aware. Runtime context includes an execution topology, `c
 witnesses so illegal states such as "VM project container command running on the host Docker daemon" fail
 before side effects.
 
-Target (reopened, documentation-only): under
+Implemented (phase 19, `Done`): under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the config TYPE
 is project-defined, not the fixed `ProjectConfig`. Every field is mandatory and a missing field fails the
 strict decode; defaults live ONLY in the project-owned `psInit`, never in core. Secret-bearing fields use
@@ -44,9 +44,10 @@ See the [generic_project_model.md](../architecture/generic_project_model.md) des
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
-This is why defaults must live in `psInit`: the core default budget `4/8/20` cannot bootstrap the demo
-(its `deploy-VM` gate requires `6/10/80`, `demoFullLifecycleResources`), so under phase-19 the demo's
-project-owned `psInit` returns its real budget rather than inheriting a core default. See
+This is why defaults must live in `psInit`: a naive one-size `4/8/20` default (only the sample value of
+core's `budget` render artifact, not a core-shipped config default) cannot bootstrap the demo (its
+`deploy-VM` gate requires `6/10/80`, `demoFullLifecycleResources`), so the demo's project-owned `psInit`
+returns its real budget rather than inheriting any core default. See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
 
 ## File Location
@@ -199,9 +200,9 @@ in  { dockerfile = "docker/Dockerfile"
   }
 ```
 
-The exact generated value is owned by the binary. Use `<project> project init` for a valid default and
-`<project> context schema` for the reflected type the decoder accepts; do not hand-maintain a parallel
-schema in project docs.
+The exact generated value is owned by the binary. Use `<project> project init` for a valid default,
+`<project> context schema` for the in-scope artifact union, and `<project> service schema` for the
+reflected type the decoder accepts; do not hand-maintain a parallel schema in project docs.
 
 The `message : Text` field is a worked example of a project-extended field flowing all the way to the
 workload, with no core-owned slot: `<project>.dhall` carries `message`, the chart's `deploy-chart` step
@@ -219,9 +220,9 @@ The project binary provides an ungated initialization command, for example:
 ```
 
 The generated file is a valid default; `project init --help` names the editable options (`--dockerfile`,
-`--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`) and `context schema` includes the
-reflected `ProjectConfig` type. Normal commands do not silently create a missing config. They fail fast
-and tell the user how to run the initialization command.
+`--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`), `context schema` prints the in-scope
+artifact union, and `service schema` prints the reflected `ProjectConfig` type. Normal commands do not
+silently create a missing config. They fail fast and tell the user how to run the initialization command.
 
 The Dockerfile creates a build-time image config after installing the binary:
 
@@ -230,7 +231,7 @@ RUN <project> project init --role image-build-container --output /usr/local/bin/
 ```
 
 Runtime, service, or daemon deployments override the baked build-time config by mounting or materializing
-a role-specific file at the same canonical path. A lifted `test all` container must receive a
+a role-specific file at the same canonical path. A lifted `test run all` container must receive a
 parent-generated VM-project-container config with topology witnesses; it must not rely on the image-build
 default.
 

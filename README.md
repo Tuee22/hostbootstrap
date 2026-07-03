@@ -23,7 +23,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
 `hostbootstrap` splits host management between a Haskell core and a deliberately small Python layer.
 
 - **`hostbootstrap-core` (Haskell)** owns host-tool resolution, the `ensure` reconcilers
-  (`docker`, `colima`, `cuda`, `homebrew`, `ghc`, each fail-fast on the wrong host), substrate
+  (`docker`, `colima`, `lima`, `incus`, `wsl2`, `cuda`, `cudawin`, `homebrew`, `ghc`, each fail-fast on the wrong host), substrate
   detection, the binary-context contract and command gate, cluster-lifecycle semantics with kind resource
   cordoning, and the `optparse-applicative` command tree that project binaries extend through
   `runHostBootstrapCLI progName projectSpec`. See
@@ -73,7 +73,7 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
 > "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
 > `chain :: cfg -> [Step]` interpreter described above — are **implemented and real-run-validated**.
-> On Apple Silicon (Lima) the demo reports `3/3 passed`, including the Playwright e2e case; on native Linux
+> On Apple Silicon (Lima) the demo reports `6/6 passed` (three cases × two message variants), including the Playwright e2e case; on native Linux
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
@@ -113,8 +113,9 @@ fail-fast sequence:
    `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows: winget. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
 2. **Ensure the host Haskell build toolchain and package index.** The prerequisites needed to build the
-   binary host-native — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows
-   winget-rooted GHCup → GHC/Cabal; then `cabal update`.
+   binary host-native — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows a
+   PowerShell-downloaded GHCup → GHC/Cabal (winget is a required precondition but does not install the
+   toolchain); then `cabal update`.
 3. **Build the project binary host-native** into `./.build/<binary>`. The build is the same on every
    substrate; the binary is never copied out of a container, because a Linux ELF cannot exec on a
    general host such as Apple silicon.
@@ -136,7 +137,7 @@ Linux ELF cannot exec on a general host such as Apple silicon, so there is no bu
 copy-out path:
 
 - The Python bootstrapper ensures the host Haskell toolchain and Cabal package index (on Apple, `ghcup`
-  via Homebrew; the equivalent on Linux; on Windows winget-rooted GHCup → GHC/Cabal), builds the binary host-native into
+  via Homebrew; the equivalent on Linux; on Windows a PowerShell-downloaded GHCup → GHC/Cabal), builds the binary host-native into
   `./.build/<binary>`, and execs it.
 - **Headless host build for platform-locked artifacts.** On Windows the implemented shape builds
   CUDA artifacts on the bare host (`ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC via
@@ -251,7 +252,7 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 | `<binary> project up` | Recursively interpret `chain cfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
 | `<binary> project down` | Stop service/VM frames and tear down kind clusters while preserving durable host state (`.data`) |
 | `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
-| `<binary> test init` | Write `test.dhall` (the case matrix + config overrides) using the same value-free builder as `project init`; needs no pre-existing `<project>.dhall` |
+| `<binary> test init` | Write `test.dhall` (the case matrix + config overrides) via the project's `psTestInit` builder (which shares `psInit`'s defaults); needs no pre-existing `<project>.dhall` |
 | `<binary> test run <suite>\|all` | Root-gated; per distinct test config, drives the real `project up` under a test-written `.dhall`, asserts in-frame, then `project destroy`; two fail-fast safety preconditions (refuse if a sibling `.build/<project>.dhall` exists — checked at `siblingProjectConfigPath`, not the project root — or a production cluster is running); uses `.test_data` |
 | `<binary> service init\|schema\|run` | Run a long-running role: `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT, fail-fast unless the config declares a service role + variant; no `service down` (the controller owns lifetime) |
 | `<binary> context` | Read-only: introspect **any** sibling `.dhall` uniformly and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
@@ -332,12 +333,13 @@ contributed workload steps, and `project up` interprets it recursively:
 | 6 | build image | VM | build the project container image on the VM's Docker |
 | 7 | deploy kind | VM → container | bring up the kind cluster on the VM's Docker |
 | 8 | deploy harbor | container | the demo's workload step: stand up the in-cluster Harbor registry |
-| 9 | launch web | container | the demo's workload step: launch the webservice |
-| 10 | expose NodePort | container → host | the demo's workload step: expose the NodePort back to the host |
+| 9 | push image | container | the demo's workload step: load the project image into kind and push it to Harbor |
+| 10 | deploy chart | container | launch the web-service chart pod, whose entrypoint is `service run web`, on NodePort 30080 |
+| 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
 
-Steps 1–7 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image, deploy-kind);
-steps 8–10 are the demo's contributed step kinds (deploy-harbor, launch-web, expose-port) — host and
-workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
+Steps 1–7, 10, and 11 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
+deploy-kind, deploy-chart, expose-port); steps 8–9 are the demo's contributed step kinds (deploy-harbor,
+push-image) — host, cluster, and workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
 transition through the [self-reference lift](documents/architecture/composition_methodology.md) so kind,
 Harbor, and the webservice run **in the VM** on the VM's Docker, reached with no second "bring up a
 cluster" path. The doctrine is stated canonically in
@@ -348,8 +350,8 @@ cluster" path. The doctrine is stated canonically in
 > VM, and stands up kind → Harbor → the web service on the VM's Docker. The unified-harness / fixed-surface
 > / resource-SSoT correction has **landed**: the demo's test seams drive that same `project up` under a test
 > config (rather than a separate per-case cluster), the budget-doubling VM sizing collapses to budget = VM
-> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reported `3/3 passed`
-> including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
+> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed`
+> (three cases × two message variants) including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
 > both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
 > (phases 0 through 21) is `Done` — including **phase 11**, closed 2026-07-01 by the full Windows/WSL2
@@ -461,8 +463,8 @@ This map reflects the implemented shape: the Haskell `hostbootstrap-core` librar
 │   │   │   │                         #   substrate detection, project-local Dhall config,
 │   │   │   │                         #   cluster lifecycle, command tree
 │   │   │   ├── HostTool.hs  HostConfig.hs  HostPrereqs.hs  Substrate.hs
-│   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Cuda, Homebrew, Ghc
-│   │   │   ├── Config/Schema.hs      # project-local Dhall config schema/defaults
+│   │   │   ├── Ensure.hs  Ensure/    # Docker, Colima, Lima, Incus, Wsl2, Cuda, CudaWin, Homebrew, Ghc
+│   │   │   ├── Config/Schema.hs      # project-local Dhall config schema
 │   │   │   ├── Cluster/              # Lifecycle.hs, Cordon.hs
 │   │   │   ├── Command.hs  CLI.hs    # core command tree + ProjectSpec entrypoint
 │   │   │   └── DocValidator.hs

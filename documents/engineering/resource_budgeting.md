@@ -31,7 +31,7 @@
 
 ## Current Status
 
-Target (reopened, documentation-only): under
+Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the resource
 budget / VM cordon is a PROVIDER concern carried by a project's own `cfg`, not a core-universal field. A
 secrets-strict, RKE2/EKS-sized consumer that deploys to an existing cluster carries no VM budget at all,
@@ -40,9 +40,9 @@ the [generic_project_model.md](../architecture/generic_project_model.md) design,
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
-Concretely, the core default budget `4/8/20` cannot bootstrap the demo — the demo's `deploy-VM` gate
-requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19 the default moves into the
-project-owned `psInit` and the demo's `psInit` returns its real budget. See
+Concretely, the former core default budget `4/8/20` (now only a test fixture) could not bootstrap the
+demo — the demo's `deploy-VM` gate requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19
+the default lives in the project-owned `psInit` and the demo's `psInit` returns its real budget. See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
 
 ## The Budget Field

@@ -55,17 +55,19 @@ ConfigMap override). Validated by a live Windows/WSL2 `test run all` `6/6`.
   two, `"Hello, world!"` then `"Hello, Universe!"`, with a full teardown and spin-up between. The fail-fast
   existence precondition checks the executable-sibling `siblingProjectConfigPath`
   (`.build/<project>.dhall`), not the project root.
-- **Substrate parity.** `test run all` is **`3/3` on both** Apple-Silicon/Lima (2026-06-20) and native
-  Incus/Linux (2026-06-21). All three cases run in the **VM frame**: each reachability check is a pure probe
+- **Substrate parity.** `test run all` was validated on both Apple-Silicon/Lima (2026-06-20) and native
+  Incus/Linux (2026-06-21); those dated figures were the earlier single-variant **`3/3`** milestone (three
+  cases, one config), superseded by the current two-variant **`6/6`** suite (3 cases x 2 variants). All
+  three cases run in the **VM frame**: each reachability check is a pure probe
   folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl
   …`), so it reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to
   the host.
-- **Windows WSL2 status.** Post-reboot validation on 2026-06-29 shows WSL2 platform readiness
+- **Windows WSL2 status.** Post-reboot validation on 2026-06-29 crossed the WSL2 platform-readiness gate
   (`HyperVisorPresent = True`, default WSL version 2). A live Windows `project up` registers/enters
   `hostbootstrap-demo-vm`, stages the source under `/root/hostbootstrap`, builds the in-distro
-  host-native demo binary, installs Docker, and starts the project image build. The open validation item is
-  runtime stability: repeated WSL/Docker sessions exit non-zero during the in-distro Docker build before
-  `test run all` and `project destroy` can validate the full lifecycle.
+  host-native demo binary, installs Docker, and builds the project image; the full lifecycle then closed
+  end to end on **2026-07-01** through `test run all` (`6/6`) and `project destroy`, with the `.wslconfig`
+  `[wsl2]` budget ceiling applied.
 
 The operator surface below (`project init|up|down|destroy`, read-only `context`, `test init` /
 `test run <suite>|all`) and the recursive interpreter that walks the demo's `chain :: ProjectConfig ->
@@ -94,7 +96,7 @@ itself is the contributed `demoChain` interpreted by `project up`.
 ## The demo and its extension contract
 
 The demo's primary contribution is its **lift chain value**. The demo binary contributes its `chain`,
-step actions, harness cases, Dhall vocabulary, and artifacts through `ProjectSpec` (`demoCommands`,
+step actions, harness cases, Dhall vocabulary, and artifacts through `ProjectSpec` (`demoChain`,
 `demoCases`, `demoCheckCode`, `demoArtifacts`); it never re-implements or shadows a core operation. Core
 ships the host-management step kinds (deploy-VM, `ensure-X`, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port); the demo interleaves its own workload step kinds
@@ -115,7 +117,7 @@ service variant run by `service run`):
 | Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `context schema` / `project init` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case `runMatrix` loop and the
-seam-split the demo's `demoSeams` plug into, and
+stack-driven `demoTestSuite` that reuses the deploy's `project up`, and
 [authoring_project_binaries](../engineering/authoring_project_binaries.md) for how a consumer authors its
 chain.
 
@@ -272,7 +274,7 @@ stack down with `project destroy` (guaranteed through `finally`); each `demoCase
 slice of the live stack in the frame appropriate to it (e.g. the `e2e-tabs` Playwright assertion as a
 container on the kind network in the VM frame, outside the cluster). The demo declares two variants and the
 harness stands each up / asserts / tears down in turn.
-*(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)*
+*(The harness recast has landed and is real-run-validated — phase-10/13/17.)*
 
 | Harness case | Feature demonstrated |
 |---|---|
@@ -336,14 +338,15 @@ substrate-specific prerequisites:
 
 ## Windows / WSL2 readiness
 
-A full Windows / WSL2 readiness walkthrough — the winget pre-binary toolchain, the native
-`hostbootstrap.exe` host-native build, `ensure wsl2` platform readiness, and the project-owned
-`Ubuntu-24.04` distro named from the project identity on the third metal substrate — is **pending Windows
-validation**. It is a **target** owned by
-[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md); the WSL2 host provider and its
+The full Windows / WSL2 readiness walkthrough — the winget pre-binary toolchain, the native
+`hostbootstrap.exe` host-native build, the `Wsl2` reconciler's platform readiness, and the project-owned
+`Ubuntu-24.04` distro named from the project identity on the third metal substrate — is **real-run-closed**:
+[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) closed the Windows lifecycle end to end
+on **2026-07-01** through `project up` → `test run all` (`6/6`) → `project destroy`, with the `.wslconfig`
+budget ceiling applied. The WSL2 host provider and its
 deploy-VM / `project down` (stop-without-delete) / `project destroy` lifecycle steps are described in
 [wsl2](../engineering/wsl2.md), the Windows peer of the Lima (Apple Silicon) and Incus (native Linux) VM
-providers. Once the Windows substrate is hardware-validated this section gains the substrate-specific
+providers. With the Windows substrate hardware-validated, this section carries the substrate-specific
 prerequisites the Apple Silicon walkthrough above lists for Lima.
 
 - **Forward the registry credential.** Symmetric with the other substrates and code-identical: Windows

@@ -64,11 +64,12 @@ indexHtml =
         \</body>\n\
         \</html>\n"
 
-{- | Serve the webservice on the incus host (the Playwright @baseURL@). Binds all
-interfaces so the container-side Playwright run can reach the host. Reads its own
-mounted @<project>.dhall@ via the core generic loader (the cluster-service config
-the ConfigMap delivers) and serves the config-driven @message@ from it (Sprint
-20.1), so the served value is whatever the active config carries.
+{- | Serve the webservice as the @web@ cluster-service pod, bound on @0.0.0.0:8080@
+and reached through the @30080@ NodePort (the Playwright @baseURL@). Binding all
+interfaces lets the in-cluster Playwright run reach it. Reads its own mounted
+@<project>.dhall@ via the core generic loader (the cluster-service config the
+ConfigMap delivers) and serves the config-driven @message@ from it (Sprint 20.1),
+so the served value is whatever the active config carries.
 -}
 serveWeb :: Int -> IO ()
 serveWeb port = do

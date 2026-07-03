@@ -5,6 +5,7 @@ module HostBootstrap.Wsl2
     bcdeditHypervisorLaunchArgs,
     classifyWsl2Readiness,
     normalizeWslText,
+    wslListDistros,
     wslReportsNoInstalledDistributions,
     wslReportsVirtualizationDisabled,
     wslInstallArgs,
@@ -52,6 +53,13 @@ wslReportsNoInstalledDistributions (_, out, err) =
 normalizeWslText :: String -> String
 normalizeWslText =
   map toLower . filter (/= '\0')
+
+-- | Tokenise @wsl --list --quiet@ output into distro names for a membership
+-- test. Strips the UTF-16 NUL padding and splits on whitespace, but preserves
+-- case — WSL2 distro names are case-sensitive, unlike the lowercased marker
+-- checks that go through 'normalizeWslText'.
+wslListDistros :: String -> [String]
+wslListDistros = words . filter (/= '\0')
 
 bcdeditHypervisorLaunchArgs :: [String]
 bcdeditHypervisorLaunchArgs =

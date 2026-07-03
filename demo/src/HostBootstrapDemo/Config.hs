@@ -49,6 +49,7 @@ module HostBootstrapDemo.Config (
     demoDefaultDeployConfig,
     demoDefaultDockerfile,
     demoDefaultMessage,
+    demoCaseIds,
 
     -- * InitArgs builders (threaded into the demo's ProjectSpec)
     demoInit,
@@ -364,11 +365,17 @@ defaults).
 demoTestInit :: InitArgs -> TestConfig
 demoTestInit _ = defaultTestConfig demoTestSuiteIds demoDefaultResources
 
-{- | The demo's selectable test-suite ids (the case ids plus @all@). Kept in sync
-with the demo's case matrix manually; a richer reflection lives in Commands.
+{- | The demo's case ids — the single source of truth the harness case matrix
+('demoCases' in Commands) is also built from, so the two cannot drift.
+-}
+demoCaseIds :: [Text]
+demoCaseIds = ["pristine-bootstrap", "web-build", "e2e-tabs"]
+
+{- | The demo's selectable test-suite ids: the case ids plus the always-injected
+@all@ selector, derived from 'demoCaseIds'.
 -}
 demoTestSuiteIds :: [Text]
-demoTestSuiteIds = ["pristine-bootstrap", "web-build", "e2e-tabs", "all"]
+demoTestSuiteIds = demoCaseIds <> ["all"]
 
 {- | The demo's @test run@ config generator: build the run's labeled
 'ProjectConfig' variants from the 'TestConfig' (host-orchestrator configs sized to
@@ -386,7 +393,7 @@ served value), not hard-coded.
 demoTestConfig :: TestConfig -> IO [(Text, ProjectConfig)]
 demoTestConfig tc =
     pure
-        [ ("Hello, world!", configFor "Hello, world!")
+        [ (demoDefaultMessage, configFor demoDefaultMessage)
         , ("Hello, Universe!", configFor "Hello, Universe!")
         ]
   where

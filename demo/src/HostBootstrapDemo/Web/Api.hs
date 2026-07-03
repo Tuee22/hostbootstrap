@@ -8,12 +8,14 @@
 asserts: the project's resource budget, the concurrent pod footprint, and
 whether the pods fit — computed by the same canonical 'fitsBudget' the cluster
 bring-up uses, so the served value cannot disagree with the cordon. The type is
-the source the @web bridge@ verb reflects into PureScript (so the SPA's types
-match the API by construction) and the JSON the @web serve@ verb returns.
+the source the build-image bridge step reflects into PureScript (so the SPA's
+types match the API by construction) and the JSON the @web@ service handler
+(@service run web@) returns.
 -}
 module HostBootstrapDemo.Web.Api (
     BudgetView (..),
     budgetView,
+    demoWebPod,
 )
 where
 
@@ -46,9 +48,16 @@ data BudgetView = BudgetView
 demoBudget :: V.Budget
 demoBudget = V.Budget 6 10 80
 
--- | The demo's concurrent web-pod set (the @demoWeb@ schema-gen artifact).
+{- | The demo's single web-pod footprint (the @demoWeb@ schema-gen artifact),
+shared with @Commands.demoArtifacts@ so the served 'BudgetView' and the reflected
+schema cannot disagree.
+-}
+demoWebPod :: V.PodResources
+demoWebPod = V.PodResources 2 1 1 1 2
+
+-- | The demo's concurrent web-pod set (just the one 'demoWebPod').
 demoPods :: [V.PodResources]
-demoPods = [V.PodResources 2 1 1 1 2]
+demoPods = [demoWebPod]
 
 {- | The canonical budget view, parameterized by the config-driven served
 @message@ (Sprint 20.1): the fits verdict is the real 'fitsBudget' result, so
@@ -61,8 +70,8 @@ budgetView msg =
         , cpu = fromIntegral demoBudget.cpu
         , memory = fromIntegral demoBudget.memory
         , storage = fromIntegral demoBudget.storage
-        , podReplicas = 2
-        , podCpuLimit = 1
-        , podMemoryLimit = 2
+        , podReplicas = fromIntegral demoWebPod.replicas
+        , podCpuLimit = fromIntegral demoWebPod.cpuLimit
+        , podMemoryLimit = fromIntegral demoWebPod.memoryLimit
         , fits = either (const False) (const True) (fitsBudget demoBudget demoPods)
         }

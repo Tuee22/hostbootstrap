@@ -102,17 +102,24 @@ def installed_vcs_source(package: str = PACKAGE_NAME) -> InstalledVCS | None:
 
 
 def parse_ls_remote(stdout: str) -> str:
-    for line in stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and not parts[1].endswith("^{}"):
-            return parts[0]
+    entries = [parts for line in stdout.splitlines() if len(parts := line.split()) >= 2]
+    # Prefer the peeled commit of an annotated tag (the ``<ref>^{}`` line) — that is
+    # the commit pip records in direct_url.json. A branch head or lightweight tag
+    # advertises no ``^{}`` line and already names a commit, so fall back to it.
+    for sha, name in ((parts[0], parts[1]) for parts in entries):
+        if name.endswith("^{}"):
+            return sha
+    for parts in entries:
+        return parts[0]
     raise SelfUpdateError("remote ref did not resolve to a git commit.")
 
 
 def remote_commit(*, repo_url: str = DEFAULT_REPO_URL, ref: str = DEFAULT_REF) -> str:
     try:
         completed = subprocess.run(
-            ["git", "ls-remote", repo_url, ref],
+            # Request the ref and its peeled form so an annotated tag also emits its
+            # ``<ref>^{}`` commit line; parse_ls_remote prefers that peeled commit.
+            ["git", "ls-remote", repo_url, ref, f"{ref}^{{}}"],
             capture_output=True,
             text=True,
             check=False,

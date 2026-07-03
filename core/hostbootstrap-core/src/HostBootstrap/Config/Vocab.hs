@@ -5,10 +5,12 @@
 -- | Haskell mirrors of the reusable @Core.dhall@ vocabulary record types.
 --
 -- These types are the shape the project binary reflects from its decoders into
--- the emitted Dhall schema (@config schema@) and decodes generated configs into
--- (@config render@). An anti-drift test asserts each type's reflected Dhall shape
--- equals the matching @Core.dhall@ type, so the hand-written vocabulary and the
--- Haskell decoders cannot diverge (see @development_plan_standards.md § Q, § T@).
+-- the emitted Dhall schema (@context schema@) and decodes generated configs into
+-- (@context render@). 'SecretRef' carries an anti-drift test asserting its
+-- reflected Dhall shape equals the matching @Core.dhall@ type; the L0 record
+-- types (@Budget@/@PodResources@/@KindNode@) are pinned by a re-snapshottable
+-- golden of their reflected shape, and @Mount@ is not yet pinned (see
+-- @development_plan_standards.md § Q, § T@).
 --
 -- @DuplicateRecordFields@ lets the budget/footprint records share field names
 -- (@cpu@/@memory@/@storage@) so they match the @Core.dhall@ field labels exactly.

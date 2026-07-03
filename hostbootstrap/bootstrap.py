@@ -6,9 +6,10 @@ The Python layer does only what must run *before any project binary exists*
 1. derive the project name from the project's single Cabal file;
 2. assert the fail-fast host minimums;
 3. ensure the host Haskell build toolchain and package index (Homebrew -> ``ghcup``
-   -> GHC/Cabal on Apple silicon; ``ghcup`` -> GHC/Cabal on Linux; winget-rooted
-   GHCup -> GHC/Cabal on Windows) -- the prerequisites to *build* the binary;
-4. build the project binary **host-native** at ``./.build/<project>`` on every
+   -> GHC/Cabal on Apple silicon; ``ghcup`` -> GHC/Cabal on Linux; a
+   PowerShell-downloaded GHCup -> GHC/Cabal on Windows) -- the prerequisites to
+   *build* the binary;
+4. build the project binary **host-native** at ``./.build/<executable>`` on every
    substrate;
 5. ``exec`` the binary, handing control to ``hostbootstrap-core``'s command tree
    extended by the project.
@@ -41,7 +42,7 @@ _POWERSHELL: str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 # The family-pinned GHC every project's ``cabal.project`` selects.
 GHC_VERSION: str = "9.12.4"
 
-# The host-native build output directory; ./.build/<project> is always present.
+# The host-native build output directory; ./.build/<executable> is always present.
 _BUILD_DIR: str = ".build"
 
 # The host-native cabal package store, kept repo-local under ./.build/.
@@ -60,6 +61,12 @@ _GHCUP_WINDOWS_BOOTSTRAP: str = (
     "Invoke-WebRequest "
     "https://downloads.haskell.org/ghcup/0.2.6.2/x86_64-mingw64-ghcup-0.2.6.2.exe "
     "-OutFile $ghcup"
+)
+# The POSIX ghcup bootstrap (Linux): install ghcup itself, non-interactively and
+# without pulling GHC/Cabal (the ghcup_steps below install the pinned toolchain).
+_GHCUP_POSIX_BOOTSTRAP: str = (
+    "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org "
+    "| BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh"
 )
 
 
@@ -158,7 +165,15 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
             ),
             *ghcup_steps,
         )
-    return ghcup_steps
+    # Linux (linux-cpu / linux-gpu): bootstrap ghcup via its POSIX installer first,
+    # mirroring the Apple/Windows shape so a pristine host is not assumed to ship it.
+    return (
+        ToolchainStep(
+            probe=(_GHCUP, "--version"),
+            install=("sh", "-c", _GHCUP_POSIX_BOOTSTRAP),
+        ),
+        *ghcup_steps,
+    )
 
 
 def native_build_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
@@ -192,7 +207,7 @@ def native_listbin_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[
 
 
 def binary_path(spec: ProjectBuildSpec, project_root: Path) -> Path:
-    """The single stable ``./.build/<project>`` location every consumer execs."""
+    """The single stable ``./.build/<executable>`` location every consumer execs."""
     suffix = ".exe" if os.name == "nt" else ""
     return project_root / _BUILD_DIR / f"{spec.executable}{suffix}"
 
@@ -203,12 +218,25 @@ def exec_argv(spec: ProjectBuildSpec, project_root: Path, args: tuple[str, ...])
 
 
 def _toolchain_env() -> dict[str, str]:
-    """Environment that sees tools installed during this bootstrap invocation."""
+    """Environment that sees tools installed during this bootstrap invocation.
+
+    ghcup installs its shims outside the default PATH mid-bootstrap: under
+    ``C:/ghcup/bin`` on Windows and ``~/.ghcup/bin`` (with the cabal/local bins
+    alongside) on Apple/Linux, so prepend them here for every substrate.
+    """
     env = dict(os.environ)
     if os.name == "nt":
-        existing = env.get("PATH", "")
-        prefix = os.pathsep.join(str(path) for path in _WINDOWS_TOOLCHAIN_PATHS)
-        env["PATH"] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+        toolchain_paths: tuple[Path, ...] = _WINDOWS_TOOLCHAIN_PATHS
+    else:
+        home = Path.home()
+        toolchain_paths = (
+            home / ".ghcup" / "bin",
+            home / ".cabal" / "bin",
+            home / ".local" / "bin",
+        )
+    existing = env.get("PATH", "")
+    prefix = os.pathsep.join(str(path) for path in toolchain_paths)
+    env["PATH"] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
     return env
 
 
@@ -246,7 +274,7 @@ async def _ensure_toolchain(sub: Substrate) -> None:
 
 
 async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
-    """Build the binary host-native and copy it to ``./.build/<project>``."""
+    """Build the binary host-native and copy it to ``./.build/<executable>``."""
     binary_path(spec, project_root).parent.mkdir(parents=True, exist_ok=True)
     await process.run_checked(cabal_update_command(), cwd=project_root, env=_toolchain_env())
     await process.run_checked(

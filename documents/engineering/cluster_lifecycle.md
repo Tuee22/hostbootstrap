@@ -81,7 +81,7 @@ container frame the recursive interpreter reaches — not host tools (see
 not provide a reliable stop/restart contract for the cluster frame, so `down` uses `kind delete cluster`
 for compute and keeps the `.data` and derived paths in place. The next `project up` recreates the kind
 cluster from the chain. VM frames are different: they use provider stop-without-delete (`incus stop` /
-`limactl stop` / `wsl --shutdown` (WSL2 managed-stop)) on ascent after the inner cluster teardown (see
+`limactl stop` / `wsl --terminate <distro>` (per-distro WSL2 stop)) on ascent after the inner cluster teardown (see
 [incus](incus.md), [lima](lima.md), [wsl2](wsl2.md)).
 
 Stop steps use the best-effort `reportStep`, which logs a failed step without aborting the rest of the
@@ -135,7 +135,7 @@ executable sibling `siblingProjectConfigPath` (`.build/<project>.dhall`, not the
 **production cluster is running** (never touch production state) — and it deletes only the `.test_data` and
 generated config it created this run. The production kind cluster is cordoned to a **slice within the VM
 wall** (the budget = VM wall, cluster = slice rule, [resource_budgeting](resource_budgeting.md)), never the
-full budget. *(Target; the harness recast is reopened, real-run-gated — phase-10/13/17.)* See
+full budget. *(The harness recast is implemented and real-run-validated — phase-10/13/17.)* See
 [testing](testing.md).
 
 ## Current Status

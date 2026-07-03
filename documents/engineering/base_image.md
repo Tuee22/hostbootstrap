@@ -109,7 +109,8 @@ flavor × arch set.
   `GOTOOLCHAIN`, and `PATH` set alongside other languages.
 * **nvkind** — built once in the final image (`CGO_ENABLED=1 go install …/nvkind@latest`) and copied
   to `/usr/local/bin/nvkind`.
-* **Node** — latest upstream Node, with npm, esbuild, TypeScript, Playwright (Chromium/Firefox/WebKit),
+* **Node** — latest Node LTS (non-LTS/current releases are excluded because tools like Spago lag the
+  newest major), with npm, esbuild, TypeScript, Playwright (Chromium/Firefox/WebKit),
   Spago, purs-tidy. Playwright is installed globally under the npm prefix
   `/opt/build/node/global`; project-local specs that import `@playwright/test` without their own
   `node_modules` run with `NODE_PATH=/opt/build/node/global/lib/node_modules`.

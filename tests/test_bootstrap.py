@@ -112,6 +112,10 @@ def test_toolchain_ensure_steps_apple() -> None:
 def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
     assert bootstrap.toolchain_ensure_steps(sub) == (
         bootstrap.ToolchainStep(
+            probe=("ghcup", "--version"),
+            install=("sh", "-c", bootstrap._GHCUP_POSIX_BOOTSTRAP),
+        ),
+        bootstrap.ToolchainStep(
             probe=("ghcup", "whereis", "ghc", "9.12.4"),
             install=("ghcup", "install", "ghc", "9.12.4", "--set"),
         ),
@@ -154,8 +158,31 @@ def test_windows_toolchain_env_prepends_installed_tool_dirs(
 
     env = bootstrap._toolchain_env()
 
-    assert env["PATH"].startswith("C:\\ghcup\\bin;C:\\cabal\\bin;")
+    expected_prefix = bootstrap.os.pathsep.join(
+        str(p) for p in bootstrap._WINDOWS_TOOLCHAIN_PATHS
+    )
+    assert env["PATH"].startswith(expected_prefix + bootstrap.os.pathsep)
     assert env["PATH"].endswith("C:/existing")
+
+
+def test_posix_toolchain_env_prepends_ghcup_bins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(bootstrap.os, "name", "posix")
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = bootstrap._toolchain_env()
+
+    sep = bootstrap.os.pathsep
+    expected_dirs = (
+        tmp_path / ".ghcup" / "bin",
+        tmp_path / ".cabal" / "bin",
+        tmp_path / ".local" / "bin",
+    )
+    expected_prefix = sep.join(str(p) for p in expected_dirs)
+    assert env["PATH"].startswith(expected_prefix + sep)
+    assert env["PATH"].endswith("/usr/bin")
 
 
 def test_native_build_command() -> None:
@@ -258,6 +285,7 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
 
     assert doctored == [LINUX_CPU]
     assert recorded_commands == [
+        ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
         bootstrap.cabal_update_command(),
@@ -285,6 +313,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
     # build_binary builds and locates the binary -- it does NOT run any
     # ``project init`` / config-init step (no auto-init).
     assert recorded_commands == [
+        ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
         bootstrap.cabal_update_command(),
@@ -359,6 +388,8 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     assert recorded_commands_fresh_host == [
+        ("ghcup", "--version"),
+        ("sh", "-c", bootstrap._GHCUP_POSIX_BOOTSTRAP),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
@@ -431,3 +462,39 @@ async def test_already_present_false_when_probe_binary_missing(
 
     monkeypatch.setattr(bootstrap.process, "run", _missing)
     assert await bootstrap._already_present(("ghcup", "--version")) is False
+
+
+async def test_already_present_gives_up_after_windows_sharing_violations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap.os, "name", "nt")
+    sleeps: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(bootstrap.asyncio, "sleep", _record_sleep)
+
+    async def _busy(cmd: object, **_: object) -> bootstrap.process.CommandResult:
+        err = OSError("file is in use by another process")
+        err.winerror = 32  # type: ignore[attr-defined]
+        raise err
+
+    monkeypatch.setattr(bootstrap.process, "run", _busy)
+    assert await bootstrap._already_present(("ghcup", "--version")) is False
+    assert sleeps == [5, 5, 5, 5, 5, 5]
+
+
+async def test_already_present_reraises_non_sharing_oserror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap.os, "name", "nt")
+
+    async def _boom(cmd: object, **_: object) -> bootstrap.process.CommandResult:
+        err = OSError("permission denied")
+        err.winerror = 5  # type: ignore[attr-defined]
+        raise err
+
+    monkeypatch.setattr(bootstrap.process, "run", _boom)
+    with pytest.raises(OSError, match="permission denied"):
+        await bootstrap._already_present(("ghcup", "--version"))

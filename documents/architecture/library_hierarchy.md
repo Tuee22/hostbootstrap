@@ -116,7 +116,10 @@ The schema-generation stream merges by concatenating each level's `ConfigArtifac
 registers `coreArtifacts`; a project appends its own artifacts:
 
 ```haskell
-projectSpec projectChain projectSuite projectCheckCode [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
+withChain projectChain
+  (projectSpec projectSuite projectCheckCode
+      [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
+      projectInit projectTestInit projectTestConfig)
 ```
 
 The read-only `context` surface then prints the transitive union of the in-scope schemas and
@@ -133,8 +136,10 @@ the context-init step inside `project up`, deriving from the active local config
 
 ### Stream 4 — Test-Harness Seams
 
-The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` made from
-its `Seams` value and case matrix; `ProjectSpec` threads that suite into the inherited `test` surface.
+The fourth stream is the standardized test harness. A project supplies a non-empty `TestSuite` — a five-field
+existential (safety precondition, bring-up, case matrix, per-case assertion, teardown); `ProjectSpec` threads
+that suite into the inherited `test` surface. The `Seams`/`runMatrix` engine is built internally by the harness
+(`assertSeams`), not supplied by the project.
 The harness **drives the real `project up`**: it **generates** the run's `<project>.dhall` functionally via
 the project's own `psTestConfig` (reusing the project-owned `psInit` builder, never shelling the CLI),
 runs `project up`, asserts in-frame, then `project destroy`; it owns no second cluster-bring-up path. A

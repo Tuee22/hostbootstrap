@@ -9,8 +9,6 @@ supported entry point and configuration.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 
@@ -72,9 +70,3 @@ def recorded_commands_fresh_host(monkeypatch: pytest.MonkeyPatch) -> list[tuple[
     monkeypatch.setattr(process, "run_checked", _checked)
     monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
     return calls
-
-
-@pytest.fixture
-def project_root(tmp_path: Path) -> Iterator[Path]:
-    """A throwaway project directory."""
-    yield tmp_path
