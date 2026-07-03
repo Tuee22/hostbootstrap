@@ -30,7 +30,8 @@ import HostBootstrap.Lift
     LiftDispatch,
     SelfRef,
     foldLift,
-    liftSubcommand,
+    liftStdin,
+    liftSubcommandWithStdin,
   )
 import HostBootstrap.Step
   ( Step (..),
@@ -102,7 +103,13 @@ runChainFromFrame cfg self liftCtx current steps
       case nextFrameAfter current steps of
         Nothing -> pure (Right ())
         Just next -> do
-          result <- liftSubcommand cfg self (liftCtx next) handoffArgv
+          -- Stream the next frame's child config in-place: for a container frame
+          -- with config delivery, 'liftStdin' carries the narrowed projection on
+          -- the handoff @stdin@ (the entrypoint wrapper writes the sibling before
+          -- dispatch); for a VM/local frame it is empty, byte-identical to the
+          -- former 'liftSubcommand'. See § X.
+          let nextCtx = liftCtx next
+          result <- liftSubcommandWithStdin cfg self nextCtx handoffArgv (liftStdin nextCtx)
           case result of
             Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
             -- Surface the nested frame's captured stdout even on failure (it holds

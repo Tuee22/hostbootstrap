@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
 builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
@@ -49,15 +49,22 @@ is a first-class effect, not a dropped value. See
 [applied_cordon](../documents/engineering/applied_cordon.md) and
 [wsl2](../documents/engineering/wsl2.md).
 
+**Closed (2026-07-01).** A live Windows `test run all` wrote the `.wslconfig` `[wsl2]` ceiling
+(`processors`/`memory`/`swap`) and ran `wsl --shutdown` before registering the distro, and the full
+`project up` → `test run all` → `project destroy` lifecycle closed **`6/6`** on a 16 GiB host with **no** WSL
+utility-VM session drop — the applied wall is validated on a live WSL2 distro (jointly with
+[phase-11](phase-11-incus-host-provider.md) Sprint 11.7).
+
 ## Remaining Work
 
-Sprint 9.7 (honest WSL2 cordon) is `Active`. Static validation is closed: `cabal build all` and
+None. Sprint 9.7 (honest WSL2 cordon) is `Done`. Static validation is closed: `cabal build all` and
 `cabal test all` pass from `core/` (274 tests; `CordonSpec` covers the corrected `wsl2SizingArgs` —
-`[wsl2]` + `swap`, no `vhdx-size` — and the `WindowsTotalMemory` capacity source; the new `ProviderSpec`
+`[wsl2]` + `swap`, no `vhdx-size` — and the `WindowsTotalMemory` capacity source; the `ProviderSpec`
 locks the unified `selectSubstrateProvider` launch/teardown/transfer effect lists, with Lima/Incus
-byte-for-byte equal to the former argv). The open item is the real-run validation of the applied
-`.wslconfig` wall on a live WSL2 distro, owned jointly with
-[phase-11](phase-11-incus-host-provider.md) Sprint 11.7 (the Windows lifecycle closure).
+byte-for-byte equal to the former argv). The real-run gate closed **2026-07-01**: a live Windows
+`test run all` applied the `.wslconfig` wall on a live WSL2 distro and drove the full `project up` →
+`test run all` → `project destroy` Windows lifecycle to **`6/6`**, restoring `.wslconfig` on teardown
+(jointly with [phase-11](phase-11-incus-host-provider.md) Sprint 11.7, the Windows lifecycle closure).
 
 ## Phase Objective
 
@@ -249,9 +256,9 @@ returned `Right (HostCapacity {spareCpu = 16, ...})` through the PowerShell/CIM 
 distro application of the generated `.wslconfig` + VHDX cap is consumed and validated by
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 sprint.
 
-### Sprint 9.7: Honest WSL2 cordon and one pure lift per substrate [Active]
+### Sprint 9.7: Honest WSL2 cordon and one pure lift per substrate [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs` (new),
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs` (`wsl2SizingArgs`, `WindowsTotalMemory`),
 `demo/src/HostBootstrapDemo/Commands.hs` (generic lifecycle interpreters),
@@ -294,9 +301,12 @@ one pure lift so the WSL2 difference is data, not a hand-branched special case.
 
 #### Remaining Work
 
-The applied `.wslconfig` wall on a **live** WSL2 distro — the full `project up` → `test run all` →
-`project destroy` Windows closure — is real-run-gated, jointly with
-[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) Sprint 11.7.
+None. The applied `.wslconfig` wall on a **live** WSL2 distro — the full `project up` → `test run all` →
+`project destroy` Windows closure — was validated **2026-07-01**: the run wrote the `.wslconfig` ceiling,
+registered/sized the distro, brought up in-distro Docker/kind without a utility-VM session drop, reported
+**`test report: 6/6 passed`** across both message variants, and `project destroy` restored `.wslconfig` with
+host `.data` preserved (jointly with [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)
+Sprint 11.7).
 
 ## Documentation Requirements
 

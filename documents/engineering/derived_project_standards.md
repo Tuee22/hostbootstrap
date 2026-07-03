@@ -150,7 +150,8 @@ Haskell.
    expensive backend work; the container is built on every substrate as the mandatory code-check gate. The
    container frame skips the build step at runtime — `docker run img project up` enters the chain already
    built. Runtime launchers receive a parent-generated runtime `<project>.dhall` minted by the context-init
-   step. See [code_check_doctrine.md](code_check_doctrine.md#derived-images) and
+   step and **streamed in-place** (over the launch `stdin`, written before dispatch — no config bind-mount).
+   See [code_check_doctrine.md](code_check_doctrine.md#derived-images) and
    [binary_context_config](../architecture/binary_context_config.md).
 4. **Link executables statically; build libraries with `shared: True`.** Do not pass
    `--enable-executable-dynamic` or `--enable-executable-static`. See
@@ -246,8 +247,10 @@ base image at build time, and `hostbootstrap-core`'s dependency closure is alrea
 The `project init --role image-build-container` line is the container-image bootstrap hook. It is the only
 binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
 commands such as `check-code` load that config and refuse commands not valid for the image-build frame. At
-runtime the parent's context-init step mounts or materializes the role-specific `<project>.dhall` at
-`/usr/local/bin/<project>.dhall`, and the container enters the chain with `docker run img project up`.
+runtime the parent's context-init step **streams** the role-specific `<project>.dhall` into the container
+in-place — piped on the `docker run` `stdin`, written to `/usr/local/bin/<project>.dhall` by the entrypoint
+before dispatch (no config bind-mount) — and the container enters the chain with `project up` (a Kubernetes
+service pod instead receives a ConfigMap override).
 
 ## Status
 

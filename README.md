@@ -77,17 +77,23 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
-> writes no Dhall; lifted runtime containers receive parent-mounted configs with topology frames and
+> writes no Dhall; lifted runtime containers receive parent-generated configs **streamed in-place** (over
+> the lift's `stdin` channel, written by the descending binary before dispatch) with topology frames and
 > witnesses.
 >
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
 > worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done`. The original scope (phases 0 through 21) is `Done` except **phase 11**, which remains
-> `Active`: the WSL2 provider is implemented and unit-validated, the post-reboot host reports WSL2
-> platform readiness (`HyperVisorPresent = True`, default WSL version 2), and the live chain reaches the
-> managed Ubuntu-24.04 distro plus the in-distro Docker image build. The remaining work is real
-> Windows/WSL2 provider lifecycle closure because repeated WSL/Docker sessions exit non-zero before
-> `test run all` and `project destroy` validate teardown. The Windows third-substrate work for phases
+> `Done`. The original scope (phases 0 through 21) is **`Done`**. Phases 13 and 15 were briefly reopened
+> (2026-07-02) for the **in-place child-config delivery** refinement and are now closed `Done` — the
+> `context-init` projection is streamed into each child frame over the lift's `stdin` channel and written by
+> the descending binary before dispatch (no host-side `.vm.dhall`/`.runtime-container.dhall`, no config
+> bind-mount; only the narrowed projection crosses, on `stdin` only), validated by `cabal test all` and a
+> live Windows/WSL2 `test run all` **`6/6`**; the superseded surfaces are in
+> [`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+> **Phase 11 is now `Done`** (closed 2026-07-01): the Windows/WSL2 provider lifecycle closed end to end —
+> `project up` registered/entered the managed Ubuntu-24.04 distro with the `.wslconfig` budget wall applied,
+> built the in-distro binary and project image without a session drop, and `test run all` reported `6/6`
+> before `project destroy` restored `.wslconfig` with host `.data` preserved. The Windows third-substrate work for phases
 > 2, 3, and 9 is closed: native `hostbootstrap.exe` bootstrap, CUDA as a headless host build, and Windows
 > host-capacity / WSL2 sizing are implemented and validated. This status is tracked in
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
@@ -346,9 +352,10 @@ cluster" path. The doctrine is stated canonically in
 > including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
 > both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
-> (phases 0 through 21) is `Done` except phase 11, which is `Active` for the remaining real WSL2 provider
-> lifecycle closure: WSL2 platform readiness is present after reboot, but repeated WSL/Docker sessions exit
-> non-zero during the in-distro project image build before `test run all` and `project destroy`; see
+> (phases 0 through 21) is `Done` — including **phase 11**, closed 2026-07-01 by the full Windows/WSL2
+> `project up` → `test run all` (`6/6`) → `project destroy` lifecycle with the `.wslconfig` budget wall
+> applied, and **phases 13 and 15**, reopened then closed 2026-07-02 for in-place child-config delivery
+> (§ X, validated by a live Windows/WSL2 `test run all` `6/6`); see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up

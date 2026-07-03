@@ -35,9 +35,17 @@
 
 ## Current Status
 
-The demo's Apple-Silicon/Lima and native Incus/Linux paths are real-run-validated. The Windows/WSL2 path
-is implemented and reaches the live WSL2 VM frame, but Phase 11 remains `Active` until the Windows
-lifecycle closes through `test run all` and `project destroy`.
+The demo's Apple-Silicon/Lima, native Incus/Linux, and Windows/WSL2 paths are all real-run-validated.
+Phase 11 closed **2026-07-01** when the Windows lifecycle completed end to end through `test run all`
+(`6/6`) and `project destroy` with the `.wslconfig` budget wall applied.
+
+Child-config **delivery** was refined to **in-place streaming** over the lift's `stdin` channel (landed
+2026-07-02, development_plan_standards § X — [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)
+Sprint 13.15 / [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) Sprint 15.7): the parent
+streams the narrowed projection into the VM and the container, which each write their own sibling
+`hostbootstrap-demo.dhall` before dispatch, with no host-side `hostbootstrap-demo.vm.dhall` /
+`hostbootstrap-demo.runtime-container.dhall` and no config bind-mount (the webservice pod keeps its
+ConfigMap override). Validated by a live Windows/WSL2 `test run all` `6/6`.
 
 - **Config handling.** The harness owns the run's config and its `.test_data` root: it generates the
   `hostbootstrap-demo.dhall` from the thin `test.dhall` override **functionally**, through the
@@ -142,8 +150,9 @@ The `resources` block is the demo's one budget ceiling. The `message` field is a
 `BudgetView.message` → the SPA `#message`. The chain's context-init steps carry the relevant
 envelope down to the VM, project-container, and service frames. The Dockerfile bakes an image-build
 `/usr/local/bin/hostbootstrap-demo.dhall`; the context-init step inside the chain mints the
-VM-project-container config mounted over that path for the in-container frame; and the chart mounts a
-service-role file at the same path for webservice pods. The budget feeds both the VM sizing cordon and
+VM-project-container config and **streams it in-place** into the container over the handoff `stdin` (the
+entrypoint writes that path before dispatch — no config bind-mount) for the in-container frame; and the
+chart delivers a service-role file at the same path for webservice pods as a **ConfigMap override**. The budget feeds both the VM sizing cordon and
 the kind-node cap (see [applied cordon](../engineering/applied_cordon.md), [incus](../engineering/incus.md),
 and [binary context](../architecture/binary_context_config.md)). The deploy-VM step rejects smaller
 budgets before launching the VM; the full demo lifecycle needs this 6 CPU / 10 GiB / 80 GiB envelope to
@@ -170,7 +179,7 @@ are the host minimums the Python wrapper asserts (Ubuntu 24.04 + passwordless `s
 installed, orchestrated, and torn back down by the chain:
 
 - **(a)** the metal-orchestrator binary installs and verifies the **VM provider** (Lima on Apple Silicon,
-  native Incus on Linux, and WSL2 on Windows, whose full lifecycle closure remains phase-11 Active);
+  native Incus on Linux, and WSL2 on Windows, whose full lifecycle closure landed in phase-11 on 2026-07-01);
 - **(b)** inside the spun-up pristine VM, **`ghcup` is installed and the binary is built on the VM**
   (host-native, by `hostbootstrap run`);
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
@@ -202,7 +211,7 @@ pod, and the verified NodePort:
 | deploy-VM provider | `host-orchestrator-0` | reconciler on metal: install-and-verify the VM provider, Lima, Incus, or WSL2 on Windows |
 | deploy-VM | `host-orchestrator-0` | **cordon #1** — launch the budget-sized pristine VM, the wall (a hard per-VM cap on Lima/Incus; on WSL2 the global `.wslconfig` ceiling written + `wsl --shutdown` then the `--vhd-size` distro, see [applied cordon](../engineering/applied_cordon.md)) |
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
-| context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses, then hand off `project up` into the container |
+| context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses and stream it in-place into the container over the handoff `stdin` (no config bind-mount), then hand off `project up` into the container |
 | deploy-kind | `vm-project-container-2` | **cordon #2** — bring up the persistent kind cluster (Production profile) on the VM's Docker |
 | deploy-harbor | `vm-project-container-2` | install the in-cluster Harbor registry (NodePort 30500) |
 | push-image | `vm-project-container-2` | load the project image into kind and push it to Harbor |

@@ -23,6 +23,7 @@ module HostBootstrap.Lift
   ( -- * Contexts
     LiftLayer (..),
     ContainerLift (..),
+    ConfigDelivery (..),
     LiftContext (..),
     localContext,
     inVM,
@@ -42,10 +43,15 @@ module HostBootstrap.Lift
     foldLeaf,
     foldLift,
     containerRunArgs,
+    configWriteScript,
+    liftStdin,
     liftLeaf,
+    liftLeafWithStdin,
     liftSubcommand,
+    liftSubcommandWithStdin,
     liftSubcommandWithAuth,
     runSelf,
+    runSelfWithStdin,
   )
 where
 
@@ -75,7 +81,27 @@ data ContainerLift = ContainerLift
   { clImage :: String,
     clMounts :: [Mount],
     clExtraArgs :: [String],
-    clRemoveAfter :: Bool
+    clRemoveAfter :: Bool,
+    -- | Optional in-place child-config delivery. When set, the container handoff
+    -- keeps the container's @stdin@ open (@-i@) and overrides the @ENTRYPOINT@ to
+    -- write the piped @stdin@ (the narrowed child projection) to the sibling
+    -- config path, then @exec@s the binary — so the config is delivered on
+    -- @stdin@ (never @argv@, never a bind-mount) and the sibling exists before the
+    -- in-container command gate reads it.
+    clConfigDelivery :: Maybe ConfigDelivery
+  }
+  deriving (Eq, Show)
+
+-- | In-place child-config delivery for a container handoff (see
+-- @development_plan_standards.md § X@): write the piped @stdin@ payload to
+-- 'cdWritePath' (the child's sibling @\<project\>.dhall@), then @exec@ 'cdExecPath'
+-- with the folded subcommand. The payload is the /narrowed child projection/ (not a
+-- secret), carried on @stdin@ by the effectful seam and never in @argv@; it
+-- replaces the former host-side file + config bind-mount.
+data ConfigDelivery = ConfigDelivery
+  { cdWritePath :: FilePath,
+    cdExecPath :: FilePath,
+    cdPayload :: T.Text
   }
   deriving (Eq, Show)
 
@@ -145,10 +171,17 @@ containerRunArgs c inner =
   ["run"]
     ++ (["--rm" | clRemoveAfter c])
     ++ concatMap mountArg (clMounts c)
+    ++ deliveryArgs
     ++ clExtraArgs c
     ++ [clImage c]
-    ++ inner
+    ++ innerTail
   where
+    -- With config delivery: keep the container's @stdin@ open (@-i@) so the
+    -- in-container @cat@ receives the piped projection, and override the
+    -- @ENTRYPOINT@ to a @sh@ that writes the sibling then @exec@s the binary.
+    (deliveryArgs, innerTail) = case clConfigDelivery c of
+      Nothing -> ([], inner)
+      Just cd -> (["-i", "--entrypoint", "sh"], ["-c", configWriteScript cd inner])
     mountArg m =
       [ "-v",
         T.unpack (Vocab.source m)
@@ -156,6 +189,18 @@ containerRunArgs c inner =
           ++ T.unpack (Vocab.target m)
           ++ (if Vocab.readOnly m then ":ro" else "")
       ]
+
+-- | The @sh -c@ body a delivering container runs: write the piped @stdin@ (the
+-- child projection) to the sibling config path, then @exec@ the child binary with
+-- the folded subcommand. The write path and the exec argv are single-quoted
+-- ('shellQuoteArgs') so no re-splitting or glob expansion occurs; the payload
+-- itself is /not/ in the script — it flows on @stdin@. Pure.
+configWriteScript :: ConfigDelivery -> [String] -> String
+configWriteScript cd inner =
+  "cat > "
+    ++ shellQuoteArgs [cdWritePath cd]
+    ++ " && exec "
+    ++ shellQuoteArgs (cdExecPath cd : inner)
 
 -- | The innermost thing a lift runs at the bottom frame: either /this binary's/
 -- own subcommand (whose path differs by frame — local vs in-VM), or an arbitrary
@@ -217,6 +262,15 @@ foldLeaf (LiftContext layers) leaf = build layers
 foldLift :: SelfRef -> LiftContext -> [String] -> LiftDispatch
 foldLift self ctx sub = foldLeaf ctx (SelfSub self sub)
 
+-- | The @stdin@ a context wants piped into its innermost container handoff: a
+-- terminal container layer's config-delivery payload (the narrowed child
+-- projection), else empty. Pure. Lets the recursive handoff stream the child
+-- config in-place without a host-side file or a config bind-mount (§ X).
+liftStdin :: LiftContext -> String
+liftStdin (LiftContext layers) = case reverse layers of
+  (ViaContainer c : _) -> maybe "" (T.unpack . cdPayload) (clConfigDelivery c)
+  _ -> ""
+
 -- | Run a 'LiftLeaf' in a context: fold to a 'LiftDispatch', then exec — a host
 -- tool via 'runTool' (absolute path), or a local command via 'runSelf'.
 liftLeaf ::
@@ -228,6 +282,20 @@ liftLeaf cfg ctx leaf = case foldLeaf ctx leaf of
   DispatchLocal exe args -> runSelf exe args
   DispatchTool tool args -> runTool cfg tool args
 
+-- | Like 'liftLeaf', but feed @input@ to the folded invocation on @stdin@ (the
+-- streamed child-config channel). 'liftLeaf' is @liftLeafWithStdin … ""@ (and
+-- @runTool@/@runSelf@ are the empty-stdin cases of their @…WithStdin@ peers), so
+-- an empty @input@ is byte-identical to 'liftLeaf'.
+liftLeafWithStdin ::
+  HostConfig ->
+  LiftContext ->
+  LiftLeaf ->
+  String ->
+  IO (Either String (ExitCode, String, String))
+liftLeafWithStdin cfg ctx leaf input = case foldLeaf ctx leaf of
+  DispatchLocal exe args -> runSelfWithStdin exe args input
+  DispatchTool tool args -> runToolWithStdin cfg tool args input
+
 -- | Run a subcommand of this binary in a context — the 'SelfSub' special case of
 -- 'liftLeaf'.
 liftSubcommand ::
@@ -238,11 +306,28 @@ liftSubcommand ::
   IO (Either String (ExitCode, String, String))
 liftSubcommand cfg self ctx sub = liftLeaf cfg ctx (SelfSub self sub)
 
+-- | Like 'liftSubcommand', but feed @input@ to the nested invocation on @stdin@ —
+-- the channel the recursive handoff uses to stream the next frame's child config
+-- in-place (§ X). 'liftSubcommand' is @liftSubcommandWithStdin … ""@.
+liftSubcommandWithStdin ::
+  HostConfig ->
+  SelfRef ->
+  LiftContext ->
+  [String] ->
+  String ->
+  IO (Either String (ExitCode, String, String))
+liftSubcommandWithStdin cfg self ctx sub = liftLeafWithStdin cfg ctx (SelfSub self sub)
+
 -- | Run a local executable (the binary itself — not a 'HostTool') capturing its
 -- exit/stdout/stderr; 'Left' on an exec failure.
 runSelf :: FilePath -> [String] -> IO (Either String (ExitCode, String, String))
-runSelf exe args = do
-  result <- try (readProcessWithExitCode exe args "")
+runSelf exe args = runSelfWithStdin exe args ""
+
+-- | Like 'runSelf', but feed @stdin@ to the binary — the channel a streamed child
+-- config travels on when the innermost frame is local.
+runSelfWithStdin :: FilePath -> [String] -> String -> IO (Either String (ExitCode, String, String))
+runSelfWithStdin exe args input = do
+  result <- try (readProcessWithExitCode exe args input)
   pure $ case (result :: Either SomeException (ExitCode, String, String)) of
     Right ok -> Right ok
     Left err -> Left ("could not exec " ++ exe ++ ": " ++ show err)

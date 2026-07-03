@@ -12,6 +12,19 @@
 
 **Status**: Done
 
+**Reopened and closed (2026-07-02)** for **in-place child-config delivery** (development_plan_standards
+§ U, § X; [phase-15](phase-15-binary-context-config.md) Sprint 15.7): the demo replaced the build-then-copy
+VM config (`writeAndCopyVMConfig` writing `demo/.build/hostbootstrap-demo.vm.dhall` + `copyFileToDemoVM`) and
+the build-then-mount container config (`mintContainerConfig` + the `demoDeployImage` config bind-mount of
+`hostbootstrap-demo.runtime-container.dhall`) with a projection **streamed in-place**: the parent renders the
+narrowed child projection and pipes it over the lift's `stdin` channel, and the descending binary writes its
+own sibling `<project>.dhall` before dispatch. No host-side `.vm.dhall`, no `.runtime-container.dhall`, no
+config bind-mount (the docker-socket and `/run/hostbootstrap` witness mounts are retained). **Closed
+2026-07-02**: `streamVMConfig`, `containerConfigPayload` + `demoDeployImage payload`, and `contextInitAnnounce`
+landed (demo `-Werror` build + suite green); a live Windows/WSL2 `test run all` reported **`6/6`** with both
+in-place markers firing and no `.vm.dhall`/`.runtime-container.dhall`/config bind-mount. See Sprint 13.15 and
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 **Reopened (2026-06-19) and closed (2026-06-20)** for the unified-harness / fixed-command-surface /
 resource-SSoT correction: the demo's test surface drives the real `project up` (not a second bring-up
 mirror), the budget-doubling VM sizing collapsed to budget = VM wall / cluster = slice, and the `web serve`
@@ -768,6 +781,49 @@ the in-container `kind`/e2e pulls authenticated through the same forwarded crede
 ephemeral `DOCKER_CONFIG`) and reported `test report: 3/3 passed` (`pristine-bootstrap`, `web-build`, and
 `e2e-tabs` — the e2e Playwright run is green across chromium, firefox, and webkit: 9 runs, 3 specs × 3
 engines) → guarded `vm down` (`.data` preserved). `DEMO_DEPLOY_EXIT=0`, no leftover VM.
+
+### Sprint 13.15: In-place child-config delivery [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (with the generic capability in
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs` + `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+owned by [phase-15](phase-15-binary-context-config.md) Sprint 15.7)
+**Docs to update**: `documents/operations/demo_runbook.md`,
+`documents/architecture/binary_context_config.md`, `documents/engineering/config_generation.md`,
+`documents/engineering/dhall_topology.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Replace the demo's build-then-copy VM config and build-then-mount container config with a projection
+**streamed in-place** over the lift's `stdin` channel (development_plan_standards § U, § X), so no host-side
+child config file and no config bind-mount is produced.
+
+#### Deliverables
+
+- The VM-config rewrite (`streamVMConfig`): render the narrowed VM projection and stream it into the VM,
+  written to the VM's sibling `<project>.dhall`; remove `demo/.build/hostbootstrap-demo.vm.dhall` and the
+  config `copyFileToDemoVM` (`stageFileEffects`, used by `stageSource`, is retained).
+- The container-config rewrite: stream the projection on the container handoff's `stdin` with an entrypoint
+  wrapper that writes the sibling before exec; remove `mintContainerConfig`, `vmRuntimeContainerConfigPath`
+  (`hostbootstrap-demo.runtime-container.dhall`), and the config `Mount` in `demoDeployImage` (the
+  docker-socket and `/run/hostbootstrap` witness mounts are retained).
+- Keep the metal-side `/run/hostbootstrap/vm-provider` witness minting and a VM-frame `context-init` anchor
+  so `vm-orchestrator-1` stays a real frame in the chain.
+
+#### Validation
+
+- Demo build green; `LiftSpec` / `ChainSpec` fixtures updated (config-delivery on `stdin`, absent from
+  `argv`).
+
+#### Remaining Work
+
+None. Closed **2026-07-02**: the demo `-Werror` build and suite pass, and a live Windows/WSL2 `test run all`
+reported **`test report: 6/6 passed`** across both message variants (`"Hello, world!"` and
+`"Hello, Universe!"`; `pristine-bootstrap`/`web-build`/`e2e-tabs` × 2). Both in-place markers fired
+(`streamed parent-derived VM config …` and `context-init: … streamed … in-place on handoff (stdin, no config
+bind-mount)`), the container `docker run` carried **no** `-v …hostbootstrap-demo.dhall` mount, **no**
+`hostbootstrap-demo.vm.dhall`/`hostbootstrap-demo.runtime-container.dhall` were produced, and
+`project destroy` restored `.wslconfig` with host `.data` preserved.
 
 ## Documentation Requirements
 

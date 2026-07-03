@@ -83,13 +83,16 @@ run VM-scoped workflows on whatever Docker daemon happens to be reachable.
   `docker run <image> project up` to work from any host. This is wrong because it silently makes the
   current Docker daemon authoritative and can create a kind cluster outside the VM the topology intended.
 - **RIGHT**: bake only an image-build config for Dockerfile-time gates. The context-init step inside the
-  parent's `project up` materializes a child config for the exact frame it is launching, and the child
-  verifies its witnesses before dispatch.
+  parent's `project up` **streams** a child config in-place into the exact frame it is launching (over the
+  lift's `stdin` channel; the child writes its own sibling before dispatch), and the child verifies its
+  witnesses before dispatch.
 
 ## Generated Child Configs
 
-When `project up` crosses a frame boundary, the context-init step first mints the next local config at
-the target path. The child config is a projection:
+When `project up` crosses a frame boundary, the context-init step first mints the next local config and
+**streams it in-place** into the target frame — over the lift's `stdin` channel, written by the child to its
+own sibling path before dispatch, with no host-side intermediate file and no config bind-mount (the
+Kubernetes service pod is the exception, receiving a ConfigMap override). The child config is a projection:
 
 - it carries only the settings the child needs;
 - it carries a narrower context and allowed command set for a named child frame;

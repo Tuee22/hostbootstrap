@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `incus` is the native Linux host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
 like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler
@@ -45,43 +45,29 @@ kind + the workload inside the distro exactly as the Lima/Incus VMs do. `HostBoo
 pure argv builders and the host-reboot readiness classifier `classifyWsl2Readiness`,
 `HostBootstrap.Ensure.Wsl2` exposes `ensure wsl2` (windows-cpu + windows-gpu), and `HostBootstrap.Lift`
 folds a provider-backed VM layer through WSL2 into the distro (`wsl -d <distro> -- <inner>`). That is
-Sprint 11.7 (`[Active]`), which also carries the Windows/WSL2 demo real-run validation.
+Sprint 11.7 (`[Done]`), which also carried the Windows/WSL2 demo real-run validation — **closed 2026-07-01**
+by a full `project up` → `test run all` (`6/6`) → `project destroy` Windows lifecycle with the `.wslconfig`
+ceiling applied.
 
 ## Remaining Work
 
-The **Windows WSL2 host provider** is implemented and unit-validated, and the post-reboot WSL2 platform
-readiness gate is now crossed: on 2026-06-29 the host reports `HyperVisorPresent = True`,
-`VirtualizationFirmwareEnabled = True`, `wsl --status` succeeds with default WSL version 2, and
-`wsl --list --verbose` can enumerate the managed `hostbootstrap-demo-vm` WSL2 distro. Native Linux remains
-the Incus provider path and Apple Silicon uses Lima for the worked demo's pristine VM path; WSL2 is the
-Windows peer.
+None. The **Windows WSL2 host provider** is implemented, unit-validated, and now **real-run-closed
+(2026-07-01)**. The post-reboot WSL2 platform readiness gate was crossed on 2026-06-29
+(`HyperVisorPresent = True`, `VirtualizationFirmwareEnabled = True`, default WSL version 2), and the full
+Windows lifecycle then closed end to end: a live `hostbootstrap-demo` `test run all` **applied the
+`.wslconfig` `[wsl2]` ceiling** (Sprint 9.7's honest cordon — the fix for the earlier
+`Wsl/Service/0x80072746` utility-VM session drop, whose root cause was the cordon being computed but never
+written), registered/entered the managed `hostbootstrap-demo-vm` Ubuntu-24.04 distro, staged the source,
+built the in-distro host-native binary (build #2) and the project container (build #3, in-Dockerfile
+`fourmolu`/`hlint`/`cabal -Werror` gate passing) **without a session drop**, stood up in-distro
+kind/Harbor/web on the VM's Docker, ran the lifted project-container assertions, and reported
+**`test report: 6/6 passed`** across both message variants — then `project destroy` tore the stack down
+through the guarded `wsl --unregister` path, restoring `.wslconfig` with host `.data` preserved. Native
+Linux remains the Incus provider path and Apple Silicon uses Lima; WSL2 is the validated Windows peer.
 
-Sprint 11.7 remains `Active` because the real Windows/WSL2 lifecycle has not yet completed through the
-recursive chain's live close. A rebuilt Windows `hostbootstrap-demo.exe project up` now reaches the
-binary-owned WSL2 provider path, registers/enters the project-named Ubuntu-24.04 distro
-(`hostbootstrap-demo-vm`), stages the source under `/root/hostbootstrap`, installs the local Python
-bootstrapper through `pipx`, builds the in-distro host-native demo binary, installs Docker in the distro,
-and starts the project-container build from the pulled base image. One live run reached a tagged
-`hostbootstrap-demo:local` project image and a running kind control-plane, but the command still exited
-non-zero before `test run all` / `project destroy` validation. Subsequent closure attempts reproducibly
-lose the WSL/Docker session during the in-distro Docker build (`docker build` reaches `COPY demo` or the
-following `RUN cp docker/container.cabal.project cabal.project`, then the parent `wsl -d
-hostbootstrap-demo-vm -- ...` session ends non-zero or with `Wsl/Service/0x80072746`). A clean
-`wsl --shutdown` recovers the distro and `/root` remains writable, so the open item is the real-run
-provider/runtime stability gate, not a missing code path.
-
-Static validation remains clean after the WSL2 implementation changes: `cabal test all` from `core/`,
-`cabal build all --ghc-options=-Werror` from `core/`, `cabal test all` from `demo/` (demo `14/14` plus the
-embedded core suite), `cabal build all --ghc-options=-Werror` from `demo/`, and `poetry run python -m
-hostbootstrap.check_code` have passed in this reopening. The project image's in-Dockerfile quality gate
-also reached and passed in a live WSL2 run before the later WSL session instability: pinned `fourmolu`,
-`hlint` (`No hints`), `cabal -Werror`, `spago build`, and `esbuild` completed before Docker tagged
-`hostbootstrap-demo:local`.
-
-The remaining Sprint 11.7 work is to restore enough host/WSL2 runtime stability for a live closure run,
-then rerun the full Windows chain: `project up` through WSL2 distro registration/entry, in-distro
-Docker/kind/Harbor/web deployment, lifted `test run all`, and `project destroy` through guarded
-`wsl --unregister` with host `.data` preserved.
+Static validation is clean: `cabal test all` and `cabal build all --ghc-options=-Werror` from `core/`,
+`cabal test all` from `demo/` (demo suite plus the embedded core suite), `cabal build all
+--ghc-options=-Werror` from `demo/`, and `poetry run python -m hostbootstrap.check_code`.
 
 ## Phase Objective
 
@@ -274,9 +260,9 @@ demo must not attempt to create an Incus VM on Apple Silicon.
 
 None.
 
-### Sprint 11.7: Windows WSL2 host provider [Active]
+### Sprint 11.7: Windows WSL2 host provider [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Wsl2.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
@@ -430,26 +416,28 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   (`project destroy: deleting hostbootstrap-demo-vm`) and preserves `demo/.data`, but that partial
   teardown does not replace the missing successful `project up` -> `test run all` -> `project destroy`
   closure run.
+- **2026-07-01 closure run: the full Windows/WSL2 lifecycle closed `6/6`.** With Sprint 9.7's honest cordon
+  **applied**, `hostbootstrap-demo` `test run all` wrote the `.wslconfig` `[wsl2]` ceiling and ran
+  `wsl --shutdown`, registered/entered `hostbootstrap-demo-vm`, built the in-distro binary (build #2) and
+  the project image (build #3) **without the earlier utility-VM session drop**, stood up kind/Harbor/web on
+  the VM's Docker, and reported `test report: 6/6 passed` across both message variants (`"Hello, world!"`
+  and `"Hello, Universe!"`; `pristine-bootstrap`/`web-build`/`e2e-tabs` × 2), then `project destroy` tore
+  down through the guarded `wsl --unregister` path and restored `.wslconfig` with host `.data` preserved.
+  The intermittent `Wsl/Service/0x80072746` drop did not recur once the budget wall was applied.
 
 #### Remaining Work
 
-Run the real Windows closure to completion. The host reboot gate is crossed, and the chain reaches the
-WSL2 distro and in-distro Docker build. The intermittent `Wsl/Service/0x80072746` (`WSAECONNRESET`)
-session drop during the in-distro Docker build was diagnosed as the WSL2 utility VM being terminated
-under memory pressure because the budget cordon was **computed but never applied** — `wsl2SizingArgs` was
-only logged, never written to `.wslconfig` — so the VM ran at WSL2's ~8 GB default instead of the 10 GiB
-budget on a 16 GB host. Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`, and
-the stable total-memory preflight) addresses that root cause; closure now requires a successful Windows
-run in which `project up` registers/enters the managed Ubuntu-24.04 distro **with the `.wslconfig` ceiling
-applied**, brings up in-distro Docker/kind without a session drop, deploys the workload, runs the lifted
-project-container `test all` reporting the expected suite pass count, and `project destroy` tears down
-through guarded `wsl --unregister` (restoring `.wslconfig`) with host `.data` preserved. If a 16 GB host
-still cannot fit the 10 GiB budget even with the applied ceiling + swap, the fallback decision (accept
-slower swap-backed runs vs. lower the demo's enforced floor) is recorded here from the real run.
+None. The real Windows closure ran to completion on **2026-07-01**: with Sprint 9.7's honest cordon
+**applied** (the `.wslconfig` ceiling + `wsl --shutdown` + `swap`, and the stable total-memory preflight),
+`project up` registered/entered the managed Ubuntu-24.04 distro **with the ceiling in effect**, brought up
+in-distro Docker/kind **without the `Wsl/Service/0x80072746` session drop** (whose root cause — the cordon
+computed but never written — Sprint 9.7 fixed), deployed the workload, ran the lifted project-container
+assertions reporting **`6/6`**, and `project destroy` tore down through guarded `wsl --unregister`
+(restoring `.wslconfig`) with host `.data` preserved. The 10 GiB budget fit on the 16 GB host with the
+applied ceiling + swap, so no floor-lowering fallback was needed.
 
-This is Phase 11 work only; it does not block the closed Phase 2 bootstrap, Phase 3 CUDA-on-Windows
-reconciler, or Phase 9 Windows capacity/sizing surfaces. Earlier phases provide the host-floor facts and
-pure sizing/building primitives; Phase 11 owns turning those facts into a usable WSL2 provider.
+This was Phase 11 work only; it did not block the closed Phase 2 bootstrap, Phase 3 CUDA-on-Windows
+reconciler, or Phase 9 Windows capacity/sizing surfaces.
 
 ## Documentation Requirements
 

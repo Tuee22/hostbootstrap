@@ -220,8 +220,8 @@ Those surfaces are closed in the development plan.
 The **Windows** substrate is partially closed. `windows-cpu`/`windows-gpu` detection, native
 `hostbootstrap.exe` host-native build via winget-rooted GHCup, and the headless host build's `ensure
 cudawin` CUDA stack are implemented and validated at the code/unit level. The WSL2 Ubuntu-24.04 VM frame
-(`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)) remains phase-11
-`Active` until the real Windows/WSL2 lifecycle closes through `test run all` and `project destroy`.
+(`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)) closed in phase-11
+on 2026-07-01 when the real Windows/WSL2 lifecycle completed through `test run all` (`6/6`) and `project destroy`.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. A project extends core through streams (lift chain, Dhall vocabulary,
@@ -251,8 +251,8 @@ preserved.
 - **The chain steps:** `project up` interprets the chain across three frames. The metal frame runs
   `deploy-VM` (ensure the provider, launch the budget-sized VM) and `build-pb` (the host-native binary
   build plus the project-image build in the VM), then hands off into the VM. The in-VM frame runs
-  `context-init`, which mints the child `<project>.dhall` for the project container, then hands off into
-  the container. The container frame runs `deploy-kind` (the cordoned kind cluster — a slice within the
+  `context-init`, which mints the child `<project>.dhall` for the project container and streams it in-place
+  into the container over the handoff `stdin` (no config bind-mount), then hands off into the container. The container frame runs `deploy-kind` (the cordoned kind cluster — a slice within the
   VM wall) → `deploy-harbor` (the in-cluster Harbor registry) → `push-image` (kind-load + push the
   project image) → `deploy-chart` (deploys the service pod whose entrypoint is `service run`, with the
   active config delivered as a ConfigMap overriding the baked container `<project>.dhall`) →

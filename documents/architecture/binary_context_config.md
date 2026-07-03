@@ -224,8 +224,9 @@ algebra in [hostbootstrap_core_library](hostbootstrap_core_library.md)):
    witnesses the child can verify locally.
 4. The project Dockerfile bakes a narrow `image-build-container` config at `/usr/local/bin/<project>.dhall`
    so build-time commands (`check-code`, static code generation, web asset compilation) run during the
-   image build. Runtime parents mount a narrower runtime config at the same path when launching a container
-   for `test run all`, service, or daemon work.
+   image build. Runtime parents **stream** a narrower runtime config in-place — piped on the launch `stdin`
+   and written to the same path before dispatch — when launching a container for `test run all` or ad-hoc
+   runtime work; a Kubernetes service or daemon pod instead receives its config as a ConfigMap override (below).
 5. A service or daemon receives a role-specific config from the controller or launcher that owns identity
    and durable placement. For stateful Kubernetes services that is usually a `StatefulSet`.
 
@@ -235,10 +236,11 @@ The Docker image carries a safe default `ImageBuildContainer` config so build-ti
 the Dockerfile. That baked config is narrow: build/code-quality and context-init authority only.
 
 A lifted runtime workflow must not gain authority merely because the image has a baked default file. The
-parent VM or host frame's context-init step mounts or materializes a runtime child `<project>.dhall` at the
-canonical path before launching the container; that runtime config declares the frame and witnesses its
-ancestry. A direct host invocation without that runtime context fails fast instead of silently creating a
-kind cluster on the wrong Docker daemon.
+parent VM or host frame's context-init step **streams** a runtime child `<project>.dhall` into the container
+in-place — piped on the launch `stdin`, and the entrypoint writes it to the canonical path before dispatch,
+with no host-side config file and no config bind-mount — so that runtime config declares the frame and
+witnesses its ancestry. A direct host invocation without that runtime context fails fast instead of silently
+creating a kind cluster on the wrong Docker daemon.
 
 A long-running service follows the same rule and is the common case: the chart's `deploy-chart` step deploys
 a pod whose entrypoint is **`service run`**, and the pod's service-role `<project>.dhall` arrives as a
@@ -289,7 +291,7 @@ given copy occupies.
 
 ## Secrets Are Never In The Context
 
-The context is generated, mounted, copied between frames, and read for inspection (`context`), so it must
+The context is generated, streamed between frames, and read for inspection (`context`), so it must
 carry no secret. Docker Hub credentials in particular are **never** a context field: they are an
 effect-only runtime capability forwarded ephemerally down the lift (piped on `stdin` / a forwarded
 environment name), never represented in Dhall and never persisted. See
@@ -304,7 +306,19 @@ in the local config. The gate checks project/binary identity, context kind, comm
 capabilities, execution topology, current frame, parent/ancestor relationships, and local runtime
 witnesses, and a command fails before side effects when the process is not actually in the frame its Dhall
 declares. Dockerfiles bake the narrow `image-build-container` role; runtime containers receive
-parent-generated `vm-project-container` configs mounted over the baked file.
+parent-generated `vm-project-container` configs **streamed in-place** over the baked file.
+
+**In-place delivery (landed 2026-07-02).** Child-config **delivery** was refined from build-then-copy
+(the VM's host-side `.vm.dhall` copied in) and build-then-mount (the VM's `.runtime-container.dhall`
+bind-mounted in) to **streaming the projection in-place over the lift's `stdin` channel**, written by the
+descending binary to its own sibling before dispatch — only the narrowed projection crosses (never the
+parent's full config), on `stdin` only, with no host-side config file and no config bind-mount for the
+VM/container frames (the Kubernetes service pod keeps its ConfigMap override). This landed in
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) (Sprint 15.7) and
+[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) (Sprint 13.15), validated by `cabal test
+all` and a live Windows/WSL2 `test run all` `6/6`; the superseded
+build-then-copy/mount surfaces are tracked in
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 The model described above is real-run-validated end-to-end on real hardware:
 

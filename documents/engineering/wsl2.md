@@ -206,12 +206,14 @@ and starts the project image build from `docker.io/tuee22/hostbootstrap:basecont
 run reached a tagged `hostbootstrap-demo:local` image and a running kind control-plane; the in-Dockerfile
 gate reached pinned `fourmolu`, `hlint` (`No hints`), `cabal -Werror`, `spago build`, and `esbuild`.
 
-Phase 11 remains `Active` because the Windows lifecycle still does not close through `test run all` and
-`project destroy`. Repeated closure attempts lose the WSL/Docker session during the in-distro Docker
-build (`COPY demo` or the following `RUN cp docker/container.cabal.project cabal.project`); the parent
-`wsl -d hostbootstrap-demo-vm -- ...` session exits non-zero or with `Wsl/Service/0x80072746`. A clean
-`wsl --shutdown` recovers the distro and `/root` remains writable, so the open item is real-run provider
-runtime stability, not WSL2 platform readiness. Static validation remains clean: the core and demo Cabal
+Phase 11 **closed 2026-07-01**: the Windows lifecycle completed end to end through `test run all` (`6/6`)
+and `project destroy`. The earlier `Wsl/Service/0x80072746` session drop during the in-distro Docker build
+was diagnosed as the WSL2 utility VM being terminated under memory pressure because the budget cordon was
+**computed but never written**; Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`,
+plus the stable total-memory preflight) fixed the root cause, and the closure run brought up in-distro
+Docker/kind/Harbor/web **without a session drop**, restoring `.wslconfig` on teardown with host `.data`
+preserved. (The Windows/WSL2 path is real but remains the most memory-sensitive substrate on a 16 GiB host;
+the Harbor/`push-image` stage can still stall intermittently under memory pressure.) Static validation remains clean: the core and demo Cabal
 test/build gates and `poetry run python -m hostbootstrap.check_code` pass.
 
 Closure requires one Windows VM lifecycle run end to end through the core `deploy-VM` step kind and the

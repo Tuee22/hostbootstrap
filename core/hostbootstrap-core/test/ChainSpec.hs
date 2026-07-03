@@ -68,7 +68,8 @@ container =
     { clImage = "demo:local",
       clMounts = [sockMount],
       clExtraArgs = ["--network=host"],
-      clRemoveAfter = True
+      clRemoveAfter = True,
+      clConfigDelivery = Nothing
     }
 
 nextFrameCases :: [TestTree]

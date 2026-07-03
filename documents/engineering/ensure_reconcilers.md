@@ -182,7 +182,7 @@ remains a library call, not a surfaced command.
 
 The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-validated.
 Windows substrate detection and `ensure-cudawin` are closed in phases 2 and 3. The Windows VM-provider
-reconciler `ensure-wsl2` is implemented but remains Phase 11 `Active` for the OS-level hypervisor-launch
-readiness branch and the real WSL2 provider lifecycle run. The former `ensure-tart` reconciler is dropped
+reconciler `ensure-wsl2` is implemented and closed in Phase 11 (2026-07-01): the OS-level hypervisor-launch
+readiness branch and the real WSL2 provider lifecycle run both landed (`test run all` `6/6` → `project destroy`). The former `ensure-tart` reconciler is dropped
 from this contract and tracked as removed in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).

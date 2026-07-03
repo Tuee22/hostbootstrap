@@ -12,6 +12,8 @@
 
 None.
 
+The in-place child-config delivery correction (development_plan_standards § U, § X) landed in phase-15
+Sprint 15.7 / phase-13 Sprint 13.15 (2026-07-02); its two former entries are in **Removed Surfaces** below.
 The earlier generic-project-model correction (development_plan_standards § BB) landed in phase-19
 (2026-06-23); its three former entries are in **Removed Surfaces** below.
 
@@ -41,6 +43,30 @@ These surfaces are intentionally present and are not cleanup obligations.
 
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
+
+- **Build-then-copy VM child config** (`writeAndCopyVMConfig` writing the host-side
+  `demo/.build/hostbootstrap-demo.vm.dhall`, and `copyFileToDemoVM`, in
+  `demo/src/HostBootstrapDemo/Commands.hs`) — removed 2026-07-02 by the in-place child-config delivery
+  landing (development_plan_standards § U, § X). Replacement: `streamVMConfig` renders the narrowed VM
+  projection and streams it over the VM shell's `stdin` (via `runInDemoVMStdin`), where the in-VM binary
+  writes its own sibling `<project>.dhall`; no host-side `.vm.dhall` is written. `copyFileToDemoVM` is
+  deleted (`stageSource` uses `stageFileEffects` directly — **retained**). Owning phase: phase-13
+  Sprint 13.15, phase-15 Sprint 15.7; validated 2026-07-02 by `cabal test all` (280) and a live
+  Windows/WSL2 `test run all` `6/6` (the `streamed parent-derived VM config …` marker; no `.vm.dhall`
+  produced).
+- **Build-then-mount container child config** (`mintContainerConfig` + `vmRuntimeContainerConfigPath`
+  writing `hostbootstrap-demo.runtime-container.dhall`, and the config `Mount` in `demoDeployImage`
+  bind-mounting it over `/usr/local/bin/hostbootstrap-demo.dhall`, in
+  `demo/src/HostBootstrapDemo/Commands.hs`) — removed 2026-07-02. Replacement: `containerConfigPayload`
+  renders the narrowed projection, folded into `demoDeployImage`'s `clConfigDelivery` and streamed on the
+  container handoff `stdin` (core `HostBootstrap.Lift.ConfigDelivery` + the `HostBootstrap.Chain`
+  `liftStdin`/`liftSubcommandWithStdin` handoff), with an entrypoint wrapper
+  (`sh -c 'cat > <sibling> && exec <pb> project up'`) writing the sibling before dispatch; the docker-socket
+  and `/run/hostbootstrap` witness mounts are **retained**. `mintContainerConfig` is now
+  `contextInitAnnounce` (a frame anchor keeping `vm-orchestrator-1` a real frame). Owning phase: phase-13
+  Sprint 13.15, phase-15 Sprint 15.7; validated 2026-07-02 by `cabal test all` (280, incl. `LiftSpec`
+  config-delivery cases asserting the projection is absent from `argv`) and a live Windows/WSL2
+  `test run all` `6/6` (no `-v …hostbootstrap-demo.dhall` on the container `docker run`).
 
 - **The hand-branched `DemoVMProvider` sum and its per-substrate lifecycle branches**
   (`data DemoVMProvider = AppleLimaVM | LinuxIncusVM | WindowsWsl2VM`, `demoVMProvider`, `demoVMName`, and
@@ -119,8 +145,8 @@ a plan update creates a new current owner for it.
   `role` (`HostBootstrapDemo.Role`) verbs are deleted (2026-06-18); the demo does not maintain a second
   standalone deploy path beside `HostBootstrap.Harness`. Owning phase: phase-13, phase-16.
 - **Dockerfile-baked `vm-project-container` runtime authority** — Dockerfiles now bake
-  `image-build-container` authority only. Runtime workflows receive parent-mounted configs for the exact
-  frame they run in.
+  `image-build-container` authority only. Runtime workflows receive parent-generated configs streamed
+  in-place for the exact frame they run in (§ X).
 - **Flat binary context without execution topology witnesses** — `HostBootstrap.Context` now encodes
   provider-backed frames, current-frame identity, parent links, and local runtime witnesses inside
   `<project>.dhall`.
@@ -151,7 +177,8 @@ a plan update creates a new current owner for it.
   copies use the sibling `<project>.dhall` filename rule, with role/capability context inside the file.
 - **`--create-container-config` Dockerfile shortcut** — container images create image-build config through
   `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall`; runtime
-  contexts are parent-generated and mounted or materialized at launch.
+  contexts are parent-generated and streamed in-place at launch (§ X), except the Kubernetes service pod,
+  whose config arrives as a ConfigMap override.
 - **`demo/hostbootstrap.dhall`** — the demo uses `hostbootstrap-demo.dhall` at each execution context.
 - **`core/hostbootstrap-core/example/Main.hs` and the `hostbootstrap-example` executable** — the
   worked consumer is `demo/`.

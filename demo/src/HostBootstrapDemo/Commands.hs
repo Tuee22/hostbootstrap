@@ -60,7 +60,7 @@ import HostBootstrap.Cluster.Cordon (
     resolveHostCapacity,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
-import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
+import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
@@ -72,7 +72,7 @@ import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSa
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
-import HostBootstrap.Lift (ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
 import HostBootstrap.Service (ServiceHandler (..), ServiceRegistry)
@@ -108,6 +108,7 @@ import HostBootstrapDemo.Config (
     envelopeOfResources,
     projectConfigFromContext,
     renderDhallText,
+    renderProjectConfig,
  )
 import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
@@ -115,7 +116,7 @@ import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..), die)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath ((</>))
 import System.IO (hPutStr, stderr)
 import System.Process (readProcessWithExitCode)
 
@@ -219,7 +220,7 @@ demoChain _ =
     , deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const runVmUp)
     , buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (const runVmBootstrap)
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
-      contextInitStep "mint the project-container child config in the VM" demoVMFrame mintContainerConfig
+      contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
       deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame deployKindAction
     , projectStep "deploy-harbor" "install the in-cluster Harbor registry (helm, NodePort 30500)" demoContainerFrame deployHarborAction
@@ -249,10 +250,29 @@ needs no provider). Each binary only ever hands off to its immediate next frame,
 so a single one-level lift per transition is correct.
 -}
 demoFrameContext :: Substrate -> ProjectConfig -> StepFrame -> LiftContext
-demoFrameContext sub _ next
+demoFrameContext sub cfg next
     | frameId next == frameId demoVMFrame = demoVMFrameContext sub
-    | frameId next == frameId demoContainerFrame = inContainer demoDeployImage localContext
+    | frameId next == frameId demoContainerFrame =
+        inContainer (demoDeployImage (containerConfigPayload cfg)) localContext
     | otherwise = localContext
+
+{- | The narrowed project-container projection rendered to Dhall text (pure): the
+child config the VM→container handoff streams in-place on its @stdin@ (§ X). It
+reproduces exactly what the former @context-init@ write minted, but the result is
+carried on the handoff @stdin@ and written by the container entrypoint to its own
+sibling @<project>.dhall@ before dispatch — no host-side file, no config bind-mount.
+Only this narrowed projection crosses the boundary; the parent's full config never
+does.
+-}
+containerConfigPayload :: ProjectConfig -> T.Text
+containerConfigPayload cfg =
+    renderProjectConfig
+        ( projectConfigFromContext
+            (dockerfile cfg)
+            (deploy cfg)
+            (message cfg)
+            (Context.deriveContainerContext (context cfg) (T.pack containerSourceRoot))
+        )
 
 {- | The lift from the metal/harness frame into the demo's VM frame, selected by
 substrate — @inLimaVM@ on Apple Silicon, @inVM@ (Incus) on Linux. Shared by
@@ -266,21 +286,21 @@ demoVMFrameContext sub =
         Right sp -> LiftContext [spLiftLayer sp]
         Left _ -> localContext
 
-{- | @context-init@ (the @vm-orchestrator-1@ step): mint the project-container
-child @<project>.dhall@ (parameters + context + witness, never the chain) from
-the active VM config and write it where 'demoDeployImage' mounts it into the
-container, just before the @docker run … project up@ handoff. Idempotent.
+{- | @context-init@ (the @vm-orchestrator-1@ step): the project-container child
+@<project>.dhall@ is now streamed in-place into the container over the handoff
+@stdin@ ('containerConfigPayload' folded into 'demoDeployImage' by
+'demoFrameContext'), so this step is a frame anchor. Keeping it in the chain is what
+makes @vm-orchestrator-1@ a real frame in the topology (so the metal→VM→container
+descent is three-deep and the recursive interpreter hands off into the container
+rather than folding a local @docker run@ on the metal host). Re-deriving the
+projection here would duplicate the pure computation the frame context already does,
+so the body is a no-op announce (the container's source root @/workspace/demo@ and
+the derivation live in 'containerConfigPayload').
 -}
-mintContainerConfig :: HostConfig -> IO ()
-mintContainerConfig _ = demoConfigContext Context.ContextCreationCommand [] $ \parentCfg ctx -> do
-    -- The container's source root is @/workspace/demo@ (the Dockerfile's @COPY demo
-    -- /workspace/demo@ + @WORKDIR@), NOT the VM's @/root/hostbootstrap/demo@ — the
-    -- container-frame steps @cd@ here for @./chart@ etc.
-    let containerCtx = Context.deriveContainerContext ctx (T.pack containerSourceRoot)
-        containerCfg = projectConfigFromContext (dockerfile parentCfg) (deploy parentCfg) (message parentCfg) containerCtx
-    createDirectoryIfMissing True (takeDirectory vmRuntimeContainerConfigPath)
-    writeProjectConfigFile vmRuntimeContainerConfigPath containerCfg
-    putStrLn ("context-init: minted project-container config at " ++ vmRuntimeContainerConfigPath)
+contextInitAnnounce :: HostConfig -> IO ()
+contextInitAnnounce _ =
+    putStrLn
+        "context-init: the project-container config is streamed into the container in-place on handoff (stdin, no config bind-mount)"
 
 {- | The persistent cluster plan for the demo's container-frame steps: the
 Production profile (fixed name + the never-deleted @.data@ path, § O), rooted at
@@ -1025,7 +1045,7 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     createDirectoryIfMissing True bridgeDir
     writeBridge bridgeDir
     stageSource cfg provider (T.unpack (Context.sourceRoot ctx))
-    writeAndCopyVMConfig cfg provider parentCfg ctx
+    streamVMConfig cfg provider parentCfg ctx
     let vmStep label script = do
             putStrLn ("pristine-bootstrap: " ++ label)
             runInDemoVM cfg provider script
@@ -1070,20 +1090,26 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
                 buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
-writeAndCopyVMConfig :: HostConfig -> SubstrateProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
-writeAndCopyVMConfig cfg provider parentCfg ctx = do
-    let hostRoot = T.unpack (Context.sourceRoot ctx)
-        localPath = hostRoot </> ".build" </> "hostbootstrap-demo.vm.dhall"
-        remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
+{- | Stream the parent-derived VM-orchestrator config into the VM **in-place**
+(§ X): render the narrowed VM projection and pipe it over the VM shell's @stdin@,
+where a single in-VM @bash -lc@ mints the @/run/hostbootstrap/vm-provider@ witness
+and @cat@s the config to the VM's sibling @<project>.dhall@. No host-side
+@.vm.dhall@ file and no file copy — only the narrowed projection crosses, on
+@stdin@ only. The witness is still minted here on the metal side because the in-VM
+@project up@ gate checks it before any step runs. The @printf … | sudo tee@
+sub-pipeline has its own @stdin@, so the outer @stdin@ stays intact for the final
+@cat@, which writes the config bytes verbatim.
+-}
+streamVMConfig :: HostConfig -> SubstrateProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
+streamVMConfig cfg provider parentCfg ctx = do
+    let remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
         vmCfg =
             projectConfigFromContext
                 (dockerfile parentCfg)
                 (deploy parentCfg)
                 (message parentCfg)
                 (Context.deriveVMContextWithProvider (spProviderKind provider) ctx (T.pack vmDemoRoot))
-    createDirectoryIfMissing True (hostRoot </> ".build")
-    writeProjectConfigFile localPath vmCfg
-    runInDemoVM
+    runInDemoVMStdin
         cfg
         provider
         ( "mkdir -p "
@@ -1092,9 +1118,11 @@ writeAndCopyVMConfig cfg provider parentCfg ctx = do
             ++ " && printf %s "
             ++ shellQuote (spVmId provider)
             ++ " | sudo tee /run/hostbootstrap/vm-provider >/dev/null"
+            ++ " && cat > "
+            ++ shellQuote remotePath
         )
-    copyFileToDemoVM cfg provider localPath remotePath
-    putStrLn ("pristine-bootstrap: copied parent-derived VM config to " ++ spVmId provider ++ ":" ++ remotePath)
+        (T.unpack (renderProjectConfig vmCfg))
+    putStrLn ("pristine-bootstrap: streamed parent-derived VM config into " ++ spVmId provider ++ ":" ++ remotePath)
 
 {- | The published base tag the demo's project container builds @FROM@ — cpu /
 the detected VM architecture. The base is pulled inside the VM by build #3.
@@ -1178,25 +1206,6 @@ stageSource cfg provider sourceRoot = do
         )
         `finally` removeFile tarball
 
-copyFileToDemoVM :: HostConfig -> SubstrateProvider -> FilePath -> FilePath -> IO ()
-copyFileToDemoVM cfg provider localPath remotePath = do
-    -- Lima/Incus push straight to @remotePath@; WSL2 (no host effect) reads the
-    -- file in place via @/mnt@ and copies it in-guest. The split is the pure
-    -- 'stageFileEffects' plan, the same one 'stageSource' uses.
-    let staged = stageFileEffects (spTransfer provider) localPath remotePath
-    runEffects cfg (sfHostEffects staged)
-    unless (sfPushedTemp staged) $
-        runInDemoVM
-            cfg
-            provider
-            ( "mkdir -p "
-                ++ shellQuote (takeDirectory remotePath)
-                ++ " && cp "
-                ++ shellQuote (sfGuestPath staged)
-                ++ " "
-                ++ shellQuote remotePath
-            )
-
 isSuffixOfPath :: FilePath -> FilePath -> Bool
 isSuffixOfPath suffix path =
     ("/" ++ suffix) `isSuffixOf` path || suffix == path
@@ -1249,31 +1258,28 @@ bestEffortTool cfg tool argv intent = do
 harborEndpoint :: String
 harborEndpoint = "localhost:30500"
 
-{- | The minted project-container child @<project>.dhall@ path in the VM: the
-@context-init@ chain step writes it and 'demoDeployImage' mounts it into the
-container at the binary's sibling-config path.
--}
-vmRuntimeContainerConfigPath :: FilePath
-vmRuntimeContainerConfigPath = "/root/hostbootstrap/demo/.build/hostbootstrap-demo.runtime-container.dhall"
-
 -- | The container frame's topology id (the @vm-project-container-2@ witness).
 containerRuntimeFrameId :: String
 containerRuntimeFrameId = "vm-project-container-2"
 
 {- | The project container the chain's container frame runs in: the demo image, with the
 host Docker socket mounted (so kind nodes are siblings on the VM daemon) and
-host networking. It also forwards the Docker Hub credential by /name/ only
-(@-e HOSTBOOTSTRAP_REGISTRY_AUTH@) — never the value, which the lift pipes in
-over stdin — so the in-container kind/curl pulls authenticate; with no host
-login the variable is unset and pulls stay anonymous (see "HostBootstrap.Registry").
+host networking. The project-container child @<project>.dhall@ is delivered
+**in-place** via 'clConfigDelivery' — the narrowed projection (@payload@) is piped
+on the handoff @stdin@ and the entrypoint writes it to
+@/usr/local/bin/hostbootstrap-demo.dhall@ before @exec@ing @project up@, so there is
+**no config bind-mount** (only the docker-socket and @/run/hostbootstrap@ witness
+mounts remain). It also forwards the Docker Hub credential by /name/ only
+(@-e HOSTBOOTSTRAP_REGISTRY_AUTH@) — never the value — so the in-container kind/curl
+pulls authenticate; with no host login the variable is unset and pulls stay
+anonymous (see "HostBootstrap.Registry").
 -}
-demoDeployImage :: ContainerLift
-demoDeployImage =
+demoDeployImage :: T.Text -> ContainerLift
+demoDeployImage payload =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
         , clMounts =
             [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
-            , Mount (T.pack vmRuntimeContainerConfigPath) "/usr/local/bin/hostbootstrap-demo.dhall" True
             , Mount "/run/hostbootstrap" "/run/hostbootstrap" True
             ]
         , clExtraArgs =
@@ -1284,4 +1290,11 @@ demoDeployImage =
             , registryAuthEnvVar
             ]
         , clRemoveAfter = True
+        , clConfigDelivery =
+            Just
+                ( ConfigDelivery
+                    "/usr/local/bin/hostbootstrap-demo.dhall"
+                    "/usr/local/bin/hostbootstrap-demo"
+                    payload
+                )
         }

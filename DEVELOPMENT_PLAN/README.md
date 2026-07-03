@@ -41,7 +41,8 @@ the same fractal bootstrap — provision the frame, build the pb in it, hand off
 the Python bootstrapper is the metal-frame instance.
 
 The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18) is
-**complete — all phases are `Done`**. The command surface is **fixed** to `project` / `test` / `service` /
+**complete — all `Done`**; phases 13 and 15 were briefly reopened for the **in-place child-config delivery**
+refinement (below) and are now **closed `Done`** (2026-07-02). The command surface is **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
 (§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (no
@@ -73,7 +74,7 @@ defaults live only in a project-owned `psInit`, `project init` and the test harn
 (DRY), the harness **generates** the run's `<project>.dhall` from a thin `test.dhall` override, a pure
 `SecretRef` vocabulary keeps a secrets-strict consumer's production configs plaintext-free, and the Python
 bootstrapper no longer initializes config (Sprint 19.5 — Python builds the host-native binary and execs it,
-the binary owning its Dhall and failing fast when no sibling config exists). Phases 4, 8, 10, 15, and 17
+the binary owning its Dhall and failing fast when no sibling config exists). Phases 4, 8, 10, and 17
 stay `Done` with forward-pointers; phase 19 (`Done`) owns the work and the superseded surfaces are listed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Phase 20 (`Done`) is the
 config-driven demo worked example built on top of the generic model: it adds the demo's own `message`
@@ -85,20 +86,35 @@ standardized, `Type.dhall` is deleted, and cluster-down prose matches kind delet
 state preserved. The Windows third-substrate reopening is now closed for phases 2, 3, and 9:
 Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`) through the Phase-2
 pre-binary Haskell toolchain bootstrap and substrate detection, Phase-3 `ensure cudawin` reconciler,
-and Phase-9 Windows host-capacity / WSL2 sizing surfaces. Phase 11 remains `Active`: the WSL2 provider is
-implemented and unit-validated, the post-reboot host now reports WSL2 platform readiness
-(`HyperVisorPresent = True`, default WSL version 2), and the live chain reaches the managed
-Ubuntu-24.04 distro plus the in-distro Docker image build. The remaining work is real Windows/WSL2
-provider lifecycle closure because repeated WSL/Docker sessions exit non-zero during the project image
-build before `test run all` and `project destroy` validate teardown. The work is woven into the existing
-phases, not a new phase. See
+and Phase-9 Windows host-capacity / WSL2 sizing surfaces. **Phases 9 and 11 are now `Done`** — closed
+**2026-07-01** by the full Windows/WSL2 lifecycle: `hostbootstrap-demo` `test run all` applied the
+`.wslconfig` `[wsl2]` ceiling (Sprint 9.7's honest cordon — the fix for the earlier
+`Wsl/Service/0x80072746` utility-VM session drop, whose root cause was the cordon computed but never
+written), registered/entered the managed Ubuntu-24.04 distro, built the in-distro binary and project image
+**without a session drop**, stood up in-distro kind/Harbor/web, reported **`6/6`** across both message
+variants, and `project destroy` restored `.wslconfig` with host `.data` preserved. The work was woven into
+the existing phases, not a new phase. See
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md),
 [phase-21-documentation-code-consistency-reconciliation.md](phase-21-documentation-code-consistency-reconciliation.md),
 and [generic_project_model](../documents/architecture/generic_project_model.md).
 
+The **in-place child-config delivery** refinement (2026-07-02, development_plan_standards § U, § X) reopened
+phases **15** (the § X delivery contract, Sprint 15.7) and **13** (the demo surfaces, Sprint 13.15) and
+**closed both `Done`** the same day. The `context-init` step still mints each child projection, but delivery
+moved from **build-then-copy** (the VM's `.build/hostbootstrap-demo.vm.dhall` + `copyFileToDemoVM`) and
+**build-then-mount** (the VM's `hostbootstrap-demo.runtime-container.dhall` + a config bind-mount) to
+**streaming the projection in-place over the lift's `stdin` channel**, written by the descending binary to
+its own sibling `<project>.dhall` before dispatch. Only the narrowed projection crosses — never the parent's
+full config — on `stdin` only, so it is neither persisted nor inspectable (the Kubernetes service pod keeps
+its ConfigMap override). It built **forward**: no schema/loader/gate change and no earlier closure reversed.
+Closed by `cabal test all` (280 tests, incl. new `LiftSpec` config-delivery cases) plus a live Windows/WSL2
+`test run all` **`6/6`** with no `.vm.dhall`/`.runtime-container.dhall` and no config bind-mount; the
+superseded surfaces moved to **Removed Surfaces** in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md): `core 239 + demo 14` static `testCase` definitions.
+[system-components.md](system-components.md): `core 245 + demo 14` static `testCase` definitions.
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -118,9 +134,9 @@ for the component inventory.
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
-| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active |
+| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
-| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |

@@ -47,8 +47,9 @@ per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the real `project up`** under a test config rather than re-expressing bring-up (§ W); the declared budget is
 the **one ceiling = the VM wall** with the cluster a **slice within it** (no doubling, § O); each
 `<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
-(§ X); and long-running roles run through the new `service` command (§ AA). The correction is **complete —
-all of phases 10, 13, 14, 15, 16, 17, and 18 are `Done`**: the code is code-check-validated (`cabal test
+(§ X); and long-running roles run through the new `service` command (§ AA). The correction is **complete**
+(phases 10, 14, 16, 17, 18 `Done`; phases 13 and 15 reopened then **closed `Done` 2026-07-02** for in-place
+child-config delivery, § U/§ X — see their sections below): the code is code-check-validated (`cabal test
 all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
 lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
 `test run all` reports **`3/3 passed` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
@@ -64,7 +65,7 @@ living only in a project-owned `psInit`, `project init` and the harness sharing 
 harness **generating** the run's `<project>.dhall` from a thin `test.dhall` override, and a pure `SecretRef`
 vocabulary for secrets-strict consumers. It also owns the Python auto-init removal (Sprint 19.5): Python
 builds the host-native binary and execs it without initializing or triggering config creation. Phases 4, 8,
-10, 15, and 17 stay `Done` with forward-pointers to phase 19; the superseded surfaces are listed in
+10, and 17 stay `Done` with forward-pointers to phase 19; the superseded surfaces are listed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Phase 20 (`Done`) is the
 config-driven demo worked example built on top of the generic model — implemented and validated.
 
@@ -72,11 +73,12 @@ The **Windows third-substrate** work is woven into the existing phases — not a
 and 9 are closed again: Windows joins `apple-silicon`, `linux-cpu`, and `linux-gpu` as
 `windows-cpu`/`windows-gpu` through the Phase-2 pre-binary Haskell toolchain bootstrap and substrate
 detection, the Phase-3 `ensure cudawin` reconciler, and the Phase-9 Windows host-capacity / WSL2 sizing
-surfaces. Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, WSL2 platform
-readiness is now present after the host reboot (`HyperVisorPresent = True`, default WSL version 2), and
-the live chain reaches the managed Ubuntu-24.04 distro plus the in-distro Docker image build. The
-remaining work is real Windows/WSL2 provider lifecycle closure because repeated WSL/Docker sessions exit
-non-zero during the project image build before `test run all` and `project destroy` validate teardown. In the same pass **Tart
+surfaces. Phases 9 and 11 are now `Done`, closed **2026-07-01** by the full Windows/WSL2 lifecycle:
+`test run all` applied the `.wslconfig` `[wsl2]` ceiling (Sprint 9.7's honest cordon — the fix for the
+earlier `Wsl/Service/0x80072746` utility-VM session drop), registered/entered the managed Ubuntu-24.04
+distro, built the in-distro binary and project image **without a session drop**, stood up in-distro
+kind/Harbor/web, reported **`6/6`** across both message variants, and `project destroy` restored
+`.wslconfig` with host `.data` preserved. In the same pass **Tart
 retires** — it was core-only and latent — and composition pattern #7 **re-anchors to a headless host build**, with `ensure cudawin`
 (CUDA-on-Windows) its first instance.
 
@@ -167,14 +169,16 @@ Phase 9 owns the enforced budget ceiling: one canonical `parseQuantity`, shared 
 `verifyBudget` and `fitsBudget`, and the Linux `docker update` kind-node cordon applied by `cluster up`
 after `kind create` and before Helm. `resolveHostCapacity` is substrate-aware: Apple silicon reads
 `sysctl` `hw.ncpu`/`hw.memsize` through the resolved `HostTool Sysctl`, while Linux reads `/proc`.
-It is **`Active`** (reopened 2026-06-30 for Sprint 9.7, the honest WSL2 cordon): the substrate-aware
+It is **`Done`** (reopened 2026-06-30 for Sprint 9.7, the honest WSL2 cordon, and closed 2026-07-01 on the
+live-distro real run): the substrate-aware
 host-capacity read extends to Windows (`windows-cpu`/`windows-gpu`) alongside Apple silicon and Linux.
 The Windows predicate now reads stable **total** physical memory (not volatile free RAM), the WSL2
 `wsl2SizingArgs` emits the real `.wslconfig` `[wsl2]` ceiling with `swap` (no invalid `vhdx-size` key;
 storage is the `--vhd-size` install cap), and the per-substrate VM lifecycle is unified behind one pure
 lift (`HostBootstrap.Substrate.Provider`) so the WSL2 `.wslconfig` write + `wsl --shutdown` is a
 first-class effect. Static validation is closed (274 tests, `ProviderSpec` byte-for-byte Lima/Incus);
-applying that wall on a real distro is the real-run item shared with Phase 11 Sprint 11.7.
+the applied wall on a real distro closed **2026-07-01** together with Phase 11 Sprint 11.7 (the full
+`project up` → `test run all` `6/6` → `project destroy` Windows lifecycle).
 
 ### Phase 10 — Standardized test harness and run-models
 
@@ -196,11 +200,12 @@ Phase 11 owns the incus host-provider axis and self-reference lift. `HostTarget 
 tool-level dispatch; `HostBootstrap.Lift` handles subcommand-level context stacks (`Local`, `InVM`,
 `InContainer`) by invoking the binary's own subcommand in the nested context. The Lima VM provider used
 by the Apple Silicon demo path is implemented and validated through the full demo lifecycle. It is
-`Active` (reopened): WSL2 (Ubuntu-24.04) joins as the Windows host-provider VM peer of Lima/Incus,
-depending on Phase 2's Windows substrate detection and pre-binary toolchain bootstrap; `ensure wsl2` has
-reconciled Windows hypervisor launch readiness, the post-reboot host reports WSL2 platform readiness, and
-the remaining work is the real provider lifecycle close after WSL/Docker session loss during the in-distro
-image build.
+`Done` (reopened, closed 2026-07-01): WSL2 (Ubuntu-24.04) joins as the Windows host-provider VM peer of
+Lima/Incus, depending on Phase 2's Windows substrate detection and pre-binary toolchain bootstrap;
+`ensure wsl2` reconciled Windows hypervisor launch readiness, and the real provider lifecycle **closed** on
+the live distro — `project up` → in-distro Docker/kind/Harbor/web → lifted `test run all` (`6/6`) →
+`project destroy` (guarded `wsl --unregister`, `.wslconfig` restored, `.data` preserved) — with the earlier
+in-distro-build session drop resolved by applying the Sprint 9.7 `.wslconfig` budget wall.
 
 ### Phase 12 — Layered warm store
 
@@ -221,7 +226,12 @@ container, and service/daemon contexts. It is `Done`: the contributed `demoChain
 bring-up), the VM is sized to the budget with the cluster a slice within it, and `web serve` / `web bridge`
 moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 (8-pod
 `arm64` Harbor via the dual-arch `ghcr.io/octohelm/harbor/*` images) and `test run all` reports `3/3
-passed` (incl. the Playwright e2e lifted into the VM frame).
+passed` (incl. the Playwright e2e lifted into the VM frame). **Reopened and closed `Done` (2026-07-02)** for
+in-place child-config delivery (Sprint 13.15): the demo replaced the build-then-copy VM config and
+build-then-mount container config with a projection streamed over the lift's `stdin` channel and written by
+the descending binary before dispatch — validated by a live Windows/WSL2 `test run all` **`6/6`** with no
+`.vm.dhall`, no `.runtime-container.dhall`, and no config bind-mount; see
+[phase-15](phase-15-binary-context-config.md) Sprint 15.7 for the § X delivery contract.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -248,7 +258,14 @@ read-only and uniform over all configs. The realigned contract (`context` intros
 host-init verb that replaced `config init`, `validateRuntimeContext`, multi-role generation) is built and
 validated. It is `Done`; phase 19 (§ BB) builds **forward** on it, making the binary-context coupling the
 generic `cfg -> BinaryContext` accessor on `ProjectSpec cfg tcfg`, so the gate is expressed over a
-project-defined config type rather than the fixed `ProjectConfig`.
+project-defined config type rather than the fixed `ProjectConfig`. **Reopened and closed `Done` (2026-07-02)**
+for in-place child-config delivery (Sprint 15.7, § U/§ X): the `context-init` step still mints each child
+projection, but delivery moved from build-then-copy/mount to **streaming the projection over the lift's
+`stdin` channel**, written by the descending binary to its own sibling `<project>.dhall` before dispatch —
+only the narrowed projection crosses (never the parent's full config), on `stdin` only, with no host-side
+config file and no config bind-mount for the VM/container frames (the Kubernetes service pod keeps its
+ConfigMap override). The core `Lift.ConfigDelivery` + `Chain` stdin-handoff landed (280 tests) and a live
+Windows/WSL2 `test run all` reported **`6/6`**.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -348,7 +365,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-19 (builds forward on 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config, Python auto-init removal) -- Done
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
   phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done
-  Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Active: post-reboot WSL2 platform readiness is present and the live chain reaches the managed distro plus in-distro Docker image build, but repeated WSL/Docker sessions exit non-zero before test run all and project destroy close the lifecycle
+  Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Done (closed 2026-07-01: full Windows/WSL2 project up -> test run all 6/6 -> project destroy with the .wslconfig budget wall applied)
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

@@ -113,7 +113,12 @@ after the harness generates one for a run. There is no auto-init backstop.
 
 Descending into a nested frame requires a child config that proves the binary's new position. That child
 `.dhall` is minted by a **context-init step** the chain runs inside `project up`, just before it hands
-off `pb project up` into the next frame (the VM, then the project container). The same pure generation
+off `pb project up` into the next frame (the VM, then the project container). The minted projection is
+delivered **in-place**: it is streamed into the child frame over the lift's `stdin` channel, and the
+descending binary writes it to its own sibling `<project>.dhall` before dispatch — only the narrowed
+projection crosses (never the parent's full config), on `stdin` only, with no host-side config file and no
+config bind-mount for the VM/container frames (the Kubernetes service pod keeps its ConfigMap override,
+§ AA). The same pure generation
 code that `project init` uses projects the child from the parent:
 
 - it keeps the project settings the child needs;
@@ -222,7 +227,10 @@ host-orchestrator config, failing fast on an existing sibling `<project>.dhall`;
 projection runs as the **context-init step** the chain executes inside the recursive `project up`
 interpreter, minting each child `<project>.dhall` just before the chain hands off into the next frame
 (the VM, then the project container); and `context schema`/`context render` are the ungated read-only
-inspection verbs under the `context` command. The topology-aware gate checks the per-frame witnesses on
+inspection verbs under the `context` command. Child-config **delivery** was refined from
+build-then-copy/mount to **in-place streaming** over the lift's `stdin` channel (landed 2026-07-02 — see
+[binary_context_config](../architecture/binary_context_config.md) and
+[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) Sprint 15.7); minting is unchanged. The topology-aware gate checks the per-frame witnesses on
 every descent. The recursive `project up` interpreter and the `[Step]` chain that calls the context-init
 step are real-run-validated end-to-end: a single `project up` on Incus/Linux stands up the live
 persistent stack and `project down` / `project destroy` tear it back down (see the development plan

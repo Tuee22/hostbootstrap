@@ -10,14 +10,14 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-20 landed `Done`, and the Windows third-substrate reopening is now closed for phases 2,
-> 3, and 9. Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires from
-> the prose, and composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
-> Phase 11 remains `Active`: the WSL2 provider is implemented and unit-validated, and `ensure wsl2` has
-> reconciled WSL2 platform readiness on the post-reboot host (`HyperVisorPresent = True`, default WSL
-> version 2). The live Windows chain reaches the managed Ubuntu-24.04 distro and in-distro Docker image
-> build, but repeated WSL/Docker sessions exit non-zero before `test run all` and `project destroy` close
-> the lifecycle; that real-run provider validation remains open.
+> Note: Phases 0-21 are all `Done` (phases 13 and 15 were reopened for in-place child-config delivery,
+> § U/§ X, and closed 2026-07-02 by a live Windows/WSL2 `test run all` `6/6`). The Windows third-substrate
+> reopening is closed for phases 2, 3, and 9, and the
+> Windows/WSL2 provider (**phase 11**) closed **2026-07-01** by the full Windows/WSL2 `project up` →
+> `test run all` (`6/6`) → `project destroy` lifecycle with the `.wslconfig` budget wall applied (the
+> earlier in-distro-build WSL session drop was resolved by applying Sprint 9.7's honest cordon). Windows
+> joins as the third metal substrate (`windows-cpu`/`windows-gpu`), Tart retires from the prose, and
+> composition pattern #7 re-anchors to a headless host build (`ensure cudawin` first).
 > The **generic-project-model** work (phase 19, § BB) is `Done` —
 > phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.
@@ -57,7 +57,8 @@
 > of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
 >
-> **Current suite SSoT:** `core 239 + demo 14` static Haskell `testCase` definitions; run the core suite
+> **Current suite SSoT:** `core 245 + demo 14` static Haskell `testCase` definitions (the in-place
+> child-config delivery landing, Sprint 15.7, added 6 `LiftSpec` config-delivery cases); run the core suite
 > with `cabal test` from `core/` and the demo suite with `cabal test` from `demo/`.
 
 ## hostbootstrap-core Haskell module surface
@@ -177,9 +178,9 @@ The runtime authority is:
 | Artifact | Created by | Read by | Purpose |
 |----------|------------|---------|---------|
 | `./.build/<project>.dhall` | `<project> project init` or user-supplied config | host binary | host-orchestrator identity, capabilities, budget envelope, Dockerfile/build inputs, and child-config rules |
-| VM-local `<project>.dhall` | parent project binary before VM exec/bootstrap | VM binary | fresh-host context and allowed VM-local work |
+| VM-local `<project>.dhall` | parent renders the narrowed projection, streamed over the VM shell's `stdin`; the in-VM binary writes it in-place | VM binary | fresh-host context and allowed VM-local work |
 | `/usr/local/bin/<project>.dhall` baked in image | project Dockerfiles via `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall` | project container binary during image build | build/code-quality and config-generation authority only |
-| `/usr/local/bin/<project>.dhall` mounted at runtime | parent project binary before `docker run` | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test all`, with topology witnesses |
+| `/usr/local/bin/<project>.dhall` streamed in-place at runtime | parent renders the narrowed projection, streamed on the `docker run` `stdin`; the container entrypoint writes it before dispatch | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test run all`, with topology witnesses (no config bind-mount) |
 | service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for

@@ -50,7 +50,7 @@ and that difference drives plan/apply, retry, and run-model selection:
 | `ensure` reconciler | idempotent converge | the local host frame | L0 |
 | `deploy-vm` | provision a provider VM (Lima/Incus) | the host's VM provider | L0 |
 | `copy-source` / `build-pb` / `build-image` | stage source, build the `pb`, build the project image | the current frame | L0 |
-| `context-init` | mint the child frame's `<project>.dhall` | the current frame | L0 |
+| `context-init` | mint the child frame's `<project>.dhall` and stream it in-place into that frame | the current frame | L0 |
 | `deploy-kind` / `deploy-chart` / `expose-port` | cluster and workload bring-up | an in-frame cluster | L0 |
 | cloud / IaC deploy | plan→apply converge | a remote API + external state backend | L2 |
 | REST / RPC, pub/sub, observe-and-scale, finite-job | request, publish, control loop, run-to-completion | endpoints / bus / jobs | L1/L2 |
@@ -257,7 +257,8 @@ VM/provider IO as chain steps.
 frames and deletes kind clusters while preserving durable state, and `project destroy` deletes the
 provisioned compute frames — both preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
-standardized harness. `context-init` mints the child `<project>.dhall`; `deploy-kind`/`deploy-chart`
+standardized harness. `context-init` mints the child `<project>.dhall` and streams it in-place into the next frame over the lift's
+`stdin` channel (no config bind-mount); `deploy-kind`/`deploy-chart`
 bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
 the project image; `context inspect` renders the topology with the current frame marked. A single
 `project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
@@ -269,8 +270,8 @@ Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with H
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
 (see [harbor](../engineering/harbor.md)). The **third** metal substrate, Windows (WSL2 on
 `windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is implemented through platform readiness
-and the managed Ubuntu-24.04 distro / in-distro Docker image build, but full end-to-end lifecycle closure
-remains phase-11 `Active` until `test run all` and `project destroy` validate teardown on Windows (see
+and the managed Ubuntu-24.04 distro / in-distro Docker image build, and full end-to-end lifecycle closure
+landed in phase-11 on 2026-07-01 (`test run all` `6/6` → `project destroy` on Windows; see
 [wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
 under the test surface and reports `3/3 passed` on **both** Apple-Silicon/Lima (2026-06-20) and native
 Incus/Linux (2026-06-21). Every case — the two reachability checks and the Playwright e2e — runs in the

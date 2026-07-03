@@ -92,12 +92,13 @@ service.
 Child configs are **projections, not copies**, and they are minted by a **context-init step** the
 recursive interpreter runs inside `project up` at each frame boundary, before handing off `pb project up`
 into the next frame. The step reads the active config, derives a narrower context for the child frame,
-carries only the needed parameter/budget slice, writes the child witnesses, and emits a local
-`<project>.dhall` at the child executable location. The generated context's allowed command classes make
+carries only the needed parameter/budget slice, writes the child witnesses, and **streams** the child's
+local `<project>.dhall` in-place into the next frame over the lift's `stdin` channel, where the descending
+binary writes it at its own executable-sibling location before dispatch. The generated context's allowed command classes make
 illegal functions unrepresentable: a service config can serve but cannot launch host VMs; a container
 config can run build/test work but cannot perform host orchestration. Project Dockerfiles bake the narrow
 `image-build-container` config so build-time commands run during the image build, before any runtime child
-config is mounted. See [config_generation](../engineering/config_generation.md) for the step's projection
+config is streamed in. See [config_generation](../engineering/config_generation.md) for the step's projection
 helpers and [binary_context_config](binary_context_config.md) for the per-frame witness contract.
 
 ## Three Vocabulary Layers

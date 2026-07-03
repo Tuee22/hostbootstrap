@@ -31,9 +31,9 @@
 
 The binary-context contract (see [binary_context_config](../architecture/binary_context_config.md)) says
 every project binary at every level reads a sibling `<project>.dhall` describing the whole composition
-topology. Credentials must **never** be part of that picture: a `<project>.dhall` is generated, mounted,
-copied between contexts, and read for inspection (`context show`), so a credential placed in it would be
-copied into the VM and the cluster and would survive on disk. The type system enforces the boundary:
+topology. Credentials must **never** be part of that picture: a `<project>.dhall` is generated, streamed
+between contexts, and read for inspection (`context show`), so a credential placed in it would be streamed
+into the VM and the cluster and would survive on disk. The type system enforces the boundary:
 `RegistryAuth` has no Dhall codec, so it is not expressible in the schema, the context, or any
 `ConfigArtifact`. The credential is a *runtime effect*, resolved at the moment of a pull, not *state*.
 

@@ -2,6 +2,7 @@
 
 module LiftSpec (tests) where
 
+import Data.List (isInfixOf)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
@@ -17,7 +18,8 @@ tests =
     "LiftSpec"
     [ testGroup "foldLift across context stacks" foldCases,
       testGroup "foldLeaf places any command in the right frame" foldLeafCases,
-      testGroup "containerRunArgs" containerCases
+      testGroup "containerRunArgs" containerCases,
+      testGroup "config delivery streams the projection in-place on stdin" configDeliveryCases
     ]
 
 -- Fixtures.
@@ -39,7 +41,8 @@ container =
     { clImage = "demo:local",
       clMounts = [sockMount],
       clExtraArgs = ["--network=host"],
-      clRemoveAfter = True
+      clRemoveAfter = True,
+      clConfigDelivery = Nothing
     }
 
 self :: SelfRef
@@ -164,8 +167,57 @@ containerCases =
           { clImage = "img",
             clMounts = [V.Mount {V.source = "/host", V.target = "/in", V.readOnly = True}],
             clExtraArgs = [],
-            clRemoveAfter = False
+            clRemoveAfter = False,
+            clConfigDelivery = Nothing
           }
         ["x"]
         @?= ["run", "-v", "/host:/in:ro", "img", "x"]
+  ]
+
+-- | A container that streams its child config in-place on @stdin@.
+deliveringContainer :: ContainerLift
+deliveringContainer =
+  container
+    { clConfigDelivery =
+        Just
+          ( ConfigDelivery
+              "/usr/local/bin/hostbootstrap-demo.dhall"
+              "/usr/local/bin/hostbootstrap-demo"
+              "PAYLOAD-DHALL-TEXT"
+          )
+    }
+
+configDeliveryCases :: [TestTree]
+configDeliveryCases =
+  [ testCase "a delivering container overrides the entrypoint to write the sibling then exec" $
+      containerRunArgs deliveringContainer ["project", "up"]
+        @?= [ "run",
+              "--rm",
+              "-v",
+              "/var/run/docker.sock:/var/run/docker.sock",
+              "-i",
+              "--entrypoint",
+              "sh",
+              "--network=host",
+              "demo:local",
+              "-c",
+              "cat > '/usr/local/bin/hostbootstrap-demo.dhall' && exec '/usr/local/bin/hostbootstrap-demo' 'project' 'up'"
+            ],
+    testCase "the config payload is NOT in the argv (it rides stdin only)" $
+      any ("PAYLOAD-DHALL-TEXT" `isInfixOf`) (containerRunArgs deliveringContainer ["project", "up"])
+        @?= False,
+    testCase "liftStdin carries a terminal delivering container's payload" $
+      liftStdin (inContainer deliveringContainer localContext)
+        @?= "PAYLOAD-DHALL-TEXT",
+    testCase "liftStdin is empty for a non-delivering container" $
+      liftStdin (inContainer container localContext)
+        @?= "",
+    testCase "liftStdin is empty for a VM frame (no container)" $
+      liftStdin (inWsl2VM wslVM localContext)
+        @?= "",
+    testCase "configWriteScript single-quotes the write path and the exec argv" $
+      configWriteScript
+        (ConfigDelivery "/p/x.dhall" "/b/bin" "IGNORED")
+        ["project", "up"]
+        @?= "cat > '/p/x.dhall' && exec '/b/bin' 'project' 'up'"
   ]
