@@ -7,8 +7,9 @@
 --
 -- The @ToDhall@-derived renderer inlines a union type's full declaration at
 -- every constructor site, so a generated @<project>.dhall@ repeats the 8-way
--- @ContextKind@, 8-way @Capability@, and 11-way @CommandClass@ unions many times
--- over. This module post-processes the embedded Dhall AST before pretty-printing:
+-- @ContextKind@, 7-way @ProviderKind@, 4-way @WitnessKind@, 8-way @Capability@,
+-- and 11-way @CommandClass@ unions many times over. This module post-processes
+-- the embedded Dhall AST before pretty-printing:
 -- each repeated union is bound once in a top-level @let@ and its inline
 -- occurrences are rewritten to that variable, e.g.
 --

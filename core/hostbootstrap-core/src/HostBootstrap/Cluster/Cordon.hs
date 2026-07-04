@@ -5,9 +5,9 @@
 --
 -- @hostbootstrap@ verifies the host has the spare budget declared in the
 -- active project-local config's @resources@ and cordons it to the project: on
--- Apple by sizing a dedicated per-project Colima VM, on Linux by applying a
--- @docker update@ cap to the kind control-plane node (see
--- @development_plan_standards.md § O@). There is **one** canonical quantity
+-- Apple by sizing a dedicated per-project Lima VM, on Linux an Incus VM, and on
+-- Windows a WSL2 utility VM, with an in-cluster @docker update@ cap on the kind
+-- control-plane node (see @development_plan_standards.md § O@). There is **one** canonical quantity
 -- parser ('parseQuantity') feeding every argument builder, so the one declared
 -- budget number is interpreted identically everywhere. The parsing, budget
 -- verification, the fits-within proof, and the tool-argument derivations are pure

@@ -8,7 +8,8 @@
 --   * required metadata lines for governed @documents/@ content
 --   * required structure for the broad doctrine docs (architecture suite)
 --   * governed root-document metadata lines
---   * relative-link resolution for governed docs, root docs, and phase docs
+--   * relative-link resolution for governed docs, root docs, and all
+--     @DEVELOPMENT_PLAN/@ docs
 --   * root @README.md@ references to both @documents/@ and @DEVELOPMENT_PLAN/@
 --   * @DEVELOPMENT_PLAN/@ phase docs retaining @## Documentation Requirements@
 --   * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)

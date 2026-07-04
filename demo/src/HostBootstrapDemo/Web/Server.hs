@@ -26,7 +26,7 @@ import Network.HTTP.Types (hContentType, status200, status404)
 import Network.Wai (Application, pathInfo, responseFile, responseLBS)
 import Network.Wai.Handler.Warp (run)
 
-{- | The @esbuild@ bundle path, relative to the directory @web serve@ runs from
+{- | The @esbuild@ bundle path, relative to the directory @service run web@ runs from
 (the project root, where @web/public/app.js@ is produced by build #3).
 -}
 bundlePath :: FilePath

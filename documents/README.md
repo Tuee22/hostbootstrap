@@ -12,7 +12,7 @@
 material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
-The model is **the lift chain is the project**. A project binary's identity is its
+The model is **the lift chain is the project**. A project binary (`pb`)'s identity is its
 `chain :: cfg -> [Step]` value; `project up` is a recursive interpreter that runs the current
 frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
 [architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc

@@ -217,9 +217,10 @@ separate per-case cluster path, the service run-model runs via `service run` and
 `deploy-chart`, and the resource model is **budget-is-the-VM-wall / cluster-is-a-slice** with no doubling.
 Those surfaces are closed in the development plan.
 
-The **Windows** substrate is partially closed. `windows-cpu`/`windows-gpu` detection, native
-`hostbootstrap.exe` host-native build via winget-rooted GHCup, and the headless host build's `ensure
-cudawin` CUDA stack are implemented and validated at the code/unit level. The WSL2 Ubuntu-24.04 VM frame
+The **Windows** substrate is partially closed. `windows-cpu`/`windows-gpu` detection and the native
+`hostbootstrap.exe` host-native build via winget-rooted GHCup are implemented and validated at the
+code/unit level. The Phase-3 `ensure cudawin` host CUDA reconciler reported `present (no-op)` on a real
+Windows GPU host on 2026-06-26, and the full CUDA host-build stack is unit-validated. The WSL2 Ubuntu-24.04 VM frame
 (`ensure wsl2`, the Windows peer of Lima/Incus — see [wsl2](../engineering/wsl2.md)) closed in phase-11
 on 2026-07-01 when the real Windows/WSL2 lifecycle completed through `test run all` (`6/6`) and `project destroy`.
 

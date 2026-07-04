@@ -113,14 +113,17 @@ See [self_update.md](self_update.md).
 
 ## Typed Checks In hostbootstrap-core
 
-The fail-fast minimums above are expressed as typed checks in `HostBootstrap.HostPrereqs`, dispatched
-by the detected substrate (`HostBootstrap.Substrate`). `checkHostMinimums` runs the labelled checks
-in order and stops at the first failure, returning a one-line `PrereqError`. Each check resolves its
-external tools through the closed `HostTool` enumeration to absolute paths (`HostBootstrap.HostTool` /
-`HostBootstrap.HostConfig`) — no `$PATH`-resolved bare command names. Substrate detection and host-tool
-resolution are owned by `hostbootstrap-core`. The pure-Python `prereqs.py` and `substrate.py` are the
-thin bootstrapper's fail-fast surface — the irreducible host floor the pre-binary work depends on. The
-consolidated host minimums live in `HostBootstrap.HostPrereqs`. See
+The fail-fast minimums above are asserted live by the thin bootstrapper's pure-Python `prereqs.py`;
+`HostBootstrap.HostPrereqs` is a **forward-looking mirror** of them as typed checks, dispatched by the
+detected substrate (`HostBootstrap.Substrate`), whose current check set still diverges from the live
+`prereqs.py` (on Linux it gates Docker reachability and omits the `/dev/kvm` check the minimums above
+list). `checkHostMinimums` runs the labelled checks in order and stops at the first failure, returning a
+one-line `PrereqError`. Each check resolves its external tools through the closed `HostTool` enumeration
+to absolute paths (`HostBootstrap.HostTool` / `HostBootstrap.HostConfig`) — no `$PATH`-resolved bare
+command names. Substrate detection and host-tool resolution are owned by `hostbootstrap-core`. The
+pure-Python `prereqs.py` and `substrate.py` are the thin bootstrapper's live fail-fast surface — the
+irreducible host floor the pre-binary work depends on. The consolidated host minimums are mirrored in
+`HostBootstrap.HostPrereqs`. See
 [hostbootstrap_core_library.md](../architecture/hostbootstrap_core_library.md).
 
 > **WRONG** — treating an ensured tool as a manual host prerequisite

@@ -84,9 +84,11 @@ onward has named modules to fill in and the command-tree extension contract has 
 #### Command Surface
 
 - `hostbootstrap --help` lists the (initially empty) core command groups.
-- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to extend the tree through named
-  `ProjectCommand` values, a non-empty `TestSuite`, a `check-code` action, and any project
-  `ConfigArtifact`s (see [development_plan_standards.md § P](development_plan_standards.md)).
+- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to extend the tree through its
+  `ProjectSpec` streams — the lift chain (`chain :: cfg -> [Step]` via `withChain`), the service-handler
+  registry (`withServices` / `service run web`), a non-empty `TestSuite`, a `check-code` action, any
+  project `ConfigArtifact`s, and its init builders; projects add no new verbs
+  (see [development_plan_standards.md § P](development_plan_standards.md)).
 
 #### Validation
 

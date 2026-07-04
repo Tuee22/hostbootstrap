@@ -27,6 +27,12 @@ generates role-specific project-local configs without an existing context, `conf
 reflected `ProjectConfig` type, and pure projection helpers derive narrower child configs from a parent
 config. This phase is `Done`.
 
+**Naming forward-note (phases 4/16).** The flat `config schema` / `config render` / `config init` and
+`test all` verb spellings used present-tense throughout this phase document were later renamed on the
+fixed command surface: `config schema` → `context schema`, `config render` → `context render [--artifact
+NAME]`, `config init` → `project init`, and `test all` → `test run all`. The surfaces they describe are
+unchanged — only the verb spellings moved (§ P; phases 4/16).
+
 ## Remaining Work
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
@@ -90,8 +96,9 @@ Land the schema-generation substrate: a registry whose entries carry a reflected
 
 #### Deliverables
 
-- `data ConfigArtifact = ConfigArtifact { schemaText :: Text, render :: Inputs -> Value }` where
-  `schemaText` is reflected from the Haskell type via `Dhall.Encoder` (so it equals the decoder type).
+- `data ConfigArtifact = ConfigArtifact { artifactName :: Text, schemaText :: Text, renderText :: Text }`
+  where `schemaText` is reflected from the Haskell type via `Dhall.Encoder` (so it equals the decoder
+  type) and `renderText` is the deterministic `ToDhall` embedding of a canonical value.
 - A registry the command tree concatenates across library levels (L0 registers core artifacts; project
   binaries append their own).
 
@@ -182,7 +189,9 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 - The contract is stated for all four streams in
   [`documents/architecture/library_hierarchy.md`](../documents/architecture/library_hierarchy.md): CLI
-  tree (`runHostBootstrapCLI progName projectSpec`, append named `ProjectCommand`s after validation),
+  tree (`runHostBootstrapCLI progName projectSpec` — a project extends the fixed core tree only through
+  the `ProjectSpec` streams (`withChain` lift chain, `withServices`, test suite), never by appending
+  named `ProjectCommand`s),
   Dhall vocabulary (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (`ConfigArtifact` registry
   concatenation through `ProjectSpec`), and test harness (`Seams` through a non-empty `TestSuite`). All
   four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the `Core.dhall`

@@ -51,8 +51,7 @@ The resource budget is a `resources` record in the host-level project config des
 [schema](schema.md):
 
 ```dhall
-{ project   = "app"
-, resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
+{ resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
 }
 ```
 

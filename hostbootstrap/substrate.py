@@ -2,9 +2,10 @@
 
 Frozen substrates describe the host detected at runtime; projects do not
 declare a substrate matrix in the Python bootstrapper.
-Detection is pure: it reads the platform and a small set of files
-(``/proc/driver/nvidia/version`` etc.) and returns one frozen value. No side
-effects.
+Detection reads the platform and a small set of files
+(``/proc/driver/nvidia/version`` etc.), falling back to an ``nvidia-smi -L``
+subprocess probe when those markers are absent, and returns one frozen value.
+It does not mutate host state.
 """
 
 from __future__ import annotations

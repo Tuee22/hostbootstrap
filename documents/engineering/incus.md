@@ -124,8 +124,9 @@ runs, and its stop/delete are interpreter teardown operations:
 | `project down` | stop the VM frame | **stop** the VM without deleting it (stop-without-delete) |
 | `project destroy` | delete the VM frame | stop the VM, then delete it and its compute (`.data` preserved) |
 
-`HostBootstrap.Incus` is the pure argv builders plus the IO loop that runs them; the `deploy-vm` step
-action and the teardown drive those builders. The builders:
+`HostBootstrap.Incus` is the pure argv builders plus the `classifyDockerReadiness` classifier; the IO
+loop that runs them (`runInTarget`, `rebootDockerToReady`) lives in `HostBootstrap.HostTarget`. The
+`deploy-vm` step action and the teardown drive those builders. The builders:
 
 | Builder | Emits |
 |---------|-------|

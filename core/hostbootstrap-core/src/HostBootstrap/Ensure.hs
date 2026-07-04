@@ -41,9 +41,9 @@ import System.Process (readProcessWithExitCode)
 
 -- | A host-dependency reconciler.
 data Reconciler = Reconciler
-  { -- | subcommand name, e.g. @"docker"@
+  { -- | reconciler name, e.g. @"docker"@ (the @ensure-*@ chain-step label)
     reconcilerName :: String,
-    -- | optparse @progDesc@
+    -- | one-line human summary of what the reconciler ensures
     reconcilerSummary :: String,
     -- | host-applicability predicate
     appliesTo :: Substrate -> Bool,

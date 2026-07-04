@@ -439,7 +439,7 @@ waitHarborLogin cfg n = do
 
 {- | @deploy-chart@: install the web chart pod, templating the chart's embedded
 config from the live config's served @message@ (Sprint 20.2). The message is
-forwarded to helm as the generic @demoMessage@ extra-value; the ConfigMap template
+forwarded to helm as the generic @demoMessage@ extra-value (with the deploy's @haReplicas@ replica count forwarded alongside it); the ConfigMap template
 interpolates it into the pod's mounted @<project>.dhall@, so @service run web@
 reads the same message the host config carried, end to end.
 -}
@@ -958,7 +958,7 @@ runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ d
                 putStrLn "vm ensure: Windows uses a WSL2 Ubuntu-24.04 distro"
             | otherwise -> die "vm ensure: unsupported substrate"
 
-{- | @demo vm up@: read the active context envelope, derive the VM sizing from
+{- | The IO behind the dissolved @vm up@ verb: read the active context envelope, derive the VM sizing from
 the one canonical parser, and launch the VM cordoned to it (cordon #1). The launch
 is the substrate's pure 'spLaunch' effect list — a single sized argv on Apple
 Silicon (Lima) and Linux (Incus); on Windows it begins by writing the global
@@ -1026,13 +1026,13 @@ requireDemoLifecycleResources actualResources = do
         | otherwise = []
     showGiB bytes = show (gibibytes bytes) ++ "GiB"
 
-{- | @demo vm pristine-bootstrap@: the from-zero first-run flow inside the VM
+{- | The IO behind the dissolved @vm pristine-bootstrap@ verb: the from-zero first-run flow inside the VM
 (the project source is staged at @/root/hostbootstrap@; see the runbook).
 Provision the documented Linux host prerequisites (pipx + the @ghcup@ toolchain
 pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
-@hostbootstrap run@ — which asserts the host minimums, ensures the toolchain,
-and builds the demo binary **host-native** in the VM (**build #2**) before
-exec'ing it (here with @context schema@, so the built binary proves itself).
+@hostbootstrap build@ — which asserts the host minimums, ensures the toolchain,
+and builds the demo binary **host-native** in the VM (**build #2**), then
+installs the built binary (no exec).
 -}
 runVmBootstrap :: IO ()
 runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do

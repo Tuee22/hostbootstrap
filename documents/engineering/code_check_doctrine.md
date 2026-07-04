@@ -93,7 +93,7 @@ construction. There is no separate "did the lint pass?" question to ask later.
 >
 > No code-check anywhere. A container can be produced from source that fails
 > `proj check-code`. Style violations only surface when someone manually runs
-> `hostbootstrap test run all` — possibly never, in CI shortcuts.
+> the code-check gate — possibly never, in CI shortcuts.
 >
 > **RIGHT**
 >

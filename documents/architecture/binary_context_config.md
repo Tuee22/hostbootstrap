@@ -276,7 +276,8 @@ stdout/stderr by default so systemd, Docker, Kubernetes, or incus can collect an
 
 ## Demo Contexts
 
-The worked demo descends through four frames, each reading its own `<project>.dhall`:
+The worked demo runs across four execution contexts — the three descent frames (host, VM, project
+container) plus the chart-launched service-role pod — each reading its own `<project>.dhall`:
 
 | Context | Role |
 |---|---|

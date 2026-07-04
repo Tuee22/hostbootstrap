@@ -257,8 +257,8 @@ Normal commands treat the active config as an immutable startup snapshot:
 - run against that snapshot;
 - ignore later file changes during the same short-lived process.
 
-Allowed writes are explicit and narrow: `project init`, `project upgrade FILE`, user-requested config-edit
-commands, and parent commands generating child configs. The canonical example of a parent generating a
+Allowed writes are explicit and narrow: `project init` (re-run with `--force` to overwrite),
+user-requested config-edit commands, and parent commands generating child configs. The canonical example of a parent generating a
 child config is the `context-init` chain step inside `project up`, which mints the narrower
 `<project>.dhall` for the project-container frame. Runtime status, discovered endpoints, locks, leader
 election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating the

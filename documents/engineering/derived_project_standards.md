@@ -260,7 +260,7 @@ tree is exactly `project`, `test`, `service`, `context`, and `check-code`:
   commands.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, and `path`/`show`/`schema`/`render` inspect and describe the project-local config.
-- `test init` writes `test.dhall`; `test run <suite>|all` runs a suite, or the whole matrix with `all`,
+- `test init` writes the sibling `<project>.test.dhall`; `test run <suite>|all` runs a suite, or the whole matrix with `all`,
   from the root frame.
 - `service init|schema|run` runs long-running roles as leaf-frame service handlers.
 - `check-code` runs the project's fail-fast code-check gate.

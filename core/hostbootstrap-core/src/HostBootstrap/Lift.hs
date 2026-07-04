@@ -347,7 +347,7 @@ runSelfWithStdin exe args input = do
 --     a transient @DOCKER_CONFIG@ and never persists it.
 --
 -- This is the supported forwarding shape — a container reached through a VM
--- (@inContainer img (inVM\/inLimaVM vm localContext)@), the worked demo's deploy
+-- (@inContainer img (inVM\/inLimaVM\/inWsl2VM vm localContext)@), the worked demo's deploy
 -- frame. With 'Nothing' (no host login) or any other context shape it is exactly
 -- 'liftSubcommand', so pulls degrade gracefully to anonymous.
 liftSubcommandWithAuth ::

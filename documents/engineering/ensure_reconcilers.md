@@ -26,11 +26,16 @@
   converge to a frame that has the substrate capability the next chain step needs (a reachable Docker
   daemon / a VM-capable Incus) **and** working egress, so a `build-pb`, `build-image`, or `deploy-VM`
   step that follows can actually run.
-- The **only** hard fail-fast in the whole system is the Python wrapper's host minimums (the
-  irreducible host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
-  (Docker, Incus, the NVIDIA container toolkit, …) is installed by a reconciler when its step runs. The
-  *one* fail-fast inside a reconciler is a **wrong-host misuse** (e.g. an `ensure-cudawin` step reached
-  on linux-cpu) — an operator error, not an absent dependency.
+- The Python wrapper's host minimums are the **pre-binary** hard fail-fast surface (the irreducible
+  host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
+  (Docker, Incus, the NVIDIA container toolkit, …) is installed by a reconciler when its step runs, so an
+  absent-but-installable dependency is installed rather than a hard stop. A reconciler still has **two**
+  hard fail-fast classes of its own: (1) a **wrong-host misuse** (e.g. an `ensure-cudawin` step reached
+  on linux-cpu) — an operator error, not an absent dependency; and (2) an **absent, non-installable
+  precondition on the correct host, or a dependency still missing after the install plan runs** — e.g.
+  `ensure cuda` / `ensure cudawin` die on an absent `nvidia-smi`, `ensure homebrew` dies when `brew` is
+  absent on Apple, `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
+  `installAndVerify` dies when the dependency is still not satisfied after the install plan.
 
 ## Reconciler Contract
 
@@ -41,13 +46,19 @@ A reconciler is a value, not a free function, and carries two parts:
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
 
 Idempotence is required: running a reconciler when the host is already in the desired state is a
-successful no-op. A **missing** dependency is **never** a hard stop for the frame — the reconcile
-action installs it (see *Install-and-Verify* below). Running a reconciler on a host where the
-applicability predicate is false is a fail-fast error, not a quiet skip — this surfaces operator
-mistakes (for example, an `ensure-cudawin` step reached on linux-cpu) instead of hiding them. That wrong-host
-fail-fast is the **only** fail-fast a reconciler performs, and it is a misuse signal, not an
-absent-dependency signal; the only other hard prerequisites in the system are the Python wrapper's host
-minimums (see [prerequisites](prerequisites.md)).
+successful no-op. A **missing but installable** dependency is **never** a hard stop for the frame — the
+reconcile action installs it (see *Install-and-Verify* below). A reconciler nonetheless fails fast in
+two cases. First, running a reconciler on a host where the applicability predicate is false is a
+fail-fast error, not a quiet skip — this surfaces operator mistakes (for example, an `ensure-cudawin`
+step reached on linux-cpu) instead of hiding them. Second, an **absent, non-installable precondition on
+the correct host** — or a dependency still missing after the install plan runs — is also a hard stop:
+`ensure cuda` / `ensure cudawin` die on an absent `nvidia-smi` (the NVIDIA driver is a precondition, not
+auto-installed), `ensure homebrew` dies when `brew` is absent on Apple (its install plan is always
+`Left`), `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
+`installAndVerify` dies when its re-verify probe shows the dependency is still not satisfied after the
+install plan. The wrong-host case is a misuse signal; the second case is a genuine absent-precondition
+signal. The other hard prerequisites in the system are the Python wrapper's host minimums (see
+[prerequisites](prerequisites.md)).
 
 Reconcilers live under `HostBootstrap.Ensure.*`. Every external tool a reconciler drives is resolved
 through the closed `HostTool` enumeration to an absolute path. The reconcile action itself stays
@@ -137,7 +148,7 @@ leave the substrate reachable, the lift's job is to carry the credential.
 | `ensure-homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so the step verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: readies the Windows host CUDA build stack (driver + CUDA Toolkit + MSVC) for the headless host build; it has no meaning off a Windows GPU host. |
-| `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP, reconciles Windows hypervisor launch readiness, and registers the `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
+| `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP and reconciles Windows hypervisor launch readiness. A separate project-owned `deploy-VM` step registers that project's own named `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
 | `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
 `ensure-incus` is the **first cross-substrate reconciler** — its applicability predicate spans both

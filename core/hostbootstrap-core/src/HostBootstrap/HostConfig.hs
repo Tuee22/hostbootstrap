@@ -44,7 +44,8 @@ instance Exception HostToolError where
 
 -- | Build a host configuration for a substrate by discovering every tool's
 -- absolute path. Tools that are not installed are simply absent from the map;
--- a reconciler that needs one fails fast via 'resolve'.
+-- a reconciler that needs one probes it via 'resolveMaybe' and fails fast
+-- through 'installAndVerify' if it stays missing after the install plan.
 buildHostConfig :: Substrate -> IO HostConfig
 buildHostConfig substrate = do
   resolved <- mapM discoverPair allHostTools

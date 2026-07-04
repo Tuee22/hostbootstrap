@@ -182,8 +182,11 @@ The ownership boundary described above is the shipped implementation.
   [composition_methodology](composition_methodology.md) for the model.
 - **Windows.** The Windows metal frame uses winget as the pre-binary package manager for the
   mingw32 GHC/Cabal toolchain and builds the native `hostbootstrap.exe` host-native. That Phase-2
-  bootstrap and the Phase-3 `ensure cudawin` host CUDA reconciler are implemented and validated on a
-  real Windows GPU host. The binary-owned `ensure wsl2` descent into the WSL2 Ubuntu-24.04 VM frame
-  (the peer of Lima/Incus) remains the Phase-11 real-run gate. The ownership boundary is unchanged:
+  bootstrap is implemented and validated on a real Windows GPU host. The Phase-3 `ensure cudawin` host
+  CUDA reconciler reported `present (no-op)` on a real Windows GPU host on 2026-06-26, and the full CUDA
+  host-build stack is unit-validated. The binary-owned `ensure wsl2` descent into the WSL2 Ubuntu-24.04
+  VM frame (the peer of Lima/Incus) closed in Phase-11 on 2026-07-01 via a full Windows/WSL2 `project up`
+  -> `test run all` (`6/6`) -> `project destroy` lifecycle with the `.wslconfig` budget wall applied. The
+  ownership boundary is unchanged:
   winget + the toolchain + the `.exe` build are the only pre-binary Python work, while `ensure wsl2`
   and `ensure cudawin` are reconcilers the exe owns. See [wsl2](../engineering/wsl2.md).

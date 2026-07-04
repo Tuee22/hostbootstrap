@@ -33,7 +33,8 @@ its own segment.
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container →
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
-   Its chain is a **single** ordered `[Step]` — deploy-VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows) →
+   Its chain is a **single** ordered `[Step]` — deploy-VM (ensure the VM provider — Lima on Apple Silicon,
+   Incus on Linux, WSL2 on Windows) → deploy-VM (launch the budget-sized VM, cordon #1) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
    VM) → context-init in the VM → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port —
    that stands up a live, persistent stack ending at a web service. See

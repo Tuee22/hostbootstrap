@@ -37,7 +37,7 @@ configuration** the engine writes a test-specific `<project>.dhall`, runs `proje
 self-reference lift, § U), and tears the stack down with `project destroy`. There is **one `project up` per
 distinct test config**, and the engine owns **no second cluster-bring-up path** — it reuses the core pure
 functional logic (the case matrix, the budget-slicing cores, the run-model selection, the delete-guard) and
-the chain production uses. The engine recast to drive the real `project up` landed in code and is real-run-validated (`test run all` reports `3/3 passed`).
+the chain production uses. The engine recast to drive the real `project up` landed in code and is real-run-validated; the current `test run all` reports `6/6 passed` (phase-20's second message variant brought the earlier single-variant `3/3` matrix to `6/6`; the dated 2026-06-20 `3/3` validation below stands).
 
 ## Remaining Work
 

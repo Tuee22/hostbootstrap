@@ -112,7 +112,7 @@ The web build follows the gate, in three ordered steps:
    `public/app.js`.
 
 The Playwright e2e suite is not part of the image build. It runs in the `test run all` harness's
-`e2e-tabs` case, from the already-built project image on the kind network against that case's in-cluster
+`e2e-tabs` case, from the already-built project image on the VM host network against that case's in-cluster
 service via its NodePort. Because the project image inherits the base image's global Playwright install
 and browser cache, the harness runs the e2e from that baked install: it does not pull a separate
 `mcr.microsoft.com/playwright:*` image and does not run `npm install` or `npx` at test time. See

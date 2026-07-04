@@ -36,11 +36,11 @@ by the core `project` lifecycle command, driven by `project up` (bring up), `pro
 delete), and `project destroy` (delete). The flat `cluster` verb is **removed** (phase-4), and the new
 **stop-without-delete capability** is implemented as the pure `stopVMArgs` argv builders in
 `HostBootstrap.Incus` / `HostBootstrap.Lima`, unit-tested in `IncusSpec` / `LimaSpec`. The cordon derivation
-and the never-delete-`.data` invariant carry forward unchanged. The phase stays `Active` for the
-**real-run-gated** remainder: wiring the cluster bring-up as a real `deploy-kind` / `deploy-chart` step
-action and the recursive `project down` / `project destroy` teardown that issues the stop/delete to the
-live VM — validated by a real `project up` run (owned with
-[Phase 16](phase-16-project-lifecycle-command.md)).
+and the never-delete-`.data` invariant carry forward unchanged. This work is **Done**: Phase 16 owns the
+`project` lifecycle interpreter (Done), and the only remaining item is the real-run-gated container-frame
+apply — wiring the cluster bring-up as a real `deploy-kind` / `deploy-chart` step action and the recursive
+`project down` / `project destroy` teardown that issues the stop/delete to the live VM, validated by a real
+`project up` run (owned with [Phase 16](phase-16-project-lifecycle-command.md)).
 
 ## Phase Objective
 
@@ -72,10 +72,11 @@ Specifically:
   because kind has no reliable stop/restart contract.
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`; the
   durable host `.data` path is never placed in any removal set (§ O).
-- The `project` lifecycle command, its step interpreters, and the stop-without-delete capability are **not
-  yet implemented** — the code still ships the flat `cluster` verb group. This remaining work tracks the
-  target shape, owned by [Phase 16](phase-16-project-lifecycle-command.md); the dissolved `cluster` verbs
-  are recorded `Pending` in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- The `project` lifecycle command, its step interpreters, and the stop-without-delete capability **ship**,
+  and the flat `cluster` verb group is **removed** (§ Sprint 5.2). Phase 16 owns the interpreter (Done);
+  the only remaining item is the real-run-gated container-frame apply, owned by
+  [Phase 16](phase-16-project-lifecycle-command.md); the dissolved `cluster` verbs are recorded under
+  **Removed Surfaces** in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprints
 

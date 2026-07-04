@@ -159,7 +159,7 @@ hypervisor is configured to launch (for example `hypervisorlaunchtype auto` or a
 state), sets WSL default version 2, and then re-verifies. It applies on `windows-cpu` and `windows-gpu`
 (`appliesTo = isWindows`) and fails fast on a wrong host. It runs as part of the `deploy-VM` bring-up in
 `project up`, ahead of the project-owned distro registration. The project VM step then registers its own
-named Ubuntu-24.04 distro (`wsl --install Ubuntu-24.04 --name <project>-vm`) if absent and enters it with
+named Ubuntu-24.04 distro (`wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>`) if absent and enters it with
 `wsl -d <distro> -- …`. On a host that has never enabled WSL2 or whose hypervisor boot state was changed,
 it can return the `NeedsReboot` verdict described above. See [ensure reconcilers](ensure_reconcilers.md)
 for the reconciler contract.

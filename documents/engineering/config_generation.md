@@ -74,7 +74,7 @@ host-level binary with no sibling `<project>.dhall`, and writes the host-orchest
 frame with no parent:
 
 ```sh
-<project> project init --cpu 6 --memory 10 --storage 80 --ha-replicas 1
+<project> project init --cpu 6 --memory 10GiB --storage 80GiB --ha-replicas 1
 ```
 
 The values it writes are NOT core defaults: `project init` calls the project-owned `psInit` to render a
@@ -100,7 +100,7 @@ frame's config is **derived**, not hand-edited.
 A single pure builder under `psInit` — `demoInit` (= `demoInitWithMessage demoDefaultMessage`), which
 delegates to the value-taking `projectConfigForRole` assembler — is the only place
 default config values live. Three callers share it: `project init` (renders the root config, then layers
-flag overrides), `test init` (writes the thin `test.dhall` override), and the test harness (generates each
+flag overrides), `test init` (writes the thin `<project>.test.dhall` override), and the test harness (generates each
 run's `<project>.dhall` via the project-owned `psTestConfig`, which reuses `psInit`). The harness builds
 its config **functionally**, by calling that builder in-process — it never shells out to `<project>
 project init`. Sharing one builder is what keeps the production config and every test run rendered from the

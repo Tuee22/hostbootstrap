@@ -27,7 +27,7 @@
 This generic model is implemented and phase 19 is `Done`. `hostbootstrap-core` owns no
 `defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and no fixed `ProjectConfig` type;
 projects supply `ProjectSpec cfg tcfg`, `psInit`, `psTestInit`, and `psTestConfig`. `test init` writes a
-thin `test.dhall` without a pre-existing production config, and `test run` generates each run's
+thin `<project>.test.dhall` without a pre-existing production config, and `test run` generates each run's
 `<project>.dhall`, drives the real `project up`, then removes the generated config on teardown. The
 superseded concrete-config and pre-existing-config flows are listed in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The canonical
@@ -120,7 +120,7 @@ one `demoInitWithMessage` builder) — so the init default and the harness's run
 
 ```text
 project init  : InitArgs --projectConfigForRole (psInit)--> cfg ---write---> <project>.dhall
-test init     : InitArgs --psTestInit (defaultTestConfig)--> tcfg --write--> test.dhall  (no pre-existing <project>.dhall needed)
+test init     : InitArgs --psTestInit (defaultTestConfig)--> tcfg --write--> <project>.test.dhall  (no pre-existing <project>.dhall needed)
 test run      : test.dhall --psTestConfig (reuses projectConfigForRole + applies overrides)--> [(label, cfg)]  (non-empty; harness loops per variant)
                   --write--> <project>.dhall --project up--> assert --project destroy-->
                   delete generated <project>.dhall + self-created .test_data   (keep test.dhall)

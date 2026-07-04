@@ -4,7 +4,7 @@ This module is the source of truth for every value the logic-free
 ``docker/basecontainer.Dockerfile`` consumes. The CLI's ``base build`` /
 ``base build-and-push`` commands call into the helpers here.
 
-Tag scheme (single-arch, no manifest lists; §4):
+Tag scheme (single-arch, no manifest lists; see ``documents/engineering/base_image.md`` Tags):
 
 * ``basecontainer-cpu-amd64``
 * ``basecontainer-cpu-arm64``
@@ -39,7 +39,7 @@ class Flavor(StrEnum):
 HOSTBOOTSTRAP_IMAGE_REPO: Final[str] = "docker.io/tuee22/hostbootstrap"
 CPU_BASE_IMAGE: Final[str] = "ubuntu:24.04"
 
-# Pinned toolchain versions (the single-GHC line from §4).
+# Pinned toolchain versions (the single-GHC line).
 GHC_VERSION: Final[str] = "9.12.4"
 CABAL_VERSION: Final[str] = "3.16.1.0"
 RUST_TOOLCHAIN: Final[str] = "1.95.0"
@@ -70,7 +70,7 @@ _PURESCRIPT_ASSET: Final[Mapping[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Substrate → base flavor mapping (§4)
+# Substrate → base flavor mapping (see documents/engineering/base_image.md Flavor And Arch Selection)
 # ---------------------------------------------------------------------------
 
 

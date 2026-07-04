@@ -66,7 +66,8 @@ Building `hostbootstrap-core` **host-native on Windows** — the native `hostboo
 the macOS arm64 binary — uses the native (mingw32) Windows GHC, which reports
 `System.Info.os == "mingw32"` rather than `"linux"` or `"darwin"`. The POSIX-only `unix` dependency is
 conditionalized at its call sites (and with the matching `build-depends` guard) so the mingw32 build can
-compile without it. This is implemented as part of the Windows substrate work; the remaining Windows
-open item is WSL2 provider lifecycle closure, tracked in phase 11. Which layer owns the native binary
+compile without it. This is implemented as part of the Windows substrate work. The full Windows/WSL2
+lifecycle closed in phase 11: the Windows lifecycle runs end to end through `test run all` (`6/6`) and
+`project destroy`. Which layer owns the native binary
 versus the thin Python bootstrapper that builds and execs it is the
 [python_haskell_boundary](../architecture/python_haskell_boundary.md).

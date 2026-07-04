@@ -41,7 +41,7 @@
 > resource-SSoT** correction (phases 10/13/14/15/16/17/18) is complete — code-check-validated and
 > real-run-validated end-to-end (the
 > full `project up` lifecycle + `test run all` `3/3 passed` on both Incus/Linux and a 16 GiB Apple-Silicon
-> host, 2026-06-20). The
+> host (2026-06-20, pre-phase-20; current runs report `6/6`). The
 > command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` — no per-project
 > verbs; `hostbootstrap-core` is a **library of composable tools**, not a CLI topology (§ P). The test
 > harness **drives the real `project up`** under a test config rather than re-expressing bring-up (§ W); the
@@ -82,6 +82,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure.Ghc` | 3 | yes | `ensure ghc` reconciler |
 | `HostBootstrap.Ensure.Lima` | 11.6 | yes | `ensure lima` reconciler for the Apple Silicon Lima VM provider |
 | `HostBootstrap.Config.Schema` | 4, 8, 15 | yes | project-local `<project>.dhall` schema/default/projection substrate; sibling project-config discovery and command-gate loading |
+| `HostBootstrap.Config.Class` | 19 | yes | the `ProjectCfg` class coupling core to a project's config type only through `cfgContext` / `cfgWithContext` (the universal `BinaryContext` accessor + the child-config lift), the shared `InitArgs` record that `project init` and the harness interpret, and `projectCfgSchemaText` (the project config schema reflected generically from its encoder) |
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service constructors, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
 | `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics |
@@ -228,6 +229,8 @@ The Python CLI command surface is:
 | `hostbootstrap base build` | 6 | yes | cold-rebuild base image tags locally |
 | `hostbootstrap base build-and-push` | 6 | yes | cold-rebuild and publish base image tags when the operator explicitly requests it |
 | `hostbootstrap update` | 6.5 | yes | explicit pipx self-update of the Python bootstrapper; no automatic latest-version gate |
+| `hostbootstrap check-code` | 6 | yes | dev-only maintainer gate: run the Python code-check (ruff → black → mypy); hidden from the pipx-installed CLI outside a Poetry dev install (`_maintainer_cli_enabled`) |
+| `hostbootstrap test-all` | 6 | yes | dev-only maintainer runner: run the full pytest suite via the supported runner, forwarding args to pytest; hidden from the pipx-installed CLI outside a Poetry dev install |
 
 ## Host-native binary build
 
@@ -325,7 +328,7 @@ build path `demo/.build`). It extends `hostbootstrap-core` directly (L0-direct) 
 `runHostBootstrapCLI "hostbootstrap-demo" projectSpec` and demonstrates the extension streams — the lift
 chain (`demoChain :: ProjectConfig -> [Step]` the core `project up` interprets; the former
 `incus`/`vm`/`harbor`/`web` verbs collapse into chain steps and the `service` `Web` variant — phase-13/16/18),
-the schema-gen concat (`config schema` / `config render --artifact demoWeb` over `coreArtifacts ++
+the schema-gen concat (`context schema` / `context render --artifact demoWeb` over `coreArtifacts ++
 demoArtifacts`), the harness (`hostbootstrap-demo test run all` → `runMatrix` driving the real `project up`
 per test config, bound to the inherited `test` verb), and the service handlers (the demo's `Web` service
 variant run by `service run`). The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall`

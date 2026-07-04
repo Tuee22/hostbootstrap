@@ -27,7 +27,7 @@ data RolePhase = Load | Prereq | Acquire | Ready | Serve | Drain | Exit
 rolePhases :: [RolePhase]
 rolePhases = [minBound .. maxBound]
 
--- | A role: acquire its environment (the Load→Acquire phases — e.g. fetch the
+-- | A role: acquire its environment (the Load→Ready phases — e.g. fetch the
 -- static artifact and subscribe), serve work (the Serve phase), and drain on
 -- shutdown (the Drain→Exit phases). The skeleton is L0; these callbacks are the
 -- consumer's binding to its bus/store/engine.

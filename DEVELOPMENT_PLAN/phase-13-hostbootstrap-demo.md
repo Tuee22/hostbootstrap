@@ -160,7 +160,9 @@ bring-up path, § W), then tearing the stack down with `project destroy` (host `
 harness's per-case assertions run in the frame appropriate to each (reachability from the harness frame, the
 e2e lifted into the VM via the self-reference lift, § U).
 
-`test run all` is **`3/3` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux (2026-06-21).
+`test run all` ran **`3/3` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux (2026-06-21)
+in the pre-phase-20 single-message-variant matrix; phase-20's second message variant brought the current
+run to **`6/6`**.
 All three cases run in the **VM frame**: each reachability check is a pure probe folded into the VM by the
 self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl …`, via
 `HostBootstrap.Lift.reachLeaf`/`liftLeaf`), so it reaches the in-cluster NodePort whether or not the

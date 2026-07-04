@@ -143,7 +143,7 @@ The project binary owns default local config generation (via `project init`), pu
 helpers, and command gating through the sibling `<project>.dhall`. The context authority is topology-aware:
 runtime configs carry provider-backed `topologyFrames`, a `currentFrame`, and locally checked witnesses,
 and the binary verifies its frame before side effects. The core command surface is
-`ensure`/`context`/`project`/`test`/`check-code`, and the demo drives its lifecycle through the recursive
+`context`/`project`/`test`/`service`/`check-code`, and the demo drives its lifecycle through the recursive
 `project` chain — `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` —
 interpreted by `project up`. The demo also contributes its `Web` service variant (run by `service run`)
 and its VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.

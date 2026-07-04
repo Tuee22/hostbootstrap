@@ -17,8 +17,10 @@ project-owned config builders ('psInit' / 'psTestInit' / 'psTestConfig') — the
 **only** place config defaults live, since the core ships none.
 
 A project binary calls 'runHostBootstrapCLI' with a 'ProjectSpec'. The entrypoint
-validates the extension points (a non-empty test suite, no duplicate test
-cases/artifacts/service variants, a supplied @check-code@ action) and then merges
+validates the extension points (a non-empty test suite; no duplicate test case
+ids, artifacts, or service variants; no case id shadowing the reserved
+whole-matrix selector; and no project artifact shadowing a core artifact) and
+then merges
 the spec into the core command tree ('HostBootstrap.Command.coreCommands'). The
 bare @hostbootstrap@ binary (built like any project binary, not baked into the
 base image) uses the separate 'runBareHostBootstrapCLI'. See

@@ -78,10 +78,11 @@ representation of the test path because it *is* the deploy chain, run under a ge
 declare **more than one config variant**; the harness stands each variant up, asserts, and tears it down in
 turn. Per variant it **generates** the run's `<project>.dhall` functionally via the project-owned
 `psTestConfig` (reusing the same `psInit` builder as `project init` — never shelling the CLI), runs
-`project up` over the project's own chain
-(`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
+`project up` over the project's own chain (the full 9-step chain first provisions the VM and builds the
+binary and image; its in-container persistent-stack segment is
+`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
 in the frame appropriate to each (reusing the self-reference lift — e.g. a Playwright assertion as a
-container on the kind network in the VM frame, outside the cluster), and tears the stack down with
+container on the VM host network in the VM frame, outside the cluster), and tears the stack down with
 `project destroy` before moving to the next variant. The demo runs **two** variants — `"Hello, world!"`
 then `"Hello, Universe!"` — with a full teardown and spin-up between, so the `message` field's whole
 flow is exercised twice. There is no separate `seamSetup` that stands a cluster up a second way, so the

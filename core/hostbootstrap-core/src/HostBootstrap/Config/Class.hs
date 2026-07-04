@@ -44,8 +44,9 @@ class (Dhall.FromDhall cfg, Dhall.ToDhall cfg) => ProjectCfg cfg where
   -- boundary crossing to mint a narrower child @<project>.dhall@.
   cfgWithContext :: Context.BinaryContext -> cfg -> cfg
 
--- | The raw, parsed @init@ flags shared by @project init@ and the test harness'
--- config generation. The role/context selectors are required to shape the
+-- | The raw, parsed @init@ flags shared by @project init@, @service init@, and
+-- the test harness' config generation. The role/context selectors are required
+-- to shape the
 -- context; the project-tunable knobs are **generic optionals** (core supplies no
 -- value for any of them), so a project's @init@ builder fills the omitted ones
 -- with the project's own defaults. The 'force' / 'ifMissing' switches drive the

@@ -30,8 +30,9 @@ The three-level hierarchy and the **two integration modes** — (1) freeze-impor
 Make `hostbootstrap-core` a consumable library. Each consumer ships one optparse-applicative binary
 that calls `runHostBootstrapCLI "<project>" projectSpec` to extend the core command tree rather than
 re-implementing core verbs (see [development_plan_standards.md § P](development_plan_standards.md)).
-The `ProjectSpec` supplies named project commands, a non-empty test suite, the project `check-code`
-action, and the project config-artifact delta. The consumer's binary is built **host-native** into
+The `ProjectSpec` supplies the project's extension streams — the lift chain (`withChain`), the
+service-handler registry (`withServices` / `service run web`), a non-empty test suite, the project
+`check-code` action, and the project config-artifact delta; it adds no new verbs. The consumer's binary is built **host-native** into
 `./.build/`; the project **container** it later builds `FROM` the `hostbootstrap` base image gates on the
 project `check-code`.
 
@@ -61,9 +62,10 @@ Confirm `hostbootstrap-core` is consumable as a `source-repository-package` depe
 
 #### Validation
 
-- `hostbootstrap-demo --help` shows the core verbs (`ensure`, `config`, `cluster`, `test`,
-  `check-code`) plus its own appended verbs (`incus`/`vm`/`harbor`/`web`) — the consumer extension
-  contract, verified on the worked `demo/` binary.
+- `hostbootstrap-demo --help` shows the fixed core verbs (`context` / `project` / `test` / `service` /
+  `check-code`) and **no** appended verbs — the demo extends the core through its chain (`withChain`), its
+  service registry (`service run web`), its test suite, and its `check-code` action, not new verbs — the
+  consumer extension contract, verified on the worked `demo/` binary.
 - The consumer container building `FROM` the base image and passing its `check-code` gate is
   consumer-side work, exercised in each consumer repository.
 

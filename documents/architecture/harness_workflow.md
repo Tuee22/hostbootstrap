@@ -22,7 +22,7 @@
   runs **two** variants — the default `message = "Hello, world!"` then a harness-generated
   `message = "Hello, Universe!"`.
 - Assertions run **in the frame appropriate to each**, reusing the self-reference lift (e.g. a Playwright
-  assertion as a container on the kind network in the VM frame, outside the cluster). An assertion is
+  assertion as a container on the VM host network in the VM frame, outside the cluster). An assertion is
   **polymorphic over what the active variant set**: the harness exports `EXPECTED_MESSAGE` and the
   Playwright e2e-tabs spec asserts the SPA `#message` matches whatever the active deployment set, not a
   hardcoded string.
@@ -80,9 +80,9 @@ The test surface is a **separate command pair**, gated to the **root** (host-orc
   matrix plus thin config overrides (resources, secrets, the message variant) to pass through to the normal
   binary — but it never re-derives the lift chain; the chain is the project's `[Step]` value, owned by
   `project up`.
-- `test run <suite>` runs the named suite; `test run all` is always a suite that runs the project's
-  **whole** case matrix. Both require `test.dhall`; an unknown suite fails fast, listing the valid suite
-  names and `all`.
+- `test run <case-id>` runs that single case; `test run all` runs the project's **whole** case matrix
+  (the positional metavar is `SUITE`, with `all` the reserved whole-matrix selector). Both require
+  `test.dhall`; an unknown selector fails fast, listing the valid case ids and `all`.
 
 `all` is reserved by the verb, so a project may not name a suite `all`. A project supplies its `Case`s and
 `assertCase` bodies as a non-empty `TestSuite` so the cases run under `test run`, not a per-noun subcommand.

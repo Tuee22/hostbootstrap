@@ -57,7 +57,7 @@ tools**, not a CLI topology (development_plan_standards § P, § T).
 
 **Landed in code (2026-06-19), code-check-validated** (`cabal test all` green; `cabal build all
 --ghc-options=-Werror` green; fourmolu/hlint clean on the demo; verified on the real binary that
-`hostbootstrap-demo --help` lists only `ensure` / `context` / `project` / `test` / `service` /
+`hostbootstrap-demo --help` lists only `context` / `project` / `test` / `service` /
 `check-code`):
 
 - The surface is exactly `project` / `test` / `service` / `context` / `check-code` for every project binary.
@@ -83,7 +83,7 @@ Make a project's deploy a pure value interpreted by the core, per development_pl
 - Define the `Step` algebra as the lift-chain stream's reuse unit (§ T): `hostbootstrap-core` ships the
   host-management step kinds (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`,
   deploy-kind, deploy-chart, expose-port), and a project contributes its own step kinds (deploy-harbor,
-  launch-web, role) into the same `[Step]`. Host and project steps interleave freely.
+  push-image) into the same `[Step]`. Host and project steps interleave freely.
 - Interpret the chain **recursively/fractally**: `project up` runs the current frame's steps, then for the
   next nested frame provisions it, builds/installs the project binary in it, and hands off `pb project up`
   (the fractal bootstrap, § U), so each binary owns its own segment and the deploy is restartable from any
@@ -119,7 +119,7 @@ host-management step kinds plus an open seam for project-contributed step kinds,
   deploy-VM, `ensure-*` (the `ensure` reconcilers invoked as chain steps, § L), copy-source, build-pb,
   build-image, `context-init`, deploy-kind, deploy-chart, and expose-port.
 - A project-extension seam so a consumer contributes its own step kinds (for the demo: deploy-harbor,
-  launch-web, role) into the same `[Step]` without redefining the core kinds, interleaving host and
+  push-image) into the same `[Step]` without redefining the core kinds, interleaving host and
   workload steps freely (the lift-chain stream, § T).
 - A pure, unit-testable shape for each step (description, target frame, and reconcile action) so the chain
   is a value that renders without acting.
@@ -272,8 +272,8 @@ workload-extension seam (§ T, § Y).
 - The demo contributes its chain value — host-pb → deploy VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows) →
   copy source + ensure GHC in the VM → build pb in the VM → ensure Docker in the VM → build the project
   image → deploy kind → deploy harbor → launch the webservice → expose the NodePort to the host — as a
-  `[Step]` value, interleaving core host-management steps with the demo's own deploy-harbor / launch-web /
-  role step kinds.
+  `[Step]` value, interleaving core host-management steps with the demo's own deploy-harbor /
+  push-image step kinds.
 - The demo's project step actions (registry install, web-serve, role) are expressed as steps in the chain,
   not as separate top-level verbs; the demo `deploy` / `vm` / `incus` / `harbor` / `web` / `role` verbs and
   the hand-written `demoDeployChain` are dissolved (phase-13).

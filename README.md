@@ -43,7 +43,7 @@ the orientation layer and points at those canonical homes rather than duplicatin
 A project's deploy is **not a sequence of noun verbs** — it is a pure value. Each project contributes a
 `chain :: cfg -> [Step]` function, and that `[Step]` **is the project's identity**: the ordered
 list of host-management and workload steps that bring the project up. There is one representation of that
-work (single representation, §W). The single lifecycle command `<binary> project init|up|down|destroy`
+work (single representation, § W). The single lifecycle command `<binary> project init|up|down|destroy`
 **interprets the chain recursively**. Each frame transition is the same **fractal bootstrap** — provision
 the frame, build the project binary (the "pb") in it, then hand off `pb project up` into that frame so the
 child pb owns its own segment of the chain. The Python bootstrapper is simply the **metal-frame instance**
@@ -73,7 +73,7 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
 > "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
 > `chain :: cfg -> [Step]` interpreter described above — are **implemented and real-run-validated**.
-> On Apple Silicon (Lima) the demo reports `6/6 passed` (three cases × two message variants), including the Playwright e2e case; on native Linux
+> On Apple Silicon (Lima) the demo reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. --> (three cases × two message variants), including the Playwright e2e case; on native Linux
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
@@ -110,7 +110,7 @@ fail-fast sequence:
 
 1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
    (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
-   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows: winget. Missing minimums stop the run with a clear
+   `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows: winget and Windows PowerShell. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.
 2. **Ensure the host Haskell build toolchain and package index.** The prerequisites needed to build the
    binary host-native — on Apple, Homebrew → `ghcup` → GHC/Cabal; the equivalent on Linux; on Windows a
@@ -190,7 +190,7 @@ nested context fields carrying the role and command authority:
 > `hostbootstrap-core` owns **no hardcoded defaults** and is parameterized over a project's own config type
 > — `ProjectSpec cfg tcfg` — coupled to core only through the lift authority (`cfg -> BinaryContext`).
 > Defaults live only in a project-owned `psInit`, which `project init` and the test harness share (DRY);
-> `test.dhall` is a thin override the harness uses to **generate** the run's `<project>.dhall`; and a pure
+> `<project>.test.dhall` is a thin override the harness uses to **generate** the run's `<project>.dhall`; and a pure
 > `SecretRef` vocabulary keeps a secrets-strict consumer's production configs plaintext-free. Under this
 > model the demo **owns** its config type, so `hostbootstrap-core` ships no hardcoded defaults and no generic
 > extra field. Phase 19 is `Done` (real-run-validated 2026-06-23: `test run all` reported `3/3 passed` from
@@ -252,7 +252,7 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 | `<binary> project up` | Recursively interpret `chain cfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
 | `<binary> project down` | Stop service/VM frames and tear down kind clusters while preserving durable host state (`.data`) |
 | `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
-| `<binary> test init` | Write `test.dhall` (the case matrix + config overrides) via the project's `psTestInit` builder (which shares `psInit`'s defaults); needs no pre-existing `<project>.dhall` |
+| `<binary> test init` | Write `<project>.test.dhall` (the case matrix + config overrides) via the project's `psTestInit` builder (which shares `psInit`'s defaults); needs no pre-existing `<project>.dhall` |
 | `<binary> test run <suite>\|all` | Root-gated; per distinct test config, drives the real `project up` under a test-written `.dhall`, asserts in-frame, then `project destroy`; two fail-fast safety preconditions (refuse if a sibling `.build/<project>.dhall` exists — checked at `siblingProjectConfigPath`, not the project root — or a production cluster is running); uses `.test_data` |
 | `<binary> service init\|schema\|run` | Run a long-running role: `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT, fail-fast unless the config declares a service role + variant; no `service down` (the controller owns lifetime) |
 | `<binary> context` | Read-only: introspect **any** sibling `.dhall` uniformly and render the global lift composition with the **current frame highlighted** (absorbs `config show/schema/render`) |
@@ -319,9 +319,12 @@ undersized VM during Docker layer extraction.
 
 The demo's end-to-end deploy is **one chain value**, not a parallel set of verbs that re-express cluster
 bring-up, Harbor, web-serve, and e2e. There is **one operation, one representation** (single
-representation, §W): the ordered `[Step]` chain is THE representation, and the standardized test harness
+representation, § W): the ordered `[Step]` chain is THE representation, and the standardized test harness
 stays the one test-engine / lift-target. The chain interleaves core host-management steps with the demo's
-contributed workload steps, and `project up` interprets it recursively:
+contributed workload steps, and `project up` interprets it recursively. The 11-row table below is a
+narrative expansion of the 9-value `demoChain` — row 1 is the upstream Python bootstrapper, the narrative
+copy-source / ensure-GHC / ensure-docker / build-image rows fold into the single `build-pb` step, and the
+two deploy-VM steps plus the `context-init` step are the real chain that `project up --dry-run` renders:
 
 | # | Step | Frame | Role |
 |---|---|---|---|
@@ -337,8 +340,9 @@ contributed workload steps, and `project up` interprets it recursively:
 | 10 | deploy chart | container | launch the web-service chart pod, whose entrypoint is `service run web`, on NodePort 30080 |
 | 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
 
-Steps 1–7, 10, and 11 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
-deploy-kind, deploy-chart, expose-port); steps 8–9 are the demo's contributed step kinds (deploy-harbor,
+Steps 2–7, 10, and 11 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
+deploy-kind, deploy-chart, expose-port) — row 1 (host-pb) is the Python bootstrapper, not a `[Step]`;
+steps 8–9 are the demo's contributed step kinds (deploy-harbor,
 push-image) — host, cluster, and workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
 transition through the [self-reference lift](documents/architecture/composition_methodology.md) so kind,
 Harbor, and the webservice run **in the VM** on the VM's Docker, reached with no second "bring up a
@@ -350,7 +354,7 @@ cluster" path. The doctrine is stated canonically in
 > VM, and stands up kind → Harbor → the web service on the VM's Docker. The unified-harness / fixed-surface
 > / resource-SSoT correction has **landed**: the demo's test seams drive that same `project up` under a test
 > config (rather than a separate per-case cluster), the budget-doubling VM sizing collapses to budget = VM
-> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed`
+> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. -->
 > (three cases × two message variants) including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
 > both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope

@@ -1,7 +1,7 @@
 """``hostbootstrap`` Click application.
 
 The single entrypoint installed on every downstream host (via
-``pip install git+…``). The surface is thin: ``doctor`` asserts the fail-fast
+``pipx install "hostbootstrap @ git+…"``). The surface is thin: ``doctor`` asserts the fail-fast
 host minimums; ``build`` runs the pre-binary bootstrapper (assert minimums →
 ensure the host build toolchain → build the binary host-native) without exec'ing;
 ``run`` does the same and then execs the binary with the forwarded args; ``update``

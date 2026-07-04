@@ -13,7 +13,7 @@
 
 - **The chain is the project.** A project binary's identity is the value `chain :: cfg -> [Step]`
   — an ordered list of host-management and workload steps. The chain is code, it is the single
-  representation (§W), and `project up --dry-run` renders exactly that value.
+  representation (§ W), and `project up --dry-run` renders exactly that value.
 - **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
   `pb project up` into the next frame; each `pb` owns its own segment of the chain and is restartable from
   any frame. Descent is always the same shape: *provision the frame → build/install the `pb` in it → hand
@@ -48,7 +48,7 @@ and that difference drives plan/apply, retry, and run-model selection:
 | Step kind | Semantics | Target / control plane | Layer |
 |---|---|---|---|
 | `ensure` reconciler | idempotent converge | the local host frame | L0 |
-| `deploy-vm` | provision a provider VM (Lima/Incus) | the host's VM provider | L0 |
+| `deploy-vm` | provision a provider VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows) | the host's VM provider | L0 |
 | `copy-source` / `build-pb` / `build-image` | stage source, build the `pb`, build the project image | the current frame | L0 |
 | `context-init` | mint the child frame's `<project>.dhall` and stream it in-place into that frame | the current frame | L0 |
 | `deploy-kind` / `deploy-chart` / `expose-port` | cluster and workload bring-up | an in-frame cluster | L0 |
@@ -214,7 +214,7 @@ typed Dhall (see [dhall_generation](dhall_generation.md)).
 
 ## Single Representation: The Chain Is The Representation
 
-A project has exactly **one** representation: the `[Step]` chain (§W). Deployment, teardown, and the
+A project has exactly **one** representation: the `[Step]` chain (§ W). Deployment, teardown, and the
 visualization of the topology are all reads or interpretations of that single value — there is never a
 parallel hand-assembled second chain that could drift from it.
 
@@ -255,34 +255,47 @@ VM/provider IO as chain steps.
 `chain :: cfg -> [Step]` value: `project up` descends the 3-frame fractal topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`), `project down` stops service/VM
 frames and deletes kind clusters while preserving durable state, and `project destroy` deletes the
-provisioned compute frames — both preserving durable host `.data` (§ O). `context` is read-only introspection (`inspect`/`path`/`show`/
+provisioned compute frames — both preserving durable host `.data` (§ O).
+
+`context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
-standardized harness. `context-init` mints the child `<project>.dhall` and streams it in-place into the next frame over the lift's
+standardized harness.
+
+`context-init` mints the child `<project>.dhall` and streams it in-place into the next frame over the lift's
 `stdin` channel (no config bind-mount); `deploy-kind`/`deploy-chart`
 bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
-the project image; `context inspect` renders the topology with the current frame marked. A single
-`project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
+the project image; `context inspect` renders the topology with the current frame marked.
+
+A single `project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
 budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod
 production Harbor (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
 pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
-it down with host `.data` preserved. This is validated end-to-end on two of the three metal substrates:
+it down with host `.data` preserved.
+
+This is validated end-to-end on two of the three metal substrates:
 Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
 overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
-(see [harbor](../engineering/harbor.md)). The **third** metal substrate, Windows (WSL2 on
+(see [harbor](../engineering/harbor.md)).
+
+The **third** metal substrate, Windows (WSL2 on
 `windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is implemented through platform readiness
 and the managed Ubuntu-24.04 distro / in-distro Docker image build, and full end-to-end lifecycle closure
 landed in phase-11 on 2026-07-01 (`test run all` `6/6` → `project destroy` on Windows; see
-[wsl2](../engineering/wsl2.md)). The decoupled `test run all` drives that **same** `project up`
+[wsl2](../engineering/wsl2.md)).
+
+The decoupled `test run all` drives that **same** `project up`
 under the test surface and reports `6/6 passed` (three cases × two message variants) on **both**
 Apple-Silicon/Lima and native Incus/Linux. Every case — the two reachability checks and the Playwright e2e — runs in the
 **VM frame**: each is a pure probe folded into the VM by the self-reference lift
 (`HostBootstrap.Lift.reachLeaf`/`liftLeaf`, the generalized `foldLeaf`), so it reaches the in-cluster
 NodePort whether or not the provider forwards the guest port to the host. This is the same single
 representation as `project up` (one fold places any leaf — a self-subcommand handoff or a reachability
-probe — into the correct frame). This document is the canonical statement of the model the validated build
+probe — into the correct frame).
+
+This document is the canonical statement of the model the validated build
 ships.
 
-The harness's config handling is reconciled with the §W single-representation rule above. `test run all`
+The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `test.dhall`, generates each run's `<project>.dhall` via `psTestConfig` (reusing `psInit`),
 drives `project up` against that generated config, and deletes the generated config on teardown. The
 pre-existing-config flow is removed and recorded in

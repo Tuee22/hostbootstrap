@@ -131,12 +131,12 @@ gate :: forall cfg. (ProjectCfg cfg) => String -> Context.CommandClass -> [Conte
 gate progName commandClass caps body =
     withSiblingProjectConfigContext (T.pack progName) commandClass caps (\(_ :: cfg) _ -> body)
 
-{- | The @test@ verb: select over the project's case matrix and print the report
-card. @test all@ runs the whole matrix; @test \<case\>@ runs the single case
-with that id (an unknown id fails fast, listing the valid ids). The bare binary
-reaches this through the explicit bare entrypoint; a project supplies its
-non-empty matrix and seams as the 'TestSuite' threaded through
-'HostBootstrap.CLI.runHostBootstrapCLI'.
+{- | The @test@ verb: a two-subcommand surface (@init@ and @run@). @test run@
+selects over the project's case matrix and prints the report card — @test run
+all@ runs the whole matrix; @test run \<case\>@ runs the single case with that id
+(an unknown id fails fast, listing the valid ids). The bare binary reaches this
+through the explicit bare entrypoint; a project supplies its non-empty matrix and
+seams as the 'TestSuite' threaded through 'HostBootstrap.CLI.runHostBootstrapCLI'.
 
 @test init@ writes the project's test config via 'psTestInit' (it needs **no**
 pre-existing project config — a bootstrap entrypoint). @test run@ reads that test
@@ -158,7 +158,7 @@ testCommand progName suite _initBuilder testInit testConfig =
         "test"
         ( info
             (hsubparser (testInitCmd <> testRunCmd))
-            (progDesc "Test surface: `init` writes test.dhall; `run` runs a suite against the live stack (root-only)")
+            (progDesc "Test surface: `init` writes <project>.test.dhall; `run` runs a suite against the live stack (root-only)")
         )
   where
     testInitCmd =
@@ -166,14 +166,14 @@ testCommand progName suite _initBuilder testInit testConfig =
             "init"
             ( info
                 (pure runTestInit)
-                (progDesc "Write test.dhall next to the project config (needs no pre-existing project config)")
+                (progDesc "Write <project>.test.dhall next to the project config (needs no pre-existing project config)")
             )
     testRunCmd =
         command
             "run"
             ( info
                 (runTestRun <$> caseArg)
-                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (needs test.dhall)"))
+                (progDesc ("Run a test suite, or `" ++ allCasesSelector ++ "` for the whole matrix (needs <project>.test.dhall)"))
             )
     caseArg =
         strArgument
@@ -519,10 +519,10 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
 
     -- @project up@ is the recursive interpreter that runs in EVERY orchestration
     -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand',
-    -- which is permitted in all three orchestration kinds (HostOrchestrator /
-    -- VMOrchestrator / VMProjectContainer) and rejected in the
-    -- ClusterService / Daemon / ImageBuildContainer leaves, where a recursive
-    -- @project up@ must not run (§ X).
+    -- which is permitted in the three orchestration kinds (HostOrchestrator /
+    -- VMOrchestrator / VMProjectContainer) plus the TestHarness kind, and
+    -- rejected in the ClusterService / Daemon / OneShotJob / ImageBuildContainer
+    -- leaves, where a recursive @project up@ must not run (§ X).
     runUp dryRun =
         withSiblingProjectConfigContext (T.pack progName) Context.ClusterLifecycleCommand [] $ \(projectCfg :: cfg) ctx ->
             if dryRun

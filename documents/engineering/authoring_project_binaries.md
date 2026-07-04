@@ -38,7 +38,7 @@
    [resource_budgeting](resource_budgeting.md).
 2. **Author the chain.** Provide `chain :: cfg -> [Step]` — the ordered lift sequence that is the
    project's identity. A `Step` is a typed operation in the `Step` algebra; the chain is the single
-   representation of the deploy (§W), and `project up --dry-run` renders `chain projectCfg`. Compose from
+   representation of the deploy (§ W), and `project up --dry-run` renders `chain projectCfg`. Compose from
    the core's host-management step kinds (`deployVMStep`, `buildPbStep`, `contextInitStep`,
    `deployKindStep`, `deployChartStep`, `exposePortStep`) and the project's own kinds via `projectStep`;
    host and workload steps interleave in one list. The core interprets the chain recursively and
@@ -59,7 +59,7 @@
    [`HostBootstrap.Lift`](../architecture/hostbootstrap_core_library.md) and
    [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation).
 5. **Supply the test suite.** Provide a `TestSuite`/`Case` matrix (the test stream); `test run <suite>|all`
-   drives `runSuiteSelection` from the root frame, gated on an existing `test.dhall` and needing no pre-existing
+   drives `runSuiteSelection` from the root frame, gated on an existing `<project>.test.dhall` and needing no pre-existing
    `<project>.dhall`. A suite may declare more than one config variant; for each, the harness **generates**
    the run's `<project>.dhall` functionally via the project-owned `psTestConfig` (reusing `psInit`, never
    shelling the CLI), runs the real `project up`, asserts the real workload in-frame, and tears it down with

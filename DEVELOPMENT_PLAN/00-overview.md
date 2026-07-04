@@ -30,8 +30,8 @@ auto-check GitHub freshness, or fail because a newer wrapper commit exists.
 
 Every normal project-binary command reads a sibling `<project>.dhall` before dispatch. The config carries
 project identity, resource budget, Docker/build inputs, runtime context, command authority, and child
-projection defaults. Bootstrap/inspection commands (`help`, `version`, `project init`, `config schema`,
-`config show`, `config path`, and static `config render`) are the explicit ungated exceptions.
+projection defaults. Bootstrap/inspection commands (`help`, `version`, `project init`, and the read-only `context` command
+(`inspect`/`show`/`schema`/`render`/`path`)) are the explicit ungated exceptions.
 The context model is topology-aware: provider-backed execution frames, a current frame, runtime
 witnesses, and command predicates fail before side effects when the binary is not actually running in the
 declared frame.
@@ -52,8 +52,10 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 child-config delivery, § U/§ X — see their sections below): the code is code-check-validated (`cabal test
 all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
 lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
-`test run all` reports **`3/3 passed` on both** Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
-(2026-06-21): every case runs in the **VM frame** via the self-reference lift, so each reachability probe
+`test run all` reports **`6/6 passed`** on current runs (three cases x two message variants; phase 20 added
+the second message variant); the **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and native
+Incus/Linux (2026-06-21) are pre-phase-20 historical snapshots: every case runs in the **VM frame** via the
+self-reference lift, so each reachability probe
 reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to the host
 (see [phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
 blocked by a later one; the core cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
@@ -225,8 +227,8 @@ container, and service/daemon contexts. It is `Done`: the contributed `demoChain
 16 GiB Apple-Silicon host (2026-06-20) — the demo's test surface drives the real `project up` (no second
 bring-up), the VM is sized to the budget with the cluster a slice within it, and `web serve` / `web bridge`
 moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 (8-pod
-`arm64` Harbor via the dual-arch `ghcr.io/octohelm/harbor/*` images) and `test run all` reports `3/3
-passed` (incl. the Playwright e2e lifted into the VM frame). **Reopened and closed `Done` (2026-07-02)** for
+`arm64` Harbor via the dual-arch `ghcr.io/octohelm/harbor/*` images) and `test run all` reported `3/3
+passed` (2026-06-20, pre-phase-20, incl. the Playwright e2e lifted into the VM frame; current runs report `6/6`). **Reopened and closed `Done` (2026-07-02)** for
 in-place child-config delivery (Sprint 13.15): the demo replaced the build-then-copy VM config and
 build-then-mount container config with a projection streamed over the lift's `stdin` channel and written by
 the descending binary before dispatch — validated by a live Windows/WSL2 `test run all` **`6/6`** with no

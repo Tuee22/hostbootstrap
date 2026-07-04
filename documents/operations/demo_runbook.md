@@ -272,7 +272,7 @@ the harness **generates** the `hostbootstrap-demo.dhall` functionally (via `psTe
 — never shelling the CLI; the Test profile, data under `./.test_data/`), runs `project up`, and tears the
 stack down with `project destroy` (guaranteed through `finally`); each `demoCases` case asserts a distinct
 slice of the live stack in the frame appropriate to it (e.g. the `e2e-tabs` Playwright assertion as a
-container on the kind network in the VM frame, outside the cluster). The demo declares two variants and the
+container on the VM host network in the VM frame, outside the cluster). The demo declares two variants and the
 harness stands each up / asserts / tears down in turn.
 *(The harness recast has landed and is real-run-validated — phase-10/13/17.)*
 
@@ -280,7 +280,7 @@ harness stands each up / asserts / tears down in turn.
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (the deploy-VM provider / deploy-VM / build-pb steps): the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
-| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the kind network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the VM host network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
 
 ## Three builds vs the standard host-native build
 

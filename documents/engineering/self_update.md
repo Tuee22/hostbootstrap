@@ -54,6 +54,11 @@ The `--pip-args` value is glued onto the flag with `=`. pipx parses its CLI with
 refuses to consume a following token that looks like an option (a leading `-`) as that flag's value, so
 the split `--pip-args --force-reinstall` form fails with "expected one argument".
 
+Some downstream install instructions — and the `cli.py` module docstring — describe the initial
+downstream install as `pip install git+…`. That does not contradict the pipx doctrine here: because
+`hostbootstrap update` runs `pipx install --force`, a pip-installed host is re-homed into pipx by the
+first `update`. pipx remains the canonical end-user mechanism.
+
 The command may expose explicit operator options:
 
 | Option | Contract |

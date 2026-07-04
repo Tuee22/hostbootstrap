@@ -5,9 +5,11 @@
 
 {- | The one standardized, Dhall-driven test harness.
 
-Every project's tests run through this single L0 engine: 'runMatrix' drives a
-list of generated per-case configs, each spinning up an isolated, budget-sliced
-environment that tears down while preserving production @.data@. The harness is
+Every project's tests run through this single L0 engine: per message variant it
+generates **one** run config and brings a single test stack up, then drives that
+variant's chosen cases against the shared, already-up environment via 'runMatrix'
+(whose per-case 'Seams' are built internally by @assertSeams@), tearing the stack
+down once per variant while preserving production @.data@. The harness is
 parameterized by a 'Seams' record (the default seams do a one-shot container
 run; cluster projects supply kind/Helm seams), and the app supplies only the
 case matrix (see @development_plan_standards.md § S, § T@).
@@ -285,7 +287,7 @@ The fields, in order:
   4. the per-case assertion against the live stack (reusing the self-reference
      lift, § U);
   5. /tear down/: drive @project destroy@, deleting only what this run created
-     (the self-created-only delete-guard, § O).
+     (the self-created-only delete-guard, § Z).
 
 The bare binary ships 'emptySuite' through its explicit bare entrypoint.
 -}

@@ -1,7 +1,7 @@
 """The thin pre-binary bootstrapper.
 
 The Python layer does only what must run *before any project binary exists*
-(see ``documents/architecture/python_haskell_boundary.md`` §§ M, N):
+(see ``DEVELOPMENT_PLAN/development_plan_standards.md`` §§ M, N):
 
 1. derive the project name from the project's single Cabal file;
 2. assert the fail-fast host minimums;
@@ -130,7 +130,7 @@ class ToolchainStep(NamedTuple):
 
 
 def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
-    """The host build-toolchain ensure steps (§ N), run before the build."""
+    """The host build-toolchain ensure steps (development_plan_standards.md § N), run before the build."""
     ghcup = _WINDOWS_GHCUP if sub.is_windows else _GHCUP
     ghcup_steps = (
         ToolchainStep(
@@ -290,7 +290,7 @@ async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
 
 
 async def build_binary(spec: ProjectBuildSpec, *, project_root: Path) -> Path:
-    """Run the pre-binary bootstrap (§§ M, N) and build the binary host-native."""
+    """Run the pre-binary bootstrap (development_plan_standards.md §§ M, N) and build the binary host-native."""
     sub = substrate.detect()
     await _assert_minimums(sub)
     await _ensure_toolchain(sub)
