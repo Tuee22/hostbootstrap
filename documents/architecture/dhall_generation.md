@@ -168,6 +168,6 @@ tests. The parameters/context/witness data model is the `binary_context_config` 
 
 A single `project up` on Incus/Linux interprets `demoChain :: ProjectConfig -> [Step]` across the
 three-frame fractal descent and stands up the live persistent stack: the cordoned kind cluster, the
-in-cluster Harbor registry, the project image pushed to that registry, and the web chart pod serving
+in-cluster registry, the project image pushed to that registry, and the web chart pod serving
 `localhost:30080`. `project down` deletes kind compute and stops the VM while preserving durable host
 `.data`; `project destroy` deletes the VM too. The schema and example surfaces are introspection under the read-only `context` command.

@@ -234,7 +234,7 @@ binary into `./.build/`, and execs it; the binary ensures Docker and builds the 
 
 The recursive `project` command and the `[Step]` chain interpreter described above run end-to-end on
 real hardware. A single `project up` on Incus/Linux stands up the live persistent stack — the cordoned
-kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) → the production Harbor
+kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
 (NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod serving
 `localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
 preserved.
@@ -254,7 +254,7 @@ preserved.
   build plus the project-image build in the VM), then hands off into the VM. The in-VM frame runs
   `context-init`, which mints the child `<project>.dhall` for the project container and streams it in-place
   into the container over the handoff `stdin` (no config bind-mount), then hands off into the container. The container frame runs `deploy-kind` (the cordoned kind cluster — a slice within the
-  VM wall) → `deploy-harbor` (the in-cluster Harbor registry) → `push-image` (kind-load + push the
+  VM wall) → `deploy-registry` (the in-cluster registry) → `push-image` (kind-load + push the
   project image) → `deploy-chart` (deploys the service pod whose entrypoint is `service run`, with the
   active config delivered as a ConfigMap overriding the baked container `<project>.dhall`) →
   `expose-port` (verify the NodePort). Core ships the

@@ -183,7 +183,7 @@ component (no `LiftContext` inside it — per the self-reference-lift rule, § U
 consumer composes its deploy as a **single** explicit lift sequence (§ U) whose final compute step
 **lifts the whole test workflow** into the project container in the VM — folding to
 the selected VM provider followed by `docker run --rm <image> test all` — so the harness runs `clusterUp`
-"locally" on the VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / Harbor / web-serve
+"locally" on the VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / registry / web-serve
 / e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation** (it
 duplicates the harness and double-creates clusters); there is one representation, and the harness is it.
 

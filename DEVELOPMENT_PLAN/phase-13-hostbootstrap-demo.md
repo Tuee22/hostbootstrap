@@ -10,7 +10,16 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened (2026-07-04)** for the **in-cluster-registry doctrine switch** (Harbor → single-binary
+`registry:2`): the demo's `deploy-harbor` step became `deploy-registry`, replacing the 8-pod Harbor Helm
+stack + the `ghcr.io/octohelm/harbor/*` dual-arch mirror + the trivy scanner with a single `registry:2`
+(CNCF `distribution`) Deployment applied via `kubectl` — natively multi-arch, anonymous, HTTP. Harbor was
+never load-bearing (the web pod runs the `kind load`-ed image; no assertion touches the registry), so the
+change is confined to the demo's contributed `deploy-registry` / `push-image` steps; core is untouched.
+**Not yet real-run-validated end to end, so the phase is `Active`** — see Sprint 13.16, `## Remaining Work`,
+and [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 **Reopened and closed (2026-07-02)** for **in-place child-config delivery** (development_plan_standards
 § U, § X; [phase-15](phase-15-binary-context-config.md) Sprint 15.7): the demo replaced the build-then-copy
@@ -127,6 +136,15 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 
 ## Remaining Work
 
+**In-cluster-registry switch (open, real-run-gated).** The Harbor → single-binary `registry:2` swap
+(Sprint 13.16) is code-landed (`deployRegistryAction`; the demo `-Wall` build is green, so the in-container
+`check-code` `-Werror` gate passes) but **not yet real-run-validated end to end**. The closing gate is a
+live `project up` → `test run all` → `project destroy` on Windows/WSL2 (and, if hardware is available,
+Apple-Silicon/`arm64` — where `registry:2`'s native multi-arch removes the old Harbor-image gap) standing up
+`registry:2`, pushing the project image, and reporting **`6/6`**. Until that run passes this phase is
+`Active` and the retired Harbor surfaces stay in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 The contributed `demoChain :: ProjectConfig -> [Step]` interpreted by `project up` is built and
 real-run-validated (2026-06-18). The unified-harness / resource-SSoT / fixed-surface correction
 (development_plan_standards § W, § O, § P, § AA) **landed in code (2026-06-19), code-check-validated**
@@ -195,7 +213,9 @@ dual-arch Harbor override):
   applied (2026-06-19):** `deployHarborAction` now pins the chart to `1.18.3` and overrides every Harbor
   component image to the dual-arch `ghcr.io/octohelm/harbor/*:v2.14.0` mirror (the approach the
   `mattandjames` sibling uses; `goharbor/*` is amd64-only, so `kind load` does not help — it loads the only,
-  amd64, manifest). See [harbor.md](../documents/engineering/harbor.md). The full 8-pod Harbor →
+  amd64, manifest). **This octohelm mirror was superseded (2026-07-04) by the single-binary `registry:2`,
+which is natively multi-arch and needs no mirror — see Sprint 13.16 and
+[in_cluster_registry.md](../documents/engineering/in_cluster_registry.md).** The full 8-pod Harbor →
   `push-image` → `deploy-chart` → `expose-port` lifecycle is also validated on the **Linux/amd64** path
   (2026-06-18), and those step actions are otherwise unchanged by this refactor (only `deploy-kind`'s cordon
   changed, to the slice). `project destroy` then deleted the VM (host `.data` preserved, § O).
@@ -204,9 +224,10 @@ dual-arch Harbor override):
   bridge step needs in the build context; (2) `runVmUp` always issued a VM *create*, breaking idempotent
   reconcile-to-running on a re-run — it now starts an existing instance (Lima/Incus).
 
-The remaining real-run closure is the full Harbor lifecycle with the refactored code: either on the
-Linux/amd64 path (where the Harbor steps are validated and unchanged), or on Apple Silicon once
-`arm64`-capable Harbor images are available. The interpreter this drives is owned by
+The remaining real-run closure is the full registry lifecycle with the refactored code — resolved on every
+substrate by the 2026-07-04 switch to the single-binary `registry:2`, which is natively multi-arch (so the
+earlier "`arm64`-capable Harbor images" gap no longer exists); the open gate is now the `registry:2`
+real-run validation (Sprint 13.16, `## Remaining Work`). The interpreter this drives is owned by
 [phase-16](phase-16-project-lifecycle-command.md); the harness engine by
 [phase-10](phase-10-standardized-test-harness.md); the service command by
 [phase-18](phase-18-service-runtime-command.md).
@@ -339,7 +360,7 @@ the first-run prerequisites are ensured by the demo verbs and the bootstrapper:
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`harbor install` / `harbor push`)
-**Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/harbor.md`
+**Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/in_cluster_registry.md`
 
 #### Objective
 
@@ -827,6 +848,49 @@ bind-mount)`), the container `docker run` carried **no** `-v …hostbootstrap-de
 `hostbootstrap-demo.vm.dhall`/`hostbootstrap-demo.runtime-container.dhall` were produced, and
 `project destroy` restored `.wslconfig` with host `.data` preserved.
 
+### Sprint 13.16: In-cluster registry — Harbor → single-binary registry:2 [Active]
+
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`deployRegistryAction`, `pushImageAction`),
+`demo/kind.yaml`
+**Docs to update**: `documents/engineering/in_cluster_registry.md`,
+`documents/operations/demo_runbook.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Replace the demo's in-cluster registry — the 8-pod Harbor Helm stack (with the `ghcr.io/octohelm/harbor/*`
+dual-arch mirror and the trivy scanner) — with a single-binary `registry:2` (CNCF `distribution`), so the
+registry step fits the tight substrates (a 16 GiB Windows host) without the memory pressure that made the
+Harbor `push-image` stage flake, and so the demo demonstrates the same lightweight registry real consumers
+deploy. Harbor is not load-bearing (the web pod runs the `kind load`-ed image; no assertion touches the
+registry), so this is confined to the demo's contributed `deploy-registry` / `push-image` steps — core is
+untouched.
+
+#### Deliverables
+
+- `deployHarborAction` → `deployRegistryAction`: a single `registry:2` Deployment + NodePort-30500 Service
+  applied with `kubectl` (no Helm, no multi-pod chart), the image `kind load`-ed and the Deployment
+  rollout-waited. `registry:2` is natively multi-arch, so no per-component override and no trivy.
+- `pushImageAction` simplified: keep `kind load`; drop `docker login` / `waitHarborLogin` (the registry is
+  anonymous, HTTP, `localhost`-insecure); keep the bounded `pushWithRetry`.
+- Rename `deploy-harbor` → `deploy-registry`, `harborEndpoint` → `registryEndpoint`; delete
+  `harborImageOverrides` / `harborChartVersion` / `harborImageTag` / `harborAdminPassword`.
+- Docs: retire `documents/engineering/harbor.md` → `in_cluster_registry.md` (supersede + repointed links);
+  update the demo_runbook and the § J harmony docs; record the retired Harbor surfaces in the ledger.
+
+#### Validation
+
+- Demo `-Wall` build green (the in-container `check-code` `-Werror` gate passes on the `Commands.hs`
+  change); `cabal test` (`DocValidator`) green after the doc rename + link repoints.
+
+#### Remaining Work
+
+Open, real-run-gated (§ C): a live `project up` → `test run all` → `project destroy` on Windows/WSL2 (and,
+if available, Apple-Silicon/`arm64`) standing up `registry:2`, pushing the project image, and reporting
+**`6/6`**. On closure, move the four Harbor entries in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) from `## Pending` to `## Removed
+Surfaces` with the validation stamp and flip the phase (and the § J harmony docs) back to `Done`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -838,7 +902,7 @@ bind-mount)`), the container `docker run` carried **no** `-v …hostbootstrap-de
   `role` verbs, the 3-builds explanation, and the four `hostbootstrap-demo.dhall` runtime configs.
 
 **Cross-references to add:**
-- `documents/engineering/harbor.md`, `documents/languages/purescript.md`,
+- `documents/engineering/in_cluster_registry.md`, `documents/languages/purescript.md`,
   `documents/languages/playwright.md`, and `documents/engineering/derived_project_standards.md` reference
   the demo.
 - `system-components.md` adds the `hostbootstrap-demo` worked-consumer subsection.

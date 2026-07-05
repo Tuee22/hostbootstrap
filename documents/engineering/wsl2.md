@@ -211,9 +211,9 @@ and `project destroy`. The earlier `Wsl/Service/0x80072746` session drop during 
 was diagnosed as the WSL2 utility VM being terminated under memory pressure because the budget cordon was
 **computed but never written**; Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`,
 plus the stable total-memory preflight) fixed the root cause, and the closure run brought up in-distro
-Docker/kind/Harbor/web **without a session drop**, restoring `.wslconfig` on teardown with host `.data`
+Docker/kind/registry/web **without a session drop**, restoring `.wslconfig` on teardown with host `.data`
 preserved. (The Windows/WSL2 path is real but remains the most memory-sensitive substrate on a 16 GiB host;
-the Harbor/`push-image` stage can still stall intermittently under memory pressure.) Static validation remains clean: the core and demo Cabal
+the `push-image` stage can still stall intermittently under memory pressure, though the single-binary in-cluster registry is far lighter than the multi-pod stack it replaced.) Static validation remains clean: the core and demo Cabal
 test/build gates and `poetry run python -m hostbootstrap.check_code` pass.
 
 Closure requires one Windows VM lifecycle run end to end through the core `deploy-VM` step kind and the

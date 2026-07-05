@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: the execution-model / lifecycle ("five rules" tied to Container/HostBinary/HostDaemon) derived-project doctrine
-**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [harbor.md](harbor.md), [linking_and_optimization.md](linking_and_optimization.md), [binary_context_config](../architecture/binary_context_config.md)
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [in_cluster_registry.md](in_cluster_registry.md), [linking_and_optimization.md](linking_and_optimization.md), [binary_context_config](../architecture/binary_context_config.md)
 
 > **Purpose**: State the rules a derived project follows to build the one binary that extends
 > `hostbootstrap-core`, contribute its lift **chain** and step actions, inherit the base image, gate on
@@ -33,7 +33,7 @@ an ordered list of `Step`s the core interprets. The shape of that list **is** th
 (single representation, see [composition_methodology § single representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
 host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
-(deploy-harbor, push-image, …). `project up` recursively interprets `chain cfg` from the current frame
+(deploy-registry, push-image, …). `project up` recursively interprets `chain cfg` from the current frame
 and hands off `pb project up` into the next frame; `project up --dry-run` renders the chain plan without
 executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
 verifies it is in the frame its `.dhall` describes, or fails fast.
@@ -76,7 +76,7 @@ The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Ma
 `runHostBootstrapCLI "hostbootstrap-demo" (withChain demoChain (... (projectSpec demoTestSuite
 demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)))`. Its `demoChain` contributes the demo's
 host→VM→container→cluster lift (deploy VM, build pb + image in the VM, context-init the project-container
-child config, deploy kind, deploy harbor, push image, deploy chart, expose NodePort) as a single `[Step]`
+child config, deploy kind, deploy registry, push image, deploy chart, expose NodePort) as a single `[Step]`
 the core interprets across the 3-frame fractal descent. `project up` interprets that chain to stand up the
 persistent stack; `context` visualizes the composition; and `test run all` **drives that same `project up`**
 under a test config (one per distinct test config), asserting the live stack with `demoTestSuite` and tearing it
@@ -273,8 +273,8 @@ into the build-image step) and its VM/provider IO as chain steps — the surface
 verbs. The image-build hook runs as `project init --role image-build-container`.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster
-(kind `extraPortMappings` publish NodePorts to the VM localhost) → the full 8-pod production Harbor
-(NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod →
+(kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
+(NodePort 30500) → the project image pushed to that registry → the web chart pod →
 `localhost:30080` serving HTTP 200 — after which `project down` / `project destroy` tear it down with the
 durable host `.data` preserved. `test run all` **drives that same `project up`** under a test config (one
 per distinct test config), asserts the live stack, and tears it down — reusing the chain rather than a
@@ -291,5 +291,5 @@ that realizes it.
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate
 * [linking_and_optimization.md](linking_and_optimization.md) — linking and optimisation defaults
-* [harbor.md](harbor.md) — pushing the project image (out of scope for hostbootstrap itself)
+* [in_cluster_registry.md](in_cluster_registry.md) — pushing the project image (out of scope for hostbootstrap itself)
 * [binary_context_config](../architecture/binary_context_config.md) — the runtime sibling config file every normal command reads

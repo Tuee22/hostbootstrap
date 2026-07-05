@@ -70,7 +70,7 @@ import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
@@ -209,7 +209,7 @@ The chain descends three frames (the full fractal): the metal host-orchestrator
 provisions the VM and builds the pb (#2) + the project image (#3) in it; the in-VM
 @vm-orchestrator-1@ mints the project-container child config and hands off; the
 in-container @vm-project-container-2@ stands up the persistent stack —
-@deploy-kind@ → @deploy-harbor@ → @push-image@ → @deploy-chart@ → @expose-port@ —
+@deploy-kind@ → @deploy-registry@ → @push-image@ → @deploy-chart@ → @expose-port@ —
 ending at a live webservice on the NodePort. Each frame's binary runs only its
 own segment, then hands off @project up@ one level down via 'demoFrameContext'.
 -}
@@ -223,8 +223,8 @@ demoChain _ =
       contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
       deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame deployKindAction
-    , projectStep "deploy-harbor" "install the in-cluster Harbor registry (helm, NodePort 30500)" demoContainerFrame deployHarborAction
-    , projectStep "push-image" "load the project image into kind + push it to Harbor" demoContainerFrame pushImageAction
+    , projectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500)" demoContainerFrame deployRegistryAction
+    , projectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame pushImageAction
     , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame deployChartAction
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame exposeAction
     ]
@@ -314,8 +314,8 @@ the project container, where the VM's Docker socket is mounted (kind nodes are
 siblings on the VM daemon) and @kubectl@/@helm@/@kind@ resolve on @$PATH@ (baked
 into the base image). Each reads the container's local @<project>.dhall@ for the
 source root + resources, then drives the real reconcile — reusing the core
-cluster lifecycle and the demo's Harbor logic. The persistent stack: a cordoned
-kind cluster (Production profile) → the Harbor registry → the image (kind-loaded
+cluster lifecycle and the demo's registry logic. The persistent stack: a cordoned
+kind cluster (Production profile) → the in-cluster registry → the image (kind-loaded
 + pushed) → the web chart pod → the verified NodePort.
 -}
 deployKindAction :: HostConfig -> IO ()
@@ -326,116 +326,102 @@ deployKindAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
     slice <- either die pure (clusterSliceOfBudget (resourcesFromContext ctx))
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (envelopeOfResources slice))
 
-{- | The default Harbor admin credential the demo installs Harbor with and logs in
-as to push (the in-cluster registry is a demo fixture, not a secret store).
+{- | The in-cluster OCI registry image: the single-binary, natively multi-arch
+CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
+every substrate (amd64 + arm64) with no per-component image override (a multi-pod
+registry stack would otherwise need a dual-arch mirror per component).
 -}
-harborAdminPassword :: String
-harborAdminPassword = "Harbor12345"
+registryImage :: String
+registryImage = "registry:2"
 
-deployHarborAction :: HostConfig -> IO ()
-deployHarborAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+{- | The in-cluster registry manifest: a single @registry:2@ Deployment plus a
+NodePort Service on 30500. Anonymous + HTTP — a @localhost@ NodePort is
+insecure-by-default in Docker, so @push-image@ needs no @docker login@ and no TLS.
+The pod's @IfNotPresent@ pull resolves the kind-loaded image with no in-cluster
+docker.io round-trip.
+-}
+registryManifest :: String
+registryManifest =
+    unlines
+        [ "apiVersion: apps/v1"
+        , "kind: Deployment"
+        , "metadata:"
+        , "  name: registry"
+        , "  labels: { app: registry }"
+        , "spec:"
+        , "  replicas: 1"
+        , "  selector: { matchLabels: { app: registry } }"
+        , "  template:"
+        , "    metadata: { labels: { app: registry } }"
+        , "    spec:"
+        , "      containers:"
+        , "        - name: registry"
+        , "          image: registry:2"
+        , "          imagePullPolicy: IfNotPresent"
+        , "          ports: [ { containerPort: 5000 } ]"
+        , "---"
+        , "apiVersion: v1"
+        , "kind: Service"
+        , "metadata:"
+        , "  name: registry"
+        , "spec:"
+        , "  type: NodePort"
+        , "  selector: { app: registry }"
+        , "  ports:"
+        , "    - { port: 5000, targetPort: 5000, nodePort: 30500 }"
+        ]
+
+{- | @deploy-registry@ (the demo's contributed workload step): stand up the
+in-cluster OCI registry the @push-image@ step pushes to. A single @registry:2@
+Deployment + NodePort Service applied with @kubectl@ (no
+Helm, no multi-pod chart), the image pre-loaded onto the kind nodes and the
+Deployment waited to Ready. @registry:2@ is natively multi-arch, so one manifest
+serves every substrate with no component overrides.
+-}
+deployRegistryAction :: HostConfig -> IO ()
+deployRegistryAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
-    runOrDie cfg Helm ["repo", "add", "harbor", "https://helm.goharbor.io"]
-    runOrDie cfg Helm ["repo", "update"]
-    runOrDie cfg Helm $
-        [ "upgrade"
-        , "--install"
-        , "harbor"
-        , "harbor/harbor"
-        , "--version"
-        , harborChartVersion
-        , "--set"
-        , "expose.type=nodePort"
-        , "--set"
-        , "expose.tls.enabled=false"
-        , "--set"
-        , "expose.nodePort.ports.http.nodePort=30500"
-        , "--set"
-        , "externalURL=http://" ++ harborEndpoint
-        , "--set"
-        , "harborAdminPassword=" ++ harborAdminPassword
-        ]
-            ++ harborImageOverrides
-            ++ [ -- Wait for the Harbor pods to be Ready before returning, so push-image
-                 -- finds the registry live (helm returns immediately without this).
-                 "--wait"
-               , "--timeout"
-               , "15m"
-               ]
-    putStrLn ("deploy-harbor: Harbor reachable at http://" ++ harborEndpoint)
-
-{- | The Harbor chart version pinned to match 'harborImageTag': chart @1.18.3@
-ships Harbor @v2.14.0@, the version of the dual-arch 'octohelm' mirror images, so
-the chart templates and the overridden image tags stay in lockstep.
--}
-harborChartVersion :: String
-harborChartVersion = "1.18.3"
-
--- | The dual-arch Harbor image tag (Harbor @v2.14.0@).
-harborImageTag :: String
-harborImageTag = "v2.14.0"
-
-{- | Override every Harbor component image to the @ghcr.io/octohelm/harbor/*@
-**dual-arch** mirror (development_plan_standards § K; see
-@documents/engineering/harbor.md@). The upstream @goharbor/*@ images are
-**amd64-only single-arch manifests**, so on an @arm64@ kind node (Apple Silicon)
-their pods crash with @exec format error@; the @octohelm@ mirror publishes
-@linux/amd64@ + @linux/arm64@ for the same @v2.14.0@ components, so Harbor runs
-natively on whatever substrate the VM is. Each @--set@ retargets a component's
-@image.repository@ + @image.tag@; the set covers every pod the default chart
-enables (nginx, portal, core, jobservice, registry + registryctl, the internal
-database and redis, and trivy).
--}
-harborImageOverrides :: [String]
-harborImageOverrides =
-    concatMap
-        override
-        [ ("nginx.image", "nginx-photon")
-        , ("portal.image", "harbor-portal")
-        , ("core.image", "harbor-core")
-        , ("jobservice.image", "harbor-jobservice")
-        , ("registry.registry.image", "registry-photon")
-        , ("registry.controller.image", "harbor-registryctl")
-        , ("database.internal.image", "harbor-db")
-        , ("redis.internal.image", "redis-photon")
-        , ("trivy.image", "trivy-adapter-photon")
-        ]
-  where
-    override (key, img) =
-        [ "--set"
-        , key ++ ".repository=ghcr.io/octohelm/harbor/" ++ img
-        , "--set"
-        , key ++ ".tag=" ++ harborImageTag
-        ]
+    -- Pre-load registry:2 onto the kind nodes so the pod's IfNotPresent pull needs
+    -- no docker.io round-trip inside the cluster (the same delivery push-image uses
+    -- for the project image).
+    runOrDie cfg Docker ["pull", registryImage]
+    runOrDie cfg Kind ["load", "docker-image", registryImage, "--name", clusterName (containerPlan ctx)]
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] registryManifest
+    runOrDie cfg Kubectl ["rollout", "status", "deployment/registry", "--timeout=120s"]
+    putStrLn ("deploy-registry: in-cluster registry reachable at http://" ++ registryEndpoint)
 
 pushImageAction :: HostConfig -> IO ()
 pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
     -- Load the image into the kind nodes (so the web chart pod's IfNotPresent pull
-    -- resolves without a registry round-trip), then also push it to Harbor (the
-    -- in-cluster registry capability). @localhost@ registries are insecure by
-    -- default in Docker, so the HTTP NodePort needs no extra config.
+    -- resolves without a registry round-trip), then also push it to the in-cluster
+    -- registry (the capability the demo demonstrates). A @localhost@ registry is
+    -- insecure-by-default in Docker, and @registry:2@ is anonymous, so the HTTP
+    -- NodePort needs no @docker login@ and no TLS.
     runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
-    loggedIn <- waitHarborLogin cfg 60
-    unless loggedIn (die ("push-image: could not log in to the Harbor registry at " ++ harborEndpoint))
-    let ref = harborEndpoint ++ "/library/hostbootstrap-demo:demo"
+    let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
     runOrDie cfg Docker ["tag", demoProjectImage, ref]
-    runOrDie cfg Docker ["push", ref]
+    pushWithRetry cfg ref 4
     putStrLn ("push-image: kind-loaded " ++ demoProjectImage ++ " and pushed " ++ ref)
 
-{- | Retry @docker login@ to the Harbor registry until it succeeds. The registry's
-@/v2/@ returns 401 until authenticated, so a login probe — not a 2xx HTTP check —
-is the right readiness signal once Harbor's pods are up (the @deploy-harbor@ helm
-@--wait@ already gates on pod readiness; this absorbs the brief NodePort / token-
-service warm-up after that). Bounded by @n@ five-second attempts.
+{- | Retry @docker push@ for the transient registry digest / blob-upload class. A
+push is idempotent — it re-uploads only the missing blobs and re-verifies each
+digest — so a bounded retry safely absorbs the intermittent @provided digest did
+not match uploaded content@ / @blob upload unknown@ failures that occur under
+registry load, while a deterministic failure still surfaces on the final attempt.
+Bounded by @n@ attempts with a five-second backoff; the final attempt is a plain
+'runOrDie' so a persistent failure dies with the registry's full diagnostics.
 -}
-waitHarborLogin :: HostConfig -> Int -> IO Bool
-waitHarborLogin _ 0 = pure False
-waitHarborLogin cfg n = do
-    r <- runToolWithStdin cfg Docker ["login", harborEndpoint, "-u", "admin", "-p", harborAdminPassword] ""
-    case r of
-        Right (ExitSuccess, _, _) -> pure True
-        _ -> threadDelay 5000000 >> waitHarborLogin cfg (n - 1)
+pushWithRetry :: HostConfig -> String -> Int -> IO ()
+pushWithRetry cfg ref 1 = runOrDie cfg Docker ["push", ref]
+pushWithRetry cfg ref n = do
+    result <- runToolWithStdin cfg Docker ["push", ref] ""
+    case result of
+        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+        _ -> do
+            putStrLn "push-image: docker push failed; retrying after backoff"
+            threadDelay 5000000
+            pushWithRetry cfg ref (n - 1)
 
 {- | @deploy-chart@: install the web chart pod, templating the chart's embedded
 config from the live config's served @message@ (Sprint 20.2). The message is
@@ -1261,9 +1247,9 @@ bestEffortTool cfg tool argv intent = do
         Right (ExitFailure _, _, err) -> putStrLn ("  (skipped: " ++ takeWhile (/= '\n') err ++ ")")
         Left err -> putStrLn ("  (skipped: " ++ err ++ ")")
 
--- | The in-cluster registry endpoint (a NodePort the demo publishes Harbor on).
-harborEndpoint :: String
-harborEndpoint = "localhost:30500"
+-- | The in-cluster registry endpoint (the NodePort the demo publishes registry:2 on).
+registryEndpoint :: String
+registryEndpoint = "localhost:30500"
 
 -- | The container frame's topology id (the @vm-project-container-2@ witness).
 containerRuntimeFrameId :: String

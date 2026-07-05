@@ -14,7 +14,7 @@
   binary-context validation that gates the recursive interpreter.
 - The core surface a project extends is the **`Step` algebra**. Core ships host-management step kinds
   (deploy-VM, ensure-X, copy-source, build-pb, build-image, context-init, deploy-kind, deploy-chart,
-  expose-port); a project contributes its own step kinds (for the demo, deploy-harbor and push-image)
+  expose-port); a project contributes its own step kinds (for the demo, deploy-registry and push-image)
   into the same ordered `[Step]`. Host steps and workload steps interleave freely — this is the
   workload-extension seam.
 - A project's identity is its **lift chain**, a pure function `chain :: cfg -> [Step]`. The
@@ -38,7 +38,7 @@ steps — the surface is fixed, so it adds no verbs. The binary-context gate and
 the project-local `<project>.dhall` schema decoder/encoder back the interpreter.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
-production Harbor registry, the project image pushed to the in-cluster registry, and the web chart pod
+in-cluster registry, the project image pushed to the in-cluster registry, and the web chart pod
 serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
 `.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
 
@@ -120,7 +120,7 @@ composable unit the recursive interpreter runs and reports. `hostbootstrap-core`
 - `deploy-kind` / `deploy-chart` — cluster and Helm-release lifecycle leaves;
 - `expose-port` — expose an in-cluster `NodePort` to the host.
 
-A project contributes its **own** step kinds (for the demo: `deploy-harbor`, `push-image`) into the same
+A project contributes its **own** step kinds (for the demo: `deploy-registry`, `push-image`) into the same
 ordered `[Step]`. Host steps and workload steps interleave freely; the project appends its step kinds to
 the chain. This is the workload-extension seam.
 
@@ -216,7 +216,7 @@ core command tree.
 |---|---|
 | `context` | Read-only introspection over the sibling `.dhall`: `inspect` renders the lift composition with the current frame marked, and `path`/`show`/`schema`/`render` print the canonical config filename, the config, the schema, and static examples of the reusable Dhall artifacts. |
 | `project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fails fast unless run on a fresh host-level binary with no sibling `.dhall`. Layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults). |
-| `project up` | Recursively interpret `chain projectCfg` from the current frame; idempotent (reconcile-to-running). `--dry-run` renders the chain. Stands up the persistent stack (deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port). |
+| `project up` | Recursively interpret `chain projectCfg` from the current frame; idempotent (reconcile-to-running). `--dry-run` renders the chain. Stands up the persistent stack (deploy-kind → deploy-registry → push-image → deploy-chart → expose-port). |
 | `project down` | Stop service/VM frames and delete kind clusters while preserving durable host state (`.data`). |
 | `project destroy` | Stop, then delete everything spun up; `.data` is always preserved. |
 | `test init` | Needs **no** pre-existing `<project>.dhall`; writes `<project>.test.dhall` (the case matrix plus thin config overrides) via the project-owned `psTestInit`. `project init` writes via `psInit`, whose defaults the harness later reuses (through `psTestConfig`) to generate the run config. |

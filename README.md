@@ -262,7 +262,7 @@ These core verbs behave identically whether invoked through the bare `hostbootst
 binary. The fixed `project`/`test`/`service`/`context`/`check-code` surface, the harness driving the real
 `project up`, and the `service` command are **implemented and real-run-validated** (the `ProjectCommand`
 extension point and the demo `vm`/`incus`/`web` verbs are removed; `service` + its registry exist; the
-harness drives `project up`). Full multi-arch republish and Harbor remain operator-scale steps that need
+harness drives `project up`). Full multi-arch republish remains an operator-scale step that needs
 operator-only prerequisites (a host Docker Hub login + a republished `arm64` base). See
 [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md) and the "Current state" note in the Architecture
 section above. See
@@ -318,7 +318,7 @@ undersized VM during Docker layer extraction.
 ### The demo chain
 
 The demo's end-to-end deploy is **one chain value**, not a parallel set of verbs that re-express cluster
-bring-up, Harbor, web-serve, and e2e. There is **one operation, one representation** (single
+bring-up, the in-cluster registry, web-serve, and e2e. There is **one operation, one representation** (single
 representation, § W): the ordered `[Step]` chain is THE representation, and the standardized test harness
 stays the one test-engine / lift-target. The chain interleaves core host-management steps with the demo's
 contributed workload steps, and `project up` interprets it recursively. The 11-row table below is a
@@ -335,23 +335,23 @@ two deploy-VM steps plus the `context-init` step are the real chain that `projec
 | 5 | ensure docker in VM | VM | reconcile Docker inside the guest (not supplied by Lima's containerd) |
 | 6 | build image | VM | build the project container image on the VM's Docker |
 | 7 | deploy kind | VM → container | bring up the kind cluster on the VM's Docker |
-| 8 | deploy harbor | container | the demo's workload step: stand up the in-cluster Harbor registry |
-| 9 | push image | container | the demo's workload step: load the project image into kind and push it to Harbor |
+| 8 | deploy registry | container | the demo's workload step: stand up the in-cluster registry (registry:2) |
+| 9 | push image | container | the demo's workload step: load the project image into kind and push it to the in-cluster registry |
 | 10 | deploy chart | container | launch the web-service chart pod, whose entrypoint is `service run web`, on NodePort 30080 |
 | 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
 
 Steps 2–7, 10, and 11 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
 deploy-kind, deploy-chart, expose-port) — row 1 (host-pb) is the Python bootstrapper, not a `[Step]`;
-steps 8–9 are the demo's contributed step kinds (deploy-harbor,
+steps 8–9 are the demo's contributed step kinds (deploy-registry,
 push-image) — host, cluster, and workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
 transition through the [self-reference lift](documents/architecture/composition_methodology.md) so kind,
-Harbor, and the webservice run **in the VM** on the VM's Docker, reached with no second "bring up a
+the registry, and the webservice run **in the VM** on the VM's Docker, reached with no second "bring up a
 cluster" path. The doctrine is stated canonically in
 [`documents/architecture/composition_methodology.md`](documents/architecture/composition_methodology.md).
 
 > **Status.** This `[Step]` chain interpreted by `project up` is implemented and real-run-validated: a
 > single `project up` brings up the cordon VM, runs the host-native build and the project-image build in the
-> VM, and stands up kind → Harbor → the web service on the VM's Docker. The unified-harness / fixed-surface
+> VM, and stands up kind → the registry → the web service on the VM's Docker. The unified-harness / fixed-surface
 > / resource-SSoT correction has **landed**: the demo's test seams drive that same `project up` under a test
 > config (rather than a separate per-case cluster), the budget-doubling VM sizing collapses to budget = VM
 > wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. -->
@@ -398,7 +398,7 @@ handler reads its config) → `BudgetView.message` → the SPA `#message` elemen
 implemented worked example (phase-20, `Done`) of a project-owned config value reaching the live workload. The integrated VM/cluster lifecycle is **not** a
 separate chain of verbs: it is the demo's contributed `[Step]` chain above, interpreted recursively by
 `project up`, whose `deploy-chart` step launches the pod whose entrypoint is `service run`, carrying cluster
-bring-up, Harbor, the web service, and the NodePort **inside** the VM. The deploy-VM step is the metal-side
+bring-up, the registry, the web service, and the NodePort **inside** the VM. The deploy-VM step is the metal-side
 cordon step of that one chain, documented in the runbook.
 
 ### Run its test suite

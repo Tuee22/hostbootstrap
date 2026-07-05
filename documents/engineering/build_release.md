@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [harbor.md](harbor.md), [warm_store.md](warm_store.md)
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [in_cluster_registry.md](in_cluster_registry.md), [warm_store.md](warm_store.md)
 
 > **Purpose**: Describe how the four base tags are built and published (host-native `docker build`,
 > no buildx, cold publish) and how a downstream project can build the base locally.
@@ -83,7 +83,7 @@ hostbootstrap base build-and-push --arch amd64
 ```
 
 The CLI never re-pushes the large base image when a downstream project pushes
-its custom image (see [harbor.md](harbor.md)).
+its custom image (see [in_cluster_registry.md](in_cluster_registry.md)).
 
 ## Building the base for downstream projects
 

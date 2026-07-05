@@ -79,7 +79,7 @@ The demo's deploy is the single `[Step]` value `demoChain :: ProjectConfig -> [S
 interprets recursively. The chain descends three frames: the metal `host-orchestrator-0` provisions the
 VM and builds the pb and image in it; the in-VM `vm-orchestrator-1` mints the project-container child
 config and hands off; the in-container `vm-project-container-2` stands up the persistent stack
-(deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port). Each frame's binary runs only
+(deploy-kind → deploy-registry → push-image → deploy-chart → expose-port). Each frame's binary runs only
 its own segment, then hands off `project up` one level down. `project up` ends at a live webservice on
 `localhost:30080`. `project down` deletes the kind cluster and stops the VM while preserving host `.data`;
 `project destroy` deletes the VM too.
@@ -100,7 +100,7 @@ step actions, harness cases, Dhall vocabulary, and artifacts through `ProjectSpe
 `demoCases`, `demoCheckCode`, `demoArtifacts`); it never re-implements or shadows a core operation. Core
 ships the host-management step kinds (deploy-VM, `ensure-X`, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port); the demo interleaves its own workload step kinds
-(deploy-harbor, push-image) into the same `[Step]`. This is the workload-extension seam —
+(deploy-registry, push-image) into the same `[Step]`. This is the workload-extension seam —
 host and workload steps compose in one chain.
 
 The demo demonstrates the additive extension streams (the command surface is **fixed** — a project adds no
@@ -171,7 +171,7 @@ copy refuse commands that do not belong to its frame.
 | Host (`host-orchestrator-0`) | metal orchestrator: drives the chain (`project up` ensures the VM provider, brings the VM up, builds the binary and image in it; `project down` / `project destroy` tear the VM down) |
 | VM (`vm-orchestrator-1`) | fresh Linux host: build the host-native binary and the project container, then mint the project-container child config and hand off `project up` |
 | Image-build container | Dockerfile-time `check-code` and config/code generation only |
-| Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, Harbor, the pushed image, the web chart pod, and the verified NodePort |
+| Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, the in-cluster registry, the pushed image, the web chart pod, and the verified NodePort |
 | Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant), reading its ConfigMap-delivered service-role config and surfacing its `message` field into the served SPA |
 
 ## Lifecycle ownership
@@ -187,7 +187,7 @@ installed, orchestrated, and torn back down by the chain:
 - **(c)** that binary **installs Docker (on the VM) and builds the project container**;
 - **(d)** the chain hands `project up` into the project container in the VM, where the container frame
   brings up the persistent kind cluster **on the VM's Docker** (the mounted socket), installs the
-  in-cluster Harbor registry, loads and pushes the project image, and deploys the webservice into the
+  in-cluster registry, loads and pushes the project image, and deploys the webservice into the
   cluster;
 - **(e)** the **expose-port** step verifies the published NodePort, ending `project up` at a live
   webservice on `localhost:30080`;
@@ -205,7 +205,7 @@ handing off `project up` one frame at a time. The canonical statement and the li
 The chain drives a pristine `ubuntu/24.04` VM from zero to a running, end-to-end-served
 `hostbootstrap-demo`, then (on `project down` / `project destroy`) tears it back down. The metal frame
 provisions the VM and builds the binary and image in it; the in-VM frame mints the project-container
-child config; the in-container frame stands up the kind cluster, Harbor, the pushed image, the web chart
+child config; the in-container frame stands up the kind cluster, the in-cluster registry, the pushed image, the web chart
 pod, and the verified NodePort:
 
 | Step | Frame | What it does |
@@ -215,8 +215,8 @@ pod, and the verified NodePort:
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
 | context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses and stream it in-place into the container over the handoff `stdin` (no config bind-mount), then hand off `project up` into the container |
 | deploy-kind | `vm-project-container-2` | **cordon #2** — bring up the persistent kind cluster (Production profile) on the VM's Docker |
-| deploy-harbor | `vm-project-container-2` | install the in-cluster Harbor registry (NodePort 30500) |
-| push-image | `vm-project-container-2` | load the project image into kind and push it to Harbor |
+| deploy-registry | `vm-project-container-2` | install the in-cluster registry (registry:2, NodePort 30500) |
+| push-image | `vm-project-container-2` | load the project image into kind and push it to the in-cluster registry |
 | deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
@@ -236,8 +236,8 @@ The operator drives the chain through the `project` lifecycle.
   (builds #2 and #3), then hands off into the VM. The in-VM `vm-orchestrator-1` frame's context-init step
   mints the project-container child config and hands off into the container. The in-container
   `vm-project-container-2` frame then brings up the persistent kind cluster (cordon #2, Production
-  profile) on the **VM's** Docker, installs the in-cluster Harbor registry (NodePort 30500), loads and
-  pushes the `hostbootstrap-demo:local` image to Harbor, deploys the `warp` / `wai` web service chart pod
+  profile) on the **VM's** Docker, installs the in-cluster registry (NodePort 30500), loads and
+  pushes the `hostbootstrap-demo:local` image to the in-cluster registry, deploys the `warp` / `wai` web service chart pod
   (NodePort 30080, the pod's entrypoint is `service run`, the `Web` variant), and verifies the NodePort — ending at a live
   webservice on `localhost:30080`. When the metal host is logged in to Docker Hub, the orchestrator
   forwards that login over `stdin` so the nested pulls authenticate; the credential is never written into
@@ -245,7 +245,7 @@ The operator drives the chain through the `project` lifecycle.
   [registry credentials](../engineering/registry_credentials.md)). See
   [build and run model](../architecture/build_and_run_model.md),
   [derived Dockerfile](../engineering/derived_dockerfile.md),
-  [harbor](../engineering/harbor.md) for the in-cluster registry, and
+  [in_cluster_registry.md](../engineering/in_cluster_registry.md) for the in-cluster registry, and
   [cluster lifecycle](../engineering/cluster_lifecycle.md) for the fail-closed `clusterUp` reconciler the
   `deploy-kind` step drives.
 - **`test run all`** — needs `test.dhall` (written by `test init`; `test init` needs no pre-existing
@@ -316,13 +316,9 @@ substrate-specific prerequisites:
   consumer never works around a stale published base by editing `container.cabal.project` to import a
   freeze the published base does not ship. See [base image](../engineering/base_image.md) and
   [build & release](../engineering/build_release.md).
-- **Harbor runs on dual-arch images (handled by the chain, not the operator).** The upstream
-  `goharbor/*` images are amd64-only, so on an `arm64` kind node they crash with `exec format error`. The
-  demo's `deploy-harbor` step pins the chart to `1.18.3` and overrides every Harbor component image to the
-  dual-arch `ghcr.io/octohelm/harbor/*:v2.14.0` mirror, so `deploy-harbor`'s `--wait` does not stall on a
-  missing-arch image — see [Harbor: dual-arch component images](../engineering/harbor.md). The operator
-  still confirms the project image's Playwright browsers (`chromium`/`firefox`/`webkit`) and WebKit system
-  dependencies resolve on `aarch64` so the `e2e-tabs` case does not stall.
+- **Confirm Playwright browsers on `aarch64`.** The operator confirms the project image's Playwright
+  browsers (`chromium`/`firefox`/`webkit`) and WebKit system dependencies resolve on `aarch64` so the
+  `e2e-tabs` case does not stall.
 - **Provision host disk.** Lima sizes `--disk` only on first creation of the instance, and the
   budget-sized VM needs ~100 GiB of free APFS space to grow into. An operator deletes any stale
   `hostbootstrap-demo-vm` instance (`limactl delete`) so the fresh sizing takes effect, and confirms the

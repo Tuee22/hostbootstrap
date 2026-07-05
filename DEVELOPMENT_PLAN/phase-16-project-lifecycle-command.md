@@ -82,7 +82,7 @@ Make a project's deploy a pure value interpreted by the core, per development_pl
 
 - Define the `Step` algebra as the lift-chain stream's reuse unit (§ T): `hostbootstrap-core` ships the
   host-management step kinds (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`,
-  deploy-kind, deploy-chart, expose-port), and a project contributes its own step kinds (deploy-harbor,
+  deploy-kind, deploy-chart, expose-port), and a project contributes its own step kinds (deploy-registry,
   push-image) into the same `[Step]`. Host and project steps interleave freely.
 - Interpret the chain **recursively/fractally**: `project up` runs the current frame's steps, then for the
   next nested frame provisions it, builds/installs the project binary in it, and hands off `pb project up`
@@ -118,7 +118,7 @@ host-management step kinds plus an open seam for project-contributed step kinds,
 - A `Step` type in `HostBootstrap.Step` whose core constructors model the host-management step kinds:
   deploy-VM, `ensure-*` (the `ensure` reconcilers invoked as chain steps, § L), copy-source, build-pb,
   build-image, `context-init`, deploy-kind, deploy-chart, and expose-port.
-- A project-extension seam so a consumer contributes its own step kinds (for the demo: deploy-harbor,
+- A project-extension seam so a consumer contributes its own step kinds (for the demo: deploy-registry,
   push-image) into the same `[Step]` without redefining the core kinds, interleaving host and
   workload steps freely (the lift-chain stream, § T).
 - A pure, unit-testable shape for each step (description, target frame, and reconcile action) so the chain

@@ -106,7 +106,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   Dhall, never persisted, and never in `argv`.
 - [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the
   root-gated `test init` / `test run <suite>|all` surface (`test.dhall`), and the project test suites.
-- [engineering/harbor.md](engineering/harbor.md) — downstream image-push guidance.
+- [engineering/in_cluster_registry.md](engineering/in_cluster_registry.md) — the in-cluster registry a downstream project pushes to.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
   every derived project follows, including the extension-stream contract whose stream 1 is the lift chain.
 - [engineering/derived_dockerfile.md](engineering/derived_dockerfile.md) — the idiomatic derived
@@ -140,7 +140,7 @@ the next frame, standing up the live persistent stack; `project down` / `project
 while preserving host `.data`.
 
 - **The chain is the single representation.** Cluster bring-up runs as the `deploy-kind` and `deploy-chart`
-  steps, the `context-init` step mints the child config, `deploy-harbor` and `push-image` stand up and load
+  steps, the `context-init` step mints the child config, `deploy-registry` and `push-image` stand up and load
   the registry, and the `ensure` reconcilers run as chain steps — all interpreted under `project up`.
 - **`context` is read-only introspection.** Its `inspect`/`path`/`show`/`schema`/`render` subcommands
   introspect and visualize the current frame, including schema and render output.

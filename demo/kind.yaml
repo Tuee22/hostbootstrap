@@ -1,7 +1,7 @@
 # The kind cluster config for the demo's persistent stack (cordon #2, inside the
 # VM). It publishes the in-cluster NodePorts to the VM's localhost via
 # extraPortMappings so the container-frame steps reach them on localhost:
-#   - 30500 — the Harbor registry (push-image pushes the project image here)
+#   - 30500 — the in-cluster registry (push-image pushes the project image here)
 #   - 30080 — the web service (expose-port verifies it; the host reaches it here)
 # Without these mappings a kind NodePort is only reachable on the node's internal
 # Docker IP, not on localhost. `HostBootstrap.Cluster.Lifecycle.clusterCreate`

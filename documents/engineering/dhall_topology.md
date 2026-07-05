@@ -151,8 +151,8 @@ and its VM/provider IO as chain steps — the surface is fixed, so it adds no ve
 The model this document describes is the recursive `project` chain: `chain :: cfg -> [Step]`
 interpreted by `project up`, with `project init` writing the root config, the context-init step minting
 child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
-stands up the live persistent stack — a cordoned kind cluster, the full 8-pod production Harbor, the
-project image pushed to the in-cluster registry, and the web chart pod serving `localhost:30080` — and
+stands up the live persistent stack — a cordoned kind cluster, the in-cluster registry, the
+project image pushed to that registry, and the web chart pod serving `localhost:30080` — and
 `project down` / `project destroy` tear it back down with durable host `.data` preserved. The topology
 data and per-frame fail-fast above are the substrate the chain interpreter builds on. `test run all`
 **drives the same `project up`** under a test-written config (one `project up` per distinct test config),

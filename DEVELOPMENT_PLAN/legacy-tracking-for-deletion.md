@@ -10,7 +10,27 @@
 
 ## Pending
 
-None.
+The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`) is code-landed in phase-13
+Sprint 13.16 (2026-07-04) but **not yet real-run-validated**; these four Harbor surfaces are removed from
+`demo/src/HostBootstrapDemo/Commands.hs` and move to **Removed Surfaces** when the Sprint 13.16 real-run
+gate (a live `test run all` `6/6` standing up `registry:2`) closes.
+
+- **The dual-arch octohelm Harbor mirror override set** (`harborImageOverrides` in
+  `demo/src/HostBootstrapDemo/Commands.hs`, pinning the `harbor/harbor` chart to `1.18.3` and overriding
+  every component image to `ghcr.io/octohelm/harbor/*:v2.14.0`) — removed when the demo's in-cluster registry
+  moved from the 8-pod Harbor Helm stack to a single-binary `registry:2` (CNCF `distribution`), which is
+  natively multi-arch and needs no mirror. Replacement: the `deploy-registry` step (`deployRegistryAction`)
+  running `registry:2`. Owning phase: phase-13 Sprint 13.16 (step-kind name also phase-16).
+- **The `harbor/harbor` Helm chart dependency and its 8-pod stack** (the `helm repo add harbor` +
+  `helm upgrade --install harbor` install in `deployHarborAction`, NodePort 30500) — removed by the
+  `registry:2` swap; a single `registry:2` Deployment applied with `kubectl` replaces the 8-pod chart.
+  Replacement: `deployRegistryAction`. Owning phase: phase-13 Sprint 13.16.
+- **The Harbor trivy scanner component** (the `trivy.image` override / `trivy.enabled=false` in the Harbor
+  override set) — removed; `registry:2` ships no image scanner. Owning phase: phase-13 Sprint 13.16.
+- **`harborAdminPassword` and `waitHarborLogin`** (the Harbor admin credential and the post-install
+  `docker login` readiness wait in `demo/src/HostBootstrapDemo/Commands.hs`) — removed; `registry:2` runs
+  anonymous/insecure in-cluster, so no admin password or login-wait step is needed. Owning phase: phase-13
+  Sprint 13.16.
 
 The in-place child-config delivery correction (development_plan_standards § U, § X) landed in phase-15
 Sprint 15.7 / phase-13 Sprint 13.15 (2026-07-02); its two former entries are in **Removed Surfaces** below.

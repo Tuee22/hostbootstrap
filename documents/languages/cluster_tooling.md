@@ -10,7 +10,7 @@
 This page documents what the base image ships for cluster tooling.
 
 The base image carries the CLIs every project needs to drive a local Kind
-cluster + Harbor registry:
+cluster + in-cluster registry:
 
 | CLI | Source |
 |---|---|

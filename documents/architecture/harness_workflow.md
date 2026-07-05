@@ -88,7 +88,7 @@ The test surface is a **separate command pair**, gated to the **root** (host-orc
 `assertCase` bodies as a non-empty `TestSuite` so the cases run under `test run`, not a per-noun subcommand.
 
 The surface **drives** deploy rather than duplicating it. `project up` interprets the project chain to
-stand up a persistent stack (VM → project image → kind → harbor → webservice/`service run`, exposed to
+stand up a persistent stack (VM → project image → kind → registry → webservice/`service run`, exposed to
 the host); `test run` runs that same `project up` under a test config, asserts, and tears it down. There
 is no parallel `seamSetup` that stands up a cluster a second way.
 

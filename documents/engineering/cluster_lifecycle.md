@@ -32,7 +32,7 @@ The chain is the project: `chain :: cfg -> [Step]` is one ordered representation
 interpreter walks (see [composition_methodology](../architecture/composition_methodology.md), the
 canonical home of the model). Cluster lifecycle is expressed as **step kinds** in that chain.
 `hostbootstrap-core` contributes the cluster step kinds (`deploy-kind`-class steps plus the chart
-deploy); a project contributes its own steps (`deploy-harbor`, `push-image`, …) into the *same*
+deploy); a project contributes its own steps (`deploy-registry`, `push-image`, …) into the *same*
 `[Step]`, and host and workload steps interleave freely. The cluster steps are leaves: they bottom out
 at the container frame into `kubectl`/`helm`/`kind`.
 
@@ -158,7 +158,7 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
-  in-cluster Harbor registry (NodePort 30500), the project image pushed to that registry, and the web
+  in-cluster registry (NodePort 30500), the project image pushed to that registry, and the web
   chart pod serving HTTP 200 at `localhost:30080` — and `project down` / `project destroy` tear it down
   with host `.data` preserved.
 

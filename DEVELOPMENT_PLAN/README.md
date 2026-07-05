@@ -50,8 +50,9 @@ doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role
 --also-role`, § X); and long-running roles run through the `service` command (§ AA). It is code-check- and
 real-run-validated: `cabal test all` (226, phase-close snapshot), `cabal build all --ghc-options=-Werror`,
 fourmolu/hlint on the demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
-Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (8-pod Harbor on `arm64` via
-the dual-arch `ghcr.io/octohelm/harbor/*` images, the web pod running `service run web`). `test run all`
+Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (the web pod running
+`service run web`), with the in-cluster registry step now switching from the 8-pod Harbor stack to a
+single-binary `registry:2` (phase-13 `Active`, real-run-gated; see Sprint 13.16). `test run all`
 reports **`6/6 passed`** on current runs (three cases x two message variants; phase 20 added the second
 message variant); the **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
 (2026-06-21) are pre-phase-20 historical snapshots: every
@@ -140,7 +141,7 @@ for the component inventory.
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
 | 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
 | 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |

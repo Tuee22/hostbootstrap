@@ -162,13 +162,13 @@ The ownership boundary described above is the shipped implementation.
   descent — the chain is the SINGLE representation of the deploy. The core command tree is exactly
   `project`, `test`, `service`, `context`, and `check-code`; `context` is read-only introspection
   (`inspect`/`path`/`show`/`schema`/`render`). `project up` interprets the chain steps
-  (`deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port`), and the lifecycle rests on
+  (`deploy-kind`/`deploy-registry`/`push-image`/`deploy-chart`/`expose-port`), and the lifecycle rests on
   the lift primitive with provider-backed folds for Lima and Incus. The demo contributes its `Web` service
   variant (the chart pod runs `service run`; the build-time bridge folds into the build-image step) and its
   VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.
 - **Persistent stack.** A single `project up` on Incus/Linux interprets the chain across the 3-frame
   fractal descent (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`) and stands up
-  the live persistent stack — a cordoned kind cluster, then the full 8-pod production Harbor (NodePort
+  the live persistent stack — a cordoned kind cluster, then the in-cluster registry (NodePort
   30500), then the project image pushed to the in-cluster registry, then the web chart pod serving HTTP
   200 at `localhost:30080`. `project down` deletes kind compute and stops VM frames; `project destroy`
   deletes the provisioned compute frames. Both preserve host `.data`. `test run all` **drives that same `project up`** under

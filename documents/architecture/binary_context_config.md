@@ -283,7 +283,7 @@ container) plus the chart-launched service-role pod — each reading its own `<p
 |---|---|
 | Host | metal-side orchestrator: select the VM provider, size and launch the VM, tear it down behind the guard |
 | VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux, WSL2 on Windows; re-establish the host-native binary and build the project container |
-| Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`) that stand up the persistent stack |
+| Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-registry` → `push-image` → `deploy-chart` → `expose-port`) that stand up the persistent stack |
 | Cluster service | chart-launched webservice pod: serve only the service role |
 
 The same `project` command tree exists in each copy of the binary. Each copy reads a different local
@@ -330,8 +330,8 @@ The model described above is real-run-validated end-to-end on real hardware:
 - The `.dhall` is the explicit parameters + context + witness value of a root the chain is a pure function
   of, with structural variation expressed as a root parameter flag.
 
-A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the full
-production Harbor, the project image pushed to the in-cluster registry, and the web chart pod serving
+A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
+in-cluster registry, the project image pushed to the in-cluster registry, and the web chart pod serving
 `localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
 preserved. The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
 describes the authority contract.

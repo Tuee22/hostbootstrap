@@ -80,7 +80,7 @@ turn. Per variant it **generates** the run's `<project>.dhall` functionally via 
 `psTestConfig` (reusing the same `psInit` builder as `project init` — never shelling the CLI), runs
 `project up` over the project's own chain (the full 9-step chain first provisions the VM and builds the
 binary and image; its in-container persistent-stack segment is
-`deploy-kind` → `deploy-harbor` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
+`deploy-kind` → `deploy-registry` → `push-image` → `deploy-chart` → `expose-port`), runs the case assertions
 in the frame appropriate to each (reusing the self-reference lift — e.g. a Playwright assertion as a
 container on the VM host network in the VM frame, outside the cluster), and tears the stack down with
 `project destroy` before moving to the next variant. The demo runs **two** variants — `"Hello, world!"`
@@ -178,7 +178,7 @@ no unit-file rendering tests or real service-manager integration tests.
   tears it down between variants, reusing the chain rather than standing up a separate per-case cluster.
   The recursive `project init|up|down|destroy` command interprets the `[Step]` chain
   across the composed frame stack: on Incus/Linux a single `project up` stands up the cordoned kind
-  cluster, the 8-pod production Harbor (NodePort 30500), the project image pushed to the in-cluster
+  cluster, the in-cluster registry (NodePort 30500), the project image pushed to that
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
   `project destroy` tear it down with host `.data` preserved.
 

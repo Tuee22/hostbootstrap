@@ -23,13 +23,13 @@
   so the shape lives in code and the `.dhall` carries only parameters, context, and witnesses.
 - **The Step algebra is the reuse unit.** The core ships host-management step kinds (`deploy-vm`,
   `ensure-X`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`,
-  `expose-port`); the project contributes workload step kinds (`deploy-harbor`, `push-image`, …) into the
+  `expose-port`); the project contributes workload step kinds (`deploy-registry`, `push-image`, …) into the
   *same* `[Step]`. Host and workload steps interleave freely — this is the workload-extension seam.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
 - **Fractal bootstrap.** The Python bootstrapper is the **metal-frame instance** of the descent pattern,
-  and the recursion bottoms out at the container `pb` running the `deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm` leaves. See
+  and the recursion bottoms out at the container `pb` running the `deploy-kind`/`deploy-registry`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm` leaves. See
   [§ Fractal Bootstrap](#fractal-bootstrap).
 
 ## The Step And The Chain
@@ -133,7 +133,7 @@ model makes explicit rather than hides:
   parent frame builds/installs it before it can hand off.
 - The **container frame skips the build** (`docker run <image> project up`), because the project image
   already carries the `pb` as its `ENTRYPOINT`. Recursion **bottoms out** at the container `pb`, which
-  runs the `deploy-kind`/`deploy-harbor`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm`
+  runs the `deploy-kind`/`deploy-registry`/`push-image`/`deploy-chart`/`expose-port` steps as `kubectl`/`helm`
   leaves — no further frame to descend into.
 
 ## Context-Aware Topology
@@ -263,19 +263,17 @@ standardized harness.
 
 `context-init` mints the child `<project>.dhall` and streams it in-place into the next frame over the lift's
 `stdin` channel (no config bind-mount); `deploy-kind`/`deploy-chart`
-bring up the cluster and workload; `deploy-harbor`/`push-image` install the in-cluster registry and push
+bring up the cluster and workload; `deploy-registry`/`push-image` install the in-cluster registry and push
 the project image; `context inspect` renders the topology with the current frame marked.
 
 A single `project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
-budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the full 8-pod
-production Harbor (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
+budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the in-cluster
+registry (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
 pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
 it down with host `.data` preserved.
 
 This is validated end-to-end on two of the three metal substrates:
-Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20), the latter with Harbor's component images
-overridden to the dual-arch `ghcr.io/octohelm/harbor/*` mirror so the `arm64` kind nodes run them natively
-(see [harbor](../engineering/harbor.md)).
+Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20).
 
 The **third** metal substrate, Windows (WSL2 on
 `windows-cpu`/`windows-gpu`, the structural peer of Lima/Incus), is implemented through platform readiness

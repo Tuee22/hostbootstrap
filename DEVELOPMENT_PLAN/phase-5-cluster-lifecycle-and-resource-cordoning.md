@@ -16,7 +16,7 @@ The cluster lifecycle is now reached **only** as `deploy-kind` / `deploy-chart` 
 `project up` (the flat `cluster` verb group is removed; read-only liveness moved under `context`), and the
 real-run gate is **met (2026-06-18)**: a live `project up` on Incus/Linux brought the cordoned kind cluster
 up in the container frame (`clusterCreate` preflight + `kind create` + `kind export kubeconfig` + the Linux
-cordon, then the Harbor + web charts), and `project down` / `project destroy` tore it down with host `.data`
+cordon, then the registry + web charts), and `project down` / `project destroy` tore it down with host `.data`
 preserved (§ O). The pure cores below are unchanged and unit-tested.
 
 `HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,

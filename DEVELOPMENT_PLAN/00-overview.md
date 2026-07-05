@@ -226,9 +226,10 @@ container, and service/daemon contexts. It is `Done`: the contributed `demoChain
 `project up` drove the unified-harness / resource-SSoT / fixed-surface correction to a real-run close on a
 16 GiB Apple-Silicon host (2026-06-20) — the demo's test surface drives the real `project up` (no second
 bring-up), the VM is sized to the budget with the cluster a slice within it, and `web serve` / `web bridge`
-moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 (8-pod
-`arm64` Harbor via the dual-arch `ghcr.io/octohelm/harbor/*` images) and `test run all` reported `3/3
-passed` (2026-06-20, pre-phase-20, incl. the Playwright e2e lifted into the VM frame; current runs report `6/6`). **Reopened and closed `Done` (2026-07-02)** for
+moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 and
+`test run all` reported `3/3 passed` (2026-06-20, pre-phase-20, with an 8-pod Harbor registry at the time,
+incl. the Playwright e2e lifted into the VM frame; later runs `6/6`); the in-cluster registry is now
+switching to a single-binary `registry:2` (phase-13 `Active`, see Sprint 13.16). **Reopened and closed `Done` (2026-07-02)** for
 in-place child-config delivery (Sprint 13.15): the demo replaced the build-then-copy VM config and
 build-then-mount container config with a projection streamed over the lift's `stdin` channel and written by
 the descending binary before dispatch — validated by a live Windows/WSL2 `test run all` **`6/6`** with no

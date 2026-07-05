@@ -43,7 +43,7 @@
    `deployKindStep`, `deployChartStep`, `exposePortStep`) and the project's own kinds via `projectStep`;
    host and workload steps interleave in one list. The core interprets the chain recursively and
    idempotently (reconcile-to-running). See [composition_patterns](composition_patterns.md).
-3. **Define project step kinds and their actions.** A workload step the core does not ship (deploy-harbor,
+3. **Define project step kinds and their actions.** A workload step the core does not ship (deploy-registry,
    push-image, …) is a project-contributed `Step` kind built with `projectStep`, plus its action. Hand
    these — together with the chain, a non-empty `TestSuite`, the `check-code` action, and the
    `ConfigArtifact` delta — to `runHostBootstrapCLI` through `ProjectSpec` so they merge into the recursive
@@ -87,8 +87,8 @@ deploy-VM       host-orchestrator-0 (metal)        -- launch the budget-sized VM
 build-pb        host-orchestrator-0 (metal)        -- pristine-bootstrap: build the binary host-native (#2) + the project image (#3) in the VM
 context-init    vm-orchestrator-1 (vm)             -- mint the project-container child .dhall in the VM
 deploy-kind     vm-project-container-2 (container) -- bring up the persistent kind cluster (cordon #2, Production profile)
-deploy-harbor   vm-project-container-2 (container) -- install the in-cluster Harbor registry (NodePort 30500)
-push-image      vm-project-container-2 (container) -- load the project image into kind and push it to Harbor
+deploy-registry vm-project-container-2 (container) -- install the in-cluster registry (registry:2, NodePort 30500)
+push-image      vm-project-container-2 (container) -- load the project image into kind and push it to the in-cluster registry
 deploy-chart    vm-project-container-2 (container) -- deploy the web service chart pod (NodePort 30080), forwarding the demo's `message` into its ConfigMap
 expose-port     vm-project-container-2 (container) -- verify the web NodePort (30080) is reachable
 ```
@@ -97,7 +97,7 @@ The metal binary's `buildPbStep` runs `pristine-bootstrap`: it stages the source
 demo binary host-native (build #2), and builds the project image FROM the published base (build #3), all
 in the VM. The `contextInitStep` mints the project-container child `<project>.dhall`. The container steps
 stand up the persistent stack: `deployKindStep` brings up the cordoned kind cluster on the VM's Docker,
-`projectStep "deploy-harbor"` and `projectStep "push-image"` are the demo's own workload kinds in the same
+`projectStep "deploy-registry"` and `projectStep "push-image"` are the demo's own workload kinds in the same
 list, `deployChartStep` deploys the web pod and forwards the demo's `message` field as chart extra-values
 into its ConfigMap (the `serveWeb` handler reads its delivered config and the SPA renders `message` into
 `#message`), and `exposePortStep` verifies the endpoint. `project up` ends at a live webservice on

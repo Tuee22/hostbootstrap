@@ -84,7 +84,7 @@ The run-model is not a top-level mode the operator picks. It is the shape a **co
 
 - A binary's identity is its chain value `chain :: cfg -> [Step]` — an ordered list of steps that
   interleaves core host-management step kinds (deploy-VM, ensure-X, copy-source, build-pb, build-image,
-  context-init, deploy-kind, deploy-chart, expose-port) with the project's own step kinds (deploy-harbor,
+  context-init, deploy-kind, deploy-chart, expose-port) with the project's own step kinds (deploy-registry,
   push-image, …). This ordered `[Step]` is the extension-stream's **lift chain** (stream 1); see
   [library hierarchy](library_hierarchy.md).
 - `project up` interprets that chain recursively (the fractal interpreter): it runs the current frame's
@@ -180,7 +180,7 @@ recursively by `project up`; `web serve` resolves to `service run` (`Web` varian
 the build-image step.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster (kind
-`extraPortMappings` publish NodePorts to the VM localhost) → the production Harbor registry (NodePort
+`extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry (NodePort
 30500) → the project image pushed to the in-cluster registry → the web chart pod at `localhost:30080`
 serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` deletes kind
 compute and stops the VM while preserving host `.data`; `project destroy` deletes the VM too. The test harness

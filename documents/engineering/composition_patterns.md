@@ -36,7 +36,7 @@ its own segment.
    Its chain is a **single** ordered `[Step]` — deploy-VM (ensure the VM provider — Lima on Apple Silicon,
    Incus on Linux, WSL2 on Windows) → deploy-VM (launch the budget-sized VM, cordon #1) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
-   VM) → context-init in the VM → deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port —
+   VM) → context-init in the VM → deploy-kind → deploy-registry → push-image → deploy-chart → expose-port —
    that stands up a live, persistent stack ending at a web service. See
    [single representation](#single-representation-the-chain-is-the-representation).
 3. **Host → managed cloud cluster** — build the container, then a container-frame step uses a cloud CLI
@@ -46,7 +46,7 @@ its own segment.
    service (e.g. `rke2`/`k3s`), deploy into it, optionally layer cloud-validation stacks via an
    in-cluster state store.
 5. **Phased, registry-first cluster bring-up** — within a cluster frame, an ordering shape: stand up
-   storage + database + **registry foundation first**, mirror all images through the in-cluster
+   storage + database + **registry foundation first**, mirror images through the in-cluster
    registry, then platform services, then the workload chart.
 6. **Host-native daemon bridged to an in-cluster coordinator** — the binary also runs as a long-lived
    host daemon (singleton via a file lock) an in-cluster workload reaches over a message bus, used when
@@ -79,7 +79,7 @@ the cookbook summary:
 - **The Python bootstrapper is the metal-frame instance** of that exact pattern — provision the metal
   frame, build/install the pb, hand off — with two caveats the cookbook reuses: the *build* step is
   parent-orchestrated (the child pb does not exist yet), and the container frame *skips* the build
-  (`docker run img project up`). Recursion bottoms out at the container pb, which runs kind/harbor/web
+  (`docker run img project up`). Recursion bottoms out at the container pb, which runs kind/registry/web
   as `kubectl`/`helm` leaves.
 - **`.dhall` is parameters + context + witness, never the shape.** Each pb reads the sibling
   `<project>.dhall`, verifies it occupies the frame the `.dhall` describes, and fails fast on a wrong
@@ -94,7 +94,7 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 | Origin | Step kinds (examples) |
 |---|---|
 | Core (host-management) | `deploy-vm`, `ensure-<tool>`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port` |
-| Project (workload) | `deploy-harbor`, `push-image`, … contributed by the consumer |
+| Project (workload) | `deploy-registry`, `push-image`, … contributed by the consumer |
 
 The canonical taxonomy of step semantics — converge / context-lift / one-shot action / control-loop /
 run-to-completion, plus each kind's plan/apply, retry behaviour, and L0/L1/L2 layer — lives in
@@ -114,7 +114,7 @@ summary for shape 2:
 - The shape-2 chain stands up a persistent stack as one descent: `project up` interprets it across the
   composed frame stack — the metal frame provisions the VM and rebuilds the binary + project image in
   it, the in-VM frame mints the project-container child config and hands off, and the in-container frame
-  runs deploy-kind → deploy-harbor → push-image → deploy-chart → expose-port. The chain ends at a live
+  runs deploy-kind → deploy-registry → push-image → deploy-chart → expose-port. The chain ends at a live
   web service.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
   surface, frame-agnostic — it runs its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
@@ -180,7 +180,7 @@ reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `cluste
 The `chain :: cfg -> [Step]` value, the recursive `project up` interpreter, the core Step
 algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
 compose end-to-end: a single `project up` on Incus/Linux stands up the live persistent stack — a
-cordoned kind cluster, the production Harbor, the project image pushed to the in-cluster registry, and
+cordoned kind cluster, the in-cluster registry, the project image pushed to that registry, and
 the web chart pod serving `localhost:30080` — and `project down`/`project destroy` tear it down with
 host `.data` preserved. The demo's status is tracked in
 [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
