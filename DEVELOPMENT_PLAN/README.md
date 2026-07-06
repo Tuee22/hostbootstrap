@@ -40,9 +40,10 @@ lifecycle command, with a read-only `context` introspection command and a `test`
 the same fractal bootstrap — provision the frame, build the pb in it, hand off `pb project up` — of which
 the Python bootstrapper is the metal-frame instance.
 
-The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18) is
-**complete — all `Done`**; phases 13 and 15 were briefly reopened for the **in-place child-config delivery**
-refinement (below) and are now **closed `Done`** (2026-07-02). The command surface is **fixed** to `project` / `test` / `service` /
+The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18)
+landed and is code-check-validated (phases 10 and 16 are **reopened `Active` 2026-07-05** for cross-substrate
+reliability hardening — see below); phases 13 and 15 were briefly reopened for the **in-place child-config
+delivery** refinement (below) and are now **closed `Done`** (2026-07-02). The command surface is **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
 (§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (no
@@ -89,8 +90,9 @@ standardized, `Type.dhall` is deleted, and cluster-down prose matches kind delet
 state preserved. The Windows third-substrate reopening is now closed for phases 2, 3, and 9:
 Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`) through the Phase-2
 pre-binary Haskell toolchain bootstrap and substrate detection, Phase-3 `ensure cudawin` reconciler,
-and Phase-9 Windows host-capacity / WSL2 sizing surfaces. **Phases 9 and 11 are now `Done`** — closed
-**2026-07-01** by the full Windows/WSL2 lifecycle: `hostbootstrap-demo` `test run all` applied the
+and Phase-9 Windows host-capacity / WSL2 sizing surfaces. **Phases 9 and 11 closed the Windows/WSL2
+lifecycle 2026-07-01** — both **reopened `Active` 2026-07-05** for cross-substrate reliability hardening
+(see below) — by the full Windows/WSL2 lifecycle: `hostbootstrap-demo` `test run all` applied the
 `.wslconfig` `[wsl2]` ceiling (Sprint 9.7's honest cordon — the fix for the earlier
 `Wsl/Service/0x80072746` utility-VM session drop, whose root cause was the cordon computed but never
 written), registered/entered the managed Ubuntu-24.04 distro, built the in-distro binary and project image
@@ -124,6 +126,37 @@ and pushing the multi-GB project image are release/demo operations, not open pha
 [00-overview.md](00-overview.md) for phase responsibilities and [system-components.md](system-components.md)
 for the component inventory.
 
+**Reopened 2026-07-05 — cross-substrate reliability hardening.** Driving the Sprint 13.16 real-run gate
+surfaced a systemic class of **race conditions, resource conflicts, and cleanup gaps** in cross-substrate
+spin-up + tests (Windows/WSL2, Apple/Lima, Linux/Incus), and several governed docs asserted guarantees the
+code does not uphold. **Phases 5, 9, 10, 11, and 16 were reopened `Active`** (alongside `Active` phase 13) —
+**all now closed `Done`, real-run-validated `6/6`; see the Update below** — each with a `## Remaining Work`
+section owning its slice: node/CNI readiness + kind health-check (5);
+host-headroom preflight, budget-scaled slice, `.wslconfig` merge, cross-substrate disk preflight (9);
+teardown-on-bring-up-failure, spatial test isolation, the in-VM safety probe (10); network-aware VM-ready
+probe, crash-recoverable `.wslconfig` restore, reconcile re-cordon, `vmIdleTimeout` (11); best-effort
+teardown on chain failure (16). This pass reopens the phases and reconciles the docs to honest current-state;
+the code fixes are the reopened Remaining Work, real-run-gated per substrate. The registry:2 `kind load`
+pre-load removed by the fix is recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+**Update (2026-07-05, CLOSED `Done`).** All six reopened phases' reliability code fixes landed, are
+code-check-validated (`cabal build all --ghc-options=-Werror` + `cabal test all` **core 292** from `core/`;
+the demo `-Werror` build + demo/core suites **14 + 292** from `demo/`; the Python `ruff`/`black`/`mypy` gate),
+and are now **real-run-closed (§ C)**: a decoupled Windows/WSL2 `hostbootstrap-demo test run all` — run as a
+Windows Scheduled Task so a harness stop could not abort it — reported **`test report: 6/6 passed`**
+(`REALRUN_EXIT=0`) across both message variants (`pristine-bootstrap`/`web-build`/`e2e-tabs` ×
+`"Hello, world!"`/`"Hello, Universe!"`). The run exercised every fix end-to-end on both bring-ups: the
+`.wslconfig` merge with `vmIdleTimeout=-1`, the network-ready gate, the in-Haskell docker-readiness poll
+(`docker daemon ready`), the node/CNI readiness gate (`nodes Ready`), the metal host-headroom preflight + the
+reserve-free in-VM slice cordon (`docker update … --memory-swap` 2× the RAM cap), `deploy-registry` +
+`push-image` (single-binary `registry:2`), the web service at `localhost:30080`, the guaranteed harness
+teardown, and `project destroy` restoring `.wslconfig` with host `.data` preserved. **Phases 5, 9, 10, 11,
+13, and 16 are `Done`.** Three fixes-to-the-fixes the real run surfaced were caught and closed on the way (a
+truncated source-staging `tar`; a docker-poll shell-quoting break through the Windows PowerShell→`wsl`→`bash`
+path, moved to Haskell; and a host-reserve wrongly applied to the in-VM slice, split into a metal-only
+preflight).
+
 ## Phases
 
 | Phase | Title | Status |
@@ -141,7 +174,7 @@ for the component inventory.
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
 | 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
 | 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |

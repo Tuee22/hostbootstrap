@@ -10,8 +10,14 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-21 are all `Done` (phases 13 and 15 were reopened for in-place child-config delivery,
-> § U/§ X, and closed 2026-07-02 by a live Windows/WSL2 `test run all` `6/6`). The Windows third-substrate
+> Note: Phases 0-21 are all `Done`. Phases 5, 9, 10, 11, 13, and 16 were reopened `Active` (2026-07-05) for
+> cross-substrate reliability hardening and **closed the same day** by a decoupled Windows/WSL2
+> `test run all` reporting `6/6 passed` (`REALRUN_EXIT=0`) across both message variants — the node/CNI
+> readiness gate + health-recreate, the metal-vs-in-VM budget-reserve split + swap-headroom cordon, the
+> guaranteed harness teardown + in-VM safety probe, the network/docker readiness polls + crash-recoverable
+> `.wslconfig` merge/restore + `vmIdleTimeout`, the single-binary `registry:2`, and the best-effort chain-
+> failure teardown, all validated end-to-end. (Phases 13 and 15 were also reopened for in-place child-config
+> delivery, § U/§ X, and closed 2026-07-02 by a live Windows/WSL2 `test run all` `6/6`.) The Windows third-substrate
 > reopening is closed for phases 2, 3, and 9, and the
 > Windows/WSL2 provider (**phase 11**) closed **2026-07-01** by the full Windows/WSL2 `project up` →
 > `test run all` (`6/6`) → `project destroy` lifecycle with the `.wslconfig` budget wall applied (the
@@ -57,9 +63,11 @@
 > of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
 >
-> **Current suite SSoT:** `core 245 + demo 14` static Haskell `testCase` definitions (the in-place
-> child-config delivery landing, Sprint 15.7, added 6 `LiftSpec` config-delivery cases); run the core suite
-> with `cabal test` from `core/` and the demo suite with `cabal test` from `demo/`.
+> **Current suite SSoT:** `core 292 + demo 14` static Haskell `testCase` definitions (the 2026-07-05
+> cross-substrate reliability hardening added `Cordon`/`Lifecycle`/`Harness`/`Wsl2`/`Provider` cases — the
+> node/CNI health probe, the metal-vs-in-VM budget-reserve split, the `.wslconfig` merge, the swap-headroom
+> cordon, and the guaranteed-teardown harness); run the core suite with `cabal test` from `core/` and the demo
+> suite with `cabal test` from `demo/`.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -259,13 +267,18 @@ is the maintainer base-image build: `hostbootstrap base build` measures host CPU
 (`hostbootstrap/resources.py`) and applies docker `--memory`/`--cpus` caps plus a host-sized `cabal -j` to
 the base-image **build container** — a build-phase limit on the warm-store compile, not a project runtime
 cordon (see `documents/engineering/base_image.md`). `cluster up` runs the `verifyBudget`
-spare-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
+total-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
 before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
 host capacity per substrate (`sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on Linux, CIM
-`TotalPhysicalMemory` on Windows — total memory, not volatile free RAM, so a too-small host fails fast).
-On Windows the applied memory/CPU wall is the global `.wslconfig` `[wsl2]` ceiling (WSL2 has no per-distro
-cap), written and applied with `wsl --shutdown` at bring-up via the one pure lift
-(`HostBootstrap.Substrate.Provider`) and restored on teardown. The cluster lifecycle
+`TotalPhysicalMemory` on Windows, and `df -P -k` free disk on Apple/Linux). The **metal** host preflight
+(`preflightHostBudget`/`verifyHostBudget`) gates on `host RAM ≥ budget + ~4 GiB host-OS reserve` (§ O), so a
+tight host (e.g. a 10 GiB budget on 16 GiB) is refused before bring-up; the **in-VM** cluster-slice preflight
+(`preflightBudget`/`verifyBudget`) is reserve-free (the slice is already the reserved subset), so the two are
+not double-counted (closed phase-9, 2026-07-05). On Windows the applied memory/CPU wall is the global
+`.wslconfig` `[wsl2]` ceiling (WSL2 has no per-distro cap; `processors`/`memory`/`swap`/`vmIdleTimeout=-1`),
+**merged** into the user's file (other sections preserved), written and applied with `wsl --shutdown` at
+bring-up via the one pure lift (`HostBootstrap.Substrate.Provider`), and restored on `project down` **and**
+`project destroy` (crash-recoverable; closed phase-11, 2026-07-05). The cluster lifecycle
 never deletes host `.data`. The production-vs-test cluster profile distinction selects fixed names /
 `.data` paths for production and per-case isolated paths for the test profile. See
 `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).

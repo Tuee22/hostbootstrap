@@ -155,7 +155,10 @@ single-representation rule.
 Deploy is what `project up` leaves running: a **persistent stack**, not a
 run-to-completion job. `project up` reconciles the chain to running and is idempotent — a rerun against
 a partially-up stack converges the remainder rather than rebuilding from zero. The VM, the cluster, and
-the workload services stay up after `project up` returns.
+the workload services stay up after `project up` returns. (Reconcile-to-running is now health-aware: the
+exists-path re-applies the WSL2 `.wslconfig` cordon on reconcile, and a listed-but-unhealthy in-VM kind
+cluster is health-checked (`clusterHealthy`/`clusterHealthyFromProbe`) and deleted+recreated rather than
+trusted — real-run-validated 2026-07-05 by the Windows/WSL2 `test run all` (`6/6`).)
 
 The lifecycle verbs are split so the persistent stack has explicit stop and delete transitions:
 
@@ -167,7 +170,11 @@ The lifecycle verbs are split so the persistent stack has explicit stop and dele
 
 `.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
 frame is still up, then stops or deletes on ascent (the VM stopped last); it is best-effort and
-idempotent, tolerating a partial stack. The test harness validates the live stack by **driving the same
+idempotent, tolerating a partial stack. (This applies to the explicit `down`/`destroy` verbs; a chain
+failure *during* `project up` now runs the same best-effort `project destroy` teardown at the ROOT frame
+(guarded `applyChain`), so it leaves no leaked VM + in-VM cluster + global `.wslconfig` cordon; only a
+hard external process kill can still leave that state — clean up such an interrupted run with
+`wsl --unregister` / `incus delete` / `limactl delete`.) The test harness validates the live stack by **driving the same
 `project up`** (generating a test `<project>.dhall` functionally, running `project up`, asserting in-frame
 with the assertion polymorphic over the active variant's `EXPECTED_MESSAGE`, then `project destroy`),
 iterating over each config variant the suite declares (the demo runs two), using durable test storage

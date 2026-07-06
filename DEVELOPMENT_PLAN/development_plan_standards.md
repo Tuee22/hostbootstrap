@@ -301,10 +301,16 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 The host-level `<project>.dhall` declares a per-project resource budget (`cpu`, `memory`, `storage`) —
 the **one ceiling** the project may not exceed, used **once**. The declared budget **is the VM wall**: the
 VM (cordon #1) is sized to the budget, and the in-VM cluster (cordon #2) is a **slice within that wall**,
-strictly smaller in every dimension so it fits inside the VM's spare capacity alongside the VM OS, Docker,
-and image builds. The budget is **never** added to itself: there is no budget-sized VM "headroom" that
-sizes the VM above the ceiling (that would count the one requirement twice and is forbidden — see
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). The project binary reads the budget
+strictly smaller in every dimension, sized to leave a reserve for the VM OS, Docker, and image builds. **That
+reserve must track the real in-VM working set** — a fixed subtraction is a known reliability gap on tight
+hosts (a multi-GB `kind load`/push can OOM the node at the budget floor), so the slice's reliable fit across
+substrates is real-run-gated (phase-9). The budget is **never** added to itself: there is no budget-sized VM
+"headroom" that sizes the VM above the ceiling (that would count the one requirement twice and is forbidden —
+see [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). This concerns the **VM** sizing;
+separately, the **host** must have headroom above the budget — `host RAM ≥ budget + a host-OS reserve`
+(~4 GiB) — enforced by the pre-bring-up preflight, because a budget that merely fits under *total* host RAM
+leaves no room for the host OS, Docker, and the orchestrator and is a known gap the preflight closes
+(phase-9). The project binary reads the budget
 from its active config and projects narrower resource envelopes into child configs (§ X). It is enforced
 with defense in depth: a Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure
 `verifyBudget`/`fitsBudget` before bring-up, and the applied wall at runtime — a sized Lima VM on Apple

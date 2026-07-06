@@ -83,19 +83,24 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 >
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
 > worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done`. The original scope (phases 0 through 21) is **`Done`**. Phases 13 and 15 were briefly reopened
+> `Done`. The original scope (phases 0 through 21) reached `Done`, but **phases 5, 9, 10, 11, and 16 are reopened
+`Active` (2026-07-05)** for cross-substrate reliability hardening — the race conditions, resource conflicts,
+and cleanup gaps the real-run gate surfaced (see
+[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)). Phases 13 and 15 were briefly reopened
 > (2026-07-02) for the **in-place child-config delivery** refinement and are now closed `Done` — the
 > `context-init` projection is streamed into each child frame over the lift's `stdin` channel and written by
 > the descending binary before dispatch (no host-side `.vm.dhall`/`.runtime-container.dhall`, no config
 > bind-mount; only the narrowed projection crosses, on `stdin` only), validated by `cabal test all` and a
 > live Windows/WSL2 `test run all` **`6/6`**; the superseded surfaces are in
 > [`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
-> **Phase 11 is now `Done`** (closed 2026-07-01): the Windows/WSL2 provider lifecycle closed end to end —
+> **Phase 11 closed the Windows/WSL2 lifecycle 2026-07-01** (reopened `Active` 2026-07-05 for reliability
+> hardening): the Windows/WSL2 provider lifecycle closed end to end —
 > `project up` registered/entered the managed Ubuntu-24.04 distro with the `.wslconfig` budget wall applied,
 > built the in-distro binary and project image without a session drop, and `test run all` reported `6/6`
 > before `project destroy` restored `.wslconfig` with host `.data` preserved. The Windows third-substrate work for phases
 > 2, 3, and 9 is closed: native `hostbootstrap.exe` bootstrap, CUDA as a headless host build, and Windows
-> host-capacity / WSL2 sizing are implemented and validated. This status is tracked in
+> host-capacity / WSL2 sizing are implemented and validated (phase 9 reopened `Active` 2026-07-05 for
+reliability hardening). This status is tracked in
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
@@ -357,9 +362,11 @@ cluster" path. The doctrine is stated canonically in
 > wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. -->
 > (three cases × two message variants) including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
 > end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
-> both implemented and `Done`; phase-21 reconciles the documentation/code drift, so the original scope
-> (phases 0 through 21) is `Done` — including **phase 11**, closed 2026-07-01 by the full Windows/WSL2
-> `project up` → `test run all` (`6/6`) → `project destroy` lifecycle with the `.wslconfig` budget wall
+> both implemented and `Done`; phase-21 reconciles the documentation/code drift. The original scope
+> (phases 0 through 21) reached `Done`, but **phases 5, 9, 10, 11, and 16 are reopened `Active`
+> (2026-07-05)** for cross-substrate reliability hardening (see
+> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)) — phase 11 closed the Windows/WSL2
+> `project up` → `test run all` (`6/6`) → `project destroy` lifecycle 2026-07-01 with the `.wslconfig` budget wall
 > applied, and **phases 13 and 15**, reopened then closed 2026-07-02 for in-place child-config delivery
 > (§ X, validated by a live Windows/WSL2 `test run all` `6/6`); see
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
@@ -412,7 +419,8 @@ carries two test layers:
   `hostbootstrap-demo test run <suite>`). The harness is the **one** test engine and it *is* the chain,
   driven under a test config: per distinct test config it writes a test-specific `hostbootstrap-demo.dhall`,
   runs `project up` over the demo's own chain, runs the case assertions in the appropriate frame, and tears
-  the stack down with `project destroy` (guaranteed via `finally`, preserving host `.data`). There is no
+  the stack down with `project destroy` (via `finally` once bring-up succeeds, preserving host `.data`; a
+  failure *during* `project up` or an external kill is not covered — reopened phase-10/16 work). There is no
   separate `seamSetup` that stands a cluster up a second way — the bring-up a test exercises is the same
   chain production uses. Two fail-fast safety preconditions run before any test: the harness refuses if a
   sibling `hostbootstrap-demo.dhall` already exists (checked at `siblingProjectConfigPath`) or if a

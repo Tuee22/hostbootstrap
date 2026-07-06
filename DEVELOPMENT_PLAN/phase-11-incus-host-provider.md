@@ -13,6 +13,18 @@
 
 **Status**: Done
 
+**Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
+provider-lifecycle gaps in this phase's scope: the VM-ready probe (`WaitProbe … true`) only proves the
+guest agent answers, not that the network/cloud-init is up, so the first `apt`/`ghcup`/`curl` can race
+(Incus/WSL2); the WSL2 `.wslconfig` global cordon is restored **only** on `project destroy` (not on
+`down`/re-run/interrupt), so an interrupted run throttles every other distro until a manual restore;
+reconcile-to-running skips re-applying the WSL2 cordon; no `vmIdleTimeout` pins the utility VM across
+separate `wsl -d` steps; docker-daemon readiness after install is assumed instant; and `wsl --shutdown`
+is an unguarded global cross-distro side-effect. The fixes landed (see `## Remaining Work`) and **closed
+2026-07-05** by a live Windows/WSL2 `test run all` reporting **`6/6 passed`** — the network gate, the
+`vmIdleTimeout=-1` utility-VM pin, and the in-Haskell docker-readiness poll (`pristine-bootstrap: docker
+daemon ready in hostbootstrap-demo-vm`, on both bring-ups) all fired, and teardown restored `.wslconfig`.
+
 `incus` is the native Linux host-provider axis. `HostTool` includes the `Incus` constructor (resolved to an `AbsExe`
 like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify reconciler
 (Colima-backed Incus runtime on Apple, native daemon on Linux); `HostBootstrap.HostTarget`
@@ -51,7 +63,41 @@ ceiling applied.
 
 ## Remaining Work
 
-None. The **Windows WSL2 host provider** is implemented, unit-validated, and now **real-run-closed
+**Reopened 2026-07-05 — provider lifecycle reliability. Code landed + code-check-validated 2026-07-05;
+real-run-gated (§ C) closure pending:**
+
+- **Network/cloud-init-aware VM-ready probe — landed.** `runVmUp` now runs `waitVMNetwork` after the guest
+  agent answers: it lets cloud-init finish if present (`timeout 90 cloud-init status --wait`) then requires
+  DNS to resolve the apt mirror (`getent hosts archive.ubuntu.com`), bounded-retry, so the first in-VM
+  `apt`/`ghcup`/`curl` cannot race a not-yet-configured network (Incus/WSL2).
+- **`.wslconfig` crash-recoverable restore — landed.** The WSL2 `spStop` now emits `RestoreHostFile` too, so
+  `project down` restores the global cordon (not only `project destroy`); and the next `project up`'s
+  `mergeWslConfigWithBackup` detects a leftover `.bak`, logs it, and preserves the true original (backup-once)
+  while re-applying — so an interrupted run stops throttling other distros.
+- **Re-cordon + idle-timeout on reconcile — landed.** On the exists path `runVmUp` re-applies the launch's
+  **file** effects (`fileEffectsOnly` → the `.wslconfig` merge, never the one-time shutdown/install), and
+  `wsl2SizingArgs` now emits `vmIdleTimeout=-1` so the utility VM survives the gaps between separate `wsl -d`
+  steps (`HostBootstrap.Cluster.Cordon`; `CordonSpec`/`ProviderSpec` updated).
+- **Docker-daemon readiness poll — landed.** The in-VM Docker install step polls `docker info` to Ready
+  (bounded 30×2 s) after `systemctl enable --now docker` + the socket ACL, instead of assuming the
+  socket/ACL is instant.
+- **Guard/disclose the global `wsl --shutdown` — landed.** `runVmUp` discloses the cross-distro side-effect
+  (`discloseWslShutdown`) before applying the WSL2 launch (the historical `0x80072746` session-drop surface).
+
+- **Docker-readiness poll moved to Haskell (real-run correction) — landed.** The docker-readiness poll first
+  landed as an inline shell `for` loop; the real run hit `bash: -c: line 2: syntax error near unexpected
+  token '2'` because a loop with a single-quoted `echo` mangles through the Windows PowerShell→`wsl`→`bash`
+  quoting path (the `'`→`''` escaping splits the line). Fixed by moving the retry into Haskell
+  (`waitDockerReady`, a simple `docker info >/dev/null 2>&1` probe — the same shape `waitVMNetwork`/
+  `substrateWait` use safely).
+
+Code-check gate (2026-07-05): `cabal build all --ghc-options=-Werror` + `cabal test all` (292) green from
+`core/`; the demo `-Werror` build + demo/embedded-core suites green from `demo/`. **Closed (real-run, § C,
+2026-07-05):** the network gate, the crash-recoverable `.wslconfig` restore, the reconcile re-cordon, the
+Haskell docker-readiness poll, and the `wsl --shutdown` disclosure were exercised by the live Windows/WSL2
+`test run all` **`6/6`** run. **None remaining.**
+
+The **Windows WSL2 host provider** is implemented, unit-validated, and now **real-run-closed
 (2026-07-01)**. The post-reboot WSL2 platform readiness gate was crossed on 2026-06-29
 (`HyperVisorPresent = True`, `VirtualizationFirmwareEnabled = True`, default WSL version 2), and the full
 Windows lifecycle then closed end to end: a live `hostbootstrap-demo` `test run all` **applied the

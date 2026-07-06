@@ -114,18 +114,18 @@ launchCases =
                     , "root,size=80GiB"
                     ]
                 ]
-    , testCase "wsl2 launch writes the .wslconfig ceiling (+swap), shuts down, then installs with the VHDX cap" $
+    , testCase "wsl2 launch merges the .wslconfig ceiling (+swap), shuts down, then installs with the VHDX cap" $
         spLaunch windows env
             @?= Right
-                [ WriteHostFile
+                [ MergeWslConfig
                     "C:\\Users\\me\\.wslconfig"
-                    "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\n"
+                    ["[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
                 , RunHostTool Wsl ["--shutdown"]
                 , RunHostTool
                     Wsl
                     ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
                 ]
-    , testCase "lima/incus do not write any host file at launch; wsl2 does" $ do
+    , testCase "lima/incus do not write any host file at launch; wsl2 merges .wslconfig" $ do
         fmap (any isWrite) (spLaunch apple env) @?= Right False
         fmap (any isWrite) (spLaunch linux env) @?= Right False
         fmap (any isWrite) (spLaunch windows env) @?= Right True
@@ -135,15 +135,21 @@ launchCases =
         spStartExisting linux @?= [RunHostTool Incus ["start", "demo-vm"]]
     ]
   where
+    -- the WSL2 wall is a merge into the user's .wslconfig (never a clobber), so a
+    -- .wslconfig merge counts as a host-file write here.
     isWrite (WriteHostFile _ _) = True
+    isWrite (MergeWslConfig _ _) = True
     isWrite _ = False
 
 teardownCases :: [TestTree]
 teardownCases =
-    [ testCase "stop is the stop/terminate argv per substrate" $ do
+    [ testCase "stop is the stop/terminate argv per substrate (wsl2 also restores .wslconfig)" $ do
         spStop apple @?= [RunHostTool Lima ["stop", "demo-vm"]]
         spStop linux @?= [RunHostTool Incus ["stop", "demo-vm"]]
-        spStop windows @?= [RunHostTool Wsl ["--terminate", "demo-vm"]]
+        spStop windows
+            @?= [ RunHostTool Wsl ["--terminate", "demo-vm"]
+                , RestoreHostFile "C:\\Users\\me\\.wslconfig"
+                ]
     , testCase "guarded destroy emits the delete argv (and wsl2 restores .wslconfig)" $ do
         spDestroy apple @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
         spDestroy linux @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]

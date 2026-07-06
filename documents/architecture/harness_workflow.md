@@ -30,9 +30,13 @@
   `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall`) already exists (never
   overwrite a production config), and refuse if a production cluster is running (never touch production
   state). Either → no tests run.
-- Teardown ALWAYS runs via `finally`; a body exception is recorded as `Fail`, never leaked. Teardown
-  removes **only** the `<project>.dhall` and the `.test_data` directory the harness created this run, never
-  anything it found.
+- Teardown runs via `finally`, and bring-up is now bound **inside** it — a body (assertion) exception is
+  recorded as `Fail`, never leaked, and teardown still runs; a failure *during* `project up` is covered too,
+  because the Phase 16 guarded `applyChain` runs the same best-effort `project destroy` teardown at the ROOT
+  frame, so a bring-up failure leaves no provider VM + in-VM cluster registered. (Only an external process
+  kill still escapes the in-process teardown; the idempotent next-up reconcile — or a manual
+  `wsl --unregister` / `incus delete` — cleans up such a hard kill.) Teardown removes **only** the
+  `<project>.dhall` and the `.test_data` directory the harness created this run, never anything it found.
 - The harness is the **one** representation of the test workflow because it *is* the deploy chain, driven
   with a test config. See [composition_methodology](composition_methodology.md) for the canonical model.
 
@@ -58,9 +62,13 @@ variant, in turn — so the demo's two messages each get their own fresh stack:
    Assertions are **polymorphic over what the variant set**: the harness exports `EXPECTED_MESSAGE` and the
    Playwright e2e-tabs spec asserts the SPA `#message` matches it, so the same spec proves both the
    `"Hello, world!"` and `"Hello, Universe!"` deployments.
-5. **`project destroy`** — ALWAYS runs, wired through `finally` so it executes whether the bodies succeed,
-   fail, or throw, then removes the generated `<project>.dhall` and the `.test_data` the harness created
-   this run. The next variant then spins up a fresh stack.
+5. **`project destroy`** — runs via `finally` with bring-up (step 3) now bound **inside** it, so it executes
+   whether bring-up fails or the assertion bodies succeed, fail, or throw, then removes the generated
+   `<project>.dhall` and the `.test_data` the harness created this run. The next variant then spins up a
+   fresh stack. A failure *inside* step 3 is covered too: the Phase 16 guarded `applyChain` runs the same
+   best-effort `project destroy` teardown at the ROOT frame, so it leaves no VM registered. (Only an external
+   kill still escapes the in-process teardown; clean up such a hard kill with the idempotent next-up
+   reconcile, or manually with `wsl --unregister` / `incus delete` / `limactl delete`.)
 
 A body exception is caught and recorded as a `Fail` in the per-case result; it is never leaked out of
 `runMatrix`. The per-case results aggregate into a `Report`. `reportCard` renders the report (the bare

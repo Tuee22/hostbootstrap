@@ -286,8 +286,11 @@ The fields, in order:
   3. the 'Case' matrix the assertions cover;
   4. the per-case assertion against the live stack (reusing the self-reference
      lift, § U);
-  5. /tear down/: drive @project destroy@, deleting only what this run created
-     (the self-created-only delete-guard, § Z).
+  5. /tear down/: drive @project destroy@ (env-independent — it re-detects the
+     stack and deletes only what this run created, the self-created-only
+     delete-guard, § Z). Because it takes no @env@, 'runSuiteSelection' can run it
+     even when /bring up/ itself failed, so a failed @project up@ never leaks the
+     stack.
 
 The bare binary ships 'emptySuite' through its explicit bare entrypoint.
 -}
@@ -298,13 +301,13 @@ data TestSuite
       (T.Text -> IO env)
       [Case]
       (env -> Case -> IO CaseResult)
-      (env -> IO ())
+      (IO ())
 
 {- | The empty suite the bare @hostbootstrap@ binary ships: no safety obstacle, a
 trivial bring-up over no cases, so @test run all@ renders @0/0 passed@.
 -}
 emptySuite :: TestSuite
-emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (\_ -> pure ())
+emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
 
 {- | The case ids in a suite. Used by the CLI layer to reject accidental empty or
 duplicate project suites before command dispatch.
@@ -398,14 +401,33 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
         -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
         -- brought up against it; the variant reports are concatenated.
         Right () -> withSelfCreatedTestData testDataRoot $ do
-          variantReports <- mapM (runVariant chosen) variants
+          variantReports <- mapM (safeRunVariant chosen) variants
           pure (Right (Report (concatMap reportResults variantReports)))
   where
+    -- A whole variant is isolated: an unexpected exception anywhere in it (the
+    -- config bracket, an escaped teardown) fails only that variant's cases and the
+    -- loop moves on to the next variant, rather than aborting the run.
+    safeRunVariant chosen cv@(ConfigVariant label _) = do
+      e <- tryAnyIO (runVariant chosen cv)
+      pure $ case e of
+        Right report -> report
+        Left err -> labelReport label (allFail chosen ("variant failed: " ++ show err))
+    -- Bring-up is now **inside** the guaranteed teardown: a failed @project up@ runs
+    -- the same best-effort @project destroy@ (so the partial stack is not leaked)
+    -- and turns into a per-case 'Fail' for this variant, instead of throwing out of
+    -- the loop. Teardown runs env-independently and best-effort, so it also fires on
+    -- the bring-up-failure path and its own failure never aborts the remaining
+    -- variants.
     runVariant chosen (ConfigVariant label withGeneratedConfig) =
-      withGeneratedConfig $ do
-        env <- bringUp label
-        report <- runMatrix (assertSeams env) chosen `finally` tearDown env
-        pure (labelReport label report)
+      labelReport label
+        <$> withGeneratedConfig (runFrame chosen label `finally` ignoreExceptions tearDown)
+    runFrame chosen label = do
+      eenv <- tryAnyIO (bringUp label)
+      case eenv of
+        Left err -> pure (allFail chosen ("bring-up failed: " ++ show err))
+        Right env -> runMatrix (assertSeams env) chosen
+    -- Every chosen case fails with one reason (the bring-up / variant failure).
+    allFail chosen reason = Report [(caseId c, Fail reason) | c <- chosen]
     chosenCases
       | selector == allCasesSelector = Right cases
       | otherwise = case filter ((== selector) . caseId) cases of
@@ -450,6 +472,18 @@ oneShotSeams cfg specFor =
                 Left err -> Fail err
         , seamTeardown = \_ _ -> pure ()
         }
+
+-- | 'try' pinned to 'SomeException' (the existential @env@ cannot be named in a
+-- signature, so this monomorphic wrapper fixes the exception type for the
+-- bring-up / teardown / variant guards).
+tryAnyIO :: IO a -> IO (Either SomeException a)
+tryAnyIO = try
+
+-- | Run a teardown/cleanup action best-effort: swallow any exception so a failing
+-- @project destroy@ never aborts the remaining variants (the safety preconditions,
+-- not teardown, protect production state).
+ignoreExceptions :: IO () -> IO ()
+ignoreExceptions io = tryAnyIO io >> pure ()
 
 -- | Whether every case passed.
 allPassed :: Report -> Bool

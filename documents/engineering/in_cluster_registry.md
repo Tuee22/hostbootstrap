@@ -32,9 +32,13 @@ login` and no TLS.
 The `hostbootstrap-demo` consumer (`demo/`) drives this end-to-end. Its
 `deploy-registry` and `push-image` steps belong to the container frame of
 `demoChain :: ProjectConfig -> [Step]`, the demo's contributed chain, and `project
-up` interprets them as it descends into that frame. `deploy-registry` pre-loads
-`registry:2` onto the kind nodes (`kind load`), applies a single Deployment +
-NodePort-30500 Service with `kubectl`, and waits for the Deployment to be Ready.
+up` interprets them as it descends into that frame. `deploy-registry` applies a
+single Deployment + NodePort-30500 Service with `kubectl` and waits for the
+Deployment to be Ready; the registry pod **pulls** `registry:2` itself
+(`imagePullPolicy: IfNotPresent`), so containerd on the node selects the node
+platform from the multi-arch manifest. It is **not** `kind load`-ed: `kind load
+docker-image` (a `docker save` + `ctr import --all-platforms`) cannot import a
+multi-arch image (it fails `content digest … not found`).
 `push-image` loads the project image into the kind nodes, tags it, and pushes it to
 `localhost:30500/library/hostbootstrap-demo:demo`. The push runs as part of the
 live persistent stack that `project up` stands up.

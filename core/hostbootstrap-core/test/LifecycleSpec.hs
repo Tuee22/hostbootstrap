@@ -4,6 +4,7 @@ module LifecycleSpec (tests) where
 
 import Data.List (isInfixOf)
 import HostBootstrap.Cluster.Lifecycle
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -32,8 +33,25 @@ tests =
       testGroup "profiles are distinct" profileCases,
       testGroup "host-port publication" hostPortCases,
       testGroup "never-delete-.data" dataInvariantCases,
-      testGroup "status report" statusCases
+      testGroup "status report" statusCases,
+      testGroup "health-check-and-recreate" healthProbeCases
     ]
+
+-- The pure classification behind clusterCreate's health-check-and-recreate: a
+-- listed kind cluster is only trusted when @kubectl get nodes@ actually answers
+-- with a node line; a stopped cluster (connection refused) or an empty listing is
+-- unhealthy so the caller deletes and recreates it.
+healthProbeCases :: [TestTree]
+healthProbeCases =
+  [ testCase "a node listing is healthy" $
+      clusterHealthyFromProbe (Right (ExitSuccess, "demo-control-plane   Ready   control-plane   2m   v1.29\n", "")) @?= True,
+    testCase "a stopped cluster (connection refused) is unhealthy" $
+      clusterHealthyFromProbe (Left "could not exec kubectl: connection refused") @?= False,
+    testCase "a non-zero kubectl exit is unhealthy" $
+      clusterHealthyFromProbe (Right (ExitFailure 1, "", "The connection to the server was refused")) @?= False,
+    testCase "an empty node listing is unhealthy" $
+      clusterHealthyFromProbe (Right (ExitSuccess, "   \n", "")) @?= False
+  ]
 
 planCases :: [TestTree]
 planCases =

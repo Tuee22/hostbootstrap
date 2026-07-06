@@ -81,7 +81,10 @@ its declared share because the ceiling is held by three independent rings of def
 - **Compile ring** — the generated deploy config carries a Dhall-time `assert` that the budget fits the
   pods, so an over-budget config fails to type-check.
 - **Bring-up ring** — the pure `verifyBudget` runs as a fail-fast preflight (budget versus resolved
-  spare host capacity), and `fitsBudget` proves the concurrent pod set fits before bring-up.
+  host capacity — total RAM on Apple/Windows, `MemAvailable` on Linux); it is reserve-free because it
+  gates the in-VM cluster slice, which is already the reserved subset, while the METAL host preflight
+  (`preflightHostBudget`/`verifyHostBudget`) applies the ~4 GiB host-OS reserve, and `fitsBudget` proves
+  the concurrent pod set fits before bring-up.
 - **Runtime ring** — the applied VM / kind-node / `docker run` caps on the live substrate.
 
 The applied mechanics of all three rings, the canonical parser, and the per-substrate storage cordon
@@ -91,10 +94,16 @@ are documented in [applied_cordon](applied_cordon.md).
 
 Before cordoning, the project binary checks that the active context's declared envelope can be satisfied
 locally. If the host cannot satisfy `cpu` / `memory` / `storage`, it fails fast with a one-line diagnostic
-naming the shortfall and exits non-zero rather than over-committing the host.
+naming the shortfall and exits non-zero. **The METAL host preflight now gates on `host RAM ≥ budget +
+reserve` (a ~4 GiB host-OS reserve)**, so a budget that fits under *total* host RAM but would leave the host
+itself short (e.g. a 10 GiB budget on a 16 GiB host) is refused by `preflightHostBudget`/`verifyHostBudget`;
+the in-VM cluster-slice preflight (`preflightBudget`/`verifyBudget`) stays reserve-free because the slice is
+already the reserved subset, so the reserve is never double-counted. This split is real-run-validated
+2026-07-05 by the decoupled Windows/WSL2 `test run all` reporting `test report: 6/6 passed`.
 
 `verifyBudget` is the pure core of this check; `preflightBudget resources hostCapacity` derives the
-budget and runs `verifyBudget` against resolved spare host capacity. `resolveHostCapacity` resolves
+budget and runs `verifyBudget` against resolved host capacity (total physical RAM on Apple/Windows,
+`MemAvailable` on Linux). `resolveHostCapacity` resolves
 capacity **per substrate**, so the preflight is a real gate on every supported host:
 
 | Substrate | CPU cores | Memory | Storage |

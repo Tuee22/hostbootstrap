@@ -262,15 +262,25 @@ The operator drives the chain through the `project` lifecycle.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
   up inside it. Host `.data` is **preserved** (the never-delete-`.data` invariant). Teardown is
-  best-effort and idempotent, tolerating a partial stack. See [incus](../engineering/incus.md).
+  best-effort and idempotent, tolerating a partial stack. **`project destroy` needs a sibling
+  `<project>.dhall`**; a chain failure *during* `project up` now runs the same best-effort `project destroy`
+  teardown at the root frame (the `applyChain` guard), leaving no orphaned VM, kind cluster, or `.wslconfig`.
+  Only a hard kill of `project up` can still leave the provider VM registered with no sibling config, so
+  clean that up directly with `wsl --unregister hostbootstrap-demo-vm` (or `incus delete` / `limactl delete`).
+  See
+  [incus](../engineering/incus.md).
 
 ## Feature-to-harness-case table
 
 `test run all` drives `runMatrix` over the demo's case matrix — the standardized harness, which **drives
 the real `project up`** under a test config rather than being a separate bring-up. Per config **variant**
 the harness **generates** the `hostbootstrap-demo.dhall` functionally (via `psTestConfig`, reusing `psInit`
-— never shelling the CLI; the Test profile, data under `./.test_data/`), runs `project up`, and tears the
-stack down with `project destroy` (guaranteed through `finally`); each `demoCases` case asserts a distinct
+— never shelling the CLI; data under `./.test_data/`, on the Production cluster profile — a concurrent
+run is refused up front by mutual exclusion, via the sibling-config and `productionClusterRunning`
+(VM-existence) fail-fast preconditions), runs `project up`, and tears the stack down with
+`project destroy` (via `finally`, with bring-up now moved inside the `finally` so a failure *during*
+`project up` is torn down too — via the `applyChain` root-frame guard; only an external hard kill escapes
+cleanup); each `demoCases` case asserts a distinct
 slice of the live stack in the frame appropriate to it (e.g. the `e2e-tabs` Playwright assertion as a
 container on the VM host network in the VM frame, outside the cluster). The demo declares two variants and the
 harness stands each up / asserts / tears down in turn.

@@ -55,8 +55,13 @@ case matrix. A project supplies its `Case`s and `Seams` as a non-empty `TestSuit
 bare core binary ships no suites, so a bare `test run all` prints `test report: 0/0 passed`.
 
 The harness is the single L0 test engine: per case it runs `seamSetup` → `seamRun` → `seamTeardown`,
-with teardown ALWAYS running via `finally`, records a body exception as `Fail` (never leaked),
-aggregates a `Report`, renders it with `reportCard`, and exits non-zero when `allPassed` is false. The
+with teardown guaranteed via `finally` — bring-up now runs **inside** the `finally`, so teardown fires
+even when `project up` bring-up fails (a body exception is recorded as `Fail`, never leaked, and teardown
+still runs; the `TestSuite` teardown is an env-independent `IO ()`, and each variant is isolated so one
+failure never aborts the rest; a chain failure *during* `project up` is guarded so `applyChain` runs the
+same best-effort `project destroy` teardown at the root frame, and an external kill — still uncatchable —
+is reconciled by the next `project up` idempotent reconcile), aggregates a `Report`, renders it with
+`reportCard`, and exits non-zero when `allPassed` is false. The
 driver, the self-created-only `.test_data` lifecycle (`withSelfCreatedTestData` over the flat
 `testDataRoot`, `.test_data`), the mechanical never-touch-production guard (`guardTestDelete`), and
 budget-slicing (`sliceBudget`) all live once in `HostBootstrap.Harness`. `oneShotSeams` realize the

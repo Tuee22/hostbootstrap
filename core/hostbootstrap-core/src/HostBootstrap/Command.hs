@@ -532,8 +532,33 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
         cfg <- hostConfig
         self <- currentSelfRef ("/usr/local/bin/" ++ progName)
         let current = T.unpack (Context.currentFrame ctx)
-        result <- runChainFromFrame cfg self (frameCtx projectCfg) current (chain projectCfg)
-        either die pure result
+        -- Guard the chain apply with best-effort teardown: a chain failure — a `Left`
+        -- from a non-zero handoff, or a thrown exception — at the ROOT frame runs the
+        -- same best-effort teardown as `project destroy`, so a failed `project up`
+        -- does not leak the VM + in-VM kind + the global `.wslconfig`. Only the root
+        -- frame tears down: a nested frame's failure propagates up to the root (which
+        -- alone can reach the VM to delete it and restore `.wslconfig`), and an
+        -- uncatchable external kill is handled instead by the idempotent stale-state
+        -- reconcile on the next `project up` (phases 5/11).
+        outcome <- try (runChainFromFrame cfg self (frameCtx projectCfg) current (chain projectCfg))
+        case outcome of
+            Right (Right ()) -> pure ()
+            Right (Left err) -> failChain cfg projectCfg ctx err
+            Left (exc :: SomeException) -> failChain cfg projectCfg ctx (show exc)
+    -- Run the best-effort `project destroy` teardown at the root frame, then die.
+    failChain cfg projectCfg ctx reason = do
+        when (null (Context.parentChain ctx)) $ do
+            putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
+            ignoreChainExc (withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+            ignoreChainExc (teardown projectCfg True)
+        die reason
+    -- Swallow a teardown step's exception (best-effort): the whole teardown must not
+    -- hinge on one step succeeding.
+    ignoreChainExc act = do
+        r <- try act
+        case (r :: Either SomeException ()) of
+            Right () -> pure ()
+            Left e -> putStrLn ("  (teardown step skipped: " ++ show e ++ ")")
 
     -- Teardown runs the cluster-lifecycle reconciler (clusterDown / clusterDelete,
     -- which never remove host @.data@, § O), then the project's chain-frame

@@ -10,27 +10,11 @@
 
 ## Pending
 
-The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`) is code-landed in phase-13
-Sprint 13.16 (2026-07-04) but **not yet real-run-validated**; these four Harbor surfaces are removed from
-`demo/src/HostBootstrapDemo/Commands.hs` and move to **Removed Surfaces** when the Sprint 13.16 real-run
-gate (a live `test run all` `6/6` standing up `registry:2`) closes.
-
-- **The dual-arch octohelm Harbor mirror override set** (`harborImageOverrides` in
-  `demo/src/HostBootstrapDemo/Commands.hs`, pinning the `harbor/harbor` chart to `1.18.3` and overriding
-  every component image to `ghcr.io/octohelm/harbor/*:v2.14.0`) — removed when the demo's in-cluster registry
-  moved from the 8-pod Harbor Helm stack to a single-binary `registry:2` (CNCF `distribution`), which is
-  natively multi-arch and needs no mirror. Replacement: the `deploy-registry` step (`deployRegistryAction`)
-  running `registry:2`. Owning phase: phase-13 Sprint 13.16 (step-kind name also phase-16).
-- **The `harbor/harbor` Helm chart dependency and its 8-pod stack** (the `helm repo add harbor` +
-  `helm upgrade --install harbor` install in `deployHarborAction`, NodePort 30500) — removed by the
-  `registry:2` swap; a single `registry:2` Deployment applied with `kubectl` replaces the 8-pod chart.
-  Replacement: `deployRegistryAction`. Owning phase: phase-13 Sprint 13.16.
-- **The Harbor trivy scanner component** (the `trivy.image` override / `trivy.enabled=false` in the Harbor
-  override set) — removed; `registry:2` ships no image scanner. Owning phase: phase-13 Sprint 13.16.
-- **`harborAdminPassword` and `waitHarborLogin`** (the Harbor admin credential and the post-install
-  `docker login` readiness wait in `demo/src/HostBootstrapDemo/Commands.hs`) — removed; `registry:2` runs
-  anonymous/insecure in-cluster, so no admin password or login-wait step is needed. Owning phase: phase-13
-  Sprint 13.16.
+None. The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`, phase-13 Sprint 13.16)
+was the last pending cleanup; it **closed 2026-07-05** on a live decoupled Windows/WSL2 `test run all`
+reporting **`test report: 6/6 passed`** (`REALRUN_EXIT=0`) standing up `registry:2` and pushing the project
+image, so its four Harbor surfaces **and** the removed `kind load registry:2` pre-load moved to
+**Removed Surfaces** below. Empty `Pending` is valid (see `## Rules`).
 
 The in-place child-config delivery correction (development_plan_standards § U, § X) landed in phase-15
 Sprint 15.7 / phase-13 Sprint 13.15 (2026-07-02); its two former entries are in **Removed Surfaces** below.
@@ -64,6 +48,25 @@ These surfaces are intentionally present and are not cleanup obligations.
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
+- **The 8-pod Harbor in-cluster registry and its dual-arch mirror** — the `harbor/harbor` Helm chart + its
+  8-pod stack (`deployHarborAction`, `helm upgrade --install harbor`, NodePort 30500), the dual-arch
+  `ghcr.io/octohelm/harbor/*:v2.14.0` override set (`harborImageOverrides`, pinning the chart to `1.18.3`),
+  the trivy scanner override, and `harborAdminPassword` / `waitHarborLogin` (all in
+  `demo/src/HostBootstrapDemo/Commands.hs`) — removed by the phase-13 Sprint 13.16 switch to a single-binary
+  `registry:2` (CNCF `distribution`), which is natively multi-arch (no mirror), anonymous/insecure in-cluster
+  (no admin password / login-wait), and ships no scanner. Replacement: `deployRegistryAction` applies a single
+  `registry:2` Deployment + NodePort-30500 Service with `kubectl`. Owning phase: phase-13 Sprint 13.16 (step
+  kind also phase-16); validated 2026-07-05 by a live Windows/WSL2 `test run all` **`6/6`** (`deploy-registry:
+  in-cluster registry rollout complete`).
+- **The `kind load docker-image registry:2` pre-load** (the `docker pull registryImage` + `runOrDie cfg Kind
+  ["load", "docker-image", registryImage, …]` in `deployRegistryAction`) — removed 2026-07-05 because
+  `kind load docker-image` (a `docker save` + `ctr import --all-platforms`) cannot import a **multi-arch**
+  image (it fails `content digest … not found`), and `registry:2` publishes a multi-arch manifest.
+  Replacement: the registry pod pulls `registry:2` itself (`imagePullPolicy: IfNotPresent`), so containerd on
+  the node selects the node platform; the demo's own single-arch project image is still delivered locally by
+  `push-image`'s `kind load`. Reintroducing the `kind load` of a multi-arch image is a regression. Owning
+  phase: phase-13 Sprint 13.16; validated 2026-07-05 by the same `6/6` run (`push-image: kind-loaded … and
+  pushed localhost:30500/…`).
 - **Build-then-copy VM child config** (`writeAndCopyVMConfig` writing the host-side
   `demo/.build/hostbootstrap-demo.vm.dhall`, and `copyFileToDemoVM`, in
   `demo/src/HostBootstrapDemo/Commands.hs`) — removed 2026-07-02 by the in-place child-config delivery
@@ -241,6 +244,20 @@ a plan update creates a new current owner for it.
   are removed. Replacement: substrate-aware `resolveHostCapacity` reads resolved `sysctl`
   `hw.ncpu` / `hw.memsize` on Apple silicon and retains `/proc/cpuinfo` plus `/proc/meminfo`
   `MemAvailable` on Linux.
+- **The `GenerousStorage` (1 PB) capacity source in
+  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`** — the unconditional petabyte free-storage
+  reading for Apple/Linux (which made the storage preflight a no-op off Windows) is removed. Replacement:
+  `PosixFreeStorage "/"` read via a real `df -P -k` (the new `Df` host tool + the pure
+  `parseDfAvailableKBytes`), so the storage ring gates on real free disk on all three substrates. Owning
+  phase: phase-9 (reopened 2026-07-05); validated by `cabal test all` (`CordonSpec` — the `df` parser and the
+  Apple/Linux `PosixFreeStorage` read plan).
+- **The full-file `WriteHostFile` clobber of the global `.wslconfig`** (the WSL2 launch effect in
+  `HostBootstrap.Substrate.Provider` and its `writeHostFileWithBackup` interpreter overwriting the whole
+  `.wslconfig`) — removed for the WSL2 cordon. Replacement: the `MergeWslConfig` effect + pure
+  `HostBootstrap.Wsl2.mergeWslConfig`, which drops only the old `[wsl2]` section and appends ours, preserving
+  the user's other sections (never-clobber-user-state). Owning phase: phase-9 (reopened 2026-07-05);
+  validated by `cabal test all` (`Wsl2Spec` merge cases, `ProviderSpec` launch effect list). `WriteHostFile`
+  itself is retained for any future whole-file host write.
 
 ## Rules
 

@@ -123,14 +123,40 @@ suiteCases =
               (\label -> record ("up:" ++ T.unpack label) >> pure label)
               [Case "a" 1 False]
               (\label _ -> record ("assert:" ++ T.unpack label) >> pure Pass)
-              (\label -> record ("down:" ++ T.unpack label))
+              (record "down")
       outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
       seen <- reverse <$> readIORef events
       case outcome of
         Right (Report rs) -> map fst rs @?= ["[v0] a", "[v1] a"]
         Left err -> assertFailure ("expected Right, got Left " ++ err)
       -- Each variant fully completes (up -> assert -> down) before the next starts.
-      seen @?= ["up:v0", "assert:v0", "down:v0", "up:v1", "assert:v1", "down:v1"],
+      seen @?= ["up:v0", "assert:v0", "down", "up:v1", "assert:v1", "down"],
+    testCase "a failed bring-up still runs teardown and isolates the variant" $ do
+      events <- newIORef []
+      let record e = modifyIORef' events (e :)
+          -- v0's bring-up throws; v1's succeeds. v0 must still tear down, fail its
+          -- case, and NOT abort v1.
+          suite =
+            TestSuite
+              (pure (Right ()))
+              ( \label ->
+                  if label == T.pack "v0"
+                    then record "up:v0-boom" >> ioError (userError "project up kaboom")
+                    else record ("up:" ++ T.unpack label) >> pure label
+              )
+              [Case "a" 1 False]
+              (\label _ -> record ("assert:" ++ T.unpack label) >> pure Pass)
+              (record "down")
+      outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
+      seen <- reverse <$> readIORef events
+      case outcome of
+        Right (Report rs) -> do
+          -- v0's case Fails (bring-up), v1's case Passes — the loop was not aborted.
+          lookup "[v0] a" rs @?= Just (Fail "bring-up failed: user error (project up kaboom)")
+          lookup "[v1] a" rs @?= Just Pass
+        Left err -> assertFailure ("expected Right, got Left " ++ err)
+      -- v0 tore down despite its failed bring-up; v1 ran normally.
+      seen @?= ["up:v0-boom", "down", "up:v1", "assert:v1", "down"],
     testCase "an unknown case fails fast, listing the valid ids and `all`" $ do
       outcome <- runSuiteSelection twoCaseSuite [oneVariant] "nope"
       case outcome of
@@ -149,7 +175,7 @@ suiteCases =
         pure
         [Case "a" 1 False, Case "b" 1 False]
         (\_ _ -> pure Pass)
-        (\_ -> pure ())
+        (pure ())
     variant label = ConfigVariant (T.pack label) id
     oneVariant = variant "v0"
 

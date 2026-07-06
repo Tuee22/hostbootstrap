@@ -79,6 +79,10 @@ file, so the write backs up any pre-existing copy and the restore puts it back);
 data HostEffect
     = -- | write @content@ to @path@ on the host, preserving any existing file
       WriteHostFile FilePath String
+    | -- | merge a @[wsl2]@ body (header + keys) into the @.wslconfig@ at @path@,
+      -- preserving the user's other sections (never a full clobber), backing up
+      -- the original once so 'RestoreHostFile' can put it back
+      MergeWslConfig FilePath [String]
     | -- | restore @path@ from its backup (or remove it if there was none)
       RestoreHostFile FilePath
     | -- | run a resolved host tool with these args
@@ -217,7 +221,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                     budget <- budgetFromResources env
                     let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
                     pure
-                        [ WriteHostFile wslConfig (unlines body)
+                        [ MergeWslConfig wslConfig body
                         , RunHostTool Wsl Wsl2.wslShutdownArgs
                         , RunHostTool Wsl (Wsl2.wslInstallArgs distro vhd)
                         ]
@@ -226,7 +230,15 @@ selectSubstrateProvider sub h = case substrateName sub of
                   spStartExisting = []
                 , spWait = WaitProbe Wsl (Wsl2.wslExecArgs distro ["true"])
                 , spTransfer = Wsl2MountTransfer vm
-                , spStop = [RunHostTool Wsl (Wsl2.wslTerminateArgs distro)]
+                , -- @project down@ terminates the distro AND restores the global
+                  -- @.wslconfig@ (crash-recoverable never-clobber): the global cordon
+                  -- stops throttling the user's other distros as soon as the stack is
+                  -- stopped, not only on @destroy@. The file restore is idempotent
+                  -- (a no-op when there was no backup to restore).
+                  spStop =
+                    [ RunHostTool Wsl (Wsl2.wslTerminateArgs distro)
+                    , RestoreHostFile wslConfig
+                    ]
                 , spDestroy =
                     (\argv -> [RunHostTool Wsl argv, RestoreHostFile wslConfig])
                         <$> Wsl2.wslUnregisterArgs prefix distro

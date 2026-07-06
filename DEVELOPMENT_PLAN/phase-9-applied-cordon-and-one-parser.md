@@ -12,6 +12,18 @@
 
 **Status**: Done
 
+**Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
+resource-cordon gaps in this phase's scope: there is no host-headroom preflight (the gate is
+`budget ≤ total RAM`, and `spareMemoryBytes` is actually *total* physical RAM on Apple/Windows), so a
+16 GiB host + 10 GiB VM passes with ~6 GiB left; the in-VM cluster slice reserves a fixed 4 GiB with
+`--memory-swap == --memory` (the `kind load`/push OOM); the WSL2 `.wslconfig` write **replaces** the
+user's file rather than merging and omits swap from the storage budget; and disk preflight is Windows-only
+(`GenerousStorage` no-ops it on Apple/Linux). The fixes landed (see `## Remaining Work`) and **closed
+2026-07-05** by a live Windows/WSL2 `test run all` reporting **`6/6 passed`** — the applied cordon read
+`docker update --cpus 5 --memory 6442450944 --memory-swap 12884901888` on both bring-ups (the cluster slice
+with `--memory-swap` = 2× the RAM cap, the swap-headroom fix), the metal host-headroom preflight passed, and
+the `.wslconfig` was merged (other sections preserved) then restored on teardown.
+
 The budget is now an **enforced** ceiling. The one canonical `parseQuantity` feeds every argument
 builder (`colimaSizingArgs` emits the full profiled `colima start` argv; `kindNodeCordonArgs` emits the
 `docker update` cap; `incusSizingArgs` emits the VM `limits.cpu`/`limits.memory`/`root,size`), so the
@@ -57,7 +69,41 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 
 ## Remaining Work
 
-None. Sprint 9.7 (honest WSL2 cordon) is `Done`. Static validation is closed: `cabal build all` and
+**Reopened 2026-07-05 — cross-substrate resource cordon. Code landed + code-check-validated 2026-07-05;
+real-run-gated (§ C) closure pending:**
+
+- **Host-headroom preflight — landed.** `HostCapacity`'s `spare*` fields are renamed `total*` (honest: the
+  Apple/Windows reads are *total* physical RAM, not spare), and `verifyBudget` now gates memory on
+  `budget + hostMemoryReserveBytes ≤ total` (`hostMemoryReserveBytes` = 4 GiB), so a 16 GiB host + 10 GiB VM
+  is refused with a `plus host reserve` diagnostic rather than silently over-committed
+  (`HostBootstrap.Cluster.Cordon`; `CordonSpec` covers the reserve boundary).
+- **Budget-scaled cluster slice + load/push headroom — landed.** `kindNodeCordonArgs` now sets
+  `--memory-swap = 2 × --memory` (swap headroom = RAM) so a multi-GB `kind load`/push bursts into swap
+  instead of OOM-killing the node at the floor; the demo's `clusterSliceOfBudget` scales the reserve with the
+  budget (`memReserve = max 4 (mem/4)`, `storeReserve = max 40 (store/2)`) instead of a fixed 4 GiB.
+- **`.wslconfig` merge, not clobber; count swap in storage — landed.** The WSL2 launch emits a new
+  `MergeWslConfig` effect interpreted by the pure `HostBootstrap.Wsl2.mergeWslConfig` (drops only the old
+  `[wsl2]` section and appends ours, preserving the user's other sections; backup-once keeps the true
+  original), replacing the full-file `WriteHostFile`. On Windows `runVmUp` preflights storage as vhdx + swap
+  (`withWsl2SwapStorage`). `Wsl2Spec`/`ProviderSpec` cover the merge and the launch effect.
+- **Disk preflight on Apple/Linux — landed.** `GenerousStorage` (1 PB) is replaced by `PosixFreeStorage "/"`,
+  read via a new `Df` host tool (`df -P -k`, pure `parseDfAvailableKBytes`), so the storage ring gates on
+  real free disk on all three substrates. The removed petabyte fallback is recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+- **Host-reserve is metal-only (real-run correction) — landed.** The first real run failed at the in-VM
+  `deploy-kind` with `resource budget plus host reserve exceeds host memory: wants 6 GiB + 4 GiB host reserve,
+  host has 9 GiB`: the host-OS reserve was being applied to the **in-VM cluster-slice** preflight (the slice
+  is already `budget − reserve`, checked against the VM's *available* memory, so re-reserving double-counts).
+  Fixed by splitting the reserve into a metal-only `preflightHostBudget`/`verifyHostBudget`; the plain
+  `verifyBudget`/`preflightBudget` the in-VM `clusterCreate` uses is reserve-free. `CordonSpec` covers both.
+
+Code-check gate (2026-07-05): `cabal build all --ghc-options=-Werror` + `cabal test all` (292) green; the
+demo `-Werror` build green. **Closed (real-run, § C, 2026-07-05):** the metal host-headroom preflight, the
+reserve-free in-VM slice preflight, the 2×-swap kind-node cordon, and the `.wslconfig` merge were all
+exercised by the live Windows/WSL2 `test run all` **`6/6`** run. **None remaining.**
+
+Sprint 9.7 (honest WSL2 cordon) is `Done`. Static validation is closed: `cabal build all` and
 `cabal test all` pass from `core/` (274 tests; `CordonSpec` covers the corrected `wsl2SizingArgs` —
 `[wsl2]` + `swap`, no `vhdx-size` — and the `WindowsTotalMemory` capacity source; the `ProviderSpec`
 locks the unified `selectSubstrateProvider` launch/teardown/transfer effect lists, with Lima/Incus

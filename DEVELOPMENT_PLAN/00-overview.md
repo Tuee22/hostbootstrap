@@ -47,8 +47,9 @@ per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the real `project up`** under a test config rather than re-expressing bring-up (§ W); the declared budget is
 the **one ceiling = the VM wall** with the cluster a **slice within it** (no doubling, § O); each
 `<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
-(§ X); and long-running roles run through the new `service` command (§ AA). The correction is **complete**
-(phases 10, 14, 16, 17, 18 `Done`; phases 13 and 15 reopened then **closed `Done` 2026-07-02** for in-place
+(§ X); and long-running roles run through the new `service` command (§ AA). The correction landed and is code-check-validated
+(phases 14, 17, 18 `Done`; phases 10 and 16 **reopened `Active` 2026-07-05** for cross-substrate reliability
+hardening; phases 13 and 15 reopened then **closed `Done` 2026-07-02** for in-place
 child-config delivery, § U/§ X — see their sections below): the code is code-check-validated (`cabal test
 all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
 lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
@@ -58,7 +59,20 @@ Incus/Linux (2026-06-21) are pre-phase-20 historical snapshots: every case runs 
 self-reference lift, so each reachability probe
 reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to the host
 (see [phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
-blocked by a later one; the core cordon/parser phases (5, 9) stay `Done` because the doubling is demo-side.
+blocked by a later one.
+
+**Cross-substrate reliability reopening (2026-07-05) — closed `Done`.** A later pass **reopened phases 5, 9,
+10, 11, 13, and 16 `Active`** for a systemic class of cross-substrate race conditions, resource conflicts, and
+cleanup gaps the demo real-run gate surfaced (so the earlier "phases 5, 9 stay `Done`" no longer held). All
+six phases' reliability code fixes landed, are code-check-validated (`cabal build all --ghc-options=-Werror` +
+`cabal test all` **core 292** from `core/`; the demo `-Werror` build + **14 + 292** suites from `demo/`; the
+Python `ruff`/`black`/`mypy` gate), and are **real-run-closed (§ C)**: a decoupled Windows/WSL2
+`hostbootstrap-demo test run all` (run as a Windows Scheduled Task) reported **`test report: 6/6 passed`**
+(`REALRUN_EXIT=0`) across both message variants, exercising every fix end-to-end (network-ready gate, Haskell
+docker-readiness poll, node/CNI readiness gate, metal host-headroom preflight + reserve-free in-VM slice
+cordon with 2×-swap headroom, `registry:2` `deploy-registry`/`push-image`, guaranteed harness teardown,
+`.wslconfig` merge/restore). **Phases 5, 9, 10, 11, 13, and 16 are now `Done`.** See the [README](README.md)
+reopening note and each phase's `## Phase Status` / `## Remaining Work`.
 
 The **generic-project-model** work (phase 19, § BB) is **implemented and validated** (`Done`) and builds
 **forward** — it reopened, undid, or reversed no earlier phase. `hostbootstrap-core` owns **no hardcoded
@@ -75,7 +89,8 @@ The **Windows third-substrate** work is woven into the existing phases — not a
 and 9 are closed again: Windows joins `apple-silicon`, `linux-cpu`, and `linux-gpu` as
 `windows-cpu`/`windows-gpu` through the Phase-2 pre-binary Haskell toolchain bootstrap and substrate
 detection, the Phase-3 `ensure cudawin` reconciler, and the Phase-9 Windows host-capacity / WSL2 sizing
-surfaces. Phases 9 and 11 are now `Done`, closed **2026-07-01** by the full Windows/WSL2 lifecycle:
+surfaces. Phases 9 and 11 closed the Windows/WSL2 lifecycle **2026-07-01** (both **reopened `Active` 2026-07-05** for
+cross-substrate reliability hardening) by the full Windows/WSL2 lifecycle:
 `test run all` applied the `.wslconfig` `[wsl2]` ceiling (Sprint 9.7's honest cordon — the fix for the
 earlier `Wsl/Service/0x80072746` utility-VM session drop), registered/entered the managed Ubuntu-24.04
 distro, built the in-distro binary and project image **without a session drop**, stood up in-distro
@@ -136,7 +151,9 @@ profiles, and fail-closed `cluster up` behavior. The lifecycle consumes the reso
 the active execution context. It is `Done`: cluster bring-up/teardown is interpreted as `deploy-kind` /
 `deploy-chart` chain steps under `project up` / `project down` / `project destroy` (phase-16). The core
 cordon upholds budget = VM wall / cluster = slice (§ O); the demo-side budget-doubling is corrected in
-phase-13, so this core phase stays closed.
+phase-13. **Reopened `Active` 2026-07-05** (cross-substrate reliability): a node/CNI readiness gate before
+the first `kubectl apply`, a `clusterCreate` health-check-and-recreate, and the VM-nested `down`/`up`
+kind-recreate contract are open (see phase-5 `## Remaining Work`).
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -180,7 +197,9 @@ storage is the `--vhd-size` install cap), and the per-substrate VM lifecycle is 
 lift (`HostBootstrap.Substrate.Provider`) so the WSL2 `.wslconfig` write + `wsl --shutdown` is a
 first-class effect. Static validation is closed (274 tests, `ProviderSpec` byte-for-byte Lima/Incus);
 the applied wall on a real distro closed **2026-07-01** together with Phase 11 Sprint 11.7 (the full
-`project up` → `test run all` `6/6` → `project destroy` Windows lifecycle).
+`project up` → `test run all` `6/6` → `project destroy` Windows lifecycle). **Reopened `Active` 2026-07-05**
+(cross-substrate reliability): a host-headroom preflight, a budget-scaled cluster slice, `.wslconfig`
+merge-not-clobber, and a cross-substrate disk preflight are open (see phase-9 `## Remaining Work`).
 
 ### Phase 10 — Standardized test harness and run-models
 
@@ -194,7 +213,9 @@ owns the run's `.test_data` lifecycle under a self-created-only delete-guard. Re
 `test run all` reporting `3/3 passed` (2026-06-20). It is `Done`; phase 19 (§ BB) builds **forward** on it,
 having the harness **generate** the run's `<project>.dhall` from the `test.dhall` override via the
 project-owned `psTestConfig` (reusing `psInit`) and delete the generated config on teardown, rather than
-driving `project up` against a pre-existing config.
+driving `project up` against a pre-existing config. **Reopened `Active` 2026-07-05** (cross-substrate
+reliability): guaranteed teardown on a bring-up failure, spatial test isolation, and a real in-VM
+production-cluster safety probe are open (see phase-10 `## Remaining Work`).
 
 ### Phase 11 — incus first-class host-provider
 
@@ -207,7 +228,10 @@ Lima/Incus, depending on Phase 2's Windows substrate detection and pre-binary to
 `ensure wsl2` reconciled Windows hypervisor launch readiness, and the real provider lifecycle **closed** on
 the live distro — `project up` → in-distro Docker/kind/Harbor/web → lifted `test run all` (`6/6`) →
 `project destroy` (guarded `wsl --unregister`, `.wslconfig` restored, `.data` preserved) — with the earlier
-in-distro-build session drop resolved by applying the Sprint 9.7 `.wslconfig` budget wall.
+in-distro-build session drop resolved by applying the Sprint 9.7 `.wslconfig` budget wall. **Reopened
+`Active` 2026-07-05** (cross-substrate reliability): a network-aware VM-ready probe, crash-recoverable
+`.wslconfig` restore, reconcile re-cordon, `vmIdleTimeout`, and docker-readiness polling are open (see
+phase-11 `## Remaining Work`).
 
 ### Phase 12 — Layered warm store
 
@@ -279,10 +303,12 @@ frame — the fractal bootstrap), is idempotent, and renders the pure chain unde
 down` stops VM frames and deletes kind clusters while preserving durable state; `project destroy` deletes
 but preserves `.data`. The `Step` algebra, the
 recursive interpreter, and the `project` command are built and real-run-validated (2026-06-18). It is
-`Done`: the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
+`Active` (reopened 2026-07-05): the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
 composable tools, § P) — and the build-time `web bridge` is re-homed into the build-image step. The fixed
 surface is real-run-validated by the full `project up` + `test run all` run on Apple Silicon (2026-06-20).
+**Reopened `Active` 2026-07-05** (cross-substrate reliability): `applyChain` best-effort teardown on a chain
+failure, and the VM-nested `down`/`up` kind-recreate contract, are open (see phase-16 `## Remaining Work`).
 
 ### Phase 17 — Chain-driven test surface and context introspection
 

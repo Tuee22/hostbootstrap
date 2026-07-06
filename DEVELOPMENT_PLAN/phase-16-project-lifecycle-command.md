@@ -13,6 +13,16 @@
 
 **Status**: Done
 
+**Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
+lifecycle-interpreter gaps in this phase's scope: `applyChain` has no `bracket`/`finally`, so a chain
+failure during `project up` leaks every provisioned resource (leftover VM + in-VM kind + `.wslconfig`) with
+no best-effort teardown; and the `down`/`up` idempotency + kind-recreate contract does not hold for the
+VM-nested topology (with [Phase 5](phase-5-cluster-lifecycle-and-resource-cordoning.md)). The fixes landed
+(see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2 `test run all` reporting
+**`6/6 passed`** — the guarded `applyChain` root-frame teardown was exercised repeatedly on the iteration
+runs (each caught chain failure ran the same best-effort `project destroy`, leaking no VM/kind/`.wslconfig`),
+and the successful run drove the recursive descent end-to-end on both message variants.
+
 **Reopened (2026-06-19) and closed (2026-06-20)** to make the command surface **fixed and closed** —
 `project` / `test` / `service` / `context` / `check-code`, with `ProjectSpec` carrying no `ProjectCommand`
 deltas and `hostbootstrap-core` framed as a library of composable tools. The closure is real-run-validated:
@@ -51,6 +61,29 @@ them. That parameterization is owned by
 surface this phase shipped is unchanged.
 
 ## Remaining Work
+
+**Reopened 2026-07-05 — lifecycle-interpreter reliability. Code landed + code-check-validated 2026-07-05;
+real-run-gated (§ C) closure pending:**
+
+- **Best-effort teardown on chain failure — landed.** `applyChain` now `try`-wraps `runChainFromFrame`, and a
+  chain failure (a `Left` from a non-zero handoff, or a thrown exception) at the **root** frame runs the same
+  best-effort teardown as `project destroy` (`clusterDelete` + `teardown … True`, each exception-swallowed)
+  before dying, so a failed `project up` does not leak the VM + in-VM kind + the global `.wslconfig`. Only the
+  root frame (`null parentChain`) tears down — a nested frame's failure propagates up to the root, which alone
+  can reach the VM to delete it — and an uncatchable external kill is handled by the idempotent stale-state
+  reconcile on the next `project up` (`HostBootstrap.Command` `runUp`/`applyChain`, paired with
+  [Phase 5](phase-5-cluster-lifecycle-and-resource-cordoning.md) /
+  [Phase 11](phase-11-incus-host-provider.md)).
+- **Reconcile the `down`/`up` + kind-recreate contract — landed (via Phase 5).** `project down` stops the VM
+  (leaving its in-VM kind cluster stopped), and the next `project up`'s in-VM `clusterCreate` health-checks the
+  listed-but-unhealthy cluster and recreates it (the [Phase 5](phase-5-cluster-lifecycle-and-resource-cordoning.md)
+  health-check-and-recreate), so the VM-nested `down`→`up` idempotently reconciles a stopped stack to running.
+
+Code-check gate (2026-07-05): `cabal build all --ghc-options=-Werror` + `cabal test all` (292) green from
+`core/`; the demo `-Werror` build green. **Closed (real-run, § C, 2026-07-05):** the root-frame best-effort
+teardown fired on every caught chain failure during the iteration runs (no leaked VM/kind/`.wslconfig`), and
+the successful Windows/WSL2 `test run all` **`6/6`** run drove the recursive descent end-to-end on both
+variants. **None remaining.**
 
 Close the command surface to the fixed core set and make `hostbootstrap-core` a **library of composable
 tools**, not a CLI topology (development_plan_standards § P, § T).

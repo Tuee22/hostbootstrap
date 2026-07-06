@@ -59,39 +59,56 @@ budgetCases =
 
 verifyCases :: [TestTree]
 verifyCases =
-  [ testCase "within spare capacity passes" $
+  [ testCase "within capacity passes (reserve-free — the in-VM slice check)" $
       verifyBudget budget (HostCapacity 8 (16 * gib) (100 * gib)) @?= Right (),
     testCase "cpu over capacity fails naming cpu" $
       leftHas "cpu" (verifyBudget budget (HostCapacity 2 (16 * gib) (100 * gib))),
     testCase "memory over capacity fails naming memory" $
       leftHas "memory" (verifyBudget budget (HostCapacity 8 (4 * gib) (100 * gib))),
     testCase "storage over capacity fails naming storage" $
-      leftHas "storage" (verifyBudget budget (HostCapacity 8 (16 * gib) (10 * gib)))
+      leftHas "storage" (verifyBudget budget (HostCapacity 8 (16 * gib) (10 * gib))),
+    testCase "verifyBudget does NOT apply the host reserve (the in-VM slice fits available memory)" $
+      -- an 8 GiB slice against 9 GiB available memory passes reserve-free: the real
+      -- run's bug was re-reserving here (6 GiB slice + 4 GiB > 9 GiB avail) — the
+      -- reserve belongs only to the metal preflight (verifyHostBudget).
+      verifyBudget budget (HostCapacity 8 (9 * gib) (100 * gib)) @?= Right (),
+    testCase "verifyHostBudget (metal) DOES reserve: fits total but not total-minus-reserve → fails" $
+      -- 8 GiB budget + 4 GiB host reserve = 12 GiB > 10 GiB total: a tight metal host
+      -- is refused rather than silently over-committed.
+      leftHas "reserve" (verifyHostBudget budget (HostCapacity 8 (10 * gib) (100 * gib))),
+    testCase "verifyHostBudget names host memory + the reserve" $
+      leftHas "memory" (verifyHostBudget budget (HostCapacity 8 (10 * gib) (100 * gib))),
+    testCase "verifyHostBudget passes when the reserve fits" $
+      verifyHostBudget budget (HostCapacity 8 (16 * gib) (100 * gib)) @?= Right ()
   ]
   where
     budget = ResourceBudget 4 (8 * gib) (20 * gib)
 
 capacitySourceCases :: [TestTree]
 capacitySourceCases =
-    [ testCase "apple-silicon reads CPU and memory from sysctl" $
+    [ testCase "apple-silicon reads CPU/memory from sysctl and free disk from df" $
       capacityReadPlan (Substrate AppleSilicon Arm64)
-        @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") GenerousStorage,
-    testCase "linux-cpu reads CPU and memory from procfs" $
+        @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") (PosixFreeStorage "/"),
+    testCase "linux-cpu reads CPU/memory from procfs and free disk from df" $
       capacityReadPlan (Substrate LinuxCpu Amd64)
-        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage,
-    testCase "linux-gpu reads CPU and memory from procfs" $
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable (PosixFreeStorage "/"),
+    testCase "linux-gpu reads CPU/memory from procfs and free disk from df" $
       capacityReadPlan (Substrate LinuxGpu Amd64)
-        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage,
+        @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable (PosixFreeStorage "/"),
     testCase "windows substrates read CPU, total memory, and storage from PowerShell/CIM" $ do
       capacityReadPlan (Substrate WindowsCpu Amd64)
         @?= CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
       capacityReadPlan (Substrate WindowsGpu Amd64)
         @?= CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace,
+    testCase "df -k output parses to the available-1K-blocks field" $ do
+      parseDfAvailableKBytes "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/disk1s1 500000000 100000000 400000000 20% /\n"
+        @?= Just 400000000
+      parseDfAvailableKBytes "" @?= Nothing,
     testCase "windows storage shortage fails before WSL2 VHDX pressure" $
       leftHas "storage" $
         preflightBudget
           (ResourceEnvelope {cpu = 6, memory = "10GiB", storage = "80GiB"})
-          (HostCapacity 16 (12 * gib) (40 * gib)),
+          (HostCapacity 16 (20 * gib) (40 * gib)),
     testCase "apple sysctl core count can satisfy a matching N-core budget" $
       preflightBudget
         (ResourceEnvelope {cpu = 10, memory = "8GiB", storage = "20GiB"})
@@ -113,7 +130,7 @@ capacitySourceCases =
               case result of
                 Right capacity ->
                   assertBool "expected positive CPU and memory capacity" $
-                    spareCpu capacity > 0 && spareMemoryBytes capacity > 0
+                    totalCpu capacity > 0 && totalMemoryBytes capacity > 0
                 Left err -> assertBool ("expected sysctl capacity read to succeed, got: " ++ err) False
         else pure ()
   ]
@@ -147,10 +164,10 @@ sizingCases =
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],
-    testCase "wsl2 sizing emits the .wslconfig [wsl2] global ceiling with swap (no vhdx-size key)" $
+    testCase "wsl2 sizing emits the .wslconfig [wsl2] ceiling with swap + vmIdleTimeout (no vhdx-size key)" $
       wsl2SizingArgs demoResources
-        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "swap=8GB"],
-    testCase "applied Linux cordon targets the control-plane with budget caps" $
+        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=-1"],
+    testCase "applied Linux cordon caps the control-plane with 2x swap headroom" $
       kindNodeCordonArgs "demo-test-case1" demoResources
         @?= Right
           [ "update",
@@ -159,7 +176,7 @@ sizingCases =
             "--memory",
             show (8 * gib),
             "--memory-swap",
-            show (8 * gib),
+            show (2 * 8 * gib),
             "demo-test-case1-control-plane"
           ],
     testCase "the docker update cordon argv omits storage (no docker flag)" $

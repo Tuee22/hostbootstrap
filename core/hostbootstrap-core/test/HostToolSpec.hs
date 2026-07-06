@@ -47,7 +47,7 @@ enumCases =
       assertBool "every documented HostTool constructor is in the closed set" $
         all
           (`elem` allHostTools)
-          [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Nvcc, PowerShell, Bcdedit, Sysctl, Winget, Wsl, Sudo, XcodeSelect]
+          [Docker, Colima, Lima, Brew, Ghc, Ghcup, Kubectl, Helm, Kind, NvidiaSmi, Nvcc, PowerShell, Bcdedit, Sysctl, Winget, Wsl, Sudo, XcodeSelect, Incus, Df]
   ]
 
 resolutionCases :: [TestTree]

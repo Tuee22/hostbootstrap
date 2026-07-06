@@ -74,7 +74,7 @@ fixtureSpec progName =
 
 passingSuite :: TestSuite
 passingSuite =
-    TestSuite (pure (Right ())) (\_ -> pure ()) [Case "ok" 1 False] (\_ _ -> pure Pass) (\_ -> pure ())
+    TestSuite (pure (Right ())) (\_ -> pure ()) [Case "ok" 1 False] (\_ _ -> pure Pass) (pure ())
 
 tests :: TestTree
 tests =

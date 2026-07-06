@@ -12,6 +12,16 @@
 
 **Status**: Done
 
+**Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate (Sprint
+13.16) surfaced cluster-lifecycle readiness/idempotency gaps in this phase's scope: `kind create` (default
+`--wait 0s`) is followed by an immediate `kubectl apply` with no node-Ready/CNI gate; `clusterCreate`
+trusts `kind get clusters` with no health check (a stopped in-VM cluster reads as running); and the
+`down`-deletes-kind / `up`-recreates contract does not hold for the VM-nested demo cluster (`down` only
+stops the VM). The fixes landed (see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2
+`hostbootstrap-demo test run all` reporting **`test report: 6/6 passed`** across both message variants — the
+`cluster up: nodes Ready for hostbootstrap-demo` gate fired on each of the two bring-ups before the first
+apply, then `project destroy` tore down with host `.data` preserved.
+
 The cluster lifecycle is now reached **only** as `deploy-kind` / `deploy-chart` chain steps under
 `project up` (the flat `cluster` verb group is removed; read-only liveness moved under `context`), and the
 real-run gate is **met (2026-06-18)**: a live `project up` on Incus/Linux brought the cordoned kind cluster
@@ -52,6 +62,30 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 `.data` path) from the test profile (per-case isolated paths).
 
 ## Remaining Work
+
+**Reopened 2026-07-05 — cross-substrate cluster readiness + idempotency. Code landed + code-check-validated
+2026-07-05; real-run-gated (§ C) closure pending:**
+
+- **Node/CNI readiness gate — landed.** `clusterCreate` now runs `waitNodesReady`
+  (`kubectl wait --for=condition=Ready node --all --timeout=30s`, bounded-retry × 10 with a 3 s backoff,
+  fail-closed) **after** `kind create` (`--wait 0s`) and the cordon and **before** it returns, so the chain's
+  first `kubectl apply` / Helm install cannot race the API server or CNI on a busy host
+  (`HostBootstrap.Cluster.Lifecycle.clusterCreate`).
+- **Health-check-and-recreate — landed.** `clusterCreate` no longer trusts `kind get clusters`: a listed
+  cluster is health-probed by `ensureCluster` → `clusterHealthy` (export kubeconfig, then
+  `kubectl get nodes`; the pure classifier `clusterHealthyFromProbe` is unit-tested in `LifecycleSpec`), and
+  a listed-but-unhealthy cluster (stopped containers → connection refused) is `kind delete`-d and recreated.
+- **Reconcile the down/up contract for the VM-nested cluster — landed.** The health-check-and-recreate above
+  **is** the mechanism: after a `project down` that stopped the VM (leaving the in-VM kind cluster stopped),
+  the next `project up`'s in-VM `clusterCreate` sees the cluster listed-but-unhealthy and recreates it. The
+  honest prose (`down` stops the VM, so the in-VM cluster is left stopped and a re-run health-checks-and-
+  recreates) is already in [cluster_lifecycle.md](../documents/engineering/cluster_lifecycle.md). Co-owned
+  with [Phase 16](phase-16-project-lifecycle-command.md).
+
+Code-check gate (2026-07-05): `cabal build lib:hostbootstrap-core --ghc-options=-Werror` and `cabal test all`
+(292) green. **Closed (real-run, § C, 2026-07-05):** the readiness gate + recreate were exercised by the live
+Windows/WSL2 `project up` → `test run all` → `project destroy` run reporting **`6/6 passed`** — `cluster up:
+nodes Ready for hostbootstrap-demo` fired on both bring-ups. **None remaining.**
 
 The flat `cluster` verb is removed (phase-4) and the **stop-without-delete capability** is implemented
 (`stopVMArgs` for Incus and Lima, unit-tested in `IncusSpec` / `LimaSpec`). Remaining

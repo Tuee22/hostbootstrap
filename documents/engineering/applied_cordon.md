@@ -62,12 +62,12 @@ never renders. See [dhall generation](../architecture/dhall_generation.md).
 Two pure functions gate bring-up before any substrate is touched:
 
 - `preflightBudget resources hostCapacity` is the pure preflight: it derives the budget
-  (`budgetFromResources`) and then runs `verifyBudget` (budget versus resolved spare host capacity),
-  failing fast with a one-line diagnostic naming the first dimension that exceeds spare capacity.
+  (`budgetFromResources`) and then runs `verifyBudget` (budget versus resolved host capacity),
+  failing fast with a one-line diagnostic naming the first dimension that exceeds capacity.
 - `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` proves the concurrent pod
   set fits the budget.
 
-`resolveHostCapacity cfg` resolves spare capacity **per substrate** through the pure
+`resolveHostCapacity cfg` resolves host capacity **per substrate** through the pure
 `capacityReadPlan substrate` source mapping:
 
 | Substrate | CPU source | Memory source | Storage source |
@@ -80,8 +80,13 @@ Two substrates read **total** physical memory (Apple `hw.memsize`, Windows `Tota
 than momentary free/available memory: total is a stable property of the machine, so the preflight is a
 fact about whether the host *can* host a budget-sized VM, not a volatile point-in-time reading. This
 matters most on Windows/WSL2, where there is no per-distro hard memory cap (see the runtime ring): a
-host that cannot fit the budget then fails fast at this ring rather than passing on transient
-post-reboot free RAM and dying inside the build. Linux keeps `MemAvailable` (its applied incus cordon is
+host whose *total* RAM cannot fit the budget fails fast at this ring rather than passing on transient
+post-reboot free RAM and dying inside the build. **This ring now checks `budget + ~4 GiB host-OS reserve ≤ total`**
+via the metal host preflight (`preflightHostBudget` / `verifyHostBudget`), so a budget that fits under total
+RAM but leaves the host short (e.g. 10 GiB on 16 GiB) fails fast at this ring rather than passing. The in-VM
+cluster-slice preflight (`preflightBudget` / `verifyBudget`) is reserve-free — the slice is already the
+reserved subset, so there is no double-count. This host-headroom split is real-run-validated 2026-07-05 by the
+Windows/WSL2 `test run all` (`6/6`). Linux keeps `MemAvailable` (its applied incus cordon is
 a hard per-VM wall, so the preflight need only be advisory). Storage is reported generously on Apple and
 Linux (their applied VM cordons own the real wall) but read as real system-drive free space on Windows,
 so WSL2 does not begin a large VHDX-backed build on a disk that cannot satisfy the declared storage
@@ -121,7 +126,7 @@ difference. See [wsl2](wsl2.md) for the provider detail.
 ## Per-Substrate Storage Cordon
 
 Storage carries no `docker update` flag, so it is dropped from the `kindNodeCordonArgs` argv. It is
-kept in `verifyBudget`, so the bring-up ring still checks the declared storage against spare capacity.
+kept in `verifyBudget`, so the bring-up ring still checks the declared storage against the resolved capacity.
 Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |

@@ -64,6 +64,15 @@ kind/helm actions use `requireStep`, which `die`s on a non-zero `kind create` or
 `helm upgrade --install`, so a broken deploy is loud — never a swallowed message a lifting parent
 process would read as success.
 
+`clusterCreate` upholds this against a busy or stale host with two gates. Because `kind create` defaults to
+`--wait 0s`, it ends with a **node/CNI readiness gate** (`waitNodesReady`: bounded-retry
+`kubectl wait --for=condition=Ready node --all`, fail-closed) so the chain's first `kubectl apply` / Helm
+install cannot race the API server or CNI. And because `kind get clusters` lists only names, a listed
+cluster is **health-probed** (`clusterHealthy`: export kubeconfig, then `kubectl get nodes`) rather than
+trusted: a listed-but-unhealthy cluster (stopped containers after the VM that hosts it was
+`project down`-stopped and restarted) is `kind delete`-d and recreated, so the idempotent re-run reconciles
+a stopped in-VM stack back to running. The pure classifier `clusterHealthyFromProbe` is unit-tested.
+
 The deploy is **chart-conditional**: a project ships its chart at `./chart` (relative to the directory
 the cluster step runs in — the project root, or `/workspace/<project>` inside the project container)
 and the step installs it fail-closed; a project with no chart gets a clean kind + cordon bring-up with
@@ -80,7 +89,13 @@ container frame the recursive interpreter reaches — not host tools (see
 `project down` deletes the running kind cluster and its services while preserving durable state. Kind does
 not provide a reliable stop/restart contract for the cluster frame, so `down` uses `kind delete cluster`
 for compute and keeps the `.data` and derived paths in place. The next `project up` recreates the kind
-cluster from the chain. VM frames are different: they use provider stop-without-delete (`incus stop` /
+cluster from the chain. **In-VM topology:** when the kind cluster lives *inside* a provider VM (the demo
+topology), `project down` stops the VM before the host-side `kind delete` can reach it, so the in-VM cluster
+is left stopped rather than deleted; the re-run health-checks-and-recreates it — `clusterCreate` finds the
+listed cluster unhealthy (`clusterHealthy`/`clusterHealthyFromProbe`), `kind delete`s and recreates it, then
+gates on `waitNodesReady` before the first apply — rather than trusting `kind get clusters`. This VM-nested
+`down`->`up` recreate is the same health-recreate path described under `project up` above, and is
+real-run-validated 2026-07-05 by the Windows/WSL2 `hostbootstrap-demo test run all` (6/6 passed). VM frames are different: they use provider stop-without-delete (`incus stop` /
 `limactl stop` / `wsl --terminate <distro>` (per-distro WSL2 stop)) on ascent after the inner cluster teardown (see
 [incus](incus.md), [lima](lima.md), [wsl2](wsl2.md)).
 

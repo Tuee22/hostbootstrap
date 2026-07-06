@@ -10,16 +10,36 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened (2026-07-04)** for the **in-cluster-registry doctrine switch** (Harbor → single-binary
-`registry:2`): the demo's `deploy-harbor` step became `deploy-registry`, replacing the 8-pod Harbor Helm
-stack + the `ghcr.io/octohelm/harbor/*` dual-arch mirror + the trivy scanner with a single `registry:2`
-(CNCF `distribution`) Deployment applied via `kubectl` — natively multi-arch, anonymous, HTTP. Harbor was
-never load-bearing (the web pod runs the `kind load`-ed image; no assertion touches the registry), so the
+**Reopened (2026-07-04, extended 2026-07-05) then closed (2026-07-05)** for the **in-cluster-registry
+doctrine switch** (Harbor → single-binary `registry:2`) and the **cross-substrate reliability hardening** the
+real-run gate surfaced. **Closed 2026-07-05** by a live Windows/WSL2 `hostbootstrap-demo test run all`
+reporting **`test report: 6/6 passed`** across both message variants: `deploy-registry: in-cluster registry
+rollout complete at http://localhost:30500` and `push-image: kind-loaded hostbootstrap-demo:local and pushed
+localhost:30500/library/hostbootstrap-demo:demo` fired on **both** bring-ups (the single-binary `registry:2`
++ poll-to-Ready hardening), the web service was reachable at `localhost:30080`, and `project destroy` tore
+down with host `.data` preserved.
+The demo's `deploy-harbor` step became `deploy-registry`, replacing the 8-pod Harbor Helm stack + the
+`ghcr.io/octohelm/harbor/*` dual-arch mirror + the trivy scanner with a single `registry:2` (CNCF
+`distribution`) Deployment applied via `kubectl` — natively multi-arch, anonymous, HTTP. Harbor was never
+load-bearing (the web pod runs the `kind load`-ed project image; no assertion touches the registry), so the
 change is confined to the demo's contributed `deploy-registry` / `push-image` steps; core is untouched.
-**Not yet real-run-validated end to end, so the phase is `Active`** — see Sprint 13.16, `## Remaining Work`,
-and [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+**2026-07-05 real-run finding.** A live Windows/WSL2 `test run all` validated the full lifecycle up to
+`deploy-registry` (WSL2 provision → in-place VM config → build #2/#3 → web build → `kind create` → cordon),
+then exposed a bug: `deploy-registry` pre-loaded the **multi-arch** `registry:2` via `kind load
+docker-image`, which fails (`ctr import --all-platforms` → "content digest not found"). **Fixed** (code
+landed, `-Werror` green): `deployRegistryAction` no longer `kind load`s `registry:2`; the Deployment pulls
+it (`imagePullPolicy: IfNotPresent`) so containerd selects the node platform from the multi-arch manifest —
+the demo's own single-arch project image is still delivered locally by `push-image`'s `kind load`. The same
+run surfaced demo-side reliability gaps (the `deploy-registry` rollout timeout on the kubelet pull, missing
+registry readiness before `push-image`, `pushWithRetry` retrying non-transient failures, Production-profile
+port reuse, `runVmUp` reconcile) tracked in `## Remaining Work`.
+
+**Real-run-closed 2026-07-05: `6/6` with the `registry:2` pod-pull + poll-to-Ready fixes** — see Sprint 13.16,
+`## Remaining Work`, and [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) (the retired
+Harbor / `kind load registry:2` surfaces moved to Removed Surfaces on this closure).
 
 **Reopened and closed (2026-07-02)** for **in-place child-config delivery** (development_plan_standards
 § U, § X; [phase-15](phase-15-binary-context-config.md) Sprint 15.7): the demo replaced the build-then-copy
@@ -136,14 +156,53 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 
 ## Remaining Work
 
-**In-cluster-registry switch (open, real-run-gated).** The Harbor → single-binary `registry:2` swap
-(Sprint 13.16) is code-landed (`deployRegistryAction`; the demo `-Wall` build is green, so the in-container
-`check-code` `-Werror` gate passes) but **not yet real-run-validated end to end**. The closing gate is a
-live `project up` → `test run all` → `project destroy` on Windows/WSL2 (and, if hardware is available,
-Apple-Silicon/`arm64` — where `registry:2`'s native multi-arch removes the old Harbor-image gap) standing up
-`registry:2`, pushing the project image, and reporting **`6/6`**. Until that run passes this phase is
-`Active` and the retired Harbor surfaces stay in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+**In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
+single-binary `registry:2` swap (Sprint 13.16) plus the demo-side reliability fixes are **real-run-validated
+end to end**: a live Windows/WSL2 `hostbootstrap-demo test run all`, run **decoupled** from the Claude harness
+as a Windows Scheduled Task (so a harness stop could not abort it), reported **`test report: 6/6 passed`**
+across both message variants — `deploy-registry` stood up the pod-pulled `registry:2` (rollout complete on
+both bring-ups), `push-image` kind-loaded the project image and pushed it to `localhost:30500`, the web
+service served at `localhost:30080`, and `project destroy` tore down with host `.data` preserved. The
+retired Harbor / `kind load registry:2` surfaces move to **Removed Surfaces** in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The demo-side reliability fixes that
+closed the gate:
+
+- **Harden `deploy-registry` — landed.** The fixed fatal `rollout status --timeout=120s` is replaced by
+  `waitRegistryRollout` (poll-to-Ready with backoff: 6 × up-to-60 s + 5 s backoff, so an unauthenticated
+  `registry:2` pull under Docker Hub load is tolerated), and the registry Deployment carries a
+  `readinessProbe` on `GET /v2/` (`:5000`, `failureThreshold: 60`) so the NodePort Service gets no endpoints
+  — hence `push-image` cannot race — until the registry actually serves.
+- **`pushWithRetry` — landed.** It now retries **only** the known transient markers
+  (`isTransientPushError`: digest/blob-upload races, connection resets, 5xx), and a non-transient failure
+  dies immediately with full diagnostics instead of burning the retry budget. `push-image` first polls
+  `GET /v2/` on the NodePort (`waitWebReachable`) before pushing.
+- **Demo-side resource/isolation — landed (co-owned).** Budget-scaled `clusterSliceOfBudget` +
+  swap-headroom kind-node cordon (with [Phase 9](phase-9-applied-cordon-and-one-parser.md)); the harness is
+  taken off a silent Production-profile collision by the mutual-exclusion + actually-firing in-VM
+  `productionClusterRunning` probe (with [Phase 10](phase-10-standardized-test-harness.md)); `runVmUp`
+  reconcile re-applies the WSL2 cordon (with [Phase 11](phase-11-incus-host-provider.md)).
+
+- **Staging robustness — landed (real-run finding).** An early Windows/WSL2 closure attempt (2026-07-05)
+  reached the in-distro `pipx install` and failed `Directory '/root/hostbootstrap' is not installable`
+  because the host staging `tar` hit a `Permission denied` on a transient, admin-owned `.pytest_cache` and
+  produced a **truncated** archive (missing the repo-root `pyproject.toml`), which the "exit-1-but-tarball-
+  written = non-fatal" path silently accepted. Fixed in `stageSource`: exclude the transient host caches
+  (`.pytest_cache` / `.mypy_cache` / `.ruff_cache` / `__pycache__`) so the archive is complete and
+  reproducible, **and** assert `pyproject.toml` is present after extraction so a truncated stage fails loudly
+  at the source rather than as a confusing downstream `pipx` error. The reliability fixes themselves behaved
+  correctly on that attempt (Phase 16 best-effort teardown fired, Phase 11 restored/removed `.wslconfig`,
+  Phase 10 isolated both variants), confirming the guard paths.
+- **Live output — landed (observability).** The demo binary now line-buffers `stdout`/`stderr`
+  (`demo/app/Main.hs`) so every step announcement and any failure `die` streams live through the lifted
+  `project up`/`test run` pipe instead of sitting in the default block buffer — behaviour-neutral, but it
+  makes a long lifted run observable in real time (all frames inherit it, since they run the same binary).
+
+Code-check gate (2026-07-05): the demo `-Werror` build (the in-container `check-code` gate) + demo/core
+suites (14 + 292) green. **Real-run gate CLOSED 2026-07-05:** the decoupled Windows/WSL2 `test run all`
+reported **`6/6 passed`** across both message variants (`REALRUN_EXIT=0`).
+
+The retired Harbor surfaces and the removed `kind load registry:2` pre-load are now recorded in the
+**Removed Surfaces** of [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The contributed `demoChain :: ProjectConfig -> [Step]` interpreted by `project up` is built and
 real-run-validated (2026-06-18). The unified-harness / resource-SSoT / fixed-surface correction
@@ -848,9 +907,9 @@ bind-mount)`), the container `docker run` carried **no** `-v …hostbootstrap-de
 `hostbootstrap-demo.vm.dhall`/`hostbootstrap-demo.runtime-container.dhall` were produced, and
 `project destroy` restored `.wslconfig` with host `.data` preserved.
 
-### Sprint 13.16: In-cluster registry — Harbor → single-binary registry:2 [Active]
+### Sprint 13.16: In-cluster registry — Harbor → single-binary registry:2 [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`deployRegistryAction`, `pushImageAction`),
 `demo/kind.yaml`
 **Docs to update**: `documents/engineering/in_cluster_registry.md`,
@@ -869,8 +928,10 @@ untouched.
 #### Deliverables
 
 - `deployHarborAction` → `deployRegistryAction`: a single `registry:2` Deployment + NodePort-30500 Service
-  applied with `kubectl` (no Helm, no multi-pod chart), the image `kind load`-ed and the Deployment
-  rollout-waited. `registry:2` is natively multi-arch, so no per-component override and no trivy.
+  applied with `kubectl` (no Helm, no multi-pod chart), the Deployment rollout-waited. `registry:2` is
+  natively multi-arch, so no per-component override and no trivy; the registry pod **pulls** `registry:2`
+  (`imagePullPolicy: IfNotPresent`) — it is **not** `kind load`-ed, which cannot import a multi-arch image
+  (the 2026-07-05 real-run finding).
 - `pushImageAction` simplified: keep `kind load`; drop `docker login` / `waitHarborLogin` (the registry is
   anonymous, HTTP, `localhost`-insecure); keep the bounded `pushWithRetry`.
 - Rename `deploy-harbor` → `deploy-registry`, `harborEndpoint` → `registryEndpoint`; delete
@@ -880,16 +941,20 @@ untouched.
 
 #### Validation
 
-- Demo `-Wall` build green (the in-container `check-code` `-Werror` gate passes on the `Commands.hs`
-  change); `cabal test` (`DocValidator`) green after the doc rename + link repoints.
+- Demo `-Werror` build green (the in-container `check-code` gate passes on the `Commands.hs` change,
+  including the pod-pull fix); `cabal test` (`DocValidator`) green after the doc rename + link repoints.
+  Re-validated 2026-07-05 on the Windows host: core `cabal build all --ghc-options=-Werror` + `cabal test
+  all` (**281**), the demo `-Werror` build, and the Python gate (`check_code` + `test_all` 181) are all
+  green, and `project up --dry-run` renders the `deploy-registry (registry:2, NodePort 30500)` chain.
 
 #### Remaining Work
 
-Open, real-run-gated (§ C): a live `project up` → `test run all` → `project destroy` on Windows/WSL2 (and,
-if available, Apple-Silicon/`arm64`) standing up `registry:2`, pushing the project image, and reporting
-**`6/6`**. On closure, move the four Harbor entries in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) from `## Pending` to `## Removed
-Surfaces` with the validation stamp and flip the phase (and the § J harmony docs) back to `Done`.
+None. **Closed (real-run, § C, 2026-07-05):** a live `project up` → `test run all` → `project destroy` on
+Windows/WSL2, run **decoupled** as a Windows Scheduled Task, stood up the pod-pulled `registry:2`, pushed the
+project image to `localhost:30500`, and reported **`test report: 6/6 passed`** (`REALRUN_EXIT=0`) across both
+message variants, then tore down with host `.data` preserved. The four Harbor entries **and** the removed
+`kind load registry:2` pre-load are moved from `## Pending` to `## Removed Surfaces` in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with this validation stamp.
 
 ## Documentation Requirements
 

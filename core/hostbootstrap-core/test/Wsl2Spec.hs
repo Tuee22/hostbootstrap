@@ -32,8 +32,25 @@ tests =
         wslUnregisterArgs "hostbootstrap-demo-" "hostbootstrap-demo-wsl"
           @?= Right ["--unregister", "hostbootstrap-demo-wsl"]
         assertBool "refuses to unregister unmanaged distro" (isLeft (wslUnregisterArgs "hostbootstrap-demo-" "personal-ubuntu"))
-        wslShutdownArgs @?= ["--shutdown"]
+        wslShutdownArgs @?= ["--shutdown"],
+      testCase "mergeWslConfig preserves other sections and replaces [wsl2]" $ do
+        let body = ["[wsl2]", "processors=6", "memory=10GB", "swap=10GB"]
+        -- an empty/absent .wslconfig yields just our block
+        mergeWslConfig "" body @?= "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\n"
+        -- a user's other sections survive; the old [wsl2] block is replaced, not duplicated
+        let existing = "[experimental]\nsparseVhd=true\n\n[wsl2]\nmemory=4GB\nprocessors=2\n"
+            merged = mergeWslConfig existing body
+        assertBool "keeps [experimental]" ("[experimental]" `elemLine` merged)
+        assertBool "keeps the user's experimental key" ("sparseVhd=true" `elemLine` merged)
+        assertBool "applies our processors" ("processors=6" `elemLine` merged)
+        assertBool "drops the old memory value" (not ("memory=4GB" `elemLine` merged))
+        assertBool "exactly one [wsl2] header" (length (filter (== "[wsl2]") (lines merged)) == 1)
+        -- idempotent: re-merging our own output replaces [wsl2] in place, not appends
+        assertBool "idempotent [wsl2]" (length (filter (== "[wsl2]") (lines (mergeWslConfig merged body))) == 1)
     ]
+
+elemLine :: String -> String -> Bool
+elemLine needle = elem needle . lines
 
 utf16ish :: String -> String
 utf16ish =

@@ -136,15 +136,25 @@ Because `.wslconfig` is global and requires `wsl --shutdown` to take effect, the
 (`SubstrateProvider.spLaunch`) returns `[HostEffect]`:
 
 1. write `%UserProfile%\.wslconfig` with the `[wsl2]` ceiling, **backing up** any pre-existing file to
-   `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably);
-2. `wsl --shutdown` so the new ceiling applies to the next boot;
-3. register the distro with its `--vhd-size` storage cap.
+   `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably). The write
+   **merges** (`mergeWslConfig`) our `[wsl2]` ceiling into any existing file rather than replacing it, so a
+   user's other sections and keys are preserved for the duration;
+2. `wsl --shutdown` — note this stops **every** distro on the machine and the shared utility VM, not just
+   this one (an unguarded global side-effect, disclosed here rather than silently taken);
+3. register the distro with its `--vhd-size` storage cap. The `swap` size is on the Windows system drive and
+   **is** counted in the Windows storage preflight, so the swapfile's footprint is budgeted alongside the VHDX.
 
-`project destroy` restores the backed-up `.wslconfig` (or removes the one we wrote if there was none).
+Both `project down` and `project destroy` restore the backed-up `.wslconfig` (or remove the one we wrote if
+there was none), and the restore is crash-recoverable — a backup-once discipline keeps the true original, so an
+interrupted or `down`-but-not-destroyed run does not leave the global ceiling applied throttling other
+distros.
 The preflight predicate that decides whether the host can satisfy the budget reads **total** physical
 memory on Windows (CIM `Win32_ComputerSystem.TotalPhysicalMemory`), mirroring Apple's stable
-`hw.memsize` — a too-small host fails fast before the expensive build rather than passing on transient
-free RAM. The enforcement mechanics, the three rings, and the per-substrate table are owned by
+`hw.memsize` — a host whose total RAM cannot fit the budget fails fast before the expensive build rather
+than passing on transient free RAM. The metal host preflight (`preflightHostBudget` / `verifyHostBudget`)
+gates on `budget + ~4 GiB host-OS reserve ≤ total`, so a budget that fits under total RAM but would leave the
+host short is refused rather than passed — behavior real-run-validated 2026-07-05 by the Windows/WSL2
+`test run all` (**6/6**). The enforcement mechanics, the three rings, and the per-substrate table are owned by
 [applied_cordon](applied_cordon.md); this section is the WSL2-specific instance.
 
 ## `ensure wsl2`

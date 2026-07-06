@@ -12,6 +12,18 @@
 
 **Status**: Done
 
+**Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
+harness gaps in this phase's scope: teardown is **not** guaranteed on a bring-up failure or external kill (the
+harness binds `env <- bringUp` outside its `finally`, so a failed `project up` leaks the VM/cluster and
+aborts the remaining variants); the demo harness drives the **Production** profile (fixed NodePorts
+30080/30500, fixed VM name) so isolation is only temporal, not spatial (core's isolated `TestCase`,
+`publishesHostPorts=False`, is unused); and the "production cluster running" safety precondition probes the
+**metal** kind, never the in-VM cluster, so it is a structural no-op for the demo topology. The fixes landed
+(see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2 `test run all` reporting
+**`6/6 passed`**: the guaranteed-teardown engine ran the two message variants in turn (each `project up` →
+assert → `project destroy`), the in-VM `productionClusterRunning` probe gated the run, and both variants tore
+down cleanly with host `.data` preserved.
+
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /
 `./.test_data/<case>/`), running the body, and tearing down in a guaranteed `finally` (a body exception
@@ -40,6 +52,32 @@ functional logic (the case matrix, the budget-slicing cores, the run-model selec
 the chain production uses. The engine recast to drive the real `project up` landed in code and is real-run-validated; the current `test run all` reports `6/6 passed` (phase-20's second message variant brought the earlier single-variant `3/3` matrix to `6/6`; the dated 2026-06-20 `3/3` validation below stands).
 
 ## Remaining Work
+
+**Reopened 2026-07-05 — harness reliability. Code landed + code-check-validated 2026-07-05; real-run-gated
+(§ C) closure pending:**
+
+- **Guarantee teardown on bring-up failure — landed.** `TestSuite`'s tear-down field is now `IO ()`
+  (env-independent — `project destroy` re-detects the stack), so `runSuiteSelection` moves bring-up **inside**
+  the guaranteed `finally`: a failed `project up` is caught (`tryAnyIO`), runs the same best-effort
+  `project destroy`, and turns into a per-case `Fail` for that variant; each whole variant is isolated
+  (`safeRunVariant`) so one variant's failure never aborts the remaining variants
+  (`HostBootstrap.Harness.runSuiteSelection`; `HarnessSpec` covers failed-bring-up-still-tears-down).
+- **Spatial isolation — landed (via mutual exclusion + an actually-firing probe).** The demo's cluster and
+  its NodePorts live **inside** the VM, so a metal port is never a collision; two runs are made mutually
+  exclusive by the existing sibling-`<project>.dhall` precondition (a second run sees the first's generated
+  config and refuses) **and** by the managed-VM-existence refusal below, rather than racing. (Per-run offset
+  ports/VM name for genuinely concurrent runs is intentionally not added — the demo serializes runs by
+  design; noted in [phase-13](phase-13-hostbootstrap-demo.md).)
+- **Real in-VM production-cluster safety probe — landed.** The demo's `productionClusterRunning` replaces the
+  metal-only `kind get clusters` no-op: it checks metal kind **and** whether the managed provider VM exists
+  (`substrateExists`), so an operator's live stack (or a crashed run's leftover VM) — whose in-VM cluster the
+  metal probe could never see — now refuses the run (co-owned with
+  [Phase 13](phase-13-hostbootstrap-demo.md)).
+
+Code-check gate (2026-07-05): `cabal test all` (292) green; the demo `-Werror` build green. **Closed
+(real-run, § C, 2026-07-05):** the guaranteed-teardown engine and the in-VM safety probe were exercised by
+the live Windows/WSL2 `test run all` **`6/6`** run (two message variants, each brought up and torn down in
+turn). **None remaining.**
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on the harness (the generic project
 model, § BB): it *generates* the run's `<project>.dhall` from the `test.dhall` override via the

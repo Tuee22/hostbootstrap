@@ -181,7 +181,7 @@ passingSuite =
         (\_ -> pure ())
         [Case "ok" 1 False]
         (\_ _ -> pure Pass)
-        (\_ -> pure ())
+        (pure ())
 
 -- | A stack-driven suite whose single case asserts a failure.
 failingSuite :: TestSuite
@@ -191,12 +191,12 @@ failingSuite =
         (\_ -> pure ())
         [Case "fails" 1 False]
         (\_ _ -> pure (Fail "seeded case failure"))
-        (\_ -> pure ())
+        (pure ())
 
 -- | A suite with no cases (rejected by the project-spec validator).
 emptySuiteFixture :: TestSuite
 emptySuiteFixture =
-    TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (\_ -> pure ())
+    TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
 
 -- | Write a fixture project config at the executable sibling path for a
 -- gate-needing command, then remove it.

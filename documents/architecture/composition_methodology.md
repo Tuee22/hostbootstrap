@@ -88,7 +88,13 @@ partial descent resumes cleanly. `project up --dry-run` renders `chain cfg` with
 VMs use `incus`/`limactl` **stop**, while kind clusters use `kind delete cluster`. `project destroy` stops
 then deletes everything the chain spun up. **Teardown recurses in** while each frame is still up, then
 stops/deletes on the ascent (the VM is stopped last); it is best-effort and idempotent, tolerating a
-partial stack, and `.data` is always preserved (the core invariant). See
+partial stack, and `.data` is always preserved (the core invariant). (This covers the explicit
+`down`/`destroy` verbs and the reconcile happy path; a chain failure *during* `project up` now runs the same
+best-effort `project destroy` teardown at the root frame — `applyChain` is guarded so no VM + in-VM cluster +
+global `.wslconfig` cordon is leaked — and the reconcile exists-path re-applies the WSL2 cordon and
+health-checks-and-recreates a stale in-VM kind cluster (`clusterHealthy`/`clusterHealthyFromProbe`). An
+external hard kill still runs no teardown, but the next `project up` idempotent reconcile converges the
+stack; real-run-validated 2026-07-05 by the Windows/WSL2 `test run all` 6/6.) See
 [`HostBootstrap.Lift`](hostbootstrap_core_library.md).
 
 - **WRONG**: a project threads an explicit "execution context" parameter through every reconciler and

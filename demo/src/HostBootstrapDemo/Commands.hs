@@ -48,7 +48,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (unless, when)
-import Data.List (intercalate, isSuffixOf)
+import Data.List (intercalate, isInfixOf, isSuffixOf)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
@@ -56,7 +56,7 @@ import HostBootstrap.Cluster.Cordon (
     ResourceBudget (..),
     budgetFromResources,
     gibibytes,
-    preflightBudget,
+    preflightHostBudget,
     resolveHostCapacity,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
@@ -100,7 +100,7 @@ import HostBootstrap.Substrate.Provider (
     stageFileEffects,
     vmShellArgs,
  )
-import HostBootstrap.Wsl2 (Wsl2VM (..))
+import HostBootstrap.Wsl2 (Wsl2VM (..), mergeWslConfig)
 import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
@@ -337,8 +337,10 @@ registryImage = "registry:2"
 {- | The in-cluster registry manifest: a single @registry:2@ Deployment plus a
 NodePort Service on 30500. Anonymous + HTTP — a @localhost@ NodePort is
 insecure-by-default in Docker, so @push-image@ needs no @docker login@ and no TLS.
-The pod's @IfNotPresent@ pull resolves the kind-loaded image with no in-cluster
-docker.io round-trip.
+The pod's @IfNotPresent@ pull resolves @registry:2@ from Docker Hub on first
+schedule — containerd on the node selects the node platform from the multi-arch
+manifest, which @kind load docker-image@ (a @docker save@ + @ctr import
+--all-platforms@) cannot do for a multi-arch image.
 -}
 registryManifest :: String
 registryManifest =
@@ -356,9 +358,17 @@ registryManifest =
         , "    spec:"
         , "      containers:"
         , "        - name: registry"
-        , "          image: registry:2"
+        , "          image: " ++ registryImage
         , "          imagePullPolicy: IfNotPresent"
         , "          ports: [ { containerPort: 5000 } ]"
+        , -- Gate the Service endpoints on the registry actually serving GET /v2/, so
+          -- push-image cannot race a scheduled-but-not-yet-listening registry (a
+          -- NodePort Service routes only to Ready pods). A generous failureThreshold
+          -- tolerates a slow first (unauthenticated) registry:2 pull.
+          "          readinessProbe:"
+        , "            httpGet: { path: /v2/, port: 5000 }"
+        , "            periodSeconds: 5"
+        , "            failureThreshold: 60"
         , "---"
         , "apiVersion: v1"
         , "kind: Service"
@@ -373,22 +383,46 @@ registryManifest =
 
 {- | @deploy-registry@ (the demo's contributed workload step): stand up the
 in-cluster OCI registry the @push-image@ step pushes to. A single @registry:2@
-Deployment + NodePort Service applied with @kubectl@ (no
-Helm, no multi-pod chart), the image pre-loaded onto the kind nodes and the
-Deployment waited to Ready. @registry:2@ is natively multi-arch, so one manifest
-serves every substrate with no component overrides.
+Deployment + NodePort Service applied with @kubectl@ (no Helm, no multi-pod
+chart), the Deployment then waited to Ready. The pod pulls @registry:2@ from
+Docker Hub itself: containerd on the node selects the node platform from the
+multi-arch manifest, whereas @kind load docker-image@ cannot pre-load a
+multi-arch image (its @ctr import --all-platforms@ fails "content digest not
+found"). @registry:2@ is natively multi-arch, so one manifest serves every
+substrate with no component overrides.
 -}
 deployRegistryAction :: HostConfig -> IO ()
-deployRegistryAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
+deployRegistryAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
-    -- Pre-load registry:2 onto the kind nodes so the pod's IfNotPresent pull needs
-    -- no docker.io round-trip inside the cluster (the same delivery push-image uses
-    -- for the project image).
-    runOrDie cfg Docker ["pull", registryImage]
-    runOrDie cfg Kind ["load", "docker-image", registryImage, "--name", clusterName (containerPlan ctx)]
+    -- Apply the registry Deployment + NodePort and wait for the rollout. The pod
+    -- pulls registry:2 from Docker Hub itself — NOT `kind load docker-image`, which
+    -- cannot pre-load a multi-arch image (its `ctr import --all-platforms` fails
+    -- "content digest not found"). containerd on the node selects the node platform
+    -- from registry:2's multi-arch manifest on pull. The demo's own single-arch
+    -- project image is still delivered locally by push-image's `kind load`.
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] registryManifest
-    runOrDie cfg Kubectl ["rollout", "status", "deployment/registry", "--timeout=120s"]
-    putStrLn ("deploy-registry: in-cluster registry reachable at http://" ++ registryEndpoint)
+    -- Poll the rollout to Ready with backoff rather than a single fatal
+    -- `rollout status --timeout=120s`: the pod's first (unauthenticated) registry:2
+    -- pull can exceed a fixed window under Docker Hub load, so retry the rollout wait
+    -- before failing.
+    waitRegistryRollout cfg 6
+    putStrLn ("deploy-registry: in-cluster registry rollout complete at http://" ++ registryEndpoint)
+
+{- | Poll @kubectl rollout status deployment/registry@ to Ready with backoff,
+tolerating a slow first registry:2 pull. Each attempt waits up to 60 s; @n@
+attempts with a 5 s backoff give generous headroom, then a final failure dies so a
+genuinely stuck rollout still surfaces.
+-}
+waitRegistryRollout :: HostConfig -> Int -> IO ()
+waitRegistryRollout _ 0 = die "deploy-registry: registry deployment did not become Ready"
+waitRegistryRollout cfg n = do
+    result <- runTool cfg Kubectl ["rollout", "status", "deployment/registry", "--timeout=60s"]
+    case result of
+        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+        _ -> do
+            putStrLn "deploy-registry: registry not Ready yet (kubelet still pulling registry:2); retrying"
+            threadDelay 5000000
+            waitRegistryRollout cfg (n - 1)
 
 pushImageAction :: HostConfig -> IO ()
 pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
@@ -400,17 +434,43 @@ pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
     -- NodePort needs no @docker login@ and no TLS.
     runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
     let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
+    -- Poll GET /v2/ on the registry NodePort from this frame before pushing, so the
+    -- push cannot race a scheduled-but-not-yet-serving registry (the readinessProbe
+    -- already gates the Service endpoints; this confirms it answers here too).
+    ready <- waitWebReachable cfg localContext ("http://" ++ registryEndpoint ++ "/v2/") 24
+    unless ready (die ("push-image: in-cluster registry did not answer GET /v2/ at " ++ registryEndpoint))
     runOrDie cfg Docker ["tag", demoProjectImage, ref]
     pushWithRetry cfg ref 4
     putStrLn ("push-image: kind-loaded " ++ demoProjectImage ++ " and pushed " ++ ref)
 
-{- | Retry @docker push@ for the transient registry digest / blob-upload class. A
-push is idempotent — it re-uploads only the missing blobs and re-verifies each
-digest — so a bounded retry safely absorbs the intermittent @provided digest did
-not match uploaded content@ / @blob upload unknown@ failures that occur under
-registry load, while a deterministic failure still surfaces on the final attempt.
-Bounded by @n@ attempts with a five-second backoff; the final attempt is a plain
-'runOrDie' so a persistent failure dies with the registry's full diagnostics.
+{- | The transient @docker push@ failure markers a bounded retry safely absorbs:
+the digest/blob-upload races and connection blips that occur under registry load.
+A push is idempotent (it re-uploads only the missing blobs and re-verifies each
+digest), so retrying these is safe; anything else is a deterministic failure that
+must surface immediately, not be retried. Pure, so the classifier is unit-tested.
+-}
+isTransientPushError :: String -> Bool
+isTransientPushError s = any (`isInfixOf` s) markers
+  where
+    markers =
+        [ "provided digest did not match uploaded content"
+        , "blob upload unknown"
+        , "blob upload invalid"
+        , "connection refused"
+        , "connection reset"
+        , "i/o timeout"
+        , "TLS handshake timeout"
+        , "unexpected EOF"
+        , "500 Internal Server Error"
+        , "502 Bad Gateway"
+        , "503 Service Unavailable"
+        ]
+
+{- | Retry @docker push@ **only** for the transient registry class
+('isTransientPushError'); a non-transient failure dies immediately with the
+registry's full diagnostics rather than burning the retry budget on a deterministic
+error. Bounded by @n@ attempts with a five-second backoff; the last attempt is a
+plain 'runOrDie'.
 -}
 pushWithRetry :: HostConfig -> String -> Int -> IO ()
 pushWithRetry cfg ref 1 = runOrDie cfg Docker ["push", ref]
@@ -418,10 +478,20 @@ pushWithRetry cfg ref n = do
     result <- runToolWithStdin cfg Docker ["push", ref] ""
     case result of
         Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        _ -> do
-            putStrLn "push-image: docker push failed; retrying after backoff"
-            threadDelay 5000000
-            pushWithRetry cfg ref (n - 1)
+        Right (ExitFailure code, out, err)
+            | isTransientPushError (out ++ err) -> do
+                putStrLn "push-image: transient registry error; retrying after backoff"
+                threadDelay 5000000
+                pushWithRetry cfg ref (n - 1)
+            | otherwise ->
+                die
+                    ( "push-image: docker push failed (exit "
+                        ++ show code
+                        ++ ", non-transient)\n"
+                        ++ out
+                        ++ err
+                    )
+        Left err -> die ("push-image: docker push could not run: " ++ err)
 
 {- | @deploy-chart@: install the web chart pod, templating the chart's embedded
 config from the live config's served @message@ (Sprint 20.2). The message is
@@ -497,15 +567,35 @@ it. The budget is **never** added to itself — there is no budget-sized VM
 clusterSliceOfBudget :: Resources -> Either String Resources
 clusterSliceOfBudget r = do
     b <- budgetFromResources (envelopeOfResources r)
-    let sliceCpu = if budgetCpu b > 1 then budgetCpu b - 1 else 1
-        sliceMem = max 2 (gibibytes (budgetMemoryBytes b) - 4)
-        sliceStore = max 10 (gibibytes (budgetStorageBytes b) - 40)
+    let memGiB = gibibytes (budgetMemoryBytes b)
+        storeGiB = gibibytes (budgetStorageBytes b)
+        -- Scale the reserve with the budget rather than subtracting a fixed 4 GiB:
+        -- a bigger VM wall leaves the VM OS + Docker + the multi-GB image builds
+        -- proportionally more headroom (≥ 4 GiB / ≥ 40 GiB floors), so the slice
+        -- stays strictly inside the wall and the kind node (whose swap headroom is
+        -- 2× its RAM, `kindNodeCordonArgs`) does not OOM on a large `kind load`/push.
+        memReserve = max 4 (memGiB `div` 4)
+        storeReserve = max 40 (storeGiB `div` 2)
+        sliceCpu = if budgetCpu b > 1 then budgetCpu b - 1 else 1
+        sliceMem = max 2 (memGiB - memReserve)
+        sliceStore = max 10 (storeGiB - storeReserve)
     pure
         ( Resources
             sliceCpu
             (T.pack (show sliceMem ++ "GiB"))
             (T.pack (show sliceStore ++ "GiB"))
         )
+
+{- | On Windows the WSL2 swap file (sized to the memory budget) lands on the system
+drive alongside the distro's vhdx, so the storage preflight must reserve room for
+vhdx **+** swap. Returns the budget resources with storage bumped by the memory
+(swap) size; off-Windows callers skip this and preflight the plain budget. Pure.
+-}
+withWsl2SwapStorage :: Resources -> Either String Resources
+withWsl2SwapStorage r@(Resources c m _) = do
+    b <- budgetFromResources (envelopeOfResources r)
+    let store = gibibytes (budgetStorageBytes b) + gibibytes (budgetMemoryBytes b)
+    pure (Resources c m (T.pack (show store ++ "GiB")))
 
 {- | A case's live environment: the resolved host config, the **VM frame** lift
 context (so every assertion reaches the live persistent stack @project up@ brought
@@ -550,7 +640,28 @@ demoTestSafety = do
     let prodPlan = resolvePlan demoProject root Production
     testSafetyPreconditions
         cfgPath
-        (clusterIsRunning cfg prodPlan)
+        (productionClusterRunning cfg prodPlan)
+
+{- | The "production cluster running" safety probe (§ Z), folded into the VM frame
+so it actually fires. The demo's cluster lives **inside** the provider VM, so a
+metal @kind get clusters@ never sees it (the reopened phase-10 gap: the probe was a
+structural no-op). This checks the metal kind (for a hypothetical no-VM path) **and**
+whether the managed provider VM exists — an existing VM is an operator's live stack
+(or a crashed run's leftover) whose in-VM cluster the harness must not disturb, so a
+present VM refuses the run. The operator tears it down first (@project destroy@, or
+@wsl --unregister@ for a crashed WSL2 run). This is also the demo's spatial-isolation
+guard: because the cluster and its NodePorts are the VM's, a metal port is never a
+collision — a second run is refused by the existing VM (and by the sibling-config
+precondition), so runs are mutually exclusive rather than racing.
+-}
+productionClusterRunning :: HostConfig -> ClusterPlan -> IO Bool
+productionClusterRunning cfg plan = do
+    metalKind <- clusterIsRunning cfg plan
+    if metalKind
+        then pure True
+        else do
+            sp <- demoProvider cfg
+            substrateExists cfg sp
 
 -- | Whether a cluster of the plan's name is already running on the host's kind.
 clusterIsRunning :: HostConfig -> ClusterPlan -> IO Bool
@@ -577,9 +688,11 @@ demoTestUp label = do
 
 {- | Tear the test stack down by driving @project destroy@ (best-effort, so a
 partial stack always tears down; host @.data@ is preserved by the lifecycle, § O).
+Env-independent (§ Y): @project destroy@ re-detects the stack itself, so the harness
+can run this even after a failed @project up@ — the guaranteed-teardown path.
 -}
-demoTestDown :: CaseEnv -> IO ()
-demoTestDown _ = do
+demoTestDown :: IO ()
+demoTestDown = do
     self <- getExecutablePath
     putStrLn "test run: tearing the stack down via `project destroy`"
     runSelfBestEffort self ["project", "destroy"]
@@ -753,6 +866,7 @@ runEffects cfg = mapM_ go
   where
     go (RunHostTool tool args) = runOrDie cfg tool args
     go (WriteHostFile path content) = writeHostFileWithBackup path content
+    go (MergeWslConfig path body) = mergeWslConfigWithBackup path body
     go (RestoreHostFile path) = restoreHostFile path
 
 {- | Run teardown effects best-effort under one intent message: a missing or
@@ -764,6 +878,7 @@ runEffectsBestEffort cfg intent = mapM_ go
     go (RunHostTool tool args) = bestEffortTool cfg tool args intent
     go (RestoreHostFile path) = restoreHostFile path
     go (WriteHostFile path content) = writeHostFileWithBackup path content
+    go (MergeWslConfig path body) = mergeWslConfigWithBackup path body
 
 {- | Write @content@ to @path@, first backing up any existing file to
 @<path>.hostbootstrap-demo.bak@ (once), so the global @.wslconfig@ the WSL2
@@ -771,12 +886,43 @@ cordon writes never clobbers a user's own file irretrievably.
 -}
 writeHostFileWithBackup :: FilePath -> String -> IO ()
 writeHostFileWithBackup path content = do
+    backupHostFileOnce path
+    writeFile path content
+    putStrLn ("vm up: wrote the WSL2 resource cordon to " ++ path)
+
+{- | Merge the WSL2 @[wsl2]@ cordon body into the global @.wslconfig@ **without
+clobbering** the user's other sections (the pure 'mergeWslConfig'), backing up the
+original once so @project down@/@destroy@ can restore it. When a leftover backup is
+found on this @project up@ (a prior run that never restored — a crash-recoverable
+case, § C), the original @.wslconfig@ is preserved as-is (backup-once keeps the
+true original) and the merge re-applies our block idempotently.
+-}
+mergeWslConfigWithBackup :: FilePath -> [String] -> IO ()
+mergeWslConfigWithBackup path body = do
+    let bak = path ++ ".hostbootstrap-demo.bak"
+    bakExists <- doesFileExist bak
+    when bakExists (putStrLn ("vm up: found leftover " ++ bak ++ " from a prior run; preserving the original and re-applying the cordon"))
+    existing <- do
+        exists <- doesFileExist path
+        if exists then readFile path else pure ""
+    backupHostFileOnce path
+    -- @readFile@ is lazy; force it before the write so we do not truncate the file
+    -- mid-read. 'length' fully evaluates @existing@ (already forced by the backup
+    -- copy above, but explicit here for the no-backup path).
+    length existing `seq` writeFile path (mergeWslConfig existing body)
+    putStrLn ("vm up: merged the WSL2 resource cordon into " ++ path ++ " (other sections preserved)")
+
+{- | Back up @path@ to @<path>.hostbootstrap-demo.bak@ exactly once — the first
+time we touch a pre-existing global @.wslconfig@ — so the backup always holds the
+user's true original across idempotent re-applies, and never overwrites it with an
+already-cordoned copy from a re-run.
+-}
+backupHostFileOnce :: FilePath -> IO ()
+backupHostFileOnce path = do
     let bak = path ++ ".hostbootstrap-demo.bak"
     exists <- doesFileExist path
     bakExists <- doesFileExist bak
     when (exists && not bakExists) (copyFile path bak)
-    writeFile path content
-    putStrLn ("vm up: wrote the WSL2 resource cordon to " ++ path)
 
 -- | Restore @path@ from its backup (or remove it if there was none), best-effort.
 restoreHostFile :: FilePath -> IO ()
@@ -819,6 +965,66 @@ substrateWait cfg sp n =
             case r of
                 Right (ExitSuccess, _, _) -> pure ()
                 _ -> threadDelay 2000000 >> substrateWait cfg sp (n - 1)
+
+{- | Keep only the FILE effects of a launch effect list (the WSL2 @.wslconfig@
+merge/restore) — used to re-apply the cordon on the idempotent reconcile path
+without re-running the one-time @wsl --shutdown@/@--install@ tool effects.
+-}
+fileEffectsOnly :: [HostEffect] -> [HostEffect]
+fileEffectsOnly = filter isFile
+  where
+    isFile (MergeWslConfig _ _) = True
+    isFile (WriteHostFile _ _) = True
+    isFile (RestoreHostFile _) = True
+    isFile (RunHostTool _ _) = False
+
+{- | Disclose that applying the WSL2 @.wslconfig@ ceiling runs @wsl --shutdown@ — a
+global cross-distro side-effect (the historical @0x80072746@ session-drop surface):
+it briefly stops every running WSL2 distro, which then restart on next use.
+-}
+discloseWslShutdown :: IO ()
+discloseWslShutdown =
+    putStrLn
+        "vm up: NOTE — applying the WSL2 .wslconfig ceiling runs `wsl --shutdown`, a GLOBAL cross-distro side-effect that briefly stops ALL running WSL2 distros (they restart on next use); the utility VM then restarts with the budget ceiling in effect."
+
+{- | Wait for a real **network** condition inside the VM, not just the guest agent
+answering (§ C): let cloud-init finish if present (Incus), then require DNS to
+resolve the apt mirror, so the first in-VM @apt@/@ghcup@/@curl@ step of the
+pristine bootstrap cannot race a not-yet-configured network. Bounded by @n@
+three-second attempts.
+-}
+waitVMNetwork :: HostConfig -> SubstrateProvider -> Int -> IO ()
+waitVMNetwork _ sp 0 = die ("vm up: " ++ spVmId sp ++ " network did not come up (DNS still unresolved)")
+waitVMNetwork cfg sp n =
+    case vmShellArgs (spLiftLayer sp) ["bash", "-lc", netProbe] of
+        Nothing -> pure ()
+        Just (tool, args) -> do
+            r <- runTool cfg tool args
+            case r of
+                Right (ExitSuccess, _, _) -> putStrLn ("vm up: " ++ spVmId sp ++ " network is up")
+                _ -> threadDelay 3000000 >> waitVMNetwork cfg sp (n - 1)
+  where
+    netProbe =
+        "command -v cloud-init >/dev/null 2>&1 && timeout 90 sudo cloud-init status --wait >/dev/null 2>&1; "
+            ++ "getent hosts archive.ubuntu.com >/dev/null 2>&1"
+
+{- | Poll @docker info@ inside the VM until the daemon answers (§ C), bounded by
+@n@ two-second attempts, after @systemctl enable --now docker@ + the socket ACL —
+so build #3 does not race a socket/ACL that is not yet live. The retry lives in
+Haskell (not an inline shell loop) so the probe stays a simple
+@docker info >/dev/null 2>&1@ that survives the Windows PowerShell→wsl→bash quoting
+path.
+-}
+waitDockerReady :: HostConfig -> SubstrateProvider -> Int -> IO ()
+waitDockerReady _ provider 0 = die ("pristine-bootstrap: docker daemon in " ++ spVmId provider ++ " did not become ready")
+waitDockerReady cfg provider n =
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", "docker info >/dev/null 2>&1"] of
+        Nothing -> die ("waitDockerReady: " ++ spVmId provider ++ " is not a VM frame")
+        Just (tool, args) -> do
+            r <- runTool cfg tool args
+            case r of
+                Right (ExitSuccess, _, _) -> putStrLn ("pristine-bootstrap: docker daemon ready in " ++ spVmId provider)
+                _ -> threadDelay 2000000 >> waitDockerReady cfg provider (n - 1)
 
 vmRepoRoot :: FilePath
 vmRepoRoot = "/root/hostbootstrap"
@@ -959,21 +1165,41 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
         envelope = envelopeOfResources lifecycleResources
     either die pure (requireDemoLifecycleResources lifecycleResources)
     resolvedCapacity <- resolveHostCapacity cfg
-    either die pure (resolvedCapacity >>= preflightBudget envelope)
+    -- Metal host preflight: `preflightHostBudget` gates the full budget + the host-OS
+    -- memory reserve (§ O) against total host RAM — the reserve is applied HERE (metal
+    -- sizing the VM), never to the in-VM cluster slice (which is already the reserved
+    -- subset, checked reserve-free by `clusterCreate`). On Windows the storage
+    -- dimension additionally reserves the WSL2 swap file's disk (vhdx + swap).
+    preflightResources <-
+        if isWindows (hcSubstrate cfg)
+            then either die pure (withWsl2SwapStorage lifecycleResources)
+            else pure lifecycleResources
+    either die pure (resolvedCapacity >>= preflightHostBudget (envelopeOfResources preflightResources))
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
     exists <- substrateExists cfg sp
     if exists
         then do
-            putStrLn ("vm up: " ++ spVmId sp ++ " already exists; ensuring it is started (idempotent)")
+            putStrLn ("vm up: " ++ spVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
+            -- Reconcile the cordon on the exists path (§ C): re-apply only the
+            -- launch's FILE effects (the WSL2 .wslconfig merge) — never the one-time
+            -- shutdown/install tool effects — so a reconcile re-establishes the
+            -- global ceiling if a crashed run cleared it. Lima/Incus carry no launch
+            -- file effects (their cordon is baked at create), so this is a no-op
+            -- there.
+            reCordon <- either die pure (spLaunch sp envelope)
+            runEffects cfg (fileEffectsOnly reCordon)
             runEffectsBestEffort cfg ("vm up: starting existing " ++ spVmId sp) (spStartExisting sp)
         else do
             launch <- either die pure (spLaunch sp envelope)
+            when (isWindows (hcSubstrate cfg)) discloseWslShutdown
             putStrLn ("vm up: launching " ++ spVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
             runEffects cfg launch
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
     substrateWait cfg sp 60
+    putStrLn ("vm up: waiting for " ++ spVmId sp ++ " network to come up")
+    waitVMNetwork cfg sp 20
     putStrLn ("vm up: " ++ spVmId sp ++ " is up")
 
 requireDemoLifecycleResources :: Resources -> Either String ()
@@ -1067,7 +1293,14 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
         )
     vmStep
         "install Docker in the VM (install + start the daemon) — prerequisite for build #3"
-        "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq docker.io acl && sudo systemctl enable --now docker && sudo setfacl -m u:$(id -un):rw /var/run/docker.sock && docker info >/dev/null"
+        "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq docker.io acl && sudo systemctl enable --now docker && sudo setfacl -m u:$(id -un):rw /var/run/docker.sock"
+    -- Poll `docker info` to Ready in Haskell (§ C) rather than assuming the
+    -- daemon/socket is instant. The retry lives here, NOT as an inline shell `for`
+    -- loop: a loop with a single-quoted `echo` mangles through the Windows
+    -- PowerShell→wsl→bash quoting path (the `'`→`''` escaping splits the line), so the
+    -- probe stays a simple `docker info >/dev/null 2>&1` — the same shape
+    -- `waitVMNetwork`/`substrateWait` use safely.
+    waitDockerReady cfg provider 30
     let buildImageScript =
             "cd " ++ shellQuote vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
         repoRootCfg =
@@ -1153,6 +1386,14 @@ stageSource cfg provider sourceRoot = do
             , "--exclude=.test_data"
             , "--exclude=.role-bus"
             , "--exclude=.venv"
+            , -- Transient host-side caches: never staged into the VM, and (being
+              -- tool-created, sometimes with restrictive ACLs) a source of
+              -- "Permission denied" stat errors that truncate the archive. Excluding
+              -- them keeps the stage complete and reproducible (§ C).
+              "--exclude=.pytest_cache"
+            , "--exclude=.mypy_cache"
+            , "--exclude=.ruff_cache"
+            , "--exclude=__pycache__"
             , "--exclude=*.tgz"
             , "-C"
             , repoRoot
@@ -1195,6 +1436,13 @@ stageSource cfg provider sourceRoot = do
                     ++ " -C "
                     ++ shellQuote vmRepoRoot
                     ++ cleanup
+                    -- Guard against a truncated stage (a host-side tar that dropped
+                    -- entries, e.g. on an unreadable file): fail loudly here rather
+                    -- than letting `pipx install` fail later with a confusing
+                    -- "not installable" error (§ C).
+                    ++ " && { test -f "
+                    ++ shellQuote (vmRepoRoot ++ "/pyproject.toml")
+                    ++ " || { echo 'pristine-bootstrap: staged source is truncated (pyproject.toml missing at repo root) — the host staging tar dropped entries' >&2; exit 1; }; }"
                 )
         )
         `finally` removeFile tarball

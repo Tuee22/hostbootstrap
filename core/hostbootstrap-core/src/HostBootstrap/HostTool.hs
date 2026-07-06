@@ -46,6 +46,7 @@ data HostTool
   | Sudo
   | XcodeSelect
   | Incus
+  | Df
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Every host tool, for building a fully-resolved 'HostBootstrap.HostConfig'.
@@ -74,6 +75,7 @@ toolCommandName Wsl = "wsl"
 toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"
 toolCommandName Incus = "incus"
+toolCommandName Df = "df"
 
 -- | An absolute path to a resolved executable. The constructor is not exported;
 -- 'mkAbsExe' is the only way to build one, so a value of this type is always an

@@ -23,7 +23,10 @@ module HostBootstrap.Cluster.Cordon
     parseQuantity,
     budgetFromResources,
     verifyBudget,
+    verifyHostBudget,
+    hostMemoryReserveBytes,
     preflightBudget,
+    preflightHostBudget,
     fitsBudget,
     colimaSizingArgs,
     limaSizingArgs,
@@ -31,6 +34,7 @@ module HostBootstrap.Cluster.Cordon
     kindNodeCordonArgs,
     incusSizingArgs,
     resolveHostCapacity,
+    parseDfAvailableKBytes,
     gibibytes,
   )
 where
@@ -43,7 +47,7 @@ import qualified Data.Text as T
 import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
-import HostBootstrap.HostTool (HostTool (PowerShell, Sysctl), absExePath)
+import HostBootstrap.HostTool (HostTool (Df, PowerShell, Sysctl), absExePath)
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), renderSubstrateName, substrateName)
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist)
@@ -59,11 +63,17 @@ data ResourceBudget = ResourceBudget
   }
   deriving (Eq, Show)
 
--- | Spare host capacity, in the same canonical units.
+-- | Resolved host capacity, in the same canonical units. The reads differ by
+-- substrate: Linux reports @/proc/meminfo@ @MemAvailable@ (genuinely spare RAM),
+-- while Apple (@hw.memsize@) and Windows (@TotalPhysicalMemory@) report /total/
+-- physical RAM — so the fields are named for the honest common denominator (the
+-- host's capacity in each dimension), and the @budget + reserve@ headroom gate in
+-- 'verifyBudget' keeps a tight host from silently over-committing regardless of
+-- which read a substrate uses.
 data HostCapacity = HostCapacity
-  { spareCpu :: Natural,
-    spareMemoryBytes :: Integer,
-    spareStorageBytes :: Integer
+  { totalCpu :: Natural,
+    totalMemoryBytes :: Integer,
+    totalStorageBytes :: Integer
   }
   deriving (Eq, Show)
 
@@ -75,7 +85,8 @@ data CapacityReadSource
   | WindowsLogicalProcessors
   | WindowsTotalMemory
   | WindowsSystemDriveFreeSpace
-  | GenerousStorage
+  | -- | free bytes on the filesystem holding @path@, via @df -k@ (Apple/Linux)
+    PosixFreeStorage FilePath
   deriving (Eq, Show)
 
 -- | The substrate-specific host-capacity read plan. Pure so the source mapping
@@ -147,20 +158,33 @@ budgetFromResources r = do
   sto <- parseQuantity (storage r)
   pure (ResourceBudget (cpu r) mem sto)
 
--- | Verify the host has the spare budget. Fails fast with a one-line diagnostic
--- naming the first dimension that exceeds spare capacity.
+-- | The host-OS reserve subtracted from memory capacity before the budget must
+-- fit: the headroom the host OS, the Docker daemon, and the orchestrator need
+-- above the project budget (see @development_plan_standards.md § O@). Without it a
+-- budget that merely fits under total RAM leaves no room for the host (a 16 GiB
+-- host + 10 GiB VM passes with ~6 GiB left, then thrashes), which is exactly the
+-- gap the preflight closes. ~4 GiB.
+hostMemoryReserveBytes :: Integer
+hostMemoryReserveBytes = 4 * 1024 ^ (3 :: Integer)
+
+-- | Verify a budget fits within resolved capacity, per dimension. Fails fast with
+-- a one-line diagnostic naming the first dimension that does not fit. This is the
+-- plain fit check the **in-VM cluster-slice** preflight uses — the slice is already
+-- a reserved subset of the VM wall (§ O), checked against the VM's /available/
+-- memory, so it applies **no** extra host reserve. The **metal** host preflight
+-- ('verifyHostBudget') adds the host-OS reserve on top.
 verifyBudget :: ResourceBudget -> HostCapacity -> Either String ()
 verifyBudget b cap
-  | budgetCpu b > spareCpu cap =
-      Left (overMsg "cpu" (show (budgetCpu b)) (show (spareCpu cap)) "cores")
-  | budgetMemoryBytes b > spareMemoryBytes cap =
-      Left (overMsg "memory" (showGiB (budgetMemoryBytes b)) (showGiBFloor (spareMemoryBytes cap)) "GiB")
-  | budgetStorageBytes b > spareStorageBytes cap =
-      Left (overMsg "storage" (showGiB (budgetStorageBytes b)) (showGiBFloor (spareStorageBytes cap)) "GiB")
+  | budgetCpu b > totalCpu cap =
+      Left (overMsg "cpu" (show (budgetCpu b)) (show (totalCpu cap)) "cores")
+  | budgetMemoryBytes b > totalMemoryBytes cap =
+      Left (overMsg "memory" (showGiB (budgetMemoryBytes b)) (showGiBFloor (totalMemoryBytes cap)) "GiB")
+  | budgetStorageBytes b > totalStorageBytes cap =
+      Left (overMsg "storage" (showGiB (budgetStorageBytes b)) (showGiBFloor (totalStorageBytes cap)) "GiB")
   | otherwise = Right ()
   where
     overMsg dim want have unit =
-      "resource budget exceeds spare host capacity: "
+      "resource budget exceeds host capacity: "
         ++ dim
         ++ " wants "
         ++ want
@@ -170,13 +194,39 @@ verifyBudget b cap
         ++ have
         ++ " "
         ++ unit
-        ++ " spare"
+
+-- | The **metal** host preflight: like 'verifyBudget' but additionally reserves
+-- 'hostMemoryReserveBytes' of memory headroom for the host OS + Docker + the
+-- orchestrator (§ O), so a tight host is refused rather than silently
+-- over-committed when it sizes the VM against /total/ host RAM. This is applied
+-- **only** at the metal frame ('preflightHostBudget'), never to the in-VM cluster
+-- slice — the slice is already the reserved subset, so re-reserving there would
+-- double-count and fail against the VM's available memory.
+verifyHostBudget :: ResourceBudget -> HostCapacity -> Either String ()
+verifyHostBudget b cap
+  | budgetMemoryBytes b + hostMemoryReserveBytes > totalMemoryBytes cap =
+      Left
+        ( "resource budget plus host reserve exceeds host memory: wants "
+            ++ showGiB (budgetMemoryBytes b)
+            ++ " GiB + "
+            ++ showGiB hostMemoryReserveBytes
+            ++ " GiB host reserve, host has "
+            ++ showGiBFloor (totalMemoryBytes cap)
+            ++ " GiB"
+        )
+  | otherwise = verifyBudget b cap
 
 -- | The spare-capacity preflight as a single fail-fast gate: parse the budget,
 -- then verify it against resolved spare host capacity. Pure (the IO that resolves
 -- capacity is 'resolveHostCapacity').
 preflightBudget :: ResourceEnvelope -> HostCapacity -> Either String ()
 preflightBudget r cap = budgetFromResources r >>= \b -> verifyBudget b cap
+
+-- | The metal host preflight (parse + 'verifyHostBudget' — the fit check /with/ the
+-- host-OS memory reserve). Used only at the metal frame where the VM is sized
+-- against total host RAM; the in-VM cluster slice uses 'preflightBudget'.
+preflightHostBudget :: ResourceEnvelope -> HostCapacity -> Either String ()
+preflightHostBudget r cap = budgetFromResources r >>= \b -> verifyHostBudget b cap
 
 -- | Prove a concurrent pod set fits within the (vocabulary) budget — the Haskell
 -- mirror of @Core.dhall@ @fitsWithin@, used as the bring-up ring before the
@@ -223,11 +273,14 @@ limaSizingArgs r = do
     ]
 
 -- | The applied Linux kind-node cordon argv: a @docker update@ cap on the
--- resolved control-plane container. @--memory-swap == --memory@ so an
--- over-budget cluster self-limits rather than swapping. Storage carries **no**
--- @docker update@ flag, so it is omitted here and cordoned per-substrate
--- elsewhere (Colima @--disk@, incus @root,size@, a quota'd hostPath on bare
--- Linux).
+-- resolved control-plane container. @--memory@ is the steady-state RAM cap
+-- (the cluster slice), while @--memory-swap@ is set to @2 ×@ that so the node has
+-- swap headroom equal to its RAM: a transient multi-GB spike (a @kind load@ /
+-- image push materialising a large layer) can burst into swap instead of being
+-- OOM-killed at the floor, while steady-state memory still self-limits to the
+-- slice. Storage carries **no** @docker update@ flag, so it is omitted here and
+-- cordoned per-substrate elsewhere (Colima @--disk@, incus @root,size@, a quota'd
+-- hostPath on bare Linux).
 kindNodeCordonArgs :: String -> ResourceEnvelope -> Either String [String]
 kindNodeCordonArgs clusterName r = do
   b <- budgetFromResources r
@@ -238,7 +291,7 @@ kindNodeCordonArgs clusterName r = do
       "--memory",
       show (budgetMemoryBytes b),
       "--memory-swap",
-      show (budgetMemoryBytes b),
+      show (2 * budgetMemoryBytes b),
       clusterName ++ "-control-plane"
     ]
 
@@ -263,6 +316,9 @@ incusSizingArgs r = do
 -- Storage is /not/ a @.wslconfig@ key — the per-distro VHDX cap is applied at
 -- install time via @wsl --install --vhd-size@ (see
 -- 'HostBootstrap.Wsl2.wslInstallArgs'), so it is intentionally absent here.
+-- @vmIdleTimeout=-1@ pins the shared utility VM alive across the gaps between the
+-- separate @wsl -d@ steps a lifecycle runs (the default 60 s idle shutdown would
+-- otherwise tear the VM — and any in-flight build — down between steps).
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs r = do
   b <- budgetFromResources r
@@ -270,20 +326,26 @@ wsl2SizingArgs r = do
     [ "[wsl2]",
       "processors=" ++ show (budgetCpu b),
       "memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",
-      "swap=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB"
+      "swap=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",
+      "vmIdleTimeout=-1"
     ]
 
 -- | Select the host-capacity read sources for a detected substrate.
 capacityReadPlan :: Substrate -> CapacityReadPlan
 capacityReadPlan sub = case substrateName sub of
-  AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") GenerousStorage
+  AppleSilicon -> CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") posixFreeStorage
   LinuxCpu -> linuxReadPlan
   LinuxGpu -> linuxReadPlan
   WindowsCpu -> windowsReadPlan
   WindowsGpu -> windowsReadPlan
   where
-    linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable GenerousStorage
+    linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable posixFreeStorage
     windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
+    -- The root filesystem's free space stands in for the project root's — the
+    -- applied per-substrate storage cordon (Colima @--disk@ / incus @root,size@)
+    -- is still the hard wall, but the preflight now gates on real free disk on
+    -- Apple/Linux too instead of an unconditional petabyte.
+    posixFreeStorage = PosixFreeStorage "/"
 
 -- | Resolve spare host capacity for the preflight. CPU, memory, and storage
 -- come from the substrate-specific sources selected by 'capacityReadPlan'.
@@ -302,9 +364,6 @@ resolveHostCapacity cfg = do
     m <- mem
     s <- storageCap
     pure (HostCapacity c m s)
-
-petabyte :: Integer
-petabyte = 1024 ^ (5 :: Integer)
 
 -- | Count CPU cores from the substrate-selected source.
 readCores :: HostConfig -> CapacityReadSource -> IO (Either String Natural)
@@ -354,12 +413,47 @@ readAvailableMemory _ source =
 
 -- | Read available storage from the substrate-selected source, in bytes.
 readAvailableStorage :: HostConfig -> CapacityReadSource -> IO (Either String Integer)
-readAvailableStorage _ GenerousStorage =
-  pure (Right petabyte)
 readAvailableStorage cfg WindowsSystemDriveFreeSpace =
   readPowerShellPositiveInteger cfg "(Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')).Free"
+readAvailableStorage cfg (PosixFreeStorage path) =
+  readDfFreeBytes cfg path
 readAvailableStorage _ source =
   pure (Left ("host capacity: unsupported storage source " ++ show source))
+
+-- | Read the free bytes of the filesystem holding @path@ via @df -P -k@ (portable
+-- across macOS BSD @df@ and Linux GNU @df@). @-P@ forces the POSIX one-line-per-
+-- filesystem format (no device-name line wrap) and @-k@ forces 1024-byte blocks,
+-- so the data line's 4th field is 1K-blocks available and the free bytes are that
+-- field × 1024. Pure parsing is 'parseDfAvailableKBytes'.
+readDfFreeBytes :: HostConfig -> FilePath -> IO (Either String Integer)
+readDfFreeBytes cfg path = case resolveMaybe cfg Df of
+  Nothing ->
+    pure $ Left ("host capacity: df is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
+  Just exe -> do
+    result <-
+      try (readProcessWithExitCode (absExePath exe) ["-P", "-k", path] "") ::
+        IO (Either SomeException (ExitCode, String, String))
+    pure $ case result of
+      Right (ExitSuccess, out, _) ->
+        maybe
+          (Left ("host capacity: could not parse df output for " ++ path))
+          (\kb -> Right (kb * 1024))
+          (parseDfAvailableKBytes out)
+      Right (ExitFailure n, _, err) ->
+        Left ("host capacity: df -k " ++ path ++ " failed (exit " ++ show n ++ "): " ++ T.unpack (T.strip (T.pack err)))
+      Left e ->
+        Left ("host capacity: failed to run df -k " ++ path ++ ": " ++ displayException e)
+
+-- | Parse the available-1K-blocks field (4th column) of the data line (2nd line)
+-- of @df -k@ output. Pure.
+parseDfAvailableKBytes :: String -> Maybe Integer
+parseDfAvailableKBytes out = case drop 1 (lines out) of
+  (dataLine : _) -> case drop 3 (words dataLine) of
+    (avail : _) -> case reads avail of
+      [(n, "")] -> Just n
+      _ -> Nothing
+    _ -> Nothing
+  _ -> Nothing
 
 readPowerShellPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
 readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of

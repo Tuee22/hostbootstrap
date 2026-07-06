@@ -14,10 +14,11 @@ module HostBootstrap.Wsl2
     wslTerminateArgs,
     wslUnregisterArgs,
     wslShutdownArgs,
+    mergeWslConfig,
   )
 where
 
-import Data.Char (toLower)
+import Data.Char (isSpace, toLower)
 import Data.List (isInfixOf, isPrefixOf)
 import System.Exit (ExitCode (..))
 
@@ -95,3 +96,30 @@ wslUnregisterArgs prefix distro
 wslShutdownArgs :: [String]
 wslShutdownArgs =
   ["--shutdown"]
+
+-- | Merge a @[wsl2]@ body (the section header line plus its @key=value@ lines,
+-- as 'HostBootstrap.Cluster.Cordon.wsl2SizingArgs' emits) into an existing
+-- @.wslconfig@, **preserving every other section** the user set. The @.wslconfig@
+-- is a /global/ user file, so a full replace would clobber a user's @[experimental]@
+-- / @[user]@ / @[network]@ blocks; this drops only the old @[wsl2]@ section (its
+-- header and keys up to the next section header) and appends the new one. Pure, so
+-- the never-clobber-user-state merge is unit-tested. Idempotent: re-merging a body
+-- into a file that already carries our @[wsl2]@ replaces it in place.
+mergeWslConfig :: String -> [String] -> String
+mergeWslConfig existing body =
+  let kept = dropWsl2Section (lines existing)
+      keptTrimmed = reverse (dropWhile blank (reverse kept))
+      separator = if null keptTrimmed then [] else keptTrimmed ++ [""]
+   in unlines (separator ++ body)
+  where
+    blank = all isSpace
+    dropWsl2Section [] = []
+    dropWsl2Section (l : ls)
+      | isSectionHeader l && sectionName l == "wsl2" =
+          dropWsl2Section (dropWhile (not . isSectionHeader) ls)
+      | otherwise = l : dropWsl2Section ls
+    isSectionHeader s = case trim s of
+      ('[' : rest) -> not (null rest) && last (trim s) == ']'
+      _ -> False
+    sectionName s = map toLower (takeWhile (/= ']') (drop 1 (trim s)))
+    trim = dropWhile isSpace
