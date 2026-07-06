@@ -369,7 +369,7 @@ demoTestInit _ = defaultTestConfig demoTestSuiteIds demoDefaultResources
 ('demoCases' in Commands) is also built from, so the two cannot drift.
 -}
 demoCaseIds :: [Text]
-demoCaseIds = ["pristine-bootstrap", "web-build", "e2e-tabs"]
+demoCaseIds = ["pristine-bootstrap", "web-build", "e2e-tabs", "registry-persistence"]
 
 {- | The demo's selectable test-suite ids: the case ids plus the always-injected
 @all@ selector, derived from 'demoCaseIds'.

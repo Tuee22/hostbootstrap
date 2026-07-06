@@ -215,7 +215,8 @@ pod, and the verified NodePort:
 | build-pb in VM | `host-orchestrator-0` | the headline: build #2 (host-native binary) + build #3 (project container), both **in the VM** |
 | context-init | `vm-orchestrator-1` | mint the project-container child config with topology witnesses and stream it in-place into the container over the handoff `stdin` (no config bind-mount), then hand off `project up` into the container |
 | deploy-kind | `vm-project-container-2` | **cordon #2** — bring up the persistent kind cluster (Production profile) on the VM's Docker |
-| deploy-registry | `vm-project-container-2` | install the in-cluster registry (registry:2, NodePort 30500) |
+| deploy-minio | `vm-project-container-2` | install the in-cluster MinIO (S3) store (Deployment + PVC + Secret, NodePort 30900) and create the registry bucket — the registry's durable backing (see [in_cluster_registry.md](../engineering/in_cluster_registry.md)) |
+| deploy-registry | `vm-project-container-2` | install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO |
 | push-image | `vm-project-container-2` | load the project image into kind and push it to the in-cluster registry |
 | deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |

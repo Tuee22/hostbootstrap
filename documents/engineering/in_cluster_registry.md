@@ -49,6 +49,41 @@ contributed chain step (`deployRegistryAction` in
 registry configuration. A derived project that deploys a registry contributes the
 same single-binary `registry:2` step in its own chain.
 
+## Persistent storage: MinIO-backed
+
+The `registry:2` pod is stateless, and its storage is externalized to an in-cluster
+**MinIO** (S3) bucket rather than the pod's ephemeral filesystem. This is the demo's
+contributed `deploy-minio` chain step (`deployMinioAction`), ordered **before**
+`deploy-registry`: a `minio/minio` Deployment + a `minio-data` PVC (bound to kind's
+default `local-path` StorageClass) + a `minio-credentials` Secret, followed by
+`mc mb --ignore-existing` to create the `registry` bucket. The bucket-init runs from
+the container frame reusing the base image's `mc` client over a loopback NodePort
+(30900) — the same idiom `push-image` uses for the registry. The registry's storage
+stanza is supplied by a mounted `registry-config` ConfigMap declaring only the `s3`
+driver pointing at `minio.default.svc:9000`; the two S3 credentials are layered in by
+env from the Secret. (Env-only S3 config does not work: stock `registry:2` ships a
+default `config.yml` with a `filesystem` driver, so `REGISTRY_STORAGE_S3_*` env alone
+yields two drivers and the registry refuses to start — hence the ConfigMap replaces
+the whole config file.) The `deploy-minio` step is ordered first because the s3
+driver requires the bucket to pre-exist.
+
+**Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
+eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.
+S3-backed, the restarted pod re-reads the blobs from MinIO and the pushed tag
+survives. The `registry-persistence` harness case proves exactly this: push → delete
+the registry pod → the tag is still served. The MinIO PVC lives on the kind node's
+`local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
+which deletes the cluster (the in-VM cluster is ephemeral by design; only host
+`.data` persists).
+
+**The design trade.** The original rationale above for `registry:2` was a
+*single-binary, not a multi-pod stack* store — minimal moving parts. MinIO-backing
+keeps the registry **image** single-binary and multi-arch (as is MinIO's), so the
+no-emulation property survives; but the *stack* is deliberately no longer single-pod:
+it carries a stateful MinIO Deployment, a PVC, a Secret, and a ConfigMap. That is a
+real complexity cost, accepted in exchange for durability across registry pod
+restarts.
+
 ## Recommended convention: arch-explicit tags only
 
 When a downstream project does push, push **arch-explicit single-arch tags** and

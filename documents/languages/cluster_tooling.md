@@ -35,3 +35,10 @@ A project's in-cluster services (e.g. MinIO, Pulsar) are reachable from the
 host binary at `./.build/<project>` **only over loopback NodePorts
 (`127.0.0.0/8`)**. This is a deliberate security boundary: cluster services must
 never be reachable off-host.
+
+The `hostbootstrap-demo` consumer instantiates this pattern: its `deploy-minio`
+chain step stands up an in-cluster MinIO (S3) store that backs the registry, and its
+container-frame binary creates the registry bucket with `mc` over MinIO's loopback
+NodePort (30900) — `mc` from the base image, reaching MinIO the same way `push-image`
+reaches the registry over its own loopback NodePort (30500). See
+[in_cluster_registry.md](../engineering/in_cluster_registry.md).

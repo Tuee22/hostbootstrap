@@ -102,6 +102,14 @@ helper is configured**:
   or, into a container, as a forwarded environment **name** whose value Docker supplies out of band.
 - A hard dependency on being logged in: with no host login, pulls run anonymously.
 
+> **Scope note.** This doctrine governs the **host Docker Hub credential** forwarded
+> down the lift. It does **not** govern an in-cluster application secret — e.g. the
+> `hostbootstrap-demo` `minio-credentials` Kubernetes Secret (the MinIO root / S3
+> credentials the `registry:2` s3 driver authenticates with). A k8s Secret is an
+> in-cluster runtime resource, never serialized into a `<project>.dhall`, `HostConfig`,
+> or `argv`, so it breaks none of the rules above. See
+> [in_cluster_registry.md](in_cluster_registry.md).
+
 ## Validation
 
 - `RegistrySpec` (run through the canonical code-check) covers the Docker-Hub-only projection (the host's

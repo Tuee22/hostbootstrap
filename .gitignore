@@ -1,4 +1,8 @@
 .DS_Store
+# Windows reserved-name file: created when a command meant to discard output to
+# the NUL device (`-o nul` / `> nul`) runs under a POSIX shell (Git Bash/MSYS/WSL),
+# where `nul` is an ordinary filename. Use /dev/null in POSIX-executed commands.
+nul
 
 dist-newstyle/
 .cabal-sandbox/

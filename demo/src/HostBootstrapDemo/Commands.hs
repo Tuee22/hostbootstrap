@@ -70,7 +70,7 @@ import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Mc, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
@@ -117,7 +117,7 @@ import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath ((</>))
 import System.IO (hPutStr, stderr)
@@ -209,7 +209,7 @@ The chain descends three frames (the full fractal): the metal host-orchestrator
 provisions the VM and builds the pb (#2) + the project image (#3) in it; the in-VM
 @vm-orchestrator-1@ mints the project-container child config and hands off; the
 in-container @vm-project-container-2@ stands up the persistent stack —
-@deploy-kind@ → @deploy-registry@ → @push-image@ → @deploy-chart@ → @expose-port@ —
+@deploy-kind@ → @deploy-minio@ → @deploy-registry@ → @push-image@ → @deploy-chart@ → @expose-port@ —
 ending at a live webservice on the NodePort. Each frame's binary runs only its
 own segment, then hands off @project up@ one level down via 'demoFrameContext'.
 -}
@@ -223,7 +223,8 @@ demoChain _ =
       contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
       deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame deployKindAction
-    , projectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500)" demoContainerFrame deployRegistryAction
+    , projectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame deployMinioAction
+    , projectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame deployRegistryAction
     , projectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame pushImageAction
     , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame deployChartAction
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame exposeAction
@@ -334,52 +335,268 @@ registry stack would otherwise need a dual-arch mirror per component).
 registryImage :: String
 registryImage = "registry:2"
 
-{- | The in-cluster registry manifest: a single @registry:2@ Deployment plus a
-NodePort Service on 30500. Anonymous + HTTP — a @localhost@ NodePort is
-insecure-by-default in Docker, so @push-image@ needs no @docker login@ and no TLS.
-The pod's @IfNotPresent@ pull resolves @registry:2@ from Docker Hub on first
-schedule — containerd on the node selects the node platform from the multi-arch
-manifest, which @kind load docker-image@ (a @docker save@ + @ctr import
---all-platforms@) cannot do for a multi-arch image.
+-- ---------------------------------------------------------------------------
+-- MinIO (S3) backing store for the in-cluster registry.
+-- ---------------------------------------------------------------------------
+
+{- | The MinIO (S3-compatible) object store image the registry's storage backend
+targets. Single-binary and natively multi-arch (like @registry:2@), so it runs on
+every substrate with no per-component override.
+-}
+minioImage :: String
+minioImage = "minio/minio"
+
+{- | The MinIO S3-API NodePort, published to the VM localhost by @kind.yaml@ so the
+container frame creates the registry bucket over the same loopback idiom
+@push-image@ uses for the registry (30500).
+-}
+minioNodePort :: Int
+minioNodePort = 30900
+
+-- | The in-cluster DNS the registry pod reaches MinIO's S3 API on (same namespace).
+minioClusterEndpoint :: String
+minioClusterEndpoint = "minio.default.svc:9000"
+
+{- | The bucket the registry stores all its blobs/manifests in. Created idempotently
+by @deploy-minio@ before the registry starts — the s3 driver requires it to
+pre-exist.
+-}
+registryBucket :: String
+registryBucket = "registry"
+
+{- | Fixed demo-internal MinIO root credentials — also the S3 credentials the
+registry authenticates with. They live only in the in-cluster @minio-credentials@
+Secret and the bucket-init @MC_HOST_local@ env, never in Dhall, @argv@, or a
+persisted host file. These are NOT the host Docker Hub credential
+"HostBootstrap.Registry" governs, so that credential doctrine does not apply.
+-}
+minioAccessKey :: String
+minioAccessKey = "hostbootstrap"
+
+minioSecretKey :: String
+minioSecretKey = "hostbootstrap-demo-secret"
+
+{- | The registry's @config.yml@ storage stanza — the @s3@ driver ONLY. Stock
+@registry:2@ ships a default config carrying a @filesystem@ driver; layering
+@REGISTRY_STORAGE_S3_*@ env on top of it makes @registry:2@ refuse to start ("must
+provide exactly one storage type"). So the whole config is replaced by this
+ConfigMap-mounted file declaring only @s3@; the two secret keys are merged in
+separately by env @secretKeyRef@ (env-over-config into this same @storage.s3@ map),
+which adds credentials without introducing a second driver.
+-}
+registryConfigYaml :: [String]
+registryConfigYaml =
+    [ "version: 0.1"
+    , "storage:"
+    , "  cache: { blobdescriptor: inmemory }"
+    , "  s3:"
+    , "    regionendpoint: http://" ++ minioClusterEndpoint
+    , "    region: us-east-1"
+    , "    bucket: " ++ registryBucket
+    , "    forcepathstyle: true"
+    , "    secure: false"
+    , "http: { addr: \":5000\" }"
+    , "health: { storagedriver: { enabled: true, interval: 10s, threshold: 3 } }"
+    ]
+
+{- | The in-cluster registry manifest: a @registry:2@ Deployment plus a NodePort
+Service on 30500, now S3-backed by MinIO. The registry image stays single-binary
+and multi-arch; storage is externalized to MinIO so the pushed blobs survive a
+registry pod restart (see 'minioManifest'). Anonymous + HTTP — a @localhost@
+NodePort is insecure-by-default in Docker, so @push-image@ needs no @docker login@
+and no TLS. The s3 storage stanza is supplied by the @registry-config@ ConfigMap
+('registryConfigYaml') mounted over the image's default @config.yml@; only the two
+S3 secrets come from the @minio-credentials@ Secret via env.
 -}
 registryManifest :: String
 registryManifest =
+    unlines $
+        [ "apiVersion: v1"
+        , "kind: ConfigMap"
+        , "metadata:"
+        , "  name: registry-config"
+        , "data:"
+        , "  config.yml: |"
+        ]
+            ++ map ("    " ++) registryConfigYaml
+            ++ [ "---"
+               , "apiVersion: apps/v1"
+               , "kind: Deployment"
+               , "metadata:"
+               , "  name: registry"
+               , "  labels: { app: registry }"
+               , "spec:"
+               , "  replicas: 1"
+               , "  selector: { matchLabels: { app: registry } }"
+               , "  template:"
+               , "    metadata: { labels: { app: registry } }"
+               , "    spec:"
+               , "      containers:"
+               , "        - name: registry"
+               , "          image: " ++ registryImage
+               , "          imagePullPolicy: IfNotPresent"
+               , -- The two S3 secrets come from the minio-credentials Secret (env-over-
+                 -- config merge into storage.s3), never the ConfigMap. The non-secret s3
+                 -- params live in the mounted config.yml.
+                 "          env:"
+               , "            - name: REGISTRY_STORAGE_S3_ACCESSKEY"
+               , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: accesskey } }"
+               , "            - name: REGISTRY_STORAGE_S3_SECRETKEY"
+               , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: secretkey } }"
+               , -- Gate the Service endpoints on the registry actually serving GET /v2/, so
+                 -- push-image cannot race a scheduled-but-not-yet-listening registry (a
+                 -- NodePort Service routes only to Ready pods). A generous failureThreshold
+                 -- tolerates a slow first (unauthenticated) registry:2 pull.
+                 "          readinessProbe:"
+               , "            httpGet: { path: /v2/, port: 5000 }"
+               , "            periodSeconds: 5"
+               , "            failureThreshold: 60"
+               , "          ports: [ { containerPort: 5000 } ]"
+               , "          volumeMounts:"
+               , "            - { name: config, mountPath: /etc/docker/registry/config.yml, subPath: config.yml, readOnly: true }"
+               , "      volumes:"
+               , "        - name: config"
+               , "          configMap: { name: registry-config }"
+               , "---"
+               , "apiVersion: v1"
+               , "kind: Service"
+               , "metadata:"
+               , "  name: registry"
+               , "spec:"
+               , "  type: NodePort"
+               , "  selector: { app: registry }"
+               , "  ports:"
+               , "    - { port: 5000, targetPort: 5000, nodePort: 30500 }"
+               ]
+
+{- | The in-cluster MinIO (S3) deployment the registry's @s3@ storage driver
+targets: a @minio-credentials@ Secret, a @minio-data@ PVC (bound to kind's default
+@local-path@ StorageClass, so the store survives registry/MinIO POD restarts — the
+persistence win — though not @project destroy@), a single @minio server@ Deployment
+(@Recreate@ strategy, since a RWO PVC cannot attach to two pods at once), and a
+NodePort Service exposing only the S3 API (9000) for bucket-init.
+-}
+minioManifest :: String
+minioManifest =
     unlines
-        [ "apiVersion: apps/v1"
+        [ "apiVersion: v1"
+        , "kind: Secret"
+        , "metadata:"
+        , "  name: minio-credentials"
+        , "type: Opaque"
+        , "stringData:"
+        , "  accesskey: " ++ minioAccessKey
+        , "  secretkey: " ++ minioSecretKey
+        , "---"
+        , "apiVersion: v1"
+        , "kind: PersistentVolumeClaim"
+        , "metadata:"
+        , "  name: minio-data"
+        , "spec:"
+        , "  accessModes: [ ReadWriteOnce ]"
+        , "  resources: { requests: { storage: 10Gi } }"
+        , "---"
+        , "apiVersion: apps/v1"
         , "kind: Deployment"
         , "metadata:"
-        , "  name: registry"
-        , "  labels: { app: registry }"
+        , "  name: minio"
+        , "  labels: { app: minio }"
         , "spec:"
         , "  replicas: 1"
-        , "  selector: { matchLabels: { app: registry } }"
+        , "  strategy: { type: Recreate }"
+        , "  selector: { matchLabels: { app: minio } }"
         , "  template:"
-        , "    metadata: { labels: { app: registry } }"
+        , "    metadata: { labels: { app: minio } }"
         , "    spec:"
         , "      containers:"
-        , "        - name: registry"
-        , "          image: " ++ registryImage
+        , "        - name: minio"
+        , "          image: " ++ minioImage
         , "          imagePullPolicy: IfNotPresent"
-        , "          ports: [ { containerPort: 5000 } ]"
-        , -- Gate the Service endpoints on the registry actually serving GET /v2/, so
-          -- push-image cannot race a scheduled-but-not-yet-listening registry (a
-          -- NodePort Service routes only to Ready pods). A generous failureThreshold
-          -- tolerates a slow first (unauthenticated) registry:2 pull.
-          "          readinessProbe:"
-        , "            httpGet: { path: /v2/, port: 5000 }"
+        , "          args: [ \"server\", \"/data\", \"--console-address\", \":9001\" ]"
+        , "          env:"
+        , "            - name: MINIO_ROOT_USER"
+        , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: accesskey } }"
+        , "            - name: MINIO_ROOT_PASSWORD"
+        , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: secretkey } }"
+        , "          ports: [ { containerPort: 9000 }, { containerPort: 9001 } ]"
+        , "          readinessProbe:"
+        , "            httpGet: { path: /minio/health/ready, port: 9000 }"
         , "            periodSeconds: 5"
-        , "            failureThreshold: 60"
+        , "            failureThreshold: 30"
+        , "          resources:"
+        , "            requests: { cpu: 100m, memory: 256Mi }"
+        , "            limits: { cpu: 500m, memory: 512Mi }"
+        , "          volumeMounts:"
+        , "            - { name: data, mountPath: /data }"
+        , "      volumes:"
+        , "        - name: data"
+        , "          persistentVolumeClaim: { claimName: minio-data }"
         , "---"
         , "apiVersion: v1"
         , "kind: Service"
         , "metadata:"
-        , "  name: registry"
+        , "  name: minio"
         , "spec:"
         , "  type: NodePort"
-        , "  selector: { app: registry }"
+        , "  selector: { app: minio }"
         , "  ports:"
-        , "    - { port: 5000, targetPort: 5000, nodePort: 30500 }"
+        , "    - { name: api, port: 9000, targetPort: 9000, nodePort: " ++ show minioNodePort ++ " }"
         ]
+
+{- | @deploy-minio@ (the demo's contributed workload step, ordered BEFORE
+@deploy-registry@): stand up the MinIO S3 backing store, wait for it Ready, and
+create the registry bucket idempotently. The @s3@ driver requires the bucket to
+pre-exist, so this completes fully before the registry pod schedules.
+-}
+deployMinioAction :: HostConfig -> IO ()
+deployMinioAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+    cfg <- resolveHostConfig
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] minioManifest
+    waitMinioRollout cfg 6
+    ensureRegistryBucket cfg 6
+    putStrLn
+        ( "deploy-minio: MinIO ready at "
+            ++ minioClusterEndpoint
+            ++ "; registry bucket '"
+            ++ registryBucket
+            ++ "' present"
+        )
+
+{- | Poll @kubectl rollout status deployment/minio@ to Ready with backoff (the peer
+of 'waitRegistryRollout'), tolerating a slow first @minio/minio@ pull.
+-}
+waitMinioRollout :: HostConfig -> Int -> IO ()
+waitMinioRollout _ 0 = die "deploy-minio: minio deployment did not become Ready"
+waitMinioRollout cfg n = do
+    result <- runTool cfg Kubectl ["rollout", "status", "deployment/minio", "--timeout=60s"]
+    case result of
+        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+        _ -> do
+            putStrLn "deploy-minio: minio not Ready yet (kubelet still pulling minio/minio); retrying"
+            threadDelay 5000000
+            waitMinioRollout cfg (n - 1)
+
+{- | Create the registry bucket in MinIO with @mc mb --ignore-existing@ (idempotent,
+so a re-run of @project up@ is safe). Runs from the container frame — the
+base-derived project image ships @mc@ — reaching MinIO over the loopback NodePort,
+the same idiom @push-image@ uses for the registry. The credentials travel in the
+@MC_HOST_local@ env (mc auto-registers the alias from it), never in @argv@. Bounded
+retry covers the window between MinIO pod-Ready and its S3 endpoint accepting a
+MakeBucket.
+-}
+ensureRegistryBucket :: HostConfig -> Int -> IO ()
+ensureRegistryBucket _ 0 = die "deploy-minio: could not create the registry bucket in MinIO"
+ensureRegistryBucket cfg n = do
+    setEnv
+        "MC_HOST_local"
+        ("http://" ++ minioAccessKey ++ ":" ++ minioSecretKey ++ "@localhost:" ++ show minioNodePort)
+    result <- runTool cfg Mc ["mb", "--ignore-existing", "local/" ++ registryBucket]
+    case result of
+        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+        _ -> do
+            putStrLn "deploy-minio: MinIO S3 endpoint not ready for bucket create; retrying"
+            threadDelay 5000000
+            ensureRegistryBucket cfg (n - 1)
 
 {- | @deploy-registry@ (the demo's contributed workload step): stand up the
 in-cluster OCI registry the @push-image@ step pushes to. A single @registry:2@
@@ -709,6 +926,7 @@ demoAssert (CaseEnv cfg frame expectedMessage) c = case caseId c of
     "pristine-bootstrap" -> assertReachable cfg frame "http://localhost:30080/api/budget" "the in-cluster webservice"
     "web-build" -> assertReachable cfg frame "http://localhost:30080/app.js" "the esbuild SPA bundle"
     "e2e-tabs" -> assertE2EInVM cfg frame expectedMessage
+    "registry-persistence" -> assertRegistrySurvivesRestart cfg frame
     other -> pure (Fail ("unknown demo case: " ++ other))
 
 {- | Reachability assertion: poll the endpoint from @frame@ (the VM frame, where
@@ -742,6 +960,37 @@ assertE2EInVM cfg frame expectedMessage = do
         Right (ExitSuccess, _, _) -> Pass
         Right (_, out, err) -> Fail ("e2e failed: " ++ takeWhile (/= '\n') (err ++ out))
         Left err -> Fail ("e2e: " ++ err)
+
+{- | The @registry-persistence@ case — the MinIO-backing proof. Confirm the pushed
+image's @tags/list@ is reachable (200), delete the registry pod and wait its
+rollout, then confirm @tags/list@ is reachable AGAIN. With the old ephemeral
+pod-filesystem storage the restarted registry would be empty (@tags/list@ 404, which
+'reachLeaf'\'s @curl -f@ reports as unreachable); MinIO-backed, the new pod re-reads
+the blobs from the bucket and it stays 200. Reuses the VM-frame lift so the probe and
+the @kubectl@ restart both run where the NodePort is published. Runs last in the case
+matrix and leaves a healthy registry pod (it waits the new rollout Ready).
+-}
+assertRegistrySurvivesRestart :: HostConfig -> LiftContext -> IO CaseResult
+assertRegistrySurvivesRestart cfg frame = do
+    let tagsUrl = "http://" ++ registryEndpoint ++ "/v2/library/hostbootstrap-demo/tags/list"
+        node = demoProject ++ "-control-plane"
+        restart =
+            "docker exec "
+                ++ node
+                ++ " kubectl delete pod -l app=registry --wait=true"
+                ++ " && docker exec "
+                ++ node
+                ++ " kubectl rollout status deployment/registry --timeout=120s"
+    before <- waitWebReachable cfg frame tagsUrl 6
+    if not before
+        then pure (Fail ("registry-persistence: pushed image not present before restart at " ++ tagsUrl))
+        else do
+            _ <- liftLeaf cfg frame (RawCmd ["bash", "-lc", restart])
+            after <- waitWebReachable cfg frame tagsUrl 24
+            pure $
+                if after
+                    then Pass
+                    else Fail "registry-persistence: the pushed image was LOST after a registry pod restart (storage is not durable)"
 
 -- | Run the binary's own subcommand (the self-reference, § U), dying on failure.
 runSelfOrDie :: FilePath -> [String] -> IO ()

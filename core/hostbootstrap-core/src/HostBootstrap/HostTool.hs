@@ -36,6 +36,7 @@ data HostTool
   | Kubectl
   | Helm
   | Kind
+  | Mc
   | NvidiaSmi
   | Nvcc
   | PowerShell
@@ -65,6 +66,7 @@ toolCommandName Ghcup = "ghcup"
 toolCommandName Kubectl = "kubectl"
 toolCommandName Helm = "helm"
 toolCommandName Kind = "kind"
+toolCommandName Mc = "mc"
 toolCommandName NvidiaSmi = "nvidia-smi"
 toolCommandName Nvcc = "nvcc"
 toolCommandName PowerShell = "powershell.exe"
