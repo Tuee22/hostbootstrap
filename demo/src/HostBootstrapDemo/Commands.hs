@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -45,10 +46,9 @@ module HostBootstrapDemo.Commands (
 )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (unless, when)
-import Data.List (intercalate, isInfixOf, isSuffixOf)
+import Data.List (intercalate, isInfixOf)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
@@ -74,7 +74,25 @@ import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Mc, Sudo), toolC
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
-import HostBootstrap.Registry (discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
+import HostBootstrap.Readiness (
+    PollPolicy,
+    Probe,
+    ProbeResult (..),
+    Ready,
+    awaitReady,
+    awaitReadyWith,
+    dockerPoll,
+    networkPoll,
+    pollUntilReady,
+    pollUntilReadyWith,
+    pushPoll,
+    reachPoll,
+    renderPollError,
+    rolloutPoll,
+    vmBootPoll,
+    withAttempts,
+ )
+import HostBootstrap.Registry (RegistryAuth, discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
 import HostBootstrap.Service (ServiceHandler (..), ServiceRegistry)
 import HostBootstrap.Step (
     Step,
@@ -543,6 +561,48 @@ minioManifest =
         , "    - { name: api, port: 9000, targetPort: 9000, nodePort: " ++ show minioNodePort ++ " }"
         ]
 
+-- Phantom readiness tags (empty marker types, § Tier-2): each names a dependency
+-- whose readiness a 'Ready' witness proves. They are distinct types, so a witness
+-- minted at one boundary cannot be passed where another is required — "push before
+-- the registry serves /v2/", "build #3 before dockerd", "bucket before MinIO Ready",
+-- and "network probe before the VM answers" become type errors, not comments.
+data VMReady
+
+data DockerDaemon
+
+data MinioReady
+
+data RegistryServing
+
+{- | The demo's readiness probes and rollout waits share these small combinators over
+"HostBootstrap.Readiness". 'exitZeroProbe' treats an exit-0 run as ready; 'stdoutProbe'
+additionally carries the captured stdout so rollout progress still prints; 'reachProbe'
+folds a @curl@ into a lift frame; 'pollRolloutOrDie' is the rollout-style wait — poll,
+echo a retry note between attempts and the probe's stdout on success, die on timeout.
+-}
+exitZeroProbe :: HostTool -> [String] -> Probe ()
+exitZeroProbe tool args c = classify <$> runTool c tool args
+  where
+    classify (Right (ExitSuccess, _, _)) = ProbeReady ()
+    classify _ = NotReady
+
+stdoutProbe :: HostTool -> [String] -> Probe String
+stdoutProbe tool args c = classify <$> runTool c tool args
+  where
+    classify (Right (ExitSuccess, out, _)) = ProbeReady out
+    classify _ = NotReady
+
+reachProbe :: LiftContext -> String -> Probe ()
+reachProbe frame url c = classify <$> liftLeaf c frame (reachLeaf url)
+  where
+    classify (Right (ExitSuccess, _, _)) = ProbeReady ()
+    classify _ = NotReady
+
+pollRolloutOrDie :: HostConfig -> PollPolicy -> String -> String -> Probe String -> IO ()
+pollRolloutOrDie cfg pol retryNote failMsg probe = do
+    outcome <- pollUntilReadyWith pol failMsg (const (putStrLn retryNote)) probe cfg
+    either (const (die failMsg)) (\out -> unless (null out) (putStr out)) outcome
+
 {- | @deploy-minio@ (the demo's contributed workload step, ordered BEFORE
 @deploy-registry@): stand up the MinIO S3 backing store, wait for it Ready, and
 create the registry bucket idempotently. The @s3@ driver requires the bucket to
@@ -552,8 +612,8 @@ deployMinioAction :: HostConfig -> IO ()
 deployMinioAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] minioManifest
-    waitMinioRollout cfg 6
-    ensureRegistryBucket cfg 6
+    minioReady <- waitMinioRollout cfg
+    ensureRegistryBucket minioReady cfg
     putStrLn
         ( "deploy-minio: MinIO ready at "
             ++ minioClusterEndpoint
@@ -565,16 +625,16 @@ deployMinioAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
 {- | Poll @kubectl rollout status deployment/minio@ to Ready with backoff (the peer
 of 'waitRegistryRollout'), tolerating a slow first @minio/minio@ pull.
 -}
-waitMinioRollout :: HostConfig -> Int -> IO ()
-waitMinioRollout _ 0 = die "deploy-minio: minio deployment did not become Ready"
-waitMinioRollout cfg n = do
-    result <- runTool cfg Kubectl ["rollout", "status", "deployment/minio", "--timeout=60s"]
-    case result of
-        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        _ -> do
-            putStrLn "deploy-minio: minio not Ready yet (kubelet still pulling minio/minio); retrying"
-            threadDelay 5000000
-            waitMinioRollout cfg (n - 1)
+waitMinioRollout :: HostConfig -> IO (Ready MinioReady)
+waitMinioRollout cfg = do
+    outcome <-
+        awaitReadyWith
+            rolloutPoll
+            "deploy-minio"
+            (const (putStrLn "deploy-minio: minio not Ready yet (kubelet still pulling minio/minio); retrying"))
+            (stdoutProbe Kubectl ["rollout", "status", "deployment/minio", "--timeout=60s"])
+            cfg
+    either (const (die "deploy-minio: minio deployment did not become Ready")) pure outcome
 
 {- | Create the registry bucket in MinIO with @mc mb --ignore-existing@ (idempotent,
 so a re-run of @project up@ is safe). Runs from the container frame — the
@@ -584,19 +644,20 @@ the same idiom @push-image@ uses for the registry. The credentials travel in the
 retry covers the window between MinIO pod-Ready and its S3 endpoint accepting a
 MakeBucket.
 -}
-ensureRegistryBucket :: HostConfig -> Int -> IO ()
-ensureRegistryBucket _ 0 = die "deploy-minio: could not create the registry bucket in MinIO"
-ensureRegistryBucket cfg n = do
+ensureRegistryBucket :: Ready MinioReady -> HostConfig -> IO ()
+ensureRegistryBucket _minioReady cfg = do
     setEnv
         "MC_HOST_local"
         ("http://" ++ minioAccessKey ++ ":" ++ minioSecretKey ++ "@localhost:" ++ show minioNodePort)
-    result <- runTool cfg Mc ["mb", "--ignore-existing", "local/" ++ registryBucket]
-    case result of
-        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        _ -> do
-            putStrLn "deploy-minio: MinIO S3 endpoint not ready for bucket create; retrying"
-            threadDelay 5000000
-            ensureRegistryBucket cfg (n - 1)
+    -- The @Ready MinioReady@ witness proves MinIO rolled out before we make the
+    -- bucket, so the @s3@ driver's "bucket must pre-exist" invariant is a type
+    -- dependency here, not a comment.
+    pollRolloutOrDie
+        cfg
+        rolloutPoll
+        "deploy-minio: MinIO S3 endpoint not ready for bucket create; retrying"
+        "deploy-minio: could not create the registry bucket in MinIO"
+        (stdoutProbe Mc ["mb", "--ignore-existing", "local/" ++ registryBucket])
 
 {- | @deploy-registry@ (the demo's contributed workload step): stand up the
 in-cluster OCI registry the @push-image@ step pushes to. A single @registry:2@
@@ -622,7 +683,7 @@ deployRegistryAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> 
     -- `rollout status --timeout=120s`: the pod's first (unauthenticated) registry:2
     -- pull can exceed a fixed window under Docker Hub load, so retry the rollout wait
     -- before failing.
-    waitRegistryRollout cfg 6
+    waitRegistryRollout cfg
     putStrLn ("deploy-registry: in-cluster registry rollout complete at http://" ++ registryEndpoint)
 
 {- | Poll @kubectl rollout status deployment/registry@ to Ready with backoff,
@@ -630,16 +691,14 @@ tolerating a slow first registry:2 pull. Each attempt waits up to 60 s; @n@
 attempts with a 5 s backoff give generous headroom, then a final failure dies so a
 genuinely stuck rollout still surfaces.
 -}
-waitRegistryRollout :: HostConfig -> Int -> IO ()
-waitRegistryRollout _ 0 = die "deploy-registry: registry deployment did not become Ready"
-waitRegistryRollout cfg n = do
-    result <- runTool cfg Kubectl ["rollout", "status", "deployment/registry", "--timeout=60s"]
-    case result of
-        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        _ -> do
-            putStrLn "deploy-registry: registry not Ready yet (kubelet still pulling registry:2); retrying"
-            threadDelay 5000000
-            waitRegistryRollout cfg (n - 1)
+waitRegistryRollout :: HostConfig -> IO ()
+waitRegistryRollout cfg =
+    pollRolloutOrDie
+        cfg
+        rolloutPoll
+        "deploy-registry: registry not Ready yet (kubelet still pulling registry:2); retrying"
+        "deploy-registry: registry deployment did not become Ready"
+        (stdoutProbe Kubectl ["rollout", "status", "deployment/registry", "--timeout=60s"])
 
 pushImageAction :: HostConfig -> IO ()
 pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
@@ -651,13 +710,24 @@ pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
     -- NodePort needs no @docker login@ and no TLS.
     runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
     let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
-    -- Poll GET /v2/ on the registry NodePort from this frame before pushing, so the
-    -- push cannot race a scheduled-but-not-yet-serving registry (the readinessProbe
-    -- already gates the Service endpoints; this confirms it answers here too).
-    ready <- waitWebReachable cfg localContext ("http://" ++ registryEndpoint ++ "/v2/") 24
-    unless ready (die ("push-image: in-cluster registry did not answer GET /v2/ at " ++ registryEndpoint))
+    -- Poll GET /v2/ on the registry NodePort from this frame, minting the
+    -- `Ready RegistryServing` witness `pushImageBlob` requires: the tag-and-push
+    -- cannot race a scheduled-but-not-yet-serving registry because pushing without
+    -- that proof is a type error (the readinessProbe gates the Service endpoints;
+    -- this confirms it answers here too, and encodes the dependency in the types).
+    serving <-
+        awaitReady
+            (reachPoll `withAttempts` 24)
+            ("push-image: registry /v2/ at " ++ registryEndpoint)
+            (reachProbe localContext ("http://" ++ registryEndpoint ++ "/v2/"))
+            cfg
+    registryServing <-
+        either
+            (const (die ("push-image: in-cluster registry did not answer GET /v2/ at " ++ registryEndpoint)))
+            pure
+            serving
     runOrDie cfg Docker ["tag", demoProjectImage, ref]
-    pushWithRetry cfg ref 4
+    pushImageBlob registryServing cfg ref
     putStrLn ("push-image: kind-loaded " ++ demoProjectImage ++ " and pushed " ++ ref)
 
 {- | The transient @docker push@ failure markers a bounded retry safely absorbs:
@@ -689,26 +759,21 @@ registry's full diagnostics rather than burning the retry budget on a determinis
 error. Bounded by @n@ attempts with a five-second backoff; the last attempt is a
 plain 'runOrDie'.
 -}
-pushWithRetry :: HostConfig -> String -> Int -> IO ()
-pushWithRetry cfg ref 1 = runOrDie cfg Docker ["push", ref]
-pushWithRetry cfg ref n = do
-    result <- runToolWithStdin cfg Docker ["push", ref] ""
-    case result of
-        Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
-        Right (ExitFailure code, out, err)
-            | isTransientPushError (out ++ err) -> do
-                putStrLn "push-image: transient registry error; retrying after backoff"
-                threadDelay 5000000
-                pushWithRetry cfg ref (n - 1)
-            | otherwise ->
-                die
-                    ( "push-image: docker push failed (exit "
-                        ++ show code
-                        ++ ", non-transient)\n"
-                        ++ out
-                        ++ err
-                    )
-        Left err -> die ("push-image: docker push could not run: " ++ err)
+pushImageBlob :: Ready RegistryServing -> HostConfig -> String -> IO ()
+pushImageBlob _serving cfg ref = do
+    outcome <- pollUntilReadyWith pushPoll "push-image" backoffNote pushProbe cfg
+    either (die . renderPollError) emitProgress outcome
+  where
+    -- The 'push-image' label is prepended to a 'Failed' message by 'pollStep', so
+    -- the rendered non-transient / could-not-run errors read exactly as before.
+    pushProbe c = classify <$> runToolWithStdin c Docker ["push", ref] ""
+    classify (Right (ExitSuccess, out, _)) = ProbeReady out
+    classify (Right (ExitFailure code, out, err))
+        | isTransientPushError (out ++ err) = NotReady
+        | otherwise = Failed ("docker push failed (exit " ++ show code ++ ", non-transient)\n" ++ out ++ err)
+    classify (Left err) = Failed ("docker push could not run: " ++ err)
+    backoffNote _ = putStrLn "push-image: transient registry error; retrying after backoff"
+    emitProgress out = unless (null out) (putStr out)
 
 {- | @deploy-chart@: install the web chart pod, templating the chart's embedded
 config from the live config's served @message@ (Sprint 20.2). The message is
@@ -741,12 +806,9 @@ Apple Silicon — correct on both providers, with no dependency on host port
 forwarding. Bounded by @n@ five-second attempts.
 -}
 waitWebReachable :: HostConfig -> LiftContext -> String -> Int -> IO Bool
-waitWebReachable _ _ _ 0 = pure False
 waitWebReachable cfg frame url n = do
-    result <- liftLeaf cfg frame (reachLeaf url)
-    case result of
-        Right (ExitSuccess, _, _) -> pure True
-        _ -> threadDelay 5000000 >> waitWebReachable cfg frame url (n - 1)
+    outcome <- pollUntilReady (reachPoll `withAttempts` n) url (reachProbe frame url) cfg
+    pure (either (const False) (const True) outcome)
 
 demoConfigContext :: Context.CommandClass -> [Context.Capability] -> (ProjectConfig -> Context.BinaryContext -> IO a) -> IO a
 demoConfigContext =
@@ -1205,15 +1267,13 @@ substrateExists cfg sp =
 two-second attempts (the substrate-generic peer of the former per-provider
 @waitVMAgent@ / @waitLimaVM@ / @waitWsl2VM@).
 -}
-substrateWait :: HostConfig -> SubstrateProvider -> Int -> IO ()
-substrateWait _ sp 0 = die ("vm up: " ++ spVmId sp ++ " did not become ready")
-substrateWait cfg sp n =
-    case spWait sp of
-        WaitProbe tool args -> do
-            r <- runTool cfg tool args
-            case r of
-                Right (ExitSuccess, _, _) -> pure ()
-                _ -> threadDelay 2000000 >> substrateWait cfg sp (n - 1)
+substrateWait :: HostConfig -> SubstrateProvider -> IO (Ready VMReady)
+substrateWait cfg sp = do
+    outcome <- awaitReady vmBootPoll ("vm up: " ++ spVmId sp) probe cfg
+    either (const (die ("vm up: " ++ spVmId sp ++ " did not become ready"))) pure outcome
+  where
+    probe = case spWait sp of
+        WaitProbe tool args -> exitZeroProbe tool args
 
 {- | Keep only the FILE effects of a launch effect list (the WSL2 @.wslconfig@
 merge/restore) — used to re-apply the cordon on the idempotent reconcile path
@@ -1242,16 +1302,16 @@ resolve the apt mirror, so the first in-VM @apt@/@ghcup@/@curl@ step of the
 pristine bootstrap cannot race a not-yet-configured network. Bounded by @n@
 three-second attempts.
 -}
-waitVMNetwork :: HostConfig -> SubstrateProvider -> Int -> IO ()
-waitVMNetwork _ sp 0 = die ("vm up: " ++ spVmId sp ++ " network did not come up (DNS still unresolved)")
-waitVMNetwork cfg sp n =
+waitVMNetwork :: Ready VMReady -> HostConfig -> SubstrateProvider -> IO ()
+waitVMNetwork _vmReady cfg sp =
     case vmShellArgs (spLiftLayer sp) ["bash", "-lc", netProbe] of
         Nothing -> pure ()
         Just (tool, args) -> do
-            r <- runTool cfg tool args
-            case r of
-                Right (ExitSuccess, _, _) -> putStrLn ("vm up: " ++ spVmId sp ++ " network is up")
-                _ -> threadDelay 3000000 >> waitVMNetwork cfg sp (n - 1)
+            outcome <- pollUntilReady networkPoll ("vm up: " ++ spVmId sp ++ " network") (exitZeroProbe tool args) cfg
+            either
+                (const (die ("vm up: " ++ spVmId sp ++ " network did not come up (DNS still unresolved)")))
+                (const (putStrLn ("vm up: " ++ spVmId sp ++ " network is up")))
+                outcome
   where
     netProbe =
         "command -v cloud-init >/dev/null 2>&1 && timeout 90 sudo cloud-init status --wait >/dev/null 2>&1; "
@@ -1264,16 +1324,35 @@ Haskell (not an inline shell loop) so the probe stays a simple
 @docker info >/dev/null 2>&1@ that survives the Windows PowerShell→wsl→bash quoting
 path.
 -}
-waitDockerReady :: HostConfig -> SubstrateProvider -> Int -> IO ()
-waitDockerReady _ provider 0 = die ("pristine-bootstrap: docker daemon in " ++ spVmId provider ++ " did not become ready")
-waitDockerReady cfg provider n =
+waitDockerReady :: HostConfig -> SubstrateProvider -> IO (Ready DockerDaemon)
+waitDockerReady cfg provider =
     case vmShellArgs (spLiftLayer provider) ["bash", "-lc", "docker info >/dev/null 2>&1"] of
         Nothing -> die ("waitDockerReady: " ++ spVmId provider ++ " is not a VM frame")
         Just (tool, args) -> do
-            r <- runTool cfg tool args
-            case r of
-                Right (ExitSuccess, _, _) -> putStrLn ("pristine-bootstrap: docker daemon ready in " ++ spVmId provider)
-                _ -> threadDelay 2000000 >> waitDockerReady cfg provider (n - 1)
+            outcome <- awaitReady dockerPoll ("pristine-bootstrap: docker daemon in " ++ spVmId provider) (exitZeroProbe tool args) cfg
+            daemon <-
+                either
+                    (const (die ("pristine-bootstrap: docker daemon in " ++ spVmId provider ++ " did not become ready")))
+                    pure
+                    outcome
+            putStrLn ("pristine-bootstrap: docker daemon ready in " ++ spVmId provider)
+            pure daemon
+
+{- | Build #3 — the project container FROM the base — gated on the @Ready DockerDaemon@
+witness so it cannot run before 'waitDockerReady' observed the in-VM daemon answering
+(pushing the build without that proof is a type error). An authenticated host Docker Hub
+login is forwarded on @stdin@; otherwise the base pulls anonymously.
+-}
+buildProjectImage :: Ready DockerDaemon -> HostConfig -> SubstrateProvider -> Maybe RegistryAuth -> String -> IO ()
+buildProjectImage _dockerReady cfg provider mAuth buildImageScript =
+    case mAuth of
+        Just auth -> do
+            putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
+            runInDemoVMStdin cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
+        Nothing -> do
+            putStrLn "pristine-bootstrap: no host Docker Hub login found — build #3 pulls the base anonymously (Docker Hub rate limits may apply). Run `docker login` on the host (the standalone Docker CLI writes an inline token) for an authenticated, forwarded pull."
+            putStrLn "pristine-bootstrap: build #3 — the project container FROM the pulled base (repo-root context, L0-direct; anonymous pull)"
+            runInDemoVM cfg provider buildImageScript
 
 vmRepoRoot :: FilePath
 vmRepoRoot = "/root/hostbootstrap"
@@ -1431,14 +1510,17 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
     if exists
         then do
             putStrLn ("vm up: " ++ spVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
-            -- Reconcile the cordon on the exists path (§ C): re-apply only the
-            -- launch's FILE effects (the WSL2 .wslconfig merge) — never the one-time
-            -- shutdown/install tool effects — so a reconcile re-establishes the
-            -- global ceiling if a crashed run cleared it. Lima/Incus carry no launch
-            -- file effects (their cordon is baked at create), so this is a no-op
-            -- there.
+            -- Reconcile the cordon on the exists path (§ C): re-apply the launch's
+            -- FILE effects (the WSL2 .wslconfig merge) — never the one-time install —
+            -- and then 'applyReconcileCordon' actually makes the ceiling take effect: a
+            -- STOPPED WSL2 distro needs a `wsl --shutdown` so it re-reads the merged
+            -- instanceIdleTimeout + vmIdleTimeout ceiling on its next cold boot (a
+            -- crashed-run distro left stopped would otherwise idle-stop mid-recovery),
+            -- while a RUNNING one already has it live. Lima/Incus carry no launch file
+            -- effects and never idle-stop, so both steps are a no-op there.
             reCordon <- either die pure (spLaunch sp envelope)
             runEffects cfg (fileEffectsOnly reCordon)
+            applyReconcileCordon cfg sp
             runEffectsBestEffort cfg ("vm up: starting existing " ++ spVmId sp) (spStartExisting sp)
         else do
             launch <- either die pure (spLaunch sp envelope)
@@ -1446,10 +1528,37 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
             putStrLn ("vm up: launching " ++ spVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
             runEffects cfg launch
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
-    substrateWait cfg sp 60
+    vmReady <- substrateWait cfg sp
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " network to come up")
-    waitVMNetwork cfg sp 20
+    waitVMNetwork vmReady cfg sp
     putStrLn ("vm up: " ++ spVmId sp ++ " is up")
+
+{- | Apply a substrate's reconcile-time cordon whose global file only takes effect
+on a VM restart. No-op for Lima/Incus (@spReconcileCordon = Nothing@: their cordon
+is baked into the VM at create and they never idle-stop). For WSL2: probe the
+distro's running state; a RUNNING distro already booted with the cordon live, so
+leave the live stack untouched (skip the global side-effect); a STOPPED distro is
+safe to restart, so run the disclosed @wsl --shutdown@ — the subsequent
+'substrateWait' then cold-boots the utility VM, which re-reads the merged
+@[general] instanceIdleTimeout=-1@ (the key that keeps the distro instance alive) +
+@[wsl2] vmIdleTimeout=-1@. This is what makes an idempotent @project up@ reconcile of a
+crashed-run distro survive the idle-stop instead of losing the kind cluster.
+-}
+applyReconcileCordon :: HostConfig -> SubstrateProvider -> IO ()
+applyReconcileCordon cfg sp =
+    case spReconcileCordon sp of
+        Nothing -> pure ()
+        Just (ExistsProbe tool args membership, whenStopped) -> do
+            r <- runTool cfg tool args
+            let running = case r of
+                    Right (ExitSuccess, out, _) -> spVmId sp `elem` membersOf membership out
+                    _ -> False
+            if running
+                then putStrLn ("vm up: " ++ spVmId sp ++ " is already running; its cordon is live — skipping the global `wsl --shutdown`")
+                else do
+                    discloseWslShutdown
+                    putStrLn ("vm up: " ++ spVmId sp ++ " is stopped; applying the .wslconfig cordon via `wsl --shutdown` so the utility VM re-reads it on the next boot")
+                    runEffects cfg whenStopped
 
 requireDemoLifecycleResources :: Resources -> Either String ()
 requireDemoLifecycleResources actualResources = do
@@ -1512,7 +1621,7 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     putStrLn ("build-image: generating the PureScript bridge into " ++ bridgeDir)
     createDirectoryIfMissing True bridgeDir
     writeBridge bridgeDir
-    stageSource cfg provider (T.unpack (Context.sourceRoot ctx))
+    stageSource cfg provider
     streamVMConfig cfg provider parentCfg ctx
     let vmStep label script = do
             putStrLn ("pristine-bootstrap: " ++ label)
@@ -1549,20 +1658,12 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     -- PowerShell→wsl→bash quoting path (the `'`→`''` escaping splits the line), so the
     -- probe stays a simple `docker info >/dev/null 2>&1` — the same shape
     -- `waitVMNetwork`/`substrateWait` use safely.
-    waitDockerReady cfg provider 30
+    dockerReady <- waitDockerReady cfg provider
     let buildImageScript =
             "cd " ++ shellQuote vmRepoRoot ++ " && " ++ dockerCommand (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
         repoRootCfg =
             parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
-    case mAuth of
-        Just auth -> do
-            putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
-            runInDemoVMStdin cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
-        Nothing -> do
-            putStrLn "pristine-bootstrap: no host Docker Hub login found — build #3 pulls the base anonymously (Docker Hub rate limits may apply). Run `docker login` on the host (the standalone Docker CLI writes an inline token) for an authenticated, forwarded pull."
-            vmStep
-                "build #3 — the project container FROM the pulled base (repo-root context, L0-direct; anonymous pull)"
-                buildImageScript
+    buildProjectImage dockerReady cfg provider mAuth buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
 {- | Stream the parent-derived VM-orchestrator config into the VM **in-place**
@@ -1606,21 +1707,27 @@ demoBaseImage :: HostConfig -> String
 demoBaseImage cfg =
     "docker.io/tuee22/hostbootstrap:basecontainer-cpu-" ++ renderArch (substrateArch (hcSubstrate cfg))
 
+{- | The hostbootstrap monorepo root (holding @core/@ + @demo/@) given the project
+home. The demo is nested one level under the repo, and the binary now always runs
+with cwd = the project home (the Python launcher execs it with @cwd=project_root@),
+so the repo root is that parent. Pure.
+-}
+repoRootOfProjectRoot :: FilePath -> FilePath
+repoRootOfProjectRoot projectRoot = projectRoot ++ "/.."
+
 {- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
 source @pipx install@ and the in-VM @hostbootstrap build@ build from. The host
 working tree (uncommitted changes included) is tarred minus build/VCS
 artifacts, pushed as a single file (@pushFileArgs@), and extracted in the VM.
 Without this step the from-zero bootstrap has nothing to install — the runbook
 documents the source as "staged at @/root/hostbootstrap@", and this is where
-that staging happens.
+that staging happens. The binary runs with cwd = the project home (@demo/@), so the
+repo root is 'repoRootOfProjectRoot' of the cwd (cwd-consistent, not cwd-fragile).
 -}
-stageSource :: HostConfig -> SubstrateProvider -> FilePath -> IO ()
-stageSource cfg provider sourceRoot = do
+stageSource :: HostConfig -> SubstrateProvider -> IO ()
+stageSource cfg provider = do
     cwd <- getCurrentDirectory
-    let repoRoot =
-            if "demo" `isSuffixOfPath` sourceRoot
-                then sourceRoot ++ "/.."
-                else cwd ++ "/.."
+    let repoRoot = repoRootOfProjectRoot cwd
         tarball = repoRoot ++ "/.hostbootstrap-src.tgz"
     putStrLn ("pristine-bootstrap: staging the project source into " ++ spVmId provider ++ ":" ++ vmRepoRoot)
     (tc, _, terr) <-
@@ -1695,10 +1802,6 @@ stageSource cfg provider sourceRoot = do
                 )
         )
         `finally` removeFile tarball
-
-isSuffixOfPath :: FilePath -> FilePath -> Bool
-isSuffixOfPath suffix path =
-    ("/" ++ suffix) `isSuffixOf` path || suffix == path
 
 shellQuote :: String -> String
 shellQuote s = "'" ++ concatMap quoteChar s ++ "'"

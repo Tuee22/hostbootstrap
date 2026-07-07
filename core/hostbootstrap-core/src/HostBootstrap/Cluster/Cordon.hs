@@ -316,14 +316,21 @@ incusSizingArgs r = do
 -- Storage is /not/ a @.wslconfig@ key — the per-distro VHDX cap is applied at
 -- install time via @wsl --install --vhd-size@ (see
 -- 'HostBootstrap.Wsl2.wslInstallArgs'), so it is intentionally absent here.
--- @vmIdleTimeout=-1@ pins the shared utility VM alive across the gaps between the
--- separate @wsl -d@ steps a lifecycle runs (the default 60 s idle shutdown would
--- otherwise tear the VM — and any in-flight build — down between steps).
+-- Two idle-timeout keys, in two sections, are both required: @[wsl2] vmIdleTimeout=-1@
+-- pins the shared /utility VM/ alive across the gaps between the separate @wsl -d@
+-- steps a lifecycle runs, while @[general] instanceIdleTimeout=-1@ keeps the individual
+-- distro /instance/ alive after the last @wsl@ session ends. @vmIdleTimeout@ governs
+-- only the utility VM, so with it alone the distro (and its kind cluster) still
+-- idle-stops ~15–60 s after @project up@ returns — and the kind control plane does not
+-- recover on the next cold start. @instanceIdleTimeout@ is the peer that closes that
+-- gap (see @documents/engineering/wsl2.md@).
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs r = do
   b <- budgetFromResources r
   pure
-    [ "[wsl2]",
+    [ "[general]",
+      "instanceIdleTimeout=-1",
+      "[wsl2]",
       "processors=" ++ show (budgetCpu b),
       "memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",
       "swap=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB",

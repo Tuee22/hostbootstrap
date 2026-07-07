@@ -13,6 +13,7 @@ module HostBootstrap.HostTarget
   )
 where
 
+import Control.Monad (void)
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Incus), toolCommandName)
@@ -22,6 +23,13 @@ import HostBootstrap.Incus
     classifyDockerReadiness,
     execVMArgs,
     rebootVMArgs,
+  )
+import HostBootstrap.Readiness
+  ( PollError (..),
+    PollPolicy (..),
+    ProbeResult (..),
+    pollUntilReadyWith,
+    seconds,
   )
 import System.Exit (ExitCode)
 
@@ -47,17 +55,19 @@ runInTarget cfg (InVM vm) t args =
 -- 'Unsatisfiable' fails fast. The classification is the pure
 -- 'classifyDockerReadiness'; this loop is exercised live.
 rebootDockerToReady :: HostConfig -> IncusVM -> Int -> IO (Either String ())
-rebootDockerToReady cfg vm maxReboots = go maxReboots
+rebootDockerToReady cfg vm maxReboots = do
+  -- @maxReboots@ reboots means @maxReboots + 1@ probes (the initial probe plus one
+  -- after each reboot); the reboot is the between-attempt recovery, so the delay is 0.
+  outcome <- pollUntilReadyWith (PollPolicy (maxReboots + 1) (seconds 0)) "reboot-to-ready" recover dockerProbe cfg
+  pure $ case outcome of
+    Right () -> Right ()
+    Left (PollTimeout _) -> Left "docker did not become ready within the reboot budget"
+    Left (PollFailed msg) -> Left msg
   where
-    go n = do
-      probe <- runTool cfg Incus (execVMArgs vm ["docker", "info"])
-      case probe of
-        Left err -> pure (Left err)
-        Right result -> case classifyDockerReadiness result of
-          Ready -> pure (Right ())
-          Unsatisfiable -> pure (Left "docker is not satisfiable in the VM (install failed)")
-          NeedsReboot
-            | n <= 0 -> pure (Left "docker did not become ready within the reboot budget")
-            | otherwise -> do
-                _ <- runTool cfg Incus (rebootVMArgs vm)
-                go (n - 1)
+    dockerProbe c = verdict <$> runTool c Incus (execVMArgs vm ["docker", "info"])
+    verdict (Left err) = Failed err
+    verdict (Right result) = case classifyDockerReadiness result of
+      Ready -> ProbeReady ()
+      NeedsReboot -> NotReady
+      Unsatisfiable -> Failed "docker is not satisfiable in the VM (install failed)"
+    recover c = void (runTool c Incus (rebootVMArgs vm))

@@ -131,14 +131,26 @@ a build that fits the budget is not killed by the host reclaiming the under-prov
 `.wslconfig` carries **no** `vhdx-size` key (it is not a `.wslconfig` setting); storage is the
 `--vhd-size` install flag instead.
 
+`wsl2SizingArgs` also emits **two idle-timeout keys, in two sections**, both required to keep a live demo
+up after `project up` returns. `[wsl2] vmIdleTimeout=-1` pins the shared **utility VM** alive across the
+gaps between the separate `wsl -d` steps a lifecycle runs; `[general] instanceIdleTimeout=-1` keeps the
+individual **distro instance** alive after the last `wsl` session ends. `vmIdleTimeout` governs only the
+utility VM, so with it alone the distro (and its in-VM kind cluster) idle-stops ~15–60 s after `project up`
+and the kind control plane does **not** recover on the next cold start — the `instanceIdleTimeout` peer is
+what closes that gap ([microsoft/WSL #8659](https://github.com/microsoft/WSL/discussions/8659)). Because
+both are `.wslconfig` keys, `mergeWslConfig` now manages **both** the `[general]` and `[wsl2]` sections
+(replacing exactly the sections our body declares, still preserving a user's unrelated sections). If a WSL
+build regresses even with both keys set, the fallback is a managed keep-alive that holds a session open in
+the distro; the native `.wslconfig` keys are tried first.
+
 Because `.wslconfig` is global and requires `wsl --shutdown` to take effect, the WSL2 launch is a
 **list of effects**, not a single argv — the structural reason the unified per-substrate lift
 (`SubstrateProvider.spLaunch`) returns `[HostEffect]`:
 
-1. write `%UserProfile%\.wslconfig` with the `[wsl2]` ceiling, **backing up** any pre-existing file to
-   `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably). The write
-   **merges** (`mergeWslConfig`) our `[wsl2]` ceiling into any existing file rather than replacing it, so a
-   user's other sections and keys are preserved for the duration;
+1. write `%UserProfile%\.wslconfig` with the `[general]`+`[wsl2]` ceiling, **backing up** any pre-existing
+   file to `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably). The
+   write **merges** (`mergeWslConfig`) our managed sections into any existing file rather than replacing the
+   whole file, so a user's unrelated sections and keys are preserved for the duration;
 2. `wsl --shutdown` — note this stops **every** distro on the machine and the shared utility VM, not just
    this one (an unguarded global side-effect, disclosed here rather than silently taken);
 3. register the distro with its `--vhd-size` storage cap. The `swap` size is on the Windows system drive and

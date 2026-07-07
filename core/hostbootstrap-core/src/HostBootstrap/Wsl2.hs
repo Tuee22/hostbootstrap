@@ -6,6 +6,8 @@ module HostBootstrap.Wsl2
     classifyWsl2Readiness,
     normalizeWslText,
     wslListDistros,
+    wslDistroStates,
+    wslRunningDistros,
     wslReportsNoInstalledDistributions,
     wslReportsVirtualizationDisabled,
     wslInstallArgs,
@@ -62,6 +64,26 @@ normalizeWslText =
 wslListDistros :: String -> [String]
 wslListDistros = words . filter (/= '\0')
 
+{- | Parse @wsl --list --verbose@ into @(distro, lowercased-state)@ pairs: strip the
+UTF-16 NUL padding, drop the leading @*@ default marker on each row, and skip the
+@NAME/STATE/VERSION@ header. Distro names preserve case (WSL2 names are
+case-sensitive); the state is lowercased for comparison. Pure, so it is unit-tested.
+-}
+wslDistroStates :: String -> [(String, String)]
+wslDistroStates raw =
+  [ (name, map toLower state)
+  | line <- lines (filter (/= '\0') raw)
+  , (name : state : _) <- [dropStar (words line)]
+  , map toLower name /= "name"
+  ]
+  where
+    dropStar ("*" : rest) = rest
+    dropStar toks = toks
+
+-- | The distro names reported RUNNING by @wsl --list --verbose@. Pure.
+wslRunningDistros :: String -> [String]
+wslRunningDistros = map fst . filter ((== "running") . snd) . wslDistroStates
+
 bcdeditHypervisorLaunchArgs :: [String]
 bcdeditHypervisorLaunchArgs =
   ["/set", "hypervisorlaunchtype", "auto"]
@@ -97,27 +119,32 @@ wslShutdownArgs :: [String]
 wslShutdownArgs =
   ["--shutdown"]
 
--- | Merge a @[wsl2]@ body (the section header line plus its @key=value@ lines,
--- as 'HostBootstrap.Cluster.Cordon.wsl2SizingArgs' emits) into an existing
--- @.wslconfig@, **preserving every other section** the user set. The @.wslconfig@
--- is a /global/ user file, so a full replace would clobber a user's @[experimental]@
--- / @[user]@ / @[network]@ blocks; this drops only the old @[wsl2]@ section (its
--- header and keys up to the next section header) and appends the new one. Pure, so
--- the never-clobber-user-state merge is unit-tested. Idempotent: re-merging a body
--- into a file that already carries our @[wsl2]@ replaces it in place.
+-- | Merge the demo-managed @.wslconfig@ body (as
+-- 'HostBootstrap.Cluster.Cordon.wsl2SizingArgs' emits — now @[general]@ +
+-- @[wsl2]@) into an existing @.wslconfig@, **preserving every other section** the
+-- user set. The managed sections are exactly those the @body@ declares, so the
+-- merge drops each old managed section (its header and keys up to the next section
+-- header) and appends the new body; a user's @[experimental]@ / @[user]@ /
+-- @[network]@ blocks survive untouched. The @.wslconfig@ is a /global/ user file,
+-- so the whole file is backed up on first write and restored on teardown. Pure, so
+-- the never-clobber-other-sections merge is unit-tested. Idempotent: re-merging a
+-- body into a file that already carries our sections replaces them in place.
 mergeWslConfig :: String -> [String] -> String
 mergeWslConfig existing body =
-  let kept = dropWsl2Section (lines existing)
+  let managed = [sectionName l | l <- body, isSectionHeader l]
+      kept = dropManaged managed (lines existing)
       keptTrimmed = reverse (dropWhile blank (reverse kept))
       separator = if null keptTrimmed then [] else keptTrimmed ++ [""]
    in unlines (separator ++ body)
   where
     blank = all isSpace
-    dropWsl2Section [] = []
-    dropWsl2Section (l : ls)
-      | isSectionHeader l && sectionName l == "wsl2" =
-          dropWsl2Section (dropWhile (not . isSectionHeader) ls)
-      | otherwise = l : dropWsl2Section ls
+    dropManaged managed = go
+      where
+        go [] = []
+        go (l : ls)
+          | isSectionHeader l && sectionName l `elem` managed =
+              go (dropWhile (not . isSectionHeader) ls)
+          | otherwise = l : go ls
     isSectionHeader s = case trim s of
       ('[' : rest) -> not (null rest) && last (trim s) == ']'
       _ -> False

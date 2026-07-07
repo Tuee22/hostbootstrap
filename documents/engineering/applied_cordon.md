@@ -118,7 +118,10 @@ Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the
 So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all from the one
 `parseQuantity`; `swap` is sized to the memory budget for OOM headroom), and the WSL2 launch is a
 *list* of effects: write `.wslconfig` (backing up any existing file), `wsl --shutdown` to apply it, then
-register the distro. Because the file is global, teardown restores the backed-up `.wslconfig`. This is a
+register the distro. The body also carries `[wsl2] vmIdleTimeout=-1` plus `[general] instanceIdleTimeout=-1` —
+the latter keeps the distro *instance* (not just the shared utility VM) alive after `project up` returns, so
+the in-VM kind cluster does not idle-stop; `mergeWslConfig` manages both sections. Because the file is global,
+teardown restores the backed-up `.wslconfig`. This is a
 weaker guarantee than a hard per-VM cap and the launch is a two-step write-then-shutdown rather than a
 single sized argv — the unified `spLaunch` effect list (one pure lift per substrate) models exactly that
 difference. See [wsl2](wsl2.md) for the provider detail.

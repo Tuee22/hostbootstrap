@@ -119,7 +119,7 @@ launchCases =
             @?= Right
                 [ MergeWslConfig
                     "C:\\Users\\me\\.wslconfig"
-                    ["[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
+                    ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
                 , RunHostTool Wsl ["--shutdown"]
                 , RunHostTool
                     Wsl
@@ -177,6 +177,14 @@ probeCases =
         spWait apple @?= WaitProbe Lima ["shell", "demo-vm", "--", "true"]
         spWait linux @?= WaitProbe Incus ["exec", "demo-vm", "--", "true"]
         spWait windows @?= WaitProbe Wsl ["-d", "demo-vm", "--", "true"]
+    , testCase "reconcile-cordon: Nothing for Lima/Incus, a running-probe + guarded shutdown for WSL2" $ do
+        spReconcileCordon apple @?= Nothing
+        spReconcileCordon linux @?= Nothing
+        spReconcileCordon windows
+            @?= Just
+                ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember
+                , [RunHostTool Wsl ["--shutdown"]]
+                )
     ]
 
 interpreterCases :: [TestTree]
@@ -186,6 +194,9 @@ interpreterCases =
     , testCase "membersOf WslQuietMember strips NULs and splits on whitespace" $
         assertBool "demo-vm is a member" $
             "demo-vm" `elem` membersOf WslQuietMember "Ubuntu-24.04\0\r\ndemo-vm\0\r\n"
+    , testCase "membersOf WslRunningMember returns only the Running distros (skips header + Stopped)" $
+        membersOf WslRunningMember "  NAME  STATE  VERSION\n* demo-vm  Running  2\nother  Stopped  2\n"
+            @?= ["demo-vm"]
     , testCase "stageFileEffects copies to the guest via limactl on Lima (removed after)" $
         stageFileEffects (LimaFileTransfer (LimaVM "demo-vm")) "src.tgz" "/tmp/x.tgz"
             @?= StagedFile [RunHostTool Lima ["copy", "src.tgz", "demo-vm:/tmp/x.tgz"]] "/tmp/x.tgz" True

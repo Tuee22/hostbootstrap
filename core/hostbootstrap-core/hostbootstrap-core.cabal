@@ -27,6 +27,8 @@ library
       HostBootstrap.Command
       HostBootstrap.HostTool
       HostBootstrap.HostConfig
+      HostBootstrap.Readiness
+      HostBootstrap.Readiness.Internal
       HostBootstrap.HostPrereqs
       HostBootstrap.Substrate
       HostBootstrap.Substrate.Provider
@@ -91,6 +93,7 @@ test-suite hostbootstrap-core-test
   main-is: Spec.hs
   other-modules:
       Fixture
+      ReadinessSpec
       CLISpec
       SubstrateSpec
       HostToolSpec

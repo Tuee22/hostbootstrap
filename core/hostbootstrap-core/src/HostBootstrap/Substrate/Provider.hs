@@ -95,6 +95,8 @@ data Membership
       LinesMember
     | -- | the name is a whitespace token of the NUL-stripped output (@wsl --list --quiet@)
       WslQuietMember
+    | -- | the name is a RUNNING distro per @wsl --list --verbose@ (the STATE column)
+      WslRunningMember
     deriving (Eq, Show)
 
 {- | An idempotency probe: list with @tool args@, then test the VM id against the
@@ -154,6 +156,11 @@ data SubstrateProvider = SubstrateProvider
     , spExists :: ExistsProbe
     , spLaunch :: ResourceEnvelope -> Either String [HostEffect]
     , spStartExisting :: [HostEffect]
+    , -- | @Nothing@ where the cordon is baked into the VM at create (Lima/Incus,
+      -- which never idle-stop). @Just@ for WSL2, whose cordon is the GLOBAL
+      -- @.wslconfig@ that only takes effect on a utility-VM restart: a running-state
+      -- probe plus the effects to run when the distro is STOPPED (safe to restart).
+      spReconcileCordon :: Maybe (ExistsProbe, [HostEffect])
     , spWait :: WaitProbe
     , spTransfer :: FileTransfer
     , spStop :: [HostEffect]
@@ -184,6 +191,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                     sizing <- limaSizingArgs env
                     pure [RunHostTool Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"]))]
                 , spStartExisting = [RunHostTool Lima ["start", limaName vm]]
+                , spReconcileCordon = Nothing
                 , spWait = WaitProbe Lima (Lima.shellVMArgs vm ["true"])
                 , spTransfer = LimaFileTransfer vm
                 , spStop = [RunHostTool Lima (Lima.stopVMArgs vm)]
@@ -201,6 +209,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                     sizing <- incusSizingArgs env
                     pure [RunHostTool Incus (createVMArgs vm (concatMap toLaunchFlag sizing))]
                 , spStartExisting = [RunHostTool Incus (startVMArgs vm)]
+                , spReconcileCordon = Nothing
                 , spWait = WaitProbe Incus (execVMArgs vm ["true"])
                 , spTransfer = IncusFileTransfer vm
                 , spStop = [RunHostTool Incus (stopVMArgs vm)]
@@ -228,6 +237,15 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , -- WSL2 has no explicit "start"; the readiness probe (@wsl -d … true@)
                   -- boots the distro on demand.
                   spStartExisting = []
+                , -- Apply the global @.wslconfig@ cordon on reconcile only when the
+                  -- distro is STOPPED (a running distro already booted with it live):
+                  -- probe the running state, and if stopped run @wsl --shutdown@ so the
+                  -- utility VM re-reads @vmIdleTimeout=-1@ on its next cold boot.
+                  spReconcileCordon =
+                    Just
+                        ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember
+                        , [RunHostTool Wsl Wsl2.wslShutdownArgs]
+                        )
                 , spWait = WaitProbe Wsl (Wsl2.wslExecArgs distro ["true"])
                 , spTransfer = Wsl2MountTransfer vm
                 , -- @project down@ terminates the distro AND restores the global
@@ -254,6 +272,7 @@ selectSubstrateProvider sub h = case substrateName sub of
 membersOf :: Membership -> String -> [String]
 membersOf LinesMember = lines
 membersOf WslQuietMember = Wsl2.wslListDistros
+membersOf WslRunningMember = Wsl2.wslRunningDistros
 
 {- | Plan one host→guest file transfer (pure). Lima/Incus push to @dst@; WSL2 reads
 @src@ in place through its @/mnt@ drive mount, so it emits no host effect.

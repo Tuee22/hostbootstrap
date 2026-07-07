@@ -230,9 +230,11 @@ def test_windows_exec_project_binary_exits_with_child_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
+    cwds: list[Path] = []
 
-    def _fake_run(argv: list[str], *, check: bool) -> SimpleNamespace:
+    def _fake_run(argv: list[str], *, cwd: Path, check: bool) -> SimpleNamespace:
         calls.append(argv)
+        cwds.append(cwd)
         assert check is False
         return SimpleNamespace(returncode=17)
 
@@ -240,10 +242,26 @@ def test_windows_exec_project_binary_exits_with_child_status(
     monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
 
     with pytest.raises(SystemExit) as exc:
-        bootstrap._exec_project_binary(("demo.exe", "project", "up"))
+        bootstrap._exec_project_binary(("demo.exe", "project", "up"), Path("/proj"))
 
     assert exc.value.code == 17
     assert calls == [["demo.exe", "project", "up"]]
+    assert cwds == [Path("/proj")]
+
+
+def test_posix_exec_project_binary_rehomes_to_project_root_then_execs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chdirs: list[Path] = []
+    execs: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(bootstrap.os, "name", "posix")
+    monkeypatch.setattr(bootstrap.os, "chdir", lambda p: chdirs.append(p))
+    monkeypatch.setattr(bootstrap.os, "execv", lambda exe, argv: execs.append((exe, argv)))
+
+    bootstrap._exec_project_binary(("/abs/demo", "project", "up"), Path("/proj"))
+
+    assert chdirs == [Path("/proj")]
+    assert execs == [("/abs/demo", ["/abs/demo", "project", "up"])]
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +282,7 @@ def _patch_seams(
         doctored.append(detected)
         return bootstrap.prereqs.DoctorResult(detected, ("ok",))
 
-    def _fake_exec_project_binary(argv: tuple[str, ...]) -> None:
+    def _fake_exec_project_binary(argv: tuple[str, ...], project_root: Path) -> None:
         execed.append(list(argv))
 
     monkeypatch.setattr(bootstrap.prereqs, "run_doctor", _fake_doctor)

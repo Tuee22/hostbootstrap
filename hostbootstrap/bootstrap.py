@@ -307,11 +307,16 @@ async def bootstrap(
     """Build the project binary host-native, then ``exec`` it with ``args``."""
     await build_binary(spec, project_root=project_root)
     argv = exec_argv(spec, project_root, args)
-    _exec_project_binary(argv)
+    _exec_project_binary(argv, project_root)
 
 
-def _exec_project_binary(argv: tuple[str, ...]) -> None:
+def _exec_project_binary(argv: tuple[str, ...], project_root: Path) -> None:
+    # Run the binary with cwd = the project home so its cwd is deterministic on
+    # every substrate, regardless of where the caller invoked ``hostbootstrap``.
+    # ``argv[0]`` is absolute (``binary_path`` of the resolved ``project_root``),
+    # so the POSIX ``os.chdir``-before-``os.execv`` cannot break the exec.
     if os.name == "nt":
-        completed = subprocess.run(list(argv), check=False)
+        completed = subprocess.run(list(argv), cwd=project_root, check=False)
         raise SystemExit(completed.returncode)
+    os.chdir(project_root)
     os.execv(argv[0], list(argv))  # pragma: no cover

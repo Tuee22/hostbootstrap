@@ -23,7 +23,6 @@ module HostBootstrap.Cluster.Lifecycle
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -36,6 +35,7 @@ import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl))
+import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
 import HostBootstrap.Substrate (isLinux)
 import System.Directory (doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..), die)
@@ -224,24 +224,16 @@ clusterHealthyFromProbe _ = False
 -- host is tolerated. Fail-closed: if the nodes never report Ready the step dies so
 -- a broken cluster is loud rather than racing the first apply.
 waitNodesReady :: HostConfig -> ClusterPlan -> IO ()
-waitNodesReady cfg plan = go nodeReadyAttempts
+waitNodesReady cfg plan = do
+  outcome <- pollUntilReady nodePoll lbl nodeProbe cfg
+  case outcome of
+    Right () -> putStrLn ("cluster up: nodes Ready for " ++ clusterName plan)
+    Left _ -> die (lbl ++ " did not reach Ready in time")
   where
-    nodeReadyAttempts :: Int
-    nodeReadyAttempts = 10
-    go 0 =
-      die
-        ( "cluster up: nodes for "
-            ++ clusterName plan
-            ++ " did not reach Ready in time"
-        )
-    go n = do
-      result <- runTool cfg Kubectl ["wait", "--for=condition=Ready", "node", "--all", "--timeout=30s"]
-      case result of
-        Right (ExitSuccess, _, _) ->
-          putStrLn ("cluster up: nodes Ready for " ++ clusterName plan)
-        _ -> do
-          threadDelay 3000000
-          go (n - 1)
+    lbl = "cluster up: nodes for " ++ clusterName plan
+    nodeProbe c = classify <$> runTool c Kubectl ["wait", "--for=condition=Ready", "node", "--all", "--timeout=30s"]
+    classify (Right (ExitSuccess, _, _)) = ProbeReady ()
+    classify _ = NotReady
 
 -- | Deploy the project's Helm chart if one is present. A project ships its chart
 -- at @./chart@ (relative to the directory the lifecycle runs in — the project root

@@ -164,9 +164,9 @@ sizingCases =
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],
-    testCase "wsl2 sizing emits the .wslconfig [wsl2] ceiling with swap + vmIdleTimeout (no vhdx-size key)" $
+    testCase "wsl2 sizing emits the .wslconfig [general]+[wsl2] ceiling with swap + both idle timeouts (no vhdx-size key)" $
       wsl2SizingArgs demoResources
-        @?= Right ["[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=-1"],
+        @?= Right ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=-1"],
     testCase "applied Linux cordon caps the control-plane with 2x swap headroom" $
       kindNodeCordonArgs "demo-test-case1" demoResources
         @?= Right
