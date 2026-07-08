@@ -95,6 +95,28 @@ carries its own `demo/cabal.project`. The root also carries `docker/`, `document
   The sentinel is a guardrail for one supported suite entry point, not a claim that `-k` or other
   forwarded pytest filters are disabled.
 
+## Running tests on Windows
+
+The fast suites run foreground on every platform and need no special handling:
+`poetry run python -m hostbootstrap.test_all` and `cabal test` finish well within the tool timeout —
+run them foreground and iterate normally, on Windows as elsewhere.
+
+The **long demo gate** (`hostbootstrap run -- test run all` and `project up`, ~25–50 min) is different
+**on Windows only**. Launched as a naive `run_in_background` shell it is a descendant of `claude.exe`
+and gets force-killed mid-run by the harness's own reaper (`taskkill /PID <pid> /T /F`). To run it
+durably on Windows:
+
+- launch it out of `claude.exe`'s process tree with
+  [scripts/Start-DurableRun.ps1](scripts/Start-DurableRun.ps1), then poll the printed `<label>.exit`
+  sentinel with the `ScheduleWakeup` tool;
+- **never** launch the gate as a naive `run_in_background`, and never use a `run_in_background`
+  sleep-loop "waiter" (the waiter is itself reaped and produces false "killed" alarms).
+
+A `PreToolUse` guard ([scripts/hooks/guard-durable-run.ps1](scripts/hooks/guard-durable-run.ps1))
+enforces this on Windows and no-ops on macOS/Linux. **On macOS/Linux, run the gate normally** — none of
+this applies. Full mechanism and root cause:
+[documents/engineering/durable_windows_runs.md](documents/engineering/durable_windows_runs.md).
+
 ## Base image: rebuild → republish → pull
 
 The published `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the **source of
