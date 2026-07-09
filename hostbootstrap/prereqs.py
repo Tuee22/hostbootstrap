@@ -6,15 +6,15 @@ GHC, WSL2) is ensured by Haskell ``ensure`` reconcilers. ``run_doctor``
 dispatches by the detected :class:`Substrate` alone — there is no project model
 to consult.
 
-Per ``documents/engineering/prerequisites.md`` the minimums are:
+Per ``documents/engineering/prerequisites.md`` the minimums are the **pre-binary
+build floor only** — the wrapper asserts nothing beyond what building the project
+binary needs, so the ``run`` floor equals the ``build`` floor on every substrate.
+Runtime host preconditions once asserted here — a usable ``/dev/kvm`` for the
+nested VM providers, and the ``linux-gpu`` NVIDIA container runtime — are now owned
+by the binary's ``ensure`` logic (``ensure incus``'s KVM self-heal and
+``ensure cuda``), per ``documents/architecture/python_haskell_boundary.md``.
 
-* **Linux runtime/provider gate** — Ubuntu 24.04 + passwordless sudo + hardware
-  virtualization (a usable ``/dev/kvm``, which the nested VM providers need);
-  ``linux-gpu`` additionally verifies the NVIDIA container runtime is registered
-  with Docker.
-* **Linux build-only gate** — Ubuntu 24.04 + passwordless sudo. Building a
-  host-native binary inside an already-provisioned VM does not require nested
-  virtualization.
+* **Linux** — Ubuntu 24.04 + passwordless sudo.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
 * **Windows** — winget (a required precondition, used by ``ensure cudawin``; the
   GHC/Cabal toolchain is PowerShell-bootstrapped, not winget-installed) and Windows
@@ -114,50 +114,10 @@ def _check_homebrew() -> None:
         raise PrereqError("Homebrew is required on apple-silicon. Install from https://brew.sh.")
 
 
-def _check_nvidia_runtime() -> None:
-    if not _have("nvidia-smi"):
-        raise PrereqError("nvidia-smi not found; install the NVIDIA driver")
-    if not _have("docker"):
-        return
-    try:
-        result = subprocess.run(
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise PrereqError(f"docker info failed: {exc}") from exc
-    if "nvidia" not in result.stdout:
-        raise PrereqError(
-            "NVIDIA container toolkit is not registered with Docker. "
-            "Install nvidia-container-toolkit and re-configure dockerd."
-        )
-
-
 def _check_winget() -> None:
     if not _have("winget"):
         raise PrereqError(
             "winget is required on Windows. Install App Installer from Microsoft Store, then re-run."
-        )
-
-
-def _check_hardware_virtualization() -> None:
-    """Linux nested-VM providers (incus) require KVM: a usable ``/dev/kvm`` backed
-    by CPU virtualization extensions (Intel VT-x / AMD-V). A host without it passes
-    every other check but fails deep inside VM bring-up, so assert it up front."""
-    kvm = Path("/dev/kvm")
-    if not kvm.exists():
-        raise PrereqError(
-            "/dev/kvm not found; the nested VM providers require hardware "
-            "virtualization (Intel VT-x / AMD-V) enabled in firmware with the kvm "
-            "kernel module loaded."
-        )
-    if not os.access(kvm, os.R_OK | os.W_OK):
-        raise PrereqError(
-            "/dev/kvm is present but not read/write for this user; add your user to "
-            "the 'kvm' group (or grant rw on /dev/kvm) and re-run."
         )
 
 
@@ -183,22 +143,9 @@ async def _run_apple(substrate: Substrate) -> DoctorResult:
 
 
 async def _run_linux(substrate: Substrate) -> DoctorResult:
-    messages: list[str] = []
-    _check_ubuntu_2404()
-    messages.append("Ubuntu 24.04: OK")
-    _check_passwordless_sudo()
-    messages.append("passwordless sudo: OK")
-    _check_hardware_virtualization()
-    messages.append("hardware virtualization (/dev/kvm): OK")
-
-    if substrate.name is SubstrateName.LINUX_GPU:
-        _check_nvidia_runtime()
-        messages.append("NVIDIA container runtime: OK")
-
-    return DoctorResult(substrate=substrate, messages=tuple(messages))
-
-
-async def _run_linux_build(substrate: Substrate) -> DoctorResult:
+    # The runtime floor equals the build floor: KVM (nested VM provider) and the
+    # linux-gpu NVIDIA runtime are runtime host preconditions the binary owns via
+    # its ``ensure`` logic, not pre-binary work the wrapper asserts.
     messages: list[str] = []
     _check_ubuntu_2404()
     messages.append("Ubuntu 24.04: OK")
@@ -222,14 +169,6 @@ async def run_doctor(substrate: Substrate) -> DoctorResult:
     if substrate.is_windows:
         return await _run_windows(substrate)
     return await _run_linux(substrate)
-
-
-async def run_build_doctor(substrate: Substrate) -> DoctorResult:
-    if substrate.name is SubstrateName.APPLE_SILICON:
-        return await _run_apple(substrate)
-    if substrate.is_windows:
-        return await _run_windows(substrate)
-    return await _run_linux_build(substrate)
 
 
 def run_doctor_sync(substrate: Substrate) -> DoctorResult:

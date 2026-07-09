@@ -27,8 +27,8 @@ These surfaces are intentionally present and are not cleanup obligations.
 
 - **`hostbootstrap/prereqs.py`** — the Python host-prerequisite checks retained for the pre-binary
   bootstrapper. The fail-fast host minimums are the irreducible pre-binary subset (Linux: Ubuntu 24.04 +
-  passwordless sudo + hardware virtualization (Intel VT-x / AMD-V plus a usable `/dev/kvm`), `linux-gpu`
-  additionally the NVIDIA container runtime; Apple: passwordless sudo +
+  passwordless sudo — one floor for `build`/`doctor`/`run`, with `/dev/kvm` and the `linux-gpu` NVIDIA
+  container runtime owned by the binary's `ensure incus` / `ensure cuda`; Apple: passwordless sudo +
   Xcode CLT + Homebrew), dispatched by substrate alone. Richer host logic lives in Haskell
   `HostBootstrap.HostPrereqs` plus the `ensure` reconcilers.
 - **Demo VM/provider chain-step IO** (`runVmEnsure` / `runVmUp` / `runVmBootstrap` /

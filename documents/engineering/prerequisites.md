@@ -25,10 +25,11 @@
 
 The Python layer runs *before any project binary exists*, so it can only depend on the host shell
 and a handful of system tools. Its job is to assert the host is bootstrappable, ensure the host build
-toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The build-only
-preconditions are slightly narrower than the runtime/provider preconditions: `hostbootstrap build` needs
-only enough to compile the binary, while `hostbootstrap doctor` and `hostbootstrap run` keep the full
-runtime/provider floor. All richer
+toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The split is
+between what the wrapper asserts and what the binary owns: the wrapper asserts only the **pre-binary
+build floor**, which is identical for `hostbootstrap build`, `hostbootstrap doctor`, and `hostbootstrap
+run` on every substrate. Runtime host preconditions (a usable `/dev/kvm`, the `linux-gpu` NVIDIA
+container runtime) are the binary's `ensure` responsibility, not the wrapper's. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
 project binary (or `hostbootstrap-core`'s own bare binary).
 
@@ -39,16 +40,16 @@ The Python bootstrapper asserts, fail-fast:
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
-- **Hardware virtualization for `doctor` / `run`.** Intel VT-x / AMD-V enabled in firmware with a usable
-  `/dev/kvm`, which the nested VM providers (`ensure incus`) need — a KVM-less host would otherwise pass
-  `doctor` and fail only deep inside VM bring-up. `hostbootstrap build` deliberately omits this check
-  because a build-only frame, such as the demo's already-provisioned Lima VM, can compile the binary
-  without nested virtualization.
+Hardware virtualization is **not** a Python minimum. A usable `/dev/kvm` is a runtime precondition the
+binary self-heals in `ensure incus` (loading the `kvm` module if the node is absent, granting the invoking
+user `rw` via `setfacl` if it is present-but-unwritable, and failing fast only when firmware virtualization
+is genuinely disabled) — so `build`, `doctor`, and `run` share one identical Linux floor.
 
-Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions it, starts the daemon,
+Docker itself is **not** a Python minimum on Linux either; `ensure docker` provisions it, starts the daemon,
 grants the invoking user `docker` socket access for future login sessions, applies an immediate socket
 ACL when the current process has not observed refreshed groups yet, and verifies that access.
-GPU specifics (NVIDIA driver, container toolkit) are reconciled by `ensure cuda`, not asserted here.
+GPU specifics (NVIDIA driver, container toolkit, and the container-runtime registration with Docker) are
+reconciled by `ensure cuda`, not asserted here.
 
 ## Apple Silicon Minimums
 
@@ -119,9 +120,10 @@ See [self_update.md](self_update.md).
 
 The fail-fast minimums above are asserted live by the thin bootstrapper's pure-Python `prereqs.py`;
 `HostBootstrap.HostPrereqs` is a **forward-looking mirror** of them as typed checks, dispatched by the
-detected substrate (`HostBootstrap.Substrate`), whose current check set still diverges from the live
-`prereqs.py` (on Linux it gates Docker reachability and omits the `/dev/kvm` check the minimums above
-list). `checkHostMinimums` runs the labelled checks in order and stops at the first failure, returning a
+detected substrate (`HostBootstrap.Substrate`), whose current check set is broader than the live
+`prereqs.py` (on Linux it additionally gates `/dev/kvm` read-write and Docker reachability — runtime
+preconditions the live wrapper now leaves to the binary's `ensure` logic). `checkHostMinimums` runs the
+labelled checks in order and stops at the first failure, returning a
 one-line `PrereqError`. Each check resolves its external tools through the closed `HostTool` enumeration
 to absolute paths (`HostBootstrap.HostTool` / `HostBootstrap.HostConfig`) — no `$PATH`-resolved bare
 command names. Substrate detection and host-tool resolution are owned by `hostbootstrap-core`. The

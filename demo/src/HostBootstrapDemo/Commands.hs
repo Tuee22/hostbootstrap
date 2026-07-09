@@ -1429,6 +1429,7 @@ ensureIncusProvider = do
 
 ensureLinuxIncusVMCapability :: HostConfig -> IO ()
 ensureLinuxIncusVMCapability cfg = do
+    Incus.ensureKvmAccess cfg
     putStrLn "incus ensure: ensuring the VM capability (qemu-system-x86 + ovmf)"
     runOrDie cfg Sudo ["apt-get", "install", "-y", "qemu-system-x86", "ovmf"]
     runOrDie cfg Sudo ["systemctl", "restart", "incus"]

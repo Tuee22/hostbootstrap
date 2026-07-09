@@ -114,8 +114,9 @@ Reduce the Python CLI to the thin bootstrapper and base-image operator surface.
   (`hostbootstrap/resources.py`), refuses below a floor, and applies docker `--memory`/`--cpus` caps plus a
   host-sized `cabal -j` to the base-image build container (a build-phase limit, not a project cordon — § O).
 - `prereqs.py` carries only the residual fail-fast host minimum checks; the Linux minimums are Ubuntu 24.04
-  + passwordless sudo + hardware virtualization (Intel VT-x / AMD-V plus a usable `/dev/kvm`), `linux-gpu`
-  additionally the NVIDIA container runtime.
+  + passwordless sudo (one floor for `build`/`doctor`/`run`). `/dev/kvm` and the `linux-gpu` NVIDIA
+  container runtime are runtime preconditions the binary owns (`ensure incus` / `ensure cuda`), not
+  wrapper checks.
 
 #### Validation
 

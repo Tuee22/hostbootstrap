@@ -14,6 +14,7 @@ module HostBootstrap.Ensure.Incus
     installSteps,
     appleIncusProfile,
     targetIncusAdminUser,
+    ensureKvmAccess,
   )
 where
 
@@ -28,6 +29,7 @@ import HostBootstrap.Ensure
     toolPresent,
   )
 import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostPrereqs (KvmStatus (..), kvmDeviceStatus)
 import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo))
 import HostBootstrap.Substrate
   ( Substrate,
@@ -135,6 +137,65 @@ ensureIncusAdminGroup cfg = do
                 ++ errOut
             )
         Left err -> die ("ensure incus: " ++ err)
+
+-- | Ensure the invoking user can open @/dev/kvm@, the nested-VM providers' gate.
+-- Self-healing (see @development_plan_standards.md § L@), mirroring the @setfacl@
+-- the VM bootstrap performs on the Docker socket: load the @kvm@ kernel module if
+-- the node is absent, and grant the user @rw@ via @setfacl@ if it is present but
+-- unwritable. Fails fast only on the irreducible residue — no @/dev/kvm@ after
+-- @modprobe@ (firmware virtualization disabled), or still unwritable after
+-- @setfacl@. A usable device is a verified no-op. Linux-only; the caller gates on
+-- the substrate.
+ensureKvmAccess :: HostConfig -> IO ()
+ensureKvmAccess cfg = do
+  status <- kvmDeviceStatus
+  case status of
+    KvmOk -> putStrLn "ensure kvm: /dev/kvm read-write (no-op)"
+    KvmAbsent -> do
+      putStrLn "ensure kvm: /dev/kvm absent; loading the kvm kernel module"
+      _ <-
+        runTool
+          cfg
+          Sudo
+          ["sh", "-c", "modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null || modprobe kvm 2>/dev/null || true"]
+      afterModprobe <- kvmDeviceStatus
+      case afterModprobe of
+        KvmAbsent -> die kvmFirmwareResidue
+        _ -> grantKvmReadWrite cfg
+    KvmUnwritable -> grantKvmReadWrite cfg
+
+-- | Grant the invoking user @rw@ on @/dev/kvm@ via @setfacl@, then re-verify.
+-- Root already has @rw@ (so a root euid never reaches an unwritable status and
+-- 'targetIncusAdminUser' returning 'Nothing' just re-verifies).
+grantKvmReadWrite :: HostConfig -> IO ()
+grantKvmReadWrite cfg = do
+  env <- getEnvironment
+  case targetIncusAdminUser env of
+    Nothing -> verifyKvmReadWrite
+    Just user -> do
+      putStrLn ("ensure kvm: granting " ++ user ++ " rw on /dev/kvm via setfacl")
+      result <- runTool cfg Sudo ["setfacl", "-m", "u:" ++ user ++ ":rw", "/dev/kvm"]
+      case result of
+        Right (ExitSuccess, _, _) -> verifyKvmReadWrite
+        Right (ExitFailure n, _, errOut) ->
+          die ("ensure kvm: setfacl on /dev/kvm failed (exit " ++ show n ++ ") " ++ errOut)
+        Left err -> die ("ensure kvm: " ++ err)
+
+verifyKvmReadWrite :: IO ()
+verifyKvmReadWrite = do
+  status <- kvmDeviceStatus
+  case status of
+    KvmOk -> putStrLn "ensure kvm: /dev/kvm read-write"
+    _ -> die kvmUnwritableResidue
+
+kvmFirmwareResidue :: String
+kvmFirmwareResidue =
+  "ensure kvm: /dev/kvm not found after loading the kvm module; enable hardware "
+    ++ "virtualization (Intel VT-x / AMD-V) in firmware and retry."
+
+kvmUnwritableResidue :: String
+kvmUnwritableResidue =
+  "ensure kvm: /dev/kvm still not read/write after setfacl; grant rw on /dev/kvm and retry."
 
 -- | The login user whose future sessions should be allowed to talk to the incus
 -- socket. Prefer @SUDO_USER@ so @sudo hostbootstrap ...@ grants the original

@@ -16,6 +16,10 @@ module HostBootstrap.HostPrereqs
     checkHostMinimums,
     parseOsRelease,
     isUbuntu2404,
+    KvmStatus (..),
+    kvmDeviceStatus,
+    kvmStatusToPrereq,
+    checkKvmDevice,
   )
 where
 
@@ -35,6 +39,8 @@ import HostBootstrap.Substrate
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 #ifndef mingw32_HOST_OS
+import System.Directory (doesPathExist)
+import System.Posix.Files (fileAccess)
 import System.Posix.User (getEffectiveUserID)
 #endif
 import System.Process (readProcessWithExitCode)
@@ -66,6 +72,7 @@ checkHostMinimums cfg =
     linuxChecks =
       [ ("Ubuntu 24.04", checkUbuntu2404),
         ("passwordless sudo", checkPasswordlessSudo cfg),
+        ("/dev/kvm read-write", checkKvmDevice),
         ("Docker daemon reachable", checkDockerReachable cfg)
       ]
     windowsChecks =
@@ -191,6 +198,54 @@ checkNvidiaRuntime cfg = case resolveMaybe cfg NvidiaSmi of
                 "NVIDIA container toolkit is not registered with Docker. Install nvidia-container-toolkit and re-configure dockerd."
             )
         Left err -> Left err
+
+-- ---------------------------------------------------------------------------
+-- /dev/kvm (nested-VM provider gate)
+-- ---------------------------------------------------------------------------
+
+-- | The Linux hardware-virtualization device node the nested VM providers open.
+kvmDevicePath :: FilePath
+kvmDevicePath = "/dev/kvm"
+
+-- | Whether @/dev/kvm@ is absent, present-but-unwritable, or usable by the
+-- invoking user. The read/write probe uses @access(2)@ semantics (the real
+-- uid/gid), so it reflects the invoking user rather than root.
+data KvmStatus = KvmOk | KvmAbsent | KvmUnwritable
+  deriving (Eq, Show)
+
+-- | Probe @/dev/kvm@. Windows never boots the Linux nested-VM providers, so this
+-- reports 'KvmAbsent' there and is never reached (the Windows minimums omit it).
+kvmDeviceStatus :: IO KvmStatus
+#ifdef mingw32_HOST_OS
+kvmDeviceStatus = pure KvmAbsent
+#else
+kvmDeviceStatus = do
+  present <- doesPathExist kvmDevicePath
+  if not present
+    then pure KvmAbsent
+    else do
+      readWrite <- fileAccess kvmDevicePath True True False
+      pure (if readWrite then KvmOk else KvmUnwritable)
+#endif
+
+-- | Map a 'KvmStatus' to the fail-fast host-minimum result. Pure, so the message
+-- mapping is unit-tested without a real device node.
+kvmStatusToPrereq :: KvmStatus -> Either PrereqError ()
+kvmStatusToPrereq KvmOk = Right ()
+kvmStatusToPrereq KvmAbsent =
+  Left
+    ( PrereqError
+        "/dev/kvm not found; the nested VM providers require hardware virtualization (Intel VT-x / AMD-V) enabled in firmware with the kvm kernel module loaded."
+    )
+kvmStatusToPrereq KvmUnwritable =
+  Left
+    ( PrereqError
+        "/dev/kvm is present but not read/write for this user; add your user to the 'kvm' group (or grant rw on /dev/kvm) and re-run."
+    )
+
+-- | Fail-fast check that @/dev/kvm@ is usable by the invoking user.
+checkKvmDevice :: IO (Either PrereqError ())
+checkKvmDevice = kvmStatusToPrereq <$> kvmDeviceStatus
 
 -- ---------------------------------------------------------------------------
 -- /etc/os-release parsing (pure)

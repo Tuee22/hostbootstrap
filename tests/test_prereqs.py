@@ -141,41 +141,6 @@ def test_homebrew_check(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_homebrew()
 
 
-def test_nvidia_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd in {"nvidia-smi", "docker"})
-    monkeypatch.setattr(
-        prereqs.subprocess,
-        "run",
-        lambda cmd, **kwargs: _completed(cmd, stdout='{"runc":{},"nvidia":{}}\n'),
-    )
-    prereqs._check_nvidia_runtime()
-
-    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="nvidia-smi"):
-        prereqs._check_nvidia_runtime()
-
-    # nvidia-smi present but docker absent: short-circuit, no runtime probe.
-    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "nvidia-smi")
-    prereqs._check_nvidia_runtime()
-
-    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd in {"nvidia-smi", "docker"})
-
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("noexec")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
-    with pytest.raises(prereqs.PrereqError, match="docker info failed"):
-        prereqs._check_nvidia_runtime()
-
-    monkeypatch.setattr(
-        prereqs.subprocess,
-        "run",
-        lambda cmd, **kwargs: _completed(cmd, stdout='{"runc":{}}\n'),
-    )
-    with pytest.raises(prereqs.PrereqError, match="NVIDIA container toolkit"):
-        prereqs._check_nvidia_runtime()
-
-
 def test_winget_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "winget")
     prereqs._check_winget()
@@ -194,95 +159,22 @@ def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_powershell()
 
 
-def test_hardware_virtualization_check(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    kvm = tmp_path / "kvm"
-    kvm.write_bytes(b"")
-    monkeypatch.setattr(
-        prereqs, "Path", lambda value: kvm if value == "/dev/kvm" else Path(value)
-    )
-
-    # present + read/write -> OK
-    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: True)
-    prereqs._check_hardware_virtualization()
-
-    # present but not accessible -> group-membership hint
-    monkeypatch.setattr(prereqs.os, "access", lambda _p, _mode: False)
-    with pytest.raises(prereqs.PrereqError, match="not read/write"):
-        prereqs._check_hardware_virtualization()
-
-    # absent -> firmware/kvm-module hint
-    missing = tmp_path / "absent"
-    monkeypatch.setattr(
-        prereqs, "Path", lambda value: missing if value == "/dev/kvm" else Path(value)
-    )
-    with pytest.raises(prereqs.PrereqError, match="/dev/kvm not found"):
-        prereqs._check_hardware_virtualization()
-
-
-async def test_run_linux_cpu_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_linux_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The Linux floor is the build floor on every substrate: only Ubuntu +
+    # passwordless sudo. KVM and the linux-gpu NVIDIA runtime moved to the
+    # binary's ``ensure`` logic, so there is no CPU/GPU distinction here.
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
-    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
 
-    result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_CPU, "amd64"))
-
-    assert calls == ["ubuntu", "sudo", "kvm"]
-    assert result.messages == (
-        "Ubuntu 24.04: OK",
-        "passwordless sudo: OK",
-        "hardware virtualization (/dev/kvm): OK",
-    )
-
-
-async def test_run_linux_build_minimums_omit_kvm(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
-    monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
-    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
-
-    result = await prereqs.run_build_doctor(Substrate(SubstrateName.LINUX_CPU, "amd64"))
-
-    assert calls == ["ubuntu", "sudo"]
-    assert result.messages == (
-        "Ubuntu 24.04: OK",
-        "passwordless sudo: OK",
-    )
-
-
-async def test_run_linux_gpu_build_minimums_omit_kvm_and_nvidia(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
-    monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
-    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
-
-    result = await prereqs.run_build_doctor(Substrate(SubstrateName.LINUX_GPU, "amd64"))
-
-    assert calls == ["ubuntu", "sudo"]
-    assert result.messages == (
-        "Ubuntu 24.04: OK",
-        "passwordless sudo: OK",
-    )
-
-
-async def test_run_linux_gpu_checks_nvidia_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
-    monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
-    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
-    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
-
-    result = await prereqs._run_linux(Substrate(SubstrateName.LINUX_GPU, "amd64"))
-
-    assert calls == ["ubuntu", "sudo", "kvm", "nvidia"]
-    assert "NVIDIA container runtime: OK" in result.messages
+    for name in (SubstrateName.LINUX_CPU, SubstrateName.LINUX_GPU):
+        calls.clear()
+        result = await prereqs._run_linux(Substrate(name, "amd64"))
+        assert calls == ["ubuntu", "sudo"]
+        assert result.messages == (
+            "Ubuntu 24.04: OK",
+            "passwordless sudo: OK",
+        )
 
 
 async def test_run_apple_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,41 +233,6 @@ async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatc
     assert (await prereqs.run_doctor(apple)).messages == ("apple",)
     assert (await prereqs.run_doctor(windows)).messages == ("windows",)
     assert calls == ["linux", "apple", "windows"]
-
-
-async def test_run_build_doctor_dispatches_by_substrate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    linux = Substrate(SubstrateName.LINUX_CPU, "amd64")
-    apple = Substrate(SubstrateName.APPLE_SILICON, "arm64")
-    windows = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
-    calls: list[str] = []
-
-    async def _linux_build(_sub: Substrate) -> prereqs.DoctorResult:
-        calls.append("linux-build")
-        return prereqs.DoctorResult(linux, ("linux-build",))
-
-    async def _linux_runtime(_sub: Substrate) -> prereqs.DoctorResult:
-        calls.append("linux-runtime")
-        return prereqs.DoctorResult(linux, ("linux-runtime",))
-
-    async def _apple(_sub: Substrate) -> prereqs.DoctorResult:
-        calls.append("apple")
-        return prereqs.DoctorResult(apple, ("apple",))
-
-    async def _windows(_sub: Substrate) -> prereqs.DoctorResult:
-        calls.append("windows")
-        return prereqs.DoctorResult(windows, ("windows",))
-
-    monkeypatch.setattr(prereqs, "_run_linux_build", _linux_build)
-    monkeypatch.setattr(prereqs, "_run_linux", _linux_runtime)
-    monkeypatch.setattr(prereqs, "_run_apple", _apple)
-    monkeypatch.setattr(prereqs, "_run_windows", _windows)
-
-    assert (await prereqs.run_build_doctor(linux)).messages == ("linux-build",)
-    assert (await prereqs.run_build_doctor(apple)).messages == ("apple",)
-    assert (await prereqs.run_build_doctor(windows)).messages == ("windows",)
-    assert calls == ["linux-build", "apple", "windows"]
 
 
 def test_run_doctor_sync_wraps_async(monkeypatch: pytest.MonkeyPatch) -> None:

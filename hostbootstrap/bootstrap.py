@@ -246,11 +246,10 @@ def _toolchain_env() -> dict[str, str]:
 
 
 async def _assert_minimums(sub: Substrate) -> None:
+    # One floor for both `run` and `build`: the wrapper asserts only the
+    # pre-binary build minimums (see prereqs._run_linux); runtime host
+    # preconditions are the binary's `ensure` responsibility.
     await prereqs.run_doctor(sub)
-
-
-async def _assert_build_minimums(sub: Substrate) -> None:
-    await prereqs.run_build_doctor(sub)
 
 
 async def _already_present(probe: tuple[str, ...]) -> bool:
@@ -296,7 +295,7 @@ async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
 async def build_binary(spec: ProjectBuildSpec, *, project_root: Path) -> Path:
     """Run the pre-binary bootstrap (development_plan_standards.md §§ M, N) and build the binary host-native."""
     sub = substrate.detect()
-    await _assert_build_minimums(sub)
+    await _assert_minimums(sub)
     await _ensure_toolchain(sub)
     await _build_native(spec, project_root=project_root)
     return binary_path(spec, project_root)
