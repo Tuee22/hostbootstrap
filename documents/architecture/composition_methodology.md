@@ -218,6 +218,13 @@ declares request/result topics and artifact buckets — the same algebra, differ
 in the one chain. A webservice/SPA is the same shape: a serving role whose API and UI are generated from
 typed Dhall (see [dhall_generation](dhall_generation.md)).
 
+The planned accelerator demo is the smallest hardware-backed instance of that runtime shape: the web
+service accepts CBOR WebSocket connections from a project-binary daemon, dispatches an asynchronous
+`Float` add request, and receives the result from a generated substrate-specific worker. Apple Silicon and
+Windows GPU place that daemon on the host; Linux CPU/GPU place it in the cluster. The representation is
+still the chain and context graph, not a second hidden accelerator path; see
+[accelerator_daemon](../engineering/accelerator_daemon.md).
+
 ## Single Representation: The Chain Is The Representation
 
 A project has exactly **one** representation: the `[Step]` chain (§ W). Deployment, teardown, and the
@@ -298,6 +305,10 @@ probe — into the correct frame).
 
 This document is the canonical statement of the model the validated build
 ships.
+
+The accelerator-daemon generalization is active plan work. It will extend the model with a post-cluster
+daemon startup/connection step and direct Linux GPU `nvkind` topology, and its closure requires real
+integration tests plus browser e2e tests that prove the UI add operation reaches the daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `test.dhall`, generates each run's `<project>.dhall` via `psTestConfig` (reusing `psInit`),

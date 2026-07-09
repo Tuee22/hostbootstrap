@@ -40,7 +40,7 @@
 |-------|--------------|------------------|
 | `OneShot` | Build-if-needed, then `docker run --rm [-it] [mounts]` — a single container invocation that exits. | Budget-capped: the container runs within the project ceiling. |
 | `HostNative` | Host-native build (into `./.build/`) plus a host exec of the resulting binary. | Host process, sliced by the harness budget when run as a case. |
-| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores (message bus + object store), run operationally via `service run` as a leaf-frame pod entrypoint. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
+| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores or a daemon/coordinator channel, run operationally via `service run` as a leaf-frame pod entrypoint or host daemon entrypoint. The planned accelerator demo uses this model for a project-binary daemon that connects to the web service over CBOR WebSocket and forwards work to a substrate-specific JIT worker. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
 | `Cluster` | A kind cluster plus Helm releases — the full orchestrated substrate. | Cordoned per substrate; `fitsBudget` proves the concurrent set fits. |
 
 `OneShot` and `HostNative` differ only in **where the code runs**: `OneShot` runs inside a container
@@ -64,6 +64,10 @@ is run in production and in tests.
   role inside the pod it was deployed into. It **fails fast** unless the active `<project>.dhall` declares
   a service role with a valid variant. The service handler **reads its effective config** and renders it
   (the demo's `Web` handler serves `cfg.message` to the SPA `#message`).
+- A daemon variant is the same leaf-frame shape with a different placement. An in-cluster daemon runs as a
+  pod and receives its config by ConfigMap; a host-resident daemon reads a host sibling config and is
+  started by the host project binary after the web-service ingress exists. It still brings up no VM or
+  cluster; it connects to the coordinator endpoint and serves until stopped by the surrounding lifecycle.
 - Multiple service types are expressed as a Dhall **`ServiceType` ADT**; `service run` resolves the
   declared variant against a **service-handler registry** (each variant maps to one handler) and runs that
   handler. There is **no `service down`** — a service's lifetime is the pod's lifetime, and teardown is
@@ -165,6 +169,11 @@ The behavior described above is implemented. The `service`-command service run-m
 a ConfigMap override, and no `service down`. The harness **drives the real `project up`** under generated
 test configs rather than standing up isolated per-case clusters. The reconciliation that spanned phases
 10, 13, 14, 15, 16, 17, 18, 19, and 20 is closed in the development plan.
+
+The accelerator-daemon generalization is planned and tracked as reopened phase work. It extends the
+`HostDaemon` shape with a host/in-cluster placement matrix, CBOR WebSocket dispatch, and a real
+substrate-specific worker. It is not closed until integration tests build the worker in each lane and a
+browser e2e test proves the UI add operation is served by daemon-returned backend metadata.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. `project init|up|down|destroy` drives the lifecycle; `service run`

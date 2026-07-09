@@ -10,8 +10,8 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-21 are all `Done`. Phases 5, 9, 10, 11, 13, and 16 were reopened `Active` (2026-07-05) for
-> cross-substrate reliability hardening and **closed the same day** by a decoupled Windows/WSL2
+> Note: Phases 0-21 reached `Done`. Phases 5, 9, 10, 11, 13, and 16 were temporarily reopened
+> (2026-07-05) for cross-substrate reliability hardening and **closed the same day** by a decoupled Windows/WSL2
 > `test run all` reporting `6/6 passed` (`REALRUN_EXIT=0`) across both message variants — the node/CNI
 > readiness gate + health-recreate, the metal-vs-in-VM budget-reserve split + swap-headroom cordon, the
 > guaranteed harness teardown + in-VM safety probe, the network/docker readiness polls + crash-recoverable
@@ -62,6 +62,11 @@
 > library consumed through `runHostBootstrapCLI progName projectSpec`. The single-representation rule is part
 > of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
+> Reopened 2026-07-09: phases 2, 3, 5, 13, 15, 16, and 18 are `Active` for the substrate-specific
+> accelerator daemon demo. The planned surfaces are Apple/Windows accelerator host-tool coverage, Apple
+> Metal build-stack ensure, hardened Windows CUDA/clang ensure, Linux GPU direct `nvkind`, daemon context
+> authority, host-daemon lifecycle startup/teardown, CBOR WebSocket daemon runtime, and demo
+> integration/browser e2e tests proving the UI add operation reaches a real JIT-built worker.
 >
 > **Current suite SSoT:** `core 292 + demo 14` static Haskell `testCase` definitions (the 2026-07-05
 > cross-substrate reliability hardening added `Cordon`/`Lifecycle`/`Harness`/`Wsl2`/`Provider` cases — the
@@ -112,9 +117,13 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Wsl2` | 11 | yes | WSL2 (Ubuntu-24.04) VM lifecycle argv on Windows — the incus/lima host-provider VM peer (`install`/`import`/`exec`/`terminate`, distro-guarded) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 | `HostBootstrap.Ensure.Wsl2` | 11 | yes | `ensure wsl2` install-and-verify reconciler for the Windows WSL2 host-provider (the incus/lima peer) |
+| `HostBootstrap.Ensure.AppleMetal` | 3.6 | planned | planned `ensure-apple-metal` reconciler for the Apple Silicon accelerator daemon: visible Metal device, macOS SDK through `xcrun`, and a Swift + Metal compile/run probe |
+| hardened `HostBootstrap.Ensure.CudaWin` | 3.6 | planned | planned hardening of the Windows accelerator build-stack ensure: CUDA Toolkit, MSVC C++ workload, LLVM clang, and CUDA smoke compile |
 | `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-validated end-to-end on Incus/Linux and Apple Silicon |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, with the pure `renderChainPlan` dry-run render and `stepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; end-to-end provisioning is real-run-validated |
+| `HostBootstrap.Accelerator.Protocol` | 18.5 | planned | planned CBOR request/result/failure protocol and request-id correlation for the demo accelerator daemon |
+| `HostBootstrap.Accelerator.Daemon` | 13.17, 18.5 | planned | planned project-binary daemon runtime: JIT source generation, build/cache, worker subprocess supervision, and WebSocket connection loop |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -128,7 +137,9 @@ that resolves through `$PATH`; every invocation reads an absolute path from type
 `ensure` reconciler. On Windows the closed enum adds `Winget` (the Homebrew-analog pre-binary package
 manager), `Nvcc` (CUDA-on-Windows toolchain verification for `ensure cudawin`), `Wsl` (WSL2
 host-provider control), and `Bcdedit` (Windows hypervisor launch reconciliation for `ensure wsl2`);
-`Tart` is no longer a member of the enum.
+`Tart` is no longer a member of the enum. The accelerator reopening adds planned host-tool coverage for
+Apple `swiftc`/`xcrun` and Windows LLVM clang / MSVC host-compiler probes so generated Swift/Metal and CUDA
+workers can be built without bare `$PATH` calls.
 See [development_plan_standards.md § K](development_plan_standards.md).
 
 ## Ensure reconcilers and host applicability
@@ -150,6 +161,8 @@ with a one-line diagnostic and a non-zero exit. See
 | `ensure lima` | `HostBootstrap.Ensure.Lima` | 11.6 | `apple-silicon` (pristine demo VM provider) | fail fast, non-zero |
 | `ensure incus` | `HostBootstrap.Ensure.Incus` | 11 | `apple-silicon` **and** `linux-cpu`/`linux-gpu` (install-and-verify; Colima-backed on Apple, native daemon on Linux) | fail fast, non-zero |
 | `ensure wsl2` | `HostBootstrap.Ensure.Wsl2` | 11 | `windows-cpu`/`windows-gpu` (install-and-verify; WSL2 platform readiness for the incus/lima peer; project VM steps register the project-named Ubuntu-24.04 distro) | fail fast, non-zero |
+| `ensure apple-metal` | planned `HostBootstrap.Ensure.AppleMetal` | 3.6 | `apple-silicon` (accelerator daemon Swift/Metal build stack) | fail fast, non-zero |
+| hardened `ensure cudawin` | `HostBootstrap.Ensure.CudaWin` | 3.6 | `windows-gpu` (accelerator daemon CUDA + MSVC C++ workload + LLVM clang build stack) | fail fast, non-zero |
 
 ## Project-local `<project>.dhall` schema
 
@@ -191,6 +204,8 @@ The runtime authority is:
 | `/usr/local/bin/<project>.dhall` baked in image | project Dockerfiles via `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall` | project container binary during image build | build/code-quality and config-generation authority only |
 | `/usr/local/bin/<project>.dhall` streamed in-place at runtime | parent renders the narrowed projection, streamed on the `docker run` `stdin`; the container entrypoint writes it before dispatch | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test run all`, with topology witnesses (no config bind-mount) |
 | service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
+| host daemon sibling `<project>.dhall` (planned) | host project binary after cluster ingress exists | Apple/Windows accelerator daemon | daemon role context, local-only accelerator ingress endpoint, worker build cache root, and backend identity |
+| in-cluster accelerator daemon `<project>.dhall` (planned) | chart/controller during cluster bring-up | Linux CPU/GPU daemon pod | daemon role context, `ClusterIP` accelerator ingress endpoint, and resource/backend settings |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for
 another project, claims unavailable capabilities, or does not authorize the requested command. Help,
@@ -351,7 +366,9 @@ cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-c
 (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA served by `service run`, and
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that
 inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside a
-managed Linux VM.
+managed Linux VM. The active accelerator reopening extends the demo with an Add UI, CBOR WebSocket
+accelerator ingress, a project-binary daemon, generated native workers, per-substrate integration tests,
+and a browser e2e assertion that the UI result includes daemon-returned backend/artifact metadata.
 
 ## Update rule
 

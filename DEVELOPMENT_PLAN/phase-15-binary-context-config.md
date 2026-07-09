@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened and closed (2026-07-02)** for **in-place child-config delivery** (development_plan_standards
 § U, § X): the `context-init` step still mints each child projection, but the projection is now **streamed
@@ -57,7 +57,24 @@ unit-tested. The schema/loader/gate substrate (Sprints 15.1, 15.2, 15.6) and the
 sprints (15.3, 15.4, 15.5) are `Done`; the effectful wiring of the `context-init` step and the per-frame
 gate into the recursive `project up` apply is owned by phase-16.
 
+**Reopened 2026-07-09 for accelerator daemon contexts.** The accelerator daemon generalization needs a
+daemon-authority context that works both in-cluster and host-native, plus a direct host-backed
+project-container topology for the Linux GPU `nvkind` path.
+
 ## Remaining Work
+
+**Accelerator daemon context work — open.**
+
+- Define daemon-role authority for the accelerator daemon: it may run `service run`/daemon handler work,
+  connect to the web accelerator ingress, and supervise a worker, but it may not run `project up` or cluster
+  lifecycle commands.
+- Support in-cluster daemon configs delivered by ConfigMap for Linux CPU/GPU daemon pods.
+- Support host-resident daemon configs for Apple Silicon and Windows GPU host daemons.
+- Generalize the project-container topology so Linux GPU can represent `host -> project container ->
+  nvkind cluster` without a VM-orchestrator ancestor, while the existing VM-backed runtime container
+  authority remains strict.
+- Add tests that wrong-frame daemon configs fail before side effects and that direct host `docker run` is
+  accepted only for the explicit Linux GPU topology.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
@@ -449,6 +466,39 @@ bind-mount on the container `docker run` (verified: no `-v …hostbootstrap-demo
 superseded build-then-copy/mount surfaces moved from `Pending` to `Removed Surfaces` in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+### Sprint 15.8: Accelerator daemon and direct-container context [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+`core/hostbootstrap-core/test/ContextSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/engineering/accelerator_daemon.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Extend binary-context authority for accelerator daemon placement and the Linux GPU direct-host
+project-container topology.
+
+#### Deliverables
+
+- A daemon context that authorizes the accelerator service handler and worker supervision, not project
+  lifecycle commands.
+- In-cluster daemon config delivery for Linux CPU/GPU daemon pods.
+- Host-resident daemon config delivery for Apple Silicon and Windows GPU host daemons.
+- A context/topology representation for `host -> project container -> nvkind cluster` that does not require
+  a VM parent, while preserving VM ancestry checks for VM-backed runtime containers.
+
+#### Validation
+
+- `ContextSpec` covers daemon command authorization, project-command rejection from daemon contexts, and
+  wrong-frame witness failures.
+- Pure topology tests cover the direct Linux GPU project-container path and the existing VM path.
+- Integration tests prove all daemon placements read the expected config and connect to the web service.
+
+#### Remaining Work
+
+Open until the context constructors, gates, topology tests, and integration checks land.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -458,6 +508,7 @@ superseded build-then-copy/mount surfaces moved from `Pending` to `Removed Surfa
 - `documents/architecture/build_and_run_model.md` - host-native build followed by project-binary config
   initialization when needed.
 - `documents/architecture/composition_methodology.md` - self-reference lift plus explicit local context.
+- `documents/engineering/accelerator_daemon.md` - daemon context authority and direct-container topology.
 
 **Engineering docs to create/update:**
 - `documents/engineering/dhall_topology.md` - local runtime config, generated child configs, and generated

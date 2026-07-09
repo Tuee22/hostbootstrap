@@ -29,3 +29,13 @@ allocator.
 
 The LLVM major version is passed as `LLVM_MAJOR` from the host CLI; the
 Dockerfile contains no apt-cache probing.
+
+## Accelerator Daemon CPU Lane
+
+The planned `linux-cpu` accelerator daemon runs in Kubernetes from the CPU
+hostbootstrap base image and JIT-builds its generated add worker with the
+base-provided `clang++`. It does not run `ensure` inside the pod; missing
+`clang++` is a base-image contract failure. The integration test for this lane
+must build the worker in the pod and drive the demo UI add request through the
+CBOR WebSocket daemon path. See
+[accelerator_daemon](../engineering/accelerator_daemon.md).

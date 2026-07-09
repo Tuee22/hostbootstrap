@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened from Blocked then closed (2026-06-19):** the fixed command surface (phase-16) and the
 binary-context contract (phase-15) it depended on are in place, the `service` command landed in code, and
@@ -51,6 +51,22 @@ green, fourmolu/hlint clean on the demo):
 Real-run-validated (§ C): the demo's live `web` pod serves HTTP 200 via `service run web` on the NodePort
 (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
+**Reopened 2026-07-09 for the accelerator daemon runtime.** The same fixed `service run`/handler registry
+surface should run the accelerator daemon role in host and in-cluster placements, with CBOR WebSocket
+connection management and a supervised JIT worker.
+
+## Remaining Work
+
+**Accelerator daemon runtime — open.**
+
+- Add a daemon/service handler for the accelerator role.
+- Add CBOR request/result/failure codecs and request-id correlation.
+- Add a WebSocket client loop for daemon-to-web connection, reconnect, timeout, and graceful shutdown.
+- Add a worker-supervision seam used by the daemon after the substrate-specific JIT build.
+- Gate `service run accelerator` to daemon/service contexts only, rejecting project lifecycle authority.
+- Validate with codec/unit tests, in-cluster and host-daemon integration tests, and the browser e2e Add
+  workflow.
+
 ## Phase Objective
 
 Provide a generic, fixed `service` command on the core tree so every project binary runs its long-running
@@ -58,6 +74,10 @@ roles uniformly: `service init` / `service schema` / `service run`, dispatched o
 `ServiceType` ADT, gated to a service-role frame, with config delivered by a ConfigMap that overrides the
 image's baked container `<project>.dhall`. There is no `service down` — a service's lifetime is owned by its
 Kubernetes controller and torn down by `project destroy` (§ O, § Y).
+
+For the accelerator reopening, extend that surface with a daemon variant that connects to the web service
+instead of serving HTTP itself. The daemon is still a leaf role: it performs no cluster bring-up and no
+project lifecycle work.
 
 ## Sprints
 
@@ -186,6 +206,40 @@ verb); the chart pod's `args` is `["service", "run", "web"]`. The `web` verb is 
 the full demo lifecycle on the 16 GiB Apple-Silicon host serves HTTP 200 via `service run web` on the
 NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
+### Sprint 18.5: Accelerator daemon runtime over CBOR WebSocket [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/run_models.md`,
+`documents/architecture/binary_context_config.md`, `documents/engineering/accelerator_daemon.md`
+
+#### Objective
+
+Add the accelerator daemon as a long-running service/daemon role that connects to the web server over CBOR
+WebSocket and forwards add requests to a JIT-built worker.
+
+#### Deliverables
+
+- A demo accelerator service handler or daemon handler registered through the fixed service registry.
+- CBOR request/result/failure codecs with request-id correlation.
+- WebSocket client loop with reconnect, timeout, graceful shutdown, and backend/artifact metadata in
+  replies.
+- Worker-supervision seam used by the daemon after Phase 13's substrate-specific JIT build.
+- Gate `service run accelerator` to daemon/service contexts only.
+
+#### Validation
+
+- Unit tests for CBOR codec round trips, invalid payload rejection, request correlation, and no in-process
+  web fallback.
+- Integration tests for in-cluster daemon connection by `ClusterIP` and host daemon connection by
+  local-only `NodePort`.
+- Browser e2e add test asserts the sum and daemon-returned backend/artifact metadata.
+
+#### Remaining Work
+
+Open until the daemon handler, protocol tests, integration tests, and e2e add test land.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -197,6 +251,7 @@ NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 **Engineering docs to create/update:**
 - `documents/engineering/cluster_lifecycle.md` - the chart pod entrypoint `service run` and its config
   delivery.
+- `documents/engineering/accelerator_daemon.md` - CBOR WebSocket daemon runtime and worker supervision.
 
 **Cross-references to add:**
 - `README.md` CLI Surface lists `service`; `system-components.md` adds the `service` command and the

@@ -125,6 +125,21 @@ flavor × arch set.
 * **CUDA (cuda flavor only)** — built on top of the latest
   `nvidia/cuda:*-cudnn-devel-ubuntu24.04` with a manifest for the target arch.
 
+### Accelerator daemon base contract
+
+The planned accelerator daemon uses the published base images directly for in-cluster Linux lanes:
+
+- `linux-cpu` daemon pods run from the CPU base and build the generated C++ worker with the base-provided
+  `clang++`;
+- `linux-gpu` daemon pods run from the CUDA base and build the generated CUDA worker with the
+  base-provided `nvcc`;
+- no in-cluster daemon pod runs `ensure` to install compilers. A missing compiler in the pod is treated as
+  a stale or incorrect base image, not as something the pod remediates at runtime.
+
+Host-resident accelerator lanes are separate from the base-image contract. Apple Silicon ensures the host
+Swift/Metal build stack; Windows GPU ensures the host CUDA/MSVC/clang build stack. See
+[accelerator_daemon.md](accelerator_daemon.md).
+
 See [`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile) for the exact
 instructions. The Dockerfile is **logic-free**: every dynamic value (versions, URLs, arch strings,
 the CUDA base image) arrives as a `--build-arg`, resolved on the host before the build.

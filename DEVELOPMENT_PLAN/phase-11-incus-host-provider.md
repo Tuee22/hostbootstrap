@@ -63,8 +63,8 @@ ceiling applied.
 
 ## Remaining Work
 
-**Reopened 2026-07-05 — provider lifecycle reliability. Code landed + code-check-validated 2026-07-05;
-real-run-gated (§ C) closure pending:**
+**Historical reopening 2026-07-05 — provider lifecycle reliability. Code landed, code-check-validated, and
+real-run-closed (§ C) 2026-07-05:**
 
 - **Network/cloud-init-aware VM-ready probe — landed.** `runVmUp` now runs `waitVMNetwork` after the guest
   agent answers: it lets cloud-init finish if present (`timeout 90 cloud-init status --wait`) then requires

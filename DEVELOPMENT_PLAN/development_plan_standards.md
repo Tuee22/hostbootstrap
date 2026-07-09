@@ -210,7 +210,8 @@ by `hostbootstrap-core`.
 that simply isn't installed.** Each host dependency is an idempotent `ensure` reconciler — a
 host-applicability predicate plus a reconcile action — exposed to projects as library primitives
 (`ensureDocker`, `ensureColima`, `ensureLima`, `ensureCuda`, `ensureCudaWin`, `ensureWsl2`,
-`ensureHomebrew`, `ensureGhc`, `ensureIncus`) and as `ensure-*` step kinds composed into the lift chain. There is no
+`ensureHomebrew`, `ensureGhc`, `ensureIncus`, and planned accelerator build-stack reconcilers such as
+`ensureAppleMetal`) and as `ensure-*` step kinds composed into the lift chain. There is no
 top-level `ensure` command and there are no hidden commands. A reconcile action **installs** the dependency if absent and is a verified no-op if
 present (install-and-verify, not check-only), so an absent-but-installable dependency is **installed,
 never a hard stop**. The **only** hard fail-fast surface in the entire system is the Python wrapper's
@@ -224,7 +225,10 @@ The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
 drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
 GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
-(`daemon-substrate`) contributes via the extension-stream merge (§ T). The `ensure` reconcilers are normally
+(`daemon-substrate`) contributes via the extension-stream merge (§ T). The accelerator-daemon demo keeps
+the same boundary: Apple Silicon and Windows GPU host daemons run host `ensure` for the Swift/Metal or
+CUDA build stack, while Linux CPU/GPU daemon pods do **not** run in-container ensure and instead trust the
+published hostbootstrap base image to contain `clang++` or `nvcc`. The `ensure` reconcilers are normally
 invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs. A provider reconciler reaches a
 **usable** provider, not merely an installed binary — on Linux `ensure incus` also ensures the VM
 capability (machine emulator + UEFI firmware) and the bridge egress a fresh VM needs to reach the network.

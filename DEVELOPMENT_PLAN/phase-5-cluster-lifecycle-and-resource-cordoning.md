@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate (Sprint
 13.16) surfaced cluster-lifecycle readiness/idempotency gaps in this phase's scope: `kind create` (default
@@ -47,10 +47,12 @@ delete), and `project destroy` (delete). The flat `cluster` verb is **removed** 
 **stop-without-delete capability** is implemented as the pure `stopVMArgs` argv builders in
 `HostBootstrap.Incus` / `HostBootstrap.Lima`, unit-tested in `IncusSpec` / `LimaSpec`. The cordon derivation
 and the never-delete-`.data` invariant carry forward unchanged. This work is **Done**: Phase 16 owns the
-`project` lifecycle interpreter (Done), and the only remaining item is the real-run-gated container-frame
-apply — wiring the cluster bring-up as a real `deploy-kind` / `deploy-chart` step action and the recursive
-`project down` / `project destroy` teardown that issues the stop/delete to the live VM, validated by a real
-`project up` run (owned with [Phase 16](phase-16-project-lifecycle-command.md)).
+`project` lifecycle interpreter, and the container-frame apply is real-run-validated by the demo.
+
+**Reopened 2026-07-09 for the accelerator Linux GPU cluster path.** The Linux GPU accelerator lane skips
+the Incus VM and launches an `nvkind` cluster directly on the host through the project container. This phase
+owns that cluster/exposure shape and the service exposure rule: in-cluster daemon pods use `ClusterIP`,
+while host daemons reach the web accelerator ingress through a local-only `NodePort`.
 
 ## Phase Objective
 
@@ -63,8 +65,20 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 
 ## Remaining Work
 
-**Reopened 2026-07-05 — cross-substrate cluster readiness + idempotency. Code landed + code-check-validated
-2026-07-05; real-run-gated (§ C) closure pending:**
+**Accelerator cluster/exposure work — open.**
+
+- Add the Linux GPU direct-host `nvkind` cluster path: no Incus VM, launch `nvkind` from the project
+  container with `docker run --rm`, using the existing `nvkind` binary in the base container and the host
+  NVIDIA runtime.
+- Preserve the Linux CPU path as Incus VM + in-cluster daemon pod.
+- Add accelerator-ingress service exposure: `ClusterIP` for in-cluster daemon pods and local-only
+  `NodePort` bound to `127.0.0.1` for Apple/Windows host daemons.
+- Validate that the Linux GPU daemon pod can see the NVIDIA runtime and build/run the CUDA worker.
+
+Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
+GPU daemon connectivity, and the browser e2e add workflow through the web service.
+
+**Previously closed 2026-07-05 — cross-substrate cluster readiness + idempotency:**
 
 - **Node/CNI readiness gate — landed.** `clusterCreate` now runs `waitNodesReady`
   (`kubectl wait --for=condition=Ready node --all --timeout=30s`, bounded-retry × 10 with a 3 s backoff,
@@ -88,11 +102,9 @@ Windows/WSL2 `project up` → `test run all` → `project destroy` run reporting
 nodes Ready for hostbootstrap-demo` fired on both bring-ups. **None remaining.**
 
 The flat `cluster` verb is removed (phase-4) and the **stop-without-delete capability** is implemented
-(`stopVMArgs` for Incus and Lima, unit-tested in `IncusSpec` / `LimaSpec`). Remaining
-(**real-run-gated**, § C): wire the cluster bring-up/teardown as real `deploy-kind` / `deploy-chart` /
-teardown step actions under `project up` / `project down` / `project destroy` (the recursive teardown
-issuing stop versus delete to the live VM), the `.data` invariant preserved — validated by a real
-`project up` run, owned with [Phase 16](phase-16-project-lifecycle-command.md).
+(`stopVMArgs` for Incus and Lima, unit-tested in `IncusSpec` / `LimaSpec`). The cluster bring-up/teardown
+as real `deploy-kind` / `deploy-chart` / teardown step actions under `project up` / `project down` /
+`project destroy` is closed and validated by the demo real runs.
 
 Specifically:
 
@@ -107,9 +119,8 @@ Specifically:
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`; the
   durable host `.data` path is never placed in any removal set (§ O).
 - The `project` lifecycle command, its step interpreters, and the stop-without-delete capability **ship**,
-  and the flat `cluster` verb group is **removed** (§ Sprint 5.2). Phase 16 owns the interpreter (Done);
-  the only remaining item is the real-run-gated container-frame apply, owned by
-  [Phase 16](phase-16-project-lifecycle-command.md); the dissolved `cluster` verbs are recorded under
+  and the flat `cluster` verb group is **removed** (§ Sprint 5.2). Phase 16 owns the interpreter; the
+  dissolved `cluster` verbs are recorded under
   **Removed Surfaces** in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprints
@@ -284,6 +295,38 @@ hangs off them.
   fail-closed steps end-to-end, owned by the [demo](phase-13-hostbootstrap-demo.md)'s container-frame real
   run ([Phase 16](phase-16-project-lifecycle-command.md) increment 3).
 
+### Sprint 5.5: Accelerator cluster exposure and Linux GPU nvkind [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`, `demo/kind.yaml`
+**Docs to update**: `documents/engineering/accelerator_daemon.md`,
+`documents/engineering/cluster_lifecycle.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Add the cluster/exposure substrate needed by the accelerator daemon demo, especially the Linux GPU direct
+`nvkind` path.
+
+#### Deliverables
+
+- Linux GPU cluster path: launch `nvkind` directly on the host through the project container, without the
+  Incus VM.
+- Linux CPU cluster path stays Incus VM backed and runs a daemon pod in-cluster.
+- Accelerator ingress: `ClusterIP` for in-cluster daemon pods, local-only `NodePort` for host daemons.
+- NVIDIA runtime probe for the Linux GPU integration path before the daemon pod builds the CUDA worker.
+
+#### Validation
+
+- Pure tests for substrate-to-cluster-profile and exposure rendering.
+- Linux CPU integration test: daemon pod connects by `ClusterIP` and returns an add result.
+- Linux GPU integration test: direct `nvkind` cluster, CUDA daemon pod, `nvcc` worker build, add result.
+- Browser e2e add test proves the UI path reaches the daemon-backed worker.
+
+#### Remaining Work
+
+Open until the direct `nvkind` path, exposure rendering, and integration/e2e tests land.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -291,6 +334,7 @@ hangs off them.
   on Apple, kind cordoning on Linux.
 - `documents/engineering/cluster_lifecycle.md` - kind/Helm semantics, the never-delete-`.data`
   invariant, the production-vs-test profile.
+- `documents/engineering/accelerator_daemon.md` - accelerator ingress and Linux GPU `nvkind` cluster path.
 
 **Cross-references to add:**
 - `system-components.md` updates the `HostBootstrap.Cluster.*` rows and the resource-cordoning

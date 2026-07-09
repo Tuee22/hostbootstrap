@@ -22,6 +22,9 @@
 - `context` is a **read-only** introspection/visualization command: it decodes the sibling `.dhall`,
   renders `topologyFrames`/`parentChain` with the current frame highlighted, and shows schema and witnesses.
   An internal **context-init step** of `project up` writes context files; no user verb does.
+- The planned accelerator daemon reuses this authority model: in-cluster Linux daemons receive
+  service/daemon configs, while Apple Silicon and Windows GPU host daemons read host-resident daemon
+  configs and connect to the cluster through a local-only NodePort.
 
 ## The Contract
 
@@ -41,6 +44,7 @@ The canonical lookup path is:
 | VM host-native binary | VM-local `./.build/<project>` or installed path | sibling `<project>.dhall` |
 | Project container binary | `/usr/local/bin/<project>` | `/usr/local/bin/<project>.dhall` |
 | Cluster service or daemon binary | container entrypoint path | sibling path mounted or materialized by the controller |
+| Host daemon binary | `./.build/<project>` or installed host path | sibling daemon-authority `<project>.dhall` |
 
 There are no alternate automatic filenames such as `<project>.host.dhall`: a role-encoding name would
 require the binary to choose a role before reading the file that declares its role. An explicit
@@ -158,6 +162,8 @@ recursive type. It can express:
 ```text
 host binary -> Lima VM -> Docker project container -> kind cluster -> service pod
 host binary -> Incus VM -> Docker project container -> Pulumi role -> EKS cluster -> workload pod
+host binary -> Docker project container -> nvkind cluster -> accelerator daemon pod
+host binary -> kind cluster service endpoint + host-native accelerator daemon
 ```
 
 `hostbootstrap-core` owns the common invariants: `currentFrame` must exist, parent references must resolve,
@@ -249,6 +255,16 @@ service role and a valid service variant; `service run` fails fast otherwise (§
 therefore serves image-build, ad-hoc runtime, and service contexts while each container instance reads
 exactly one local file.
 
+The planned accelerator daemon adds two authority placements:
+
+- in-cluster Linux CPU/GPU daemon pods receive daemon-role configs the same way service pods do, by
+  ConfigMap override, and connect to the web service through `ClusterIP`;
+- Apple Silicon and Windows GPU host daemons receive host-resident daemon authority and connect to the web
+  service through a local-only NodePort after `project up` has made the endpoint available.
+
+Both are still leaf roles. They do not run `project up`, bring up a cluster, or compute from a baked
+image-build config.
+
 The test harness obeys the same authority rules without a distinct lifted "TestHarness" path: `test run`
 runs the **real `project up`** under a harness-generated root config, so its assertions execute in the
 normal host/VM/container frames the chain mints. A suite may declare **more than one config variant**; the
@@ -285,6 +301,7 @@ container) plus the chart-launched service-role pod — each reading its own `<p
 | VM | fresh Linux host: Lima on Apple Silicon, Incus on native Linux, WSL2 on Windows; re-establish the host-native binary and build the project container |
 | Container on the VM | lifted workload: interpret the container-frame chain steps (`deploy-kind` → `deploy-registry` → `push-image` → `deploy-chart` → `expose-port`) that stand up the persistent stack |
 | Cluster service | chart-launched webservice pod: serve only the service role |
+| Accelerator daemon | in-cluster Linux daemon pod or host-resident Apple/Windows daemon: read daemon authority, connect to the web service over CBOR WebSocket, and forward requests to the JIT-built worker |
 
 The same `project` command tree exists in each copy of the binary. Each copy reads a different local
 `<project>.dhall` and therefore accepts a different subset of commands; `context` visualizes which frame a
@@ -335,6 +352,10 @@ in-cluster registry, the project image pushed to the in-cluster registry, and th
 `localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
 preserved. The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
 describes the authority contract.
+
+The accelerator-daemon contexts described above are target work, not current implementation. They are owned
+by the reopened Phase 15 context work and must be validated with integration tests that prove daemon
+contexts accept only daemon/service commands and reject project lifecycle commands.
 
 ## See Also
 

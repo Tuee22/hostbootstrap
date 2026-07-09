@@ -32,6 +32,9 @@
   per-case bring-up.
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
+- A planned accelerator extension adds two `Float` inputs and an Add button to the demo UI. The result must
+  come from a project-binary accelerator daemon over CBOR WebSocket, backed by a real Swift/Metal, CUDA, or
+  C++ worker depending on substrate.
 
 ## Current Status
 
@@ -73,6 +76,10 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 `test run <suite>|all`) and the recursive interpreter that walks the demo's `chain :: ProjectConfig ->
 [Step]` are real-run-validated end-to-end on real hardware (see
 [phase-13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)).
+
+The accelerator UI/daemon path is not implemented yet. It is reopened phase work and will not close until
+integration tests build the real worker in each supported lane and the browser e2e test proves the UI add
+workflow receives daemon-returned backend metadata.
 
 The demo's deploy is the single `[Step]` value `demoChain :: ProjectConfig -> [Step]`
 (`demo/src/HostBootstrapDemo/Commands.hs`) that the core's `project init|up|down|destroy` lifecycle
@@ -173,6 +180,7 @@ copy refuse commands that do not belong to its frame.
 | Image-build container | Dockerfile-time `check-code` and config/code generation only |
 | Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, the in-cluster registry, the pushed image, the web chart pod, and the verified NodePort |
 | Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant), reading its ConfigMap-delivered service-role config and surfacing its `message` field into the served SPA |
+| Accelerator daemon (planned) | Linux CPU/GPU: in-cluster daemon pod; Apple Silicon/Windows GPU: host-native daemon. In all cases it connects to the web service over CBOR WebSocket and forwards add work to a JIT-built native worker |
 
 ## Lifecycle ownership
 
@@ -221,6 +229,12 @@ pod, and the verified NodePort:
 | deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
+The planned accelerator extension adds a daemon connection after the web endpoint exists. Linux CPU keeps
+the Incus VM path and runs a daemon pod in the cluster. Linux GPU skips the Incus VM and launches an
+`nvkind` cluster directly on the host through the project container, then runs a CUDA daemon pod. Apple
+Silicon and Windows GPU start a host-native daemon after `project up` exposes a local-only NodePort for the
+web service.
+
 ## Operator surface
 
 The operator drives the chain through the `project` lifecycle.
@@ -259,6 +273,9 @@ The operator drives the chain through the `project` lifecycle.
   preconditions run first: refuse if a sibling `.build/hostbootstrap-demo.dhall` exists (the
   `siblingProjectConfigPath`, not the project root) or if a production cluster is running; teardown removes
   only the generated config and the `.test_data` it created.
+- **Accelerator e2e case (planned)** — fills the two add inputs, clicks Add, waits for the asynchronous
+  result, asserts the expected `Float` sum, and checks backend metadata/artifact hash returned by the
+  daemon so a fake in-process accelerator cannot pass.
 - **`project down`** — delete the kind cluster, stop the VM, and preserve host `.data`.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood

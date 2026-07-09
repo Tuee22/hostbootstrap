@@ -84,6 +84,14 @@ container frame the recursive interpreter reaches — not host tools (see
 [composition_methodology](../architecture/composition_methodology.md) and
 [development_plan_standards § L](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
 
+### Accelerator daemon ingress
+
+The planned accelerator demo adds a daemon WebSocket ingress on the web service. In-cluster daemon pods
+use a normal `ClusterIP` path to reach it. Host-resident Apple Silicon and Windows GPU daemons use a
+local-only `NodePort` whose kind host mapping binds `127.0.0.1`, so the host daemon can connect without
+publishing the accelerator ingress on the LAN. Linux GPU uses a direct host `nvkind` cluster rather than an
+Incus VM; Linux CPU keeps the Incus VM path.
+
 ## `project down`: Delete Kind, Preserve State
 
 `project down` deletes the running kind cluster and its services while preserving durable state. Kind does

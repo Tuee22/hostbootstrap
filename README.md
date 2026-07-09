@@ -73,7 +73,8 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
 > "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
 > `chain :: cfg -> [Step]` interpreter described above — are **implemented and real-run-validated**.
-> On Apple Silicon (Lima) the demo reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. --> (three cases × two message variants), including the Playwright e2e case; on native Linux
+> The historical Apple-Silicon/Lima and native Incus/Linux single-variant runs reported `3/3`; current
+> two-variant runs report `6/6` on the validated lanes, including the Playwright e2e case. On native Linux
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
@@ -83,24 +84,16 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 >
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
 > worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done`. The original scope (phases 0 through 21) reached `Done`, but **phases 5, 9, 10, 11, and 16 are reopened
-`Active` (2026-07-05)** for cross-substrate reliability hardening — the race conditions, resource conflicts,
-and cleanup gaps the real-run gate surfaced (see
-[`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)). Phases 13 and 15 were briefly reopened
-> (2026-07-02) for the **in-place child-config delivery** refinement and are now closed `Done` — the
-> `context-init` projection is streamed into each child frame over the lift's `stdin` channel and written by
-> the descending binary before dispatch (no host-side `.vm.dhall`/`.runtime-container.dhall`, no config
-> bind-mount; only the narrowed projection crosses, on `stdin` only), validated by `cabal test all` and a
-> live Windows/WSL2 `test run all` **`6/6`**; the superseded surfaces are in
-> [`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
-> **Phase 11 closed the Windows/WSL2 lifecycle 2026-07-01** (reopened `Active` 2026-07-05 for reliability
-> hardening): the Windows/WSL2 provider lifecycle closed end to end —
-> `project up` registered/entered the managed Ubuntu-24.04 distro with the `.wslconfig` budget wall applied,
-> built the in-distro binary and project image without a session drop, and `test run all` reported `6/6`
-> before `project destroy` restored `.wslconfig` with host `.data` preserved. The Windows third-substrate work for phases
-> 2, 3, and 9 is closed: native `hostbootstrap.exe` bootstrap, CUDA as a headless host build, and Windows
-> host-capacity / WSL2 sizing are implemented and validated (phase 9 reopened `Active` 2026-07-05 for
-reliability hardening). This status is tracked in
+> `Done`. The original scope (phases 0 through 21) reached `Done`, and the 2026-07-05 cross-substrate
+> reliability reopening is also closed `Done`.
+>
+> **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phases 2, 3, 5, 13, 15, 16,
+> and 18 are `Active` for a real substrate-specific accelerator path: the demo UI accepts two `Float`
+> values, the web server dispatches CBOR work over WebSocket to a separate project-binary daemon, and the
+> daemon JIT-builds and runs a real Swift/Metal, CUDA, or C++ worker depending on substrate. There is no
+> fake in-process accelerator fallback. The closure gate includes integration tests for the real daemon
+> lanes and a browser e2e test that asserts both the sum and daemon-returned backend/artifact metadata. See
+> [`documents/engineering/accelerator_daemon.md`](documents/engineering/accelerator_daemon.md) and
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
@@ -360,16 +353,11 @@ cluster" path. The doctrine is stated canonically in
 > VM, and stands up kind → the registry → the web service on the VM's Docker. The unified-harness / fixed-surface
 > / resource-SSoT correction has **landed**: the demo's test seams drive that same `project up` under a test
 > config (rather than a separate per-case cluster), the budget-doubling VM sizing collapses to budget = VM
-> wall / cluster = slice, and `web serve` → `service run`. The Apple Silicon Lima run reports `6/6 passed` <!-- REVIEW: confirm Lima ran 6/6 post-phase-20 (two message variants); recorded evidence shows only 3/3 on Lima (2026-06-20); recorded 6/6 is native Incus/Linux (2026-06-23) + Windows/WSL2. -->
-> (three cases × two message variants) including the Playwright e2e case; the native Linux Incus run drives the full `project up` lifecycle end to
-> end. **Phase-19 (the generic project model)** and **phase-20 (the config-driven demo worked example)** are
-> both implemented and `Done`; phase-21 reconciles the documentation/code drift. The original scope
-> (phases 0 through 21) reached `Done`, but **phases 5, 9, 10, 11, and 16 are reopened `Active`
-> (2026-07-05)** for cross-substrate reliability hardening (see
-> [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md)) — phase 11 closed the Windows/WSL2
-> `project up` → `test run all` (`6/6`) → `project destroy` lifecycle 2026-07-01 with the `.wslconfig` budget wall
-> applied, and **phases 13 and 15**, reopened then closed 2026-07-02 for in-place child-config delivery
-> (§ X, validated by a live Windows/WSL2 `test run all` `6/6`); see
+> wall / cluster = slice, and `web serve` → `service run`. The original phases 0 through 21 and the
+> 2026-07-05 reliability reopening are closed `Done`; the current active work is the 2026-07-09
+> accelerator-daemon demo generalization. That work adds a real CBOR WebSocket accelerator path, a
+> substrate-specific JIT worker, integration tests for each real lane, and a browser e2e Add workflow. See
+> [`documents/engineering/accelerator_daemon.md`](documents/engineering/accelerator_daemon.md) and
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 ### Spin it up

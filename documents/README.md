@@ -71,6 +71,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/composition_patterns.md](engineering/composition_patterns.md) — a cookbook of composition
   shapes (the `[Step]` chain and its recursive interpreter, context topologies, operation kinds,
   business-logic shapes) consumers compose their chain from.
+- [engineering/accelerator_daemon.md](engineering/accelerator_daemon.md) — the planned demo
+  generalization where the project binary also runs as a substrate-specific accelerator daemon, JIT-builds
+  a real Swift/Metal, CUDA, or C++ worker, exchanges CBOR over WebSocket with the web service, and is
+  validated by integration and browser e2e tests.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
   step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
   `chain :: cfg -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.

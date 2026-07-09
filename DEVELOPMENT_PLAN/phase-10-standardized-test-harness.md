@@ -53,8 +53,8 @@ the chain production uses. The engine recast to drive the real `project up` land
 
 ## Remaining Work
 
-**Reopened 2026-07-05 — harness reliability. Code landed + code-check-validated 2026-07-05; real-run-gated
-(§ C) closure pending:**
+**Historical reopening 2026-07-05 — harness reliability. Code landed, code-check-validated, and
+real-run-closed (§ C) 2026-07-05:**
 
 - **Guarantee teardown on bring-up failure — landed.** `TestSuite`'s tear-down field is now `IO ()`
   (env-independent — `project destroy` re-detects the stack), so `runSuiteSelection` moves bring-up **inside**

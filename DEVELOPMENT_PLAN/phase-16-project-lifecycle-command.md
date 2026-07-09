@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
 lifecycle-interpreter gaps in this phase's scope: `applyChain` has no `bracket`/`finally`, so a chain
@@ -60,10 +60,29 @@ them. That parameterization is owned by
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md); the `project init|up|down|destroy`
 surface this phase shipped is unchanged.
 
+**Reopened 2026-07-09 for accelerator daemon lifecycle.** Host-resident Apple Silicon and Windows GPU
+accelerator daemons must start only after `project up` has exposed the web service's local-only ingress,
+and must be stopped by `project down`/`project destroy`. Linux GPU also needs a direct host `nvkind` path
+that skips the Incus VM.
+
 ## Remaining Work
 
-**Reopened 2026-07-05 — lifecycle-interpreter reliability. Code landed + code-check-validated 2026-07-05;
-real-run-gated (§ C) closure pending:**
+**Accelerator lifecycle work — open.**
+
+- Add an explicit post-cluster/post-handoff lifecycle hook, or equivalent ordered step class, so the host
+  frame can start the Apple/Windows accelerator daemon after the container/cluster frame has made the web
+  accelerator ingress reachable. Appending a host-frame step after child-frame steps is not enough because
+  the current interpreter runs all current-frame steps before descending.
+- Start and supervise host daemons for Apple Silicon and Windows GPU as long-running project-binary
+  processes, with singleton/lock behavior and teardown on `project down`/`project destroy`.
+- Add the Linux GPU direct path that launches `nvkind` through the project container without provisioning
+  an Incus VM.
+- Keep the Linux CPU path on the existing Incus VM and start the accelerator daemon as an in-cluster pod.
+
+Validation: pure chain-order tests for the post-up hook, process lifecycle tests for daemon start/stop, and
+integration/e2e tests proving the daemon connects and serves the UI add request.
+
+**Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
 
 - **Best-effort teardown on chain failure — landed.** `applyChain` now `try`-wraps `runChainFromFrame`, and a
   chain failure (a `Left` from a non-zero handoff, or a thrown exception) at the **root** frame runs the same
@@ -380,6 +399,41 @@ None remaining. Optional future follow-ups (not gating): build #3 in the `vm-orc
 purest fractal, role-as-pod folded into the chart, and `test run all` against the live persistent stack
 (§ Z, [phase-17](phase-17-chain-driven-test-and-context-introspection.md)).
 
+### Sprint 16.5: Accelerator daemon lifecycle hooks [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/engineering/accelerator_daemon.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Extend the recursive lifecycle so accelerator daemons can be started in the correct frame after the web
+accelerator ingress exists and stopped during teardown.
+
+#### Deliverables
+
+- A post-cluster/post-handoff hook or ordered step class that runs after the child frame has stood up the
+  web endpoint.
+- Host-daemon process lifecycle for Apple Silicon and Windows GPU, including singleton behavior, stdout/
+  stderr handling, and `project down`/`project destroy` stop behavior.
+- Direct Linux GPU `nvkind` lifecycle through the project container without Incus VM provisioning.
+- Preservation of the existing Linux CPU Incus path.
+
+#### Validation
+
+- Pure chain-order tests prove host daemon startup cannot run before the accelerator ingress exists.
+- Process lifecycle tests prove daemon start/stop is idempotent and teardown-safe.
+- Integration tests prove host daemons connect through local-only NodePort and in-cluster daemons connect
+  through `ClusterIP`.
+- Browser e2e add test proves the UI receives a daemon-backed result.
+
+#### Remaining Work
+
+Open until the lifecycle hook, daemon process manager, direct Linux GPU path, and integration/e2e tests
+land.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -409,6 +463,7 @@ purest fractal, role-as-pod folded into the chart, and `test run all` against th
   its frame.
 - `documents/operations/demo_runbook.md` - the demo lifecycle is `project up` / `project down` /
   `project destroy` plus `test run all`, with `context` to visualize the chain.
+- `documents/engineering/accelerator_daemon.md` - daemon startup ordering and teardown expectations.
 
 **Cross-references to add:**
 - `README.md`, `documents/README.md`, `DEVELOPMENT_PLAN/README.md`, `00-overview.md`,

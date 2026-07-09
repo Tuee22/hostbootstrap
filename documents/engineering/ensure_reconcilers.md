@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md), [wsl2](wsl2.md)
+**Referenced by**: [documents-index](../README.md), [prerequisites](prerequisites.md), [python_haskell_boundary](../architecture/python_haskell_boundary.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [resource_budgeting](resource_budgeting.md), [wsl2](wsl2.md), [accelerator_daemon](accelerator_daemon.md)
 
 > **Purpose**: Define the `ensure` reconciler contract — idempotent host-dependency reconcilers that
 > the lift chain invokes as `ensure-X` steps inside `project up`, install-and-verify, and fail fast on
@@ -160,6 +160,21 @@ pre-binary host setup the thin Python bootstrapper drives before the build; see
 [python_haskell_boundary](../architecture/python_haskell_boundary.md). `ensure-cuda` aligns with the
 GPU host requirements tracked in [prerequisites](prerequisites.md).
 
+## Planned Accelerator Build-Stack Ensures
+
+The accelerator-daemon demo reopens the ensure surface for host-resident accelerator build stacks. These
+reconcilers run only on host daemon lanes; Linux daemon pods trust the base image and never run ensure from
+inside the container.
+
+| Reconciler step | Applies to | Planned contract |
+|-----------------|------------|------------------|
+| `ensure-apple-metal` | `apple-silicon` | Verify a visible Metal device, `xcrun --sdk macosx --show-sdk-path`, and a Swift compiler that can build and run a tiny Swift + Metal probe headlessly. The pre-binary floor already requires Xcode Command Line Tools and Homebrew; Homebrew may install a Swift fallback, but full Xcode, Tart, keychain state, and a VM are out of contract. |
+| hardened `ensure-cudawin` | `windows-gpu` | Keep the NVIDIA driver as a precondition, install/verify CUDA Toolkit (`Nvidia.CUDA`) with `winget`, Visual Studio Build Tools with the C++ workload for `nvcc`'s host compiler, and LLVM clang (`LLVM.LLVM`), then compile a CUDA smoke artifact. |
+
+The Apple reconciler is new Phase-3 work. The Windows work hardens the existing `ensure-cudawin`
+reconciler rather than adding a second Windows accelerator reconciler, because the demo's Windows
+accelerator lane is CUDA.
+
 ## Diagnostics
 
 A wrong-host run emits a single diagnostic line naming the reconciler, the detected substrate, and
@@ -192,8 +207,12 @@ remains a library call, not a surfaced command.
 ## Current Status
 
 The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-validated.
-Windows substrate detection and `ensure-cudawin` are closed in phases 2 and 3. The Windows VM-provider
-reconciler `ensure-wsl2` is implemented and closed in Phase 11 (2026-07-01): the OS-level hypervisor-launch
-readiness branch and the real WSL2 provider lifecycle run both landed (`test run all` `6/6` → `project destroy`). The former `ensure-tart` reconciler is dropped
-from this contract and tracked as removed in
-[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+Windows substrate detection and the current `ensure-cudawin` surface are closed in phases 2 and 3. The
+Windows VM-provider reconciler `ensure-wsl2` is implemented and closed in Phase 11 (2026-07-01): the
+OS-level hypervisor-launch readiness branch and the real WSL2 provider lifecycle run both landed (`test run
+all` `6/6` -> `project destroy`). The former `ensure-tart` reconciler is dropped from this contract and
+tracked as removed in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+
+The accelerator build-stack reconcilers are target work owned by the reopened Phase 3. They are not
+implemented until unit tests cover the pure install plans and real integration runs prove the host daemon
+can build the Swift/Metal and Windows CUDA workers.

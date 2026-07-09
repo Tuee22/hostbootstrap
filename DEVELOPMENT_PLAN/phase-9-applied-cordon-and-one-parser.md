@@ -69,8 +69,8 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 
 ## Remaining Work
 
-**Reopened 2026-07-05 — cross-substrate resource cordon. Code landed + code-check-validated 2026-07-05;
-real-run-gated (§ C) closure pending:**
+**Historical reopening 2026-07-05 — cross-substrate resource cordon. Code landed, code-check-validated, and
+real-run-closed (§ C) 2026-07-05:**
 
 - **Host-headroom preflight — landed.** `HostCapacity`'s `spare*` fields are renamed `total*` (honest: the
   Apple/Windows reads are *total* physical RAM, not spare), and `verifyBudget` now gates memory on

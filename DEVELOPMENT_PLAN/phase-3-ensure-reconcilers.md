@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
@@ -32,9 +32,28 @@ composition pattern #7 to the **headless host build** (build on the bare Windows
 cluster, never run the workload in a build VM); the in-container linux-gpu `ensure cuda`
 (`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit) stays as a different concern.
 
+**Reopened 2026-07-09 for accelerator build-stack ensure.** The demo accelerator daemon needs host-only
+build-stack reconciliation for Apple Silicon and Windows GPU. Linux CPU/GPU daemon pods do not run ensure;
+they trust the hostbootstrap base image.
+
 ## Remaining Work
 
-None. Closed on 2026-06-26 after Phase 2 supplied the Windows Haskell toolchain: `cabal build all` and
+**Accelerator build-stack ensure — open.**
+
+- Add `ensure-apple-metal` for `apple-silicon`: verify a visible Metal device, `xcrun --sdk macosx
+  --show-sdk-path`, and a Swift compiler that can compile and run a tiny Swift + Metal probe headlessly.
+  The pre-binary floor already requires Xcode Command Line Tools and Homebrew; the reconciler may use
+  Homebrew for a Swift fallback, but it must not require full Xcode, Tart, a keychain, or a VM.
+- Harden `ensure-cudawin` for the Windows accelerator daemon: keep the NVIDIA driver as a precondition,
+  install/verify CUDA Toolkit (`Nvidia.CUDA`) with `winget`, Visual Studio Build Tools with the C++ workload
+  for `nvcc`'s host compiler, and LLVM clang (`LLVM.LLVM`), then compile a CUDA smoke artifact.
+- Do not add any in-container ensure path. Linux CPU and Linux GPU daemon pods fail loudly if the CPU/CUDA
+  base image lacks `clang++` or `nvcc`.
+
+Validation: unit tests for applicability and pure install plans; host integration tests proving the Apple
+Swift/Metal and Windows CUDA workers build through the daemon before the e2e UI test can pass.
+
+Previously closed work remains closed. Closed on 2026-06-26 after Phase 2 supplied the Windows Haskell toolchain: `cabal build all` and
 `cabal test all` passed from `core/`; `winget install --id Nvidia.CUDA --exact` installed CUDA Toolkit
 13.3 on a Windows GPU host; `HostTool.discover Nvcc` resolves
 `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe`; and the actual
@@ -271,6 +290,40 @@ After deletion the reconciler set is `docker` / `colima` / `lima` / `cuda` / `cu
 None. `cabal build all` and `cabal test all` passed on 2026-06-26 with no Tart module, constructor,
 reconciler entry, exposed module, or tests. The Tart entries are now in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) **Removed Surfaces**.
+
+### Sprint 3.6: Accelerator build-stack reconcilers [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`,
+`core/hostbootstrap-core/test/EnsureSpec.hs`
+**Docs to update**: `documents/engineering/accelerator_daemon.md`,
+`documents/engineering/ensure_reconcilers.md`, `documents/languages/cuda.md`, `system-components.md`
+
+#### Objective
+
+Ensure host-resident accelerator build stacks only where host remediation is appropriate: Apple Silicon
+Swift/Metal and Windows GPU CUDA.
+
+#### Deliverables
+
+- New `ensure-apple-metal` reconciler (`appliesTo = isAppleSilicon`) with probe-first install-and-verify
+  semantics around a real Swift + Metal compile/run probe.
+- Hardened `ensure-cudawin` (`appliesTo = isWindowsGpu`) with CUDA Toolkit, MSVC C++ workload, LLVM clang,
+  and a CUDA smoke compile.
+- Clear wrong-host diagnostics for Apple Metal ensure on non-Apple substrates and CudaWin on non-Windows-GPU
+  substrates.
+- No runtime package-manager remediation in Linux daemon pods.
+
+#### Validation
+
+- `EnsureSpec` covers applicability, wrong-host fail-fast, and pure install plans.
+- Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
+  hardened `ensure-cudawin` builds the CUDA worker on Windows GPU.
+
+#### Remaining Work
+
+Open until the reconcilers, tests, and host integration smoke builds land.
 
 ## Documentation Requirements
 

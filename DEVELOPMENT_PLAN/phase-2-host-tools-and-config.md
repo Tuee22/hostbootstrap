@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 The pre-binary Python host floor and build-toolchain bootstrap, `HostBootstrap.HostTool`,
 `HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and `HostBootstrap.Substrate` are implemented and
@@ -27,9 +27,26 @@ The Windows reopening is closed: native Windows GHC sees
 classification (gpu when the NVIDIA CUDA stack is present) and the core's POSIX-only `unix` dependency
 is conditionalized at its three call sites so the binary builds host-native on Windows (§ L, § N).
 
+**Reopened 2026-07-09 for accelerator host-tool coverage.** The accelerator daemon's host-resident lanes
+need closed-enum tool resolution for Apple Swift/Metal probes and Windows compiler-stack verification. This
+does not change the pre-binary host floor; Python still only ensures the Haskell build toolchain before the
+project binary exists. The new tools are consumed by Phase 3 reconcilers after the binary is running.
+
 ## Remaining Work
 
-None. Closed on 2026-06-26 on native Windows: `poetry run python -m hostbootstrap.check_code`,
+**Accelerator host tools — open.** Add closed `HostTool` constructors and discovery tests for the tools the
+host daemon ensure logic needs:
+
+- Apple Silicon: `swiftc`, `xcrun`, and the Metal runtime probe command path used to prove a visible Metal
+  device and SDK-backed Swift + Metal compile.
+- Windows GPU: LLVM `clang`, the MSVC host compiler / Visual Studio Build Tools probe, and any supporting
+  resolver needed by `nvcc` host-compiler verification.
+
+Validation: `HostToolSpec` covers absolute-path discovery and missing-tool diagnostics; `SubstrateSpec`
+continues to cover the existing substrate classification; Phase 3 integration tests prove these tools are
+usable by the daemon build-stack reconcilers.
+
+Previously closed work remains closed. Closed on 2026-06-26 on native Windows: `poetry run python -m hostbootstrap.check_code`,
 `poetry run python -m hostbootstrap.test_all` (175 tests), `poetry run hostbootstrap build --project-root
 core/hostbootstrap-core` (built `.build/hostbootstrap.exe` after GHCup/GHC/Cabal and `cabal update`),
 `cabal build all` from `core/`, and `cabal test all` from `core/` (251 tests). The host reports an NVIDIA
@@ -194,6 +211,38 @@ apple-silicon and the Linux family, and the core builds host-native on native Wi
 None. `cabal build all` and `cabal test all` passed from `core/` on 2026-06-26 on native Windows; the
 host's NVIDIA GeForce RTX 3090 covers the real Windows GPU host.
 
+### Sprint 2.4: Accelerator host-tool coverage [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Docs to update**: `documents/engineering/accelerator_daemon.md`,
+`documents/engineering/ensure_reconcilers.md`, `system-components.md`
+
+#### Objective
+
+Extend the closed `HostTool` enumeration so the project binary can run host-resident accelerator ensure
+logic without bare `$PATH` calls.
+
+#### Deliverables
+
+- Apple tool coverage for the Swift/Metal build stack: `swiftc`, `xcrun`, and the SDK/runtime probe path
+  needed by `ensure-apple-metal`.
+- Windows tool coverage for the CUDA daemon build stack: LLVM `clang`, the MSVC host compiler / Visual
+  Studio Build Tools probe, and any helper needed to verify `nvcc` can compile a smoke artifact.
+- No Python bootstrapper expansion beyond the existing pre-binary Haskell toolchain bootstrap.
+
+#### Validation
+
+- `HostToolSpec` proves each new tool constructor resolves only to absolute paths and fails with the
+  standard `HostToolError` when absent.
+- Phase 3 integration gates prove the resolved tools can compile the Apple Swift/Metal and Windows CUDA
+  daemon workers.
+
+#### Remaining Work
+
+Open until the host-tool constructors, resolver tests, and reconciler integration smoke builds land.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -208,4 +257,5 @@ host's NVIDIA GeForce RTX 3090 covers the real Windows GPU host.
 
 **Cross-references to add:**
 - `system-components.md` marks the `HostBootstrap.HostTool` / `HostConfig` / `HostPrereqs` /
-  `Substrate` rows present and adds the `windows-cpu` / `windows-gpu` substrates.
+  `Substrate` rows present, adds the `windows-cpu` / `windows-gpu` substrates, and tracks the accelerator
+  host-tool additions while Sprint 2.4 is active.

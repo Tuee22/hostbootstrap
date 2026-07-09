@@ -10,11 +10,30 @@
 
 ## Pending
 
-None. The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`, phase-13 Sprint 13.16)
-was the last pending cleanup; it **closed 2026-07-05** on a live decoupled Windows/WSL2 `test run all`
-reporting **`test report: 6/6 passed`** (`REALRUN_EXIT=0`) standing up `registry:2` and pushing the project
-image, so its four Harbor surfaces **and** the removed `kind load registry:2` pre-load moved to
-**Removed Surfaces** below. Empty `Pending` is valid (see `## Rules`).
+- **Demo hard-coded CPU base flavor for every project image** (`"basecontainer-cpu-" ++ arch` in
+  `demo/src/HostBootstrapDemo/Commands.hs`) — pending replacement by substrate-aware base selection for the
+  accelerator daemon demo. Linux CPU continues to use the CPU base, while Linux GPU daemon pods must use the
+  CUDA base. Host-resident Apple/Windows daemon workers are not base-image flavors. Owning phases: phase-5
+  Sprint 5.5 and phase-13 Sprint 13.17. Validation: Linux GPU integration test builds the CUDA worker from
+  the CUDA base; Linux CPU integration test builds the C++ worker from the CPU base.
+- **VM-only runtime project-container topology for cluster workflows** (`VMProjectContainer` requiring a
+  `VMOrchestrator` ancestor in the binary-context gate) — pending generalization so the explicit Linux GPU
+  accelerator topology can represent `host -> project container -> nvkind cluster` without an Incus VM,
+  while the existing VM-backed container context remains strict. Owning phases: phase-15 Sprint 15.8 and
+  phase-16 Sprint 16.5. Validation: context tests reject accidental direct host containers unless the
+  Linux GPU direct topology is declared, and the Linux GPU integration test launches `nvkind` directly on
+  the host.
+- **Web-only demo UI and service path as the final demo surface** — pending extension, not deletion of the
+  web service. The current message/tab UI stays, but it is no longer sufficient as the final worked demo:
+  the demo must add a real accelerator Add workflow whose result comes from daemon-returned backend/artifact
+  metadata over CBOR WebSocket. Owning phase: phase-13 Sprint 13.17. Validation: browser e2e fills the two
+  float inputs, clicks Add, and asserts the daemon-backed result.
+
+The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`, phase-13 Sprint 13.16) was the
+previous pending cleanup; it **closed 2026-07-05** on a live decoupled Windows/WSL2 `test run all` reporting
+**`test report: 6/6 passed`** (`REALRUN_EXIT=0`) standing up `registry:2` and pushing the project image, so
+its four Harbor surfaces **and** the removed `kind load registry:2` pre-load moved to **Removed Surfaces**
+below.
 
 The in-place child-config delivery correction (development_plan_standards § U, § X) landed in phase-15
 Sprint 15.7 / phase-13 Sprint 13.15 (2026-07-02); its two former entries are in **Removed Surfaces** below.

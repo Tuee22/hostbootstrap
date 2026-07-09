@@ -75,3 +75,17 @@ Windows VM frame it sits beside (Docker, kind, and the in-cluster workload) is t
 [wsl2](../engineering/wsl2.md) host provider, the Windows peer of the Lima and Incus VM providers; the
 headless host build is deliberately *outside* that VM. The full Windows/WSL2 lifecycle closed in phase 11:
 the Windows lifecycle runs end to end through `test run all` (`6/6`) and `project destroy`.
+
+## Accelerator Daemon CUDA Lane
+
+The planned accelerator daemon uses CUDA in two places:
+
+- `linux-gpu`: the daemon runs as a Kubernetes pod from the CUDA hostbootstrap base image, builds the
+  generated add worker with in-image `nvcc`, and trusts that the NVIDIA runtime is available to the
+  `nvkind` cluster. It does not run host ensure inside the pod.
+- `windows-gpu`: the daemon runs host-native, uses `ensure-cudawin` to verify/install the host CUDA build
+  stack (`Nvidia.CUDA`, MSVC C++ Build Tools, and LLVM clang), builds the generated CUDA worker with host
+  `nvcc`, and connects to the cluster web service through a local-only NodePort.
+
+The browser e2e test for the demo must assert backend metadata returned by the daemon so an in-process
+fallback cannot satisfy the CUDA lane. See [accelerator_daemon](../engineering/accelerator_daemon.md).

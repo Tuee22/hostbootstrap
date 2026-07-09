@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
 **Reopened (2026-07-04, extended 2026-07-05) then closed (2026-07-05)** for the **in-cluster-registry
 doctrine switch** (Harbor → single-binary `registry:2`) and the **cross-substrate reliability hardening** the
@@ -91,21 +91,14 @@ vocabulary use, the service-handler registry (`demoServices`), and the stack-dri
 `ProjectSpec` supplies `demoChain` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
 `demoServices`, and the non-empty `demoTestSuite` — no project verbs (the surface is fixed, § P).
 
-This phase is reopened for the **"the chain is the project"** migration (§ Y, § T). The demo's worked
-shape is the proving ground for the chain-is-code model: a project's primary CLI contribution is its
-**lift chain** value (`chain :: cfg -> [Step]`, interpreted by the core `project` lifecycle), not
-the noun verbs the demo ships today. The single-representation invariant (§ W) is unchanged — what
-changes is the **representation**: the hand-written `demoDeployChain` and its small interpreter in
+Historical note: this phase was previously reopened for the **"the chain is the project"** migration (§ Y,
+§ T). That migration is now closed: the hand-written `demoDeployChain` and its small interpreter in
 `demo/src/HostBootstrapDemo/Chain.hs`, together with the demo's `vm`/`deploy`/`incus`/`harbor`/`web`/`role`
-noun verbs in `Commands.hs`, become a `chain :: cfg -> [Step]` value the **core** `Step`
-interpreter runs, plus the demo's contributed workload step actions. The target shape is described below
-as what is being built; the `project up`/`project down`/`project destroy` interpreter it depends on is
-owned by phase-16, so this phase tracks the demo's side of the migration as **remaining work**, not as a
-shipped capability.
+noun verbs, became `demoChain :: ProjectConfig -> [Step]` interpreted by the core `project` lifecycle.
 
-The demo's currently-shipped deploy shape follows the single-representation doctrine (§ W). `demo deploy`
-is one explicit lift sequence whose only lifted compute step is `test all` inside the project container in
-the managed VM:
+The former demo deploy shape followed the single-representation doctrine (§ W). `demo deploy` was one
+explicit lift sequence whose only lifted compute step was `test all` inside the project container in the
+managed VM:
 
 ```text
 vm ensure
@@ -141,8 +134,13 @@ host/container fallback cannot run `test all` against the wrong Docker daemon, b
 VM-project-container config requires a VM-orchestrator ancestor and runtime witnesses (the Dockerfile bakes
 image-build authority only; the lifted runtime container receives a parent-generated config mounted over
 `/usr/local/bin/hostbootstrap-demo.dhall`). The Lima fold, the topology-aware context enforcement, and the
-full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — are all validated for the
-current noun-verb shape.
+full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — validated that former
+noun-verb shape before it was replaced by the fixed command surface.
+
+**Reopened 2026-07-09 for the substrate-specific accelerator daemon demo.** The demo will grow a real
+accelerator path: the UI accepts two `Float` values, the web service dispatches CBOR work over WebSocket to
+a separate project-binary daemon, and the daemon forwards the calculation to a JIT-built Swift/Metal,
+CUDA, or C++ worker depending on substrate. No fake in-process accelerator may satisfy this feature.
 
 ## Current Status
 
@@ -155,6 +153,26 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 `project destroy`; `service run` owns the long-running web role.
 
 ## Remaining Work
+
+**Accelerator daemon demo — open.**
+
+- Add the demo UI controls: two `Float` inputs, an Add button, asynchronous result state, error state, and
+  backend/artifact metadata display.
+- Add the web accelerator ingress: CBOR WebSocket daemon connection, request-id correlation, timeout, and
+  no in-process fallback for the sum.
+- Add daemon JIT codegen/build/run:
+  - Apple Silicon host daemon: Swift + Metal worker built on the host.
+  - Linux CPU daemon pod: C++ worker built with `clang++` from the CPU base.
+  - Linux GPU daemon pod: CUDA worker built with `nvcc` from the CUDA base in a direct host `nvkind`
+    cluster.
+  - Windows GPU host daemon: CUDA worker built with host `nvcc` after the hardened CudaWin ensure.
+- Add integration tests for each real lane that build the worker, connect the daemon, submit an add request,
+  and assert the result plus backend/artifact metadata.
+- Add a browser e2e test that fills the two inputs, clicks Add, waits for the daemon result, asserts the
+  `Float` sum, and checks metadata so a fake in-process path cannot pass.
+
+Validation is blocked until all static protocol/codegen tests, integration tests, and the browser e2e case
+land. Unit-only closure is not accepted for this feature.
 
 **In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
 single-binary `registry:2` swap (Sprint 13.16) plus the demo-side reliability fixes are **real-run-validated
@@ -956,11 +974,55 @@ message variants, then tore down with host `.data` preserved. The four Harbor en
 `kind load registry:2` pre-load are moved from `## Pending` to `## Removed Surfaces` in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with this validation stamp.
 
+### Sprint 13.17: Substrate accelerator daemon worked example [Active]
+
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/src/HostBootstrapDemo/Web/*`, `demo/web/`, `demo/playwright/`
+**Docs to update**: `documents/engineering/accelerator_daemon.md`,
+`documents/operations/demo_runbook.md`, `documents/architecture/run_models.md`,
+`documents/architecture/binary_context_config.md`
+
+#### Objective
+
+Generalize the demo UI and runtime so the same project binary can run as a substrate-specific numerical
+accelerator daemon and perform real `Float` addition through the correct native worker.
+
+#### Deliverables
+
+- UI: two `Float` inputs, Add action, async pending/error/result states, and backend/artifact metadata.
+- Web server: CBOR WebSocket accelerator-ingress endpoint, daemon registration, request correlation, and
+  no in-process addition fallback.
+- Daemon: same project binary, daemon context, JIT source generation, idempotent build, worker subprocess
+  supervision, CBOR WebSocket loop, and graceful teardown.
+- Workers:
+  - Swift + Metal on Apple Silicon host.
+  - C++ + `clang++` inside the Linux CPU daemon pod.
+  - CUDA + `nvcc` inside the Linux GPU daemon pod.
+  - CUDA + host `nvcc` on Windows GPU.
+
+#### Validation
+
+- Unit/static tests for CBOR codecs, source generation, build command builders, and no-fallback web
+  dispatch.
+- Integration tests:
+  - Linux CPU: Incus VM, daemon pod from CPU base, C++ worker built with `clang++`, add result returned.
+  - Linux GPU: direct `nvkind`, CUDA daemon pod from CUDA base, `nvcc` worker built and executed.
+  - Apple Silicon: host daemon, Apple Metal ensure, Swift/Metal worker built and executed.
+  - Windows GPU: host daemon, hardened CudaWin ensure, CUDA worker built and executed.
+- Browser e2e: fill the add UI, click Add, wait for the asynchronous result, assert the sum and returned
+  backend/artifact metadata.
+
+#### Remaining Work
+
+Open until the real accelerator implementation and all static, integration, and e2e gates land.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 - `documents/engineering/derived_dockerfile.md` - the idiomatic derived Dockerfile (in-Dockerfile
   `check-code` gate; the `purescript-bridge` -> `spago` -> `esbuild` web build; the build-stage ordering).
+- `documents/engineering/accelerator_daemon.md` - substrate-specific daemon/JIT worker contract and tests.
 
 **Operations docs to create/update:**
 - `documents/operations/demo_runbook.md` - lift-based flow, real per-case seams, `deploy --dry-run` /

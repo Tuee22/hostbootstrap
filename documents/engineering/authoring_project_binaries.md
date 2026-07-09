@@ -116,6 +116,10 @@ best-effort and idempotent, and `.data` is always preserved.
   kinds over the same `[Step]`.
 - **Local cluster via a host service manager**: `ensure the cluster as a host service (rke2/k3s) →
   deploy-chart → optionally a cloud-validation step backed by an in-cluster state store`.
+- **Daemon-backed accelerator**: `deploy web service → expose accelerator ingress → start in-cluster or
+  host daemon → dispatch CBOR work to a generated worker`. The demo's planned accelerator extension uses
+  this shape for Swift/Metal, CUDA, and C++ add workers. Close it with integration tests that build the
+  real worker and a browser e2e test that proves the UI result came from daemon metadata.
 
 Both are the same algebra — a `[Step]` chain interpreted recursively across a context topology — differing
 only in which steps the chain selects. The chain is a pure function of the root parameters, so structural

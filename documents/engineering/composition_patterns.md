@@ -49,16 +49,21 @@ its own segment.
    storage + database + **registry foundation first**, mirror images through the in-cluster
    registry, then platform services, then the workload chart.
 6. **Host-native daemon bridged to an in-cluster coordinator** — the binary also runs as a long-lived
-   host daemon (singleton via a file lock) an in-cluster workload reaches over a message bus, used when
-   a capability (an accelerator) is reachable only on the host. The `HostDaemon`
-   [run-model](../architecture/run_models.md).
+   host daemon (singleton via a file lock) that connects to an in-cluster coordinator, used when a
+   capability is reachable only on the host. The planned accelerator demo is the small worked instance:
+   Apple Silicon and Windows GPU daemons run host-native, connect to the web service over a local-only
+   NodePort, exchange CBOR over WebSocket, and forward work to a generated native worker. See
+   [accelerator_daemon](accelerator_daemon.md).
 7. **Headless host build for platform-locked artifacts** — build a platform-locked artifact on the bare
    host (no build VM), stage it into the cluster, never run the workload in a VM — the headless
    host-bridge shape. First worked instance: CUDA-on-Windows (`ensure cudawin` readies the NVIDIA driver
    + CUDA Toolkit + MSVC via winget; nvcc artifacts are produced on the Windows host and copied out).
    See [cuda](../languages/cuda.md) and [ensure_reconcilers](ensure_reconcilers.md).
 8. **GPU cluster variant** — substrate-select a GPU cluster (device-plugin / GPU-aware kind /
-   `RuntimeClass`) and pin accelerator-owning pods; the same chains with a GPU node.
+   `RuntimeClass`) and pin accelerator-owning pods; the same chains with a GPU node. For the demo's
+   Linux GPU accelerator lane this means skipping the Incus VM and launching an `nvkind` cluster directly
+   on the host through the project container, then running the CUDA accelerator daemon pod from the CUDA
+   hostbootstrap base image.
 
 Optional structural variation (skip the VM → straight to Docker) is a root-`.dhall` flag, so the chain
 stays a pure function of root parameters.
@@ -164,6 +169,10 @@ Reused across shapes and step kinds:
   case into the cluster as a Job (a finite-job operation); see
   [single representation](#single-representation-the-chain-is-the-representation) and
   [harness_workflow](../architecture/harness_workflow.md).
+- **Real accelerator tests** — a substrate-specific daemon path is closed only by integration tests that
+  build the generated worker in its real lane and by browser e2e tests that drive the UI add workflow
+  through CBOR WebSocket to that worker. Unit tests for protocol/codegen are necessary but cannot replace
+  the real build/run gates.
 
 ## Current Status
 

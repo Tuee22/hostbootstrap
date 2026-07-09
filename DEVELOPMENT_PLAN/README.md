@@ -41,8 +41,9 @@ the same fractal bootstrap — provision the frame, build the pb in it, hand off
 the Python bootstrapper is the metal-frame instance.
 
 The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18)
-landed and is code-check-validated (phases 10 and 16 are **reopened `Active` 2026-07-05** for cross-substrate
-reliability hardening — see below); phases 13 and 15 were briefly reopened for the **in-place child-config
+landed and is code-check-validated; the 2026-07-05 cross-substrate reliability reopening is closed (see
+below), while phase 16 is reopened again only for the 2026-07-09 accelerator lifecycle work. Phases 13 and
+15 were briefly reopened for the **in-place child-config
 delivery** refinement (below) and are now **closed `Done`** (2026-07-02). The command surface is **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
@@ -52,8 +53,8 @@ doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role
 real-run-validated: `cabal test all` (226, phase-close snapshot), `cabal build all --ghc-options=-Werror`,
 fourmolu/hlint on the demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
 Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (the web pod running
-`service run web`), with the in-cluster registry step now switching from the 8-pod Harbor stack to a
-single-binary `registry:2` (phase-13 `Active`, real-run-gated; see Sprint 13.16). `test run all`
+`service run web`), with the in-cluster registry step switched from the 8-pod Harbor stack to a
+single-binary `registry:2` (Sprint 13.16 closed). `test run all`
 reports **`6/6 passed`** on current runs (three cases x two message variants; phase 20 added the second
 message variant); the **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
 (2026-06-21) are pre-phase-20 historical snapshots: every
@@ -91,8 +92,8 @@ state preserved. The Windows third-substrate reopening is now closed for phases 
 Windows joins as the third metal substrate (`windows-cpu`/`windows-gpu`) through the Phase-2
 pre-binary Haskell toolchain bootstrap and substrate detection, Phase-3 `ensure cudawin` reconciler,
 and Phase-9 Windows host-capacity / WSL2 sizing surfaces. **Phases 9 and 11 closed the Windows/WSL2
-lifecycle 2026-07-01** — both **reopened `Active` 2026-07-05** for cross-substrate reliability hardening
-(see below) — by the full Windows/WSL2 lifecycle: `hostbootstrap-demo` `test run all` applied the
+lifecycle 2026-07-01**, were temporarily reopened and closed again on 2026-07-05 for cross-substrate
+reliability hardening (see below), by the full Windows/WSL2 lifecycle: `hostbootstrap-demo` `test run all` applied the
 `.wslconfig` `[wsl2]` ceiling (Sprint 9.7's honest cordon — the fix for the earlier
 `Wsl/Service/0x80072746` utility-VM session drop, whose root cause was the cordon computed but never
 written), registered/entered the managed Ubuntu-24.04 distro, built the in-distro binary and project image
@@ -126,17 +127,17 @@ and pushing the multi-GB project image are release/demo operations, not open pha
 [00-overview.md](00-overview.md) for phase responsibilities and [system-components.md](system-components.md)
 for the component inventory.
 
-**Reopened 2026-07-05 — cross-substrate reliability hardening.** Driving the Sprint 13.16 real-run gate
+**Historical reopening 2026-07-05 — cross-substrate reliability hardening.** Driving the Sprint 13.16 real-run gate
 surfaced a systemic class of **race conditions, resource conflicts, and cleanup gaps** in cross-substrate
 spin-up + tests (Windows/WSL2, Apple/Lima, Linux/Incus), and several governed docs asserted guarantees the
-code does not uphold. **Phases 5, 9, 10, 11, and 16 were reopened `Active`** (alongside `Active` phase 13) —
+code did not uphold. **Phases 5, 9, 10, 11, and 16 were temporarily reopened** (alongside phase 13) —
 **all now closed `Done`, real-run-validated `6/6`; see the Update below** — each with a `## Remaining Work`
 section owning its slice: node/CNI readiness + kind health-check (5);
 host-headroom preflight, budget-scaled slice, `.wslconfig` merge, cross-substrate disk preflight (9);
 teardown-on-bring-up-failure, spatial test isolation, the in-VM safety probe (10); network-aware VM-ready
 probe, crash-recoverable `.wslconfig` restore, reconcile re-cordon, `vmIdleTimeout` (11); best-effort
-teardown on chain failure (16). This pass reopens the phases and reconciles the docs to honest current-state;
-the code fixes are the reopened Remaining Work, real-run-gated per substrate. The registry:2 `kind load`
+teardown on chain failure (16). That pass reconciled the docs to honest current state and closed after the
+real-run gate. The registry:2 `kind load`
 pre-load removed by the fix is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
@@ -157,16 +158,28 @@ truncated source-staging `tar`; a docker-poll shell-quoting break through the Wi
 path, moved to Haskell; and a host-reserve wrongly applied to the in-VM slice, split into a metal-only
 preflight).
 
+**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phases **2, 3, 5, 13, 15, 16, and 18
+are `Active`** for a real accelerator generalization of the demo. The demo UI will accept two `Float`
+values, dispatch an asynchronous CBOR WebSocket request to a separate project-binary daemon, and render the
+daemon's result. The daemon is the same project binary in every placement: Apple Silicon runs a host-native
+Swift/Metal worker; Linux GPU skips the Incus VM, launches an `nvkind` cluster directly on the host, and
+runs a CUDA daemon pod from the CUDA base; Linux CPU keeps the Incus VM and runs a C++/clang daemon pod from
+the CPU base; Windows GPU runs a host-native CUDA worker. No fake in-process accelerator may satisfy the
+feature. Closure requires static protocol/codegen tests, integration tests that build and run the real
+worker in each lane, and a browser e2e test that fills the add UI, waits for the asynchronous result, and
+asserts daemon-returned backend/artifact metadata. See
+[accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
+
 ## Phases
 
 | Phase | Title | Status |
 |-------|-------|--------|
 | 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
-| 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done |
-| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
+| 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Active |
+| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Done |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done |
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
@@ -174,12 +187,12 @@ preflight).
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
 | 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Done |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Done |
-| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Done |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active |
+| 16 | [Project lifecycle command and step-chain interpreter](phase-16-project-lifecycle-command.md) | Active |
 | 17 | [Chain-driven test surface and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Done |
-| 18 | [Service runtime command](phase-18-service-runtime-command.md) | Done |
+| 18 | [Service runtime command](phase-18-service-runtime-command.md) | Active |
 | 19 | [Generic project model and no core defaults](phase-19-generic-project-model.md) | Done |
 | 20 | [Config-driven demo worked example and multi-variant harness](phase-20-config-driven-demo-worked-example.md) | Done |
 | 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Done |
