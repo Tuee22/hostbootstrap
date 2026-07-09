@@ -25,8 +25,10 @@
 
 The Python layer runs *before any project binary exists*, so it can only depend on the host shell
 and a handful of system tools. Its job is to assert the host is bootstrappable, ensure the host build
-toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The fail-fast
-minimums below are the preconditions for that pre-binary work. All richer
+toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The build-only
+preconditions are slightly narrower than the runtime/provider preconditions: `hostbootstrap build` needs
+only enough to compile the binary, while `hostbootstrap doctor` and `hostbootstrap run` keep the full
+runtime/provider floor. All richer
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
 project binary (or `hostbootstrap-core`'s own bare binary).
 
@@ -37,9 +39,11 @@ The Python bootstrapper asserts, fail-fast:
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
-- **Hardware virtualization.** Intel VT-x / AMD-V enabled in firmware with a usable `/dev/kvm`, which
-  the nested VM providers (`ensure incus`) need — a KVM-less host would otherwise pass `doctor` and
-  fail only deep inside VM bring-up.
+- **Hardware virtualization for `doctor` / `run`.** Intel VT-x / AMD-V enabled in firmware with a usable
+  `/dev/kvm`, which the nested VM providers (`ensure incus`) need — a KVM-less host would otherwise pass
+  `doctor` and fail only deep inside VM bring-up. `hostbootstrap build` deliberately omits this check
+  because a build-only frame, such as the demo's already-provisioned Lima VM, can compile the binary
+  without nested virtualization.
 
 Docker itself is **not** a Python minimum on Linux; `ensure docker` provisions it, starts the daemon,
 grants the invoking user `docker` socket access for future login sessions, applies an immediate socket

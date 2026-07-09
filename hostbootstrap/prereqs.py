@@ -8,9 +8,13 @@ to consult.
 
 Per ``documents/engineering/prerequisites.md`` the minimums are:
 
-* **Linux** — Ubuntu 24.04 + passwordless sudo + hardware virtualization (a
-  usable ``/dev/kvm``, which the nested VM providers need); ``linux-gpu``
-  additionally verifies the NVIDIA container runtime is registered with Docker.
+* **Linux runtime/provider gate** — Ubuntu 24.04 + passwordless sudo + hardware
+  virtualization (a usable ``/dev/kvm``, which the nested VM providers need);
+  ``linux-gpu`` additionally verifies the NVIDIA container runtime is registered
+  with Docker.
+* **Linux build-only gate** — Ubuntu 24.04 + passwordless sudo. Building a
+  host-native binary inside an already-provisioned VM does not require nested
+  virtualization.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
 * **Windows** — winget (a required precondition, used by ``ensure cudawin``; the
   GHC/Cabal toolchain is PowerShell-bootstrapped, not winget-installed) and Windows
@@ -194,6 +198,15 @@ async def _run_linux(substrate: Substrate) -> DoctorResult:
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 
+async def _run_linux_build(substrate: Substrate) -> DoctorResult:
+    messages: list[str] = []
+    _check_ubuntu_2404()
+    messages.append("Ubuntu 24.04: OK")
+    _check_passwordless_sudo()
+    messages.append("passwordless sudo: OK")
+    return DoctorResult(substrate=substrate, messages=tuple(messages))
+
+
 async def _run_windows(substrate: Substrate) -> DoctorResult:
     messages: list[str] = []
     _check_winget()
@@ -209,6 +222,14 @@ async def run_doctor(substrate: Substrate) -> DoctorResult:
     if substrate.is_windows:
         return await _run_windows(substrate)
     return await _run_linux(substrate)
+
+
+async def run_build_doctor(substrate: Substrate) -> DoctorResult:
+    if substrate.name is SubstrateName.APPLE_SILICON:
+        return await _run_apple(substrate)
+    if substrate.is_windows:
+        return await _run_windows(substrate)
+    return await _run_linux_build(substrate)
 
 
 def run_doctor_sync(substrate: Substrate) -> DoctorResult:

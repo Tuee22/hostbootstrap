@@ -8,7 +8,7 @@ import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (Sysctl), mkAbsExe)
+import HostBootstrap.HostTool (HostTool (Df, Sysctl), mkAbsExe)
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import System.Directory (findExecutable)
 import qualified System.Info as Info
@@ -118,14 +118,20 @@ capacitySourceCases =
       if Info.os == "darwin" && Info.arch `elem` ["aarch64", "arm64"]
         then do
           sysctl <- findExecutable "sysctl"
-          case sysctl >>= either (const Nothing) Just . mkAbsExe of
-            Nothing -> assertBool "expected sysctl to resolve to an absolute path" False
-            Just exe -> do
+          df <- findExecutable "df"
+          let resolvedTools =
+                ( sysctl >>= either (const Nothing) Just . mkAbsExe,
+                  df >>= either (const Nothing) Just . mkAbsExe
+                )
+          case resolvedTools of
+            (Nothing, _) -> assertBool "expected sysctl to resolve to an absolute path" False
+            (_, Nothing) -> assertBool "expected df to resolve to an absolute path" False
+            (Just sysctlExe, Just dfExe) -> do
               result <-
                 resolveHostCapacity
                   HostConfig
                     { hcSubstrate = Substrate AppleSilicon Arm64,
-                      hcToolPaths = Map.singleton Sysctl exe
+                      hcToolPaths = Map.fromList [(Sysctl, sysctlExe), (Df, dfExe)]
                     }
               case result of
                 Right capacity ->

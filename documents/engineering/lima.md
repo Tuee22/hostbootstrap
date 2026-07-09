@@ -35,7 +35,7 @@ The pure command shapes are:
 
 ```text
 limactl start -y --timeout 15m --name=<instance> --containerd none --cpus N --memory GiB --disk GiB --vm-type vz template:ubuntu-24.04
-limactl shell <instance> -- <command>
+limactl shell <instance> -- sudo -H <command>
 limactl copy <source> <instance>:<target>
 limactl stop <instance>
 limactl delete <instance> --force
@@ -104,7 +104,7 @@ Linux VM (see [wsl2](wsl2.md)).
 `ensure lima` are exercised by the core tests. The Apple Silicon VM lifecycle runs through the core
 `deploy-VM` step kind and the recursive `project up` interpreter:
 
-- `project up` starts the Lima instance, stages the working tree into the guest, builds the project
+- `project up` starts the Lima instance, enters it through passwordless `sudo -H`, stages the working tree into the guest, builds the project
   binary host-native in the VM, ensures Docker in the VM, builds the project image, and hands `project
   up` down into the next frame.
 - `project down` stops the Lima instance through the `limactl stop` builder, preserving the instance and

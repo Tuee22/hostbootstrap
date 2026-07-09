@@ -61,7 +61,7 @@ foldCases =
         @?= DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
     testCase "InLimaVM dispatches limactl shell with the in-VM binary path" $
       foldLift self (inLimaVM limaVM localContext) sub
-        @?= DispatchTool Lima ["shell", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
+        @?= DispatchTool Lima ["shell", "demo-vm", "--", "sudo", "-H", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
     testCase "InWsl2VM dispatches wsl -d with the in-VM binary path" $
       foldLift self (inWsl2VM wslVM localContext) sub
         @?= DispatchTool Wsl ["-d", "hostbootstrap-demo", "--", "/usr/local/bin/hostbootstrap-demo", "cluster", "up"],
@@ -102,6 +102,8 @@ foldCases =
           [ "shell",
             "demo-vm",
             "--",
+            "sudo",
+            "-H",
             "docker",
             "run",
             "--rm",
@@ -145,7 +147,7 @@ foldLeafCases =
       foldLeaf (inLimaVM limaVM localContext) (reachLeaf "http://localhost:30080/api/budget")
         @?= DispatchTool
           Lima
-          ["shell", "demo-vm", "--", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
+          ["shell", "demo-vm", "--", "sudo", "-H", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://localhost:30080/api/budget"],
     testCase "reachLeaf in a WSL2 VM folds to wsl -d -- curl …" $
       foldLeaf (inWsl2VM wslVM localContext) (reachLeaf "http://localhost:30080/api/budget")
         @?= DispatchTool

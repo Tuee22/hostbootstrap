@@ -23,9 +23,9 @@ argvCases =
             @?= ["start", "-y", "--timeout", "15m", "--name=hostbootstrap-demo-vm", "--containerd", "none", "--cpus", "4", "--memory", "8", "--disk", "20", "template:ubuntu-24.04"]
     , testCase "stop halts the named instance without deleting it (project down)" $
         stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
-    , testCase "shell dispatches a bare in-VM command through limactl shell" $
+    , testCase "shell dispatches a root in-VM command through limactl shell" $
         shellVMArgs vm ["docker", "info"]
-            @?= ["shell", "hostbootstrap-demo-vm", "--", "docker", "info"]
+            @?= ["shell", "hostbootstrap-demo-vm", "--", "sudo", "-H", "docker", "info"]
     , testCase "copy targets the named instance" $
         copyToVMArgs vm "/tmp/src.tgz" "/tmp/src.tgz"
             @?= ["copy", "/tmp/src.tgz", "hostbootstrap-demo-vm:/tmp/src.tgz"]

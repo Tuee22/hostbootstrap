@@ -249,6 +249,10 @@ async def _assert_minimums(sub: Substrate) -> None:
     await prereqs.run_doctor(sub)
 
 
+async def _assert_build_minimums(sub: Substrate) -> None:
+    await prereqs.run_build_doctor(sub)
+
+
 async def _already_present(probe: tuple[str, ...]) -> bool:
     """Whether *probe* reports its tool present."""
     for _attempt in range(6):
@@ -292,7 +296,7 @@ async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
 async def build_binary(spec: ProjectBuildSpec, *, project_root: Path) -> Path:
     """Run the pre-binary bootstrap (development_plan_standards.md §§ M, N) and build the binary host-native."""
     sub = substrate.detect()
-    await _assert_minimums(sub)
+    await _assert_build_minimums(sub)
     await _ensure_toolchain(sub)
     await _build_native(spec, project_root=project_root)
     return binary_path(spec, project_root)
@@ -305,7 +309,10 @@ async def bootstrap(
     args: tuple[str, ...] = (),
 ) -> None:
     """Build the project binary host-native, then ``exec`` it with ``args``."""
-    await build_binary(spec, project_root=project_root)
+    sub = substrate.detect()
+    await _assert_minimums(sub)
+    await _ensure_toolchain(sub)
+    await _build_native(spec, project_root=project_root)
     argv = exec_argv(spec, project_root, args)
     _exec_project_binary(argv, project_root)
 

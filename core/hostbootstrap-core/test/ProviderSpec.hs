@@ -174,7 +174,7 @@ probeCases =
         spExists linux @?= ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
         spExists windows @?= ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
     , testCase "wait probes run a trivial true in the VM" $ do
-        spWait apple @?= WaitProbe Lima ["shell", "demo-vm", "--", "true"]
+        spWait apple @?= WaitProbe Lima ["shell", "demo-vm", "--", "sudo", "-H", "true"]
         spWait linux @?= WaitProbe Incus ["exec", "demo-vm", "--", "true"]
         spWait windows @?= WaitProbe Wsl ["-d", "demo-vm", "--", "true"]
     , testCase "reconcile-cordon: Nothing for Lima/Incus, a running-probe + guarded shutdown for WSL2" $ do
@@ -210,7 +210,7 @@ interpreterCases =
         vmShellArgs (ViaWsl2VM (Wsl2VM "d")) ["bash", "-lc", "echo hi"]
             @?= Just (Wsl, ["-d", "d", "--", "bash", "-lc", "echo hi"])
         vmShellArgs (ViaLimaVM (LimaVM "d")) ["true"]
-            @?= Just (Lima, ["shell", "d", "--", "true"])
+            @?= Just (Lima, ["shell", "d", "--", "sudo", "-H", "true"])
     , testCase "windowsPathToWslMount rewrites a drive path to its /mnt mount" $
         windowsPathToWslMount "C:\\Users\\Matt\\f.tgz" @?= "/mnt/c/Users/Matt/f.tgz"
     ]

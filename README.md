@@ -113,7 +113,8 @@ project binary it is built **host-native**; it is not baked into the base image.
 The Python bootstrapper does only what must run **before any project binary exists** — a short,
 fail-fast sequence:
 
-1. **Assert host minimums.** On Linux: Ubuntu 24.04, passwordless `sudo`, and hardware virtualization
+1. **Assert host minimums.** On Linux: Ubuntu 24.04 and passwordless `sudo`; `doctor` / `run` also require
+   hardware virtualization
    (Intel VT-x / AMD-V plus a usable `/dev/kvm`, which the nested VM providers need). On Apple: passwordless
    `sudo`, the Xcode Command Line Tools, and Homebrew. On Windows: winget and Windows PowerShell. Missing minimums stop the run with a clear
    message; the bootstrapper does not attempt to install them.

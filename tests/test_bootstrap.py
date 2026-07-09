@@ -275,6 +275,7 @@ def _patch_seams(
     *,
     doctored: list[Substrate],
     execed: list[list[str]],
+    build_doctored: list[Substrate] | None = None,
 ) -> None:
     monkeypatch.setattr(bootstrap.substrate, "detect", lambda: sub)
 
@@ -282,10 +283,15 @@ def _patch_seams(
         doctored.append(detected)
         return bootstrap.prereqs.DoctorResult(detected, ("ok",))
 
+    async def _fake_build_doctor(detected: Substrate) -> bootstrap.prereqs.DoctorResult:
+        (build_doctored if build_doctored is not None else doctored).append(detected)
+        return bootstrap.prereqs.DoctorResult(detected, ("ok",))
+
     def _fake_exec_project_binary(argv: tuple[str, ...], project_root: Path) -> None:
         execed.append(list(argv))
 
     monkeypatch.setattr(bootstrap.prereqs, "run_doctor", _fake_doctor)
+    monkeypatch.setattr(bootstrap.prereqs, "run_build_doctor", _fake_build_doctor)
     monkeypatch.setattr(bootstrap, "_exec_project_binary", _fake_exec_project_binary)
 
 
@@ -341,6 +347,65 @@ async def test_build_binary_builds_without_exec_or_dhall(
     assert all("init" not in cmd for cmd in recorded_commands)
     assert binary == bootstrap.binary_path(spec, tmp_path)
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
+    assert execed == []
+
+
+async def test_bootstrap_uses_runtime_doctor_not_build_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    runtime_doctored: list[Substrate] = []
+    build_doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    _patch_seams(
+        monkeypatch,
+        LINUX_CPU,
+        doctored=runtime_doctored,
+        build_doctored=build_doctored,
+        execed=execed,
+    )
+
+    spec = _project(tmp_path)
+    await bootstrap.bootstrap(spec, project_root=tmp_path)
+
+    assert runtime_doctored == [LINUX_CPU]
+    assert build_doctored == []
+    assert recorded_commands[-3:] == [
+        bootstrap.cabal_update_command(),
+        bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
+    ]
+    assert execed == [[str(bootstrap.binary_path(spec, tmp_path))]]
+
+
+async def test_build_binary_uses_build_doctor_not_runtime_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    runtime_doctored: list[Substrate] = []
+    build_doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    _patch_seams(
+        monkeypatch,
+        LINUX_CPU,
+        doctored=runtime_doctored,
+        build_doctored=build_doctored,
+        execed=execed,
+    )
+
+    spec = _project(tmp_path)
+    binary = await bootstrap.build_binary(spec, project_root=tmp_path)
+
+    assert runtime_doctored == []
+    assert build_doctored == [LINUX_CPU]
+    assert recorded_commands[-3:] == [
+        bootstrap.cabal_update_command(),
+        bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
+    ]
+    assert binary == bootstrap.binary_path(spec, tmp_path)
     assert execed == []
 
 

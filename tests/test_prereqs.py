@@ -238,6 +238,40 @@ async def test_run_linux_cpu_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+async def test_run_linux_build_minimums_omit_kvm(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
+    monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
+    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
+    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
+
+    result = await prereqs.run_build_doctor(Substrate(SubstrateName.LINUX_CPU, "amd64"))
+
+    assert calls == ["ubuntu", "sudo"]
+    assert result.messages == (
+        "Ubuntu 24.04: OK",
+        "passwordless sudo: OK",
+    )
+
+
+async def test_run_linux_gpu_build_minimums_omit_kvm_and_nvidia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
+    monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
+    monkeypatch.setattr(prereqs, "_check_hardware_virtualization", lambda: calls.append("kvm"))
+    monkeypatch.setattr(prereqs, "_check_nvidia_runtime", lambda: calls.append("nvidia"))
+
+    result = await prereqs.run_build_doctor(Substrate(SubstrateName.LINUX_GPU, "amd64"))
+
+    assert calls == ["ubuntu", "sudo"]
+    assert result.messages == (
+        "Ubuntu 24.04: OK",
+        "passwordless sudo: OK",
+    )
+
+
 async def test_run_linux_gpu_checks_nvidia_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
@@ -307,6 +341,41 @@ async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatc
     assert (await prereqs.run_doctor(apple)).messages == ("apple",)
     assert (await prereqs.run_doctor(windows)).messages == ("windows",)
     assert calls == ["linux", "apple", "windows"]
+
+
+async def test_run_build_doctor_dispatches_by_substrate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    linux = Substrate(SubstrateName.LINUX_CPU, "amd64")
+    apple = Substrate(SubstrateName.APPLE_SILICON, "arm64")
+    windows = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
+    calls: list[str] = []
+
+    async def _linux_build(_sub: Substrate) -> prereqs.DoctorResult:
+        calls.append("linux-build")
+        return prereqs.DoctorResult(linux, ("linux-build",))
+
+    async def _linux_runtime(_sub: Substrate) -> prereqs.DoctorResult:
+        calls.append("linux-runtime")
+        return prereqs.DoctorResult(linux, ("linux-runtime",))
+
+    async def _apple(_sub: Substrate) -> prereqs.DoctorResult:
+        calls.append("apple")
+        return prereqs.DoctorResult(apple, ("apple",))
+
+    async def _windows(_sub: Substrate) -> prereqs.DoctorResult:
+        calls.append("windows")
+        return prereqs.DoctorResult(windows, ("windows",))
+
+    monkeypatch.setattr(prereqs, "_run_linux_build", _linux_build)
+    monkeypatch.setattr(prereqs, "_run_linux", _linux_runtime)
+    monkeypatch.setattr(prereqs, "_run_apple", _apple)
+    monkeypatch.setattr(prereqs, "_run_windows", _windows)
+
+    assert (await prereqs.run_build_doctor(linux)).messages == ("linux-build",)
+    assert (await prereqs.run_build_doctor(apple)).messages == ("apple",)
+    assert (await prereqs.run_build_doctor(windows)).messages == ("windows",)
+    assert calls == ["linux-build", "apple", "windows"]
 
 
 def test_run_doctor_sync_wraps_async(monkeypatch: pytest.MonkeyPatch) -> None:
