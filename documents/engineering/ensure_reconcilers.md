@@ -164,13 +164,14 @@ GPU host requirements tracked in [prerequisites](prerequisites.md).
 ## Accelerator Build-Stack Ensures
 
 The accelerator-daemon demo reopens the ensure surface for host-resident accelerator build stacks. The
-reconciler implementations are present and unit-validated; their phase remains open only for real
-Apple/Windows host smoke runs. These reconcilers run only on host daemon lanes; Linux daemon pods trust the
-base image and never run ensure from inside the container.
+reconciler implementations are present and unit-validated. The Apple Silicon smoke run closed 2026-07-10
+on an M1 Max host (`ensure apple-metal: present (no-op)`); the phase remains open for the Windows GPU host
+smoke run. These reconcilers run only on host daemon lanes; Linux daemon pods trust the base image and never
+run ensure from inside the container.
 
 Phase 2 supplies the closed host-tool surface these reconcilers consume: `Swiftc`, `Xcrun`, and
-`SystemProfiler` for Apple Silicon, and `NvidiaSmi`, `Nvcc`, `Clang`, `MsvcCl`, and `Vswhere` for Windows
-GPU.
+`SystemProfiler` for Apple Silicon, `Clangxx` for the Linux CPU worker, and `NvidiaSmi`, `Nvcc`, `Clang`,
+`MsvcCl`, and `Vswhere` for Windows GPU.
 
 | Reconciler step | Applies to | Contract |
 |-----------------|------------|------------------|
@@ -180,8 +181,8 @@ GPU.
 The Apple reconciler is new Phase-3 code. The Windows work hardens the existing `ensure-cudawin`
 reconciler rather than adding a second Windows accelerator reconciler, because the demo's Windows
 accelerator lane is CUDA. Static validation is green (`cabal build all --ghc-options=-Werror` and the
-current `cabal test all` core baseline, 328 tests); real Apple Silicon and Windows GPU smoke runs remain
-the phase gate.
+current `cabal test all` core baseline, 328 tests); the Apple Silicon real smoke run closed 2026-07-10,
+and the Windows GPU smoke run remains the phase gate.
 
 ## Diagnostics
 

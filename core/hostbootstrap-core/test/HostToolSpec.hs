@@ -72,6 +72,7 @@ enumCases =
                 , Xcrun
                 , SystemProfiler
                 , Clang
+                , Clangxx
                 , MsvcCl
                 , Vswhere
                 , PowerShell
@@ -83,6 +84,7 @@ enumCases =
                 , XcodeSelect
                 , Incus
                 , Df
+                , Kill
                 ]
     ]
 
@@ -108,6 +110,7 @@ resolutionCases =
             , assertResolved Xcrun xcrunPath
             , assertResolved SystemProfiler systemProfilerPath
             , assertResolved Clang clangPath
+            , assertResolved Clangxx clangxxPath
             , assertResolved MsvcCl msvcClPath
             , assertResolved Vswhere vswherePath
             ]
@@ -117,6 +120,7 @@ resolutionCases =
             , assertUnresolved Xcrun
             , assertUnresolved SystemProfiler
             , assertUnresolved Clang
+            , assertUnresolved Clangxx
             , assertUnresolved MsvcCl
             , assertUnresolved Vswhere
             ]
@@ -142,6 +146,7 @@ resolutionCases =
                     , (Xcrun, mustAbs xcrunPath)
                     , (SystemProfiler, mustAbs systemProfilerPath)
                     , (Clang, mustAbs clangPath)
+                    , (Clangxx, mustAbs clangxxPath)
                     , (MsvcCl, mustAbs msvcClPath)
                     , (Vswhere, mustAbs vswherePath)
                     ]
@@ -191,6 +196,9 @@ systemProfilerPath = "C:\\Tools\\Xcode\\usr\\bin\\system_profiler.exe"
 clangPath :: FilePath
 clangPath = "C:\\Program Files\\LLVM\\bin\\clang.exe"
 
+clangxxPath :: FilePath
+clangxxPath = "C:\\Program Files\\LLVM\\bin\\clang++.exe"
+
 msvcClPath :: FilePath
 msvcClPath = "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.40.33807\\bin\\Hostx64\\x64\\cl.exe"
 
@@ -214,6 +222,9 @@ systemProfilerPath = "/usr/sbin/system_profiler"
 
 clangPath :: FilePath
 clangPath = "/usr/bin/clang"
+
+clangxxPath :: FilePath
+clangxxPath = "/usr/bin/clang++"
 
 msvcClPath :: FilePath
 msvcClPath = "/opt/msvc/bin/cl.exe"

@@ -168,17 +168,20 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 
 - **Landed (static):** demo UI controls, async pending/error/result state slots, and backend/artifact
   metadata display.
-- **Landed (static):** web API request/result/failure shapes plus the no-in-process-fallback
-  `/api/accelerator/add` placeholder that refuses to compute without a daemon.
+- **Landed:** web API request/result/failure shapes plus a no-in-process-fallback `/api/accelerator/add`
+  path. The endpoint refuses to compute when no daemon is registered, and otherwise dispatches CBOR work
+  to the daemon WebSocket with request-id correlation and a bounded response timeout.
 - **Landed (static):** deterministic JIT source generation, artifact hashing, and pure build-command
   builders for Apple Silicon Swift/Metal, Linux CPU C++/`clang++`, Linux GPU CUDA/`nvcc`, and Windows GPU
   CUDA/host-`nvcc` lanes.
-- **Landed (static):** Phase 18 service/runtime seam: `service run accelerator`, CBOR codecs,
-  request-id correlation, worker-supervision seam, and transport-injected daemon loop unit tests.
-- **Remaining:** live CBOR WebSocket transport, daemon registration, and daemon-to-web connection
-  integration.
-- **Remaining:** daemon build/run integration for the real workers in host and in-cluster placements
-  (Phases 15/16/18 plus the real substrate gates).
+- **Landed:** Phase 18 service/runtime seam and concrete local transport path: `service run accelerator`,
+  CBOR codecs, request-id correlation, worker-supervision seam, transport-injected daemon loop tests,
+  concrete WebSocket client transport, and web-side daemon registration.
+- **Landed:** Phase 16 host-daemon start/stop scaffolding for Apple Silicon and Windows GPU: the
+  post-handoff hook writes a host daemon sibling config, starts the copied project binary as
+  `service run accelerator`, records a pid file, and teardown best-effort stops that pid.
+- **Remaining:** daemon build/run integration for the real workers in host and in-cluster placements,
+  including the unavailable Windows GPU and Linux CPU/GPU lanes.
 - Add integration tests for each real lane that build the worker, connect the daemon, submit an add request,
   and assert the result plus backend/artifact metadata.
 - Add a browser e2e test that fills the two inputs, clicks Add, waits for the daemon result, asserts the
@@ -187,9 +190,11 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 Validation is blocked until integration tests and the browser e2e case land. Unit-only closure is not
 accepted for this feature.
 
-Static validation (2026-07-09): `cabal build all --ghc-options=-Werror` from `demo/` passed, and
-`cabal test all` from `demo/` passed with 37 demo tests plus the embedded 328 core tests after the
-Phase 18 accelerator protocol/runtime seam additions. Local
+Static/local validation (2026-07-10): `cabal build all --ghc-options=-Werror` from `demo/` passed, and
+`cabal test all` from `demo/` passed with 44 demo tests plus the embedded 328 core tests after the
+concrete WebSocket transport, host-daemon lifecycle, and reconnect-hardening additions. The locally
+available Apple worker smoke passed the same day: the daemon helper built/reused the Swift/Metal worker
+and `runWorkerProcess` returned `Right 3.75` for `1.5 + 2.25`. Local
 PureScript validation was not run because `spago`/`purs` are not installed on this host; the normal
 project-container `check-code`/web-build gate remains a live integration gate.
 
@@ -1036,9 +1041,10 @@ accelerator daemon and perform real `Float` addition through the correct native 
 
 #### Remaining Work
 
-Static UI/API/no-fallback/codegen work and the Phase 18 protocol/runtime seam are landed and validated by
-the demo Haskell gates. Open until the live CBOR WebSocket transport, daemon contexts/lifecycle, real
-worker build/run integration on each substrate, and browser e2e sum+metadata gate land.
+Static UI/API/codegen work, the Phase 18 concrete WebSocket transport, and the Phase 16 host-daemon
+start/stop slice are landed and validated by the demo Haskell gates. Open until real worker build/run
+integration on each substrate, in-cluster daemon pod placement, full host-daemon-to-web integration runs,
+and the browser e2e sum+metadata gate land.
 
 ## Documentation Requirements
 

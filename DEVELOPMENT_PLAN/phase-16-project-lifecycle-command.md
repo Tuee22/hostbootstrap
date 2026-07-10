@@ -76,14 +76,20 @@ that skips the Incus VM.
 - Done statically: the demo now selects `demoChainFor` by detected substrate. `linux-gpu` skips the Incus VM
   and uses a direct host -> project-container chain with the Phase 15 direct Linux GPU context and the
   Phase 5 `NvkindDriver` plan; `linux-cpu` keeps the existing Incus VM-backed chain.
-- Start and supervise host daemons for Apple Silicon and Windows GPU as long-running project-binary
-  processes, with singleton/lock behavior and teardown on `project down`/`project destroy`.
-- Wire in-cluster Linux CPU/GPU daemon pod startup once the Phase 18 live WebSocket transport is connected.
+- Done locally: Apple Silicon and Windows GPU host-daemon start/stop scaffolding is implemented in the
+  demo post-handoff hook. It stops an existing pid-file daemon, copies the current project binary into
+  `.build/accelerator-daemon/`, writes a daemon-authority sibling config, starts
+  `service run accelerator` with `HOSTBOOTSTRAP_ACCELERATOR_WS_URL`, records the pid, and best-effort stops
+  that pid from `project down`/`project destroy` through resolved host tools (`kill` or PowerShell).
+- Wire in-cluster Linux CPU/GPU daemon pod startup using the Phase 18 concrete WebSocket transport and the
+  Phase 5 `ClusterIP` ingress plan.
 
 Validation completed for the static slice: `cabal build all --ghc-options=-Werror` and `cabal test all`
-from `core/` pass (328 tests); the demo `-Werror` build passes; `cabal test all` from `demo/` passes (37
-demo tests plus the embedded 328 core tests after the Phase 18 runtime-seam tests). Remaining validation: process lifecycle tests for daemon
-start/stop and integration/e2e tests proving the daemon connects and serves the UI add request.
+from `core/` pass (328 tests); the demo `-Werror` build passes; `cabal test all` from `demo/` passes (44
+demo tests plus the embedded 328 core tests after the Phase 18 concrete WebSocket/reconnect tests).
+Remaining validation: real process lifecycle runs proving the host daemon connects through the local-only
+NodePort, in-cluster daemon pod startup, and integration/e2e tests proving the daemon serves the UI add
+request.
 
 **Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
 
@@ -420,8 +426,8 @@ accelerator ingress exists and stopped during teardown.
 
 - A post-cluster/post-handoff hook or ordered step class that runs after the child frame has stood up the
   web endpoint.
-- Host-daemon process lifecycle for Apple Silicon and Windows GPU, including singleton behavior, stdout/
-  stderr handling, and `project down`/`project destroy` stop behavior.
+- Host-daemon process lifecycle for Apple Silicon and Windows GPU, including pid-file singleton behavior,
+  daemon-authority sibling config creation, and `project down`/`project destroy` stop behavior.
 - Direct Linux GPU `nvkind` lifecycle through the project container without Incus VM provisioning.
 - Preservation of the existing Linux CPU Incus path.
 
@@ -437,10 +443,10 @@ accelerator ingress exists and stopped during teardown.
 
 #### Remaining Work
 
-Static hook ordering and the direct Linux GPU chain landed 2026-07-09. Validation: core `-Werror` build and
-328 tests; demo `-Werror` build and 37 demo tests plus embedded 328 core tests. Open for the long-running
-daemon process manager, teardown of those daemon processes, in-cluster daemon pod startup after Phase 18's
-live transport exists, and integration/browser e2e closure.
+Static hook ordering, the direct Linux GPU chain, and host-daemon start/stop scaffolding are landed.
+Validation: core `-Werror` build and 328 tests; demo `-Werror` build and 44 demo tests plus embedded 328
+core tests. Open for real host-daemon process integration on Apple/Windows, in-cluster Linux CPU/GPU
+daemon pod startup, and integration/browser e2e closure.
 
 ## Documentation Requirements
 

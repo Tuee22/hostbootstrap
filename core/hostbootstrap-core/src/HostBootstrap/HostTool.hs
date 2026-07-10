@@ -53,6 +53,7 @@ data HostTool
     | Xcrun
     | SystemProfiler
     | Clang
+    | Clangxx
     | MsvcCl
     | Vswhere
     | PowerShell
@@ -64,6 +65,7 @@ data HostTool
     | XcodeSelect
     | Incus
     | Df
+    | Kill
     deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Every host tool, for building a fully-resolved 'HostBootstrap.HostConfig'.
@@ -91,6 +93,7 @@ toolCommandName Swiftc = "swiftc"
 toolCommandName Xcrun = "xcrun"
 toolCommandName SystemProfiler = "system_profiler"
 toolCommandName Clang = "clang"
+toolCommandName Clangxx = "clang++"
 toolCommandName MsvcCl = "cl.exe"
 toolCommandName Vswhere = "vswhere.exe"
 toolCommandName PowerShell = "powershell.exe"
@@ -102,6 +105,7 @@ toolCommandName Sudo = "sudo"
 toolCommandName XcodeSelect = "xcode-select"
 toolCommandName Incus = "incus"
 toolCommandName Df = "df"
+toolCommandName Kill = "kill"
 
 {- | An absolute path to a resolved executable. The constructor is not exported;
 'mkAbsExe' is the only way to build one, so a value of this type is always an

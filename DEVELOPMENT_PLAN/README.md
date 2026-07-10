@@ -171,13 +171,21 @@ worker in each lane, and a browser e2e test that fills the add UI, waits for the
 asserts daemon-returned backend/artifact metadata. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 
-Static slices have landed for Phases 5, 13, 15, and 16: Linux GPU cluster/exposure planning is implemented
-in core, the demo now has the Accelerator tab, no-fallback web placeholder, typed accelerator API records,
-and deterministic worker source/build generators, the context layer has daemon/direct-container authority,
-and the lifecycle layer has post-handoff hooks plus Linux GPU direct-chain selection. The remaining open
-work is daemon process startup/teardown, live CBOR WebSocket transport and daemon registration, real worker
-integration, and real e2e closure. Phase 18's static protocol/runtime seam is implemented and unit-tested:
-`service run accelerator`, CBOR codecs/correlation, and the transport-injected daemon worker loop.
+Phase 3 has now closed the locally available Apple Silicon smoke gate: on 2026-07-10 an M1 Max host built
+the core with `cabal build all --ghc-options=-Werror` and `ensure apple-metal` reported
+`present (no-op)`. It remains `Active` only for the Windows GPU CudaWin smoke run.
+
+Static and local runtime slices have landed for Phases 5, 13, 15, 16, and 18: Linux GPU
+cluster/exposure planning is implemented in core, the demo has the Accelerator tab and typed accelerator
+API records, the web service has a no-in-process-fallback CBOR WebSocket daemon ingress, the daemon can
+build/reuse workers and connect over a concrete WebSocket transport, the context layer has daemon/direct-
+container authority, and the lifecycle layer has post-handoff hooks, Linux GPU direct-chain selection, and
+Apple/Windows host-daemon start/stop scaffolding. The remaining open work is real host/in-cluster daemon
+integration, real worker build/run validation across the unavailable substrate lanes, Linux CPU/GPU live
+daemon connectivity, and browser e2e closure. Phase 18's runtime seam is implemented and unit-tested:
+`service run accelerator`, CBOR codecs/correlation, transport-injected reconnect/timeout/shutdown, and the
+concrete WebSocket transport path. The locally available Apple worker smoke also passed on 2026-07-10: the
+daemon helper built/reused the Swift/Metal worker and returned `Right 3.75` for `1.5 + 2.25`.
 
 ## Phases
 

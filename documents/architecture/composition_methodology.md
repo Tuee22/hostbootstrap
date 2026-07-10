@@ -308,10 +308,12 @@ probe — into the correct frame).
 This document is the canonical statement of the model the validated build
 ships.
 
-The accelerator-daemon generalization is active plan work. The static lifecycle extension is implemented:
-`PostHandoff` hooks run only after the recursive child frame succeeds, and the demo selects a direct Linux
-GPU `nvkind` host -> project-container topology. Closure still requires real daemon process/runtime
-integration tests plus browser e2e tests that prove the UI add operation reaches the daemon-built worker.
+The accelerator-daemon generalization is active plan work. The lifecycle/runtime extension is implemented
+locally: `PostHandoff` hooks run only after the recursive child frame succeeds, the demo selects a direct
+Linux GPU `nvkind` host -> project-container topology, Apple/Windows host daemons have pid/config
+start-stop scaffolding, and the daemon/web path uses CBOR WebSocket. Closure still requires real
+host/in-cluster integration tests plus browser e2e tests that prove the UI add operation reaches the
+daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `test.dhall`, generates each run's `<project>.dhall` via `psTestConfig` (reusing `psInit`),

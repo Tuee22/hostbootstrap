@@ -34,8 +34,13 @@ sourceCases :: [TestTree]
 sourceCases =
     [ testCase "Swift/Metal source probes a Metal device" $
         assertText "MTLCreateSystemDefaultDevice" (workerSource AppleMetalBackend)
+    , testCase "Swift/Metal worker reads stdin and dispatches the kernel" $ do
+        assertText "FileHandle.standardInput" (workerSource AppleMetalBackend)
+        assertText "dispatchThreads" (workerSource AppleMetalBackend)
     , testCase "CUDA source contains the real kernel" $
         assertText "__global__ void hostbootstrap_add" (workerSource LinuxGpuBackend)
+    , testCase "CUDA source includes the runtime API header" $
+        assertText "#include <cuda_runtime.h>" (workerSource LinuxGpuBackend)
     , testCase "C++ source performs the worker add outside the web server" $
         assertText "std::cin >> left >> right" (workerSource LinuxCpuBackend)
     ]

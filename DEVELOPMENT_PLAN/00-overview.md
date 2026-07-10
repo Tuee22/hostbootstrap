@@ -146,8 +146,9 @@ docker, colima, apple-metal, lima, cuda, cudawin, homebrew, ghc, incus, and wsl2
 (CUDA-on-Windows headless host build, the first instance of composition pattern #7) is present on
 `windows-gpu`; `ensure tart` is retired. The provider-specific `ensure incus` / `ensure wsl2` lifecycle
 validation is owned by Phase 11. It is `Active` only for the accelerator build-stack real-run gates: the
-Apple Metal reconciler and hardened `ensure-cudawin` implementation are static-validated, but Apple
-Silicon and Windows GPU smoke builds still have to run on those hosts.
+Apple Metal reconciler and hardened `ensure-cudawin` implementation are static-validated; the Apple
+Silicon smoke build closed 2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`), and the
+Windows GPU smoke build still has to run on that host.
 
 ### Phase 4 — project-local Dhall and command tree
 
@@ -276,10 +277,10 @@ the descending binary before dispatch — validated by a live Windows/WSL2 `test
 `.vm.dhall`, no `.runtime-container.dhall`, and no config bind-mount; see
 [phase-15](phase-15-binary-context-config.md) Sprint 15.7 for the § X delivery contract.
 It is `Active` for the accelerator worked example. The static UI/API/codegen slice is implemented: the SPA
-has the Accelerator tab, the web endpoint refuses to compute without a daemon, and deterministic
-Swift/Metal, C++ and CUDA worker source/build generators are unit-tested. The remaining work is CBOR
-WebSocket dispatch, real per-substrate worker execution, and the integration/browser e2e tests that prove
-the path.
+has the Accelerator tab, the web endpoint refuses to compute without a daemon, deterministic Swift/Metal,
+C++ and CUDA worker source/build generators are unit-tested, and the local CBOR WebSocket daemon dispatch
+path is implemented. The remaining work is real per-substrate worker execution and the
+integration/browser e2e tests that prove the path.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -332,11 +333,13 @@ recursive interpreter, and the `project` command are built and real-run-validate
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
 composable tools, § P) — and the build-time `web bridge` is re-homed into the build-image step. The fixed
 surface is real-run-validated by the full `project up` + `test run all` run on Apple Silicon (2026-06-20).
-The reopened static lifecycle slice is implemented: `PostHandoff` steps run after the recursive child
+The reopened lifecycle slice is implemented locally: `PostHandoff` steps run after the recursive child
 frame succeeds, the demo contributes a host-daemon hook after ingress exposure, and `demoChainFor` selects
 a direct Linux GPU host -> project-container `nvkind` chain while Linux CPU keeps the VM-backed chain. The
-remaining open work is the real long-running daemon process startup/teardown and integration with the Phase
-18 daemon runtime.
+Apple/Windows host-daemon start/stop path writes a daemon-authority sibling config, starts a copied project
+binary as `service run accelerator`, records a pid, and stops it through resolved host tools during
+teardown. The remaining open work is real host-daemon integration, in-cluster Linux CPU/GPU daemon pod
+startup, and browser/integration validation with the Phase 18 daemon runtime.
 
 ### Phase 17 — Chain-driven test surface and context introspection
 
@@ -365,8 +368,10 @@ serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19). The reopened stat
 implemented: the demo registers `service run accelerator`, the existing service-context gate rejects
 project lifecycle authority, CBOR request/result/failure codecs and request-id correlation are tested, and
 the daemon worker/client seam covers reconnect, timeout, shutdown, backend metadata, and artifact hash
-propagation. The remaining open work is the concrete WebSocket transport, daemon registration, real
-host/in-cluster integration tests, real worker build/run gates, and the browser e2e Add workflow.
+propagation. The concrete WebSocket transport and web-side daemon registration are implemented locally:
+`/api/accelerator/daemon` accepts the daemon connection and `/api/accelerator/add` dispatches CBOR work to
+that daemon without an in-process sum fallback. The remaining open work is real host/in-cluster
+integration tests, real worker build/run gates, and the browser e2e Add workflow.
 
 ### Phase 19 — generic project model and no core defaults
 

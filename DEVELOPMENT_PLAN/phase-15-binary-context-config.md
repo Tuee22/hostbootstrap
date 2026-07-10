@@ -75,9 +75,10 @@ direct topology, and rejection of an unmarked host-backed project container.
 - Done statically: daemon role authority, host-resident daemon context projection, in-cluster daemon
   projection, the explicit Linux GPU direct project-container context, strict VM-backed runtime-container
   ancestry, and the pure/witness tests.
-- Remaining integration: Phase 16 must wire these projections into lifecycle handoff/startup, Phase 18 must
-  plug `service run accelerator` into the live WebSocket transport, and Phase 13 must close the real
-  substrate/e2e gates proving each daemon placement reads its config and connects to the web ingress.
+- Remaining integration: Phase 16/18 have wired the host-daemon config/startup and concrete WebSocket
+  runtime paths locally; Phase 16 still must place Linux CPU/GPU in-cluster daemon pods, and Phase 13 must
+  close the real substrate/e2e gates proving each daemon placement reads its config and connects to the
+  web ingress.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
@@ -502,9 +503,10 @@ project-container topology.
 #### Remaining Work
 
 Static constructors, gates, and topology tests landed 2026-07-09. Validation: `cabal build all
---ghc-options=-Werror` and `cabal test all` from `core/` pass (326 tests). Open only for the later
-integration checks that prove the Phase 16 daemon lifecycle and Phase 18 live transport deliver these
-configs to real daemon placements and reach the web service.
+--ghc-options=-Werror` and `cabal test all` from `core/` pass (326 tests; the current core suite is 328
+after the Phase 16 hook additions). Open only for the later integration checks that prove the Phase 16
+daemon lifecycle and Phase 18 concrete transport deliver these configs to real daemon placements and reach
+the web service.
 
 ## Documentation Requirements
 

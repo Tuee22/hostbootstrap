@@ -50,9 +50,12 @@ executable hostbootstrap-demo
     , optparse-applicative
     , process
     , purescript-bridge
+    , stm
     , text
     , wai
+    , wai-websockets
     , warp
+    , websockets
 
 test-suite hostbootstrap-demo-test
   import: warnings
@@ -85,8 +88,11 @@ test-suite hostbootstrap-demo-test
     , optparse-applicative
     , process
     , purescript-bridge
+    , stm
     , tasty
     , tasty-hunit
     , text
     , wai
+    , wai-websockets
     , warp
+    , websockets

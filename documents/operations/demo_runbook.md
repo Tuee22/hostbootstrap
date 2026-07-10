@@ -33,9 +33,10 @@
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
 - The accelerator extension is partially implemented. The demo UI has an `Accelerator` tab with two
-  `Float` inputs, an Add button, async state, and backend/artifact slots. Until the daemon runtime lands,
-  the web endpoint returns `accelerator daemon unavailable` instead of computing locally. The final result
-  must come from a project-binary accelerator daemon over CBOR WebSocket, backed by a real Swift/Metal,
+  `Float` inputs, an Add button, async state, and backend/artifact slots. The web service exposes a CBOR
+  WebSocket daemon endpoint and never computes the sum in process: with no daemon connected it returns
+  `accelerator daemon unavailable`; with a daemon connected it dispatches the request to that daemon. The
+  final integration gate still requires a project-binary accelerator daemon backed by a real Swift/Metal,
   CUDA, or C++ worker depending on substrate.
 
 ## Current Status
@@ -79,7 +80,8 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 [Step]` are real-run-validated end-to-end on real hardware (see
 [phase-13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)).
 
-The accelerator UI/no-fallback shell and deterministic worker source/build templates are implemented. The
+The accelerator UI/no-fallback shell, deterministic worker source/build templates, concrete CBOR WebSocket
+transport, host-daemon start/stop scaffolding, and daemon worker-supervision path are implemented. The
 daemon path is still reopened phase work and will not close until integration tests build the real worker
 in each supported lane and the browser e2e test proves the UI add workflow receives daemon-returned backend
 metadata.
@@ -239,7 +241,8 @@ Incus VM path and runs a daemon pod in the cluster. Linux GPU skips the Incus VM
 cluster directly on the host through the project container, then runs a CUDA daemon pod; the static
 lifecycle driver, Docker NVIDIA-runtime probe, direct context, and direct chain selection are implemented.
 Apple Silicon and Windows GPU start a host-native daemon after `project up` exposes a local-only NodePort
-for the web service; the real daemon process manager and Phase 18 runtime are still open. The demo
+for the web service; the local pid/config start-stop path and Phase 18 WebSocket runtime are implemented,
+but real host-daemon integration runs are still open. The demo
 reserves NodePort `30081` in `demo/kind.yaml` for that local-only accelerator ingress (`127.0.0.1` kind
 listen address), leaving the existing web NodePort `30080` behavior unchanged.
 

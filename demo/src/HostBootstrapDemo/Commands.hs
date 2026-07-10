@@ -61,7 +61,7 @@ import HostBootstrap.Cluster.Cordon (
     resolveHostCapacity,
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolveAcceleratorPlan, resolvePlan)
-import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext)
+import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
@@ -71,7 +71,7 @@ import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Mc, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
@@ -138,12 +138,12 @@ import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
-import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
-import System.Environment (getExecutablePath, setEnv)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, removeFile, renameFile, setPermissions, withCurrentDirectory)
+import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStr, stderr)
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess (env), createProcess, getPid, proc, readProcessWithExitCode)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
 for a static tab).
@@ -840,12 +840,91 @@ exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
 
 startHostAcceleratorDaemonAction :: HostConfig -> IO ()
 startHostAcceleratorDaemonAction cfg
-    | isAppleSilicon (hcSubstrate cfg) =
-        putStrLn "accelerator-daemon: host-resident Apple Silicon daemon hook is ordered after accelerator ingress"
-    | isWindows (hcSubstrate cfg) =
-        putStrLn "accelerator-daemon: host-resident Windows GPU daemon hook is ordered after accelerator ingress"
+    | isAppleSilicon (hcSubstrate cfg) || isWindows (hcSubstrate cfg) =
+        demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
+            stopHostAcceleratorDaemon cfg ctx
+            daemonExe <- installHostAcceleratorDaemonBinary ctx
+            let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
+                daemonCfg =
+                    projectConfigFromContext
+                        (dockerfile projectCfg)
+                        (deploy projectCfg)
+                        (message projectCfg)
+                        daemonCtx
+                daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
+                pidPath = hostAcceleratorDaemonPidPath ctx
+                endpoint = "ws://127.0.0.1:30081/api/accelerator/daemon"
+            writeProjectConfigFile daemonCfgPath daemonCfg
+            env0 <- getEnvironment
+            let daemonEnv =
+                    [ ("HOSTBOOTSTRAP_CURRENT_FRAME", T.unpack (Context.currentFrame daemonCtx))
+                    , ("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", endpoint)
+                    ]
+                        ++ filter
+                            ( \kv ->
+                                fst kv
+                                    `notElem` [ "HOSTBOOTSTRAP_CURRENT_FRAME"
+                                               , "HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
+                                               ]
+                            )
+                            env0
+            (_, _, _, ph) <- createProcess (proc daemonExe ["service", "run", "accelerator"]){env = Just daemonEnv}
+            mpid <- getPid ph
+            case mpid of
+                Nothing -> putStrLn "accelerator-daemon: started host daemon (process id unavailable)"
+                Just pid -> do
+                    writeFile pidPath (show pid ++ "\n")
+                    putStrLn ("accelerator-daemon: started host daemon pid " ++ show pid ++ " for " ++ endpoint)
     | otherwise =
         putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
+
+hostAcceleratorDaemonDir :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonDir ctx =
+    T.unpack (Context.sourceRoot ctx) </> ".build" </> "accelerator-daemon"
+
+hostAcceleratorDaemonExePath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonExePath ctx =
+    hostAcceleratorDaemonDir ctx </> demoProject
+
+hostAcceleratorDaemonConfigPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonConfigPath ctx =
+    hostAcceleratorDaemonDir ctx </> (demoProject ++ ".dhall")
+
+hostAcceleratorDaemonPidPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonPidPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.pid"
+
+installHostAcceleratorDaemonBinary :: Context.BinaryContext -> IO FilePath
+installHostAcceleratorDaemonBinary ctx = do
+    let daemonDir = hostAcceleratorDaemonDir ctx
+        daemonExe = hostAcceleratorDaemonExePath ctx
+    createDirectoryIfMissing True daemonDir
+    currentExe <- getExecutablePath
+    copyFile currentExe daemonExe
+    getPermissions currentExe >>= setPermissions daemonExe
+    pure daemonExe
+
+stopHostAcceleratorDaemon :: HostConfig -> Context.BinaryContext -> IO ()
+stopHostAcceleratorDaemon cfg ctx
+    | not (isAppleSilicon (hcSubstrate cfg) || isWindows (hcSubstrate cfg)) = pure ()
+    | otherwise = do
+        let pidPath = hostAcceleratorDaemonPidPath ctx
+        exists <- doesFileExist pidPath
+        when exists $ do
+            raw <- readFile pidPath
+            let pid = takeWhile (`elem` ['0' .. '9']) raw
+            unless (null pid) (stopPid pid)
+            removeFile pidPath
+  where
+    stopPid pid
+        | isWindows (hcSubstrate cfg) =
+            bestEffortTool
+                cfg
+                PowerShell
+                ["-NoProfile", "-Command", "Stop-Process -Id " ++ pid ++ " -Force -ErrorAction SilentlyContinue"]
+                ("accelerator-daemon: stopping host daemon pid " ++ pid)
+        | otherwise =
+            bestEffortTool cfg Kill [pid] ("accelerator-daemon: stopping host daemon pid " ++ pid)
 
 {- | Poll a URL by folding a 'reachLeaf' (@curl@) into @frame@ via the
 self-reference lift, so the probe runs in the frame where the NodePort is
@@ -1893,8 +1972,9 @@ and idempotent: a missing or already-stopped VM is reported and skipped, never a
 hard failure, so a partial stack always tears down.
 -}
 demoTeardown :: ProjectConfig -> Bool -> IO ()
-demoTeardown _ destroyVM = do
+demoTeardown projectCfg destroyVM = do
     cfg <- resolveHostConfig
+    stopHostAcceleratorDaemon cfg (context projectCfg)
     provider <- demoProvider cfg
     let name = spVmId provider
     if destroyVM

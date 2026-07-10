@@ -358,9 +358,9 @@ The accelerator-daemon context substrate is implemented in
 `HostBootstrap.Context`: host-resident daemon contexts use host placement, in-cluster daemon contexts use
 Kubernetes placement, and the Linux GPU direct container path is represented as an explicit
 host-backed project-container topology with a direct Linux GPU witness. The normal VM-backed
-project-container path still requires a VM ancestor. Phase 15 remains open only for integration validation
-with the Phase 16 daemon-process lifecycle, the Phase 18 live WebSocket transport, and the Phase 13
-browser/e2e gates.
+project-container path still requires a VM ancestor. Phase 15 remains open only for integration validation:
+the Phase 16 host-daemon and Phase 18 WebSocket paths are implemented locally, while Linux in-cluster
+daemon placement and the Phase 13 browser/e2e gates still need real runs.
 
 ## See Also
 

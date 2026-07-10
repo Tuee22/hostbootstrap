@@ -52,9 +52,9 @@ Real-run-validated (§ C): the demo's live `web` pod serves HTTP 200 via `servic
 (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 **Reopened 2026-07-09 for the accelerator daemon runtime.** The same fixed `service run`/handler registry
-surface runs the accelerator daemon role in host and in-cluster placements. The static protocol/runtime
-seam is implemented and unit-tested; live WebSocket transport, daemon registration, real worker runs, and
-browser e2e closure remain open.
+surface runs the accelerator daemon role in host and in-cluster placements. The protocol/runtime seam and
+concrete local WebSocket path are implemented and unit-tested; real host/in-cluster integration runs, real
+worker runs, and browser e2e closure remain open.
 
 ## Remaining Work
 
@@ -68,8 +68,10 @@ browser e2e closure remain open.
 - Done statically: `HostBootstrapDemo.Accelerator.Daemon` provides the worker-supervision seam and a
   transport-injected daemon client loop covering reconnect, request timeout, graceful shutdown, backend
   metadata, and artifact hash propagation.
-- Remaining: plug in the live WebSocket transport and daemon registration path from the web service to the
-  daemon.
+- Done locally: the concrete WebSocket daemon transport is plugged in, `/api/accelerator/daemon` registers
+  the daemon connection, and `/api/accelerator/add` dispatches CBOR requests to the registered daemon with
+  request-id correlation and a bounded response timeout. No daemon still yields
+  `accelerator daemon unavailable`; the web server never computes the sum in process.
 - Remaining: integration tests for in-cluster daemon connection by `ClusterIP` and host daemon connection
   by local-only `NodePort`.
 - Remaining: browser e2e Add workflow proving the UI result came from a real JIT-built worker.
@@ -247,17 +249,18 @@ WebSocket and forwards add requests to a JIT-built worker.
 
 #### Remaining Work
 
-Static runtime contract landed 2026-07-09: the demo registers `service run accelerator`, the existing
+Static/local runtime contract landed 2026-07-10: the demo registers `service run accelerator`, the existing
 `Context.ServiceCommand` gate rejects non-service/project-lifecycle authority, the CBOR protocol round
 trips request/result/failure messages and rejects invalid payloads, request-id correlation is unit-tested,
-the worker-supervision seam wraps success/failure with backend + artifact metadata, and the
+the worker-supervision seam wraps success/failure with backend + artifact metadata, the
 transport-injected daemon loop is unit-tested for receive -> worker -> correlated response -> graceful
-stop. Validation passed with the demo `-Werror` build and `cabal test all` from `demo/` (37 demo tests plus
-the embedded 328 core tests).
+stop and reconnect-after-disconnect, and the concrete WebSocket client/server path is implemented.
+Validation passed with the demo `-Werror` build and `cabal test all` from `demo/` (44 demo tests plus the
+embedded 328 core tests).
 
-The phase remains `Active` for live runtime closure: plug in the concrete WebSocket transport and daemon
-registration, run host-daemon and in-cluster daemon integration tests, build/run the real JIT workers in
-their lanes, and close the browser e2e Add workflow with daemon-returned backend/artifact metadata.
+The phase remains `Active` for live runtime closure: run host-daemon and in-cluster daemon integration
+tests, build/run the real JIT workers in their lanes, and close the browser e2e Add workflow with
+daemon-returned backend/artifact metadata.
 
 ## Documentation Requirements
 
@@ -270,8 +273,8 @@ their lanes, and close the browser e2e Add workflow with daemon-returned backend
 **Engineering docs to create/update:**
 - `documents/engineering/cluster_lifecycle.md` - the chart pod entrypoint `service run` and its config
   delivery.
-- `documents/engineering/accelerator_daemon.md` - CBOR protocol seam, live WebSocket transport, and worker
-  supervision.
+- `documents/engineering/accelerator_daemon.md` - CBOR protocol seam, concrete WebSocket transport, and
+  worker supervision.
 
 **Cross-references to add:**
 - `README.md` CLI Surface lists `service`; `system-components.md` adds the `service` command and the

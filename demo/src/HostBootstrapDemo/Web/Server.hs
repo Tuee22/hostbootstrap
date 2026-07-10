@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The hostbootstrap-demo webservice: a thin @wai@ application served by @warp@.
 
@@ -8,12 +9,18 @@ the SPA's data source); @GET /@ serves the SPA shell that loads the
 servant) so a derived project's container build hits the base-image warm store.
 -}
 module HostBootstrapDemo.Web.Server (
+    AcceleratorHub,
     app,
     serveWeb,
+    newAcceleratorHub,
     indexHtml,
 )
 where
 
+import Control.Concurrent (MVar, ThreadId, killThread, myThreadId, newMVar, threadDelay, withMVar)
+import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
+import Control.Exception (SomeException, finally, try)
+import Control.Monad (forever)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -22,8 +29,15 @@ import qualified Data.Text as T
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Context as Context
 import HostBootstrapDemo.Config (ProjectConfig (message))
+import HostBootstrapDemo.Accelerator.Protocol (
+    AcceleratorMessage (..),
+    AcceleratorResponse (..),
+    correlateResponse,
+    decodeAcceleratorMessage,
+    encodeAcceleratorMessage,
+ )
 import HostBootstrapDemo.Web.Api (
-    AcceleratorAddFailure,
+    AcceleratorAddFailure (..),
     AcceleratorAddRequest,
     acceleratorBadRequest,
     acceleratorUnavailable,
@@ -31,9 +45,12 @@ import HostBootstrapDemo.Web.Api (
     budgetView,
     mkAcceleratorAddRequest,
  )
-import Network.HTTP.Types (hContentType, status200, status400, status404, status503)
+import Network.HTTP.Types (Status, hContentType, status200, status400, status404, status503)
 import Network.Wai (Application, Request, Response, pathInfo, queryString, responseFile, responseLBS)
 import Network.Wai.Handler.Warp (run)
+import Network.Wai.Handler.WebSockets (websocketsOr)
+import qualified Network.WebSockets as WS
+import System.Timeout (timeout)
 import Text.Read (readMaybe)
 
 {- | The @esbuild@ bundle path, relative to the directory @service run web@ runs from
@@ -46,12 +63,33 @@ bundlePath = "web/public/app.js"
 (Sprint 20.1): the budget JSON endpoint (which carries the message), the SPA
 shell, the bundled Halogen app, and a 404.
 -}
-app :: Text -> Application
-app msg req respond = case pathInfo req of
+data AcceleratorHub = AcceleratorHub
+    { connectedDaemon :: TVar (Maybe DaemonPeer)
+    }
+
+data DaemonPeer = DaemonPeer
+    { peerConnection :: WS.Connection
+    , peerLock :: MVar ()
+    , peerThread :: ThreadId
+    }
+
+acceleratorDispatchTimeoutMicros :: Int
+acceleratorDispatchTimeoutMicros = 30000000
+
+newAcceleratorHub :: IO AcceleratorHub
+newAcceleratorHub =
+    AcceleratorHub <$> newTVarIO Nothing
+
+app :: Text -> AcceleratorHub -> Application
+app msg hub =
+    websocketsOr WS.defaultConnectionOptions (acceleratorDaemonServer hub) (httpApp msg hub)
+
+httpApp :: Text -> AcceleratorHub -> Application
+httpApp msg hub req respond = case pathInfo req of
     ["api", "budget"] ->
         respond (responseLBS status200 [(hContentType, "application/json")] (encode (budgetView msg)))
     ["api", "accelerator", "add"] ->
-        respond (acceleratorAddResponse req)
+        acceleratorAddResponse hub req >>= respond
     ["app.js"] ->
         respond (responseFile status200 [(hContentType, "application/javascript")] bundlePath Nothing)
     [] ->
@@ -59,13 +97,109 @@ app msg req respond = case pathInfo req of
     _ ->
         respond (responseLBS status404 [(hContentType, "text/plain")] "not found")
 
-acceleratorAddResponse :: Request -> Response
-acceleratorAddResponse req =
+acceleratorDaemonServer :: AcceleratorHub -> WS.ServerApp
+acceleratorDaemonServer hub pending
+    | WS.requestPath (WS.pendingRequest pending) == "/api/accelerator/daemon" = do
+        conn <- WS.acceptRequest pending
+        tid <- myThreadId
+        lock <- newMVar ()
+        let peer = DaemonPeer conn lock tid
+        ( registerPeer hub peer
+            >> forever (threadDelay maxBound)
+            )
+            `finally` clearPeerIfCurrent hub peer
+    | otherwise =
+        WS.rejectRequest pending "unknown accelerator websocket endpoint"
+
+acceleratorAddResponse :: AcceleratorHub -> Request -> IO Response
+acceleratorAddResponse hub req =
     case parseAcceleratorAddRequest req of
         Left failure ->
-            responseLBS status400 [(hContentType, "application/json")] (encode failure)
+            pure (responseLBS status400 [(hContentType, "application/json")] (encode failure))
         Right addReq ->
-            responseLBS status503 [(hContentType, "application/json")] (encode (acceleratorUnavailable (addRequestId addReq)))
+            acceleratorDispatch hub addReq
+
+acceleratorDispatch :: AcceleratorHub -> AcceleratorAddRequest -> IO Response
+acceleratorDispatch hub addReq = do
+    peer <- readTVarIO (connectedDaemon hub)
+    case peer of
+        Nothing ->
+            pure (failureResponse status503 (acceleratorUnavailable (addRequestId addReq)))
+        Just daemon ->
+            dispatchToPeer hub daemon addReq
+
+dispatchToPeer :: AcceleratorHub -> DaemonPeer -> AcceleratorAddRequest -> IO Response
+dispatchToPeer hub peer addReq =
+    withMVar (peerLock peer) $ \_ -> do
+        sent <- try (WS.sendBinaryData (peerConnection peer) (encodeAcceleratorMessage (AcceleratorRequest addReq))) :: IO (Either SomeException ())
+        case sent of
+            Left err -> do
+                clearPeer hub peer
+                pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) (T.pack (show err))))
+            Right _ -> do
+                received <- timeout acceleratorDispatchTimeoutMicros (try (WS.receiveData (peerConnection peer)) :: IO (Either SomeException BS8.ByteString))
+                case received of
+                    Nothing -> do
+                        clearPeer hub peer
+                        pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) "daemon response timeout"))
+                    Just (Left err) -> do
+                        clearPeer hub peer
+                        pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) (T.pack (show err))))
+                    Just (Right raw) ->
+                        pure (responseFromDaemon addReq raw)
+
+responseFromDaemon :: AcceleratorAddRequest -> BS8.ByteString -> Response
+responseFromDaemon addReq raw =
+    case decodeAcceleratorMessage raw of
+        Right (AcceleratorResult result) ->
+            correlatedResponse (AcceleratorSucceeded result)
+        Right (AcceleratorFailure failure) ->
+            correlatedResponse (AcceleratorFailed failure)
+        Right _ ->
+            failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) "daemon returned a request message")
+        Left err ->
+            failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) err)
+  where
+    correlatedResponse response =
+        case correlateResponse (addRequestId addReq) response of
+            Left err ->
+                failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) err)
+            Right (AcceleratorSucceeded result) ->
+                responseLBS status200 [(hContentType, "application/json")] (encode result)
+            Right (AcceleratorFailed failure) ->
+                failureResponse status503 failure
+
+failureResponse :: Status -> AcceleratorAddFailure -> Response
+failureResponse status failure =
+    responseLBS status [(hContentType, "application/json")] (encode failure)
+
+acceleratorUnavailableWith :: Text -> Text -> AcceleratorAddFailure
+acceleratorUnavailableWith rid err =
+    (acceleratorUnavailable rid){failureMessage = "accelerator daemon unavailable: " <> err}
+
+clearPeer :: AcceleratorHub -> DaemonPeer -> IO ()
+clearPeer hub peer = do
+    clearPeerIfCurrent hub peer
+    killThread (peerThread peer)
+
+registerPeer :: AcceleratorHub -> DaemonPeer -> IO ()
+registerPeer hub peer = do
+    previous <-
+        atomically $ do
+            old <- readTVar (connectedDaemon hub)
+            writeTVar (connectedDaemon hub) (Just peer)
+            pure old
+    case previous of
+        Nothing -> pure ()
+        Just oldPeer -> killThread (peerThread oldPeer)
+
+clearPeerIfCurrent :: AcceleratorHub -> DaemonPeer -> IO ()
+clearPeerIfCurrent hub peer =
+    atomically $ do
+        current <- readTVar (connectedDaemon hub)
+        case current of
+            Just active | peerThread active == peerThread peer -> writeTVar (connectedDaemon hub) Nothing
+            _ -> pure ()
 
 parseAcceleratorAddRequest :: Request -> Either AcceleratorAddFailure AcceleratorAddRequest
 parseAcceleratorAddRequest req = do
@@ -123,4 +257,5 @@ serveWeb port = do
             IO ProjectConfig
     let msg = message cfg
     putStrLn ("web serve: listening on http://0.0.0.0:" ++ show port ++ " (GET /api/budget, GET /); message=" ++ T.unpack msg)
-    run port (app msg)
+    hub <- newAcceleratorHub
+    run port (app msg hub)

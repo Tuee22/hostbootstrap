@@ -64,19 +64,22 @@
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
 > Reopened 2026-07-09: Phase 2 closed the substrate-specific accelerator host-tool coverage the same day
 > (`cabal test all`, 309 tests). Phase 3's reconciler implementation is also static-validated
-> (`cabal build all --ghc-options=-Werror`, current `cabal test all` core baseline 328 tests) but remains `Active` for real
-> Apple Silicon and Windows GPU smoke runs. Phase 5's static Linux GPU cluster/exposure primitives are
+> (`cabal build all --ghc-options=-Werror`, current `cabal test all` core baseline 328 tests); the real
+> Apple Silicon smoke run closed 2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`), but
+> Phase 3 remains `Active` for the Windows GPU smoke run. Phase 5's static Linux GPU cluster/exposure primitives are
 > implemented (`NvkindDriver`, Docker NVIDIA-runtime probe, and `ClusterIP`/local-only-`NodePort`
 > exposure planning) but remain `Active` for live daemon connectivity and e2e gates. Phase 15's static
 > daemon/direct-container context substrate is implemented (`cabal build all --ghc-options=-Werror`,
-> `cabal test all`, 326 tests) but remains `Active` for runtime integration. Phase 16's static
-> hook/direct-chain slice is implemented (`PostHandoff`, Linux GPU `demoChainFor` direct host ->
-> project-container selection, core 328 + demo 27 tests) but remains `Active` for real daemon process
-> lifecycle integration. Phase 18's static protocol/runtime seam is implemented (`service run accelerator`,
-> CBOR codecs/correlation, transport-injected daemon worker loop, demo 37 tests) but remains `Active` for
-> live transport and integration. Phase 13 also remains `Active` for the accelerator daemon demo. The
-> planned/open surfaces are host-daemon process startup/teardown, live CBOR WebSocket transport/registration,
-> and demo integration/browser e2e tests proving the UI add operation reaches a real JIT-built worker.
+> `cabal test all`, 326 tests) but remains `Active` for runtime integration. Phase 16's hook/direct-chain
+> and host-daemon start/stop slices are implemented (`PostHandoff`, Linux GPU `demoChainFor` direct host ->
+> project-container selection, Apple/Windows host daemon pid/config startup and teardown, core 328 + demo 44
+> tests) but remain `Active` for real daemon process integration and in-cluster daemon pod startup. Phase
+> 18's protocol/runtime and concrete WebSocket slices are implemented (`service run accelerator`, CBOR
+> codecs/correlation, transport-injected daemon worker loop, concrete WebSocket client/server path, demo 44
+> tests) but remain `Active` for real host/in-cluster integration. Phase 13 also remains `Active` for the
+> accelerator daemon demo. The planned/open surfaces are live Linux CPU/GPU daemon connectivity, real
+> Windows GPU and Linux worker build/run validation, and demo integration/browser e2e tests proving the UI
+> add operation reaches a real JIT-built worker.
 >
 > **Current suite SSoT:** `cabal test all` from `core/` reports 328 core tests after the Phase 16
 > post-handoff hook ordering additions. The prior 326-test core count followed the Phase 15
@@ -84,8 +87,8 @@
 > accelerator cluster/exposure additions (the 2026-07-05 cross-substrate reliability hardening added
 > `Cordon`/`Lifecycle`/`Harness`/`Wsl2`/`Provider` cases — the node/CNI health probe, the
 > metal-vs-in-VM budget-reserve split, the `.wslconfig` merge, the swap-headroom cordon, and the
-> guaranteed-teardown harness); `cabal test all` from `demo/` reports 37 demo tests plus the embedded 328
-> core tests after the Phase 18 accelerator protocol/runtime seam additions.
+> guaranteed-teardown harness); `cabal test all` from `demo/` reports 44 demo tests plus the embedded 328
+> core tests after the Phase 18 concrete WebSocket/reconnect additions.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -95,7 +98,7 @@ surface; the column records whether the module exists in this repository.
 | Module | Phase | Implemented | Purpose |
 |--------|-------|-------------|---------|
 | `HostBootstrap.CLI` | 1, 16 | yes | `ProjectSpec`, `runHostBootstrapCLI progName projectSpec`, and `runBareHostBootstrapCLI`; validated optparse entrypoints. The surface is **fixed** (`project` / `test` / `service` / `context` / `check-code`); `ProjectSpec` carries no `ProjectCommand` deltas — a project extends core via the chain, Dhall vocabulary, schema-gen, test seams, and service handlers (§ P) |
-| `HostBootstrap.HostTool` | 2, 5 | yes | closed `HostTool` enumeration; absolute-path resolution, including accelerator host tools (`Swiftc`, `Xcrun`, `SystemProfiler`, `Clang`, `MsvcCl`, `Vswhere`) and the Phase-5 `Nvkind` cluster creator |
+| `HostBootstrap.HostTool` | 2, 5, 13, 16 | yes | closed `HostTool` enumeration; absolute-path resolution, including accelerator host tools (`Swiftc`, `Xcrun`, `SystemProfiler`, `Clang`, `Clangxx`, `MsvcCl`, `Vswhere`), the Phase-5 `Nvkind` cluster creator, and `Kill` for POSIX host-daemon teardown |
 | `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
 | `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
 | `HostBootstrap.Substrate` | 2 | yes | substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) |
@@ -130,12 +133,12 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Wsl2` | 11 | yes | WSL2 (Ubuntu-24.04) VM lifecycle argv on Windows — the incus/lima host-provider VM peer (`install`/`import`/`exec`/`terminate`, distro-guarded) |
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 | `HostBootstrap.Ensure.Wsl2` | 11 | yes | `ensure wsl2` install-and-verify reconciler for the Windows WSL2 host-provider (the incus/lima peer) |
-| `HostBootstrap.Ensure.AppleMetal` | 3.6 | yes | `ensure-apple-metal` reconciler for the Apple Silicon accelerator daemon: visible Metal device, macOS SDK through `xcrun`, and a Swift + Metal compile/run probe; static-validated, real Apple Silicon smoke run still gates Phase 3 closure |
+| `HostBootstrap.Ensure.AppleMetal` | 3.6 | yes | `ensure-apple-metal` reconciler for the Apple Silicon accelerator daemon: visible Metal device, macOS SDK through `xcrun`, and a Swift + Metal compile/run probe; static-validated and real-run-validated on an M1 Max host 2026-07-10 (`present (no-op)`) |
 | `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-validated end-to-end on Incus/Linux and Apple Silicon |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, the `PostHandoff` hook kind for after-child-frame lifecycle work, the pure `renderChainPlan` dry-run render, and `stepsForFrame`/`preHandoffStepsForFrame`/`postHandoffStepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; it runs pre-handoff steps, descends to the child frame, and runs `PostHandoff` hooks only after the child succeeds; end-to-end provisioning is real-run-validated |
 | `HostBootstrapDemo.Accelerator.Protocol` | 18.5 | yes | deterministic CBOR request/result/failure protocol, invalid-payload rejection, and request-id correlation for the demo accelerator daemon |
-| `HostBootstrapDemo.Accelerator.Daemon` | 18.5 | yes | demo project-binary daemon seam: `service run accelerator`, worker supervision, backend/artifact metadata propagation, and transport-injected reconnect/timeout/shutdown loop; concrete WebSocket transport remains open |
+| `HostBootstrapDemo.Accelerator.Daemon` | 18.5 | yes | demo project-binary daemon seam: `service run accelerator`, worker supervision, backend/artifact metadata propagation, transport-injected reconnect/timeout/shutdown loop, concrete WebSocket client transport, endpoint parsing, and substrate-specific worker build/run entrypoints; real host/in-cluster integration remains open |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -150,10 +153,11 @@ that resolves through `$PATH`; every invocation reads an absolute path from type
 manager), `Nvcc` (CUDA-on-Windows toolchain verification for `ensure cudawin`), `Wsl` (WSL2
 host-provider control), and `Bcdedit` (Windows hypervisor launch reconciliation for `ensure wsl2`);
 `Tart` is no longer a member of the enum. The accelerator reopening added implemented host-tool coverage
-for Apple `swiftc`/`xcrun` plus `system_profiler` and Windows LLVM clang / MSVC host-compiler probes
-(`clang`, `cl.exe`, `vswhere.exe`) so generated Swift/Metal and CUDA workers can be built without bare
-`$PATH` calls. Phase 5 adds `Nvkind` so the Linux GPU direct cluster path creates GPU-enabled kind
-clusters through the same absolute-path host-tool boundary.
+for Apple `swiftc`/`xcrun` plus `system_profiler`, Linux CPU `clang++`, and Windows LLVM clang / MSVC
+host-compiler probes (`clang`, `cl.exe`, `vswhere.exe`) so generated Swift/Metal, C++ and CUDA workers can
+be built without bare `$PATH` calls. Phase 5 adds `Nvkind` so the Linux GPU direct cluster path creates
+GPU-enabled kind clusters through the same absolute-path host-tool boundary, and Phase 16 uses resolved
+`kill` for POSIX host-daemon teardown.
 See [development_plan_standards.md § K](development_plan_standards.md).
 
 ## Ensure reconcilers and host applicability
@@ -218,8 +222,8 @@ The runtime authority is:
 | `/usr/local/bin/<project>.dhall` baked in image | project Dockerfiles via `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall` | project container binary during image build | build/code-quality and config-generation authority only |
 | `/usr/local/bin/<project>.dhall` streamed in-place at runtime | parent renders the narrowed projection, streamed on the `docker run` `stdin`; the container entrypoint writes it before dispatch | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test run all`, with topology witnesses (no config bind-mount) |
 | service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
-| host daemon sibling `<project>.dhall` | host project binary after cluster ingress exists (Phase 16 lifecycle wiring still open) | Apple/Windows accelerator daemon | daemon role context, local-only accelerator ingress endpoint, worker build cache root, and backend identity |
-| in-cluster accelerator daemon `<project>.dhall` | chart/controller during cluster bring-up (Phase 16 pod startup and Phase 18 live transport still open) | Linux CPU/GPU daemon pod | daemon role context, `ClusterIP` accelerator ingress endpoint, and resource/backend settings |
+| host daemon sibling `<project>.dhall` | host project binary after cluster ingress exists (Phase 16 host-daemon wiring implemented locally; real integration still open) | Apple/Windows accelerator daemon | daemon role context, local-only accelerator ingress endpoint, worker build cache root, and backend identity |
+| in-cluster accelerator daemon `<project>.dhall` | chart/controller during cluster bring-up (Phase 16 pod startup still open; Phase 18 transport implemented locally) | Linux CPU/GPU daemon pod | daemon role context, `ClusterIP` accelerator ingress endpoint, and resource/backend settings |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for
 another project, claims unavailable capabilities, or does not authorize the requested command. Help,
@@ -379,8 +383,9 @@ accelerator static slices add
 `HostBootstrapDemo.Accelerator` (deterministic Swift/Metal, C++ and CUDA source templates, artifact hashes,
 and pure build-command builders), typed accelerator API result/failure records in
 `HostBootstrapDemo.Web.Api`, the SPA `Accelerator` tab, `HostBootstrapDemo.Accelerator.Protocol` CBOR
-codecs/correlation, `HostBootstrapDemo.Accelerator.Daemon` worker/client seams, and a current
-no-in-process-fallback web response.
+codecs/correlation, `HostBootstrapDemo.Accelerator.Daemon` worker/client seams and concrete WebSocket
+client transport, and a web service that registers a daemon WebSocket and never computes accelerator sums
+in process.
 The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall`
 files (host, VM, container on the VM, and cluster-service pod, the last delivered by a ConfigMap). The chain
 drives the live surface — the provider-aware VM axis (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows), applied budget
@@ -388,9 +393,10 @@ cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-c
 (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA served by `service run`, and
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that
 inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside a
-managed Linux VM. The active accelerator reopening still needs CBOR WebSocket accelerator ingress, a
-project-binary daemon, real worker build/run integration, per-substrate integration tests, and a browser e2e
-assertion that the UI result includes daemon-returned backend/artifact metadata.
+managed Linux VM. The active accelerator reopening has the local CBOR WebSocket accelerator ingress and
+project-binary daemon path implemented; it still needs real worker build/run integration, per-substrate
+integration tests, and a browser e2e assertion that the UI result includes daemon-returned backend/artifact
+metadata.
 
 ## Update rule
 

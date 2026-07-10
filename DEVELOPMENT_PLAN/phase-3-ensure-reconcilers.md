@@ -43,16 +43,20 @@ base image.
 
 ## Remaining Work
 
-**Accelerator build-stack ensure real-run gates — open.** The reconcilers and static tests are landed:
+**Accelerator build-stack ensure real-run gates — partly closed.** The reconcilers and static tests are landed:
 `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the current
 core suite reports 328 tests after the later accelerator context/lifecycle additions. `EnsureSpec` covers
 the ten-reconciler registry, Apple Metal applicability, CudaWin applicability, the pure install plans, and
 the Apple/Windows smoke-build command/source builders.
 
-Remaining validation requires real substrate runs that this local Linux GPU host cannot supply:
+Real substrate validation now closed for the locally available Apple Silicon lane: on 2026-07-10, an
+Apple Silicon M1 Max host built `hostbootstrap-core` with `cabal build all --ghc-options=-Werror` from
+`core/`, then invoked `runEnsure HostBootstrap.Ensure.AppleMetal.reconciler`; the reconciler reported
+`ensure apple-metal: present (no-op)`, proving the Swift compiler, macOS SDK, visible Metal device, and
+Swift/Metal probe are usable.
 
-- Apple Silicon: run `ensure apple-metal` on an Apple Silicon host and prove the Swift + Metal probe builds
-  and executes against a visible Metal device.
+Remaining validation requires a real Windows GPU substrate that this Apple Silicon host cannot supply:
+
 - Windows GPU: run the hardened `ensure cudawin` on a Windows GPU host and prove the `nvcc -ccbin <MSVC>`
   CUDA smoke compile succeeds after the CUDA Toolkit, Visual Studio VCTools workload, and LLVM clang are
   installed/verified.
@@ -328,11 +332,13 @@ Swift/Metal and Windows GPU CUDA.
 - `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the
   current core suite reports 328 tests after the later accelerator context/lifecycle additions.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
-  hardened `ensure-cudawin` builds the CUDA worker on Windows GPU.
+  hardened `ensure-cudawin` builds the CUDA worker on Windows GPU. The Apple Silicon gate closed
+  2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`); the Windows GPU gate remains open.
 
 #### Remaining Work
 
-Open only for the real host integration smoke builds: Apple Silicon Swift/Metal and Windows GPU CUDA/MSVC.
+Open only for the real Windows GPU CUDA/MSVC host integration smoke build. The Apple Silicon Swift/Metal
+smoke build closed 2026-07-10 on an M1 Max host after the core `-Werror` build.
 
 ## Documentation Requirements
 

@@ -170,10 +170,11 @@ a ConfigMap override, and no `service down`. The harness **drives the real `proj
 test configs rather than standing up isolated per-case clusters. The reconciliation that spanned phases
 10, 13, 14, 15, 16, 17, 18, 19, and 20 is closed in the development plan.
 
-The accelerator-daemon generalization is planned and tracked as reopened phase work. It extends the
-`HostDaemon` shape with a host/in-cluster placement matrix, CBOR WebSocket dispatch, and a real
-substrate-specific worker. It is not closed until integration tests build the worker in each lane and a
-browser e2e test proves the UI add operation is served by daemon-returned backend metadata.
+The accelerator-daemon generalization is tracked as reopened phase work. It extends the `HostDaemon` shape
+with a host/in-cluster placement matrix, CBOR WebSocket dispatch, and a real substrate-specific worker. The
+local daemon/web transport and Apple/Windows host-daemon start-stop path are implemented, but the work is
+not closed until integration tests build the worker in each lane and a browser e2e test proves the UI add
+operation is served by daemon-returned backend metadata.
 
 The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
 there are **no per-project verbs**. `project init|up|down|destroy` drives the lifecycle; `service run`
