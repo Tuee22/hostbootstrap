@@ -53,6 +53,7 @@ import HostBootstrap.Dhall.Gen (
     schemaUnion,
  )
 import HostBootstrap.Ensure (Reconciler)
+import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -82,6 +83,7 @@ allReconcilers :: [Reconciler]
 allReconcilers =
     [ Docker.reconciler
     , Colima.reconciler
+    , AppleMetal.reconciler
     , Cuda.reconciler
     , CudaWin.reconciler
     , Homebrew.reconciler
@@ -224,9 +226,10 @@ testCommand progName suite _initBuilder testInit testConfig =
         present <- doesFileExist cfgPath
         when present (removeFile cfgPath)
 
--- | The defaultless @init@ flag bundle the @test init@ / harness path uses: no
--- output/source-root/role overrides, so the project's builder supplies all
--- defaults.
+{- | The defaultless @init@ flag bundle the @test init@ / harness path uses: no
+output/source-root/role overrides, so the project's builder supplies all
+defaults.
+-}
 defaultInitArgs :: InitArgs
 defaultInitArgs =
     InitArgs
@@ -243,8 +246,9 @@ defaultInitArgs =
         , ifMissing = False
         }
 
--- | The per-project @test.dhall@ path: a sibling of the project config (the
--- @test run@ gate, § Z).
+{- | The per-project @test.dhall@ path: a sibling of the project config (the
+@test run@ gate, § Z).
+-}
 testDhallPath :: String -> IO FilePath
 testDhallPath progName = do
     cfgPath <- siblingProjectConfigPath (T.pack progName)

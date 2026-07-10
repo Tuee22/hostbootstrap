@@ -1,6 +1,8 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {- | The hostbootstrap-demo webservice API types.
 
@@ -13,9 +15,16 @@ types match the API by construction) and the JSON the @web@ service handler
 (@service run web@) returns.
 -}
 module HostBootstrapDemo.Web.Api (
+    AcceleratorAddFailure (..),
+    AcceleratorAddRequest (..),
+    AcceleratorAddResult (..),
     BudgetView (..),
+    addRequestId,
+    acceleratorBadRequest,
+    acceleratorUnavailable,
     budgetView,
     demoWebPod,
+    mkAcceleratorAddRequest,
 )
 where
 
@@ -24,6 +33,58 @@ import Data.Text (Text)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (fitsBudget)
 import qualified HostBootstrap.Config.Vocab as V
+
+data AcceleratorAddRequest = AcceleratorAddRequest
+    { requestId :: Text
+    , left :: Double
+    , right :: Double
+    }
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data AcceleratorAddResult = AcceleratorAddResult
+    { requestId :: Text
+    , result :: Double
+    , backend :: Text
+    , artifactHash :: Text
+    }
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+data AcceleratorAddFailure = AcceleratorAddFailure
+    { requestId :: Text
+    , failureMessage :: Text
+    , backend :: Text
+    , artifactHash :: Text
+    }
+    deriving (Eq, Show, Generic, ToJSON, FromJSON)
+
+acceleratorUnavailable :: Text -> AcceleratorAddFailure
+acceleratorUnavailable rid =
+    AcceleratorAddFailure
+        { requestId = rid
+        , failureMessage = "accelerator daemon unavailable"
+        , backend = "unavailable"
+        , artifactHash = ""
+        }
+
+acceleratorBadRequest :: Text -> Text -> AcceleratorAddFailure
+acceleratorBadRequest rid msg =
+    AcceleratorAddFailure
+        { requestId = rid
+        , failureMessage = msg
+        , backend = "invalid-request"
+        , artifactHash = ""
+        }
+
+mkAcceleratorAddRequest :: Text -> Double -> Double -> AcceleratorAddRequest
+mkAcceleratorAddRequest rid leftVal rightVal =
+    AcceleratorAddRequest
+        { requestId = rid
+        , left = leftVal
+        , right = rightVal
+        }
+
+addRequestId :: AcceleratorAddRequest -> Text
+addRequestId AcceleratorAddRequest{requestId = rid} = rid
 
 {- | The webservice's one view: the config-driven served @message@ (the worked
 example, Sprint 20.1), the demo budget, the concurrent web-pod footprint, and the

@@ -87,14 +87,17 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > `Done`. The original scope (phases 0 through 21) reached `Done`, and the 2026-07-05 cross-substrate
 > reliability reopening is also closed `Done`.
 >
-> **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phases 2, 3, 5, 13, 15, 16,
-> and 18 are `Active` for a real substrate-specific accelerator path: the demo UI accepts two `Float`
-> values, the web server dispatches CBOR work over WebSocket to a separate project-binary daemon, and the
-> daemon JIT-builds and runs a real Swift/Metal, CUDA, or C++ worker depending on substrate. There is no
-> fake in-process accelerator fallback. The closure gate includes integration tests for the real daemon
-> lanes and a browser e2e test that asserts both the sum and daemon-returned backend/artifact metadata. See
+> **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phase 2's host-tool slice is
+> closed; phases 3, 5, 13, 15, 16, and 18 remain `Active` for a real substrate-specific accelerator path:
+> the demo UI accepts two `Float` values, the web server dispatches CBOR work over WebSocket to a separate
+> project-binary daemon, and the daemon JIT-builds and runs a real Swift/Metal, CUDA, or C++ worker
+> depending on substrate. There is no fake in-process accelerator fallback. The closure gate includes
+> integration tests for the real daemon lanes and a browser e2e test that asserts both the sum and
+> daemon-returned backend/artifact metadata. See
 > [`documents/engineering/accelerator_daemon.md`](documents/engineering/accelerator_daemon.md) and
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
+> The static UI/no-fallback/codegen and daemon/direct-container context pieces are now present; lifecycle,
+> WebSocket runtime, real worker integration, and the final e2e gate remain open.
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -304,8 +307,8 @@ pipx install --force /path/to/hostbootstrap
 ## Demo App
 
 [`demo/`](demo/) is `hostbootstrap-demo`, the worked consumer of `hostbootstrap-core`. It consumes the
-core directly (L0-direct, like `mcts`) and contributes its own `demoChain :: ProjectConfig -> [Step]` value plus
-the step actions, test suites, and Dhall vocabulary that go with it, so the **demo's deploy is its chain**
+core directly (L0-direct, like `mcts`) and contributes its own substrate-selected `demoChainFor` `[Step]`
+value plus the step actions, test suites, and Dhall vocabulary that go with it, so the **demo's deploy is its chain**
 — interpreted by the single `project up` lifecycle command rather than a tree of noun verbs. It is the
 end-to-end exercise of the extension-stream additive extension contract: the lift chain (`[Step]` = core host
 steps + the demo's workload steps), the schema-gen registry (`coreArtifacts ++ demoArtifacts`), the test
@@ -320,10 +323,12 @@ The demo's end-to-end deploy is **one chain value**, not a parallel set of verbs
 bring-up, the in-cluster registry, web-serve, and e2e. There is **one operation, one representation** (single
 representation, § W): the ordered `[Step]` chain is THE representation, and the standardized test harness
 stays the one test-engine / lift-target. The chain interleaves core host-management steps with the demo's
-contributed workload steps, and `project up` interprets it recursively. The 11-row table below is a
-narrative expansion of the 9-value `demoChain` — row 1 is the upstream Python bootstrapper, the narrative
+contributed workload steps, and `project up` interprets it recursively. The 12-row table below is a
+narrative expansion of the default VM-backed `demoChain` — row 1 is the upstream Python bootstrapper, the narrative
 copy-source / ensure-GHC / ensure-docker / build-image rows fold into the single `build-pb` step, and the
-two deploy-VM steps plus the `context-init` step are the real chain that `project up --dry-run` renders:
+two deploy-VM steps plus the `context-init` step and post-handoff accelerator hook are the real chain that
+`project up --dry-run` renders. On `linux-gpu`, `demoChainFor` selects a direct host → project-container
+chain and the `nvkind` cluster plan instead of provisioning the Incus VM:
 
 | # | Step | Frame | Role |
 |---|---|---|---|
@@ -338,9 +343,10 @@ two deploy-VM steps plus the `context-init` step are the real chain that `projec
 | 9 | push image | container | the demo's workload step: load the project image into kind and push it to the in-cluster registry |
 | 10 | deploy chart | container | launch the web-service chart pod, whose entrypoint is `service run web`, on NodePort 30080 |
 | 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
+| 12 | post-handoff accelerator hook | host | host-resident daemon startup point after ingress is reachable; currently static until live daemon process startup/transport is wired |
 
-Steps 2–7, 10, and 11 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
-deploy-kind, deploy-chart, expose-port) — row 1 (host-pb) is the Python bootstrapper, not a `[Step]`;
+Steps 2–7, 10, 11, and 12 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
+deploy-kind, deploy-chart, expose-port, post-handoff) — row 1 (host-pb) is the Python bootstrapper, not a `[Step]`;
 steps 8–9 are the demo's contributed step kinds (deploy-registry,
 push-image) — host, cluster, and workload steps interleave freely in the same `[Step]`. The recursive interpreter folds each frame
 transition through the [self-reference lift](documents/architecture/composition_methodology.md) so kind,
@@ -359,6 +365,8 @@ cluster" path. The doctrine is stated canonically in
 > substrate-specific JIT worker, integration tests for each real lane, and a browser e2e Add workflow. See
 > [`documents/engineering/accelerator_daemon.md`](documents/engineering/accelerator_daemon.md) and
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
+> The current code includes the Accelerator tab, a no-fallback web response, and deterministic worker
+> source/build generators; it does not yet run a daemon-backed sum.
 
 ### Spin it up
 
@@ -440,7 +448,7 @@ carries two test layers:
   `NODE_PATH` to the base image's global npm package directory so `@playwright/test` resolves, and runs
   `playwright test`. It does not pull `mcr.microsoft.com/playwright:*`, run `npm install`, or use `npx`
   during validation. The suite runs every spec on all three engines the base image installs (Chromium,
-  Firefox, WebKit), so the `e2e-tabs` case is a `3 specs × 3 engines` matrix. The
+  Firefox, WebKit), so the `e2e-tabs` case is currently a `4 specs × 3 engines` matrix. The
   `e2e-tabs` spec is **polymorphic**: the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts
   whichever message the active deployment set — reading the SPA `#message` element — so the same spec proves
   both the `"Hello, world!"` and `"Hello, Universe!"` clusters.

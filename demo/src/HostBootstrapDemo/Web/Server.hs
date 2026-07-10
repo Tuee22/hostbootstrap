@@ -15,16 +15,26 @@ module HostBootstrapDemo.Web.Server (
 where
 
 import Data.Aeson (encode)
+import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Context as Context
 import HostBootstrapDemo.Config (ProjectConfig (message))
-import HostBootstrapDemo.Web.Api (budgetView)
-import Network.HTTP.Types (hContentType, status200, status404)
-import Network.Wai (Application, pathInfo, responseFile, responseLBS)
+import HostBootstrapDemo.Web.Api (
+    AcceleratorAddFailure,
+    AcceleratorAddRequest,
+    acceleratorBadRequest,
+    acceleratorUnavailable,
+    addRequestId,
+    budgetView,
+    mkAcceleratorAddRequest,
+ )
+import Network.HTTP.Types (hContentType, status200, status400, status404, status503)
+import Network.Wai (Application, Request, Response, pathInfo, queryString, responseFile, responseLBS)
 import Network.Wai.Handler.Warp (run)
+import Text.Read (readMaybe)
 
 {- | The @esbuild@ bundle path, relative to the directory @service run web@ runs from
 (the project root, where @web/public/app.js@ is produced by build #3).
@@ -40,12 +50,44 @@ app :: Text -> Application
 app msg req respond = case pathInfo req of
     ["api", "budget"] ->
         respond (responseLBS status200 [(hContentType, "application/json")] (encode (budgetView msg)))
+    ["api", "accelerator", "add"] ->
+        respond (acceleratorAddResponse req)
     ["app.js"] ->
         respond (responseFile status200 [(hContentType, "application/javascript")] bundlePath Nothing)
     [] ->
         respond (responseLBS status200 [(hContentType, "text/html; charset=utf-8")] indexHtml)
     _ ->
         respond (responseLBS status404 [(hContentType, "text/plain")] "not found")
+
+acceleratorAddResponse :: Request -> Response
+acceleratorAddResponse req =
+    case parseAcceleratorAddRequest req of
+        Left failure ->
+            responseLBS status400 [(hContentType, "application/json")] (encode failure)
+        Right addReq ->
+            responseLBS status503 [(hContentType, "application/json")] (encode (acceleratorUnavailable (addRequestId addReq)))
+
+parseAcceleratorAddRequest :: Request -> Either AcceleratorAddFailure AcceleratorAddRequest
+parseAcceleratorAddRequest req = do
+    rid <- Right (T.pack (maybe "web-ui" BS8.unpack (lookupQuery "requestId")))
+    leftRaw <- required "left" rid
+    rightRaw <- required "right" rid
+    leftVal <- number "left" rid leftRaw
+    rightVal <- number "right" rid rightRaw
+    Right (mkAcceleratorAddRequest rid leftVal rightVal)
+  where
+    pairs = queryString req
+    lookupQuery key = lookup key pairs >>= id
+    required key rid =
+        maybe
+            (Left (acceleratorBadRequest rid ("missing query parameter: " <> T.pack (BS8.unpack key))))
+            Right
+            (lookupQuery key)
+    number key rid raw =
+        maybe
+            (Left (acceleratorBadRequest rid ("invalid numeric query parameter: " <> T.pack (BS8.unpack key))))
+            Right
+            (readMaybe (BS8.unpack raw))
 
 {- | The SPA shell: a minimal HTML document that mounts the @esbuild@ bundle the
 @web bridge@ + @spago build@ + @esbuild@ steps produce (served from @/app.js@).

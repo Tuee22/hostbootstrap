@@ -23,35 +23,41 @@ chains as `ensure-*` steps; wrong-host applicability still fails fast before sid
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (see
 [development_plan_standards.md § L](development_plan_standards.md)).
 
-The Windows reopening is closed. The final reconciler set is
-`docker` / `colima` / `lima` / `cuda` / `cudawin` / `homebrew` / `ghc` / `incus` / `wsl2` — adding the
-Windows CUDA host-build reconciler `ensure cudawin` (this phase, Sprint 3.4) and the Windows WSL2 VM
-reconciler `ensure wsl2` (owned by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)) —
-and **retiring** the latent Tart reconciler (Sprint 3.5). The `ensure cudawin` work re-anchors
-composition pattern #7 to the **headless host build** (build on the bare Windows host, stage into the
-cluster, never run the workload in a build VM); the in-container linux-gpu `ensure cuda`
-(`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit) stays as a different concern.
+The Windows reopening is closed. The reconciler set is `docker` / `colima` / `apple-metal` / `cuda` /
+`cudawin` / `homebrew` / `ghc` / `lima` / `incus` / `wsl2` — adding the Windows CUDA host-build reconciler
+`ensure cudawin` (this phase, Sprint 3.4), the Apple Silicon accelerator build-stack reconciler
+`ensure apple-metal` (Sprint 3.6), and the Windows WSL2 VM reconciler `ensure wsl2` (owned by
+[phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)) — and **retiring** the latent Tart
+reconciler (Sprint 3.5). The `ensure cudawin` work re-anchors composition pattern #7 to the **headless
+host build** (build on the bare Windows host, stage into the cluster, never run the workload in a build
+VM); the in-container linux-gpu `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit)
+stays as a different concern.
 
 **Reopened 2026-07-09 for accelerator build-stack ensure.** The demo accelerator daemon needs host-only
-build-stack reconciliation for Apple Silicon and Windows GPU. Linux CPU/GPU daemon pods do not run ensure;
-they trust the hostbootstrap base image.
+build-stack reconciliation for Apple Silicon and Windows GPU. The implementation landed the same day:
+`HostBootstrap.Ensure.AppleMetal` verifies `system_profiler`, `xcrun --sdk macosx --show-sdk-path`, and a
+Swift + Metal compile/run probe; `HostBootstrap.Ensure.CudaWin` now verifies CUDA Toolkit, LLVM clang,
+Visual Studio Build Tools/VCTools discovery through `vswhere`, the resolved MSVC host compiler, and an
+`nvcc -ccbin` CUDA smoke compile. Linux CPU/GPU daemon pods do not run ensure; they trust the hostbootstrap
+base image.
 
 ## Remaining Work
 
-**Accelerator build-stack ensure — open.**
+**Accelerator build-stack ensure real-run gates — open.** The reconcilers and static tests are landed:
+`cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the current
+core suite reports 328 tests after the later accelerator context/lifecycle additions. `EnsureSpec` covers
+the ten-reconciler registry, Apple Metal applicability, CudaWin applicability, the pure install plans, and
+the Apple/Windows smoke-build command/source builders.
 
-- Add `ensure-apple-metal` for `apple-silicon`: verify a visible Metal device, `xcrun --sdk macosx
-  --show-sdk-path`, and a Swift compiler that can compile and run a tiny Swift + Metal probe headlessly.
-  The pre-binary floor already requires Xcode Command Line Tools and Homebrew; the reconciler may use
-  Homebrew for a Swift fallback, but it must not require full Xcode, Tart, a keychain, or a VM.
-- Harden `ensure-cudawin` for the Windows accelerator daemon: keep the NVIDIA driver as a precondition,
-  install/verify CUDA Toolkit (`Nvidia.CUDA`) with `winget`, Visual Studio Build Tools with the C++ workload
-  for `nvcc`'s host compiler, and LLVM clang (`LLVM.LLVM`), then compile a CUDA smoke artifact.
-- Do not add any in-container ensure path. Linux CPU and Linux GPU daemon pods fail loudly if the CPU/CUDA
+Remaining validation requires real substrate runs that this local Linux GPU host cannot supply:
+
+- Apple Silicon: run `ensure apple-metal` on an Apple Silicon host and prove the Swift + Metal probe builds
+  and executes against a visible Metal device.
+- Windows GPU: run the hardened `ensure cudawin` on a Windows GPU host and prove the `nvcc -ccbin <MSVC>`
+  CUDA smoke compile succeeds after the CUDA Toolkit, Visual Studio VCTools workload, and LLVM clang are
+  installed/verified.
+- Keep the no-in-container-ensure boundary: Linux CPU and Linux GPU daemon pods fail loudly if the CPU/CUDA
   base image lacks `clang++` or `nvcc`.
-
-Validation: unit tests for applicability and pure install plans; host integration tests proving the Apple
-Swift/Metal and Windows CUDA workers build through the daemon before the e2e UI test can pass.
 
 Previously closed work remains closed. Closed on 2026-06-26 after Phase 2 supplied the Windows Haskell toolchain: `cabal build all` and
 `cabal test all` passed from `core/`; `winget install --id Nvidia.CUDA --exact` installed CUDA Toolkit
@@ -69,11 +75,11 @@ GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the extensi
 Implement the substrate-and-ensure-reconciler contract (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
 idempotent value carrying a host-applicability predicate and a reconcile action. Projects compose the
-concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-lima`, `ensure-cuda`,
-`ensure-cudawin`, `ensure-homebrew`, `ensure-ghc`, `ensure-wsl2`, and `ensure-incus` chain steps
-(`ensure-cudawin` and `ensure-wsl2` are the reopened Windows additions — `ensure-cudawin` owned here,
-`ensure-wsl2` by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). A reconciler
-invoked on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
+concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-apple-metal`, `ensure-lima`,
+`ensure-cuda`, `ensure-cudawin`, `ensure-homebrew`, `ensure-ghc`, `ensure-wsl2`, and `ensure-incus` chain
+steps (`ensure-cudawin` and `ensure-wsl2` are the reopened Windows additions — `ensure-cudawin` owned here,
+`ensure-wsl2` by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). A reconciler invoked
+on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
 
 ## Sprints
 
@@ -318,12 +324,15 @@ Swift/Metal and Windows GPU CUDA.
 #### Validation
 
 - `EnsureSpec` covers applicability, wrong-host fail-fast, and pure install plans.
+- `EnsureSpec` covers the Apple Metal SDK/probe builders and the CudaWin clang/vswhere/nvcc smoke builders.
+- `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the
+  current core suite reports 328 tests after the later accelerator context/lifecycle additions.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
   hardened `ensure-cudawin` builds the CUDA worker on Windows GPU.
 
 #### Remaining Work
 
-Open until the reconcilers, tests, and host integration smoke builds land.
+Open only for the real host integration smoke builds: Apple Silicon Swift/Metal and Windows GPU CUDA/MSVC.
 
 ## Documentation Requirements
 

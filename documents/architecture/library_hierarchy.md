@@ -173,13 +173,14 @@ describes, exercised end-to-end on real hardware:
 
 - Stream 1 is the single contributed chain value walked by the recursive `project up` interpreter and
   threaded through `ProjectSpec`. Under the generic model (§ BB) the chain is `chain :: cfg -> [Step]` over
-  a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` (the demo's
-  `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`). The core ships
+  a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` through the
+  substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
+  `demo/src/HostBootstrapDemo/Commands.hs`. The core ships
   the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
   deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-registry, push-image)
   into the same ordered `[Step]`. Every binary surfaces the same fixed tree — `project`, `test`,
-  `service`, `context`, and `check-code` — and adds no verbs; the demo contributes its `Web` service
-  variant and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
+  `service`, `context`, and `check-code` — and adds no verbs; the demo contributes its `web` and
+  `accelerator` service variants and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
   persistent stack — deploy-kind →
   deploy-registry → push-image → deploy-chart → expose-port ending at a live web service on
   `localhost:30080` — and `project down` / `project destroy` tear it down with host `.data` preserved.

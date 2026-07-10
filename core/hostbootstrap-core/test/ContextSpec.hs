@@ -58,10 +58,11 @@ testRequirement =
         , requiredCapabilities = [DockerSocket, KindNetwork]
         }
 
--- | A fixture-backed project spec for the CLI-driving tests: the init builders
--- write/read a concrete 'Fixture.ProjectConfig' shape (so a written config
--- decodes back), and the suite is a trivial passing one (these tests never run
--- @test run@).
+{- | A fixture-backed project spec for the CLI-driving tests: the init builders
+write/read a concrete 'Fixture.ProjectConfig' shape (so a written config
+decodes back), and the suite is a trivial passing one (these tests never run
+@test run@).
+-}
 fixtureSpec :: String -> ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec progName =
     projectSpec
@@ -187,6 +188,60 @@ tests =
             parentChain svc @?= [ContextFrame HostOrchestrator "demo", ContextFrame VMOrchestrator "demo"]
             commandAllowed svc ServiceCommand @?= True
             commandAllowed svc HostOrchestratorCommand @?= False
+        , testCase "daemon contexts are leaf service authorities, not project lifecycle authorities" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                daemon = deriveHostDaemonContext host "/workspace/demo"
+                serviceReq = contextRequirement "demo" ServiceCommand []
+                projectReq = contextRequirement "demo" ClusterLifecycleCommand []
+            contextKind daemon @?= Daemon
+            roleName daemon @?= "daemon"
+            commandAllowed daemon ServiceCommand @?= True
+            commandAllowed daemon DaemonCommand @?= True
+            commandAllowed daemon ClusterLifecycleCommand @?= False
+            validateContext serviceReq daemon @?= Right daemon
+            validateContext projectReq daemon @?= Left (ContextCommandNotAllowed ClusterLifecycleCommand Daemon)
+        , testCase "daemon placement constructors distinguish host-resident and in-cluster configs" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                ctr = deriveContainerContext vm "/workspace/demo"
+                hostDaemon = deriveHostDaemonContext host "/workspace/daemon"
+                clusterDaemon = deriveClusterDaemonContext ctr "/srv/daemon"
+            providerOf hostDaemon @?= Just HostProvider
+            providerOf clusterDaemon @?= Just KubernetesProvider
+            assertBool
+                "host daemon has a frame witness"
+                (RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame hostDaemon) `elem` runtimeWitnesses hostDaemon)
+            assertBool
+                "cluster daemon has the service-account witness"
+                ( RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""
+                    `elem` runtimeWitnesses clusterDaemon
+                )
+        , testCase "wrong-frame daemon witness fails before daemon dispatch" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                badWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "daemon-1"
+                daemon = (deriveHostDaemonContext host "/workspace/daemon"){runtimeWitnesses = [badWitness]}
+                req = contextRequirement "demo" ServiceCommand []
+            result <- validateRuntimeContext req daemon
+            case result of
+                Left (ContextRuntimeWitnessFailed witness detail) -> do
+                    witness @?= badWitness
+                    assertBool "env witness reports a frame mismatch" ("environment HOSTBOOTSTRAP_CURRENT_FRAME" `isInfixOfS` detail)
+                other -> assertFailure ("expected runtime witness failure, got " ++ show other)
         , testCase "standaloneContainerContext is the Dockerfile bootstrap context" $ do
             let ctr = standaloneContainerContext "demo" "demo" "/workspace/demo" defaultResourceEnvelope
             contextKind ctr @?= ImageBuildContainer
@@ -207,6 +262,43 @@ tests =
                         (ResourceEnvelope 4 "8GiB" "20GiB")
                         VMProjectContainer
             validateContext testRequirement ctr
+                @?= Left (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
+        , testCase "explicit Linux GPU direct project-container context skips only the VM ancestor" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                direct = deriveLinuxGpuContainerContext host "/workspace/demo"
+            contextKind direct @?= VMProjectContainer
+            roleName direct @?= "linux-gpu-project-container"
+            parentChain direct @?= [ContextFrame HostOrchestrator "demo"]
+            currentFrame direct @?= "vm-project-container-1"
+            topologyFrames direct
+                @?= [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
+                    , TopologyFrame "vm-project-container-1" "host-orchestrator-0" DockerContainerProvider VMProjectContainer "linux-gpu-project-container"
+                    ]
+            assertBool
+                "direct topology is explicitly marked Linux GPU"
+                (RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu" `elem` runtimeWitnesses direct)
+            validateContext testRequirement direct @?= Right direct
+        , testCase "host-backed project-container without Linux GPU witness is rejected" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                        (ResourceEnvelope 4 "8GiB" "20GiB")
+                direct = deriveLinuxGpuContainerContext host "/workspace/demo"
+                missingExplicitWitness =
+                    direct
+                        { runtimeWitnesses =
+                            filter
+                                (/= RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu")
+                                (runtimeWitnesses direct)
+                        }
+            validateContext testRequirement missingExplicitWitness
                 @?= Left (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
         , testCase "validateRuntimeContext checks declared file witnesses before dispatch" $
             withSystemTempDirectory "hostbootstrap-witness" $ \dir -> do
@@ -345,3 +437,17 @@ withContextFile body action =
 
 fromString :: String -> T.Text
 fromString = T.pack
+
+providerOf :: BinaryContext -> Maybe ProviderKind
+providerOf ctx =
+    topologyProvider <$> findCurrent (currentFrame ctx) (topologyFrames ctx)
+
+findCurrent :: T.Text -> [TopologyFrame] -> Maybe TopologyFrame
+findCurrent _ [] = Nothing
+findCurrent frame (candidate : rest)
+    | topologyFrameId candidate == frame = Just candidate
+    | otherwise = findCurrent frame rest
+
+isInfixOfS :: String -> String -> Bool
+isInfixOfS needle hay =
+    T.pack needle `T.isInfixOf` T.pack hay

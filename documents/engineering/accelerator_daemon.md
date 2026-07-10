@@ -58,6 +58,12 @@ The server owns request correlation and timeouts. A UI request is not complete u
 matching `AddResult`. The response includes a backend identity and artifact hash so tests can prove the UI
 path reached the built worker rather than an in-process fallback.
 
+Current static demo behavior preserves that invariant before the live daemon transport lands: the SPA has
+the Add controls and renders pending/error/result states, but `/api/accelerator/add` returns
+`accelerator daemon unavailable` rather than computing locally. That placeholder is intentionally not the
+final transport; Phase 18 has the static CBOR protocol/correlation/timeout seam and still owns the concrete
+WebSocket transport plus daemon registration.
+
 ## Daemon And Worker Split
 
 The Haskell daemon should supervise a generated worker subprocess for the first implementation.
@@ -66,6 +72,8 @@ The project binary daemon owns:
 
 - deterministic source generation into `.build/accelerator/<substrate>/<hash>/`;
 - substrate build-stack ensure on Apple Silicon and Windows GPU only;
+- closed-enum host-tool resolution for host-resident probes: `Swiftc`, `Xcrun`, and `SystemProfiler` on
+  Apple Silicon; `NvidiaSmi`, `Nvcc`, `Clang`, `MsvcCl`, and `Vswhere` on Windows GPU;
 - build command selection and artifact caching;
 - worker process lifecycle, restart, stderr/stdout capture, and health probes;
 - WebSocket connection management and CBOR request/reply framing;
@@ -85,6 +93,11 @@ daemon portable, makes rebuild/restart simple, and isolates worker crashes from 
 plane. The cost is irrelevant for a demo operation that adds two floats.
 
 FFI is still a reasonable later optimization once the artifact ABI is stable and worth hardening.
+
+The deterministic worker source templates and build-command builders now live in
+`HostBootstrapDemo.Accelerator`: Swift/Metal for Apple Silicon, C++ for Linux CPU, and CUDA for Linux GPU
+and Windows GPU. Unit tests cover template identity, artifact hashes, and pure build arguments; the daemon
+runtime still owns writing those sources, invoking the builders, and supervising the subprocess.
 
 ## JIT Build Rules
 
@@ -110,15 +123,16 @@ that is a bad image/base contract, not an in-pod remediation event.
 
 Only host-resident daemon lanes run accelerator build-stack ensure:
 
-- **Apple Silicon**: add an Apple Metal build-stack reconciler that applies only to `apple-silicon`.
-  It verifies a visible Metal device, the macOS SDK via `xcrun --sdk macosx --show-sdk-path`, and a Swift
-  compiler that can build and run a tiny Swift + Metal probe headlessly. The pre-binary host floor already
-  requires Xcode Command Line Tools and Homebrew; the reconciler may use Homebrew for a Swift toolchain
-  fallback, but it must not require the full Xcode app, keychain state, Tart, or a VM.
-- **Windows GPU**: harden `ensure-cudawin` for the daemon build stack. It must verify the NVIDIA driver
-  (`nvidia-smi`), install the CUDA Toolkit (`Nvidia.CUDA`) with `winget`, install Visual Studio Build
-  Tools with the C++ workload (`Microsoft.VisualStudio.2022.BuildTools` plus the VCTools workload) for
-  `nvcc`'s host compiler, install LLVM clang (`LLVM.LLVM`) with `winget`, then compile a smoke artifact.
+- **Apple Silicon**: the Apple Metal build-stack reconciler applies only to `apple-silicon`. It verifies a
+  visible Metal device, the macOS SDK via `xcrun --sdk macosx --show-sdk-path`, and a Swift compiler that
+  can build and run a tiny Swift + Metal probe headlessly. The pre-binary host floor already requires Xcode
+  Command Line Tools and Homebrew; the reconciler must not require the full Xcode app, keychain state,
+  Tart, or a VM.
+- **Windows GPU**: the hardened `ensure-cudawin` daemon build-stack path verifies the NVIDIA driver
+  (`nvidia-smi`), installs/verifies the CUDA Toolkit (`Nvidia.CUDA`) with `winget`, installs Visual Studio
+  Build Tools with the C++ workload (`Microsoft.VisualStudio.2022.BuildTools` plus the VCTools workload)
+  for `nvcc`'s host compiler, installs/verifies LLVM clang (`LLVM.LLVM`) with `winget`, then compiles a
+  smoke artifact through `nvcc -ccbin <resolved-msvc-cl-directory>`.
 
 Linux CPU and Linux GPU daemon pods use the published base images. The CPU base carries the LLVM/clang
 stack; the CUDA base carries CUDA development tooling and the same hostbootstrap toolchain. The pod either
@@ -137,16 +151,29 @@ The accelerator ingress is a web-service endpoint, not a daemon service exposed 
 
 For the demo's kind-based clusters, local-only means the kind `extraPortMappings` entry binds the host
 listener to `127.0.0.1`, so the daemon can connect from the host without exposing the ingress on the LAN.
+`HostBootstrap.Cluster.Lifecycle.acceleratorIngressPlan` is the pure implementation of this selection:
+in-cluster daemons render `ClusterIP`, host-resident daemons render `NodePort` with the local-only kind
+listen address. The demo reserves `30081` as the local-only accelerator ingress mapping in `demo/kind.yaml`;
+the existing web, registry, and MinIO NodePorts keep their current bindings.
 
 ## Linux GPU Direct Cluster
 
 The Linux GPU lane does not need an Incus VM. The project binary should launch an `nvkind` cluster directly
 on the host, using the project container with a `docker run --rm` invocation and the host Docker socket.
-That requires the binary-context topology to express a host-backed project-container frame, not only the
-current VM-backed `vm-project-container` frame. The CUDA daemon pod then runs inside that cluster from the
-CUDA hostbootstrap base image and builds the CUDA worker with `nvcc`.
+The binary-context topology can express this as an explicit host-backed project-container frame, not only
+the existing VM-backed `vm-project-container` frame. The explicit Linux GPU context carries a direct
+topology witness so an ordinary host-to-container config cannot bypass the VM-ancestor rule. The CUDA
+daemon pod then runs inside that cluster from the CUDA hostbootstrap base image and builds the CUDA worker
+with `nvcc`.
 
 Linux CPU keeps the Incus VM path and still runs a separate in-cluster daemon pod.
+
+The lifecycle primitive is implemented in `HostBootstrap.Cluster.Lifecycle`: Linux GPU accelerator plans
+select `NvkindDriver`, run a Docker NVIDIA-runtime smoke, and create the cluster with
+`nvkind cluster create` and `--name=<cluster>` (with `kind.yaml` supplied as an `nvkind` config template when host port mappings
+are published). The Phase 15 context primitive is also implemented: `deriveLinuxGpuContainerContext`
+represents the host-backed project container while the normal VM-backed container context still requires a
+VM ancestor. Phase 16 still owns the effectful handoff that will call this path in the live demo.
 
 ## Tests
 
@@ -186,11 +213,24 @@ Browser e2e tests:
 
 ## Current Status
 
-This document is target design. The implementation is not yet present. The owning phases are reopened in
-the development plan: Phase 2 for host-tool enumeration, Phase 3 for host ensure logic, Phase 5 for the
-Linux GPU direct `nvkind` cluster and exposure shape, Phase 13 for the demo UI and integration/e2e tests,
-Phase 15 for daemon/direct-container context authority, Phase 16 for lifecycle startup of host daemons, and
-Phase 18 for the daemon/service runtime contract.
+This document is target design for the accelerator daemon as a whole. Phase 2's host-tool enumeration,
+Phase 3's reconciler implementation, Phase 5's cluster/exposure primitives, Phase 13's demo UI/codegen
+slice, Phase 15's daemon/direct-container context substrate, Phase 16's hook/direct-chain lifecycle
+substrate, and Phase 18's protocol/runtime seam are statically validated:
+the host-resident daemon lanes have closed `HostTool` constructors plus `ensure-apple-metal` / hardened
+`ensure-cudawin` code and unit tests, and the cluster lifecycle has `NvkindDriver`, the NVIDIA Docker
+runtime probe, and pure ingress exposure planning. The demo SPA now exposes the Accelerator tab and the
+Haskell worker templates/build builders exist. The context layer now gives daemon contexts `service run`
+authority without project lifecycle authority, distinguishes host-resident and in-cluster daemon
+placements, and models the explicit Linux GPU direct project-container topology. The lifecycle layer now
+has `PostHandoff` ordering and `demoChainFor` selects the direct Linux GPU host -> project-container
+`nvkind` chain while preserving the Linux CPU VM-backed chain. The runtime seam now registers
+`service run accelerator`, has CBOR request/result/failure codecs with request-id correlation, and tests a
+transport-injected daemon loop that supervises a worker and returns backend/artifact metadata. Phase 3
+still needs real Apple Silicon and Windows GPU smoke runs before it can close; Phase 5 still needs the live
+Linux CPU/GPU daemon connectivity and e2e gates. The remaining owning phases stay reopened in the
+development plan: Phase 13 for real integration/e2e tests, Phase 16 for daemon process startup/teardown,
+and Phase 18 for concrete WebSocket transport and daemon registration.
 
 ## See Also
 

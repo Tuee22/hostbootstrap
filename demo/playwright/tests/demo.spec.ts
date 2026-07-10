@@ -10,6 +10,7 @@ test("the SPA renders all three tabs", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Overview" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Budget" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Status" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Accelerator" })).toBeVisible();
 });
 
 test("the Budget tab shows the fitsBudget verdict", async ({ page }) => {
@@ -24,6 +25,16 @@ test("GET /api/budget returns the fitsBudget view", async ({ request }) => {
   const body = await res.json();
   expect(body.fits).toBe(true);
   expect(body.cpu).toBe(6);
+});
+
+test("the Accelerator tab has controls and no in-process fallback", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Accelerator" }).click();
+  await page.locator("#add-left").fill("1.5");
+  await page.locator("#add-right").fill("2.25");
+  await page.locator("#add-button").click();
+  await expect(page.locator("#add-error")).toHaveText("accelerator daemon unavailable");
+  await expect(page.locator("#add-backend")).toHaveText("unavailable");
 });
 
 // The polymorphic e2e (Sprint 20.4): the SPA's #message element renders the

@@ -127,7 +127,7 @@ flavor × arch set.
 
 ### Accelerator daemon base contract
 
-The planned accelerator daemon uses the published base images directly for in-cluster Linux lanes:
+The accelerator daemon uses the published base images directly for in-cluster Linux lanes:
 
 - `linux-cpu` daemon pods run from the CPU base and build the generated C++ worker with the base-provided
   `clang++`;
@@ -135,6 +135,9 @@ The planned accelerator daemon uses the published base images directly for in-cl
   base-provided `nvcc`;
 - no in-cluster daemon pod runs `ensure` to install compilers. A missing compiler in the pod is treated as
   a stale or incorrect base image, not as something the pod remediates at runtime.
+
+The deterministic C++/CUDA source templates and build arguments are implemented in
+`HostBootstrapDemo.Accelerator`; real in-pod build/run validation remains an accelerator integration gate.
 
 Host-resident accelerator lanes are separate from the base-image contract. Apple Silicon ensures the host
 Swift/Metal build stack; Windows GPU ensures the host CUDA/MSVC/clang build stack. See

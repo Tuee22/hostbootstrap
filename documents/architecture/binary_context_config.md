@@ -22,9 +22,9 @@
 - `context` is a **read-only** introspection/visualization command: it decodes the sibling `.dhall`,
   renders `topologyFrames`/`parentChain` with the current frame highlighted, and shows schema and witnesses.
   An internal **context-init step** of `project up` writes context files; no user verb does.
-- The planned accelerator daemon reuses this authority model: in-cluster Linux daemons receive
-  service/daemon configs, while Apple Silicon and Windows GPU host daemons read host-resident daemon
-  configs and connect to the cluster through a local-only NodePort.
+- The accelerator daemon reuses this authority model: in-cluster Linux daemons receive service/daemon
+  configs, while Apple Silicon and Windows GPU host daemons read host-resident daemon configs and connect
+  to the cluster through a local-only NodePort.
 
 ## The Contract
 
@@ -255,15 +255,16 @@ service role and a valid service variant; `service run` fails fast otherwise (§
 therefore serves image-build, ad-hoc runtime, and service contexts while each container instance reads
 exactly one local file.
 
-The planned accelerator daemon adds two authority placements:
+The accelerator daemon adds two authority placements:
 
 - in-cluster Linux CPU/GPU daemon pods receive daemon-role configs the same way service pods do, by
   ConfigMap override, and connect to the web service through `ClusterIP`;
 - Apple Silicon and Windows GPU host daemons receive host-resident daemon authority and connect to the web
   service through a local-only NodePort after `project up` has made the endpoint available.
 
-Both are still leaf roles. They do not run `project up`, bring up a cluster, or compute from a baked
-image-build config.
+Both are still leaf roles. The static context substrate enforces that daemon contexts can run the daemon
+handler through `service run` and daemon-only work, but cannot run `project up`, bring up a cluster, or
+compute from a baked image-build config.
 
 The test harness obeys the same authority rules without a distinct lifted "TestHarness" path: `test run`
 runs the **real `project up`** under a harness-generated root config, so its assertions execute in the
@@ -353,9 +354,13 @@ in-cluster registry, the project image pushed to the in-cluster registry, and th
 preserved. The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
 describes the authority contract.
 
-The accelerator-daemon contexts described above are target work, not current implementation. They are owned
-by the reopened Phase 15 context work and must be validated with integration tests that prove daemon
-contexts accept only daemon/service commands and reject project lifecycle commands.
+The accelerator-daemon context substrate is implemented in
+`HostBootstrap.Context`: host-resident daemon contexts use host placement, in-cluster daemon contexts use
+Kubernetes placement, and the Linux GPU direct container path is represented as an explicit
+host-backed project-container topology with a direct Linux GPU witness. The normal VM-backed
+project-container path still requires a VM ancestor. Phase 15 remains open only for integration validation
+with the Phase 16 daemon-process lifecycle, the Phase 18 live WebSocket transport, and the Phase 13
+browser/e2e gates.
 
 ## See Also
 

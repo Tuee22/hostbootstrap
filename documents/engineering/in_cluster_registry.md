@@ -31,7 +31,7 @@ login` and no TLS.
 
 The `hostbootstrap-demo` consumer (`demo/`) drives this end-to-end. Its
 `deploy-registry` and `push-image` steps belong to the container frame of
-`demoChain :: ProjectConfig -> [Step]`, the demo's contributed chain, and `project
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]`, the demo's contributed chain, and `project
 up` interprets them as it descends into that frame. `deploy-registry` applies a
 single Deployment + NodePort-30500 Service with `kubectl` and waits for the
 Deployment to be Ready; the registry pod **pulls** `registry:2` itself

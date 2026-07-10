@@ -52,20 +52,27 @@ Real-run-validated (§ C): the demo's live `web` pod serves HTTP 200 via `servic
 (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 **Reopened 2026-07-09 for the accelerator daemon runtime.** The same fixed `service run`/handler registry
-surface should run the accelerator daemon role in host and in-cluster placements, with CBOR WebSocket
-connection management and a supervised JIT worker.
+surface runs the accelerator daemon role in host and in-cluster placements. The static protocol/runtime
+seam is implemented and unit-tested; live WebSocket transport, daemon registration, real worker runs, and
+browser e2e closure remain open.
 
 ## Remaining Work
 
 **Accelerator daemon runtime — open.**
 
-- Add a daemon/service handler for the accelerator role.
-- Add CBOR request/result/failure codecs and request-id correlation.
-- Add a WebSocket client loop for daemon-to-web connection, reconnect, timeout, and graceful shutdown.
-- Add a worker-supervision seam used by the daemon after the substrate-specific JIT build.
-- Gate `service run accelerator` to daemon/service contexts only, rejecting project lifecycle authority.
-- Validate with codec/unit tests, in-cluster and host-daemon integration tests, and the browser e2e Add
-  workflow.
+- Done statically: `service run accelerator` is registered through the demo service-handler registry and
+  goes through the existing `Context.ServiceCommand` gate, so host/project lifecycle authority is rejected
+  before the handler can run.
+- Done statically: `HostBootstrapDemo.Accelerator.Protocol` provides deterministic CBOR request/result/
+  failure codecs and request-id correlation.
+- Done statically: `HostBootstrapDemo.Accelerator.Daemon` provides the worker-supervision seam and a
+  transport-injected daemon client loop covering reconnect, request timeout, graceful shutdown, backend
+  metadata, and artifact hash propagation.
+- Remaining: plug in the live WebSocket transport and daemon registration path from the web service to the
+  daemon.
+- Remaining: integration tests for in-cluster daemon connection by `ClusterIP` and host daemon connection
+  by local-only `NodePort`.
+- Remaining: browser e2e Add workflow proving the UI result came from a real JIT-built worker.
 
 ## Phase Objective
 
@@ -210,7 +217,9 @@ NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/src/HostBootstrapDemo/Accelerator/Protocol.hs`,
+`demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`
 **Docs to update**: `documents/architecture/run_models.md`,
 `documents/architecture/binary_context_config.md`, `documents/engineering/accelerator_daemon.md`
 
@@ -238,7 +247,17 @@ WebSocket and forwards add requests to a JIT-built worker.
 
 #### Remaining Work
 
-Open until the daemon handler, protocol tests, integration tests, and e2e add test land.
+Static runtime contract landed 2026-07-09: the demo registers `service run accelerator`, the existing
+`Context.ServiceCommand` gate rejects non-service/project-lifecycle authority, the CBOR protocol round
+trips request/result/failure messages and rejects invalid payloads, request-id correlation is unit-tested,
+the worker-supervision seam wraps success/failure with backend + artifact metadata, and the
+transport-injected daemon loop is unit-tested for receive -> worker -> correlated response -> graceful
+stop. Validation passed with the demo `-Werror` build and `cabal test all` from `demo/` (37 demo tests plus
+the embedded 328 core tests).
+
+The phase remains `Active` for live runtime closure: plug in the concrete WebSocket transport and daemon
+registration, run host-daemon and in-cluster daemon integration tests, build/run the real JIT workers in
+their lanes, and close the browser e2e Add workflow with daemon-returned backend/artifact metadata.
 
 ## Documentation Requirements
 
@@ -251,7 +270,8 @@ Open until the daemon handler, protocol tests, integration tests, and e2e add te
 **Engineering docs to create/update:**
 - `documents/engineering/cluster_lifecycle.md` - the chart pod entrypoint `service run` and its config
   delivery.
-- `documents/engineering/accelerator_daemon.md` - CBOR WebSocket daemon runtime and worker supervision.
+- `documents/engineering/accelerator_daemon.md` - CBOR protocol seam, live WebSocket transport, and worker
+  supervision.
 
 **Cross-references to add:**
 - `README.md` CLI Surface lists `service`; `system-components.md` adds the `service` command and the

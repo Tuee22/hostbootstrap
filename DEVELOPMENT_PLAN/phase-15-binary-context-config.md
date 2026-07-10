@@ -61,20 +61,23 @@ gate into the recursive `project up` apply is owned by phase-16.
 daemon-authority context that works both in-cluster and host-native, plus a direct host-backed
 project-container topology for the Linux GPU `nvkind` path.
 
+The static context slice is implemented and validated: `HostBootstrap.Context` now gives daemon contexts
+leaf `service run` / daemon authority without project lifecycle authority, distinguishes host-resident and
+in-cluster daemon projections, and exposes an explicit Linux GPU direct project-container context that
+requires a direct-topology witness while preserving the normal VM-ancestor rule for VM-backed runtime
+containers. `ContextSpec` covers daemon authorization, wrong-frame daemon witness failure, the Linux GPU
+direct topology, and rejection of an unmarked host-backed project container.
+
 ## Remaining Work
 
-**Accelerator daemon context work — open.**
+**Accelerator daemon context work — static substrate landed; integration open.**
 
-- Define daemon-role authority for the accelerator daemon: it may run `service run`/daemon handler work,
-  connect to the web accelerator ingress, and supervise a worker, but it may not run `project up` or cluster
-  lifecycle commands.
-- Support in-cluster daemon configs delivered by ConfigMap for Linux CPU/GPU daemon pods.
-- Support host-resident daemon configs for Apple Silicon and Windows GPU host daemons.
-- Generalize the project-container topology so Linux GPU can represent `host -> project container ->
-  nvkind cluster` without a VM-orchestrator ancestor, while the existing VM-backed runtime container
-  authority remains strict.
-- Add tests that wrong-frame daemon configs fail before side effects and that direct host `docker run` is
-  accepted only for the explicit Linux GPU topology.
+- Done statically: daemon role authority, host-resident daemon context projection, in-cluster daemon
+  projection, the explicit Linux GPU direct project-container context, strict VM-backed runtime-container
+  ancestry, and the pure/witness tests.
+- Remaining integration: Phase 16 must wire these projections into lifecycle handoff/startup, Phase 18 must
+  plug `service run accelerator` into the live WebSocket transport, and Phase 13 must close the real
+  substrate/e2e gates proving each daemon placement reads its config and connects to the web ingress.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
@@ -492,12 +495,16 @@ project-container topology.
 
 - `ContextSpec` covers daemon command authorization, project-command rejection from daemon contexts, and
   wrong-frame witness failures.
-- Pure topology tests cover the direct Linux GPU project-container path and the existing VM path.
+- Pure topology tests cover the direct Linux GPU project-container path, rejection of an unmarked
+  host-backed project container, and the existing VM path.
 - Integration tests prove all daemon placements read the expected config and connect to the web service.
 
 #### Remaining Work
 
-Open until the context constructors, gates, topology tests, and integration checks land.
+Static constructors, gates, and topology tests landed 2026-07-09. Validation: `cabal build all
+--ghc-options=-Werror` and `cabal test all` from `core/` pass (326 tests). Open only for the later
+integration checks that prove the Phase 16 daemon lifecycle and Phase 18 live transport deliver these
+configs to real daemon placements and reach the web service.
 
 ## Documentation Requirements
 

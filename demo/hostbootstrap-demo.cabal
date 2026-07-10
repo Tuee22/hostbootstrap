@@ -29,6 +29,9 @@ executable hostbootstrap-demo
   -- warp's timer manager requires the threaded runtime.
   ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
   other-modules:
+      HostBootstrapDemo.Accelerator
+      HostBootstrapDemo.Accelerator.Daemon
+      HostBootstrapDemo.Accelerator.Protocol
       HostBootstrapDemo.Commands
       HostBootstrapDemo.Config
       HostBootstrapDemo.Container
@@ -57,13 +60,33 @@ test-suite hostbootstrap-demo-test
   hs-source-dirs: test, src
   main-is: Spec.hs
   other-modules:
+      AcceleratorSpec
+      AcceleratorRuntimeSpec
+      CommandsSpec
       ConfigSpec
+      HostBootstrapDemo.Accelerator
+      HostBootstrapDemo.Accelerator.Daemon
+      HostBootstrapDemo.Accelerator.Protocol
+      HostBootstrapDemo.Commands
       HostBootstrapDemo.Config
       HostBootstrapDemo.Container
+      HostBootstrapDemo.Web.Api
+      HostBootstrapDemo.Web.Bridge
+      HostBootstrapDemo.Web.Server
   build-depends:
-      base >=4.18 && <5
+      aeson
+    , base >=4.18 && <5
+    , bytestring
     , dhall
+    , directory
+    , filepath
     , hostbootstrap-core
+    , http-types
+    , optparse-applicative
+    , process
+    , purescript-bridge
     , tasty
     , tasty-hunit
     , text
+    , wai
+    , warp

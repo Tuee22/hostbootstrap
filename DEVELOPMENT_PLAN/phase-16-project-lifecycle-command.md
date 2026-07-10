@@ -51,7 +51,7 @@ old `deploy` / `harbor` / `role` verbs + the Op-based `HostBootstrapDemo.Chain` 
 tree carries only `coreCommandNames` = `context` / `project` / `test` / `service` / `check-code`; `ensure`
 is a reconciler library composed through `ensure-*` steps, not a verb. The flat `cluster`, `config init`,
 `config show|schema|render`, and `context create` verbs are removed; the demo contributes
-`demoChain :: ProjectConfig -> [Step]` + `demoFrameContext` + `demoTeardown`, with its old per-project
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` + `demoFrameContext` + `demoTeardown`, with its old per-project
 verbs recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 Forward-pointer: under the generic project model, `project init` sources its defaults from the
@@ -69,18 +69,21 @@ that skips the Incus VM.
 
 **Accelerator lifecycle work — open.**
 
-- Add an explicit post-cluster/post-handoff lifecycle hook, or equivalent ordered step class, so the host
-  frame can start the Apple/Windows accelerator daemon after the container/cluster frame has made the web
-  accelerator ingress reachable. Appending a host-frame step after child-frame steps is not enough because
-  the current interpreter runs all current-frame steps before descending.
+- Done statically: `HostBootstrap.Step.PostHandoff` / `postHandoffStep` and the `HostBootstrap.Chain`
+  pre/post split run host-frame post-handoff hooks only after the recursive child frame returns
+  successfully. The demo contributes a host-frame accelerator-daemon hook after `expose-port`, so
+  Apple/Windows host daemon startup is ordered after the web accelerator ingress is reachable.
+- Done statically: the demo now selects `demoChainFor` by detected substrate. `linux-gpu` skips the Incus VM
+  and uses a direct host -> project-container chain with the Phase 15 direct Linux GPU context and the
+  Phase 5 `NvkindDriver` plan; `linux-cpu` keeps the existing Incus VM-backed chain.
 - Start and supervise host daemons for Apple Silicon and Windows GPU as long-running project-binary
   processes, with singleton/lock behavior and teardown on `project down`/`project destroy`.
-- Add the Linux GPU direct path that launches `nvkind` through the project container without provisioning
-  an Incus VM.
-- Keep the Linux CPU path on the existing Incus VM and start the accelerator daemon as an in-cluster pod.
+- Wire in-cluster Linux CPU/GPU daemon pod startup once the Phase 18 live WebSocket transport is connected.
 
-Validation: pure chain-order tests for the post-up hook, process lifecycle tests for daemon start/stop, and
-integration/e2e tests proving the daemon connects and serves the UI add request.
+Validation completed for the static slice: `cabal build all --ghc-options=-Werror` and `cabal test all`
+from `core/` pass (328 tests); the demo `-Werror` build passes; `cabal test all` from `demo/` passes (37
+demo tests plus the embedded 328 core tests after the Phase 18 runtime-seam tests). Remaining validation: process lifecycle tests for daemon
+start/stop and integration/e2e tests proving the daemon connects and serves the UI add request.
 
 **Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
 
@@ -347,7 +350,7 @@ workload-extension seam (§ T, § Y).
 #### Remaining Work
 
 The metal-frame migration is **done and real-run-validated**: the demo contributes
-`demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), wired via `withChain` (and
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), wired via `withChain` (and
 the chain-frame teardown via `withTeardown`) in `demo/app/Main.hs`, and a real `hostbootstrap-demo project
 up` on Incus/Linux ran the chain's three metal-frame steps end-to-end — ensure the VM provider → launch the
 budget VM (cordon #1) → pristine-bootstrap (build #2 host-native + build #3 project image in the VM) —
@@ -402,7 +405,8 @@ purest fractal, role-as-pod folded into the chart, and `test run all` against th
 ### Sprint 16.5: Accelerator daemon lifecycle hooks [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/engineering/accelerator_daemon.md`, `documents/operations/demo_runbook.md`
@@ -424,6 +428,8 @@ accelerator ingress exists and stopped during teardown.
 #### Validation
 
 - Pure chain-order tests prove host daemon startup cannot run before the accelerator ingress exists.
+- Demo chain-selection tests prove Linux GPU uses the direct host -> project-container `nvkind` chain while
+  Linux CPU keeps the VM-backed chain.
 - Process lifecycle tests prove daemon start/stop is idempotent and teardown-safe.
 - Integration tests prove host daemons connect through local-only NodePort and in-cluster daemons connect
   through `ClusterIP`.
@@ -431,8 +437,10 @@ accelerator ingress exists and stopped during teardown.
 
 #### Remaining Work
 
-Open until the lifecycle hook, daemon process manager, direct Linux GPU path, and integration/e2e tests
-land.
+Static hook ordering and the direct Linux GPU chain landed 2026-07-09. Validation: core `-Werror` build and
+328 tests; demo `-Werror` build and 37 demo tests plus embedded 328 core tests. Open for the long-running
+daemon process manager, teardown of those daemon processes, in-cluster daemon pod startup after Phase 18's
+live transport exists, and integration/browser e2e closure.
 
 ## Documentation Requirements
 

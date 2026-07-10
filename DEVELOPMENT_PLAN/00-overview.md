@@ -75,14 +75,15 @@ cordon with 2×-swap headroom, `registry:2` `deploy-registry`/`push-image`, guar
 `.wslconfig` merge/restore). **Phases 5, 9, 10, 11, 13, and 16 are now `Done`.** See the [README](README.md)
 reopening note and each phase's `## Phase Status` / `## Remaining Work`.
 
-**Substrate-specific accelerator daemon reopening (2026-07-09) — `Active`.** Phases 2, 3, 5, 13, 15, 16,
-and 18 are reopened for a real accelerator generalization of the demo. The project binary will also run as
-a daemon that JIT-generates and builds a substrate-specific worker, connects to the web service over CBOR
-WebSocket, and performs `Float` addition for the UI. Apple Silicon uses a host Swift/Metal worker; Linux
-GPU skips Incus and launches an `nvkind` cluster directly on the host with an in-cluster CUDA daemon;
-Linux CPU keeps Incus with an in-cluster C++/clang daemon; Windows GPU uses a host CUDA worker. Closure
-requires unit coverage for protocol/codegen, integration tests for the real daemon lanes, and a browser e2e
-test that proves the UI add result comes with daemon-returned backend/artifact metadata. See
+**Substrate-specific accelerator daemon reopening (2026-07-09) — `Active`.** Phase 2's host-tool slice is
+closed; phases 3, 5, 13, 15, 16, and 18 remain reopened for a real accelerator generalization of the demo.
+The project binary will also run as a daemon that JIT-generates and builds a substrate-specific worker,
+connects to the web service over CBOR WebSocket, and performs `Float` addition for the UI. Apple Silicon
+uses a host Swift/Metal worker; Linux GPU skips Incus and launches an `nvkind` cluster directly on the host
+with an in-cluster CUDA daemon; Linux CPU keeps Incus with an in-cluster C++/clang daemon; Windows GPU uses
+a host CUDA worker. Closure requires unit coverage for protocol/codegen, integration tests for the real
+daemon lanes, and a browser e2e test that proves the UI add result comes with daemon-returned
+backend/artifact metadata. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 
 The **generic-project-model** work (phase 19, § BB) is **implemented and validated** (`Done`) and builds
@@ -129,10 +130,9 @@ and the explicit `runBareHostBootstrapCLI` entrypoint for the bare core executab
 Phase 2 owns the pre-binary host floor/toolchain bootstrap, host-tool resolution, typed host
 configuration, fail-fast host minimum checks, and substrate detection. External tools resolve through the
 closed `HostTool` enumeration to absolute paths; supported substrates are `apple-silicon`, `linux-cpu`,
-`linux-gpu`, `windows-cpu`, and `windows-gpu`. It is `Active` for the accelerator-daemon host-tool
-extension: the existing Windows substrate detection is done, and the reopened work adds closed-enum tool
-coverage for the Apple Swift/Metal build stack and the Windows clang/MSVC host compiler probes the daemon
-ensure logic needs.
+`linux-gpu`, `windows-cpu`, and `windows-gpu`. It is `Done`: the accelerator-daemon reopening added
+closed-enum tool coverage for the Apple Swift/Metal build stack (`Swiftc`, `Xcrun`, `SystemProfiler`) and
+the Windows clang/MSVC host compiler probes (`Clang`, `MsvcCl`, `Vswhere`) the daemon ensure logic needs.
 On Windows the Python bootstrapper requires only `winget` before the binary exists. Firmware
 virtualization is a host-floor fact; WSL/VMP feature activation and Windows hypervisor launch readiness
 are later provider reconciler work owned by Phase 11.
@@ -142,11 +142,12 @@ are later provider reconciler work owned by Phase 11.
 Phase 3 owns the install-and-verify `ensure` suite. Each host dependency is an idempotent reconciler with
 a host-applicability predicate and reconcile action, exposed as library primitives and `ensure-*` chain
 steps. A wrong-host invocation fails fast with a one-line diagnostic. The implemented reconciler set is
-docker, colima, lima, cuda, cudawin, homebrew, ghc, incus, and wsl2. `ensure cudawin` (CUDA-on-Windows
-headless host build, the first instance of composition pattern #7) is present on `windows-gpu`; `ensure
-tart` is retired. The provider-specific `ensure incus` / `ensure wsl2` lifecycle validation is owned by
-Phase 11. It is `Active` for the accelerator build-stack work: add an Apple Metal reconciler and harden
-`ensure-cudawin` to install/verify CUDA Toolkit, MSVC C++ Build Tools, and LLVM clang through `winget`.
+docker, colima, apple-metal, lima, cuda, cudawin, homebrew, ghc, incus, and wsl2. `ensure cudawin`
+(CUDA-on-Windows headless host build, the first instance of composition pattern #7) is present on
+`windows-gpu`; `ensure tart` is retired. The provider-specific `ensure incus` / `ensure wsl2` lifecycle
+validation is owned by Phase 11. It is `Active` only for the accelerator build-stack real-run gates: the
+Apple Metal reconciler and hardened `ensure-cudawin` implementation are static-validated, but Apple
+Silicon and Windows GPU smoke builds still have to run on those hosts.
 
 ### Phase 4 — project-local Dhall and command tree
 
@@ -168,7 +169,10 @@ the active execution context. The existing cluster bring-up/teardown work is `Do
 budget-doubling is corrected in phase-13. It is `Active` for the accelerator Linux GPU lane: `linux-gpu`
 skips the Incus VM, launches an `nvkind` cluster directly on the host through the project container, and
 exposes the accelerator ingress so in-cluster daemons use `ClusterIP` while host daemons use a local-only
-`NodePort`.
+`NodePort`. The static Phase 5 slice is implemented: cluster plans carry `KindDriver`/`NvkindDriver`,
+Linux GPU accelerator plans select `NvkindDriver`, `nvkind cluster create` args and the Docker
+NVIDIA-runtime probe are unit-tested, and the ingress exposure planner renders the `ClusterIP` versus
+local-only `NodePort` split. Live Linux CPU/GPU daemon connectivity and the browser e2e gate remain open.
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -271,8 +275,11 @@ build-then-mount container config with a projection streamed over the lift's `st
 the descending binary before dispatch — validated by a live Windows/WSL2 `test run all` **`6/6`** with no
 `.vm.dhall`, no `.runtime-container.dhall`, and no config bind-mount; see
 [phase-15](phase-15-binary-context-config.md) Sprint 15.7 for the § X delivery contract.
-It is `Active` for the accelerator worked example: add the accelerator UI, CBOR WebSocket dispatch, real per-substrate workers, and
-the integration/browser e2e tests that prove the path.
+It is `Active` for the accelerator worked example. The static UI/API/codegen slice is implemented: the SPA
+has the Accelerator tab, the web endpoint refuses to compute without a daemon, and deterministic
+Swift/Metal, C++ and CUDA worker source/build generators are unit-tested. The remaining work is CBOR
+WebSocket dispatch, real per-substrate worker execution, and the integration/browser e2e tests that prove
+the path.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -307,8 +314,10 @@ only the narrowed projection crosses (never the parent's full config), on `stdin
 config file and no config bind-mount for the VM/container frames (the Kubernetes service pod keeps its
 ConfigMap override). The core `Lift.ConfigDelivery` + `Chain` stdin-handoff landed (280 tests) and a live
 Windows/WSL2 `test run all` reported **`6/6`**.
-It is `Active` for the accelerator context extension: add daemon authority, host-resident daemon configs, and a direct
-host-backed project-container topology for the Linux GPU `nvkind` path.
+It is `Active` for accelerator-context integration only: the static context extension is implemented
+(daemon service authority without project lifecycle authority, host-resident and in-cluster daemon
+projections, and the explicit Linux GPU direct project-container topology), but the real lifecycle/runtime
+handoff is closed by Phases 16, 18, and 13.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -323,8 +332,11 @@ recursive interpreter, and the `project` command are built and real-run-validate
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
 composable tools, § P) — and the build-time `web bridge` is re-homed into the build-image step. The fixed
 surface is real-run-validated by the full `project up` + `test run all` run on Apple Silicon (2026-06-20).
-The reopened work adds post-cluster host-daemon startup for Apple/Windows, direct Linux GPU `nvkind`
-startup, and lifecycle teardown for accelerator daemons.
+The reopened static lifecycle slice is implemented: `PostHandoff` steps run after the recursive child
+frame succeeds, the demo contributes a host-daemon hook after ingress exposure, and `demoChainFor` selects
+a direct Linux GPU host -> project-container `nvkind` chain while Linux CPU keeps the VM-backed chain. The
+remaining open work is the real long-running daemon process startup/teardown and integration with the Phase
+18 daemon runtime.
 
 ### Phase 17 — Chain-driven test surface and context introspection
 
@@ -347,11 +359,14 @@ defines its service variants via a project-contributed service-handler registry 
 threaded through `ProjectSpec` with `withServices`); there is no `service down` (lifetime owned by the k8s
 controller, torn down by `project destroy`); `project up`'s `deploy-chart` step deploys the pod whose
 entrypoint is `service run`, its config delivered by a ConfigMap overriding the baked container
-`<project>.dhall` (§ AA). It is `Active`: the command, registry, and demo `web serve` → `service run web`
+`<project>.dhall` (§ AA). It is `Active`: the command, registry, and demo `web serve` -> `service run web`
 migration landed in code and are **real-run-validated** — the live demo's web pod runs `service run web` and
-serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19). The reopened work extends this leaf-role
-surface with the accelerator daemon variant, CBOR WebSocket connection management, and daemon-context
-gating for host and in-cluster placements.
+serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19). The reopened static accelerator slice is
+implemented: the demo registers `service run accelerator`, the existing service-context gate rejects
+project lifecycle authority, CBOR request/result/failure codecs and request-id correlation are tested, and
+the daemon worker/client seam covers reconnect, timeout, shutdown, backend metadata, and artifact hash
+propagation. The remaining open work is the concrete WebSocket transport, daemon registration, real
+host/in-cluster integration tests, real worker build/run gates, and the browser e2e Add workflow.
 
 ### Phase 19 — generic project model and no core defaults
 

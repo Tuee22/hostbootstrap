@@ -1,21 +1,22 @@
--- | The 'Step' algebra: the lift-chain stream's reuse unit (development_plan_standards § T, § Y).
---
--- A project's deploy is a pure @chain :: cfg -> [Step]@ value (see
--- 'HostBootstrap.Chain'); each 'Step' is one composable action a binary runs and
--- reports inside one execution frame. @hostbootstrap-core@ ships the
--- host-management step kinds ('StepKind'); a project contributes its own kinds
--- through the open 'ProjectStep' seam, interleaving host and workload steps in
--- one @[Step]@.
---
--- A 'Step' carries a pure, renderable shape — a label, the frame it runs in, and
--- its 'StepKind' — plus an effectful 'stepRun' reconcile action. @project up
--- --dry-run@ renders the shape via 'renderChainPlan' without running the action;
--- the recursive interpreter ('HostBootstrap.Chain') runs the action when the
--- binary is in the step's frame. The action stays context-agnostic
--- (@HostConfig -> IO ()@) so a step is lifted purely by /which frame/ the
--- interpreter runs it in (§ U).
-module HostBootstrap.Step
-  ( -- * Frames
+{- | The 'Step' algebra: the lift-chain stream's reuse unit (development_plan_standards § T, § Y).
+
+A project's deploy is a pure @chain :: cfg -> [Step]@ value (see
+'HostBootstrap.Chain'); each 'Step' is one composable action a binary runs and
+reports inside one execution frame. @hostbootstrap-core@ ships the
+host-management step kinds ('StepKind'); a project contributes its own kinds
+through the open 'ProjectStep' seam, interleaving host and workload steps in
+one @[Step]@.
+
+A 'Step' carries a pure, renderable shape — a label, the frame it runs in, and
+its 'StepKind' — plus an effectful 'stepRun' reconcile action. @project up
+--dry-run@ renders the shape via 'renderChainPlan' without running the action;
+the recursive interpreter ('HostBootstrap.Chain') runs the action when the
+binary is in the step's frame. The action stays context-agnostic
+(@HostConfig -> IO ()@) so a step is lifted purely by /which frame/ the
+interpreter runs it in (§ U).
+-}
+module HostBootstrap.Step (
+    -- * Frames
     StepFrame (..),
 
     -- * Kinds
@@ -27,6 +28,8 @@ module HostBootstrap.Step
     renderStep,
     renderChainPlan,
     stepsForFrame,
+    preHandoffStepsForFrame,
+    postHandoffStepsForFrame,
     chainFrames,
 
     -- * Core host-management step constructors
@@ -39,105 +42,132 @@ module HostBootstrap.Step
     deployKindStep,
     deployChartStep,
     exposePortStep,
+    postHandoffStep,
 
     -- * Project-extension seam
     projectStep,
-  )
+)
 where
 
 import HostBootstrap.HostConfig (HostConfig)
 
--- | The composed frame a step's binary runs in, identified by its topology frame
--- id (the @topologyFrameId@ in the sibling @<project>.dhall@). The recursive
--- interpreter groups a chain into contiguous per-frame segments in chain order;
--- 'frameLabel' is a human label for the dry-run render.
+{- | The composed frame a step's binary runs in, identified by its topology frame
+id (the @topologyFrameId@ in the sibling @<project>.dhall@). The recursive
+interpreter groups a chain into contiguous per-frame segments in chain order;
+'frameLabel' is a human label for the dry-run render.
+-}
 data StepFrame = StepFrame
-  { frameId :: String,
-    frameLabel :: String
-  }
-  deriving (Eq, Show)
+    { frameId :: String
+    , frameLabel :: String
+    }
+    deriving (Eq, Show)
 
--- | The kind of a step: a closed core set of host-management kinds plus the open
--- 'ProjectStep' seam for project-contributed kinds. Pure and renderable, so a
--- chain renders without acting.
+{- | The kind of a step: a closed core set of host-management kinds plus the open
+'ProjectStep' seam for project-contributed kinds. Pure and renderable, so a
+chain renders without acting.
+-}
 data StepKind
-  = -- | provision a provider VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)
-    DeployVM
-  | -- | run an @ensure@ reconciler as a chain step (§ L); carries the tool name
-    EnsureTool String
-  | -- | stage the project source into the next frame
-    CopySource
-  | -- | build the project binary host-native in the target frame
-    BuildPb
-  | -- | build the project container image
-    BuildImage
-  | -- | mint the next frame's child @<project>.dhall@ before the handoff
-    ContextInit
-  | -- | bring up the kind cluster
-    DeployKind
-  | -- | install/upgrade the project Helm chart
-    DeployChart
-  | -- | expose an in-cluster service outward (NodePort)
-    ExposePort
-  | -- | the open seam: a project-contributed step kind, carrying its name
-    ProjectStep String
-  deriving (Eq, Show)
+    = -- | provision a provider VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)
+      DeployVM
+    | -- | run an @ensure@ reconciler as a chain step (§ L); carries the tool name
+      EnsureTool String
+    | -- | stage the project source into the next frame
+      CopySource
+    | -- | build the project binary host-native in the target frame
+      BuildPb
+    | -- | build the project container image
+      BuildImage
+    | -- | mint the next frame's child @<project>.dhall@ before the handoff
+      ContextInit
+    | -- | bring up the kind cluster
+      DeployKind
+    | -- | install/upgrade the project Helm chart
+      DeployChart
+    | -- | expose an in-cluster service outward (NodePort)
+      ExposePort
+    | -- | run after the recursive handoff below this frame has completed; carries the hook name
+      PostHandoff String
+    | -- | the open seam: a project-contributed step kind, carrying its name
+      ProjectStep String
+    deriving (Eq, Show)
 
 -- | A short stable name for a step kind, used in the dry-run render.
 stepKindName :: StepKind -> String
 stepKindName k = case k of
-  DeployVM -> "deploy-vm"
-  EnsureTool tool -> "ensure-" ++ tool
-  CopySource -> "copy-source"
-  BuildPb -> "build-pb"
-  BuildImage -> "build-image"
-  ContextInit -> "context-init"
-  DeployKind -> "deploy-kind"
-  DeployChart -> "deploy-chart"
-  ExposePort -> "expose-port"
-  ProjectStep name -> name
+    DeployVM -> "deploy-vm"
+    EnsureTool tool -> "ensure-" ++ tool
+    CopySource -> "copy-source"
+    BuildPb -> "build-pb"
+    BuildImage -> "build-image"
+    ContextInit -> "context-init"
+    DeployKind -> "deploy-kind"
+    DeployChart -> "deploy-chart"
+    ExposePort -> "expose-port"
+    PostHandoff name -> "post-handoff-" ++ name
+    ProjectStep name -> name
 
--- | One composable step: the pure renderable shape plus the effectful reconcile
--- action.
+{- | One composable step: the pure renderable shape plus the effectful reconcile
+action.
+-}
 data Step = Step
-  { stepLabel :: String,
-    stepFrame :: StepFrame,
-    stepKind :: StepKind,
-    stepRun :: HostConfig -> IO ()
-  }
+    { stepLabel :: String
+    , stepFrame :: StepFrame
+    , stepKind :: StepKind
+    , stepRun :: HostConfig -> IO ()
+    }
 
 -- | The one-line dry-run render of a step (pure): frame, kind, and label.
 renderStep :: Step -> String
 renderStep s =
-  "["
-    ++ frameId (stepFrame s)
-    ++ "] "
-    ++ stepKindName (stepKind s)
-    ++ " — "
-    ++ stepLabel s
+    "["
+        ++ frameId (stepFrame s)
+        ++ "] "
+        ++ stepKindName (stepKind s)
+        ++ " — "
+        ++ stepLabel s
 
--- | Render an ordered chain as its numbered plan (the @--dry-run@ output). Pure,
--- so the rendered plan is exactly the value the interpreter would execute (§ W).
+{- | Render an ordered chain as its numbered plan (the @--dry-run@ output). Pure,
+so the rendered plan is exactly the value the interpreter would execute (§ W).
+-}
 renderChainPlan :: [Step] -> String
 renderChainPlan steps = unlines (zipWith line [1 :: Int ..] steps)
   where
     line n s = show n ++ ". " ++ renderStep s
 
--- | The steps of a chain that run in a given frame, in chain order. The recursive
--- interpreter runs exactly these "locally" when the binary is in @fid@.
+{- | The steps of a chain that run in a given frame, in chain order. The recursive
+interpreter runs exactly these "locally" when the binary is in @fid@.
+-}
 stepsForFrame :: String -> [Step] -> [Step]
 stepsForFrame fid = filter ((== fid) . frameId . stepFrame)
 
--- | The distinct frames a chain descends through, in first-appearance (descent)
--- order. The interpreter runs the head frame's steps, then hands off into the
--- next, and so on.
+-- | Steps that run before this frame hands off into a child frame.
+preHandoffStepsForFrame :: String -> [Step] -> [Step]
+preHandoffStepsForFrame fid = filter (not . isPostHandoffStep) . stepsForFrame fid
+
+{- | Steps that run after this frame's recursive child handoff completes
+successfully. This lets a host-frame hook start a host-resident daemon only
+after the nested cluster/web ingress has been stood up.
+-}
+postHandoffStepsForFrame :: String -> [Step] -> [Step]
+postHandoffStepsForFrame fid = filter isPostHandoffStep . stepsForFrame fid
+
+isPostHandoffStep :: Step -> Bool
+isPostHandoffStep s =
+    case stepKind s of
+        PostHandoff _ -> True
+        _ -> False
+
+{- | The distinct frames a chain descends through, in first-appearance (descent)
+order. The interpreter runs the head frame's steps, then hands off into the
+next, and so on.
+-}
 chainFrames :: [Step] -> [StepFrame]
 chainFrames steps = go [] (map stepFrame steps)
   where
     go _ [] = []
     go seen (f : fs)
-      | frameId f `elem` seen = go seen fs
-      | otherwise = f : go (frameId f : seen) fs
+        | frameId f `elem` seen = go seen fs
+        | otherwise = f : go (frameId f : seen) fs
 
 -- Core host-management step constructors. Each fixes the 'StepKind' and takes the
 -- label, frame, and reconcile action so a chain reads as data.
@@ -178,7 +208,14 @@ deployChartStep label frame = Step label frame DeployChart
 exposePortStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
 exposePortStep label frame = Step label frame ExposePort
 
--- | A project-contributed step (the open seam): the project names its own kind,
--- and the step interleaves freely with the core host-management steps.
+{- | A post-handoff hook. The step belongs to its declaring frame, but the
+interpreter runs it only after the recursive child frame returns successfully.
+-}
+postHandoffStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
+postHandoffStep name label frame = Step label frame (PostHandoff name)
+
+{- | A project-contributed step (the open seam): the project names its own kind,
+and the step interleaves freely with the core host-management steps.
+-}
 projectStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
 projectStep name label frame = Step label frame (ProjectStep name)

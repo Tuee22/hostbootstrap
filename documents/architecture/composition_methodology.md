@@ -23,8 +23,9 @@
   so the shape lives in code and the `.dhall` carries only parameters, context, and witnesses.
 - **The Step algebra is the reuse unit.** The core ships host-management step kinds (`deploy-vm`,
   `ensure-X`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`,
-  `expose-port`); the project contributes workload step kinds (`deploy-registry`, `push-image`, …) into the
-  *same* `[Step]`. Host and workload steps interleave freely — this is the workload-extension seam.
+  `expose-port`, `post-handoff`); the project contributes workload step kinds (`deploy-registry`,
+  `push-image`, …) into the *same* `[Step]`. Host and workload steps interleave freely — this is the
+  workload-extension seam.
 - **The same algebra expresses deployment and runtime business logic.** "Bring up a cluster" and "run an
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
@@ -52,6 +53,7 @@ and that difference drives plan/apply, retry, and run-model selection:
 | `copy-source` / `build-pb` / `build-image` | stage source, build the `pb`, build the project image | the current frame | L0 |
 | `context-init` | mint the child frame's `<project>.dhall` and stream it in-place into that frame | the current frame | L0 |
 | `deploy-kind` / `deploy-chart` / `expose-port` | cluster and workload bring-up | an in-frame cluster | L0 |
+| `post-handoff` | after-child-frame lifecycle hook, e.g. host daemon startup after ingress exists | the declaring parent frame | L0 |
 | cloud / IaC deploy | plan→apply converge | a remote API + external state backend | L2 |
 | REST / RPC, pub/sub, observe-and-scale, finite-job | request, publish, control loop, run-to-completion | endpoints / bus / jobs | L1/L2 |
 
@@ -260,9 +262,9 @@ The lift primitive is built: the core has provider-backed folds for Incus and Li
 gate is topology-aware (runtime configs carry provider-backed frames, a current frame, and locally
 checked witnesses), and the canonical demo chain runs end-to-end. The core command tree is exactly
 `project`, `test`, `service`, `context`, and `check-code` — a fixed surface with no per-project verbs. The
-demo contributes its deploy as the pure value `demoChain :: ProjectConfig -> [Step]` in
-`demo/src/HostBootstrapDemo/Commands.hs`, its `Web` service variant (run by `service run`), and its
-VM/provider IO as chain steps.
+demo contributes its deploy as the substrate-selected pure value
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, its
+`web` and `accelerator` service variants, and its VM/provider IO as chain steps.
 
 `project init|up|down|destroy` is the recursive lifecycle interpreter driven by the
 `chain :: cfg -> [Step]` value: `project up` descends the 3-frame fractal topology
@@ -306,8 +308,9 @@ probe — into the correct frame).
 This document is the canonical statement of the model the validated build
 ships.
 
-The accelerator-daemon generalization is active plan work. It will extend the model with a post-cluster
-daemon startup/connection step and direct Linux GPU `nvkind` topology, and its closure requires real
+The accelerator-daemon generalization is active plan work. The static lifecycle extension is implemented:
+`PostHandoff` hooks run only after the recursive child frame succeeds, and the demo selects a direct Linux
+GPU `nvkind` host -> project-container topology. Closure still requires real daemon process/runtime
 integration tests plus browser e2e tests that prove the UI add operation reaches the daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`

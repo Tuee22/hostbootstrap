@@ -3,6 +3,7 @@
 # extraPortMappings so the container-frame steps reach them on localhost:
 #   - 30500 — the in-cluster registry (push-image pushes the project image here)
 #   - 30080 — the web service (expose-port verifies it; the host reaches it here)
+#   - 30081 — local-only accelerator ingress for host-resident daemons
 #   - 30900 — the in-cluster MinIO S3 API (deploy-minio creates the registry bucket here)
 # Without these mappings a kind NodePort is only reachable on the node's internal
 # Docker IP, not on localhost. `HostBootstrap.Cluster.Lifecycle.clusterCreate`
@@ -19,6 +20,10 @@ nodes:
       - containerPort: 30080
         hostPort: 30080
         listenAddress: "0.0.0.0"
+        protocol: TCP
+      - containerPort: 30081
+        hostPort: 30081
+        listenAddress: "127.0.0.1"
         protocol: TCP
       - containerPort: 30900
         hostPort: 30900

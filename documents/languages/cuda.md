@@ -55,8 +55,10 @@ pattern #7 (see [composition_patterns](../engineering/composition_patterns.md)).
 
 On a `windows-gpu` host, `ensure cudawin` readies the Windows GPU build toolchain. The NVIDIA Windows
 display driver is a **precondition** — the reconciler fails fast when `nvidia-smi` is absent, so it is
-never auto-installed — while the CUDA Toolkit (`Nvidia.CUDA`) and the MSVC host compiler are installed
-via **winget** (the Homebrew-analog pre-binary package manager). `nvcc` then compiles the platform-locked
+never auto-installed — while the CUDA Toolkit (`Nvidia.CUDA`), Visual Studio Build Tools with the VCTools
+workload, and LLVM clang (`LLVM.LLVM`) are installed via **winget** (the Homebrew-analog pre-binary package
+manager). The reconciler verifies `vswhere`, the resolved MSVC `cl.exe`, LLVM clang, and a CUDA smoke
+compile through `nvcc -ccbin <resolved-msvc-cl-directory>`. `nvcc` then compiles the platform-locked
 artifact **on the bare Windows host**, and the chain stages the produced artifact into the cluster. **No
 workload runs in a build VM**;
 the build VM is absent by design. This is the headless host-bridge shape: build a platform-locked
@@ -67,8 +69,8 @@ The two paths contrast explicitly:
 - **In-container `linux-gpu` (the sections above).** The GPU toolchain is in the base image and the
   workload *runs* in a GPU container through `nvidia-container-toolkit`; readied by `ensure cuda`.
 - **Windows host-build (`windows-gpu`, this section).** nvcc *builds* on the bare Windows host through
-  `ensure cudawin` (CUDA Toolkit + MSVC via winget; the NVIDIA driver is a required precondition); the
-  artifact is staged into the cluster and nothing GPU-bound runs in a build VM.
+  `ensure cudawin` (CUDA Toolkit + MSVC VCTools + LLVM clang via winget; the NVIDIA driver is a required
+  precondition); the artifact is staged into the cluster and nothing GPU-bound runs in a build VM.
 
 This Windows host-build path is implemented as the `ensure cudawin` headless host-build surface. The
 Windows VM frame it sits beside (Docker, kind, and the in-cluster workload) is the
@@ -78,14 +80,15 @@ the Windows lifecycle runs end to end through `test run all` (`6/6`) and `projec
 
 ## Accelerator Daemon CUDA Lane
 
-The planned accelerator daemon uses CUDA in two places:
+The accelerator daemon design uses CUDA in two places:
 
 - `linux-gpu`: the daemon runs as a Kubernetes pod from the CUDA hostbootstrap base image, builds the
   generated add worker with in-image `nvcc`, and trusts that the NVIDIA runtime is available to the
   `nvkind` cluster. It does not run host ensure inside the pod.
 - `windows-gpu`: the daemon runs host-native, uses `ensure-cudawin` to verify/install the host CUDA build
-  stack (`Nvidia.CUDA`, MSVC C++ Build Tools, and LLVM clang), builds the generated CUDA worker with host
-  `nvcc`, and connects to the cluster web service through a local-only NodePort.
+  stack (`Nvidia.CUDA`, MSVC C++ Build Tools/VCTools, LLVM clang, and an `nvcc -ccbin` smoke compile),
+  builds the generated CUDA worker with host `nvcc`, and connects to the cluster web service through a
+  local-only NodePort.
 
 The browser e2e test for the demo must assert backend metadata returned by the daemon so an in-process
 fallback cannot satisfy the CUDA lane. See [accelerator_daemon](../engineering/accelerator_daemon.md).

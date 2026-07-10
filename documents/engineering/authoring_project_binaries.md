@@ -77,9 +77,10 @@
 
 ## A Worked Chain (the demo)
 
-The demo's `demoChain :: ProjectConfig -> [Step]` (in `demo/src/HostBootstrapDemo/Commands.hs`) is the
-canonical example. It nests *pristine-host VM bootstrap* over *in-container deploy*, and every host and
-workload step lives in one ordered `[Step]` spanning three frames:
+The demo's `demoChainFor :: Substrate -> ProjectConfig -> [Step]` (in
+`demo/src/HostBootstrapDemo/Commands.hs`) is the canonical example. Its default VM-backed branch nests
+*pristine-host VM bootstrap* over *in-container deploy*, and every host and workload step lives in one
+ordered `[Step]` spanning three frames:
 
 ```text
 deploy-VM       host-orchestrator-0 (metal)        -- ensure the VM provider (Incus on Linux, Lima on Apple)
@@ -130,8 +131,8 @@ preserves `.data`.
 
 `hostbootstrap-core` exposes exactly `project`, `test`, `service`, `context`, and `check-code`. The
 consumer's contribution is `chain :: cfg -> [Step]` plus project step actions; the demo supplies
-`demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, wired into the core CLI
-through `runHostBootstrapCLI` with `withChain`, `withFrameContext`, and `withTeardown`. The recursive
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, wired
+into the core CLI through `runHostBootstrapCLI` with `withChain`, `withFrameContext`, and `withTeardown`. The recursive
 `project` command (`init`/`up`/`down`/`destroy`), the read-only `context` introspection
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <suite>|all` split are real-run validated end-to-end on real

@@ -144,10 +144,11 @@ leave the substrate reachable, the lift's job is to carry the credential.
 | `ensure-docker` | all substrates | n/a (Docker is required to build and run the project container; the step installs Docker and grants the invoking user a usable, reachable daemon — an immediate socket ACL for the current session when needed (Linux), or the per-project Colima VM (Apple) — and verifies the daemon is reachable). On Apple it also implies the per-project Colima VM exists. |
 | `ensure-colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
 | `ensure-lima` | `apple-silicon` | Errors on Linux: Lima is the macOS VM provider used by the demo pristine Linux VM; Linux uses native Incus for the demo VM. |
+| `ensure-apple-metal` | `apple-silicon` | Errors off Apple Silicon: verifies a visible Metal device, the macOS SDK through `xcrun`, and a Swift + Metal compile/run probe for the host-native accelerator daemon. It has no meaning in a Linux daemon pod or on Windows. |
 | `ensure-cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
 | `ensure-homebrew` | `apple-silicon` | Errors on Linux: Homebrew is the macOS host package manager for the host toolchain; it is the toolchain root the Python bootstrapper installs pre-binary, so the step verifies its presence and fails fast with the install instruction when it is absent. |
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
-| `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: readies the Windows host CUDA build stack (driver + CUDA Toolkit + MSVC) for the headless host build; it has no meaning off a Windows GPU host. |
+| `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: readies the Windows host CUDA build stack (driver + CUDA Toolkit + MSVC VCTools + LLVM clang) for the headless host build and compiles a CUDA smoke artifact through `nvcc -ccbin <MSVC>`; it has no meaning off a Windows GPU host. |
 | `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP and reconciles Windows hypervisor launch readiness. A separate project-owned `deploy-VM` step registers that project's own named `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
 | `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts the Colima-backed Incus provider; on Linux it initializes the native daemon. See [incus](incus.md). |
 
@@ -160,20 +161,27 @@ pre-binary host setup the thin Python bootstrapper drives before the build; see
 [python_haskell_boundary](../architecture/python_haskell_boundary.md). `ensure-cuda` aligns with the
 GPU host requirements tracked in [prerequisites](prerequisites.md).
 
-## Planned Accelerator Build-Stack Ensures
+## Accelerator Build-Stack Ensures
 
-The accelerator-daemon demo reopens the ensure surface for host-resident accelerator build stacks. These
-reconcilers run only on host daemon lanes; Linux daemon pods trust the base image and never run ensure from
-inside the container.
+The accelerator-daemon demo reopens the ensure surface for host-resident accelerator build stacks. The
+reconciler implementations are present and unit-validated; their phase remains open only for real
+Apple/Windows host smoke runs. These reconcilers run only on host daemon lanes; Linux daemon pods trust the
+base image and never run ensure from inside the container.
 
-| Reconciler step | Applies to | Planned contract |
+Phase 2 supplies the closed host-tool surface these reconcilers consume: `Swiftc`, `Xcrun`, and
+`SystemProfiler` for Apple Silicon, and `NvidiaSmi`, `Nvcc`, `Clang`, `MsvcCl`, and `Vswhere` for Windows
+GPU.
+
+| Reconciler step | Applies to | Contract |
 |-----------------|------------|------------------|
-| `ensure-apple-metal` | `apple-silicon` | Verify a visible Metal device, `xcrun --sdk macosx --show-sdk-path`, and a Swift compiler that can build and run a tiny Swift + Metal probe headlessly. The pre-binary floor already requires Xcode Command Line Tools and Homebrew; Homebrew may install a Swift fallback, but full Xcode, Tart, keychain state, and a VM are out of contract. |
-| hardened `ensure-cudawin` | `windows-gpu` | Keep the NVIDIA driver as a precondition, install/verify CUDA Toolkit (`Nvidia.CUDA`) with `winget`, Visual Studio Build Tools with the C++ workload for `nvcc`'s host compiler, and LLVM clang (`LLVM.LLVM`), then compile a CUDA smoke artifact. |
+| `ensure-apple-metal` | `apple-silicon` | Verify a visible Metal device, `xcrun --sdk macosx --show-sdk-path`, and a Swift compiler that can build and run a tiny Swift + Metal probe headlessly. The pre-binary floor already requires Xcode Command Line Tools and Homebrew; full Xcode, Tart, keychain state, and a VM are out of contract. |
+| hardened `ensure-cudawin` | `windows-gpu` | Keep the NVIDIA driver as a precondition, install/verify CUDA Toolkit (`Nvidia.CUDA`) with `winget`, Visual Studio Build Tools with the C++ workload for `nvcc`'s host compiler, and LLVM clang (`LLVM.LLVM`), then compile a CUDA smoke artifact through the resolved MSVC host compiler path. |
 
-The Apple reconciler is new Phase-3 work. The Windows work hardens the existing `ensure-cudawin`
+The Apple reconciler is new Phase-3 code. The Windows work hardens the existing `ensure-cudawin`
 reconciler rather than adding a second Windows accelerator reconciler, because the demo's Windows
-accelerator lane is CUDA.
+accelerator lane is CUDA. Static validation is green (`cabal build all --ghc-options=-Werror` and the
+current `cabal test all` core baseline, 328 tests); real Apple Silicon and Windows GPU smoke runs remain
+the phase gate.
 
 ## Diagnostics
 
@@ -199,10 +207,10 @@ the frame its step is reached in, sequenced alongside the other core and project
 (`deploy-VM`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`,
 `expose-port`).
 
-The concrete reconciler set is still centralized as `allReconcilers` (the `docker`, `colima`, `cuda`,
-`cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus` reconcilers), and project-owned
-actions can call `runEnsure` directly when they need one reconciler in a specific scripted seam. That
-remains a library call, not a surfaced command.
+The concrete reconciler set is still centralized as `allReconcilers` (the `docker`, `colima`,
+`apple-metal`, `cuda`, `cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus`
+reconcilers), and project-owned actions can call `runEnsure` directly when they need one reconciler in a
+specific scripted seam. That remains a library call, not a surfaced command.
 
 ## Current Status
 
@@ -213,6 +221,6 @@ OS-level hypervisor-launch readiness branch and the real WSL2 provider lifecycle
 all` `6/6` -> `project destroy`). The former `ensure-tart` reconciler is dropped from this contract and
 tracked as removed in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
-The accelerator build-stack reconcilers are target work owned by the reopened Phase 3. They are not
-implemented until unit tests cover the pure install plans and real integration runs prove the host daemon
-can build the Swift/Metal and Windows CUDA workers.
+The accelerator build-stack reconcilers are implemented and statically validated, but the reopened Phase 3
+stays `Active` until real integration runs prove the host daemon can build the Swift/Metal worker on Apple
+Silicon and the CUDA worker on Windows GPU.

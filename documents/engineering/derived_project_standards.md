@@ -266,11 +266,11 @@ tree is exactly `project`, `test`, `service`, `context`, and `check-code`:
 - `check-code` runs the project's fail-fast code-check gate.
 - `ensure` is a reconciler library, not a command; `project up` invokes reconcilers as `ensure-*` chain steps.
 
-The demo's deploy is the contributed `demoChain :: ProjectConfig -> [Step]` value in
-`demo/src/HostBootstrapDemo/Commands.hs` — a list of `Step` the core interprets across the 3-frame fractal
-descent. The demo contributes its `Web` service variant (run by `service run`; the build-time bridge folds
-into the build-image step) and its VM/provider IO as chain steps — the surface is fixed, so it adds no
-verbs. The image-build hook runs as `project init --role image-build-container`.
+The demo's deploy is the contributed `demoChainFor :: Substrate -> ProjectConfig -> [Step]` value in
+`demo/src/HostBootstrapDemo/Commands.hs` — a list of `Step` the core interprets across the selected fractal
+descent. The demo contributes its `web` and `accelerator` service variants (run by `service run`; the
+build-time bridge folds into the build-image step) and its VM/provider IO as chain steps — the surface is
+fixed, so it adds no verbs. The image-build hook runs as `project init --role image-build-container`.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster
 (kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry

@@ -33,6 +33,7 @@ library
       HostBootstrap.Substrate
       HostBootstrap.Substrate.Provider
       HostBootstrap.Ensure
+      HostBootstrap.Ensure.AppleMetal
       HostBootstrap.Ensure.Docker
       HostBootstrap.Ensure.Colima
       HostBootstrap.Ensure.Cuda

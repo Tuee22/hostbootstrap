@@ -40,7 +40,11 @@ at the container frame into `kubectl`/`helm`/`kind`.
 (`HostBootstrap.Cluster.Cordon`) from [resource_budgeting](resource_budgeting.md). The plan resolution
 (`resolvePlan`), the teardown partition (`teardown`), and the status report (`statusReport`) are pure,
 so the never-delete-`.data` invariant, the production-versus-test profile distinction, and the status
-shape are unit-tested; the IO drivers run `kind`/`Helm` through the `HostTool` enumeration. The
+shape are unit-tested; the IO drivers run `kind`/`Helm` through the `HostTool` enumeration. Accelerator
+plans also carry a pure cluster driver: normal paths use `KindDriver`; Linux GPU accelerator plans use
+`NvkindDriver`, which creates the cluster with `nvkind cluster create --name=<cluster>` after a Docker
+NVIDIA-runtime smoke while the health check, kubeconfig export, and teardown keep using the resulting kind
+cluster name. The
 semantics are shared so a project does not re-implement cluster orchestration; its chain selects a
 profile and supplies the chart, and the core interprets the step.
 
@@ -89,8 +93,10 @@ container frame the recursive interpreter reaches — not host tools (see
 The planned accelerator demo adds a daemon WebSocket ingress on the web service. In-cluster daemon pods
 use a normal `ClusterIP` path to reach it. Host-resident Apple Silicon and Windows GPU daemons use a
 local-only `NodePort` whose kind host mapping binds `127.0.0.1`, so the host daemon can connect without
-publishing the accelerator ingress on the LAN. Linux GPU uses a direct host `nvkind` cluster rather than an
-Incus VM; Linux CPU keeps the Incus VM path.
+publishing the accelerator ingress on the LAN. `acceleratorIngressPlan` is the pure renderer for that
+choice. The demo reserves NodePort `30081` in `demo/kind.yaml` with a `127.0.0.1` listen address for the
+host-daemon ingress; the existing web/registry/MinIO NodePorts keep their historical bindings. Linux GPU
+uses a direct host `nvkind` cluster rather than an Incus VM; Linux CPU keeps the Incus VM path.
 
 ## `project down`: Delete Kind, Preserve State
 
@@ -174,11 +180,14 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   `clusterCreate`/`deployChart`/`clusterUp`/`clusterDown`/`clusterDelete` reconcilers live in
   `HostBootstrap.Cluster.Lifecycle` and the chain-step actions invoke them. The never-delete-`.data`
   invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
-  through its `demoChain :: ProjectConfig -> [Step]` value
+  through its substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` value
   (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle. Under the
   implemented generic project model, `deployChart` carries the `[(Text, Text)]` extra-values param so the demo
   forwards its `message` field into the chart ConfigMap (see [schema](schema.md) and
-  [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
+  [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)). The 2026-07-09 accelerator
+  lifecycle slice added the static Linux GPU `nvkind` cluster driver, NVIDIA Docker runtime probe, and
+  pure accelerator ingress exposure planning; live daemon connectivity remains gated by the accelerator
+  phases in the development plan.
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
   in-cluster registry (NodePort 30500), the project image pushed to that registry, and the web

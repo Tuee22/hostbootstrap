@@ -8,7 +8,7 @@ module HostBootstrapDemo.Web.Bridge (
 where
 
 import Data.Proxy (Proxy (..))
-import HostBootstrapDemo.Web.Api (BudgetView)
+import HostBootstrapDemo.Web.Api (AcceleratorAddFailure, AcceleratorAddResult, BudgetView)
 import Language.PureScript.Bridge (
     buildBridge,
     defaultBridge,
@@ -19,5 +19,11 @@ import Language.PureScript.Bridge (
 -- | Write the PureScript mirror of 'BudgetView' (and its closure) into @dir@.
 writeBridge :: FilePath -> IO ()
 writeBridge dir = do
-    writePSTypes dir (buildBridge defaultBridge) [mkSumType (Proxy :: Proxy BudgetView)]
-    putStrLn ("web bridge: wrote PureScript types (BudgetView) to " ++ dir)
+    writePSTypes
+        dir
+        (buildBridge defaultBridge)
+        [ mkSumType (Proxy :: Proxy BudgetView)
+        , mkSumType (Proxy :: Proxy AcceleratorAddResult)
+        , mkSumType (Proxy :: Proxy AcceleratorAddFailure)
+        ]
+    putStrLn ("web bridge: wrote PureScript types (BudgetView, AcceleratorAddResult, AcceleratorAddFailure) to " ++ dir)

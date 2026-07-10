@@ -40,6 +40,10 @@ from `/workspace/demo/playwright`. Its `playwright.config.ts` declares one proje
 per engine, so every spec runs on all three browsers the base image installs
 (Chromium, Firefox, WebKit) with no extra download at validation time.
 
+The current `e2e-tabs` spec also opens the Accelerator tab and asserts the Add
+path reports `accelerator daemon unavailable` rather than a web-computed sum; the
+real sum+metadata assertion remains the accelerator daemon integration gate.
+
 The `e2e-tabs` spec is **polymorphic** across the suite's config variants. The
 harness exports `EXPECTED_MESSAGE` per variant, and the spec reads that env var
 rather than a hardcoded string: in addition to the tabs and `/api/budget`, it

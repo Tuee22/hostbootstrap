@@ -13,7 +13,7 @@ module Main (main) where
 import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServices, withTeardown)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChain, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
 import HostBootstrapDemo.Config (demoInit, demoTestConfig, demoTestInit)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
@@ -38,7 +38,7 @@ main = do
         runHostBootstrapCLI
             "hostbootstrap-demo"
             ( withChain
-                demoChain
+                (demoChainFor substrate)
                 ( withFrameContext
                     (demoFrameContext substrate)
                     ( withTeardown

@@ -120,7 +120,8 @@ superseded surfaces moved to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md): `core 245 + demo 14` static `testCase` definitions.
+[system-components.md](system-components.md); after the Phase 16 post-handoff and direct-chain additions,
+`cabal test all` from `core/` reports 328 core tests.
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -158,8 +159,8 @@ truncated source-staging `tar`; a docker-poll shell-quoting break through the Wi
 path, moved to Haskell; and a host-reserve wrongly applied to the in-VM slice, split into a metal-only
 preflight).
 
-**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phases **2, 3, 5, 13, 15, 16, and 18
-are `Active`** for a real accelerator generalization of the demo. The demo UI will accept two `Float`
+**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phase 2 is closed; phases **3, 5,
+13, 15, 16, and 18 are `Active`** for a real accelerator generalization of the demo. The demo UI will accept two `Float`
 values, dispatch an asynchronous CBOR WebSocket request to a separate project-binary daemon, and render the
 daemon's result. The daemon is the same project binary in every placement: Apple Silicon runs a host-native
 Swift/Metal worker; Linux GPU skips the Incus VM, launches an `nvkind` cluster directly on the host, and
@@ -170,13 +171,21 @@ worker in each lane, and a browser e2e test that fills the add UI, waits for the
 asserts daemon-returned backend/artifact metadata. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 
+Static slices have landed for Phases 5, 13, 15, and 16: Linux GPU cluster/exposure planning is implemented
+in core, the demo now has the Accelerator tab, no-fallback web placeholder, typed accelerator API records,
+and deterministic worker source/build generators, the context layer has daemon/direct-container authority,
+and the lifecycle layer has post-handoff hooks plus Linux GPU direct-chain selection. The remaining open
+work is daemon process startup/teardown, live CBOR WebSocket transport and daemon registration, real worker
+integration, and real e2e closure. Phase 18's static protocol/runtime seam is implemented and unit-tested:
+`service run accelerator`, CBOR codecs/correlation, and the transport-injected daemon worker loop.
+
 ## Phases
 
 | Phase | Title | Status |
 |-------|-------|--------|
 | 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
-| 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Active |
+| 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |

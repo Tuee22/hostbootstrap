@@ -31,10 +31,11 @@
 The core surface is the **recursive `project` interpreter**. It merges the `context`
 read-only command, `project init|up|down|destroy`, the `test init|run` split, `service init|schema|run`,
 and `check-code` into a
-composable `optparse-applicative` value. The demo's deploy is the first-class `demoChain :: ProjectConfig
--> [Step]` value (in `demo/src/HostBootstrapDemo/Commands.hs`), interpreted recursively by `project up`;
-the demo also contributes its `Web` service variant (run by `service run`) and its VM/provider IO as chain
-steps — the surface is fixed, so it adds no verbs. The binary-context gate and
+composable `optparse-applicative` value. The demo's deploy is the first-class
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` value (in
+`demo/src/HostBootstrapDemo/Commands.hs`), interpreted recursively by `project up`; the demo also
+contributes its `web` and `accelerator` service variants and its VM/provider IO as chain steps — the
+surface is fixed, so it adds no verbs. The binary-context gate and
 the project-local `<project>.dhall` schema decoder/encoder back the interpreter.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
@@ -178,7 +179,7 @@ attaches the chain (interleaving core and project step kinds) to the spec and ha
 ```haskell
 import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServices, withTeardown)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChain, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
 import HostBootstrapDemo.Config (demoInit, demoTestConfig, demoTestInit)
 import System.Exit (die)
 
@@ -190,7 +191,7 @@ main = do
   runHostBootstrapCLI
     "hostbootstrap-demo"
     ( withChain
-        demoChain
+        (demoChainFor substrate)
         ( withFrameContext
             (demoFrameContext substrate)
             (withTeardown demoTeardown (withServices demoServices (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)))

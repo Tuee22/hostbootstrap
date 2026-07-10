@@ -32,6 +32,7 @@ Incus.
 -}
 module HostBootstrapDemo.Commands (
     demoChain,
+    demoChainFor,
     demoFrameContext,
     demoTeardown,
     demoArtifacts,
@@ -59,7 +60,7 @@ import HostBootstrap.Cluster.Cordon (
     preflightHostBudget,
     resolveHostCapacity,
  )
-import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolvePlan)
+import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolveAcceleratorPlan, resolvePlan)
 import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
@@ -97,15 +98,17 @@ import HostBootstrap.Service (ServiceHandler (..), ServiceRegistry)
 import HostBootstrap.Step (
     Step,
     StepFrame (..),
+    buildImageStep,
     buildPbStep,
     contextInitStep,
     deployChartStep,
     deployKindStep,
     deployVMStep,
     exposePortStep,
+    postHandoffStep,
     projectStep,
  )
-import HostBootstrap.Substrate (Substrate, detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch)
+import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
     ExistsProbe (..),
     HostEffect (..),
@@ -119,6 +122,7 @@ import HostBootstrap.Substrate.Provider (
     vmShellArgs,
  )
 import HostBootstrap.Wsl2 (Wsl2VM (..), mergeWslConfig)
+import HostBootstrapDemo.Accelerator.Daemon (serveAcceleratorDaemon)
 import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
@@ -137,7 +141,7 @@ import HostBootstrapDemo.Web.Server (serveWeb)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, removeFile, renameFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStr, stderr)
 import System.Process (readProcessWithExitCode)
 
@@ -246,6 +250,24 @@ demoChain _ =
     , projectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame pushImageAction
     , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame deployChartAction
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame exposeAction
+    , postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame startHostAcceleratorDaemonAction
+    ]
+
+demoChainFor :: Substrate -> ProjectConfig -> [Step]
+demoChainFor sub
+    | substrateName sub == LinuxGpu = demoLinuxGpuChain
+    | otherwise = demoChain
+
+demoLinuxGpuChain :: ProjectConfig -> [Step]
+demoLinuxGpuChain _ =
+    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (const runDirectHostBootstrap)
+    , contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame contextInitDirectAnnounce
+    , deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame deployKindAction
+    , projectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame deployMinioAction
+    , projectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame deployRegistryAction
+    , projectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame pushImageAction
+    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame deployChartAction
+    , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame exposeAction
     ]
 
 demoMetalFrame :: StepFrame
@@ -256,6 +278,9 @@ demoVMFrame = StepFrame "vm-orchestrator-1" "vm-orchestrator"
 
 demoContainerFrame :: StepFrame
 demoContainerFrame = StepFrame containerRuntimeFrameId "project-container"
+
+demoDirectContainerFrame :: StepFrame
+demoDirectContainerFrame = StepFrame directContainerRuntimeFrameId "linux-gpu-project-container"
 
 {- | The per-frame lift-context resolver (§ U) attached via 'withFrameContext':
 how the binary in the CURRENT frame descends ONE level into @next@. The metal
@@ -272,7 +297,9 @@ demoFrameContext :: Substrate -> ProjectConfig -> StepFrame -> LiftContext
 demoFrameContext sub cfg next
     | frameId next == frameId demoVMFrame = demoVMFrameContext sub
     | frameId next == frameId demoContainerFrame =
-        inContainer (demoDeployImage (containerConfigPayload cfg)) localContext
+        inContainer (demoDeployImage containerRuntimeFrameId False (containerConfigPayload cfg)) localContext
+    | frameId next == frameId demoDirectContainerFrame =
+        inContainer (demoDeployImage directContainerRuntimeFrameId True (directContainerConfigPayload cfg)) localContext
     | otherwise = localContext
 
 {- | The narrowed project-container projection rendered to Dhall text (pure): the
@@ -291,6 +318,16 @@ containerConfigPayload cfg =
             (deploy cfg)
             (message cfg)
             (Context.deriveContainerContext (context cfg) (T.pack containerSourceRoot))
+        )
+
+directContainerConfigPayload :: ProjectConfig -> T.Text
+directContainerConfigPayload cfg =
+    renderProjectConfig
+        ( projectConfigFromContext
+            (dockerfile cfg)
+            (deploy cfg)
+            (message cfg)
+            (Context.deriveLinuxGpuContainerContext (context cfg) (T.pack containerSourceRoot))
         )
 
 {- | The lift from the metal/harness frame into the demo's VM frame, selected by
@@ -321,12 +358,17 @@ contextInitAnnounce _ =
     putStrLn
         "context-init: the project-container config is streamed into the container in-place on handoff (stdin, no config bind-mount)"
 
+contextInitDirectAnnounce :: HostConfig -> IO ()
+contextInitDirectAnnounce _ =
+    putStrLn
+        "context-init: the Linux GPU direct project-container config is streamed into the host-launched container with the direct topology witness"
+
 {- | The persistent cluster plan for the demo's container-frame steps: the
 Production profile (fixed name + the never-deleted @.data@ path, § O), rooted at
 the container's source root.
 -}
-containerPlan :: Context.BinaryContext -> ClusterPlan
-containerPlan ctx = resolvePlan demoProject (T.unpack (Context.sourceRoot ctx)) Production
+containerPlan :: HostConfig -> Context.BinaryContext -> ClusterPlan
+containerPlan cfg ctx = resolveAcceleratorPlan demoProject (T.unpack (Context.sourceRoot ctx)) Production (hcSubstrate cfg)
 
 {- | Container-frame (@vm-project-container-2@) workload step actions. They run in
 the project container, where the VM's Docker socket is mounted (kind nodes are
@@ -343,7 +385,7 @@ deployKindAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
     -- full budget — the budget is used once, as the VM wall (cordon #1).
     slice <- either die pure (clusterSliceOfBudget (resourcesFromContext ctx))
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (envelopeOfResources slice))
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan cfg ctx) (envelopeOfResources slice))
 
 {- | The in-cluster OCI registry image: the single-binary, natively multi-arch
 CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
@@ -708,7 +750,7 @@ pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
     -- registry (the capability the demo demonstrates). A @localhost@ registry is
     -- insecure-by-default in Docker, and @registry:2@ is anonymous, so the HTTP
     -- NodePort needs no @docker login@ and no TLS.
-    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
+    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan cfg ctx)]
     let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
     -- Poll GET /v2/ on the registry NodePort from this frame, minting the
     -- `Ready RegistryServing` witness `pushImageBlob` requires: the tag-and-push
@@ -788,13 +830,22 @@ deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \pr
             [ ("demoMessage", renderDhallText (message projectCfg))
             , ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
             ]
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan cfg ctx) extraValues)
 
 exposeAction :: HostConfig -> IO ()
 exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
     ready <- waitWebReachable cfg localContext "http://localhost:30080/api/budget" 60
     unless ready (die "expose-port: the web NodePort 30080 did not become reachable on the host")
     putStrLn "expose-port: web service reachable at http://localhost:30080/"
+
+startHostAcceleratorDaemonAction :: HostConfig -> IO ()
+startHostAcceleratorDaemonAction cfg
+    | isAppleSilicon (hcSubstrate cfg) =
+        putStrLn "accelerator-daemon: host-resident Apple Silicon daemon hook is ordered after accelerator ingress"
+    | isWindows (hcSubstrate cfg) =
+        putStrLn "accelerator-daemon: host-resident Windows GPU daemon hook is ordered after accelerator ingress"
+    | otherwise =
+        putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
 
 {- | Poll a URL by folding a 'reachLeaf' (@curl@) into @frame@ via the
 self-reference lift, so the probe runs in the frame where the NodePort is
@@ -1110,13 +1161,17 @@ demoGuardPrefix :: String
 demoGuardPrefix = demoProject
 
 {- | The demo's service-handler registry (§ AA): the long-running @web@ role
-@service run web@ dispatches to (the former @web serve@ verb). The @service run@
+@service run web@ dispatches to the warp/wai webservice, and @service run
+accelerator@ dispatches to the accelerator daemon role. The @service run@
 context gate has already validated the service-role @<project>.dhall@ (the
-ConfigMap-delivered cluster-service config, § X) before the handler runs, so the
-handler is just the role body — the warp/wai webservice on the service port.
+ConfigMap-delivered cluster-service or daemon config, § X) before the handler
+runs, so the handler is just the role body.
 -}
 demoServices :: ServiceRegistry
-demoServices = [ServiceHandler "web" (serveWeb 8080)]
+demoServices =
+    [ ServiceHandler "web" (serveWeb 8080)
+    , ServiceHandler "accelerator" serveAcceleratorDaemon
+    ]
 
 -- ---------------------------------------------------------------------------
 -- Metal-host orchestration helpers.
@@ -1667,6 +1722,22 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     buildProjectImage dockerReady cfg provider mAuth buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
+runDirectHostBootstrap :: IO ()
+runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+    cfg <- resolveHostConfig
+    when (substrateName (hcSubstrate cfg) /= LinuxGpu) $
+        die "direct-linux-gpu-bootstrap: this path is only valid on the linux-gpu substrate"
+    let bridgeDir = T.unpack (Context.sourceRoot ctx) </> "web" </> "src" </> "Generated"
+        repoRoot = takeDirectory (T.unpack (Context.sourceRoot ctx))
+        repoRootCfg = parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
+    putStrLn ("build-image: generating the PureScript bridge into " ++ bridgeDir)
+    createDirectoryIfMissing True bridgeDir
+    writeBridge bridgeDir
+    putStrLn "direct-linux-gpu-bootstrap: build the project container on the host for nvkind"
+    withCurrentDirectory repoRoot $
+        runOrDie cfg Docker (dockerBuildArgs repoRootCfg (demoBaseImage cfg))
+    putStrLn "direct-linux-gpu-bootstrap: done (project image built on the host)"
+
 {- | Stream the parent-derived VM-orchestrator config into the VM **in-place**
 (§ X): render the narrowed VM projection and pipe it over the VM shell's @stdin@,
 where a single in-VM @bash -lc@ mints the @/run/hostbootstrap/vm-provider@ witness
@@ -1856,6 +1927,10 @@ registryEndpoint = "localhost:30500"
 containerRuntimeFrameId :: String
 containerRuntimeFrameId = "vm-project-container-2"
 
+-- | The Linux GPU direct container topology id: host -> project container.
+directContainerRuntimeFrameId :: String
+directContainerRuntimeFrameId = "vm-project-container-1"
+
 {- | The project container the chain's container frame runs in: the demo image, with the
 host Docker socket mounted (so kind nodes are siblings on the VM daemon) and
 host networking. The project-container child @<project>.dhall@ is delivered
@@ -1868,21 +1943,25 @@ mounts remain). It also forwards the Docker Hub credential by /name/ only
 pulls authenticate; with no host login the variable is unset and pulls stay
 anonymous (see "HostBootstrap.Registry").
 -}
-demoDeployImage :: T.Text -> ContainerLift
-demoDeployImage payload =
+demoDeployImage :: String -> Bool -> T.Text -> ContainerLift
+demoDeployImage currentFrameId directLinuxGpu payload =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
         , clMounts =
-            [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
-            , Mount "/run/hostbootstrap" "/run/hostbootstrap" True
-            ]
+            Mount "/var/run/docker.sock" "/var/run/docker.sock" False
+                : [Mount "/run/hostbootstrap" "/run/hostbootstrap" True | not directLinuxGpu]
         , clExtraArgs =
             [ "--network=host"
             , "-e"
-            , "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ containerRuntimeFrameId
-            , "-e"
-            , registryAuthEnvVar
+            , "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ currentFrameId
             ]
+                ++ ( if directLinuxGpu
+                        then ["-e", "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"]
+                        else []
+                   )
+                ++ [ "-e"
+                   , registryAuthEnvVar
+                   ]
         , clRemoveAfter = True
         , clConfigDelivery =
             Just

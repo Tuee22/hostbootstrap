@@ -1,5 +1,8 @@
 module Main (main) where
 
+import qualified AcceleratorRuntimeSpec
+import qualified AcceleratorSpec
+import qualified CommandsSpec
 import qualified ConfigSpec
 import Test.Tasty (defaultMain, testGroup)
 
@@ -8,5 +11,8 @@ main =
     defaultMain $
         testGroup
             "hostbootstrap-demo"
-            [ ConfigSpec.tests
+            [ AcceleratorSpec.tests
+            , AcceleratorRuntimeSpec.tests
+            , CommandsSpec.tests
+            , ConfigSpec.tests
             ]

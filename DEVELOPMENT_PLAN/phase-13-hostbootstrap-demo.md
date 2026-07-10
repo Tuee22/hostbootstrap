@@ -74,8 +74,9 @@ polymorphic Playwright `e2e-tabs` spec — is owned by
 additive; this phase's validated shape is unchanged.
 
 The earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
-demo's deploy is now the contributed `demoChain :: ProjectConfig -> [Step]` value (plus `demoFrameContext` /
-`demoTeardown`) interpreted by the core `project up`, which stood up the full live persistent stack — the
+demo's deploy is the contributed chain stream, now substrate-selected by
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (plus `demoFrameContext` / `demoTeardown`) and
+interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
 pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy` (host
 `.data` preserved, § O). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and the demo's
@@ -86,7 +87,7 @@ that is now built.
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
-extension streams: the lift chain (`demoChain`), schema-registry concat (`demoArtifacts`), Dhall
+extension streams: the substrate-selected lift chain (`demoChainFor`), schema-registry concat (`demoArtifacts`), Dhall
 vocabulary use, the service-handler registry (`demoServices`), and the stack-driven `demoTestSuite`. Its
 `ProjectSpec` supplies `demoChain` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
 `demoServices`, and the non-empty `demoTestSuite` — no project verbs (the surface is fixed, § P).
@@ -142,11 +143,20 @@ accelerator path: the UI accepts two `Float` values, the web service dispatches 
 a separate project-binary daemon, and the daemon forwards the calculation to a JIT-built Swift/Metal,
 CUDA, or C++ worker depending on substrate. No fake in-process accelerator may satisfy this feature.
 
+**Static demo slice landed 2026-07-09.** The SPA now has an `Accelerator` tab with two numeric inputs, an
+Add action, pending/error/result render states, and backend/artifact metadata slots. The Haskell web API
+exports typed accelerator request/result/failure records and `/api/accelerator/add` parses the input but
+returns `accelerator daemon unavailable` instead of computing a sum in process, preserving the no-fallback
+invariant until the daemon WebSocket runtime lands. `HostBootstrapDemo.Accelerator` adds deterministic
+Swift/Metal, C++ and CUDA worker source templates, stable artifact hashes, and pure build-command builders
+for Apple Metal, Linux CPU, Linux GPU, and Windows GPU lanes. The Playwright spec includes a current-state
+no-fallback assertion and the demo unit suite covers source generation, hashes, and build arguments.
+
 ## Current Status
 
 The demo's old noun-verb deploy shape is superseded. The current demo contributes
-`demoChain :: ProjectConfig -> [Step]`, interpreted by the fixed `project up` / `project down` /
-`project destroy` surface. The former `vm` / `incus` / `harbor` / `web` / `role` verbs and the separate
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]`, interpreted by the fixed `project up` /
+`project down` / `project destroy` surface. The former `vm` / `incus` / `harbor` / `web` / `role` verbs and the separate
 hand-written deploy interpreter are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), not current surface area. The demo's
 stack-driven `TestSuite` drives the real `project up` under generated configs and tears down with
@@ -156,23 +166,32 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 
 **Accelerator daemon demo — open.**
 
-- Add the demo UI controls: two `Float` inputs, an Add button, asynchronous result state, error state, and
-  backend/artifact metadata display.
-- Add the web accelerator ingress: CBOR WebSocket daemon connection, request-id correlation, timeout, and
-  no in-process fallback for the sum.
-- Add daemon JIT codegen/build/run:
-  - Apple Silicon host daemon: Swift + Metal worker built on the host.
-  - Linux CPU daemon pod: C++ worker built with `clang++` from the CPU base.
-  - Linux GPU daemon pod: CUDA worker built with `nvcc` from the CUDA base in a direct host `nvkind`
-    cluster.
-  - Windows GPU host daemon: CUDA worker built with host `nvcc` after the hardened CudaWin ensure.
+- **Landed (static):** demo UI controls, async pending/error/result state slots, and backend/artifact
+  metadata display.
+- **Landed (static):** web API request/result/failure shapes plus the no-in-process-fallback
+  `/api/accelerator/add` placeholder that refuses to compute without a daemon.
+- **Landed (static):** deterministic JIT source generation, artifact hashing, and pure build-command
+  builders for Apple Silicon Swift/Metal, Linux CPU C++/`clang++`, Linux GPU CUDA/`nvcc`, and Windows GPU
+  CUDA/host-`nvcc` lanes.
+- **Landed (static):** Phase 18 service/runtime seam: `service run accelerator`, CBOR codecs,
+  request-id correlation, worker-supervision seam, and transport-injected daemon loop unit tests.
+- **Remaining:** live CBOR WebSocket transport, daemon registration, and daemon-to-web connection
+  integration.
+- **Remaining:** daemon build/run integration for the real workers in host and in-cluster placements
+  (Phases 15/16/18 plus the real substrate gates).
 - Add integration tests for each real lane that build the worker, connect the daemon, submit an add request,
   and assert the result plus backend/artifact metadata.
 - Add a browser e2e test that fills the two inputs, clicks Add, waits for the daemon result, asserts the
   `Float` sum, and checks metadata so a fake in-process path cannot pass.
 
-Validation is blocked until all static protocol/codegen tests, integration tests, and the browser e2e case
-land. Unit-only closure is not accepted for this feature.
+Validation is blocked until integration tests and the browser e2e case land. Unit-only closure is not
+accepted for this feature.
+
+Static validation (2026-07-09): `cabal build all --ghc-options=-Werror` from `demo/` passed, and
+`cabal test all` from `demo/` passed with 37 demo tests plus the embedded 328 core tests after the
+Phase 18 accelerator protocol/runtime seam additions. Local
+PureScript validation was not run because `spago`/`purs` are not installed on this host; the normal
+project-container `check-code`/web-build gate remains a live integration gate.
 
 **In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
 single-binary `registry:2` swap (Sprint 13.16) plus the demo-side reliability fixes are **real-run-validated
@@ -222,8 +241,9 @@ reported **`6/6 passed`** across both message variants (`REALRUN_EXIT=0`).
 The retired Harbor surfaces and the removed `kind load registry:2` pre-load are now recorded in the
 **Removed Surfaces** of [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-The contributed `demoChain :: ProjectConfig -> [Step]` interpreted by `project up` is built and
-real-run-validated (2026-06-18). The unified-harness / resource-SSoT / fixed-surface correction
+The contributed chain stream interpreted by `project up` is built and real-run-validated (2026-06-18);
+the current implementation routes through `demoChainFor` so `linux-gpu` can use the direct host-container
+path while other substrates keep the VM-backed chain. The unified-harness / resource-SSoT / fixed-surface correction
 (development_plan_standards § W, § O, § P, § AA) **landed in code (2026-06-19), code-check-validated**
 (`cabal build all --ghc-options=-Werror` green; fourmolu/hlint clean on the demo `app`/`src`; the Python
 gate green; verified on the real binary that the surface is fixed and `project up --dry-run` renders the
@@ -977,8 +997,9 @@ message variants, then tore down with host `.data` preserved. The four Harbor en
 ### Sprint 13.17: Substrate accelerator daemon worked example [Active]
 
 **Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
-`demo/src/HostBootstrapDemo/Web/*`, `demo/web/`, `demo/playwright/`
+**Implementation**: `demo/src/HostBootstrapDemo/Accelerator.hs`,
+`demo/src/HostBootstrapDemo/Web/*`, `demo/web/`, `demo/playwright/`,
+`demo/test/AcceleratorSpec.hs`
 **Docs to update**: `documents/engineering/accelerator_daemon.md`,
 `documents/operations/demo_runbook.md`, `documents/architecture/run_models.md`,
 `documents/architecture/binary_context_config.md`
@@ -1015,7 +1036,9 @@ accelerator daemon and perform real `Float` addition through the correct native 
 
 #### Remaining Work
 
-Open until the real accelerator implementation and all static, integration, and e2e gates land.
+Static UI/API/no-fallback/codegen work and the Phase 18 protocol/runtime seam are landed and validated by
+the demo Haskell gates. Open until the live CBOR WebSocket transport, daemon contexts/lifecycle, real
+worker build/run integration on each substrate, and browser e2e sum+metadata gate land.
 
 ## Documentation Requirements
 

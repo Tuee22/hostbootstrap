@@ -54,6 +54,16 @@ the Incus VM and launches an `nvkind` cluster directly on the host through the p
 owns that cluster/exposure shape and the service exposure rule: in-cluster daemon pods use `ClusterIP`,
 while host daemons reach the web accelerator ingress through a local-only `NodePort`.
 
+**Static implementation landed 2026-07-09.** `HostBootstrap.Cluster.Lifecycle` now carries an explicit
+`ClusterDriver` (`KindDriver` / `NvkindDriver`) on `ClusterPlan`, maps `linux-gpu` accelerator plans to
+`NvkindDriver`, builds `nvkind cluster create --name=<cluster>` args while preserving the standard kind path
+for Linux CPU and other substrates, and runs a Docker NVIDIA runtime smoke before the `nvkind` path creates
+the cluster. The same module now exposes the pure accelerator-ingress plan: in-cluster daemons render
+`ClusterIP`, host-resident daemons render a local-only `NodePort` with kind listen address `127.0.0.1`.
+`demo/kind.yaml` reserves `30081` as that local-only accelerator ingress mapping without changing the
+existing public demo web/registry/MinIO NodePorts. Phase 5 remains `Active` only for the live daemon
+integration gates below.
+
 ## Phase Objective
 
 Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
@@ -67,16 +77,24 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 
 **Accelerator cluster/exposure work — open.**
 
-- Add the Linux GPU direct-host `nvkind` cluster path: no Incus VM, launch `nvkind` from the project
-  container with `docker run --rm`, using the existing `nvkind` binary in the base container and the host
-  NVIDIA runtime.
-- Preserve the Linux CPU path as Incus VM + in-cluster daemon pod.
-- Add accelerator-ingress service exposure: `ClusterIP` for in-cluster daemon pods and local-only
-  `NodePort` bound to `127.0.0.1` for Apple/Windows host daemons.
-- Validate that the Linux GPU daemon pod can see the NVIDIA runtime and build/run the CUDA worker.
+- **Landed (static):** Linux GPU accelerator plans select `nvkind`; Linux CPU and the non-GPU VM-backed
+  paths stay on the existing kind/Incus shape.
+- **Landed (static):** accelerator ingress planning renders `ClusterIP` for in-cluster daemon pods and a
+  local-only `NodePort` (`127.0.0.1` kind host mapping) for host daemons.
+- **Landed (static):** the Linux GPU direct path runs a Docker NVIDIA runtime smoke before `nvkind`
+  cluster creation.
+- **Remaining (real-run-gated):** drive the Linux GPU direct `nvkind` path through the project-container
+  handoff once Phase 15/16 direct-container authority exists.
+- **Remaining (real-run-gated):** validate that the Linux GPU daemon pod sees the NVIDIA runtime and
+  builds/runs the CUDA worker once Phase 13/18 daemon runtime exists.
 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
+
+Static validation (2026-07-09): `cabal build all --ghc-options=-Werror` and `cabal test all` passed from
+`core/` with 321 tests, including `LifecycleSpec` coverage for substrate-to-driver selection,
+`kind`/`nvkind` create arguments, accelerator ingress exposure planning, and the NVIDIA Docker runtime
+probe classifier. The live Linux CPU/GPU daemon and browser e2e gates remain open.
 
 **Previously closed 2026-07-05 — cross-substrate cluster readiness + idempotency:**
 
@@ -325,7 +343,10 @@ Add the cluster/exposure substrate needed by the accelerator daemon demo, especi
 
 #### Remaining Work
 
-Open until the direct `nvkind` path, exposure rendering, and integration/e2e tests land.
+Static lifecycle work is landed: `ClusterDriver`, `resolveAcceleratorPlan`, `clusterCreateArgs`,
+`acceleratorIngressPlan`, `nvidiaRuntimeProbeArgs` / `nvidiaRuntimeProbeReady`, `Nvkind` host-tool coverage,
+and the reserved local-only `demo/kind.yaml` mapping. Open only for the real Linux CPU/GPU daemon
+integration and browser e2e gates that require the later Phase 13/15/16/18 daemon work.
 
 ## Documentation Requirements
 

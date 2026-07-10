@@ -32,8 +32,11 @@ module HostBootstrap.Context
     deriveVMContextWithProvider,
     deriveVMContext,
     deriveContainerContext,
+    deriveLinuxGpuContainerContext,
     deriveServiceContext,
     deriveDaemonContext,
+    deriveHostDaemonContext,
+    deriveClusterDaemonContext,
     deriveOneShotContext,
     deriveTestHarnessContext,
     imageBuildContainerContext,
@@ -300,6 +303,30 @@ deriveContainerContext parent root =
     (commandClassesForKind VMProjectContainer)
     (childKindsForKind VMProjectContainer)
 
+-- | Derive the explicit Linux-GPU direct-host project-container context:
+-- @host -> docker project container -> nvkind cluster@. This is intentionally a
+-- separate constructor rather than a generic HostOrchestrator child, so ordinary
+-- VM-backed runtime containers still require a VM ancestor.
+deriveLinuxGpuContainerContext :: BinaryContext -> Text -> BinaryContext
+deriveLinuxGpuContainerContext parent root =
+  let frameId = generatedFrameId VMProjectContainer (length (topologyFrames parent))
+      role = "linux-gpu-project-container"
+      witnesses =
+        [ RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" "",
+          RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId,
+          directLinuxGpuWitness
+        ]
+   in childContextWith
+        parent
+        root
+        VMProjectContainer
+        DockerContainerProvider
+        role
+        witnesses
+        (capabilitiesForKind VMProjectContainer)
+        (commandClassesForKind VMProjectContainer)
+        (childKindsForKind VMProjectContainer)
+
 -- | Derive a cluster-service context from its parent.
 deriveServiceContext :: BinaryContext -> Text -> BinaryContext
 deriveServiceContext parent root =
@@ -315,14 +342,22 @@ deriveServiceContext parent root =
 -- | Derive a daemon context from its parent.
 deriveDaemonContext :: BinaryContext -> Text -> BinaryContext
 deriveDaemonContext parent root =
-  childContext
-    parent
-    root
-    Daemon
-    (providerForKind Daemon)
-    (capabilitiesForKind Daemon)
-    (commandClassesForKind Daemon)
-    (childKindsForKind Daemon)
+  case contextKind parent of
+    HostOrchestrator -> deriveHostDaemonContext parent root
+    _ -> deriveClusterDaemonContext parent root
+
+-- | Derive a host-resident daemon context. Apple Silicon and Windows GPU
+-- accelerator daemons run this leaf role on the host after the web ingress is
+-- available.
+deriveHostDaemonContext :: BinaryContext -> Text -> BinaryContext
+deriveHostDaemonContext parent root =
+  childDaemonContext parent root HostProvider
+
+-- | Derive an in-cluster daemon-pod context. Linux CPU/GPU accelerator daemons
+-- receive this config by ConfigMap, mirroring cluster-service config delivery.
+deriveClusterDaemonContext :: BinaryContext -> Text -> BinaryContext
+deriveClusterDaemonContext parent root =
+  childDaemonContext parent root KubernetesProvider
 
 -- | Derive a one-shot-job context from its parent.
 deriveOneShotContext :: BinaryContext -> Text -> BinaryContext
@@ -369,6 +404,31 @@ childContext ::
   [ContextKind] ->
   BinaryContext
 childContext parent root kind provider caps classes childKinds =
+  childContextWith
+    parent
+    root
+    kind
+    provider
+    (defaultRoleName kind)
+    (runtimeWitnessesForKind kind frameId)
+    caps
+    classes
+    childKinds
+  where
+    frameId = generatedFrameId kind (length (topologyFrames parent))
+
+childContextWith ::
+  BinaryContext ->
+  Text ->
+  ContextKind ->
+  ProviderKind ->
+  Text ->
+  [RuntimeWitness] ->
+  [Capability] ->
+  [CommandClass] ->
+  [ContextKind] ->
+  BinaryContext
+childContextWith parent root kind provider role witnesses caps classes childKinds =
   let frameId = generatedFrameId kind (length (topologyFrames parent))
       parentFrame = currentFrame parent
    in
@@ -377,7 +437,7 @@ childContext parent root kind provider caps classes childKinds =
       binary = binary parent,
       sourceRoot = root,
       contextKind = kind,
-      roleName = defaultRoleName kind,
+      roleName = role,
       parentChain = parentChain parent ++ [ContextFrame (contextKind parent) (binary parent)],
       topologyFrames =
         topologyFrames parent
@@ -386,16 +446,38 @@ childContext parent root kind provider caps classes childKinds =
                   topologyParentId = parentFrame,
                   topologyProvider = provider,
                   topologyKind = kind,
-                  topologyRoleName = defaultRoleName kind
+                  topologyRoleName = role
                 }
              ],
       currentFrame = frameId,
-      runtimeWitnesses = runtimeWitnessesForKind kind frameId,
+      runtimeWitnesses = witnesses,
       capabilities = caps,
       allowedCommandClasses = classes,
       resourceEnvelope = resourceEnvelope parent,
       childContextKinds = childKinds
     }
+
+childDaemonContext :: BinaryContext -> Text -> ProviderKind -> BinaryContext
+childDaemonContext parent root provider =
+  let frameId = generatedFrameId Daemon (length (topologyFrames parent))
+      witnesses =
+        case provider of
+          KubernetesProvider ->
+            [ RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" "",
+              RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId
+            ]
+          _ ->
+            [RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId]
+   in childContextWith
+        parent
+        root
+        Daemon
+        provider
+        (defaultRoleName Daemon)
+        witnesses
+        (capabilitiesForKind Daemon)
+        (commandClassesForKind Daemon)
+        (childKindsForKind Daemon)
 
 capabilitiesForKind :: ContextKind -> [Capability]
 capabilitiesForKind HostOrchestrator = [HostTools, IncusProvider]
@@ -428,7 +510,7 @@ commandClassesForKind ImageBuildContainer =
 commandClassesForKind ClusterService =
   [ConfigInspectionCommand, ServiceCommand]
 commandClassesForKind Daemon =
-  [ConfigInspectionCommand, DaemonCommand]
+  [ConfigInspectionCommand, DaemonCommand, ServiceCommand]
 commandClassesForKind OneShotJob =
   [ConfigInspectionCommand, ProjectCommand]
 commandClassesForKind TestHarness =
@@ -486,7 +568,13 @@ runtimeWitnessesForKind VMProjectContainer frameId =
   ]
 runtimeWitnessesForKind ClusterService _ =
   [RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""]
+runtimeWitnessesForKind Daemon frameId =
+  [RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId]
 runtimeWitnessesForKind _ _ = []
+
+directLinuxGpuWitness :: RuntimeWitness
+directLinuxGpuWitness =
+  RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu"
 
 -- | What a command expects from the active context.
 data ContextRequirement = ContextRequirement
@@ -588,10 +676,9 @@ validateContext req ctx
       Left (ContextCommandNotAllowed (requiredCommandClass req) (contextKind ctx))
   | Just missing <- find (`notElem` capabilities ctx) (requiredCapabilities req) =
       Left (ContextCapabilityMissing missing)
-  | Just required <- requiredAncestorKind ctx,
-    Right ancestors <- ancestorKinds ctx,
-    required `notElem` ancestors =
-      Left (ContextRequiredAncestorMissing (contextKind ctx) required)
+  | Right ancestors <- ancestorKinds ctx,
+    Just err <- requiredAncestorError ctx ancestors =
+      Left err
   | otherwise = Right ctx
 
 currentTopologyFrame :: BinaryContext -> Maybe TopologyFrame
@@ -611,11 +698,26 @@ ancestorKinds ctx =
             Nothing -> Left (ContextTopologyParentMissing (topologyFrameId frame) (topologyParentId frame))
             Just parent -> go (topologyKind parent : acc) parent
 
-requiredAncestorKind :: BinaryContext -> Maybe ContextKind
-requiredAncestorKind ctx =
+requiredAncestorError :: BinaryContext -> [ContextKind] -> Maybe BinaryContextError
+requiredAncestorError ctx ancestors =
   case contextKind ctx of
-    VMProjectContainer -> Just VMOrchestrator
+    VMProjectContainer
+      | VMOrchestrator `elem` ancestors -> Nothing
+      | isExplicitLinuxGpuContainer ctx -> Nothing
+      | otherwise -> Just (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
     _ -> Nothing
+
+isExplicitLinuxGpuContainer :: BinaryContext -> Bool
+isExplicitLinuxGpuContainer ctx =
+  directLinuxGpuWitness `elem` runtimeWitnesses ctx
+    && case currentTopologyFrame ctx of
+      Just frame
+        | topologyKind frame == VMProjectContainer,
+          topologyProvider frame == DockerContainerProvider ->
+            case find ((== topologyParentId frame) . topologyFrameId) (topologyFrames ctx) of
+              Just parent -> topologyKind parent == HostOrchestrator
+              Nothing -> False
+      _ -> False
 
 -- | Validate both the pure context structure and the locally checkable runtime
 -- witnesses in the decoded context.

@@ -144,9 +144,10 @@ helpers, and command gating through the sibling `<project>.dhall`. The context a
 runtime configs carry provider-backed `topologyFrames`, a `currentFrame`, and locally checked witnesses,
 and the binary verifies its frame before side effects. The core command surface is
 `context`/`project`/`test`/`service`/`check-code`, and the demo drives its lifecycle through the recursive
-`project` chain — `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs` —
-interpreted by `project up`. The demo also contributes its `Web` service variant (run by `service run`)
-and its VM/provider IO as chain steps — the surface is fixed, so it adds no verbs.
+`project` chain — `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
+`demo/src/HostBootstrapDemo/Commands.hs` — interpreted by `project up`. The demo also contributes its
+`web` and `accelerator` service variants and its VM/provider IO as chain steps — the surface is fixed, so
+it adds no verbs.
 
 The model this document describes is the recursive `project` chain: `chain :: cfg -> [Step]`
 interpreted by `project up`, with `project init` writing the root config, the context-init step minting

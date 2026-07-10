@@ -178,8 +178,9 @@ Reused across shapes and step kinds:
 
 The **chain surface** this cookbook describes is the running system: the core command tree is exactly
 `project`, `test`, `service`, `context`, and `check-code`, and the demo's deploy is the pure value
-`demoChain :: ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), which realizes shape
-2 as one ordered chain that stands up the persistent stack and ends at a live web service. The lift
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), whose
+VM-backed branch realizes shape 2 as one ordered chain that stands up the persistent stack and ends at a
+live web service. The lift
 primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, with full lifecycle closure
 still tracked in phase 11 — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The

@@ -251,10 +251,11 @@ preserved.
   `<project>.dhall` uniformly, the `service` command (`service run` runs one long-running role), and the
   `test` harness. Run-model selection (`selectRunModel`) and the `HostTarget` tool-level lift are real;
   the four run-models are real. The **fixed** core command surface is exactly `project`, `test`,
-  `service`, `context`, `check-code` — no per-project verbs. The demo's deploy is
-  `demoChain :: ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`; the demo's
-  `web serve` resolves to `service run` (`Web` variant) and `web bridge` to the build-image step, both
-  extensions of core via the service-handler and lift-chain streams rather than new verbs. `project down`
+  `service`, `context`, `check-code` — no per-project verbs. The demo's deploy is the substrate-selected
+  `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`; the
+  demo's `web serve` resolves to `service run web`, `service run accelerator` is the accelerator daemon
+  variant, and `web bridge` folds into the build-image step, all extensions of core via the service-handler
+  and lift-chain streams rather than new verbs. `project down`
   deletes kind compute and stops VM frames while preserving durable state.
 - **The chain steps:** `project up` interprets the chain across three frames. The metal frame runs
   `deploy-VM` (ensure the provider, launch the budget-sized VM) and `build-pb` (the host-native binary

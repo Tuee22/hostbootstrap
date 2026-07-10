@@ -32,9 +32,11 @@
   per-case bring-up.
 - The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
-- A planned accelerator extension adds two `Float` inputs and an Add button to the demo UI. The result must
-  come from a project-binary accelerator daemon over CBOR WebSocket, backed by a real Swift/Metal, CUDA, or
-  C++ worker depending on substrate.
+- The accelerator extension is partially implemented. The demo UI has an `Accelerator` tab with two
+  `Float` inputs, an Add button, async state, and backend/artifact slots. Until the daemon runtime lands,
+  the web endpoint returns `accelerator daemon unavailable` instead of computing locally. The final result
+  must come from a project-binary accelerator daemon over CBOR WebSocket, backed by a real Swift/Metal,
+  CUDA, or C++ worker depending on substrate.
 
 ## Current Status
 
@@ -77,19 +79,22 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 [Step]` are real-run-validated end-to-end on real hardware (see
 [phase-13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)).
 
-The accelerator UI/daemon path is not implemented yet. It is reopened phase work and will not close until
-integration tests build the real worker in each supported lane and the browser e2e test proves the UI add
-workflow receives daemon-returned backend metadata.
+The accelerator UI/no-fallback shell and deterministic worker source/build templates are implemented. The
+daemon path is still reopened phase work and will not close until integration tests build the real worker
+in each supported lane and the browser e2e test proves the UI add workflow receives daemon-returned backend
+metadata.
 
-The demo's deploy is the single `[Step]` value `demoChain :: ProjectConfig -> [Step]`
-(`demo/src/HostBootstrapDemo/Commands.hs`) that the core's `project init|up|down|destroy` lifecycle
-interprets recursively. The chain descends three frames: the metal `host-orchestrator-0` provisions the
-VM and builds the pb and image in it; the in-VM `vm-orchestrator-1` mints the project-container child
-config and hands off; the in-container `vm-project-container-2` stands up the persistent stack
-(deploy-kind → deploy-registry → push-image → deploy-chart → expose-port). Each frame's binary runs only
-its own segment, then hands off `project up` one level down. `project up` ends at a live webservice on
-`localhost:30080`. `project down` deletes the kind cluster and stops the VM while preserving host `.data`;
-`project destroy` deletes the VM too.
+The demo's deploy is the single substrate-selected `[Step]` value (`demoChainFor` in
+`demo/src/HostBootstrapDemo/Commands.hs`) that the core's `project init|up|down|destroy` lifecycle
+interprets recursively. The default VM-backed chain descends three frames: the metal
+`host-orchestrator-0` provisions the VM and builds the pb and image in it; the in-VM
+`vm-orchestrator-1` mints the project-container child config and hands off; the in-container
+`vm-project-container-2` stands up the persistent stack (deploy-kind → deploy-registry → push-image →
+deploy-chart → expose-port), then the host-frame post-handoff hook runs. On `linux-gpu`, `demoChainFor`
+selects a direct host -> project-container chain with the Phase 15 direct context and Phase 5 `nvkind`
+plan. Each frame's binary runs only its own segment, then hands off `project up` one level down. `project
+up` ends at a live webservice on `localhost:30080`. `project down` deletes the kind cluster and stops the
+VM while preserving host `.data`; `project destroy` deletes the VM too.
 
 The core command tree is exactly `project`, `test`, `service`, `context`, and `check-code`. Cluster
 bring-up is the `deploy-kind` / `deploy-chart` chain steps; `project init` writes the root config;
@@ -98,16 +103,16 @@ chain step that mints a child config. The demo contributes its long-running web 
 (the chart pod runs `service run`, the `Web` variant; the Dockerfile's PureScript→JS bridge runs as the
 build-image step) and its VM/provider IO as chain steps — the `vm` / `incus` / `web` verbs are removed (the
 surface is fixed; see [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)). The deploy
-itself is the contributed `demoChain` interpreted by `project up`.
+itself is the contributed `demoChainFor` selection interpreted by `project up`.
 
 ## The demo and its extension contract
 
 The demo's primary contribution is its **lift chain value**. The demo binary contributes its `chain`,
-step actions, harness cases, Dhall vocabulary, and artifacts through `ProjectSpec` (`demoChain`,
+step actions, harness cases, Dhall vocabulary, and artifacts through `ProjectSpec` (`demoChainFor`,
 `demoCases`, `demoCheckCode`, `demoArtifacts`); it never re-implements or shadows a core operation. Core
 ships the host-management step kinds (deploy-VM, `ensure-X`, copy-source, build-pb, build-image,
-context-init, deploy-kind, deploy-chart, expose-port); the demo interleaves its own workload step kinds
-(deploy-registry, push-image) into the same `[Step]`. This is the workload-extension seam —
+context-init, deploy-kind, deploy-chart, expose-port, post-handoff); the demo interleaves its own workload
+step kinds (deploy-registry, push-image) into the same `[Step]`. This is the workload-extension seam —
 host and workload steps compose in one chain.
 
 The demo demonstrates the additive extension streams (the command surface is **fixed** — a project adds no
@@ -229,11 +234,14 @@ pod, and the verified NodePort:
 | deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
-The planned accelerator extension adds a daemon connection after the web endpoint exists. Linux CPU keeps
-the Incus VM path and runs a daemon pod in the cluster. Linux GPU skips the Incus VM and launches an
-`nvkind` cluster directly on the host through the project container, then runs a CUDA daemon pod. Apple
-Silicon and Windows GPU start a host-native daemon after `project up` exposes a local-only NodePort for the
-web service.
+The accelerator extension adds a daemon connection after the web endpoint exists. Linux CPU keeps the
+Incus VM path and runs a daemon pod in the cluster. Linux GPU skips the Incus VM and launches an `nvkind`
+cluster directly on the host through the project container, then runs a CUDA daemon pod; the static
+lifecycle driver, Docker NVIDIA-runtime probe, direct context, and direct chain selection are implemented.
+Apple Silicon and Windows GPU start a host-native daemon after `project up` exposes a local-only NodePort
+for the web service; the real daemon process manager and Phase 18 runtime are still open. The demo
+reserves NodePort `30081` in `demo/kind.yaml` for that local-only accelerator ingress (`127.0.0.1` kind
+listen address), leaving the existing web NodePort `30080` behavior unchanged.
 
 ## Operator surface
 
@@ -308,7 +316,7 @@ harness stands each up / asserts / tears down in turn.
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (the deploy-VM provider / deploy-VM / build-pb steps): the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
-| `e2e-tabs` | The served surface: the Halogen SPA tabs render and `/api/budget` returns the `fitsBudget` view from the project image's base-provided Playwright run (a container on the VM host network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render, `/api/budget` returns the `fitsBudget` view, and the current accelerator Add shell proves there is no in-process fallback from the project image's base-provided Playwright run (a container on the VM host network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
 
 ## Three builds vs the standard host-native build
 
