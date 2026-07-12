@@ -72,9 +72,12 @@ The full statement is [development_plan_standards.md § BB](development_plan_sta
   no default config values. The only place defaults live is a project-supplied init builder.
 - **Explicit, fail-fast configs.** Every `<project>.dhall` / `test.dhall` field is mandatory; a missing
   field fails the strict Dhall decode before any side effect (no `//`-merge, no `fromMaybe` in decode).
-- **Generic over the config type.** The extension contract becomes `ProjectSpec cfg tcfg`, coupling core
-  to `cfg` only through the lift authority (`cfg -> BinaryContext`, `BinaryContext -> cfg -> cfg`).
-  `ProjectConfig` / `Resources` / `DeployConfig` become the *demo's* concrete `cfg`/`tcfg`, not core types.
+- **Generic over the config type.** The extension contract is `ProjectSpec cfg tcfg`. Core obtains
+  contextual lift authority through the generic config seam and may carry an explicit command-specific
+  projection when a fixed command needs project-owned data. The current example is
+  `psServiceVariant :: cfg -> Either String String`, installed by `withServiceConfig`; it selects an
+  internal service-handler key without imposing a service field or ADT on core. `ProjectConfig` /
+  `Resources` / `DeployConfig` remain the *demo's* concrete `cfg`/`tcfg`, not core types.
 - **One init builder, reused (DRY).** `psInit :: InitArgs -> cfg` is the only default-bearing function;
   `project init` calls it and `test run` reuses it through `psTestConfig` — never by shelling `project init`.
 - **The binary owns config creation; Python does not.** Python builds the host-native binary and execs it;
@@ -86,9 +89,12 @@ The full statement is [development_plan_standards.md § BB](development_plan_sta
 - **The harness generates and owns the run's config.** `test run` reads `test.dhall`, refuses if a sibling
   `.build/<project>.dhall` exists or a production cluster is running, builds labeled config variants via
   `psTestConfig :: tcfg -> IO [(Text, cfg)]` (reusing `psInit`; `IO` so a project can read extra inputs
-  such as a `test-secrets.dhall`), writes each variant's `<project>.dhall`, runs `project up`, asserts,
-  `project destroy`, then deletes the **generated** `<project>.dhall` and self-created `.test_data`
-  (keeping `test.dhall`).
+  such as a `test-secrets.dhall`), and exclusively claims the generated-config and `.test_data` ownership
+  boundaries. For each variant it writes `<project>.dhall`, runs `project up`, asserts, and attempts
+  `project destroy` plus owned-artifact cleanup. Cleanup compares the current config bytes with the bytes
+  it wrote and preserves a replacement. Teardown errors fail the variant; independent teardown actions
+  are all attempted and aggregated. A distinguished `SafetyRefusal` means ownership was never acquired,
+  so automatic project teardown is deliberately skipped.
 - **Generic secrets shape.** Core offers a pure `SecretRef` union projects may embed in `cfg`; "no
   plaintext secrets in a production `<project>.dhall`" becomes type-level. Core never resolves secrets — a
   project's `psTestConfig` swaps `Vault` pointers for `TestPlaintext` read from its own `test-secrets.dhall`.
@@ -135,13 +141,15 @@ config from the project-owned `psInit`. Verified by `cabal build all --ghc-optio
 
 #### Objective
 
-Generalize `ProjectSpec` to `ProjectSpec cfg tcfg`, coupling core to `cfg` only via `psBinaryContext ::
-cfg -> BinaryContext` and `psLiftChild :: BinaryContext -> cfg -> cfg`. Demote `ProjectConfig` /
-`Resources` / `DeployConfig` to the demo's concrete instance.
+Generalize `ProjectSpec` to `ProjectSpec cfg tcfg`, coupling core to `cfg` through generic contextual
+authority and explicit project-provided projections, never through a fixed core config record. Demote
+`ProjectConfig` / `Resources` / `DeployConfig` to the demo's concrete instance.
 
 #### Deliverables
 
-- `ProjectSpec cfg tcfg` with config/test codecs and the two lift accessors; `runHostBootstrapCLI` generic.
+- `ProjectSpec cfg tcfg` with config/test codecs and contextual lift accessors;
+  `runHostBootstrapCLI` generic. Fixed commands may add narrow projections over `cfg` without adding a
+  universal field: Phase 18's `psServiceVariant` / `withServiceConfig` is the current example.
 - The resource budget / VM cordon documented as a provider concern carried by a project's `cfg`, not a
   universal field (§ O amended by § BB).
 - A project's own config fields live on its `cfg` (the demo's `message` is added on the demo's `cfg` in
@@ -160,7 +168,10 @@ Code complete and validated (2026-06-23): `ProjectSpec cfg tcfg` is parameterize
 (`HostBootstrapDemo.Config` / `.Container`), so core owns no config type. The `message` field lands on the
 demo's own cfg in [phase-20](phase-20-config-driven-demo-worked-example.md). Verified by core `cabal build
 -Werror` + `cabal test all` (232) and demo `cabal build -Werror` + its own suite (13). Real-run-validated
-2026-06-23 (test run all 3/3 from a generated config).
+2026-06-23 (test run all 3/3 from a generated config). A later Phase 18 extension now carries
+`psServiceVariant` through `ProjectSpec` and installs the demo-specific implementation with
+`withServiceConfig`; that narrow projection preserves this phase's generic-config contract and does not
+reopen it.
 
 ### Sprint 19.3: DRY init + harness-generated config + sibling-path precondition [Done]
 
@@ -172,14 +183,19 @@ demo's own cfg in [phase-20](phase-20-config-driven-demo-worked-example.md). Ver
 
 Add `psInit :: InitArgs -> cfg`, `psTestInit :: InitArgs -> tcfg`, and `psTestConfig :: tcfg -> IO [(Text, cfg)]`;
 flip `test run` to *generate* the run's `<project>.dhall` from `test.dhall` via `psTestConfig` (reusing
-`psInit`) and delete the generated config + self-created `.test_data` on teardown (closing the § Z
-code-vs-contract drift). Fix the harness existence precondition to check the executable-sibling
+`psInit`) and clean up only the generated config + self-created `.test_data` that it still owns (closing
+the § Z code-vs-contract drift). Fix the harness existence precondition to check the executable-sibling
 `siblingProjectConfigPath` (`.build/<project>.dhall`), not `getCurrentDirectory`/the project root.
 
 #### Deliverables
 
 - `test init` writes `test.dhall` from `psTestInit` without requiring an existing `<project>.dhall`.
-- `test run` generates → `project up` → assert → `project destroy` → delete generated config; keeps `test.dhall`.
+- `test run` exclusively claims its generated-config and `.test_data` ownership boundaries, then generates
+  → `project up` → assert → `project destroy` → delete only matching owned artifacts; it keeps
+  `test.dhall` and preserves any config replacement.
+- An ordinary failure after acquisition triggers root teardown; `SafetyRefusal` skips that teardown because
+  the harness did not acquire ownership. Teardown failure fails the variant, while project teardown tries
+  independent cleanup actions and reports their aggregate failures.
 - `demoTestSafety` checks the sibling `.build/<project>.dhall` so the fail-fast guard fires on the config
   `project up` actually reads; the value-free `projectConfigForRole` builder is shared by `project init`,
   `test init`, and the harness (never shelling the CLI).
@@ -194,9 +210,14 @@ Validation substrate: linux-cpu (the harness real-run on native Incus/Linux).
 Code complete and validated (2026-06-23): `psInit` / `psTestInit` / `psTestConfig` added; `test init`
 needs no pre-existing `<project>.dhall`; `test run` generates the run's config via `psTestConfig`, drives
 the real `project up`, asserts, `project destroy`, then deletes the generated config (keeping `test.dhall`);
-`demoTestSafety` now checks the executable-sibling `siblingProjectConfigPath`, not the project root.
-Verified by `cabal test all` (232) + the demo suite (13). Real-run-validated 2026-06-23 (test run all 3/3
+`demoTestSafety` checks the executable-sibling `siblingProjectConfigPath`, not the project root. Verified
+at phase close by `cabal test all` (232) + the demo suite (13), and real-run-validated 2026-06-23 (`3/3`
 from a generated config).
+
+The current harness further hardens that delivered ownership model with exclusive ownership locks for the
+generated config and `.test_data`, byte-for-byte replacement preservation, distinguished
+`SafetyRefusal`, variant-failing teardown errors, and aggregate independent cleanup. Those refinements are
+covered by the current suites without changing this sprint's Done status or its historical evidence.
 
 ### Sprint 19.4: Generic `SecretRef` and `test-secrets` seam [Done]
 
@@ -269,7 +290,8 @@ clean (ruff / black / mypy) and `test_all` reports 166 passed.
 
 **Architecture docs to create/update:**
 - `documents/architecture/generic_project_model.md` — the canonical generic-project-model design contract
-- `documents/architecture/hostbootstrap_core_library.md` — `ProjectSpec cfg tcfg` and the lift accessors
+- `documents/architecture/hostbootstrap_core_library.md` — `ProjectSpec cfg tcfg`, contextual lift
+  authority, and narrow project-provided command projections such as the service selector
 - `documents/architecture/harness_workflow.md` — the harness-generates-then-cleans-up the run's config flow
 - `documents/architecture/python_haskell_boundary.md` — Python builds + execs only; the binary owns config init (no auto-init trigger)
 - `documents/architecture/binary_context_config.md` — the binary fails fast on an absent sibling config; no Python trigger

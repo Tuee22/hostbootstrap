@@ -46,6 +46,7 @@ tests =
         , testGroup "decide" decideCases
         , testGroup "runReconciler" runCases
         , testGroup "install plans" installPlanCases
+        , testGroup "CUDA nvkind runtime probe" cudaProbeCases
         ]
 
 applicabilityCases :: [TestTree]
@@ -87,6 +88,17 @@ decideCases =
                         && "linux-cpu" `isInfixOf` msg
                         && "apple-silicon" `isInfixOf` msg
             Right _ -> assertBool "expected Left for colima on linux-cpu" False
+    , testCase "accelerator reconcilers reject the wrong host before side effects" $ do
+        case decide AppleMetal.reconciler cpu of
+            Left msg -> do
+                assertBool "apple-metal diagnostic names the reconciler" ("ensure apple-metal" `isInfixOf` msg)
+                assertBool "apple-metal diagnostic names the required substrate" ("apple-silicon" `isInfixOf` msg)
+            Right _ -> assertBool "expected apple-metal to reject linux-cpu" False
+        case decide CudaWin.reconciler winCpu of
+            Left msg -> do
+                assertBool "cudawin diagnostic names the reconciler" ("ensure cudawin" `isInfixOf` msg)
+                assertBool "cudawin diagnostic names the required substrate" ("windows-gpu" `isInfixOf` msg)
+            Right _ -> assertBool "expected cudawin to reject windows-cpu" False
     ]
 
 runCases :: [TestTree]
@@ -149,9 +161,22 @@ installPlanCases =
     , testCase "cuda: container toolkit on linux-gpu, Left elsewhere" $ do
         Cuda.installSteps gpu
             @?= Right
-                [ InstallStep Sudo ["apt-get", "install", "-y", "nvidia-container-toolkit"]
-                , InstallStep Sudo ["nvidia-ctk", "runtime", "configure", "--runtime=docker"]
+                [ InstallStep Sudo ["apt-get", "update"]
+                , InstallStep Sudo ["apt-get", "install", "-y", "--no-install-recommends", "curl", "gnupg2"]
+                , InstallStep Sudo ["/bin/sh", "-c", Cuda.repositorySetupScript]
+                , InstallStep Sudo ["apt-get", "update"]
+                , InstallStep Sudo ["apt-get", "install", "-y", "nvidia-container-toolkit"]
+                , InstallStep Sudo ["nvidia-ctk", "runtime", "configure", "--runtime=docker", "--set-as-default", "--cdi.enabled"]
+                , InstallStep Sudo ["nvidia-ctk", "config", "--set", "accept-nvidia-visible-devices-as-volume-mounts=true", "--in-place"]
                 , InstallStep Sudo ["systemctl", "restart", "docker"]
+                ]
+        assertBool "cuda configures NVIDIA's signed stable apt repository" $
+            all
+                (`isInfixOf` Cuda.repositorySetupScript)
+                [ "https://nvidia.github.io/libnvidia-container/gpgkey"
+                , "/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                , "https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list"
+                , "signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
                 ]
         assertBool "cuda Left on linux-cpu" (isLeft (Cuda.installSteps cpu))
     , testCase "apple-metal: no package-manager plan; Xcode CLT supplies the stack" $ do
@@ -172,13 +197,23 @@ installPlanCases =
             @?= Right
                 [ InstallStep
                     Winget
-                    ["install", "--id", "Nvidia.CUDA", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
+                    [ "install"
+                    , "--id"
+                    , "Nvidia.CUDA"
+                    , "--exact"
+                    , "--silent"
+                    , "--disable-interactivity"
+                    , "--accept-package-agreements"
+                    , "--accept-source-agreements"
+                    ]
                 , InstallStep
                     Winget
                     [ "install"
                     , "--id"
                     , "Microsoft.VisualStudio.2022.BuildTools"
                     , "--exact"
+                    , "--silent"
+                    , "--disable-interactivity"
                     , "--accept-package-agreements"
                     , "--accept-source-agreements"
                     , "--override"
@@ -186,7 +221,15 @@ installPlanCases =
                     ]
                 , InstallStep
                     Winget
-                    ["install", "--id", "LLVM.LLVM", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
+                    [ "install"
+                    , "--id"
+                    , "LLVM.LLVM"
+                    , "--exact"
+                    , "--silent"
+                    , "--disable-interactivity"
+                    , "--accept-package-agreements"
+                    , "--accept-source-agreements"
+                    ]
                 ]
         assertBool "cudawin Left on windows-cpu" (isLeft (CudaWin.installSteps winCpu))
     , testCase "cudawin: pure probe builders select clang, VS Build Tools, and nvcc -ccbin" $ do
@@ -224,6 +267,28 @@ installPlanCases =
             @?= Just "matt"
         EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
         EIncus.targetIncusAdminUser [("USER", "")] @?= Nothing
+    ]
+
+cudaProbeCases :: [TestTree]
+cudaProbeCases =
+    [ testCase "requires a successful host GPU listing before runtime reconciliation" $ do
+        Cuda.nvidiaDriverProbeReady (Right (ExitSuccess, "GPU 0: NVIDIA RTX 3090\n", "")) @?= True
+        Cuda.nvidiaDriverProbeReady (Right (ExitSuccess, "", "")) @?= False
+        Cuda.nvidiaDriverProbeReady (Right (ExitFailure 9, "", "driver communication failed")) @?= False
+    , testCase "uses the official nvkind volume-mount injection smoke" $
+        Cuda.nvkindRuntimeProbeArgs
+            @?= [ "run"
+                , "--rm"
+                , "-v"
+                , "/dev/null:/var/run/nvidia-container-devices/all"
+                , "ubuntu:20.04"
+                , "nvidia-smi"
+                , "-L"
+                ]
+    , testCase "accepts a visible GPU and rejects empty/failed probes" $ do
+        Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "GPU 0: NVIDIA RTX 3090\n", "")) @?= True
+        Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "", "")) @?= False
+        Cuda.nvkindRuntimeProbeReady (Right (ExitFailure 1, "", "runtime misconfigured")) @?= False
     ]
 
 isRight :: Either a b -> Bool

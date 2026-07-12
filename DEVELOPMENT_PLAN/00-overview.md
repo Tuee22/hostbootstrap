@@ -47,15 +47,18 @@ per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the real `project up`** under a test config rather than re-expressing bring-up (§ W); the declared budget is
 the **one ceiling = the VM wall** with the cluster a **slice within it** (no doubling, § O); each
 `<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
-(§ X); and long-running roles run through the new `service` command (§ AA). The correction landed and is code-check-validated
-(phases 14, 17, 18 `Done`; the 2026-07-05 cross-substrate reliability reopening is now closed `Done`;
-phases 13 and 15 reopened then **closed `Done` 2026-07-02** for in-place
-child-config delivery, § U/§ X — see their sections below): the code is code-check-validated (`cabal test
-all`, `cabal build all --ghc-options=-Werror`, fourmolu/hlint, the Python gate), and the **full demo
-lifecycle `project up` runs end-to-end on both native Incus/Linux and a 16 GiB Apple-Silicon host**.
-`test run all` reports **`6/6 passed`** on current runs (three cases x two message variants; phase 20 added
-the second message variant); the **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and native
-Incus/Linux (2026-06-21) are pre-phase-20 historical snapshots: every case runs in the **VM frame** via the
+(§ X); and long-running roles run through config-selected `service run` with no positional variant (§ AA).
+The underlying correction landed and is code-check-validated; its 2026-07-02 in-place-delivery and
+2026-07-05 cross-substrate reliability reopenings closed successfully. The later accelerator reopening
+changes the current status: phases **3, 5, 13, 15, 16, and 18 are `Active`**, while phases 14 and 17 remain
+`Done`. All current accelerator implementation and static-test work is complete (357 core + 83 demo tests),
+but the six active phases cannot close until their honest native/Apple live gates run. The historical full
+demo lifecycle ran end-to-end on native Incus/Linux and a 16 GiB Apple-Silicon host.
+The last completed pre-accelerator `test run all` gates report **`6/6 passed`** (three cases x two message
+variants; phase 20 added the second message variant). The current harness is four cases across two variants,
+so its next full result must be **`8/8 passed`**; no live `8/8` result is recorded yet. The **`3/3 passed`**
+figures on Apple-Silicon/Lima (2026-06-20) and native Incus/Linux (2026-06-21) are pre-phase-20 historical
+snapshots: every case runs in the **VM frame** via the
 self-reference lift, so each reachability probe
 reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to the host
 (see [phase-17](phase-17-chain-driven-test-and-context-introspection.md)). Dependencies are **forward-only** — no earlier phase is
@@ -72,19 +75,29 @@ Python `ruff`/`black`/`mypy` gate), and are **real-run-closed (§ C)**: a decoup
 (`REALRUN_EXIT=0`) across both message variants, exercising every fix end-to-end (network-ready gate, Haskell
 docker-readiness poll, node/CNI readiness gate, metal host-headroom preflight + reserve-free in-VM slice
 cordon with 2×-swap headroom, `registry:2` `deploy-registry`/`push-image`, guaranteed harness teardown,
-`.wslconfig` merge/restore). **Phases 5, 9, 10, 11, 13, and 16 are now `Done`.** See the [README](README.md)
-reopening note and each phase's `## Phase Status` / `## Remaining Work`.
+`.wslconfig` merge/restore). **At that reliability closure, phases 5, 9, 10, 11, 13, and 16 were `Done`;**
+the later accelerator reopening makes 5, 13, and 16 `Active` again. See the [README](README.md) reopening
+note and each phase's `## Phase Status` / `## Remaining Work`.
 
 **Substrate-specific accelerator daemon reopening (2026-07-09) — `Active`.** Phase 2's host-tool slice is
-closed; phases 3, 5, 13, 15, 16, and 18 remain reopened for a real accelerator generalization of the demo.
-The project binary will also run as a daemon that JIT-generates and builds a substrate-specific worker,
-connects to the web service over CBOR WebSocket, and performs `Float` addition for the UI. Apple Silicon
-uses a host Swift/Metal worker; Linux GPU skips Incus and launches an `nvkind` cluster directly on the host
-with an in-cluster CUDA daemon; Linux CPU keeps Incus with an in-cluster C++/clang daemon; Windows GPU uses
-a host CUDA worker. Closure requires unit coverage for protocol/codegen, integration tests for the real
-daemon lanes, and a browser e2e test that proves the UI add result comes with daemon-returned
-backend/artifact metadata. See
-[accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
+closed, and Phase 3's Apple/Windows host-build-stack slice closed 2026-07-10. Phases **3, 5, 13, 15, 16,
+and 18** remain active only for live closure. The implementation now runs the same project binary as either
+the Web or Accelerator service selected by the real Dhall `ServiceType`; `service run` has no positional
+variant. The daemon JIT-builds and reuses a substrate-specific worker, connects to the web service over
+CBOR WebSocket, and performs `Float32` addition. Apple Silicon and Windows GPU use host-native daemon
+build/run paths; Linux CPU/GPU use in-cluster Deployments, with Linux GPU taking the direct `nvkind` path.
+See [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
+
+Static closure includes the browser Add assertion; persistent Swift/Metal, C++ and CUDA worker paths;
+linked public/private web listeners; no in-process fallback; dynamic web/daemon ConfigMap generation and
+application; config-hash rollout; Linux CPU/GPU daemon deployment and rollout waits; one-GPU scheduling;
+host-daemon ownership/identity/shutdown hardening; and fail-closed harness ownership, direct-cluster, and
+teardown safety. A guarded historical worker gate built and ran CUDA on an RTX 3090
+(`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
+The current `-Werror` evidence is **357 core + 83 demo tests**. Full closure still requires the live
+four-case/two-variant runs on the native substrate hardware: the current host-daemon durable lifecycle and
+the unavailable Apple Silicon / Linux CPU / Linux GPU lanes. The matrix expects `8/8`; no live `8/8`
+result is recorded, and the latest completed live result remains the historical pre-accelerator `6/6`.
 
 The **generic-project-model** work (phase 19, § BB) is **implemented and validated** (`Done`) and builds
 **forward** — it reopened, undid, or reversed no earlier phase. `hostbootstrap-core` owns **no hardcoded
@@ -97,8 +110,8 @@ builds the host-native binary and execs it without initializing or triggering co
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Phase 20 (`Done`) is the
 config-driven demo worked example built on top of the generic model — implemented and validated.
 
-The **Windows third-substrate** work is woven into the existing phases — not a new phase. Phases 2, 3,
-and 9 are closed again: Windows joins `apple-silicon`, `linux-cpu`, and `linux-gpu` as
+The **Windows third-substrate** work is woven into the existing phases — not a new phase. Its Phase 2,
+Phase 3 CudaWin, and Phase 9 slices are closed: Windows joins `apple-silicon`, `linux-cpu`, and `linux-gpu` as
 `windows-cpu`/`windows-gpu` through the Phase-2 pre-binary Haskell toolchain bootstrap and substrate
 detection, the Phase-3 `ensure cudawin` reconciler, and the Phase-9 Windows host-capacity / WSL2 sizing
 surfaces. Phases 9 and 11 closed the Windows/WSL2 lifecycle **2026-07-01** by the full Windows/WSL2 lifecycle
@@ -145,10 +158,16 @@ steps. A wrong-host invocation fails fast with a one-line diagnostic. The implem
 docker, colima, apple-metal, lima, cuda, cudawin, homebrew, ghc, incus, and wsl2. `ensure cudawin`
 (CUDA-on-Windows headless host build, the first instance of composition pattern #7) is present on
 `windows-gpu`; `ensure tart` is retired. The provider-specific `ensure incus` / `ensure wsl2` lifecycle
-validation is owned by Phase 11. It is `Active` only for the accelerator build-stack real-run gates: the
-Apple Metal reconciler and hardened `ensure-cudawin` implementation are static-validated; the Apple
-Silicon smoke build closed 2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`), and the
-Windows GPU smoke build still has to run on that host.
+validation is owned by Phase 11. Phase 3 is `Active` only for Sprint 3.7: the Apple Metal reconciler and hardened
+`ensure-cudawin` implementation are static- and real-run-validated; Linux `ensure cuda` now bootstraps
+NVIDIA's signed stable apt source/keyring, configures the Docker NVIDIA runtime as default with CDI enabled,
+enables volume-mount device injection, and verifies the exact `/dev/null` mount smoke `nvkind` consumes. The
+Apple Silicon smoke build closed 2026-07-10 on
+an M1 Max host (`ensure apple-metal: present
+(no-op)`), and the Windows GPU smoke build closed the same day on an RTX 3090 host after CUDA 13.3, LLVM,
+and the `vswhere`-resolved VCTools compiler produced the `nvcc -ccbin` smoke artifact (`ensure cudawin:
+present (no-op)`). The current `-Werror` static gate passes with all 357 core tests; Phase 3 stays `Active`
+until a Linux GPU Docker host reports `ensure cuda: present (no-op)` under the exact runtime contract.
 
 ### Phase 4 — project-local Dhall and command tree
 
@@ -170,10 +189,17 @@ the active execution context. The existing cluster bring-up/teardown work is `Do
 budget-doubling is corrected in phase-13. It is `Active` for the accelerator Linux GPU lane: `linux-gpu`
 skips the Incus VM, launches an `nvkind` cluster directly on the host through the project container, and
 exposes the accelerator ingress so in-cluster daemons use `ClusterIP` while host daemons use a local-only
-`NodePort`. The static Phase 5 slice is implemented: cluster plans carry `KindDriver`/`NvkindDriver`,
-Linux GPU accelerator plans select `NvkindDriver`, `nvkind cluster create` args and the Docker
-NVIDIA-runtime probe are unit-tested, and the ingress exposure planner renders the `ClusterIP` versus
-local-only `NodePort` split. Live Linux CPU/GPU daemon connectivity and the browser e2e gate remain open.
+`NodePort`. The static Phase 5 slice is implemented: cluster plans carry `KindDriver`/`NvkindDriver` and an
+explicit fail-closed config path; host-daemon, Linux CPU, and direct Linux GPU placements select
+`kind.yaml`, `kind-in-cluster.yaml`, and `nvkind-in-cluster.yaml` respectively. The nvkind template creates
+a control-plane plus a worker labelled `nvidia.com/gpu.present=true`; the lifecycle divides the one cluster
+slice across both node containers, runs the same official NVIDIA runtime smoke as `ensure cuda`, and
+idempotently installs pinned device-plugin chart `0.19.3` only when no positive allocatable
+`nvidia.com/gpu` is already present. The direct chain runs the metal preflight and `ensure docker`/`ensure
+cuda`, builds from the CUDA base, hands the project container `--gpus=all`, and schedules the daemon with a
+one-GPU limit. The current static gate passes 357 core + 83 demo tests. Live native Linux CPU/GPU daemon
+connectivity and the browser e2e `8/8` gate remain open; no live `8/8` result has yet replaced the historical
+`6/6` result.
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -267,7 +293,7 @@ container, and service/daemon contexts. The current non-accelerator demo is impl
 `demoChain` interpreted by `project up` drove the unified-harness / resource-SSoT / fixed-surface correction to a real-run close on a
 16 GiB Apple-Silicon host (2026-06-20) — the demo's test surface drives the real `project up` (no second
 bring-up), the VM is sized to the budget with the cluster a slice within it, and `web serve` / `web bridge`
-moved to `service run web` / the build-image step. The full `project up` lifecycle serves HTTP 200 and
+moved to config-selected `service run` (`Web`) / the build-image step. The full `project up` lifecycle serves HTTP 200 and
 `test run all` reported `3/3 passed` (2026-06-20, pre-phase-20, with an 8-pod Harbor registry at the time,
 incl. the Playwright e2e lifted into the VM frame; later runs `6/6`); the in-cluster registry is now
 closed on single-binary `registry:2`. **Reopened and closed `Done` (2026-07-02)** for
@@ -276,11 +302,12 @@ build-then-mount container config with a projection streamed over the lift's `st
 the descending binary before dispatch — validated by a live Windows/WSL2 `test run all` **`6/6`** with no
 `.vm.dhall`, no `.runtime-container.dhall`, and no config bind-mount; see
 [phase-15](phase-15-binary-context-config.md) Sprint 15.7 for the § X delivery contract.
-It is `Active` for the accelerator worked example. The static UI/API/codegen slice is implemented: the SPA
-has the Accelerator tab, the web endpoint refuses to compute without a daemon, deterministic Swift/Metal,
-C++ and CUDA worker source/build generators are unit-tested, and the local CBOR WebSocket daemon dispatch
-path is implemented. The remaining work is real per-substrate worker execution and the
-integration/browser e2e tests that prove the path.
+It is `Active` for the accelerator worked example, with implementation and static validation complete. The
+SPA/browser assertion, CBOR WebSocket dispatch, linked public/private listeners, no-fallback and
+single-flight behavior, persistent `Float32` workers, dynamic service/daemon ConfigMaps, Linux CPU/GPU
+daemon Deployments, host-native Apple/Windows daemon lifecycle, and fail-closed harness safety are all
+implemented. The current gate passes 357 core + 83 demo tests. Remaining work is only live execution of
+the implemented four-case/two-variant matrix on each substrate; no live `8/8` is recorded.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
 
@@ -299,7 +326,8 @@ and a validated `## Current Status`).
 Phase 15 owns runtime binary-context config and command gating. Each copy of a project binary reads a
 sibling `<project>.dhall`; the role is data inside the file rather than part of the filename. Normal
 commands fail fast with exit code 1 when the local config is missing, malformed, for another project, not
-authorized for the requested command, or missing required topology witnesses. It is `Done`: each
+authorized for the requested command, or missing required topology witnesses. The baseline contract is
+implemented and historically closed: each
 `<project>.dhall` carries an **explicit context** and may declare **multiple roles** (project + service,
 generated by `project init --also-role` via `Context.addRole`), context relationships are pure compositional
 lifts, and child configs are generated from parameters **forwarded from the parent** (§ X); `context` stays
@@ -315,10 +343,11 @@ only the narrowed projection crosses (never the parent's full config), on `stdin
 config file and no config bind-mount for the VM/container frames (the Kubernetes service pod keeps its
 ConfigMap override). The core `Lift.ConfigDelivery` + `Chain` stdin-handoff landed (280 tests) and a live
 Windows/WSL2 `test run all` reported **`6/6`**.
-It is `Active` for accelerator-context integration only: the static context extension is implemented
-(daemon service authority without project lifecycle authority, host-resident and in-cluster daemon
-projections, and the explicit Linux GPU direct project-container topology), but the real lifecycle/runtime
-handoff is closed by Phases 16, 18, and 13.
+It is currently `Active` for accelerator-context integration only. The daemon service authority,
+host-resident and in-cluster projections, explicit Linux GPU direct topology, dynamically generated/applied
+web and daemon ConfigMaps, and config-byte rollout hashes are implemented. Phase 16 delivers those configs
+to the host-native and in-cluster runtime paths; Phase 18 dispatches the config-selected service. Only live
+proof that each native placement reads its projection and connects remains.
 
 ### Phase 16 — Project lifecycle command and step-chain interpreter
 
@@ -333,13 +362,15 @@ recursive interpreter, and the `project` command are built and real-run-validate
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
 composable tools, § P) — and the build-time `web bridge` is re-homed into the build-image step. The fixed
 surface is real-run-validated by the full `project up` + `test run all` run on Apple Silicon (2026-06-20).
-The reopened lifecycle slice is implemented locally: `PostHandoff` steps run after the recursive child
-frame succeeds, the demo contributes a host-daemon hook after ingress exposure, and `demoChainFor` selects
-a direct Linux GPU host -> project-container `nvkind` chain while Linux CPU keeps the VM-backed chain. The
-Apple/Windows host-daemon start/stop path writes a daemon-authority sibling config, starts a copied project
-binary as `service run accelerator`, records a pid, and stops it through resolved host tools during
-teardown. The remaining open work is real host-daemon integration, in-cluster Linux CPU/GPU daemon pod
-startup, and browser/integration validation with the Phase 18 daemon runtime.
+The reopened lifecycle slice is implemented: `PostHandoff` steps run after the recursive child frame
+succeeds, the demo contributes a host-daemon hook after ingress exposure, and `demoChainFor` selects a
+direct Linux GPU host -> project-container `nvkind` chain while Linux CPU keeps the VM-backed chain. The
+Apple/Windows path copies the host-native project-binary build, writes its daemon-authority sibling config,
+and launches config-selected `service run`; strict pid parsing, owner marker, exact executable/argv identity,
+shutdown sentinel, and no inherited output streams make teardown fail-closed. Linux CPU/GPU dynamically
+apply the daemon config, deploy and rollout-wait the in-cluster workload, dial the distinct accelerator
+`ClusterIP`, and request one GPU on the GPU lane. Only live host/in-cluster execution and the full browser
+gate remain.
 
 ### Phase 17 — Chain-driven test surface and context introspection
 
@@ -362,22 +393,22 @@ defines its service variants via a project-contributed service-handler registry 
 threaded through `ProjectSpec` with `withServices`); there is no `service down` (lifetime owned by the k8s
 controller, torn down by `project destroy`); `project up`'s `deploy-chart` step deploys the pod whose
 entrypoint is `service run`, its config delivered by a ConfigMap overriding the baked container
-`<project>.dhall` (§ AA). It is `Active`: the command, registry, and demo `web serve` -> `service run web`
-migration landed in code and are **real-run-validated** — the live demo's web pod runs `service run web` and
-serves HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19). The reopened static accelerator slice is
-implemented: the demo registers `service run accelerator`, the existing service-context gate rejects
-project lifecycle authority, CBOR request/result/failure codecs and request-id correlation are tested, and
-the daemon worker/client seam covers reconnect, timeout, shutdown, backend metadata, and artifact hash
-propagation. The concrete WebSocket transport and web-side daemon registration are implemented locally:
-`/api/accelerator/daemon` accepts the daemon connection and `/api/accelerator/add` dispatches CBOR work to
-that daemon without an in-process sum fallback. The remaining open work is real host/in-cluster
-integration tests, real worker build/run gates, and the browser e2e Add workflow.
+`<project>.dhall` (§ AA). It is `Active` for live accelerator closure. The base command, handler registry,
+and historical `web serve` -> config-selected `service run` migration are real-run-validated — the live
+demo's config selected the `Web` handler and served HTTP 200 on the 16 GiB Apple-Silicon host (2026-06-19).
+The real Dhall `ServiceType` now selects `Web WebServiceConfig` or `Accelerator
+AcceleratorServiceConfig`; `withServiceConfig` selects the handler, so neither chart nor daemon argv has a
+positional variant. CBOR correlation, reconnect, timeout, shutdown, persistent `Float32` worker semantics,
+backend/artifact propagation, concrete WebSocket transport, private/public listener separation, and the
+no-fallback web dispatch are statically validated. Only live host/in-cluster execution of that implemented
+runtime remains.
 
 ### Phase 19 — generic project model and no core defaults
 
 Phase 19 makes `hostbootstrap-core` a generic library with **no hardcoded defaults**, parameterized over a
-project's own config type. `ProjectSpec cfg tcfg` couples core to `cfg` only through the lift authority
-(`cfg -> BinaryContext`, `BinaryContext -> cfg -> cfg`); defaults live only in a project-owned `psInit`,
+project's own config type. `ProjectSpec cfg tcfg` couples core to `cfg` through lift authority
+(`cfg -> BinaryContext`, `BinaryContext -> cfg -> cfg`) and the project-owned `psServiceVariant` selector;
+defaults live only in a project-owned `psInit`,
 which `project init` and the harness both reuse (DRY); `test.dhall` is a thin override and the harness
 **generates** the run's `<project>.dhall` from it (`psTestConfig`), then deletes the generated config and
 self-created `.test_data` on teardown (closing the § Z code-vs-contract drift); a pure `SecretRef`
@@ -391,7 +422,7 @@ reopened no earlier phase. It owns the generic model and the Python auto-init re
 
 Phase 20 demonstrates the generic project model end to end by adding a project-owned config field to the
 demo: a `message : Text` field on the demo's **own** config type (the demo's `psInit` default is
-`"Hello, world!"`) that flows `<project>.dhall` -> the chart ConfigMap -> the `Web` service (`serveWeb`
+`"Hello, world!"`) that flows `<project>.dhall` -> the binary-rendered ConfigMap -> the `Web` service (`serveWeb`
 reads its config) -> `BudgetView.message` -> the SPA `#message`. Core owns no project-specific field and no
 generic extra slot. The harness runs **two** config variants (`"Hello, world!"` then `"Hello, Universe!"`)
 with full teardown and spin-up between, and the Playwright e2e-tabs spec is **polymorphic** — it reads
@@ -428,7 +459,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-15 (builds on 6, 8, the closed Phase-11 lift/provider abstraction, 13, 14; makes each lifted/runtime context explicit)
   phase-16 (reopens/builds on 4, 5, 14, 15; the project lifecycle command + the [Step] interpreter + the fixed surface)
   phase-17 (builds on 16, 10; the test surface that drives project up + the read-only context command)
-  phase-18 (builds on 15, 16; the service runtime command + the service-handler registry) ← Done; service run web real-run-validated in the demo
+  phase-18 (builds on 15, 16; service runtime + handler registry) ← Active for accelerator live gates; config-selected Web run historically real-run-validated
   phase-19 (builds forward on 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config, Python auto-init removal) -- Done
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
   phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done

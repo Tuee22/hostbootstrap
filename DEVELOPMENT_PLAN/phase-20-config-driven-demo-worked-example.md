@@ -5,20 +5,22 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [development_plan_standards.md](development_plan_standards.md), [phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md), [phase-18-service-runtime-command.md](phase-18-service-runtime-command.md), [phase-19-generic-project-model.md](phase-19-generic-project-model.md)
 
 > **Purpose**: Demonstrate the generic project model end to end by adding a **project-owned config field**
-> to the demo — a `message` string that flows `<project>.dhall` → the in-cluster ConfigMap → the `Web`
-> service → the SPA — and a **multi-variant** test run that stands up two full clusters with different
-> messages and a **polymorphic** Playwright assertion, proving that a project adds config fields and a
-> config-driven workload with **no core change**.
+> to the demo — a `message` string that flows from the parent-derived `<project>.dhall` through a
+> dynamically rendered in-cluster ConfigMap, the `Web` service, and the SPA — plus a **multi-variant** test
+> run and **polymorphic** Playwright assertion, proving that a project adds config fields and a
+> config-driven workload with **no core config shape change**.
 
 ## Phase Status
 
 **Status**: Done
 
-Phase 20 is **implemented and validated**. It is code-check-validated (core 238 + demo 13, `cabal build
-all --ghc-options=-Werror` clean) and real-run-validated 2026-06-23 (`test run all` reported `6/6
-passed` across the two message variants `"Hello, world!"` and `"Hello, Universe!"`, each a full `project
-up` → assert → `project destroy` with full teardown and spin-up between, the polymorphic e2e asserting
-the correct `#message` per variant). It builds **forward** on the demo (phase 13), the `service` command
+Phase 20 is **implemented and validated**. At phase close it was code-check-validated (core 238 + demo
+13, `cabal build all --ghc-options=-Werror` clean) and real-run-validated 2026-06-23 (`test run all`
+reported `6/6 passed` across the two message variants `"Hello, world!"` and `"Hello, Universe!"`, each a
+full `project up` → assert → `project destroy` with full teardown and spin-up between, with polymorphic
+e2e asserting the correct `#message`). Those counts and the `6/6` are historical phase-close evidence.
+The current dynamic-config implementation remains covered by the repository-wide 357-core / 82-demo
+static suites; no later live matrix result is inferred from that evidence. It builds **forward** on the demo (phase 13), the `service` command
 (phase 18), and the generic project model (phase 19); it reopened nothing. The demo's `message` is a
 field on the **demo's own `cfg`** (the concrete type phase 19 sprint 19.2 demoted out of core), never a
 core-owned field or a generic `extra` slot. The multi-variant test run reuses phase 19's
@@ -32,10 +34,9 @@ symmetric alternative).
 
 ## Motivation
 
-The demo today serves a static page. It does not exercise the one thing the generic project model makes
-possible: a project adding its **own** config field and threading it through a real workload, with no
-change to `hostbootstrap-core`. A worked example closes that gap and doubles as the harness's
-multi-config demonstration:
+The demo exercises the generic project model by adding its **own** field and threading it through a real
+workload without adding that field to `hostbootstrap-core`. It also serves as the harness's multi-config
+demonstration:
 
 - A single `message : Text` field on the demo's `cfg` is the smallest field that visibly proves the
   contract. The operator edits it in `hostbootstrap-demo.dhall`; it renders on the served page.
@@ -44,10 +45,11 @@ multi-config demonstration:
   cluster, tear it down, spin up a harness-generated `"Hello, Universe!"` cluster, and have the same
   Playwright spec assert whichever message the active deployment set.
 
-The web pod reads its config from the chart **ConfigMap** (not the operator's host config), and the
-`service run web` handler today loads its config through the gate and then **discards** it, so the field
-needs two real wirings: the ConfigMap must template the message, and the service handler must read the
-config it is handed.
+The deployer projects the service config from the actual parent config, renders the whole file (including
+`message`), dynamically applies its **ConfigMap**, and hashes the exact mounted bytes into the pod
+template. The chart does not own a static ConfigMap or receive `message` as a Helm value. The fixed
+`ServiceHandler` remains an `IO ()` action; config-selected `service run` chooses the handler, and
+`serveWeb` reads and validates its own effective config before serving `BudgetView.message`.
 
 ## Sprints
 
@@ -79,37 +81,43 @@ substrate: linux-cpu (code-check + in-container build).
 Done — the demo `cfg` carries `message : Text` (default `"Hello, world!"`), `BudgetView.message` is set
 from the config and rendered under the SPA `#message`, validated 2026-06-23 (`test run all` 6/6).
 
-### Sprint 20.2: Service handler reads its config; ConfigMap message templating [Done]
+### Sprint 20.2: Service reads its effective config; dynamic ConfigMap delivery [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` / `Command.hs` (the handler contract), `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs` (`deployChart`), `demo/src/HostBootstrapDemo/Web/Server.hs`, `demo/chart/templates/configmap.yaml`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` / `Command.hs` (the fixed handler contract and config-selected dispatch), `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Config.hs`, `demo/src/HostBootstrapDemo/Web/Server.hs`, `demo/chart/templates/deployment.yaml`
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`, `documents/architecture/run_models.md`, `documents/engineering/cluster_lifecycle.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Thread the `message` to the running pod. The `ServiceHandler` action receives the validated config it is
-gated on (today the gate loads then discards it), so `serveWeb` renders `message` from its own config.
-`deployChart` gains a generic project extra-values parameter (helm `--set-string`), and the demo's
-`deployChartAction` passes `message` from the live config into the chart ConfigMap, which templates it into
-the pod's `<project>.dhall`. This is a **forward extension** of the service-handler contract (phase 18) and
-the cluster-lifecycle deploy step (phase 5/16); it removes nothing.
+Thread `message` to the running pod without coupling core to the demo config. The fixed
+`ServiceHandler` action stays `IO ()`: config-selected `service run` resolves the handler, and `serveWeb`
+loads its own effective project config and renders `message`. The demo's deploy action renders the actual
+parent-derived service config, creates and applies its ConfigMap manifest dynamically, and passes Helm the
+current frame, exact config-byte hash, and placement. This is a project-owned realization of the Phase 18
+handler/config-selector and Phase 5/16 deployment seams.
 
 #### Deliverables
 
-- The service-handler action receives its config; `serveWeb` reads `message` (no bare `IO ()` discard).
-- `deployChart :: HostConfig -> ClusterPlan -> [(Text, Text)] -> IO ()` (generic extra-values); the demo
-  forwards `message` into a templated ConfigMap.
+- `ServiceHandler` remains an `IO ()` action; `serveWeb` loads the effective config, validates the selected
+  `Web` payload, and reads `message` from that config.
+- `renderServiceConfigForContext` produces the full parent-derived service config;
+  `serviceConfigMapManifest` wraps those exact bytes in the generated ConfigMap; `deployChartAction`
+  applies it before Helm.
+- The pod-template config-hash annotation fingerprints the exact mounted bytes. Helm values carry only
+  chart/runtime controls (current frame, config hash, and placement), not the project-owned message.
 
 #### Validation
 
-`cabal test all`; the live web pod serves the configured message. Validation substrate: linux-cpu (the
-real `project up` web reachability on native Incus/Linux).
+Static config round-trip/manifest tests assert both message values survive projection, the generated
+ConfigMap contains the rendered config, and changing the mounted bytes changes the rollout hash.
+Historical live evidence is the 2026-06-23 Linux run in which the web pod served each configured message.
 
 #### Remaining Work
 
-Done — `serveWeb` reads `message` from its delivered config, `deployChart` gained a generic project
-extra-values parameter (helm `--set-string`, with commas backslash-escaped in the value), and the demo
-forwards `message` into a templated ConfigMap, validated 2026-06-23 (`test run all` 6/6).
+None. `serveWeb` reads `message` from its effective config; the deployer dynamically renders and applies
+the complete parent-derived service config and exact-byte rollout hash. The 2026-06-23 `6/6` result is
+retained as historical live message-flow evidence; current delivery mechanics are covered statically and
+do not create a new live claim.
 
 ### Sprint 20.3: Multi-variant demo test run (two clusters) [Done]
 
@@ -171,13 +179,16 @@ validated 2026-06-23 (`test run all` 6/6).
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
-- `documents/architecture/hostbootstrap_core_library.md` — the service handler receives its config
-- `documents/architecture/run_models.md` — the service-role run-model reads its delivered config
+- `documents/architecture/hostbootstrap_core_library.md` — config-selected dispatch retains the generic
+  `IO ()` handler contract; project handlers load their own effective config
+- `documents/architecture/run_models.md` — the service-role run-model selects from config and the handler
+  reads its dynamically delivered effective config
 - `documents/architecture/binary_context_config.md` — `message` as a project-extended Parameters-layer field
 
 **Engineering docs to create/update:**
 - `documents/engineering/schema.md` — the demo `cfg` gains a `message` field (project-defined, not core)
-- `documents/engineering/cluster_lifecycle.md` — `deployChart` forwards project extra-values into the ConfigMap
+- `documents/engineering/cluster_lifecycle.md` — the project deployer renders/applies the service ConfigMap
+  and fingerprints the exact mounted config bytes; Helm does not receive `message`
 
 **Cross-references to add:**
 - `documents/operations/demo_runbook.md` — the `message` flow + the two-variant run + polymorphic e2e

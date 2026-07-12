@@ -43,6 +43,15 @@ in-cluster registry, the project image pushed to the in-cluster registry, and th
 serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
 `.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
 
+The direct `linux-gpu` path is also represented by the same core surfaces, not a second orchestrator.
+Its two-frame demo chain runs the metal resource preflight plus `Ensure.Docker`/`Ensure.Cuda`, builds the
+CUDA project image, and hands off with `--gpus=all`. In the child context, core selects
+`NvkindDriver`, creates the explicit control-plane + GPU-worker topology, splits and applies the one
+cluster envelope across both node containers, installs NVIDIA device-plugin `0.19.3`, and gates on a
+positive allocatable `nvidia.com/gpu` before the project deploys its GPU-requesting daemon pod. These
+surfaces are unit/static-validated at 357 core tests and 83 demo tests; Phase 3.7 and Phase 5.5 remain
+Active until pristine and warm real-Linux-GPU runs close their hardware gates.
+
 The Windows surface splits by responsibility: the `windows-cpu`/`windows-gpu` substrates and
 `Ensure.CudaWin` are implemented and validated on a real Windows GPU host, and the
 `HostBootstrap.Wsl2` provider and `Ensure.Wsl2` close the Phase-11 Windows pristine lifecycle. See
@@ -52,8 +61,9 @@ Current generic model: under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the extension
 contract is the generic `ProjectSpec cfg tcfg`, parameterized over a project's own config type `cfg`
 (its `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core then owns no fixed config
-type and **no default values** — it couples to `cfg` only through `cfg -> BinaryContext` and
-`BinaryContext -> cfg -> cfg`, while the surfaced command tree (`project`, `test`, `service`, `context`,
+type and **no default values** — it couples to `cfg` through `cfg -> BinaryContext`,
+`BinaryContext -> cfg -> cfg`, and the project-owned `psServiceVariant :: cfg -> Either String String`,
+while the surfaced command tree (`project`, `test`, `service`, `context`,
 `check-code`) stays fixed. Defaults live solely in the project-owned `psInit :: InitArgs -> cfg`, the only
 default-bearing function in the spec; `project init` layers optional flag overrides over those `psInit`
 defaults, and the harness reuses `psInit` (via `psTestConfig`) to generate the run config. See the
@@ -69,24 +79,24 @@ on; the canonical inventory is tracked in
 
 | Module | Responsibility |
 |--------|----------------|
-| `HostBootstrap.HostTool` | Closed `HostTool` enumeration of external tools resolved to absolute paths (including the Windows tools `Winget`, `Nvcc`, and `Wsl`); no `$PATH`-resolved bare-command invocation. |
+| `HostBootstrap.HostTool` | Closed `HostTool` enumeration of external tools resolved to absolute paths (including `Nvkind`/`NvidiaSmi` and the Windows tools `Winget`, `Nvcc`, and `Wsl`); no `$PATH`-resolved bare-command invocation. |
 | `HostBootstrap.HostConfig` | Typed host configuration: resolved tool paths, detected substrate, and the spare-resource view used for budgeting. |
 | `HostBootstrap.HostPrereqs` | Fail-fast host-minimum checks (the pre-binary subset the thin bootstrapper reclaims). |
 | `HostBootstrap.Substrate` | Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) and host-applicability predicates. |
 | `HostBootstrap.Ensure` | The `Reconciler` value type and runner; invoked as the `ensure-*` chain-step library, not exposed as a command. |
-| `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Lima`, `Cuda`, `CudaWin`, `Homebrew`, `Ghc`, `Incus`, `Wsl2`); each is an idempotent value with a host-applicability predicate and a reconcile action. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
+| `HostBootstrap.Ensure.*` | One reconciler module per host dependency (`Docker`, `Colima`, `Lima`, `Cuda`, `CudaWin`, `Homebrew`, `Ghc`, `Incus`, `Wsl2`); each is an idempotent value with a host-applicability predicate and a reconcile action. `Ensure.Cuda` owns the signed NVIDIA apt bootstrap, default-runtime/CDI/volume-injection configuration, and the exact nvkind Docker smoke. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | `HostBootstrap.Step` | The `Step` algebra — the core surface a project extends with its `chain` — plus its pure renderers and frame grouping (`renderChainPlan`, `stepsForFrame`, `chainFrames`). Core ships host-management step kinds; a project contributes its own through the `ProjectStep` seam. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Chain` | The recursive/fractal `[Step]` interpreter (`renderChain`, `runChainFromFrame`): it runs the current frame's steps then lifts `pb project up` into the next frame. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Config.Schema` | Owner for project-local `<project>.dhall` schema surfaces, sibling lookup (`siblingProjectConfigPath`), child projections, and service/daemon config snapshot log metadata. It owns **no default config values** — defaults live in the project's `psInit`. The context-init step mints child `.dhall` through this surface. See [dhall_topology](../engineering/dhall_topology.md). |
 | `HostBootstrap.Context` | Binary-context substrate inside `<project>.dhall`: discover the sibling path, render the topology frames, validate that the running binary occupies the frame its `.dhall` describes, and gate the chain per-frame on handoff. Read-only introspection backs the `context` command. See [binary_context_config](binary_context_config.md). |
-| `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (Colima/Lima VM sizing args and kind node limits). See [resource_budgeting](../engineering/resource_budgeting.md). |
-| `HostBootstrap.Cluster.Lifecycle` | kind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant, invoked as the deploy-kind / deploy-chart step kinds. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
+| `HostBootstrap.Cluster.Cordon` | Resource-budget verification and cordoning (Colima/Lima VM sizing args plus a named kind-node limit builder). Lifecycle composes the node builder over a plan's full node list after splitting the one cluster envelope. See [resource_budgeting](../engineering/resource_budgeting.md). |
+| `HostBootstrap.Cluster.Lifecycle` | kind/nvkind/Helm cluster up/down/delete semantics and the never-delete-`.data` invariant, invoked as the deploy-kind / deploy-chart step kinds. It owns driver-specific config/node topology, the all-node cordon, the NVIDIA runtime smoke, pinned device-plugin `0.19.3`, and the allocatable-GPU gate for `NvkindDriver`. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Lima` | Lima VM lifecycle argv builders for the Apple Silicon pristine demo VM (`start`, `shell`, `copy`, guarded `delete`), invoked by the deploy-VM step kind. |
 | `HostBootstrap.Wsl2` | WSL2 VM lifecycle argv builders for the Windows pristine demo distro (`import`, `wsl -d <distro> --`, `terminate`, `shutdown`, guarded `unregister`) plus the `classifyWsl2Readiness` host-reboot classifier, invoked by the deploy-VM step kind. The Windows VM-provider peer of `HostBootstrap.Lima` / Incus. See [wsl2](../engineering/wsl2.md). |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/provider VM/`InContainer`) by invoking the binary again there. The `[Step]` interpreter lifts `pb project up` across each frame boundary through this seam. The pure argv fold is unit-tested. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over the harness-built `Seams` (`assertSeams`) wired from the project's `TestSuite` (case matrix + assertions). It **drives the real `project up`**: per config variant it **generates** the run's `<project>.dhall` functionally (via the project's own `psTestConfig`/`projectConfigForRole`, never shelling the CLI), runs `project up` over the project's own chain, runs the case assertions in the appropriate frame (reusing the self-reference lift, with `EXPECTED_MESSAGE` parameterizing the polymorphic assertion), and tears down with `project destroy` through `finally`. A suite may declare more than one variant; each is stood up and torn down in turn. It owns no second cluster-bring-up path; two fail-fast preconditions (refuse if the sibling `siblingProjectConfigPath` config exists or a production cluster is running) and a self-created-only delete-guard protect production. See [harness_workflow](harness_workflow.md). |
 | `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. No per-project verbs. |
-| `HostBootstrap.CLI` | The generic `ProjectSpec cfg tcfg`, `runHostBootstrapCLI`, and `runBareHostBootstrapCLI`; the entrypoint validates a project's `chain`, test suite, code-check, service registry, and artifact delta before merging them with `coreCommands`. The spec carries the project-owned config seams `psInit :: InitArgs -> cfg` (the **only** default-bearing function — core ships no defaults), `psTestInit :: InitArgs -> tcfg`, and `psTestConfig :: tcfg -> IO [(Text, cfg)]` (the harness generates one run config per variant, never shelling the CLI). |
+| `HostBootstrap.CLI` | The generic `ProjectSpec cfg tcfg`, `runHostBootstrapCLI`, and `runBareHostBootstrapCLI`; the entrypoint validates a project's `chain`, test suite, code-check, service registry, service selector, and artifact delta before merging them with `coreCommands`. The spec carries the project-owned config seams `psInit :: InitArgs -> cfg` (the **only** default-bearing function — core ships no defaults), `psTestInit :: InitArgs -> tcfg`, `psTestConfig :: tcfg -> IO [(Text, cfg)]`, and `psServiceVariant :: cfg -> Either String String`. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |
 
 ## Host-Tool Resolution And Substrate Ownership
@@ -157,6 +167,7 @@ withChain :: (cfg -> [Step]) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withFrameContext :: (cfg -> StepFrame -> LiftContext) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withTeardown :: (cfg -> Bool -> IO ()) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withServices :: ServiceRegistry -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
+withServiceConfig :: (cfg -> Either String String) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 runHostBootstrapCLI :: String -> ProjectSpec cfg tcfg -> IO ()
 runBareHostBootstrapCLI :: String -> IO ()
 ```
@@ -166,7 +177,8 @@ runBareHostBootstrapCLI :: String -> IO ()
   the project-defined `check-code` action, the project `ConfigArtifact` delta, and the project-owned
   init/test-config builders. `withChain` attaches the project's primary contribution — its
   `chain :: cfg -> [Step]` value; `withFrameContext` attaches the per-frame lift-context
-  builder; `withTeardown` attaches the chain-frame teardown; `withServices` attaches service handlers.
+  builder; `withTeardown` attaches the chain-frame teardown; `withServices` appends service handlers;
+  `withServiceConfig` maps the effective config's project-owned `ServiceType` to one handler key.
   The bare core binary uses a separate
   entrypoint (`runBareHostBootstrapCLI`).
 - `runHostBootstrapCLI` validates the spec, merges it with the core command tree, and runs the resulting
@@ -177,16 +189,17 @@ A project binary contributes a chain value plus extension streams, never its own
 attaches the chain (interleaving core and project step kinds) to the spec and hands it to the entrypoint:
 
 ```haskell
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServices, withTeardown)
+import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServiceConfig, withServices, withTeardown)
 import HostBootstrap.Substrate (detect)
 import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
-import HostBootstrapDemo.Config (demoInit, demoTestConfig, demoTestInit)
+import HostBootstrapDemo.Config (configuredServiceVariant, demoInit, demoTestConfig, demoTestInit)
 import System.Exit (die)
 
 main :: IO ()
 main = do
   -- Detect the host substrate once so the per-frame lift context folds each
-  -- metal→VM handoff to the right provider shell (Incus on Linux, Lima on Apple Silicon).
+  -- metal→VM handoff to the right provider shell (Incus on Linux CPU, Lima on Apple Silicon).
+  -- Linux GPU has no VM frame; its direct handoff is a GPU-enabled container lift.
   substrate <- detect >>= either die pure
   runHostBootstrapCLI
     "hostbootstrap-demo"
@@ -194,7 +207,7 @@ main = do
         (demoChainFor substrate)
         ( withFrameContext
             (demoFrameContext substrate)
-            (withTeardown demoTeardown (withServices demoServices (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)))
+            (withTeardown demoTeardown (withServiceConfig configuredServiceVariant (withServices demoServices (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig))))
         )
     )
 ```
@@ -217,7 +230,7 @@ core command tree.
 |---|---|
 | `context` | Read-only introspection over the sibling `.dhall`: `inspect` renders the lift composition with the current frame marked, and `path`/`show`/`schema`/`render` print the canonical config filename, the config, the schema, and static examples of the reusable Dhall artifacts. |
 | `project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fails fast unless run on a fresh host-level binary with no sibling `.dhall`. Layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults). |
-| `project up` | Recursively interpret `chain projectCfg` from the current frame; idempotent (reconcile-to-running). `--dry-run` renders the chain. Stands up the persistent stack (deploy-kind → deploy-registry → push-image → deploy-chart → expose-port). |
+| `project up` | Recursively interpret `chain projectCfg` from the current frame; idempotent (reconcile-to-running). `--dry-run` renders the chain. Stands up the persistent stack (deploy-kind/nvkind → deploy-registry → push-image → deploy-chart → expose-port, plus the accelerator-daemon placement selected by project topology). |
 | `project down` | Stop service/VM frames and delete kind clusters while preserving durable host state (`.data`). |
 | `project destroy` | Stop, then delete everything spun up; `.data` is always preserved. |
 | `test init` | Needs **no** pre-existing `<project>.dhall`; writes `<project>.test.dhall` (the case matrix plus thin config overrides) via the project-owned `psTestInit`. `project init` writes via `psInit`, whose defaults the harness later reuses (through `psTestConfig`) to generate the run config. |

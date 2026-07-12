@@ -21,6 +21,11 @@ module HostBootstrapDemo.Config (
     DeployConfig (..),
     Resources (..),
     TestConfig (..),
+    ServiceType (..),
+    WebServiceConfig (..),
+    AcceleratorServiceConfig (..),
+    configuredServiceVariant,
+    maxAcceleratorRequestTimeoutSeconds,
 
     -- * Render / decode
     renderDhallText,
@@ -99,6 +104,33 @@ data TestConfig = TestConfig
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
+{- | Parameters owned by the demo's web service variant. They are deliberately
+part of the Dhall ADT payload rather than hidden in the handler registry.
+-}
+data WebServiceConfig = WebServiceConfig
+    { publicPort :: Natural
+    , acceleratorPort :: Natural
+    }
+    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | Parameters owned by the accelerator daemon variant.
+newtype AcceleratorServiceConfig = AcceleratorServiceConfig
+    { requestTimeoutSeconds :: Natural
+    }
+    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
+-- | Maximum worker deadline; the web dispatch deadline adds a five-second transport margin.
+maxAcceleratorRequestTimeoutSeconds :: Natural
+maxAcceleratorRequestTimeoutSeconds = 30
+
+{- | The demo's real Dhall service sum. The config carries this ADT; the core sees
+only 'configuredServiceVariant' through the generic ProjectSpec seam.
+-}
+data ServiceType
+    = Web WebServiceConfig
+    | Accelerator AcceleratorServiceConfig
+    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+
 {- | The supported project-local config shape.
 
 Project identity is deliberately not a top-level field; it is derived by the
@@ -112,6 +144,7 @@ data ProjectConfig = ProjectConfig
     , context :: BinaryContext
     , deploy :: DeployConfig
     , message :: Text
+    , service :: Maybe ServiceType
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -120,7 +153,29 @@ through these two methods and otherwise never touches the demo's fields.
 -}
 instance ProjectCfg ProjectConfig where
     cfgContext = context
-    cfgWithContext ctx cfg = cfg{context = ctx}
+    cfgWithContext ctx cfg = cfg{context = ctx, service = serviceTypeForProjection (service cfg) ctx}
+
+configuredServiceVariant :: ProjectConfig -> Either String String
+configuredServiceVariant cfg = case (Context.contextKind (context cfg), service cfg) of
+    (Context.ClusterService, Just serviceType@(Web _)) -> validateServiceType serviceType
+    (Context.Daemon, Just serviceType@(Accelerator _)) -> validateServiceType serviceType
+    (Context.ClusterService, Just (Accelerator _)) -> Left "cluster-service config declares the Accelerator variant"
+    (Context.Daemon, Just (Web _)) -> Left "daemon config declares the Web variant"
+    (_, Just serviceType) -> validateServiceType serviceType
+    (_, Nothing) -> Left "effective <project>.dhall declares no ServiceType variant"
+
+validateServiceType :: ServiceType -> Either String String
+validateServiceType (Web (WebServiceConfig public accelerator))
+    | not (validPort public) = Left "Web publicPort must be between 1 and 65535"
+    | not (validPort accelerator) = Left "Web acceleratorPort must be between 1 and 65535"
+    | public == accelerator = Left "Web publicPort and acceleratorPort must be distinct"
+    | otherwise = Right "web"
+  where
+    validPort port = port >= 1 && port <= 65535
+validateServiceType (Accelerator (AcceleratorServiceConfig timeoutSeconds))
+    | timeoutSeconds < 1 = Left "Accelerator requestTimeoutSeconds must be positive"
+    | timeoutSeconds > maxAcceleratorRequestTimeoutSeconds = Left "Accelerator requestTimeoutSeconds must not exceed 30"
+    | otherwise = Right "accelerator"
 
 {- | Render a project-local config to Dhall source text, hoisting the repeated
 vocabulary unions into top-level @let@ bindings.
@@ -213,21 +268,47 @@ projectConfigForRole projectName binaryName root cfgDockerfile cfgResources cfgD
                 kind
         , deploy = cfgDeploy
         , message = cfgMessage
+        , service = serviceTypeForContext (Context.contextForKind projectName binaryName root (envelopeOfResources cfgResources) kind)
         }
 
 {- | Wrap an already-derived context in the project-local config shape. The
 @message@ is forwarded from the parent so child frames carry the same served
 message (Sprint 20.1).
 -}
-projectConfigFromContext :: Text -> DeployConfig -> Text -> Context.BinaryContext -> ProjectConfig
-projectConfigFromContext cfgDockerfile cfgDeploy cfgMessage cfgContext' =
+projectConfigFromContext :: Text -> DeployConfig -> Text -> Maybe ServiceType -> Context.BinaryContext -> ProjectConfig
+projectConfigFromContext cfgDockerfile cfgDeploy cfgMessage inheritedService cfgContext' =
     ProjectConfig
         { dockerfile = cfgDockerfile
         , resources = resourcesFromEnvelope (Context.resourceEnvelope cfgContext')
         , context = cfgContext'
         , deploy = cfgDeploy
         , message = cfgMessage
+        , service = serviceTypeForProjection inheritedService cfgContext'
         }
+
+serviceTypeForContext :: Context.BinaryContext -> Maybe ServiceType
+serviceTypeForContext cfgContext' = case Context.contextKind cfgContext' of
+    Context.ClusterService -> Just (Web (WebServiceConfig 8080 8081))
+    Context.Daemon -> Just (Accelerator (AcceleratorServiceConfig 30))
+    _ -> Nothing
+
+serviceTypeForProjection :: Maybe ServiceType -> Context.BinaryContext -> Maybe ServiceType
+serviceTypeForProjection inherited cfgContext' =
+    case Context.contextKind cfgContext' of
+        Context.ClusterService ->
+            case inherited of
+                Just serviceType@(Web _) -> Just serviceType
+                _ -> Just (Web (WebServiceConfig 8080 8081))
+        Context.Daemon ->
+            case inherited of
+                Just serviceType@(Accelerator _) -> Just serviceType
+                _ -> Just (Accelerator (AcceleratorServiceConfig 30))
+        Context.HostOrchestrator -> inherited
+        Context.VMOrchestrator -> inherited
+        Context.VMProjectContainer -> inherited
+        Context.TestHarness -> inherited
+        Context.ImageBuildContainer -> Nothing
+        Context.OneShotJob -> Nothing
 
 -- | Project a parent config into a narrower child config for a boundary crossing.
 deriveProjectConfigForKind :: Context.ContextKind -> ProjectConfig -> Text -> Either String ProjectConfig
@@ -262,8 +343,9 @@ deriveProjectConfigForKind kind parent root
         , context = parentContext
         , deploy = parentDeploy
         , message = parentMessage
+        , service = parentService
         } = parent
-    projected = Right . projectConfigFromContext parentDockerfile parentDeploy parentMessage
+    projected = Right . projectConfigFromContext parentDockerfile parentDeploy parentMessage parentService
 
 -- | A short human-readable summary of a decoded project-local config.
 renderProjectConfigSummary :: ProjectConfig -> String
@@ -274,6 +356,7 @@ renderProjectConfigSummary
         , context = cfgContext'
         , deploy = cfgDeploy
         , message = cfgMessage
+        , service = cfgService
         } =
         T.unpack $
             T.unlines
@@ -290,6 +373,7 @@ renderProjectConfigSummary
                     <> cfgResources.storage
                 , "ha-replicas:  " <> T.pack (show cfgDeploy.haReplicas)
                 , "message:      " <> cfgMessage
+                , "service:      " <> T.pack (show cfgService)
                 ]
 
 -- ---------------------------------------------------------------------------
@@ -355,7 +439,23 @@ demoInitWithMessage cfgMessage args =
                 cfgDeploy
                 cfgMessage
                 args.role
-     in baseCfg{context = foldr Context.addRole baseCfg.context args.alsoRoles}
+        finalContext = foldr Context.addRole baseCfg.context args.alsoRoles
+        finalService = serviceTypeForRoles args.role args.alsoRoles
+     in baseCfg{context = finalContext, service = finalService}
+
+serviceTypeForRoles :: Context.ContextKind -> [Context.ContextKind] -> Maybe ServiceType
+serviceTypeForRoles primary additional
+    | primary == Context.Daemon =
+        Just (Accelerator (AcceleratorServiceConfig 30))
+    | primary == Context.ClusterService =
+        Just (Web (WebServiceConfig 8080 8081))
+    | otherwise = firstAdditionalService additional
+  where
+    firstAdditionalService [] = Nothing
+    firstAdditionalService (serviceRole : roles)
+        | serviceRole == Context.ClusterService = Just (Web (WebServiceConfig 8080 8081))
+        | serviceRole == Context.Daemon = Just (Accelerator (AcceleratorServiceConfig 30))
+        | otherwise = firstAdditionalService roles
 
 {- | The demo's @test init@ builder: a 'TestConfig' seeded from the demo's default
 resources and the demo's selectable suites. Needs **no** pre-existing project

@@ -5,7 +5,7 @@ metadata:
   labels:
     app: {{ .Release.Name }}-web
 spec:
-  replicas: {{ .Values.replicas }}
+  replicas: {{ .Values.haReplicas }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-web
@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}-web
+      annotations:
+        hostbootstrap.io/config-hash: {{ .Values.service.configHash | quote }}
     spec:
       volumes:
         - name: demo-config
@@ -22,21 +24,24 @@ spec:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # The project container's ENTRYPOINT is the demo binary; `service run web`
+          # The project container's ENTRYPOINT is the demo binary; `service run`
           # runs the demo's `web` service variant — the warp/wai webservice — on
           # the service port (the leaf-frame service run-model, § AA). The pod's
           # cluster-service config arrives as the mounted ConfigMap below.
-          args: ["service", "run", "web"]
+          args: ["service", "run"]
           env:
             - name: HOSTBOOTSTRAP_CURRENT_FRAME
-              value: cluster-service-3
+              value: {{ .Values.service.currentFrame | quote }}
           volumeMounts:
             - name: demo-config
               mountPath: /usr/local/bin/hostbootstrap-demo.dhall
               subPath: hostbootstrap-demo.dhall
               readOnly: true
           ports:
-            - containerPort: {{ .Values.service.port }}
+            - name: web
+              containerPort: {{ .Values.service.port }}
+            - name: accelerator
+              containerPort: {{ .Values.service.accelerator.targetPort }}
           readinessProbe:
             httpGet:
               path: /api/budget

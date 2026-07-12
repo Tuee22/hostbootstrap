@@ -67,6 +67,7 @@ test-suite hostbootstrap-demo-test
       AcceleratorRuntimeSpec
       CommandsSpec
       ConfigSpec
+      WebServerSpec
       HostBootstrapDemo.Accelerator
       HostBootstrapDemo.Accelerator.Daemon
       HostBootstrapDemo.Accelerator.Protocol

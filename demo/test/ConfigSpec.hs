@@ -27,9 +27,13 @@ import HostBootstrap.Context (
     commandAllowed,
  )
 import HostBootstrapDemo.Config (
+    AcceleratorServiceConfig (..),
     DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
+    ServiceType (..),
+    WebServiceConfig (..),
+    configuredServiceVariant,
     decodeProjectConfigText,
     decodeTestConfigText,
     defaultTestConfig,
@@ -92,20 +96,21 @@ tests =
                 Right s -> assertFailure ("expected a decode error, got " ++ show s)
         , testCase "child projections preserve project settings and narrow authority" $ do
             vm <- expectRight (deriveProjectConfigForKind VMOrchestrator hostCfg "/vm/demo")
-            service <- expectRight (deriveProjectConfigForKind ClusterService vm "/srv/demo")
+            serviceCfg <- expectRight (deriveProjectConfigForKind ClusterService vm "/srv/demo")
             vm.dockerfile @?= hostCfg.dockerfile
-            service.deploy @?= hostCfg.deploy
+            serviceCfg.deploy @?= hostCfg.deploy
             vm.resources @?= hostCfg.resources
             -- The served message is forwarded down every child frame (Sprint 20.1).
             vm.message @?= hostCfg.message
-            service.message @?= hostCfg.message
+            serviceCfg.message @?= hostCfg.message
+            serviceCfg.service @?= Just (Web (WebServiceConfig 8080 8081))
             contextKind (context vm) @?= VMOrchestrator
             parentChain (context vm) @?= [ContextFrame HostOrchestrator "hostbootstrap-demo"]
             topologyFrames (context vm)
                 @?= [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
                     , TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" IncusVMProvider VMOrchestrator "vm-orchestrator"
                     ]
-            contextKind (context service) @?= ClusterService
+            contextKind (context serviceCfg) @?= ClusterService
         , testCase "child projection rejects direct host-to-runtime-container configs" $
             deriveProjectConfigForKind VMProjectContainer hostCfg "/workspace/demo"
                 @?= Left "project config: child context VMProjectContainer is not allowed in HostOrchestrator"
@@ -116,6 +121,49 @@ tests =
             cfg.dockerfile @?= demoDefaultDockerfile
             cfg.message @?= demoDefaultMessage
             contextKind cfg.context @?= HostOrchestrator
+            cfg.service @?= Nothing
+        , testCase "Dhall ServiceType selects handlers and rejects role mismatches" $ do
+            let webCfg = projectConfigForRole "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile" demoDefaultResources demoDefaultDeployConfig demoDefaultMessage ClusterService
+                daemonCfg = projectConfigForRole "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile" demoDefaultResources demoDefaultDeployConfig demoDefaultMessage Daemon
+            configuredServiceVariant webCfg @?= Right "web"
+            configuredServiceVariant daemonCfg @?= Right "accelerator"
+            assertBool "daemon context cannot select Web" $
+                case configuredServiceVariant daemonCfg{service = Just (Web (WebServiceConfig 8080 8081))} of
+                    Left _ -> True
+                    Right _ -> False
+            assertBool "cluster-service context cannot select Accelerator" $
+                case configuredServiceVariant webCfg{service = Just (Accelerator (AcceleratorServiceConfig 30))} of
+                    Left _ -> True
+                    Right _ -> False
+        , testCase "multi-role host config carries its configured Web variant" $ do
+            let cfg = demoInit (initArgsFor HostOrchestrator){alsoRoles = [ClusterService]}
+            commandAllowed cfg.context ServiceCommand @?= True
+            configuredServiceVariant cfg @?= Right "web"
+        , testCase "a primary service role wins over an additional daemon role" $ do
+            let cfg = demoInit (initArgsFor ClusterService){alsoRoles = [Daemon]}
+            configuredServiceVariant cfg @?= Right "web"
+        , testCase "child projections preserve configured service payloads" $ do
+            let webHost = hostCfg{service = Just (Web (WebServiceConfig 9090 9091))}
+                acceleratorHost = hostCfg{service = Just (Accelerator (AcceleratorServiceConfig 45))}
+            webVm <- expectRight (deriveProjectConfigForKind VMOrchestrator webHost "/vm/demo")
+            webChild <- expectRight (deriveProjectConfigForKind ClusterService webVm "/srv/demo")
+            webChild.service @?= Just (Web (WebServiceConfig 9090 9091))
+            acceleratorVm <- expectRight (deriveProjectConfigForKind VMOrchestrator acceleratorHost "/vm/demo")
+            daemonChild <- expectRight (deriveProjectConfigForKind Daemon acceleratorVm "/srv/demo")
+            daemonChild.service @?= Just (Accelerator (AcceleratorServiceConfig 45))
+        , testCase "ServiceType validates ports and request timeout before dispatch" $ do
+            let webCfg = projectConfigForRole "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile" demoDefaultResources demoDefaultDeployConfig demoDefaultMessage ClusterService
+                daemonCfg = projectConfigForRole "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile" demoDefaultResources demoDefaultDeployConfig demoDefaultMessage Daemon
+                rejects candidate =
+                    assertBool "invalid service payload was rejected" $
+                        case configuredServiceVariant candidate of
+                            Left _ -> True
+                            Right _ -> False
+            rejects webCfg{service = Just (Web (WebServiceConfig 0 8081))}
+            rejects webCfg{service = Just (Web (WebServiceConfig 8080 8080))}
+            rejects webCfg{service = Just (Web (WebServiceConfig 8080 65536))}
+            rejects daemonCfg{service = Just (Accelerator (AcceleratorServiceConfig 0))}
+            rejects daemonCfg{service = Just (Accelerator (AcceleratorServiceConfig 31))}
         , testCase "demoInit honours explicit flags over defaults" $ do
             let cfg =
                     demoInit
@@ -146,11 +194,11 @@ tests =
             resourceEnvelope (context hostCfg) @?= ResourceEnvelope 6 "10GiB" "80GiB"
         , testCase "command authority narrows across the host -> service projection" $ do
             vm <- expectRight (deriveProjectConfigForKind VMOrchestrator hostCfg "/vm/demo")
-            service <- expectRight (deriveProjectConfigForKind ClusterService vm "/srv/demo")
+            serviceCfg <- expectRight (deriveProjectConfigForKind ClusterService vm "/srv/demo")
             commandAllowed (context hostCfg) HostOrchestratorCommand @?= True
-            commandAllowed (context service) ServiceCommand @?= True
-            commandAllowed (context service) HostOrchestratorCommand @?= False
-            assertBool "service keeps the kubernetes capability" (KubernetesAPI `elem` capabilities (context service))
+            commandAllowed (context serviceCfg) ServiceCommand @?= True
+            commandAllowed (context serviceCfg) HostOrchestratorCommand @?= False
+            assertBool "service keeps the kubernetes capability" (KubernetesAPI `elem` capabilities (context serviceCfg))
         ]
 
 -- | A defaultless 'InitArgs' for a chosen role.

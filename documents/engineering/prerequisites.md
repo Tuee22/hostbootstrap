@@ -14,10 +14,13 @@
   whole system.**
 - Everything beyond those minimums and the pre-binary Haskell build toolchain (Docker, Colima, CUDA,
   Homebrew packages, incus, WSL2, CUDA-on-Windows) is **installed by Haskell `ensure` reconcilers** when
-  the binary runs (install-and-verify), so the binary is **never blocked by an absent-but-installable dependency**. See
+  the binary runs (install-and-verify), so the binary is **never blocked by an absent-but-installable
+  dependency**. Hardware/firmware capabilities that cannot be safely installed — notably the Linux or
+  Windows NVIDIA display driver — remain explicit preconditions. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - A missing *minimum* aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
-  (A reconciler's only fail-fast is a wrong-host misuse, never mere absence.)
+  A reconciler also fails fast for a wrong-host misuse or an irreducible hardware/firmware precondition;
+  mere absence of an installable package triggers reconciliation instead.
 - Bootstrapper freshness is not a host minimum. Normal commands do not check whether the pipx-installed
   wrapper is at the latest commit; self-update is explicit and documented in [self_update.md](self_update.md).
 
@@ -48,8 +51,19 @@ is genuinely disabled) — so `build`, `doctor`, and `run` share one identical L
 Docker itself is **not** a Python minimum on Linux either; `ensure docker` provisions it, starts the daemon,
 grants the invoking user `docker` socket access for future login sessions, applies an immediate socket
 ACL when the current process has not observed refreshed groups yet, and verifies that access.
-GPU specifics (NVIDIA driver, container toolkit, and the container-runtime registration with Docker) are
-reconciled by `ensure cuda`, not asserted here.
+GPU specifics are not Python minimums. On `linux-gpu`, the NVIDIA kernel driver is an irreducible
+runtime precondition: `ensure cuda` requires `nvidia-smi -L` to report a GPU and does not install the
+driver. The reconciler does install the absent-but-installable portion through NVIDIA's signed Debian
+apt source: `nvidia-container-toolkit`, Docker's NVIDIA runtime set as the default, CDI enabled, and
+`accept-nvidia-visible-devices-as-volume-mounts=true`. Its satisfied probe is the exact `nvkind`
+volume-injection smoke — `docker run --rm -v
+/dev/null:/var/run/nvidia-container-devices/all ubuntu:20.04 nvidia-smi -L` — so merely listing an
+`nvidia` runtime is insufficient. The direct demo chain runs `ensure docker` and `ensure cuda` before it
+builds the CUDA-flavored project image and hands it off with `--gpus=all`.
+
+The Linux GPU install planner and no-op classifier are covered by the current 357-test core baseline,
+and the direct chain/base/handoff selection by the 83-test demo baseline. Phase 3.7 and Phase 5.5 remain
+Active pending pristine and warm real-Linux-GPU validation.
 
 ## Apple Silicon Minimums
 
@@ -77,9 +91,11 @@ The Python bootstrapper asserts, fail-fast:
   a direct PowerShell download (`Invoke-WebRequest`), not through winget.
 - **PowerShell.** The host shell the pre-binary bootstrapper runs in (it drives the ghcup download).
 
-On `windows-gpu` the host additionally needs the **NVIDIA Windows driver** and the **CUDA Toolkit** for
-the headless host-build CUDA path (`ensure cudawin`, composition pattern #7), distinct from the
-in-container `linux-gpu` toolkit reconciled by `ensure cuda`.
+On `windows-gpu` the host additionally needs the **NVIDIA Windows driver** as an irreducible
+precondition for the headless host-build CUDA path (`ensure cudawin`, composition pattern #7).
+`ensure cudawin` installs the absent CUDA Toolkit and compiler stack through winget; that installable
+tooling is not a Python prerequisite. This is distinct from the in-container `linux-gpu` toolkit
+reconciled by `ensure cuda`.
 
 WSL2 is **not** a Python pre-binary minimum. The VM provider (`ensure wsl2`) enables WSL2 / Virtual
 Machine Platform as needed, registers the `Ubuntu-24.04` distro, classifies any reboot-required
@@ -91,9 +107,9 @@ GPU host, and the real WSL2 provider lifecycle closed the Phase-11 Windows prist
 
 ## Everything Else Is Ensured, Not Required
 
-The following are **not** Python prerequisites; the `ensure` suite **installs** them (install-and-verify)
-when the binary runs, so the binary is never blocked by their absence. Each fails fast only on the wrong
-host (a misuse), never on mere absence:
+The following are **not** Python prerequisites; the `ensure` suite installs and verifies their
+installable parts when the binary runs, so the binary is never blocked by a merely absent package.
+Reconcilers still fail fast on a wrong host or on an irreducible driver/firmware precondition:
 
 | Concern | Reconciler | Applies on |
 |---|---|---|
@@ -101,10 +117,10 @@ host (a misuse), never on mere absence:
 | Per-project Colima VM | `ensure colima` | Apple silicon |
 | Lima pristine demo VM provider | `ensure lima` | Apple silicon |
 | Incus host-provider | `ensure incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
-| NVIDIA driver + container toolkit | `ensure cuda` | `linux-gpu` |
+| NVIDIA container toolkit + Docker runtime/CDI/volume injection (NVIDIA kernel driver is a precondition) | `ensure cuda` | `linux-gpu` |
 | Homebrew packages | `ensure homebrew` | Apple silicon |
 | WSL2 pristine VM provider | `ensure wsl2` | Windows (`windows-cpu` / `windows-gpu`) |
-| Headless host-build CUDA (NVIDIA driver + CUDA Toolkit + MSVC via winget) | `ensure cudawin` | `windows-gpu` |
+| Headless host-build CUDA (NVIDIA driver precondition; CUDA Toolkit + MSVC via winget) | `ensure cudawin` | `windows-gpu` |
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
 predicate and reconcile action.

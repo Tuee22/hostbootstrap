@@ -186,8 +186,8 @@ The four run-models and `selectRunModel` are exercised by the core tests; select
 generated topology plus detected substrate, reached through the recursive `project up` interpreter over
 an explicit `chain :: cfg -> [Step]` value. In the demo, the deploy sequence is the substrate-selected
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]` value in
-`demo/src/HostBootstrapDemo/Commands.hs`, interpreted recursively by `project up`; `web serve` resolves to
-`service run web`, `service run accelerator` is the accelerator daemon variant, and `web bridge` folds into
+`demo/src/HostBootstrapDemo/Commands.hs`, interpreted recursively by `project up`; config-selected
+`service run` maps `Web` or `Accelerator` to the registered handler, and `web bridge` folds into
 the build-image step.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster (kind

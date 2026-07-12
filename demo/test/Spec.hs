@@ -5,6 +5,7 @@ import qualified AcceleratorSpec
 import qualified CommandsSpec
 import qualified ConfigSpec
 import Test.Tasty (defaultMain, testGroup)
+import qualified WebServerSpec
 
 main :: IO ()
 main =
@@ -15,4 +16,5 @@ main =
             , AcceleratorRuntimeSpec.tests
             , CommandsSpec.tests
             , ConfigSpec.tests
+            , WebServerSpec.tests
             ]

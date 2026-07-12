@@ -75,14 +75,14 @@ encodeMessage (AcceleratorRequest (AcceleratorAddRequest rid leftVal rightVal)) 
     encodeMap
         [ ("type", TextValue "request")
         , ("requestId", TextValue rid)
-        , ("left", DoubleValue leftVal)
-        , ("right", DoubleValue rightVal)
+        , ("left", DoubleValue (realToFrac leftVal))
+        , ("right", DoubleValue (realToFrac rightVal))
         ]
 encodeMessage (AcceleratorResult (AcceleratorAddResult rid resultVal backendName hash)) =
     encodeMap
         [ ("type", TextValue "result")
         , ("requestId", TextValue rid)
-        , ("result", DoubleValue resultVal)
+        , ("result", DoubleValue (realToFrac resultVal))
         , ("backend", TextValue backendName)
         , ("artifactHash", TextValue hash)
         ]
@@ -265,14 +265,14 @@ messageFromFields fields = do
             AcceleratorRequest
                 <$> ( AcceleratorAddRequest
                         <$> requireText "requestId" fields
-                        <*> requireDouble "left" fields
-                        <*> requireDouble "right" fields
+                        <*> (realToFrac <$> requireDouble "left" fields)
+                        <*> (realToFrac <$> requireDouble "right" fields)
                     )
         "result" ->
             AcceleratorResult
                 <$> ( AcceleratorAddResult
                         <$> requireText "requestId" fields
-                        <*> requireDouble "result" fields
+                        <*> (realToFrac <$> requireDouble "result" fields)
                         <*> requireText "backend" fields
                         <*> requireText "artifactHash" fields
                     )

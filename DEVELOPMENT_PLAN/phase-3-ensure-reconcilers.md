@@ -18,7 +18,8 @@ the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
 set (`docker`, `colima`, `lima`, `cuda`, `homebrew`, `ghc`, and the cross-substrate `incus`) carries its applicability
 predicates and **install-and-verify** reconcile actions — each exposes a pure, substrate-branched
 `installSteps` planner (Homebrew formulae on apple-silicon; `apt-get`/`ghcup`/the NVIDIA container
-toolkit on linux), unit-tested without invoking the package manager. They are composed into project
+toolkit on linux, with NVIDIA's signed apt source/keyring bootstrapped before toolkit installation),
+unit-tested without invoking the package manager. They are composed into project
 chains as `ensure-*` steps; wrong-host applicability still fails fast before side effects. `ensure incus` is owned by
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (see
 [development_plan_standards.md § L](development_plan_standards.md)).
@@ -30,10 +31,17 @@ The Windows reopening is closed. The reconciler set is `docker` / `colima` / `ap
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)) — and **retiring** the latent Tart
 reconciler (Sprint 3.5). The `ensure cudawin` work re-anchors composition pattern #7 to the **headless
 host build** (build on the bare Windows host, stage into the cluster, never run the workload in a build
-VM); the in-container linux-gpu `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit)
-stays as a different concern.
+VM); the direct Linux GPU host's `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the NVIDIA container runtime
+consumed by the GPU-enabled project container and nvkind) stays a different concern.
 
-**Reopened 2026-07-09 for accelerator build-stack ensure.** The demo accelerator daemon needs host-only
+**Reopened 2026-07-11 for the `nvkind`-compatible Linux GPU runtime contract.** Phase 5 validation found
+that `ensure cuda` registered the Docker `nvidia` runtime but did not converge the two settings required by
+the implemented `nvkind` path: the NVIDIA runtime must be the Docker default with CDI enabled, and
+`accept-nvidia-visible-devices-as-volume-mounts` must be enabled. Its old satisfaction probe inspected only
+the registered-runtime list, so it could falsely return `present (no-op)` while an `nvkind` node could not
+receive a GPU. Sprint 3.7 owns the corrected install plan and the official volume-mount smoke probe.
+
+**Reopened 2026-07-09 and closed 2026-07-10 for accelerator build-stack ensure.** The demo accelerator daemon needs host-only
 build-stack reconciliation for Apple Silicon and Windows GPU. The implementation landed the same day:
 `HostBootstrap.Ensure.AppleMetal` verifies `system_profiler`, `xcrun --sdk macosx --show-sdk-path`, and a
 Swift + Metal compile/run probe; `HostBootstrap.Ensure.CudaWin` now verifies CUDA Toolkit, LLVM clang,
@@ -43,11 +51,15 @@ base image.
 
 ## Remaining Work
 
-**Accelerator build-stack ensure real-run gates — partly closed.** The reconcilers and static tests are landed:
-`cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the current
-core suite reports 328 tests after the later accelerator context/lifecycle additions. `EnsureSpec` covers
-the ten-reconciler registry, Apple Metal applicability, CudaWin applicability, the pure install plans, and
-the Apple/Windows smoke-build command/source builders.
+Open only for Sprint 3.7's real-host gate. The implementation now converges and verifies the exact
+NVIDIA-container-toolkit configuration consumed by `nvkind`: Docker's NVIDIA runtime is configured as the
+default with CDI enabled, volume-mount device injection is enabled, and the satisfaction probe runs the
+same `/dev/null` mount smoke used by the cluster lifecycle. A pristine Debian-family host first receives
+NVIDIA's signed stable apt source/keyring (`/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg` and
+the signed-by-qualified stable list), so the package install is self-sufficient. `EnsureSpec` covers the
+exact plan and probe; the current static gate passes under `-Werror` with all 357 core tests. A Linux
+GPU Docker host must still report the reconciler `present (no-op)` before the phase can return to `Done`.
+The other reconcilers remain closed.
 
 Real substrate validation now closed for the locally available Apple Silicon lane: on 2026-07-10, an
 Apple Silicon M1 Max host built `hostbootstrap-core` with `cabal build all --ghc-options=-Werror` from
@@ -55,13 +67,12 @@ Apple Silicon M1 Max host built `hostbootstrap-core` with `cabal build all --ghc
 `ensure apple-metal: present (no-op)`, proving the Swift compiler, macOS SDK, visible Metal device, and
 Swift/Metal probe are usable.
 
-Remaining validation requires a real Windows GPU substrate that this Apple Silicon host cannot supply:
-
-- Windows GPU: run the hardened `ensure cudawin` on a Windows GPU host and prove the `nvcc -ccbin <MSVC>`
-  CUDA smoke compile succeeds after the CUDA Toolkit, Visual Studio VCTools workload, and LLVM clang are
-  installed/verified.
-- Keep the no-in-container-ensure boundary: Linux CPU and Linux GPU daemon pods fail loudly if the CPU/CUDA
-  base image lacks `clang++` or `nvcc`.
+The Windows GPU real-run gate closed 2026-07-10 on an RTX 3090 host: the reconciler installed the missing
+LLVM toolchain, resolved CUDA 13.3 and the Visual Studio VCTools host compiler, compiled the CUDA smoke
+artifact through `nvcc -ccbin <MSVC>`, and then reported `ensure cudawin: present (no-op)`. That run also
+surfaced and closed Windows portability gaps in `vswhere`-backed MSVC discovery, unattended winget
+installation, and the `-Werror` build. The final static gate and governed documentation reconciliation
+passed against those fixes.
 
 Previously closed work remains closed. Closed on 2026-06-26 after Phase 2 supplied the Windows Haskell toolchain: `cabal build all` and
 `cabal test all` passed from `core/`; `winget install --id Nvidia.CUDA --exact` installed CUDA Toolkit
@@ -71,8 +82,9 @@ Previously closed work remains closed. Closed on 2026-06-26 after Phase 2 suppli
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) **Removed Surfaces**.
 
 The kube tools (`kubectl`/`helm`/`kind`) are L0 (baked into the base image; the L0 cluster lifecycle
-drives them, Phase 5), so they need no separate host reconciler in the in-container path; only
-GPU-specific tooling (`nvkind`) is a candidate L1/consumer extra via the extension-stream merge.
+drives them, Phase 5), so they need no separate host reconciler in the in-container path. The CUDA base also
+carries `nvkind`; Phase 5 owns that L0 cluster driver, while this phase owns only the host runtime
+reconciliation it consumes.
 
 ## Phase Objective
 
@@ -221,10 +233,11 @@ to the headless host build it instantiates.
   the NVIDIA driver reporting a GPU on the Windows host. A run on `windows-cpu` (or any non-Windows-GPU
   host) fails fast with the one-line wrong-host diagnostic — an applicability misuse, never an absent
   dependency (§ L).
-- Install-and-verify via the substrate-branched `installSteps`: `winget install` the NVIDIA Windows
-  driver, the CUDA Toolkit (`Nvidia.CUDA`), and the MSVC C++ build tools
-  (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host compiler). Pure planner, unit-tested without
-  invoking winget.
+- NVIDIA device/driver visibility is part of detecting the `windows-gpu` substrate; a host without a
+  working `nvidia-smi` is not classified as `windows-gpu`. Once that substrate exists, install-and-verify
+  uses the pure `installSteps` planner to run unattended `winget install` steps for the CUDA Toolkit
+  (`Nvidia.CUDA`), MSVC C++ Build Tools/VCTools (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host
+  compiler), and LLVM clang (`LLVM.LLVM`).
 
 #### Deliverables
 
@@ -236,8 +249,8 @@ to the headless host build it instantiates.
 - This reconciler is composition pattern #7's first worked instance — a **headless host build**: nvcc
   artifacts are produced on the bare Windows host, with **no** workload run in a build VM (§ N). Staging
   those artifacts into a concrete cluster is chain/consumer lifecycle work after the host-build toolchain
-  is present; it is not a Phase-3 reconciler prerequisite. The in-container linux-gpu `ensure cuda`
-  (`HostBootstrap.Ensure.Cuda`, the nvidia-container-toolkit) is unchanged — a different concern that stays.
+  is present; it is not a Phase-3 reconciler prerequisite. The direct Linux GPU host's `ensure cuda`
+  (`HostBootstrap.Ensure.Cuda`, the NVIDIA container runtime) is a different concern that stays.
 
 #### Validation
 
@@ -301,11 +314,13 @@ None. `cabal build all` and `cabal test all` passed on 2026-06-26 with no Tart m
 reconciler entry, exposed module, or tests. The Tart entries are now in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) **Removed Surfaces**.
 
-### Sprint 3.6: Accelerator build-stack reconcilers [Active]
+### Sprint 3.6: Accelerator build-stack reconcilers [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs`,
 `core/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/accelerator_daemon.md`,
 `documents/engineering/ensure_reconcilers.md`, `documents/languages/cuda.md`, `system-components.md`
@@ -329,16 +344,57 @@ Swift/Metal and Windows GPU CUDA.
 
 - `EnsureSpec` covers applicability, wrong-host fail-fast, and pure install plans.
 - `EnsureSpec` covers the Apple Metal SDK/probe builders and the CudaWin clang/vswhere/nvcc smoke builders.
-- `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on 2026-07-09; the
-  current core suite reports 328 tests after the later accelerator context/lifecycle additions.
+- `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on Windows GPU on
+  2026-07-10; that phase-close snapshot reported 331 tests. The 2026-07-11 cumulative snapshot reported
+  345 tests; the current 2026-07-11 static gate reports 357 tests.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
   hardened `ensure-cudawin` builds the CUDA worker on Windows GPU. The Apple Silicon gate closed
-  2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`); the Windows GPU gate remains open.
+  2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`). The Windows GPU gate closed the
+  same day on an RTX 3090 host after the reconciler resolved CUDA 13.3, LLVM, and the VCTools host compiler
+  through `vswhere`, compiled the `nvcc -ccbin` smoke artifact, and reported `ensure cudawin: present
+  (no-op)`.
 
 #### Remaining Work
 
-Open only for the real Windows GPU CUDA/MSVC host integration smoke build. The Apple Silicon Swift/Metal
-smoke build closed 2026-07-10 on an M1 Max host after the core `-Werror` build.
+None.
+
+### Sprint 3.7: `nvkind`-compatible Linux GPU runtime reconciliation [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`,
+`core/hostbootstrap-core/test/EnsureSpec.hs`
+**Docs to update**: `documents/engineering/ensure_reconcilers.md`,
+`documents/engineering/accelerator_daemon.md`, `documents/languages/cuda.md`, `system-components.md`
+
+#### Objective
+
+Make `ensure cuda` converge to the exact Docker/NVIDIA-container-toolkit configuration the Phase 5
+`nvkind` cluster path consumes, and make its no-op probe prove that configuration rather than only seeing
+an installed runtime name.
+
+#### Deliverables
+
+- Bootstrap NVIDIA's signed stable Debian repository/keyring before installing the toolkit package on a
+  pristine supported Ubuntu host: dearmor the key into
+  `/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg` and write the stable apt list with that exact
+  `signed-by` qualifier.
+- Configure the Docker NVIDIA runtime with `--set-as-default --cdi.enabled`.
+- Enable `accept-nvidia-visible-devices-as-volume-mounts=true` in the NVIDIA container-toolkit config.
+- Restart Docker after both idempotent configuration writes.
+- Use the `nvkind` volume-mount smoke (`/dev/null` mounted at
+  `/var/run/nvidia-container-devices/all`, then `nvidia-smi -L`) as the satisfaction probe.
+
+#### Validation
+
+- `EnsureSpec` covers the exact install steps and volume-mount smoke arguments/classifier. **Passed
+  2026-07-11.**
+- `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` pass from `core/`.
+  **Passed 2026-07-11: 345 tests; current 2026-07-11 cumulative gate: 357 tests.**
+- A Linux GPU host reports the reconciler `present (no-op)` after the smoke sees a GPU.
+
+#### Remaining Work
+
+Run the verified no-op gate on a Linux GPU Docker host. No implementation or static-test work remains.
 
 ## Documentation Requirements
 
@@ -348,7 +404,7 @@ smoke build closed 2026-07-10 on an M1 Max host after the core `-Werror` build.
 - `documents/engineering/composition_patterns.md` - pattern #7 re-anchored to the headless host build,
   with `ensure cudawin` as its first worked instance.
 - `documents/languages/cuda.md` - the Windows CUDA host-build stack (driver + CUDA Toolkit + MSVC via
-  winget) versus the in-container linux-gpu nvidia-container-toolkit.
+  winget) versus the direct Linux GPU host's NVIDIA container runtime and in-cluster CUDA worker.
 
 **Cross-references to add:**
 - `system-components.md` keeps the ensure-reconciler table aligned with the implemented library values

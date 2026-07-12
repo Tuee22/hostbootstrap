@@ -10,11 +10,11 @@ artifacts, and @check-code@ action. See @documents/operations/demo_runbook.md@.
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServices, withTeardown)
+import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServiceConfig, withServices, withTeardown)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
 import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
-import HostBootstrapDemo.Config (demoInit, demoTestConfig, demoTestInit)
+import HostBootstrapDemo.Config (configuredServiceVariant, demoInit, demoTestConfig, demoTestInit)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
 
@@ -43,9 +43,12 @@ main = do
                     (demoFrameContext substrate)
                     ( withTeardown
                         demoTeardown
-                        ( withServices
-                            demoServices
-                            (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)
+                        ( withServiceConfig
+                            configuredServiceVariant
+                            ( withServices
+                                demoServices
+                                (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)
+                            )
                         )
                     )
                 )

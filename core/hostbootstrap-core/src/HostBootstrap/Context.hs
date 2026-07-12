@@ -33,6 +33,7 @@ module HostBootstrap.Context
     deriveVMContext,
     deriveContainerContext,
     deriveLinuxGpuContainerContext,
+    isExplicitLinuxGpuContainer,
     deriveServiceContext,
     deriveDaemonContext,
     deriveHostDaemonContext,

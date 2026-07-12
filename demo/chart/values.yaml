@@ -6,18 +6,25 @@ image:
   tag: local
   pullPolicy: IfNotPresent
 
-# Rendered into the embedded Dhall config. The demo's `deploy-chart` step
-# overrides this with the live config's `deploy.haReplicas`.
+# Applied to the Deployment and overridden from the live project config.
 haReplicas: 1
 
-# The config-driven worked example the webservice serves (Sprint 20.1/20.2). The
-# demo's `deploy-chart` step overrides this with the live config's message via
-# `--set-string demoMessage=...`; the value must already be a valid Dhall Text
-# literal because it is injected into the embedded project config.
-demoMessage: "\"Hello, world!\""
-
 service:
+  # Overridden with the frame id and fingerprint of the parent-derived service
+  # config. The hash rolls the pod when the separately applied ConfigMap changes.
+  currentFrame: cluster-service-3
+  configHash: fnv64:0000000000000000
   # The in-cluster service port (the webservice binds :8080) and the NodePort the
   # Playwright e2e reaches it through.
   port: 8080
   nodePort: 30080
+  # Placement-specific accelerator ingress (a private listener in the same web
+  # pod, separate from the public :8080 application): the chain
+  # overrides `type` from the validated topology. In-cluster Linux daemons use
+  # ClusterIP; Apple/Windows host daemons use NodePort 30081, whose kind mapping
+  # is bound to 127.0.0.1.
+  accelerator:
+    type: NodePort
+    port: 8081
+    targetPort: 8081
+    nodePort: 30081

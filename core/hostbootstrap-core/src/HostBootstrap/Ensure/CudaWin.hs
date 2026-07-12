@@ -114,13 +114,23 @@ installSteps sub
         Right
             [ InstallStep
                 Winget
-                ["install", "--id", "Nvidia.CUDA", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
+                [ "install"
+                , "--id"
+                , "Nvidia.CUDA"
+                , "--exact"
+                , "--silent"
+                , "--disable-interactivity"
+                , "--accept-package-agreements"
+                , "--accept-source-agreements"
+                ]
             , InstallStep
                 Winget
                 [ "install"
                 , "--id"
                 , "Microsoft.VisualStudio.2022.BuildTools"
                 , "--exact"
+                , "--silent"
+                , "--disable-interactivity"
                 , "--accept-package-agreements"
                 , "--accept-source-agreements"
                 , "--override"
@@ -128,7 +138,15 @@ installSteps sub
                 ]
             , InstallStep
                 Winget
-                ["install", "--id", "LLVM.LLVM", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
+                [ "install"
+                , "--id"
+                , "LLVM.LLVM"
+                , "--exact"
+                , "--silent"
+                , "--disable-interactivity"
+                , "--accept-package-agreements"
+                , "--accept-source-agreements"
+                ]
             ]
     | otherwise =
         Left ("cudawin is only applicable on windows-gpu, not " ++ renderSubstrateName (substrateName sub))

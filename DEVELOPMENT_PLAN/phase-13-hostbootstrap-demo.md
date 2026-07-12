@@ -57,17 +57,18 @@ in-place markers firing and no `.vm.dhall`/`.runtime-container.dhall`/config bin
 **Reopened (2026-06-19) and closed (2026-06-20)** for the unified-harness / fixed-command-surface /
 resource-SSoT correction: the demo's test surface drives the real `project up` (not a second bring-up
 mirror), the budget-doubling VM sizing collapsed to budget = VM wall / cluster = slice, and the `web serve`
-/ `web bridge` verbs moved to `service run web` + the build-image step. **The closing gate is met,
+/ `web bridge` verbs moved to config-selected `service run` (`Web`) + the build-image step. **The closing gate is met,
 real-run-validated end-to-end on a 16 GiB Apple-Silicon host (2026-06-20):** a full `project up` stands up
 the live persistent stack (8-pod Harbor on `arm64` via the dual-arch `ghcr.io/octohelm/harbor/*` images,
-`service run web` serving **HTTP 200** at `localhost:30080`), and **`test run all` reports `3/3 passed`** —
+config-selected `service run` serving the `Web` variant at **HTTP 200** on `localhost:30080`), and **`test
+run all` reports `3/3 passed`** —
 `pristine-bootstrap` + `web-build` (NodePort reachability from the harness frame) and `e2e-tabs` (the
 Playwright run across chromium/firefox/webkit lifted into the VM frame) — driving the same `project up` and
 tearing down with `project destroy` (host `.data` preserved). See `## Remaining Work` for the validated
 detail.
 
 Forward-pointer: the demo's config-driven `message` worked example — the demo's `cfg` gains a
-`message : Text` field that flows `<project>.dhall` → the chart ConfigMap → the web service → the SPA, plus
+`message : Text` field that flows `<project>.dhall` → the binary-rendered ConfigMap → the web service → the SPA, plus
 the two-variant run (`"Hello, world!"` then `"Hello, Universe!"`, full teardown + spin-up between) and the
 polymorphic Playwright `e2e-tabs` spec — is owned by
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md). It is
@@ -133,24 +134,28 @@ The demo covers these supported surfaces:
 The Apple Silicon path uses Lima (not an Incus VM), and the runtime context is topology-strict: a direct
 host/container fallback cannot run `test all` against the wrong Docker daemon, because a
 VM-project-container config requires a VM-orchestrator ancestor and runtime witnesses (the Dockerfile bakes
-image-build authority only; the lifted runtime container receives a parent-generated config mounted over
-`/usr/local/bin/hostbootstrap-demo.dhall`). The Lima fold, the topology-aware context enforcement, and the
+image-build authority only; the lifted runtime container receives the narrowed parent-generated config
+in-place over the handoff's `stdin`, with no config bind-mount). The Lima fold, the topology-aware context enforcement, and the
 full real Apple Silicon Lima lifecycle — including the Playwright e2e suite — validated that former
 noun-verb shape before it was replaced by the fixed command surface.
 
-**Reopened 2026-07-09 for the substrate-specific accelerator daemon demo.** The demo will grow a real
+**Reopened 2026-07-09 for the substrate-specific accelerator daemon demo.** The demo now has the real
 accelerator path: the UI accepts two `Float` values, the web service dispatches CBOR work over WebSocket to
-a separate project-binary daemon, and the daemon forwards the calculation to a JIT-built Swift/Metal,
-CUDA, or C++ worker depending on substrate. No fake in-process accelerator may satisfy this feature.
+a separate project-binary daemon, and the daemon forwards the calculation to a persistent JIT-built
+Swift/Metal, CUDA, or C++ worker depending on substrate. No fake in-process accelerator can satisfy this
+feature.
 
-**Static demo slice landed 2026-07-09.** The SPA now has an `Accelerator` tab with two numeric inputs, an
-Add action, pending/error/result render states, and backend/artifact metadata slots. The Haskell web API
-exports typed accelerator request/result/failure records and `/api/accelerator/add` parses the input but
-returns `accelerator daemon unavailable` instead of computing a sum in process, preserving the no-fallback
-invariant until the daemon WebSocket runtime lands. `HostBootstrapDemo.Accelerator` adds deterministic
-Swift/Metal, C++ and CUDA worker source templates, stable artifact hashes, and pure build-command builders
-for Apple Metal, Linux CPU, Linux GPU, and Windows GPU lanes. The Playwright spec includes a current-state
-no-fallback assertion and the demo unit suite covers source generation, hashes, and build arguments.
+The implementation is complete statically. The SPA has an `Accelerator` tab with two numeric inputs, an
+Add action, pending/error/result states, and backend/artifact metadata. The Haskell web API has typed
+request/result/failure records and two linked listeners: public HTTP on 8080 and a private accelerator
+listener on 8081, exposed through distinct Service target ports. The public listener cannot upgrade the
+private daemon WebSocket route; linked-listener failure propagates; and a second concurrent request fails
+with 503 while the single daemon is busy. The public add endpoint returns `accelerator daemon unavailable`
+instead of computing locally when no daemon is connected. `HostBootstrapDemo.Accelerator` supplies
+deterministic Swift/Metal, C++ and CUDA worker generation, stable artifact hashes, persistent worker
+supervision, and `Float32` wire/worker semantics for every lane. The config-selected `service run` surface,
+browser Add assertion, dynamic config delivery, placement-specific daemon lifecycle, and fail-closed test
+safety are implemented; only the live substrate gates remain.
 
 ## Current Status
 
@@ -160,43 +165,38 @@ The demo's old noun-verb deploy shape is superseded. The current demo contribute
 hand-written deploy interpreter are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), not current surface area. The demo's
 stack-driven `TestSuite` drives the real `project up` under generated configs and tears down with
-`project destroy`; `service run` owns the long-running web role.
+`project destroy`; config-selected `service run` owns both long-running service variants.
 
 ## Remaining Work
 
-**Accelerator daemon demo — open.**
+**Accelerator daemon demo — implementation complete; honest live gates open.**
 
-- **Landed (static):** demo UI controls, async pending/error/result state slots, and backend/artifact
-  metadata display.
-- **Landed:** web API request/result/failure shapes plus a no-in-process-fallback `/api/accelerator/add`
-  path. The endpoint refuses to compute when no daemon is registered, and otherwise dispatches CBOR work
-  to the daemon WebSocket with request-id correlation and a bounded response timeout.
-- **Landed (static):** deterministic JIT source generation, artifact hashing, and pure build-command
-  builders for Apple Silicon Swift/Metal, Linux CPU C++/`clang++`, Linux GPU CUDA/`nvcc`, and Windows GPU
-  CUDA/host-`nvcc` lanes.
-- **Landed:** Phase 18 service/runtime seam and concrete local transport path: `service run accelerator`,
-  CBOR codecs, request-id correlation, worker-supervision seam, transport-injected daemon loop tests,
-  concrete WebSocket client transport, and web-side daemon registration.
-- **Landed:** Phase 16 host-daemon start/stop scaffolding for Apple Silicon and Windows GPU: the
-  post-handoff hook writes a host daemon sibling config, starts the copied project binary as
-  `service run accelerator`, records a pid file, and teardown best-effort stops that pid.
-- **Remaining:** daemon build/run integration for the real workers in host and in-cluster placements,
-  including the unavailable Windows GPU and Linux CPU/GPU lanes.
-- Add integration tests for each real lane that build the worker, connect the daemon, submit an add request,
-  and assert the result plus backend/artifact metadata.
-- Add a browser e2e test that fills the two inputs, clicks Add, waits for the daemon result, asserts the
-  `Float` sum, and checks metadata so a fake in-process path cannot pass.
+- **Landed (static):** the real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
+  AcceleratorServiceConfig`; `withServiceConfig` dispatches config-selected `service run`, with no
+  positional service argument. The chart and daemon process both use `service run`.
+- **Landed (static):** the UI, typed CBOR protocol, request correlation, bounded timeouts, no-in-process
+  fallback, linked public/private listeners, distinct Service target ports, fail-closed listener errors,
+  single-flight 503 behavior, and `haReplicas = 1` constraint. The browser spec fills both inputs and
+  asserts the daemon-returned `Float` result, backend, and artifact hash.
+- **Landed (static):** deterministic Swift/Metal, C++ and CUDA generation; stable artifact hashing;
+  persistent worker reuse; `Float32` protocol semantics (including `2^24 + 1 -> 2^24`); reconnect,
+  timeout, shutdown, and failure propagation. The guarded real CUDA worker gate historically built and ran
+  on an RTX 3090 and returned `Right 3.75`; the Apple worker smoke returned the same result on 2026-07-10.
+- **Landed (static):** `HostBootstrapDemo.Commands` dynamically renders and applies the web and daemon
+  ConfigMaps from the actual parent topology; exact config-byte hashes roll subPath-mounted pods. Linux
+  CPU/GPU daemon Deployments apply and rollout-wait before connecting to the distinct accelerator
+  `ClusterIP`, with a one-GPU request on the GPU lane. Apple/Windows use the host-native project-binary
+  build/run path with strict process ownership and teardown.
+- **Landed (static):** harness safety is fail-closed: `SafetyRefusal`, exclusive config ownership, guarded
+  cleanup, a direct-cluster probe, and teardown verification prevent the accelerator gate from taking over
+  or deleting operator state.
 
-Validation is blocked until integration tests and the browser e2e case land. Unit-only closure is not
-accepted for this feature.
-
-Static/local validation (2026-07-10): `cabal build all --ghc-options=-Werror` from `demo/` passed, and
-`cabal test all` from `demo/` passed with 44 demo tests plus the embedded 328 core tests after the
-concrete WebSocket transport, host-daemon lifecycle, and reconnect-hardening additions. The locally
-available Apple worker smoke passed the same day: the daemon helper built/reused the Swift/Metal worker
-and `runWorkerProcess` returned `Right 3.75` for `1.5 + 2.25`. Local
-PureScript validation was not run because `spago`/`purs` are not installed on this host; the normal
-project-container `check-code`/web-build gate remains a live integration gate.
+Current validation (2026-07-11): the `-Werror` core gate passes 357 tests and the demo gate passes 83 tests
+plus the embedded 357-core suite. Remaining work is only the full live substrate execution required by
+§ C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
+including the browser Add assertion. The native Linux and Apple hardware gates are unavailable in the
+current environment, and no current live `8/8` result is recorded; the dated `3/3` and `6/6` results below
+remain historical evidence for the pre-accelerator matrices.
 
 **In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
 single-binary `registry:2` swap (Sprint 13.16) plus the demo-side reliability fixes are **real-run-validated
@@ -264,10 +264,10 @@ gate green; verified on the real binary that the surface is fixed and `project u
   (`clusterSliceOfBudget`, strictly smaller in every dimension) within that wall. The one ceiling is used
   once (§ O); moved to `Removed Surfaces` in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
-- **Web role moved to `service`.** `web serve` → `service run web` (the `web` 'ServiceHandler' in
+- **Web role moved to `service`.** `web serve` → config-selected `service run` (the `Web` handler in
   `demoServices`, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
   step (`runVmBootstrap` runs `writeBridge` before the image build); the chart pod's entrypoint is
-  `service run web` with its config delivered by the ConfigMap. The `vm`/`incus`/`web` verbs and the
+  `service run`, with the `Web` variant selected by its delivered config. The `vm`/`incus`/`web` verbs and the
   `ProjectCommand` extension are deleted; their IO is retained as library/step functions
   ([phase-16](phase-16-project-lifecycle-command.md)).
 
@@ -295,7 +295,8 @@ in place — the full `project up` lifecycle completes end-to-end (exit 0):** th
 serves **HTTP 200** at `localhost:30080` (`/api/budget` returns the `fitsBudget` view, `cpu=6 memory=10`
 the VM wall with `podCpuLimit=1 podMemoryLimit=2` the cluster slice within it), all **8 Harbor pods Run**
 on `arm64` (`harbor-core` = `ghcr.io/octohelm/harbor/harbor-core:v2.14.0`, the dual-arch mirror), and the
-web pod runs `args: ["service","run","web"]` (the `web serve` → `service run` migration, live). Reaching
+  web pod runs `args: ["service","run"]` with the `Web` variant selected by config (the `web serve` →
+  `service run` migration, live). Reaching
 this took the metal-frame validation below plus three real-run fixes (the two bugs noted at the end and the
 dual-arch Harbor override):
 
@@ -1041,10 +1042,29 @@ accelerator daemon and perform real `Float` addition through the correct native 
 
 #### Remaining Work
 
-Static UI/API/codegen work, the Phase 18 concrete WebSocket transport, and the Phase 16 host-daemon
-start/stop slice are landed and validated by the demo Haskell gates. Open until real worker build/run
-integration on each substrate, in-cluster daemon pod placement, full host-daemon-to-web integration runs,
-and the browser e2e sum+metadata gate land.
+Implementation and static validation are complete:
+
+- The real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
+  AcceleratorServiceConfig`; `withServiceConfig` dispatches config-selected `service run`, and both the
+  chart and host-daemon argv omit a positional variant.
+- The web server runs linked public (8080) and private accelerator (8081) listeners. Separate Service
+  target ports and the local-only `127.0.0.1:30081` host mapping keep the daemon route private; the public
+  listener cannot upgrade it. Listener failures propagate, a second concurrent request fails 503, and the
+  single-daemon contract constrains HA replicas to one.
+- The daemon uses persistent, idempotently built workers and `Float32` semantics across CBOR and native
+  processes. Static/guarded coverage includes `2^24 + 1 -> 2^24`; the historical RTX 3090 real-worker gate
+  built CUDA with `nvcc -ccbin <msvc>` and returned `Right 3.75`.
+- `HostBootstrapDemo.Commands` dynamically generates/applies both service ConfigMaps before workload
+  deployment and hashes the exact mounted bytes for rollout. Linux CPU/GPU daemon Deployments rollout-wait,
+  dial the distinct accelerator `ClusterIP`, and request one GPU on the GPU lane. Apple/Windows run the
+  project daemon from a host-native build with strict pid/owner/executable/argv identity and shutdown.
+- The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. Harness ownership,
+  direct-cluster detection, `SafetyRefusal`, and verified teardown are fail-closed.
+
+The current static gate is 357 core + 83 demo tests. Remaining work is only real-run closure (§ C): execute
+the current four-case/two-variant harness on the host-daemon and native Linux CPU/GPU placements, including
+the browser assertion. The native Linux and Apple gates are unavailable in the current environment; no
+live `8/8` has replaced the historical pre-accelerator `6/6` result.
 
 ## Documentation Requirements
 

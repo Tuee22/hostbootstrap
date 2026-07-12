@@ -11,24 +11,28 @@ servant) so a derived project's container build hits the base-image warm store.
 module HostBootstrapDemo.Web.Server (
     AcceleratorHub,
     app,
+    acceleratorIngressApp,
     serveWeb,
     newAcceleratorHub,
+    acceleratorDaemonConnected,
+    acceleratorDispatch,
+    runLinkedListeners,
     indexHtml,
 )
 where
 
-import Control.Concurrent (MVar, ThreadId, killThread, myThreadId, newMVar, threadDelay, withMVar)
+import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, myThreadId, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
-import Control.Exception (SomeException, finally, try)
-import Control.Monad (forever)
+import Control.Exception (SomeAsyncException, SomeException, finally, fromException, mask, onException, throwIO, tryJust)
+import Control.Monad (join, void)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Context as Context
-import HostBootstrapDemo.Config (ProjectConfig (message))
 import HostBootstrapDemo.Accelerator.Protocol (
     AcceleratorMessage (..),
     AcceleratorResponse (..),
@@ -36,6 +40,7 @@ import HostBootstrapDemo.Accelerator.Protocol (
     decodeAcceleratorMessage,
     encodeAcceleratorMessage,
  )
+import HostBootstrapDemo.Config (ProjectConfig (message, service), ServiceType (Web), WebServiceConfig (WebServiceConfig), maxAcceleratorRequestTimeoutSeconds)
 import HostBootstrapDemo.Web.Api (
     AcceleratorAddFailure (..),
     AcceleratorAddRequest,
@@ -45,7 +50,7 @@ import HostBootstrapDemo.Web.Api (
     budgetView,
     mkAcceleratorAddRequest,
  )
-import Network.HTTP.Types (Status, hContentType, status200, status400, status404, status503)
+import Network.HTTP.Types (Status, hContentType, hOrigin, status200, status400, status404, status503)
 import Network.Wai (Application, Request, Response, pathInfo, queryString, responseFile, responseLBS)
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Handler.WebSockets (websocketsOr)
@@ -53,7 +58,8 @@ import qualified Network.WebSockets as WS
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
 
-{- | The @esbuild@ bundle path, relative to the directory @service run web@ runs from
+{- | The @esbuild@ bundle path, relative to the directory the @Web@ handler's
+config-selected @service run@ runs from
 (the project root, where @web/public/app.js@ is produced by build #3).
 -}
 bundlePath :: FilePath
@@ -63,26 +69,41 @@ bundlePath = "web/public/app.js"
 (Sprint 20.1): the budget JSON endpoint (which carries the message), the SPA
 shell, the bundled Halogen app, and a 404.
 -}
-data AcceleratorHub = AcceleratorHub
+newtype AcceleratorHub = AcceleratorHub
     { connectedDaemon :: TVar (Maybe DaemonPeer)
     }
 
 data DaemonPeer = DaemonPeer
     { peerConnection :: WS.Connection
     , peerLock :: MVar ()
+    , peerResponses :: MVar (Either Text BS8.ByteString)
     , peerThread :: ThreadId
     }
 
 acceleratorDispatchTimeoutMicros :: Int
-acceleratorDispatchTimeoutMicros = 30000000
+acceleratorDispatchTimeoutMicros =
+    fromIntegral (maxAcceleratorRequestTimeoutSeconds + 5) * 1000000
 
 newAcceleratorHub :: IO AcceleratorHub
 newAcceleratorHub =
     AcceleratorHub <$> newTVarIO Nothing
 
+acceleratorDaemonConnected :: AcceleratorHub -> IO Bool
+acceleratorDaemonConnected hub = isJust <$> readTVarIO (connectedDaemon hub)
+
 app :: Text -> AcceleratorHub -> Application
-app msg hub =
-    websocketsOr WS.defaultConnectionOptions (acceleratorDaemonServer hub) (httpApp msg hub)
+app = httpApp
+
+{- | The daemon-registration listener. It is deliberately a different WAI
+application and TCP port from 'app': the public web NodePort can never upgrade
+a request into the trusted daemon channel.
+-}
+acceleratorIngressApp :: AcceleratorHub -> Application
+acceleratorIngressApp hub =
+    websocketsOr WS.defaultConnectionOptions (acceleratorDaemonServer hub) privateNotFound
+  where
+    privateNotFound _ respond =
+        respond (responseLBS status404 [(hContentType, "text/plain")] "not found")
 
 httpApp :: Text -> AcceleratorHub -> Application
 httpApp msg hub req respond = case pathInfo req of
@@ -99,15 +120,19 @@ httpApp msg hub req respond = case pathInfo req of
 
 acceleratorDaemonServer :: AcceleratorHub -> WS.ServerApp
 acceleratorDaemonServer hub pending
+    | any ((== hOrigin) . fst) (WS.requestHeaders (WS.pendingRequest pending)) =
+        WS.rejectRequest pending "browser-origin WebSocket connections are not accepted"
     | WS.requestPath (WS.pendingRequest pending) == "/api/accelerator/daemon" = do
         conn <- WS.acceptRequest pending
         tid <- myThreadId
         lock <- newMVar ()
-        let peer = DaemonPeer conn lock tid
-        ( registerPeer hub peer
-            >> forever (threadDelay maxBound)
-            )
-            `finally` clearPeerIfCurrent hub peer
+        responses <- newEmptyMVar
+        let peer = DaemonPeer conn lock responses tid
+            disconnected = do
+                void (tryPutMVar responses (Left "daemon disconnected"))
+                clearPeerIfCurrent hub peer
+        (registerPeer hub peer >> receiveDaemonResponses peer)
+            `finally` disconnected
     | otherwise =
         WS.rejectRequest pending "unknown accelerator websocket endpoint"
 
@@ -129,24 +154,51 @@ acceleratorDispatch hub addReq = do
             dispatchToPeer hub daemon addReq
 
 dispatchToPeer :: AcceleratorHub -> DaemonPeer -> AcceleratorAddRequest -> IO Response
-dispatchToPeer hub peer addReq =
-    withMVar (peerLock peer) $ \_ -> do
-        sent <- try (WS.sendBinaryData (peerConnection peer) (encodeAcceleratorMessage (AcceleratorRequest addReq))) :: IO (Either SomeException ())
+dispatchToPeer hub peer addReq = do
+    -- One daemon connection is intentionally single-flight. A concurrent caller
+    -- gets an immediate busy response; it must never time out in the lock queue
+    -- and disconnect the healthy request that currently owns the peer.
+    acquired <- tryTakeMVar (peerLock peer)
+    case acquired of
+        Nothing ->
+            pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) "daemon is busy"))
+        Just () ->
+            (dispatch `onException` clearPeer hub peer)
+                `finally` putMVar (peerLock peer) ()
+  where
+    dispatch = do
+        sent <- trySynchronous (WS.sendBinaryData (peerConnection peer) (encodeAcceleratorMessage (AcceleratorRequest addReq)))
         case sent of
             Left err -> do
                 clearPeer hub peer
                 pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) (T.pack (show err))))
             Right _ -> do
-                received <- timeout acceleratorDispatchTimeoutMicros (try (WS.receiveData (peerConnection peer)) :: IO (Either SomeException BS8.ByteString))
+                received <- timeout acceleratorDispatchTimeoutMicros (takeMVar (peerResponses peer))
                 case received of
+                    Just (Left err) -> do
+                        clearPeer hub peer
+                        pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) err))
                     Nothing -> do
                         clearPeer hub peer
                         pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) "daemon response timeout"))
-                    Just (Left err) -> do
-                        clearPeer hub peer
-                        pure (failureResponse status503 (acceleratorUnavailableWith (addRequestId addReq) (T.pack (show err))))
                     Just (Right raw) ->
                         pure (responseFromDaemon addReq raw)
+
+receiveDaemonResponses :: DaemonPeer -> IO ()
+receiveDaemonResponses peer = do
+    received <- trySynchronous (WS.receiveData (peerConnection peer) :: IO BS8.ByteString)
+    case received of
+        Left err ->
+            void (tryPutMVar (peerResponses peer) (Left (T.pack (show err))))
+        Right raw -> do
+            delivered <- tryPutMVar (peerResponses peer) (Right raw)
+            if delivered then receiveDaemonResponses peer else pure ()
+
+trySynchronous :: IO a -> IO (Either SomeException a)
+trySynchronous = tryJust $ \err ->
+    case fromException err :: Maybe SomeAsyncException of
+        Just _ -> Nothing
+        Nothing -> Just err
 
 responseFromDaemon :: AcceleratorAddRequest -> BS8.ByteString -> Response
 responseFromDaemon addReq raw =
@@ -211,7 +263,7 @@ parseAcceleratorAddRequest req = do
     Right (mkAcceleratorAddRequest rid leftVal rightVal)
   where
     pairs = queryString req
-    lookupQuery key = lookup key pairs >>= id
+    lookupQuery key = join (lookup key pairs)
     required key rid =
         maybe
             (Left (acceleratorBadRequest rid ("missing query parameter: " <> T.pack (BS8.unpack key))))
@@ -240,22 +292,49 @@ indexHtml =
         \</body>\n\
         \</html>\n"
 
-{- | Serve the webservice as the @web@ cluster-service pod, bound on @0.0.0.0:8080@
-and reached through the @30080@ NodePort (the Playwright @baseURL@). Binding all
-interfaces lets the in-cluster Playwright run reach it. Reads its own mounted
+{- | Serve the webservice as the @web@ cluster-service pod, with the public HTTP
+application on the supplied port (normally @8080@) and the daemon-only WebSocket
+ingress on @8081@. The two listeners share one hub, but only the dedicated
+accelerator Service targets @8081@; public NodePort @30080@ therefore cannot
+register a daemon. Binding all interfaces lets the in-cluster Playwright run reach
+the public listener. Reads its own mounted
 @<project>.dhall@ via the core generic loader (the cluster-service config the
 ConfigMap delivers) and serves the config-driven @message@ from it (Sprint 20.1),
 so the served value is whatever the active config carries.
 -}
-serveWeb :: Int -> IO ()
-serveWeb port = do
+serveWeb :: IO ()
+serveWeb = do
     cfg <-
         Schema.requireSiblingProjectConfig
             (T.pack "hostbootstrap-demo")
             Context.ServiceCommand
             [] ::
             IO ProjectConfig
+    WebServiceConfig publicPort' acceleratorPort' <-
+        case service cfg of
+            Just (Web params) -> pure params
+            _ -> ioError (userError "service run: Web handler requires the Web ServiceType variant")
     let msg = message cfg
-    putStrLn ("web serve: listening on http://0.0.0.0:" ++ show port ++ " (GET /api/budget, GET /); message=" ++ T.unpack msg)
+        publicPort = fromIntegral publicPort'
+        acceleratorPort = fromIntegral acceleratorPort'
     hub <- newAcceleratorHub
-    run port (app msg hub)
+    putStrLn ("web serve: public HTTP on http://0.0.0.0:" ++ show publicPort ++ "; daemon ingress on ws://0.0.0.0:" ++ show acceleratorPort ++ "/api/accelerator/daemon; message=" ++ T.unpack msg)
+    runLinkedListeners publicPort (app msg hub) acceleratorPort (acceleratorIngressApp hub)
+
+{- | Run both listeners as one service lifetime. A bind/runtime failure in either
+listener terminates the other and fails the handler, so Kubernetes can never
+keep a public-ready pod whose private accelerator ingress died silently.
+-}
+runLinkedListeners :: Int -> Application -> Int -> Application -> IO ()
+runLinkedListeners publicPort publicApp acceleratorPort ingressApp =
+    mask $ \restore -> do
+        finished <- newEmptyMVar
+        publicThread <- forkFinally (run publicPort publicApp) (\outcome -> putMVar finished ("public", outcome))
+        ingressThread <-
+            forkFinally (run acceleratorPort ingressApp) (\outcome -> putMVar finished ("accelerator", outcome))
+                `onException` killThread publicThread
+        let stop = killThread publicThread >> killThread ingressThread
+        (label, outcome) <- restore (takeMVar finished) `finally` stop
+        case outcome of
+            Left err -> throwIO err
+            Right () -> ioError (userError (label ++ " web listener stopped unexpectedly"))

@@ -33,7 +33,8 @@
   hard fail-fast classes of its own: (1) a **wrong-host misuse** (e.g. an `ensure-cudawin` step reached
   on linux-cpu) — an operator error, not an absent dependency; and (2) an **absent, non-installable
   precondition on the correct host, or a dependency still missing after the install plan runs** — e.g.
-  `ensure cuda` / `ensure cudawin` die on an absent `nvidia-smi`, `ensure homebrew` dies when `brew` is
+  GPU reconcilers reject a substrate that lacks the `nvidia-smi` visibility needed to classify it as a
+  GPU host, `ensure homebrew` dies when `brew` is
   absent on Apple, `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
   `installAndVerify` dies when the dependency is still not satisfied after the install plan.
 
@@ -52,8 +53,8 @@ two cases. First, running a reconciler on a host where the applicability predica
 fail-fast error, not a quiet skip — this surfaces operator mistakes (for example, an `ensure-cudawin`
 step reached on linux-cpu) instead of hiding them. Second, an **absent, non-installable precondition on
 the correct host** — or a dependency still missing after the install plan runs — is also a hard stop:
-`ensure cuda` / `ensure cudawin` die on an absent `nvidia-smi` (the NVIDIA driver is a precondition, not
-auto-installed), `ensure homebrew` dies when `brew` is absent on Apple (its install plan is always
+the GPU reconcilers reject a host without `nvidia-smi` visibility (the NVIDIA driver is a substrate
+precondition, not auto-installed), `ensure homebrew` dies when `brew` is absent on Apple (its install plan is always
 `Left`), `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
 `installAndVerify` dies when its re-verify probe shows the dependency is still not satisfied after the
 install plan. The wrong-host case is a misuse signal; the second case is a genuine absent-precondition
@@ -109,10 +110,10 @@ is exercised during real bootstrap runs.
 | `docker` | `docker info` reachable **and** the invoking user can reach the socket (usable, not just installed) | Linux: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when the current process has not observed refreshed groups yet. Apple: defer to `ensure colima`. |
 | `colima` | installed and `colima status` running | Apple: `brew install colima` + `colima start`. |
 | `lima` | `limactl` resolved | Apple: `brew install lima`. |
-| `cuda` | `nvidia-smi -L` reports a GPU and Docker has the `nvidia` runtime | linux-gpu: install `nvidia-container-toolkit`, `nvidia-ctk runtime configure`, restart Docker (the kernel driver is a precondition, not auto-installed). |
+| `cuda` | `nvidia-smi -L` reports a GPU and Docker's official nvkind volume-mount smoke (`/dev/null:/var/run/nvidia-container-devices/all`) sees that GPU | linux-gpu: install `nvidia-container-toolkit`; configure the NVIDIA runtime as Docker's default with CDI; enable `accept-nvidia-visible-devices-as-volume-mounts`; restart Docker. The kernel driver is a substrate precondition, not auto-installed. |
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is the toolchain root the Python bootstrapper installs pre-binary; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
-| `cudawin` | `nvcc -V` resolves and the NVIDIA driver reports a GPU on the Windows host | windows-gpu: `winget install` the CUDA Toolkit (`Nvidia.CUDA`) and the MSVC C++ build tools (`Microsoft.VisualStudio.2022.BuildTools`, nvcc's host compiler); the NVIDIA Windows driver is a precondition, not auto-installed (the reconciler fails fast if `nvidia-smi` is absent). |
+| `cudawin` | `nvcc -V` resolves, `vswhere` finds VCTools, `clang` resolves, the NVIDIA driver reports a GPU, and an `nvcc -ccbin <MSVC>` smoke artifact compiles | windows-gpu: unattended `winget install` of the CUDA Toolkit (`Nvidia.CUDA`), MSVC C++ Build Tools/VCTools (`Microsoft.VisualStudio.2022.BuildTools`), and LLVM (`LLVM.LLVM`); the NVIDIA Windows driver is a substrate precondition, not auto-installed. |
 | `wsl2` | firmware virtualization is present, the Windows hypervisor can launch, and WSL2 platform readiness is usable | windows: install `Microsoft.WSL`, enable WSL2 + Virtual Machine Platform (`wsl --install --no-distribution`), ensure Windows hypervisor launch readiness (`hypervisorlaunchtype auto` or equivalent verified state), and set default WSL version 2; feature or boot-state changes return `NeedsReboot`. A project-owned `deploy-VM` step registers that project's own named Ubuntu-24.04 distro. |
 | `incus` | VM-capable **and** reachable (usable): Apple: `colima status incus` and `incus list` succeed. Linux: host `incus` resolved after daemon initialization. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
 
@@ -163,11 +164,16 @@ GPU host requirements tracked in [prerequisites](prerequisites.md).
 
 ## Accelerator Build-Stack Ensures
 
-The accelerator-daemon demo reopens the ensure surface for host-resident accelerator build stacks. The
-reconciler implementations are present and unit-validated. The Apple Silicon smoke run closed 2026-07-10
-on an M1 Max host (`ensure apple-metal: present (no-op)`); the phase remains open for the Windows GPU host
-smoke run. These reconcilers run only on host daemon lanes; Linux daemon pods trust the base image and never
-run ensure from inside the container.
+The accelerator-daemon demo extended the ensure surface for host-resident accelerator build stacks. The
+Apple Silicon smoke run closed 2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`), and
+the Windows GPU smoke closed the same day on an RTX 3090 host after CUDA 13.3, LLVM, and the
+`vswhere`-resolved VCTools compiler built the `nvcc -ccbin` smoke artifact. These reconcilers run only on
+host-daemon lanes; Linux daemon pods trust the base image and never run ensure from inside the container.
+
+Phase 3 was temporarily reopened 2026-07-11 for the separate Linux GPU runtime contract. The direct
+Linux GPU metal step runs `ensure cuda` before entering the project container. It now converges the exact
+default-runtime/CDI/volume-mount settings consumed by nvkind and verifies them with the official
+volume-mount smoke; only its Linux GPU real-host no-op gate remains open.
 
 Phase 2 supplies the closed host-tool surface these reconcilers consume: `Swiftc`, `Xcrun`, and
 `SystemProfiler` for Apple Silicon, `Clangxx` for the Linux CPU worker, and `NvidiaSmi`, `Nvcc`, `Clang`,
@@ -180,9 +186,9 @@ Phase 2 supplies the closed host-tool surface these reconcilers consume: `Swiftc
 
 The Apple reconciler is new Phase-3 code. The Windows work hardens the existing `ensure-cudawin`
 reconciler rather than adding a second Windows accelerator reconciler, because the demo's Windows
-accelerator lane is CUDA. Static validation is green (`cabal build all --ghc-options=-Werror` and the
-current `cabal test all` core baseline, 328 tests); the Apple Silicon real smoke run closed 2026-07-10,
-and the Windows GPU smoke run remains the phase gate.
+accelerator lane is CUDA. Static validation is green (`cabal build all --ghc-options=-Werror` and
+`cabal test all --ghc-options=-Werror`, 340 core tests on 2026-07-11); both Apple Silicon and Windows GPU
+real smoke gates are closed.
 
 ## Diagnostics
 
@@ -222,6 +228,7 @@ OS-level hypervisor-launch readiness branch and the real WSL2 provider lifecycle
 all` `6/6` -> `project destroy`). The former `ensure-tart` reconciler is dropped from this contract and
 tracked as removed in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
-The accelerator build-stack reconcilers are implemented and statically validated, but the reopened Phase 3
-stays `Active` until real integration runs prove the host daemon can build the Swift/Metal worker on Apple
-Silicon and the CUDA worker on Windows GPU.
+The accelerator build-stack reconcilers are implemented, statically validated, and real-run-validated on
+Apple Silicon and Windows GPU. Reopened Phase 3 stays `Active` only until the tightened Linux `ensure
+cuda` contract reports `present (no-op)` on a Linux GPU Docker host; its static plan/probe coverage and
+340-test core gate passed 2026-07-11.

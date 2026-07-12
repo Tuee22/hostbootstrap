@@ -16,6 +16,9 @@
 - The Python bootstrapper is the **metal-frame** of the fractal bootstrap: it ensures the host build
   toolchain, builds the binary host-native, and execs it. Building the **project container** is the
   execed binary's job, gating on the `check-code` code-check.
+- The demo's `linux-gpu` path is a direct two-frame chain: metal host → CUDA project container. The host
+  reconciles Docker and the NVIDIA runtime, builds from `basecontainer-cuda-<arch>`, and hands off with
+  `--gpus=all`; the container deploys an explicit control-plane + GPU-worker nvkind cluster.
 - The four run-models (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`) are **selected** from detected
   facts and generated topology — never declared in Dhall. They are selected
   **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, each a
@@ -80,18 +83,18 @@ later project-container build reuses (see [warm_store](../engineering/warm_store
 
 ## Headless Host Build (Windows CUDA)
 
-Some build artifacts are platform-locked to the bare host and cannot be produced in a build VM. The
-**headless host build** is the shape for them: build the artifact directly on the bare host, stage it
-into the cluster, and never run the workload in a build VM (composition pattern #7, see
-[composition_patterns](../engineering/composition_patterns.md)). The first worked instance is
-CUDA-on-Windows: the `ensure cudawin` reconciler readies the Windows host CUDA build stack — the NVIDIA
-driver, the CUDA Toolkit, and the MSVC C++ build tools (nvcc's host compiler) — via **winget**, then
-nvcc artifacts are produced on the bare Windows host, copied into `./.build/`, and staged into the
-cluster. No workload ever runs in a build VM; the host is the build environment, not a runtime. The
+Some build artifacts are platform-locked to the bare host and cannot be produced in a build VM. Generic
+**headless host build** consumers may build on the host and stage an artifact into a cluster (composition
+pattern #7, see [composition_patterns](../engineering/composition_patterns.md)). The accelerator demo is
+deliberately a host-runtime specialization: `ensure cudawin` readies the NVIDIA driver, CUDA Toolkit,
+MSVC host compiler, and LLVM via **winget**, then its host-resident daemon builds **and runs** the CUDA
+worker on bare Windows. It does not stage that worker into WSL2/kind. In both shapes no GPU workload runs
+in a build VM. The
 `ensure cudawin` reconciler therefore fails fast off a Windows GPU host — see
 [ensure_reconcilers](../engineering/ensure_reconcilers.md) and [cuda](../languages/cuda.md). This is a
 distinct concern from the in-container `linux-gpu` nvidia-container-toolkit path (`ensure cuda`), which
-stays as is.
+sets Docker's NVIDIA runtime as default, enables CDI and nvkind's volume-mount injection, and verifies
+that exact injection path before the direct GPU chain proceeds.
 
 ## The Project Container Is the Binary's Job
 
@@ -118,6 +121,34 @@ the gate or ship an unrunnable binary. This is the **fractal bootstrap**: provis
 install the binary in it, then hand off the binary's own subcommand into the next frame. The Python
 bootstrapper is the metal-frame instance of that pattern; the container frame skips the build and runs
 the binary the image already carries. See [composition_methodology](composition_methodology.md).
+
+## Direct Linux GPU Container And Nvkind Run
+
+The demo's `linux-gpu` chain deliberately skips the Incus provider VM. The metal-frame binary first runs
+the same host-resource preflight used by VM-backed lanes, then `ensure docker` and `ensure cuda`.
+`ensure cuda` installs NVIDIA's signed apt source and container toolkit, configures the NVIDIA runtime as
+Docker's default with CDI and volume-mount injection enabled, and proves the exact nvkind injection with
+the `/dev/null:/var/run/nvidia-container-devices/all` Docker smoke. The host then builds
+`hostbootstrap-demo:local` from the published `basecontainer-cuda-<arch>` tag rather than the CPU base.
+
+`context-init` derives a direct Linux GPU child context and streams it into the project container. The
+metal-to-container handoff adds `--gpus=all` and the direct-topology runtime witness. That witness is
+authoritative after the boundary: `containerPlan` selects `NvkindDriver` and
+`nvkind-in-cluster.yaml` from the validated topology rather than re-running substrate detection inside
+the container.
+
+The explicit template has one control-plane node for the public web/registry mappings and one GPU
+worker with `/dev/null` mounted at `/var/run/nvidia-container-devices/all`. Cluster lifecycle repeats
+the NVIDIA smoke, creates both nodes, splits the one cluster resource slice across both node containers,
+and applies each `docker update` cordon fail-closed. It then installs the pinned NVIDIA device-plugin
+chart `0.19.3`, waits for the plugin pods, and refuses to deploy the workload until a node advertises a
+positive allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gpu: 1` and dials
+the dedicated ClusterIP Service, while the public web and registry ports remain on the control-plane.
+
+The runtime/install planners, topology selection, all-node cordon, plugin gate, CUDA image selection,
+GPU handoff, and daemon request are covered by the current static baseline (357 core tests and 83 demo
+tests). Phase 3.7 and Phase 5.5 remain Active pending pristine and warm validation on a real Linux GPU
+host; this static evidence is not recorded as real-host closure.
 
 ## Run-Models Are Selected Within `project up`
 
@@ -209,10 +240,11 @@ lifecycle (including stop-without-delete for `project down`).
 The two-case `HostTarget` is the **tool-level** lift; the **subcommand-level self-reference lift**
 (`HostBootstrap.Lift`) generalizes it to an n-level context stack (`Local | InVM | InContainer`), where a
 binary crosses a boundary by invoking its *own* subcommand in the nested context. The Apple Silicon demo
-uses the Lima VM provider (`limactl shell <instance> -- ...`); native Linux uses Incus
+uses the Lima VM provider (`limactl shell <instance> -- ...`); the Linux CPU demo lane uses Incus
 (`incus exec <vm> -- ...`); Windows uses WSL2 Ubuntu-24.04, the Windows VM-provider frame and peer of
-Lima/Incus (`wsl -d <distro> -- ...`, see [wsl2](../engineering/wsl2.md)); containers use
-`docker run --rm`. `project up` is the
+Lima/Incus (`wsl -d <distro> -- ...`, see [wsl2](../engineering/wsl2.md)); the direct Linux GPU lane
+skips a provider VM and containers use `docker run --rm` (with `--gpus=all` on its GPU handoff).
+`project up` is the
 **recursive interpreter** of that lift: it runs the current frame's steps, then hands off
 `<binary> project up` into the next frame, where the child owns its segment and verifies it is in the
 frame its `.dhall` describes. See [composition_methodology](composition_methodology.md).
@@ -239,8 +271,12 @@ The host-native, no-copy-out build is the mechanism: Python ensures the host too
 binary into `./.build/`, and execs it; the binary ensures Docker and builds the project container
 `FROM` the base image, gating on `check-code`.
 
-The recursive `project` command and the `[Step]` chain interpreter described above run end-to-end on
-real hardware. A single `project up` on Incus/Linux stands up the live persistent stack — the cordoned
+The direct Linux GPU implementation now uses the CUDA base and the two-frame host → GPU-container chain
+described above. Its Phase-3/Phase-5 static gate is green at 357 core tests and 83 demo tests, but the
+pristine and warm real-Linux-GPU runs remain open; the development-plan phases therefore remain Active.
+
+The recursive `project` command and the `[Step]` chain interpreter described above have run end-to-end
+on real Incus/Linux hardware. A single `project up` on that VM-backed Linux lane stands up the live persistent stack — the cordoned
 kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
 (NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod serving
 `localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
@@ -253,11 +289,11 @@ preserved.
   the four run-models are real. The **fixed** core command surface is exactly `project`, `test`,
   `service`, `context`, `check-code` — no per-project verbs. The demo's deploy is the substrate-selected
   `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`; the
-  demo's `web serve` resolves to `service run web`, `service run accelerator` is the accelerator daemon
-  variant, and `web bridge` folds into the build-image step, all extensions of core via the service-handler
+  config-selected `service run` maps the effective `Web` or `Accelerator` `ServiceType` to an internal
+  handler key, and `web bridge` folds into the build-image step, all extensions of core via the service-handler
   and lift-chain streams rather than new verbs. `project down`
   deletes kind compute and stops VM frames while preserving durable state.
-- **The chain steps:** `project up` interprets the chain across three frames. The metal frame runs
+- **The VM-backed chain steps:** `project up` interprets the chain across three frames. The metal frame runs
   `deploy-VM` (ensure the provider, launch the budget-sized VM) and `build-pb` (the host-native binary
   build plus the project-image build in the VM), then hands off into the VM. The in-VM frame runs
   `context-init`, which mints the child `<project>.dhall` for the project container and streams it in-place
@@ -270,6 +306,10 @@ preserved.
   kind/Helm reconcilers (`clusterUp`/`clusterCreate`/`deployChart`/`clusterDown`/`clusterDelete`) live in
   `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the teardown path. `project down` /
   `project destroy` and read-only `context inspect` carry the teardown and status roles.
+- **The direct Linux GPU chain steps:** `project up` uses two frames. Metal runs the resource preflight,
+  `ensure docker`, `ensure cuda`, builds the CUDA project image, and hands off to it with `--gpus=all`.
+  The direct container frame deploys the cordoned control-plane + GPU-worker nvkind cluster, registry,
+  image, chart, public web exposure, and the in-cluster accelerator daemon.
 
 `DEVELOPMENT_PLAN/` owns the phase status. The `project` command and the recursive interpreter are the
 model this doc describes throughout.

@@ -30,14 +30,14 @@
   `test run all` reuses that chain, generating each run's `<project>.dhall` from `test.dhall` through the
   project-owned `psTestConfig`, asserting, then tearing down with `project destroy`. There is no separate
   per-case bring-up.
-- The three harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) prove the surface; the
+- The four harness cases (`pristine-bootstrap` / `web-build` / `e2e-tabs` / `registry-persistence`) prove the surface; the
   run is a demo-only **three-build** illustration on top of the standard single host-native build.
-- The accelerator extension is partially implemented. The demo UI has an `Accelerator` tab with two
+- The accelerator extension is implemented statically. The demo UI has an `Accelerator` tab with two
   `Float` inputs, an Add button, async state, and backend/artifact slots. The web service exposes a CBOR
   WebSocket daemon endpoint and never computes the sum in process: with no daemon connected it returns
   `accelerator daemon unavailable`; with a daemon connected it dispatches the request to that daemon. The
-  final integration gate still requires a project-binary accelerator daemon backed by a real Swift/Metal,
-  CUDA, or C++ worker depending on substrate.
+  daemon is the same project binary, backed by a persistent Swift/Metal, CUDA, or C++ worker depending on
+  substrate. Remaining gates are live per-substrate lifecycle and browser runs.
 
 ## Current Status
 
@@ -57,14 +57,16 @@ ConfigMap override). Validated by a live Windows/WSL2 `test run all` `6/6`.
   `hostbootstrap-demo.dhall` from the thin `test.dhall` override **functionally**, through the
   project-owned `psTestConfig` (which reuses `psInit`), never by shelling the CLI, drives the real
   `project up` → asserts → `project destroy`, then deletes the generated config and the `.test_data` it
-  created (keeping `test.dhall`). It iterates that over more than one config **variant** — the demo runs
+  created (keeping `test.dhall`). Ownership directories serialize config/data use, a `SafetyRefusal` skips
+  teardown of pre-existing state, and changed config bytes are preserved in a locked quarantine for
+  explicit recovery. It iterates that over more than one config **variant** — the demo runs
   two, `"Hello, world!"` then `"Hello, Universe!"`, with a full teardown and spin-up between. The fail-fast
   existence precondition checks the executable-sibling `siblingProjectConfigPath`
   (`.build/<project>.dhall`), not the project root.
-- **Substrate parity.** `test run all` was validated on both Apple-Silicon/Lima (2026-06-20) and native
-  Incus/Linux (2026-06-21); those dated figures were the earlier single-variant **`3/3`** milestone (three
-  cases, one config), superseded by the current two-variant **`6/6`** suite (3 cases x 2 variants). All
-  three cases run in the **VM frame**: each reachability check is a pure probe
+- **Substrate parity.** Dated Apple-Silicon/Lima and native Incus/Linux runs established the earlier
+  single-variant **`3/3`** milestone; later native Linux and Windows pre-accelerator runs reported `6/6`
+  for three cases across two variants. The current four-case/two-variant matrix requires **`8/8`**, and no
+  live `8/8` result is recorded yet. VM-backed cases run in the **VM frame**: each reachability check is a pure probe
   folded into the VM by the self-reference lift (`incus exec <vm> -- curl …` / `limactl shell <vm> -- curl
   …`), so it reaches the in-cluster NodePort regardless of whether the provider forwards the guest port to
   the host.
@@ -80,9 +82,9 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 [Step]` are real-run-validated end-to-end on real hardware (see
 [phase-13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)).
 
-The accelerator UI/no-fallback shell, deterministic worker source/build templates, concrete CBOR WebSocket
-transport, host-daemon start/stop scaffolding, and daemon worker-supervision path are implemented. The
-daemon path is still reopened phase work and will not close until integration tests build the real worker
+The accelerator UI/no-fallback path, deterministic atomic worker builds, concrete CBOR WebSocket
+transport, serialized host-daemon lifecycle, in-cluster Deployment, and persistent worker supervision are
+implemented and covered by the 357-core/83-demo static gate. The daemon path remains reopened until live runs build the real worker
 in each supported lane and the browser e2e test proves the UI add workflow receives daemon-returned backend
 metadata.
 
@@ -127,7 +129,7 @@ service variant run by `service run`):
 | Lift chain | the demo contributes `chain :: cfg -> [Step]` (its steps appended, never shadowing core's) | `project up`; `project up --dry-run` renders `chain cfg` |
 | Schema-gen registry | `demoArtifacts` concatenated onto `coreArtifacts` (a `demoWeb` pod footprint and the `demoWebApp` SPA-as-typed-Dhall spec) | `context render --artifact demoWeb` / `--artifact demoWebApp` |
 | Test harness | `demoCases` + per-case assertions in the stack-driven `demoTestSuite` (it drives the real `project up`/`project destroy`, no separate per-case bring-up) | `test run all` |
-| Service handlers | `demoServices` registers the `web` variant (`serveWeb`, which reads its delivered config to render the demo's `message`), threaded via `withServices` | `service run web` (the chart pod's entrypoint) |
+| Service handlers | `demoServices` registers internal `web`/`accelerator` keys; `withServiceConfig` maps the effective Dhall `ServiceType` to one key | config-selected `service run` (no positional variant) |
 | Config | local `hostbootstrap-demo.dhall` plus binary-generated rich schema | `context schema` / `project init` |
 
 See [harness workflow](../architecture/harness_workflow.md) for the per-case `runMatrix` loop and the
@@ -162,13 +164,14 @@ its `.dhall` describes or fails fast (see
 
 The `resources` block is the demo's one budget ceiling. The `message` field is a field on the demo's
 **own** config type — core owns no project-specific field and no generic extra slot — and it flows
-`hostbootstrap-demo.dhall` → the chart `ConfigMap` → the `Web` service (which reads its config) →
+`hostbootstrap-demo.dhall` → the binary-rendered `ConfigMap` → the `Web` service (which reads its config) →
 `BudgetView.message` → the SPA `#message`. The chain's context-init steps carry the relevant
 envelope down to the VM, project-container, and service frames. The Dockerfile bakes an image-build
 `/usr/local/bin/hostbootstrap-demo.dhall`; the context-init step inside the chain mints the
 VM-project-container config and **streams it in-place** into the container over the handoff `stdin` (the
 entrypoint writes that path before dispatch — no config bind-mount) for the in-container frame; and the
-chart delivers a service-role file at the same path for webservice pods as a **ConfigMap override**. The budget feeds both the VM sizing cordon and
+project binary applies a service-role file at the same path for webservice pods as a **ConfigMap override**
+and hashes its exact mounted bytes into the Deployment. The budget feeds both the VM sizing cordon and
 the kind-node cap (see [applied cordon](../engineering/applied_cordon.md), [incus](../engineering/incus.md),
 and [binary context](../architecture/binary_context_config.md)). The deploy-VM step rejects smaller
 budgets before launching the VM; the full demo lifecycle needs this 6 CPU / 10 GiB / 80 GiB envelope to
@@ -187,7 +190,7 @@ copy refuse commands that do not belong to its frame.
 | Image-build container | Dockerfile-time `check-code` and config/code generation only |
 | Container on the VM (`vm-project-container-2`) | stand up the persistent stack: the kind cluster, the in-cluster registry, the pushed image, the web chart pod, and the verified NodePort |
 | Cluster service | chart-launched webservice pod: runs `service run` (`Web` variant), reading its ConfigMap-delivered service-role config and surfacing its `message` field into the served SPA |
-| Accelerator daemon (planned) | Linux CPU/GPU: in-cluster daemon pod; Apple Silicon/Windows GPU: host-native daemon. In all cases it connects to the web service over CBOR WebSocket and forwards add work to a JIT-built native worker |
+| Accelerator daemon | Linux CPU/GPU: in-cluster daemon pod; Apple Silicon/Windows GPU: host-native daemon. In all cases config-selected `service run` connects to the private web listener over CBOR WebSocket and forwards add work to a persistent JIT-built native worker |
 
 ## Lifecycle ownership
 
@@ -233,7 +236,7 @@ pod, and the verified NodePort:
 | deploy-minio | `vm-project-container-2` | install the in-cluster MinIO (S3) store (Deployment + PVC + Secret, NodePort 30900) and create the registry bucket — the registry's durable backing (see [in_cluster_registry.md](../engineering/in_cluster_registry.md)) |
 | deploy-registry | `vm-project-container-2` | install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO |
 | push-image | `vm-project-container-2` | load the project image into kind and push it to the in-cluster registry |
-| deploy-chart | `vm-project-container-2` | deploy the `warp` / `wai` web service chart pod (NodePort 30080), passing the demo's `message` as chart extra-values into the pod's `ConfigMap` |
+| deploy-chart | `vm-project-container-2` | apply the exact parent-derived ConfigMap, then deploy the `warp` / `wai` web pod (public NodePort 30080; private accelerator service on container port 8081 / optional local NodePort 30081) |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
 The accelerator extension adds a daemon connection after the web endpoint exists. Linux CPU keeps the
@@ -242,7 +245,8 @@ cluster directly on the host through the project container, then runs a CUDA dae
 lifecycle driver, Docker NVIDIA-runtime probe, direct context, and direct chain selection are implemented.
 Apple Silicon and Windows GPU start a host-native daemon after `project up` exposes a local-only NodePort
 for the web service; the local pid/config start-stop path and Phase 18 WebSocket runtime are implemented,
-but real host-daemon integration runs are still open. The demo
+   but real host-daemon integration runs are still open. The public HTTP and private WebSocket listeners
+   are separate and linked; the public NodePort cannot register a daemon and browser-origin WebSockets are rejected. The demo
 reserves NodePort `30081` in `demo/kind.yaml` for that local-only accelerator ingress (`127.0.0.1` kind
 listen address), leaving the existing web NodePort `30080` behavior unchanged.
 
@@ -283,19 +287,20 @@ The operator drives the chain through the `project` lifecycle.
   `"Hello, world!"` then `"Hello, Universe!"`, with full teardown and spin-up between). Two fail-fast
   preconditions run first: refuse if a sibling `.build/hostbootstrap-demo.dhall` exists (the
   `siblingProjectConfigPath`, not the project root) or if a production cluster is running; teardown removes
-  only the generated config and the `.test_data` it created.
-- **Accelerator e2e case (planned)** — fills the two add inputs, clicks Add, waits for the asynchronous
-  result, asserts the expected `Float` sum, and checks backend metadata/artifact hash returned by the
+  only the generated config and the `.test_data` it created. Ownership is atomic; a safety refusal records
+  failure without tearing down state the run did not create.
+- **Accelerator e2e assertion (implemented in `e2e-tabs`)** — fills the two add inputs, clicks Add, waits for the asynchronous
+  result, asserts `1.5 + 2.25` and Float32 `2^24 + 1` rounding, and checks backend metadata/artifact hash returned by the
   daemon so a fake in-process accelerator cannot pass.
 - **`project down`** — delete the kind cluster, stop the VM, and preserve host `.data`.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
   up inside it. Host `.data` is **preserved** (the never-delete-`.data` invariant). Teardown is
-  best-effort and idempotent, tolerating a partial stack. **`project destroy` needs a sibling
+  idempotent and tolerant of a partial stack; it attempts every independent cleanup and aggregates failures. **`project destroy` needs a sibling
   `<project>.dhall`**; a chain failure *during* `project up` now runs the same best-effort `project destroy`
   teardown at the root frame (the `applyChain` guard), leaving no orphaned VM, kind cluster, or `.wslconfig`.
-  Only a hard kill of `project up` can still leave the provider VM registered with no sibling config, so
-  clean that up directly with `wsl --unregister hostbootstrap-demo-vm` (or `incus delete` / `limactl delete`).
+  An uncatchable hard kill is reconciled by the next idempotent run; do not bypass its ownership guards with
+  direct provider deletion unless the reported recovery instructions require it.
   See
   [incus](../engineering/incus.md).
 
@@ -319,7 +324,8 @@ harness stands each up / asserts / tears down in turn.
 |---|---|
 | `pristine-bootstrap` | The from-zero first-run flow (the deploy-VM provider / deploy-VM / build-pb steps): the VM sizing cordon, the in-VM `apt` / `pipx` / `hostbootstrap run` chain, the host-native binary build (#2), Docker ensure, and the project-container build (#3). |
 | `web-build` | The web build path: the in-Dockerfile `check-code` gate runs before the web build; the generated PureScript matches the `warp` / `wai` webservice's API types (round-trip); the `spago` / `esbuild` bundle exists in the project image. |
-| `e2e-tabs` | The served surface: the Halogen SPA tabs render, `/api/budget` returns the `fitsBudget` view, and the current accelerator Add shell proves there is no in-process fallback from the project image's base-provided Playwright run (a container on the VM host network) against the **in-cluster** webservice via its NodePort. The spec is **polymorphic** — the harness exports `EXPECTED_MESSAGE` per variant and the spec asserts the SPA `#message` element matches whichever message the active deployment set. |
+| `e2e-tabs` | The served surface: the Halogen SPA tabs render, `/api/budget` returns the `fitsBudget` view, and Accelerator Add asserts the daemon result/backend/hash and Float32 rounding (or the explicit no-fallback unavailable state). The spec is polymorphic over `EXPECTED_MESSAGE` and substrate backend. |
+| `registry-persistence` | Durable registry state survives the registry Deployment/pod recreation through the MinIO-backed store. |
 
 ## Three builds vs the standard host-native build
 

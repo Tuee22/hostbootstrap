@@ -9,6 +9,28 @@ spec:
   selector:
     app: {{ .Release.Name }}-web
   ports:
-    - port: {{ .Values.service.port }}
+    - name: web
+      port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.port }}
       nodePort: {{ .Values.service.nodePort }}
+---
+# The accelerator ingress is a distinct Service so its exposure follows daemon
+# placement independently of the public web NodePort: ClusterIP for Linux
+# in-cluster daemons; local-only NodePort for Apple/Windows host daemons.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-accelerator
+  labels:
+    app: {{ .Release.Name }}-web
+spec:
+  type: {{ .Values.service.accelerator.type }}
+  selector:
+    app: {{ .Release.Name }}-web
+  ports:
+    - name: accelerator
+      port: {{ .Values.service.accelerator.port }}
+      targetPort: {{ .Values.service.accelerator.targetPort }}
+{{- if eq .Values.service.accelerator.type "NodePort" }}
+      nodePort: {{ .Values.service.accelerator.nodePort }}
+{{- end }}

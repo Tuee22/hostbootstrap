@@ -32,6 +32,8 @@ import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (isAbsolute)
 #ifdef mingw32_HOST_OS
 import System.FilePath ((</>))
+import System.Exit (ExitCode (ExitSuccess))
+import System.Process (readProcessWithExitCode)
 #endif
 
 -- | The closed set of external tools @hostbootstrap-core@ resolves.
@@ -66,6 +68,7 @@ data HostTool
     | Incus
     | Df
     | Kill
+    | Ps
     deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Every host tool, for building a fully-resolved 'HostBootstrap.HostConfig'.
@@ -106,6 +109,7 @@ toolCommandName XcodeSelect = "xcode-select"
 toolCommandName Incus = "incus"
 toolCommandName Df = "df"
 toolCommandName Kill = "kill"
+toolCommandName Ps = "ps"
 
 {- | An absolute path to a resolved executable. The constructor is not exported;
 'mkAbsExe' is the only way to build one, so a value of this type is always an
@@ -157,8 +161,44 @@ discoverWindowsNvcc = do
 
 discoverWindowsMsvcCl :: IO (Maybe AbsExe)
 discoverWindowsMsvcCl = do
+  found <- discoverWindowsMsvcClViaVswhere
+  case found of
+    Just exe -> pure (Just exe)
+    Nothing -> discoverWindowsMsvcClFromKnownRoots
+
+discoverWindowsMsvcClViaVswhere :: IO (Maybe AbsExe)
+discoverWindowsMsvcClViaVswhere =
+  ( do
+      mVswhere <- discover Vswhere
+      case mVswhere of
+        Nothing -> pure Nothing
+        Just vswhere -> do
+          (exitCode, out, _) <-
+            readProcessWithExitCode
+              (absExePath vswhere)
+              [ "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Workload.VCTools",
+                "-find",
+                "VC\\Tools\\MSVC\\**\\bin\\Hostx64\\x64\\cl.exe"
+              ]
+              ""
+          case exitCode of
+            ExitSuccess -> firstExisting (filter (not . null) (lines out))
+            _ -> pure Nothing
+  )
+    `catch` \(_ :: IOException) -> pure Nothing
+
+discoverWindowsMsvcClFromKnownRoots :: IO (Maybe AbsExe)
+discoverWindowsMsvcClFromKnownRoots = do
   let roots =
-        [ "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+        [ "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC",
+          "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
           "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
           "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
           "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC"

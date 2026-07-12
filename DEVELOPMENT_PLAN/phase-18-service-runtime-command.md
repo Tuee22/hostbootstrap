@@ -6,83 +6,75 @@
 
 > **Purpose**: Add the third DSL-driven core command — `service` — that runs a project's long-running
 > roles (the `HostDaemon`/service run-model) through a fixed `service init|schema|run` surface, a project-
-> contributed `ServiceType` ADT + service-handler registry, leaf-frame fail-fast gating, and ConfigMap-
-> delivered service config.
+> contributed service ADT and internal handler registry, leaf-frame fail-fast gating, and dynamically
+> rendered ConfigMap-delivered service config.
 
 ## Phase Status
 
 **Status**: Active
 
-**Reopened from Blocked then closed (2026-06-19):** the fixed command surface (phase-16) and the
-binary-context contract (phase-15) it depended on are in place, the `service` command landed in code, and
-the demo's `web serve` → `service run web` migration is **real-run-validated** — the live demo's web pod
-runs `args: ["service","run","web"]` and serves **HTTP 200** at `localhost:30080` on the 16 GiB
-Apple-Silicon host ([phase-13](phase-13-hostbootstrap-demo.md)), reading its ConfigMap-delivered
-cluster-service config. No remaining work.
-
-Forward-pointer: the demo's worked example has the `web` service handler (`serveWeb`) read its config and
-render the demo's `message` field through `BudgetView.message` to the SPA. That config-driven message
-plumbing is owned by
-[phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md); the fixed
-`service init|schema|run` surface this phase shipped is unchanged.
-
 `service` is **new core scope** — there had never been a `service` command; the demo's long-running web
-workload ran through the load-bearing `web serve` verb. This phase adds the generic command so a
-project's long-running roles are reached through the fixed surface (development_plan_standards § AA), not a
-per-project verb.
+workload previously ran through the load-bearing `web serve` verb. The generic command now reaches every
+project role through the fixed surface (development_plan_standards § AA), not a per-project verb.
 
-The code is built and code-check-validated (`cabal test all` green, `cabal build all --ghc-options=-Werror`
-green, fourmolu/hlint clean on the demo):
+The current implementation is built and statically validated (357 core tests and 83 demo tests):
 
-- `HostBootstrap.Service` ships the `ServiceHandler` / `ServiceRegistry` extension stream (variant name +
-  role action), `lookupServiceHandler`, `serviceVariantNames`, and `duplicateServiceVariants`; the registry
-  may be empty.
-- `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` on the core tree
-  (`coreCommandNames` = `context` / `project` / `test` / `service` / `check-code`); there is **no
-  `service down`** and no hidden command surface. `service run <variant>` gates as `Context.ServiceCommand`
-  (the leaf-frame service-role gate) then dispatches on the variant; an unknown variant or empty registry
-  fails fast.
-- `HostBootstrap.CLI` threads the registry through `ProjectSpec` (`withServices`) alongside the other
-  extension streams; the entrypoint rejects duplicate service variants.
-- The demo registers the `web` variant (`demoServices`, `serveWeb`) and its chart pod's entrypoint is
-  `service run web` (the former `web serve`); `CLISpec` covers `service schema`, the leaf-frame refusal, and
-  the duplicate-variant rejection.
+- `HostBootstrap.Service` ships the possibly empty `ServiceRegistry` of internal handler keys and actions.
+  `HostBootstrap.CLI` threads it through `ProjectSpec` with `withServices`, rejects duplicate keys, and
+  independently carries the config-specific selector with `withServiceConfig` / `psServiceVariant`.
+- `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` tree. There is
+  no `service down` and no positional variant argument: `service run` gates as
+  `Context.ServiceCommand`, asks the effective project config for its selected variant, and dispatches that
+  internal key through the registry.
+- The demo owns the real Dhall service model:
+  `ServiceType = < Web : WebServiceConfig | Accelerator : AcceleratorServiceConfig >`, stored as the
+  mandatory `service : Optional ServiceType` project-config field. `Web` carries distinct public and
+  accelerator ports; `Accelerator` carries its request timeout. `configuredServiceVariant` maps those
+  payload-bearing constructors to the internal registry keys and validates their placement.
+- `demo/src/HostBootstrapDemo/Commands.hs` renders each parent-derived service config and its ConfigMap
+  manifest at deployment time. Helm receives the current frame, exact config-byte hash, and placement;
+  the hash annotation rolls the pod whenever the mounted bytes change. There is no static chart ConfigMap.
+- The web role binds linked public and private listeners: public HTTP is exposed on 8080/NodePort 30080;
+  accelerator WebSocket traffic uses 8081 through a cluster-only Service or a local-only NodePort 30081.
+  Registration is unavailable on the public listener, and the private listener rejects browser-originated
+  registration. A process-local accelerator hub requires exactly one web replica and preserves an active
+  request when a concurrent request receives the single-flight 503 response.
+- The accelerator daemon keeps a serialized, persistent newline-delimited worker session, restarts it once
+  after a worker failure, and clears it on request timeout. Worker arithmetic is semantically `Float32`
+  across Haskell, Swift, C++, and CUDA; CBOR float64 is only the transport carrier. CUDA failures surface
+  as failures rather than fabricated results.
 
-Real-run-validated (§ C): the demo's live `web` pod serves HTTP 200 via `service run web` on the NodePort
-(the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
+Historical live evidence remains valid for the behavior it exercised: on 2026-06-19 the then-current
+three-argument web entrypoint (`service run web`) served HTTP 200 at `localhost:30080` on the 16 GiB
+Apple-Silicon host ([phase-13](phase-13-hostbootstrap-demo.md)) while reading its ConfigMap-mounted config.
+That evidence predates the current config-selected two-argument entrypoint and the accelerator matrix; it
+is not a live validation claim for the current 4-by-2 substrate/placement gate.
 
-**Reopened 2026-07-09 for the accelerator daemon runtime.** The same fixed `service run`/handler registry
-surface runs the accelerator daemon role in host and in-cluster placements. The protocol/runtime seam and
-concrete local WebSocket path are implemented and unit-tested; real host/in-cluster integration runs, real
-worker runs, and browser e2e closure remain open.
+**Reopened 2026-07-09 for the accelerator daemon runtime.** The protocol, concrete socket path, dynamic
+configuration, two-listener web boundary, and persistent real-worker supervision are implemented and
+covered by static/local tests. The cross-substrate live gates below remain open, so the phase stays Active.
 
 ## Remaining Work
 
-**Accelerator daemon runtime — open.**
+**Accelerator daemon live-runtime closure — open.** Static and local validation, including the browser
+workflow specification and guarded real-worker cases, is implemented. Completion still requires:
 
-- Done statically: `service run accelerator` is registered through the demo service-handler registry and
-  goes through the existing `Context.ServiceCommand` gate, so host/project lifecycle authority is rejected
-  before the handler can run.
-- Done statically: `HostBootstrapDemo.Accelerator.Protocol` provides deterministic CBOR request/result/
-  failure codecs and request-id correlation.
-- Done statically: `HostBootstrapDemo.Accelerator.Daemon` provides the worker-supervision seam and a
-  transport-injected daemon client loop covering reconnect, request timeout, graceful shutdown, backend
-  metadata, and artifact hash propagation.
-- Done locally: the concrete WebSocket daemon transport is plugged in, `/api/accelerator/daemon` registers
-  the daemon connection, and `/api/accelerator/add` dispatches CBOR requests to the registered daemon with
-  request-id correlation and a bounded response timeout. No daemon still yields
-  `accelerator daemon unavailable`; the web server never computes the sum in process.
-- Remaining: integration tests for in-cluster daemon connection by `ClusterIP` and host daemon connection
-  by local-only `NodePort`.
-- Remaining: browser e2e Add workflow proving the UI result came from a real JIT-built worker.
+- real socket integration through the in-cluster `ClusterIP` and host-daemon local-only `NodePort` paths;
+- the browser Add workflow against those live deployments, proving the result and metadata came from the
+  selected JIT-built worker rather than from the web process; and
+- the native host/in-cluster matrix on Apple CPU/GPU and Linux CPU/GPU substrates, plus the durable
+  Windows GPU host-daemon run. The intended current matrix is 4 substrates × 2 placements = 8 cases; no
+  current `8/8` live result is claimed here.
 
 ## Phase Objective
 
 Provide a generic, fixed `service` command on the core tree so every project binary runs its long-running
-roles uniformly: `service init` / `service schema` / `service run`, dispatched over a project-contributed
-`ServiceType` ADT, gated to a service-role frame, with config delivered by a ConfigMap that overrides the
-image's baked container `<project>.dhall`. There is no `service down` — a service's lifetime is owned by its
-Kubernetes controller and torn down by `project destroy` (§ O, § Y).
+roles uniformly: `service init` / `service schema` / `service run`. The effective project config selects a
+project-owned service ADT value; a project-supplied projection maps it to an internal handler key. The
+command is gated to a service/daemon frame, and deployment config is delivered by a dynamically rendered
+ConfigMap that overrides the image's baked container `<project>.dhall`. There is no `service down`: the
+leaf process may run in a Kubernetes pod or as a host daemon, and its enclosing controller or project
+lifecycle owns teardown (§ O, § Y).
 
 For the accelerator reopening, extend that surface with a daemon variant that connects to the web service
 instead of serving HTTP itself. The daemon is still a leaf role: it performs no cluster bring-up and no
@@ -105,9 +97,9 @@ project binary inherits it.
 
 - `service init` writes a service-configured `<project>.dhall` from passed parameters (forwarded from a
   parent where applicable, § X); `service schema` prints the service config schema (reflected from the
-  decoder, § Q); `service run` runs the selected role. No `service down`.
+  decoder, § Q); `service run` runs the role selected by the effective config. No `service down`.
 - `service run` is a **leaf-frame runtime command, never an orchestrator**: it assumes it is already placed
-  in its frame (typically a k8s pod) and runs the role; it brings up no VM or cluster.
+  in its frame (a k8s pod or host daemon) and runs the role; it brings up no VM or cluster.
 
 #### Validation
 
@@ -116,46 +108,53 @@ project binary inherits it.
 
 #### Remaining Work
 
-Built and code-check-validated: `serviceCommandGroup` surfaces `service init|schema|run` (no `service
-down`); `service run` gates as `Context.ServiceCommand` (leaf-frame, never an orchestrator); `service init`
-writes a `cluster-service`-role config; `service schema` prints the variants + reflected config schema.
-`CLISpec` covers the leaf-frame refusal and `service schema`. Real-run-validated in the demo run ([phase-13](phase-13-hostbootstrap-demo.md)).
+None. `serviceCommandGroup` surfaces `service init|schema|run` (no `service down`); `service run` gates as
+`Context.ServiceCommand` and is a leaf-frame command, never an orchestrator. `CLISpec` covers the
+leaf-frame refusal and `service schema`. The 2026-06-19 demo run is historical live evidence for the
+pre-selector web form of the command ([phase-13](phase-13-hostbootstrap-demo.md)); current live matrix
+closure is tracked by Sprint 18.5.
 
 ### Sprint 18.2: The `ServiceType` ADT and service-handler registry [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`withServices`), `core/hostbootstrap-core/test/CLISpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs` (`withServices`, `withServiceConfig`), `core/hostbootstrap-core/test/CLISpec.hs`, `demo/src/HostBootstrapDemo/Config.hs`, `demo/app/Main.hs`
 **Docs to update**: `documents/architecture/library_hierarchy.md`, `system-components.md`
 
 #### Objective
 
-Let a binary define **more than one** service type and dispatch `service run` over them.
+Let a binary define **more than one** payload-bearing service type and have `service run` dispatch the
+variant selected by its effective config.
 
 #### Deliverables
 
-- A project contributes its service handlers as a **registry** threaded through `ProjectSpec` (one of the
-  extension streams, § P, § T), keyed by a Dhall **ADT** `ServiceType = < Web : … | WorkloadOrchestrator :
-  … >` with arbitrary per-variant parameters. `service run` dispatches on the variant.
-- The registry **may be empty** — the fixed surface is unchanged and `service run` fails fast when no
-  service is configured, so not every project ships a service.
+- A project contributes a possibly empty internal handler **registry** through `withServices` and a
+  config-specific selector through `withServiceConfig` / `psServiceVariant`. The selector validates the
+  project-owned Dhall ADT and maps the selected constructor to a registry key; the registry itself is not
+  the Dhall ADT.
+- The demo's real model is
+  `ServiceType = < Web : WebServiceConfig | Accelerator : AcceleratorServiceConfig >`. The Web payload
+  carries `publicPort` and `acceleratorPort`; the Accelerator payload carries `requestTimeoutSeconds`.
+  `ProjectConfig.service` is a mandatory field whose value is optional so non-service frames remain
+  representable.
+- The registry may be empty — the fixed surface is unchanged and `service run` fails fast when no service
+  is selected or no handler matches the selected key, so not every project ships a service.
 
 #### Validation
 
-- The CLI spec asserts dispatch over multiple variants, an empty registry still exposes `service` and fails
-  fast, and a config naming an unknown variant exits non-zero.
+- The CLI and demo specs assert config-selected dispatch over multiple variants, no positional variant
+  argument, an empty registry that still exposes `service` but fails fast, payload/placement validation,
+  and an unknown selected key exiting non-zero.
 
 #### Remaining Work
 
-Built and code-check-validated: the `ServiceRegistry` is a list of `ServiceHandler`s (variant name + role
-action) threaded through `ProjectSpec` via `withServices`; `service run` dispatches on the variant and fails
-fast on an unknown variant or empty registry; the entrypoint rejects duplicate variants (`validateProjectSpec`,
-`CLISpec`). The Dhall `ServiceType` ADT is modelled as the variant-name registry (the realistic L0 contract;
-a richer per-variant-parameter ADT is an optional follow-up). Real-run-validated in the demo run.
+None. The distinct registry and config-selector seams, the real payload-bearing demo ADT, duplicate-key
+rejection, placement validation, and config-selected dispatch are built and covered by the current static
+suite. Sprint 18.5 owns live validation of both constructors and placements.
 
 ### Sprint 18.3: Leaf-frame gating and ConfigMap-delivered config [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/chart/templates/deployment.yaml`, `demo/chart/templates/configmap.yaml`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `demo/chart/templates/deployment.yaml`
 **Docs to update**: `documents/architecture/binary_context_config.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
@@ -164,28 +163,29 @@ Gate `service run` to a service-role frame and deliver its config the binary-con
 
 #### Deliverables
 
-- `service run` fails fast unless the effective `<project>.dhall` declares a **service role** and a valid
-  **service variant** (§ X). A single config may declare project *and* service roles; `service run` checks
-  the service capability.
+- `service run` fails fast unless the effective `<project>.dhall` declares a **service role** and contains
+  a valid service value for that placement (§ X). A single config may declare project *and* service roles;
+  `service run` checks the service capability and uses the configured selector.
 - `project up`'s `deploy-chart` step deploys the pod whose entrypoint is `service run`; the pod's config
-  arrives as a **ConfigMap overriding the image's baked container `<project>.dhall`** (§ X). `project up`
-  *deploys* the service; `service run` *is* the service.
+  arrives as a **dynamically rendered ConfigMap overriding the image's baked container
+  `<project>.dhall`** (§ X). The deployer hashes the exact mounted bytes into the pod template annotation.
+  `project up` *deploys* the service; `service run` *is* the service.
 
 #### Validation
 
-- A non-service-role config is refused; the chart pod runs `service run` and reads the ConfigMap-supplied
-  config (exercised in the demo run).
+- A non-service-role config is refused; manifest tests prove that the chart pod runs `service run`, reads
+  the generated ConfigMap, and rolls when the exact config bytes change. The earlier web-only delivery
+  path was exercised in the historical demo run.
 
 #### Remaining Work
 
-Built and code-check-validated: `service run` refuses a non-service-role config (the
-`Context.ServiceCommand` gate — only `cluster-service` / `daemon` leaf contexts allow it; verified on the
-real binary against a host-orchestrator config). The chart pod's entrypoint is `service run web` with the
-cluster-service `<project>.dhall` delivered as the mounted ConfigMap (`demo/chart/templates`).
-Real-run-validated: the live pod reads the ConfigMap-supplied config and serves HTTP 200 via `service run
-web` (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
+None for implementation. `service run` refuses a non-service-role config; the deployer renders the actual
+parent-derived service config and ConfigMap, applies it, and passes Helm only the current frame,
+config-byte hash, and placement. The chart args are `service run` with no positional variant. The
+2026-06-19 web run remains historical evidence for mounted-config behavior; current live closure belongs
+to Sprint 18.5.
 
-### Sprint 18.4: Demo `web serve` → `service run` migration [Done]
+### Sprint 18.4: Demo web role on config-selected `service run` [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`demoServices`), `demo/app/Main.hs` (`withServices`), `demo/chart/templates/deployment.yaml`, `demo/docker/Dockerfile`
@@ -193,88 +193,109 @@ web` (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
 
 #### Objective
 
-Migrate the demo's long-running web workload off the `web` verb onto the generic `service` command — the
-real-run gate for this phase.
+Run the demo's long-running web workload through the generic command and select its payload-bearing `Web`
+constructor from the effective project config.
 
 #### Deliverables
 
-- `web serve` → `service run` (`Web` variant of the demo's `ServiceType`); `web bridge` → the build-image
-  chain step. The demo chart pod's entrypoint becomes `service run`, its config delivered by a ConfigMap.
+- `web serve` → `service run`, with `withServiceConfig` selecting `Web` and `withServices` resolving the
+  internal `web` handler key; `web bridge` → the build-image chain step. The demo chart pod's entrypoint is
+  `service run`, and its generated config selects the Web payload.
 
 #### Validation
 
-- The full demo lifecycle brings up the stack and the web pod serves HTTP 200 via `service run` on the
-  NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
+- Static manifest/CLI tests cover the current config-selected path. Historical live evidence proves the
+  migrated web handler served HTTP 200 on the NodePort before the selector replaced the positional key
+  ([phase-13](phase-13-hostbootstrap-demo.md)).
 
 #### Remaining Work
 
-Built and code-check-validated: `web serve` → `service run web` (the `web` 'ServiceHandler' in
-`demoServices`, wired via `withServices`); `web bridge` → the build-image chain step (`runVmBootstrap`
-generates the PureScript bridge before the image build, so the Dockerfile no longer invokes a `web bridge`
-verb); the chart pod's `args` is `["service", "run", "web"]`. The `web` verb is removed. Real-run-validated:
-the full demo lifecycle on the 16 GiB Apple-Silicon host serves HTTP 200 via `service run web` on the
-NodePort (the demo run, [phase-13](phase-13-hostbootstrap-demo.md)).
+None. The `web` verb is removed; `runVmBootstrap` generates the PureScript bridge before image build;
+`demo/app/Main.hs` installs both the handler registry and config selector; and the chart args are
+`["service", "run"]`. The current path is statically validated. The 2026-06-19 HTTP 200 run is retained as
+explicitly historical evidence, not as current matrix closure.
 
 ### Sprint 18.5: Accelerator daemon runtime over CBOR WebSocket [Active]
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/src/HostBootstrapDemo/Config.hs`, `demo/src/HostBootstrapDemo/Web/Server.hs`,
 `demo/src/HostBootstrapDemo/Accelerator/Protocol.hs`,
-`demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`
+`demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`, `demo/test/WebServerSpec.hs`,
+`demo/test/AcceleratorRuntimeSpec.hs`
 **Docs to update**: `documents/architecture/run_models.md`,
 `documents/architecture/binary_context_config.md`, `documents/engineering/accelerator_daemon.md`
 
 #### Objective
 
-Add the accelerator daemon as a long-running service/daemon role that connects to the web server over CBOR
-WebSocket and forwards add requests to a JIT-built worker.
+Add the accelerator daemon as a config-selected long-running service/daemon role that connects to the
+web server's private listener over CBOR WebSocket and forwards add requests to a persistent JIT-built
+worker session.
 
 #### Deliverables
 
-- A demo accelerator service handler or daemon handler registered through the fixed service registry.
+- A payload-bearing `Accelerator` config value projected to the daemon handler through the fixed service
+  registry, with `requestTimeoutSeconds` supplied by config rather than a positional CLI argument.
 - CBOR request/result/failure codecs with request-id correlation.
-- WebSocket client loop with reconnect, timeout, graceful shutdown, and backend/artifact metadata in
-  replies.
-- Worker-supervision seam used by the daemon after Phase 13's substrate-specific JIT build.
-- Gate `service run accelerator` to daemon/service contexts only.
+- Separate linked web listeners: public application HTTP and private accelerator registration, with
+  distinct ports, Origin rejection on the private path, and no registration route on the public path.
+- WebSocket client loop with reconnect, configured request timeout, graceful shutdown, and backend/artifact
+  metadata in replies. Idle socket lifetime is independent of the per-request worker timeout.
+- Serialized persistent worker sessions used after Phase 13's substrate-specific JIT build, with
+  newline-delimited request/reply framing, one restart after worker failure, timeout cleanup, and
+  end-to-end `Float32` arithmetic semantics.
+- Gate config-selected `service run` to daemon/service contexts only.
 
 #### Validation
 
-- Unit tests for CBOR codec round trips, invalid payload rejection, request correlation, and no in-process
-  web fallback.
+- Unit tests for CBOR codec round trips, invalid payload rejection, request correlation, single-flight
+  contention, listener isolation, worker-session reuse/restart/timeout, precision, and no in-process web
+  fallback.
 - Integration tests for in-cluster daemon connection by `ClusterIP` and host daemon connection by
   local-only `NodePort`.
 - Browser e2e add test asserts the sum and daemon-returned backend/artifact metadata.
 
 #### Remaining Work
 
-Static/local runtime contract landed 2026-07-10: the demo registers `service run accelerator`, the existing
-`Context.ServiceCommand` gate rejects non-service/project-lifecycle authority, the CBOR protocol round
-trips request/result/failure messages and rejects invalid payloads, request-id correlation is unit-tested,
-the worker-supervision seam wraps success/failure with backend + artifact metadata, the
-transport-injected daemon loop is unit-tested for receive -> worker -> correlated response -> graceful
-stop and reconnect-after-disconnect, and the concrete WebSocket client/server path is implemented.
-Validation passed with the demo `-Werror` build and `cabal test all` from `demo/` (44 demo tests plus the
-embedded 328 core tests).
+The implementation and current static/local contract are complete and green (357 core tests, 83 demo
+tests). The effective config selects `Accelerator`; the existing `Context.ServiceCommand` gate rejects
+project-lifecycle authority; the dynamic manifest supplies the placement-specific connection target and
+timeout; and deterministic CBOR codecs preserve request IDs, metadata, and failures. The web process owns
+a single-flight hub on its private listener but never computes the sum itself. Public and private ports are
+separate, the private path rejects Origin-bearing clients, linked listener failures terminate the role,
+and process-local hub state is guarded by an exact-one-replica invariant.
 
-The phase remains `Active` for live runtime closure: run host-daemon and in-cluster daemon integration
-tests, build/run the real JIT workers in their lanes, and close the browser e2e Add workflow with
-daemon-returned backend/artifact metadata.
+The daemon keeps one serialized worker process per session, communicates over newline-delimited standard
+input/output, reuses a healthy worker, retries once after a worker crash or protocol failure, and clears
+the worker on timeout or shutdown. The configured request timeout applies to worker requests, not idle
+WebSocket connectivity. Haskell, Swift, C++, and CUDA workers implement `Float32` semantics; CBOR's
+float64 value is only the protocol carrier, and CUDA/runtime errors are returned as failures. Static tests
+cover precision, persistence, recovery, listener isolation, contention, generated manifests, and the
+guarded real-worker/browser workflows.
+
+Historical local-worker evidence is retained: on 2026-07-10 the guarded `AcceleratorRuntimeSpec` built
+the CUDA worker on the RTX 3090 with `nvcc -ccbin <msvc>` and returned `Right 3.75` (the then-current gate
+reported 46 demo tests). That proves the native worker path used in that run; it is not a live daemon
+socket, lifecycle, or browser-matrix result.
+
+The phase remains Active for real socket and browser closure across the in-cluster `ClusterIP` and
+host-daemon local-only `NodePort` routes, including the durable Windows GPU run and native Apple/Linux
+CPU/GPU cases. No new live `8/8` result is claimed.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/run_models.md` - the `HostDaemon`/service run-model reached via `service run`, the
-  `ServiceType` ADT, and the service-handler registry.
-- `documents/architecture/binary_context_config.md` - the service-role context and the ConfigMap-overrides-
-  baked-`<project>.dhall` delivery.
+  project-owned `ServiceType` ADT, config selector, and distinct service-handler registry.
+- `documents/architecture/binary_context_config.md` - the service-role context and dynamically generated
+  ConfigMap-overrides-baked-`<project>.dhall` delivery.
 
 **Engineering docs to create/update:**
-- `documents/engineering/cluster_lifecycle.md` - the chart pod entrypoint `service run` and its config
-  delivery.
+- `documents/engineering/cluster_lifecycle.md` - the chart pod entrypoint `service run`, exact-byte config
+  hashing, and placement-specific service delivery.
 - `documents/engineering/accelerator_daemon.md` - CBOR protocol seam, concrete WebSocket transport, and
-  worker supervision.
+  persistent worker supervision.
 
 **Cross-references to add:**
 - `README.md` CLI Surface lists `service`; `system-components.md` adds the `service` command and the

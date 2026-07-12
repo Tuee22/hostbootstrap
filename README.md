@@ -73,8 +73,9 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > **Current state.** The fixed `project`/`test`/`service`/`context`/`check-code` command surface and the
 > "chain is the project" model — the recursive `project init|up|down|destroy` lifecycle command and the
 > `chain :: cfg -> [Step]` interpreter described above — are **implemented and real-run-validated**.
-> The historical Apple-Silicon/Lima and native Incus/Linux single-variant runs reported `3/3`; current
-> two-variant runs report `6/6` on the validated lanes, including the Playwright e2e case. On native Linux
+> The historical Apple-Silicon/Lima and native Incus/Linux single-variant runs reported `3/3`; later
+> pre-accelerator two-variant runs reported `6/6` on validated lanes. The current matrix has four cases
+> across two variants and therefore closes only on `8/8`; no live `8/8` result is recorded yet. On native Linux
 > (Incus) a single `project up` drives the full lifecycle end to end, exit 0. The host-native bootstrapper,
 > the self-reference lift primitive, the single-representation demo deploy, and the project-local
 > binary-context command gate are implemented; Python derives the project name from the Cabal file and
@@ -92,12 +93,14 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > the demo UI accepts two `Float` values, the web server dispatches CBOR work over WebSocket to a separate
 > project-binary daemon, and the daemon JIT-builds and runs a real Swift/Metal, CUDA, or C++ worker
 > depending on substrate. There is no fake in-process accelerator fallback. The closure gate includes
-> integration tests for the real daemon lanes and a browser e2e test that asserts both the sum and
-> daemon-returned backend/artifact metadata. See
+> live integration evidence for the real daemon lanes. The browser test already asserts the sum,
+> Float32 rounding, and daemon-returned backend/artifact metadata. See
 > [`documents/engineering/accelerator_daemon.md`](documents/engineering/accelerator_daemon.md) and
 > [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
-> The static UI/no-fallback/codegen and daemon/direct-container context pieces are now present; lifecycle,
-> WebSocket runtime, real worker integration, and the final e2e gate remain open.
+> The config-selected service runtime, isolated public/private listeners, concrete WebSocket path,
+> persistent real-worker supervision, in-cluster daemon deployment, host-daemon lifecycle, and browser
+> assertions are implemented and statically validated. The remaining gates are live substrate runs on
+> Apple Silicon, native Linux CPU/GPU, and Windows GPU.
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same
@@ -141,10 +144,10 @@ copy-out path:
 - The Python bootstrapper ensures the host Haskell toolchain and Cabal package index (on Apple, `ghcup`
   via Homebrew; the equivalent on Linux; on Windows a PowerShell-downloaded GHCup → GHC/Cabal), builds the binary host-native into
   `./.build/<binary>`, and execs it.
-- **Headless host build for platform-locked artifacts.** On Windows the implemented shape builds
-  CUDA artifacts on the bare host (`ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC via
-  winget), stages them into the cluster, and never runs the workload in a build VM — composition pattern
-  #7, owned by [phase 3](DEVELOPMENT_PLAN/phase-3-ensure-reconcilers.md). See
+- **Host-native platform-locked artifacts.** On Windows, `ensure cudawin` readies the NVIDIA driver,
+  CUDA Toolkit, MSVC, and LLVM on the bare host. The accelerator demo then builds **and runs** its CUDA
+  worker in the host-resident daemon; it does not stage that worker into WSL2/kind. Generic build-only
+  host-artifact staging remains a separate composition pattern for consumers that need it. See
   [`documents/engineering/composition_patterns.md`](documents/engineering/composition_patterns.md).
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon, so it
@@ -190,7 +193,8 @@ nested context fields carrying the role and command authority:
 
 > **The generic project model (phase 19, § BB) — implemented.** The shape above is the **demo's** config.
 > `hostbootstrap-core` owns **no hardcoded defaults** and is parameterized over a project's own config type
-> — `ProjectSpec cfg tcfg` — coupled to core only through the lift authority (`cfg -> BinaryContext`).
+> — `ProjectSpec cfg tcfg` — coupled to core through context lift authority (`cfg -> BinaryContext`) and
+> the project-owned service selector (`cfg -> Either String String`).
 > Defaults live only in a project-owned `psInit`, which `project init` and the test harness share (DRY);
 > `<project>.test.dhall` is a thin override the harness uses to **generate** the run's `<project>.dhall`; and a pure
 > `SecretRef` vocabulary keeps a secrets-strict consumer's production configs plaintext-free. Under this
@@ -198,7 +202,7 @@ nested context fields carrying the role and command authority:
 > extra field. Phase 19 is `Done` (real-run-validated 2026-06-23: `test run all` reported `3/3 passed` from
 > a harness-generated config). The `message` line above is **implemented** — it is the **phase-20** worked
 > example (`Done`): a field on the demo's own cfg (default `"Hello, world!"`) demonstrated by a two-cluster
-> run that flows the demo `message` config → the chart ConfigMap → the `Web` service → `BudgetView.message`
+> run that flows the demo `message` config → the binary-rendered ConfigMap → the `Web` service → `BudgetView.message`
 > → the SPA `#message` and a polymorphic e2e check (`test run all` reports `6/6` across the two message
 > variants). See
 > [`documents/architecture/generic_project_model.md`](documents/architecture/generic_project_model.md),
@@ -341,9 +345,9 @@ chain and the `nvkind` cluster plan instead of provisioning the Incus VM:
 | 7 | deploy kind | VM → container | bring up the kind cluster on the VM's Docker |
 | 8 | deploy registry | container | the demo's workload step: stand up the in-cluster registry (registry:2) |
 | 9 | push image | container | the demo's workload step: load the project image into kind and push it to the in-cluster registry |
-| 10 | deploy chart | container | launch the web-service chart pod, whose entrypoint is `service run web`, on NodePort 30080 |
+| 10 | deploy chart | container | apply the exact generated service ConfigMap and launch the web pod, whose config-selected entrypoint is `service run`; public HTTP is NodePort 30080 and private daemon ingress is NodePort 30081 / container port 8081 |
 | 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
-| 12 | post-handoff accelerator hook | host | host-resident daemon startup point after ingress is reachable; currently static until live daemon process startup/transport is wired |
+| 12 | post-handoff accelerator hook | host | on Apple/Windows, start the singleton host daemon after ingress is reachable; Linux deploys the daemon in-cluster through its ClusterIP-only service |
 
 Steps 2–7, 10, 11, and 12 are core step kinds (deploy-VM, copy-source, ensure-X, build-pb, build-image,
 deploy-kind, deploy-chart, expose-port, post-handoff) — row 1 (host-pb) is the Python bootstrapper, not a `[Step]`;
@@ -381,8 +385,16 @@ hostbootstrap run -- project init \
 hostbootstrap run -- project up --dry-run   # renders chain cfg without running it
 hostbootstrap run -- project up             # interprets the chain recursively, brings up the stack
 hostbootstrap run -- context                # render the lift composition, current frame highlighted
-hostbootstrap run -- test run all           # root-gated suite against the live project up stack
 hostbootstrap run -- project destroy        # stop then delete; host .data preserved
+```
+
+The harness lifecycle is a separate alternative and must start from zero; it refuses an existing production
+config or managed stack and owns its generated config, `.test_data`, bring-up, assertions, and teardown:
+
+```bash
+cd demo
+hostbootstrap run -- test init
+hostbootstrap run -- test run all
 ```
 
 To build and run the binary directly against
@@ -394,10 +406,11 @@ cabal build                           # builds hostbootstrap-demo against ../cor
 cabal run hostbootstrap-demo -- context
 ```
 
-`service run` (the demo's `Web` service variant) is the long-running webserver role. It runs inside the
-chart-launched pod, whose ConfigMap-delivered `hostbootstrap-demo.dhall` declares a service role and the
-`Web` variant; a host-orchestrator config rejects it. The demo cfg carries a
-`message` field that flows `hostbootstrap-demo.dhall` → the chart ConfigMap → the `Web` service (whose
+`service run` has no positional variant: it reads the effective config's `ServiceType` and maps `Web` or
+`Accelerator` to an internal handler key. `Web` owns the public/private ports; `Accelerator` owns the worker
+timeout. The web handler runs inside the chart-launched pod, whose dynamically applied ConfigMap declares
+a service role and the `Web` variant; a host-orchestrator config without a service role rejects it. The demo
+cfg carries a `message` field that flows `hostbootstrap-demo.dhall` → the binary-rendered ConfigMap → the `Web` service (whose
 handler reads its config) → `BudgetView.message` → the SPA `#message` element, making `message` the
 implemented worked example (phase-20, `Done`) of a project-owned config value reaching the live workload. The integrated VM/cluster lifecycle is **not** a
 separate chain of verbs: it is the demo's contributed `[Step]` chain above, interpreted recursively by
@@ -412,25 +425,27 @@ distinct test config, runs the real `project up`, asserts the live stack, then t
 carries two test layers:
 
 - **Haskell harness** — `hostbootstrap-demo test run all` drives the demo's case matrix
-  (`pristine-bootstrap` / `web-build` / `e2e-tabs`; a single suite runs with
+  (`pristine-bootstrap` / `web-build` / `e2e-tabs` / `registry-persistence`; a single suite runs with
   `hostbootstrap-demo test run <suite>`). The harness is the **one** test engine and it *is* the chain,
   driven under a test config: per distinct test config it writes a test-specific `hostbootstrap-demo.dhall`,
   runs `project up` over the demo's own chain, runs the case assertions in the appropriate frame, and tears
-  the stack down with `project destroy` (via `finally` once bring-up succeeds, preserving host `.data`; a
-  failure *during* `project up` or an external kill is not covered — reopened phase-10/16 work). There is no
+  the stack down with `project destroy` (including failed bring-up, preserving host `.data`; an uncatchable
+  external kill is reconciled by the next idempotent lifecycle run). There is no
   separate `seamSetup` that stands a cluster up a second way — the bring-up a test exercises is the same
   chain production uses. Two fail-fast safety preconditions run before any test: the harness refuses if a
   sibling `hostbootstrap-demo.dhall` already exists (checked at `siblingProjectConfigPath`) or if a
-  production cluster is running, and it deletes only the config and `.test_data` it created. A suite may
+  production cluster is running. Probes fail closed; `SafetyRefusal` never tears down pre-existing state.
+  Generated config and `.test_data` are exclusively locked, and cleanup deletes only bytes/state the run
+  still owns while preserving replacements. A suite may
   declare **more than one config variant** and the harness stands each up,
   asserts, then tears it down in turn: the demo runs **two** variants (`"Hello, world!"` then
   `"Hello, Universe!"`), with a full `project up` → assert → `project destroy` between them, each config
   built functionally through the shared `psTestConfig` builder (reusing `psInit`, never shelling the CLI). The per-case assertions (`pristine-bootstrap` a live cluster,
   `e2e-tabs` the project image's base-provided Playwright runtime against the in-cluster webservice via its
-  NodePort, `web-build` the `spago`/`esbuild` bundle) run on the **VM's** Docker, in the frame each needs.
-  The harness recast onto `project up` is **implemented**, and `test run all` reports **`6/6`** on native
-  Incus/Linux: the three cases (`pristine-bootstrap` / `web-build` / `e2e-tabs`) run across **both** message
-  variants (`"Hello, world!"` and `"Hello, Universe!"`), 3 × 2 = 6. Every case runs in the **VM frame** —
+  NodePort, `web-build` the `spago`/`esbuild` bundle, and `registry-persistence` durable registry state) run
+  on the **VM's** Docker, in the frame each needs. Historical pre-accelerator runs reported **`6/6`** for
+  three cases across both message variants. The current four-case matrix requires a new live **`8/8`**;
+  no such result is recorded yet. Every VM-backed case runs in the **VM frame** —
   each reachability check is a pure probe folded into the VM by the self-reference lift (`incus exec <vm> --
   curl …` / `limactl shell <vm> -- curl …`), so it reaches the in-cluster NodePort whether or not the
   provider forwards the guest port to the host. See

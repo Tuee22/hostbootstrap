@@ -50,7 +50,7 @@ The surface is two subcommands:
   by an off-root-frame gate.
 
 Under the hood each suite drives `runMatrix :: Seams env -> [Case] -> IO Report` over that suite's
-case matrix. A project supplies its `Case`s and `Seams` as a non-empty `TestSuite` through
+case matrix. A project supplies its `Case`s, assertions, bring-up, and teardown as a non-empty `TestSuite` through
 `ProjectSpec` (in its `app/Main.hs`), so the cases run under `test run`, not a per-noun subcommand. The
 bare core binary ships no suites, so a bare `test run all` prints `test report: 0/0 passed`.
 
@@ -59,7 +59,7 @@ with teardown guaranteed via `finally` — bring-up now runs **inside** the `fin
 even when `project up` bring-up fails (a body exception is recorded as `Fail`, never leaked, and teardown
 still runs; the `TestSuite` teardown is an env-independent `IO ()`, and each variant is isolated so one
 failure never aborts the rest; a chain failure *during* `project up` is guarded so `applyChain` runs the
-same best-effort `project destroy` teardown at the root frame, and an external kill — still uncatchable —
+same `project destroy` teardown at the root frame, and an external kill — still uncatchable —
 is reconciled by the next `project up` idempotent reconcile), aggregates a `Report`, renders it with
 `reportCard`, and exits non-zero when `allPassed` is false. The
 driver, the self-created-only `.test_data` lifecycle (`withSelfCreatedTestData` over the flat
@@ -93,11 +93,14 @@ then `"Hello, Universe!"` — with a full teardown and spin-up between, so the `
 flow is exercised twice. There is no separate `seamSetup` that stands a cluster up a second way, so the
 test and deploy resource models cannot drift.
 
-Two **hard fail-fast safety preconditions** run before any test: the harness refuses if a config already
+Two **hard fail-closed safety preconditions** run before any test: the harness refuses if a config already
 exists at the executable-sibling `siblingProjectConfigPath` (the `.build/<project>.dhall` it is about to
 write, not the project root) so it never overwrites a production config, or if a production cluster is
-running (never touch production state). Durable test storage is `.test_data` (never `.data`); teardown
-deletes only the generated config and the `.test_data` the harness created this run, while keeping the
+running (never touch production state). A distinguished `SafetyRefusal` reports failure without teardown.
+Durable test storage is `.test_data` (never `.data`); config and data ownership directories serialize runs,
+ordinary writers honor the config lock, and teardown removes only still-owned bytes/state. A changed config
+is quarantined and reported rather than overwritten or deleted. Teardown attempts every cleanup; any
+cleanup failure fails the variant. The harness keeps the
 authored `test.dhall`. The canonical model — the lift chain as the project, the
 recursive interpreter, and the harness as a driver of that chain — lives in
 [../architecture/composition_methodology.md](../architecture/composition_methodology.md); this document
@@ -175,7 +178,7 @@ no unit-file rendering tests or real service-manager integration tests.
 - The standardized harness (`runMatrix` + `Seams`, the per-variant teardown/spin-up, the delete-guard,
   budget-slicing, and the report card) runs through `cabal test`. The fixed core tree is `project`,
   `test`, `service`, `context`, and `check-code` — the binary carries no per-project verbs; the demo
-  contributes its `Web` service variant and its VM/provider IO as chain steps. The Python bootstrapper
+  contributes its `Web`/`Accelerator` service handlers and config selector plus its VM/provider IO as chain steps. The Python bootstrapper
   suite and the `HostBootstrap.DocValidator` gate run as part of their respective code-check and test targets.
 - The `test init` / `test run <suite>|all` split is a root-frame surface backed by a sibling
   `<project>.test.dhall`. `test run all` **drives the real `project up`** under a generated config —
@@ -194,8 +197,8 @@ variant the suite declares, `test run` GENERATES that variant's `<project>.dhall
 `psTestConfig` (reusing `psInit`), checks the fail-fast existence precondition at the executable sibling
 `siblingProjectConfigPath` (`.build/<project>.dhall`, not the project root), drives the real `project up`,
 asserts the live stack — with the Playwright spec reading `EXPECTED_MESSAGE` to assert whichever `message`
-the variant set — runs `project destroy`, and finally deletes the generated `<project>.dhall` plus the
-`.test_data` it created this run while keeping the authored `test.dhall`. The demo declares two variants
+the variant set — runs `project destroy`, and finally removes only its owned config/`.test_data` while
+keeping the authored `test.dhall`; changed config bytes are quarantined. The demo declares two variants
 (`"Hello, world!"`, `"Hello, Universe!"`). See
 the [generic_project_model.md](../architecture/generic_project_model.md) design,
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and

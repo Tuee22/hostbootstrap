@@ -27,14 +27,36 @@ test("GET /api/budget returns the fitsBudget view", async ({ request }) => {
   expect(body.cpu).toBe(6);
 });
 
-test("the Accelerator tab has controls and no in-process fallback", async ({ page }) => {
+// The accelerator Add e2e (Sprint 13.17 / 18.5): polymorphic on
+// EXPECTED_ACCELERATOR_BACKEND, which `assertE2EInVM` sets to the substrate's
+// backend name ONLY after it has polled the ingress and confirmed a daemon is
+// serving. When set, the UI result must come from the real JIT-built worker —
+// the exact `Float` sum, the daemon's backend identity, and a non-empty artifact
+// hash — so a fake in-process fallback cannot pass. When unset (no daemon lane,
+// e.g. windows-cpu, or a plain code-check render), the web server must NOT
+// compute in process: it reports the no-fallback "unavailable" state.
+test("the Accelerator tab computes via the daemon (or reports no in-process fallback)", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Accelerator" }).click();
   await page.locator("#add-left").fill("1.5");
   await page.locator("#add-right").fill("2.25");
   await page.locator("#add-button").click();
-  await expect(page.locator("#add-error")).toHaveText("accelerator daemon unavailable");
-  await expect(page.locator("#add-backend")).toHaveText("unavailable");
+  const expectedBackend = process.env.EXPECTED_ACCELERATOR_BACKEND;
+  if (expectedBackend) {
+    // A daemon is connected: 1.5 + 2.25 must come back from the built worker.
+    await expect(page.locator("#add-result")).toHaveText("3.75");
+    await expect(page.locator("#add-backend")).toHaveText(expectedBackend);
+    await expect(page.locator("#add-artifact")).toHaveText(/^[0-9a-f]{16}$/);
+    // The whole API/worker chain is Float32: 2^24 + 1 rounds back to 2^24.
+    await page.locator("#add-left").fill("16777216");
+    await page.locator("#add-right").fill("1");
+    await page.locator("#add-button").click();
+    await expect(page.locator("#add-result")).toHaveText("16777216");
+  } else {
+    // No daemon: no in-process fallback — the endpoint reports unavailable.
+    await expect(page.locator("#add-error")).toHaveText("accelerator daemon unavailable");
+    await expect(page.locator("#add-backend")).toHaveText("unavailable");
+  }
 });
 
 // The polymorphic e2e (Sprint 20.4): the SPA's #message element renders the

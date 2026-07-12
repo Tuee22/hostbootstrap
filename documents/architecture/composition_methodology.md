@@ -284,7 +284,7 @@ the project image; `context inspect` renders the topology with the current frame
 A single `project up` stands up the live persistent stack end-to-end — a cordoned kind cluster (a slice within the
 budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the in-cluster
 registry (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
-pod at `localhost:30080` serving HTTP 200 via `service run web` — then `project down`/`project destroy` tear
+pod at `localhost:30080` serving HTTP 200 via config-selected `service run` — then `project down`/`project destroy` tear
 it down with host `.data` preserved.
 
 This is validated end-to-end on two of the three metal substrates:
@@ -296,9 +296,9 @@ and the managed Ubuntu-24.04 distro / in-distro Docker image build, and full end
 landed in phase-11 on 2026-07-01 (`test run all` `6/6` → `project destroy` on Windows; see
 [wsl2](../engineering/wsl2.md)).
 
-The decoupled `test run all` drives that **same** `project up`
-under the test surface and reports `6/6 passed` (three cases × two message variants) on **both**
-Apple-Silicon/Lima and native Incus/Linux. Every case — the two reachability checks and the Playwright e2e — runs in the
+The decoupled `test run all` drives that **same** `project up`. Historical evidence is `3/3` for the
+single-variant Apple-Silicon/Lima lane and pre-accelerator `6/6` for native Incus/Linux and Windows; the
+current four-case/two-variant matrix requires a fresh `8/8`. Every VM-backed case runs in the
 **VM frame**: each is a pure probe folded into the VM by the self-reference lift
 (`HostBootstrap.Lift.reachLeaf`/`liftLeaf`, the generalized `foldLeaf`), so it reaches the in-cluster
 NodePort whether or not the provider forwards the guest port to the host. This is the same single

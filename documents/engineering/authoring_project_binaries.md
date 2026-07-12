@@ -90,7 +90,7 @@ context-init    vm-orchestrator-1 (vm)             -- mint the project-container
 deploy-kind     vm-project-container-2 (container) -- bring up the persistent kind cluster (cordon #2, Production profile)
 deploy-registry vm-project-container-2 (container) -- install the in-cluster registry (registry:2, NodePort 30500)
 push-image      vm-project-container-2 (container) -- load the project image into kind and push it to the in-cluster registry
-deploy-chart    vm-project-container-2 (container) -- deploy the web service chart pod (NodePort 30080), forwarding the demo's `message` into its ConfigMap
+deploy-chart    vm-project-container-2 (container) -- apply the exact projected ConfigMap, then deploy the web pod (public 30080, private accelerator ingress)
 expose-port     vm-project-container-2 (container) -- verify the web NodePort (30080) is reachable
 ```
 
@@ -99,8 +99,8 @@ demo binary host-native (build #2), and builds the project image FROM the publis
 in the VM. The `contextInitStep` mints the project-container child `<project>.dhall`. The container steps
 stand up the persistent stack: `deployKindStep` brings up the cordoned kind cluster on the VM's Docker,
 `projectStep "deploy-registry"` and `projectStep "push-image"` are the demo's own workload kinds in the same
-list, `deployChartStep` deploys the web pod and forwards the demo's `message` field as chart extra-values
-into its ConfigMap (the `serveWeb` handler reads its delivered config and the SPA renders `message` into
+list, `deployChartStep` applies the binary-rendered child config and deploys the web pod; the exact mounted
+bytes carry `message` and are rollout-hashed (the `serveWeb` handler reads them and the SPA renders `message` into
 `#message`), and `exposePortStep` verifies the endpoint. `project up` ends at a live webservice on
 `localhost:30080`. The interpreter runs the steps in order and is restartable from any frame.
 
@@ -137,7 +137,8 @@ into the core CLI through `runHostBootstrapCLI` with `withChain`, `withFrameCont
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <suite>|all` split are real-run validated end-to-end on real
 hardware. The surface is fixed — `project` / `test` / `service` / `context` / `check-code` — so the demo
-adds no verbs: it contributes its `Web` service variant (run by `service run`; the build-time bridge that
+adds no verbs: it contributes internal `web`/`accelerator` handlers plus a project-owned `ServiceType`
+selector through `withServiceConfig` (run by positional-argument-free `service run`; the build-time bridge that
 generates the PureScript types folds into the build-image step) and its VM/provider IO as chain steps.
 `ensure` is a reconciler library composed as `ensure-*` chain steps. The single-representation doctrine holds: `demoChain` is the one
 `project up` lift sequence, and `test run all` **drives that same `project up`** under a test config rather
@@ -146,7 +147,7 @@ than standing up a separate per-case cluster.
 Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) a project supplies
 the generic `ProjectSpec cfg tcfg` seams — `psInit` (the only place defaults live), `psTestInit`,
-`psTestConfig`, and the per-frame lift-context resolver `psFrameContext` (`cfg -> StepFrame ->
+`psTestConfig`, `psServiceVariant`, and the per-frame lift-context resolver `psFrameContext` (`cfg -> StepFrame ->
 LiftContext`). The demo's `psInit` carries its own defaults, including `message =
 "Hello, world!"`, on the demo's OWN config type — core owns no project-specific field and no generic extra
 slot. `project init` and the test harness share `psInit` (DRY), so the same defaults render the production

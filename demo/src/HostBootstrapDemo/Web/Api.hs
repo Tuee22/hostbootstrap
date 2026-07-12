@@ -12,7 +12,7 @@ whether the pods fit — computed by the same canonical 'fitsBudget' the cluster
 bring-up uses, so the served value cannot disagree with the cordon. The type is
 the source the build-image bridge step reflects into PureScript (so the SPA's
 types match the API by construction) and the JSON the @web@ service handler
-(@service run web@) returns.
+(config-selected @service run@) returns.
 -}
 module HostBootstrapDemo.Web.Api (
     AcceleratorAddFailure (..),
@@ -36,14 +36,14 @@ import qualified HostBootstrap.Config.Vocab as V
 
 data AcceleratorAddRequest = AcceleratorAddRequest
     { requestId :: Text
-    , left :: Double
-    , right :: Double
+    , left :: Float
+    , right :: Float
     }
     deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data AcceleratorAddResult = AcceleratorAddResult
     { requestId :: Text
-    , result :: Double
+    , result :: Float
     , backend :: Text
     , artifactHash :: Text
     }
@@ -75,7 +75,7 @@ acceleratorBadRequest rid msg =
         , artifactHash = ""
         }
 
-mkAcceleratorAddRequest :: Text -> Double -> Double -> AcceleratorAddRequest
+mkAcceleratorAddRequest :: Text -> Float -> Float -> AcceleratorAddRequest
 mkAcceleratorAddRequest rid leftVal rightVal =
     AcceleratorAddRequest
         { requestId = rid

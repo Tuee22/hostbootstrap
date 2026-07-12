@@ -41,23 +41,25 @@ the same fractal bootstrap — provision the frame, build the pb in it, hand off
 the Python bootstrapper is the metal-frame instance.
 
 The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18)
-landed and is code-check-validated; the 2026-07-05 cross-substrate reliability reopening is closed (see
-below), while phase 16 is reopened again only for the 2026-07-09 accelerator lifecycle work. Phases 13 and
-15 were briefly reopened for the **in-place child-config
-delivery** refinement (below) and are now **closed `Done`** (2026-07-02). The command surface is **fixed** to `project` / `test` / `service` /
+landed and is code-check-validated; its 2026-07-02 in-place-delivery and 2026-07-05 cross-substrate
+reopenings closed successfully. The later accelerator reopening makes phases **3, 5, 13, 15, 16, and 18
+`Active`** until their live substrate gates run; phases 14 and 17 remain `Done`. The command surface is
+**fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
 (§ W); the declared budget is the **one ceiling = the VM wall** with the cluster a **slice within it** (no
 doubling, § O); each `<project>.dhall` carries an explicit, possibly multi-role context (`project init
 --also-role`, § X); and long-running roles run through the `service` command (§ AA). It is code-check- and
-real-run-validated: `cabal test all` (226, phase-close snapshot), `cabal build all --ghc-options=-Werror`,
+real-run-validated historically: `cabal test all` (226, phase-close snapshot), `cabal build all --ghc-options=-Werror`,
 fourmolu/hlint on the demo, and the Python gate are green. The **full `project up` lifecycle runs end-to-end on both native
 Incus/Linux and a 16 GiB Apple-Silicon host** — the live stack serves HTTP 200 (the web pod running
-`service run web`), with the in-cluster registry step switched from the 8-pod Harbor stack to a
-single-binary `registry:2` (Sprint 13.16 closed). `test run all`
-reports **`6/6 passed`** on current runs (three cases x two message variants; phase 20 added the second
-message variant); the **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and native Incus/Linux
-(2026-06-21) are pre-phase-20 historical snapshots: every
+config-selected `service run` with the `Web` variant), with the in-cluster registry step switched from the 8-pod Harbor stack to a
+single-binary `registry:2` (Sprint 13.16 closed). The last completed pre-accelerator `test run all` gates
+report **`6/6 passed`** (three cases x two message variants; phase 20 added the second message variant).
+The current harness has four cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, and
+`registry-persistence`) across those two variants, so the next full gate must report **`8/8 passed`**; no
+live `8/8` result is recorded yet. The **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and
+native Incus/Linux (2026-06-21) are pre-phase-20 historical snapshots: every
 case (incl. the two reachability checks and the Playwright e2e) runs in the **VM frame** via the
 self-reference lift, so it reaches the in-cluster NodePort regardless of whether the provider forwards the
 guest port to the host (see
@@ -120,8 +122,8 @@ superseded surfaces moved to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md); after the Phase 16 post-handoff and direct-chain additions,
-`cabal test all` from `core/` reports 328 core tests.
+[system-components.md](system-components.md): the 2026-07-11 static gate reports 357 core tests and 83
+demo tests (plus the demo run's embedded 357-test core suite).
 
 Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
 and pushing the multi-GB project image are release/demo operations, not open phase work. See
@@ -132,7 +134,7 @@ for the component inventory.
 surfaced a systemic class of **race conditions, resource conflicts, and cleanup gaps** in cross-substrate
 spin-up + tests (Windows/WSL2, Apple/Lima, Linux/Incus), and several governed docs asserted guarantees the
 code did not uphold. **Phases 5, 9, 10, 11, and 16 were temporarily reopened** (alongside phase 13) —
-**all now closed `Done`, real-run-validated `6/6`; see the Update below** — each with a `## Remaining Work`
+**all closed for that reopening, real-run-validated `6/6`; see the historical update below** — each with a `## Remaining Work`
 section owning its slice: node/CNI readiness + kind health-check (5);
 host-headroom preflight, budget-scaled slice, `.wslconfig` merge, cross-substrate disk preflight (9);
 teardown-on-bring-up-failure, spatial test isolation, the in-VM safety probe (10); network-aware VM-ready
@@ -142,10 +144,10 @@ real-run gate. The registry:2 `kind load`
 pre-load removed by the fix is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-**Update (2026-07-05, CLOSED `Done`).** All six reopened phases' reliability code fixes landed, are
+**Historical update (2026-07-05, CLOSED `Done`).** All six reopened phases' reliability code fixes landed, were
 code-check-validated (`cabal build all --ghc-options=-Werror` + `cabal test all` **core 292** from `core/`;
 the demo `-Werror` build + demo/core suites **14 + 292** from `demo/`; the Python `ruff`/`black`/`mypy` gate),
-and are now **real-run-closed (§ C)**: a decoupled Windows/WSL2 `hostbootstrap-demo test run all` — run as a
+and were **real-run-closed (§ C)**: a decoupled Windows/WSL2 `hostbootstrap-demo test run all` — run as a
 Windows Scheduled Task so a harness stop could not abort it — reported **`test report: 6/6 passed`**
 (`REALRUN_EXIT=0`) across both message variants (`pristine-bootstrap`/`web-build`/`e2e-tabs` ×
 `"Hello, world!"`/`"Hello, Universe!"`). The run exercised every fix end-to-end on both bring-ups: the
@@ -153,39 +155,60 @@ Windows Scheduled Task so a harness stop could not abort it — reported **`test
 (`docker daemon ready`), the node/CNI readiness gate (`nodes Ready`), the metal host-headroom preflight + the
 reserve-free in-VM slice cordon (`docker update … --memory-swap` 2× the RAM cap), `deploy-registry` +
 `push-image` (single-binary `registry:2`), the web service at `localhost:30080`, the guaranteed harness
-teardown, and `project destroy` restoring `.wslconfig` with host `.data` preserved. **Phases 5, 9, 10, 11,
-13, and 16 are `Done`.** Three fixes-to-the-fixes the real run surfaced were caught and closed on the way (a
+teardown, and `project destroy` restoring `.wslconfig` with host `.data` preserved. **At that reliability
+closure, phases 5, 9, 10, 11, 13, and 16 were `Done`;** the accelerator reopening later made 5, 13, and 16
+`Active` again. Three fixes-to-the-fixes the real run surfaced were caught and closed on the way (a
 truncated source-staging `tar`; a docker-poll shell-quoting break through the Windows PowerShell→`wsl`→`bash`
 path, moved to Haskell; and a host-reserve wrongly applied to the in-VM slice, split into a metal-only
 preflight).
 
-**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phase 2 is closed; phases **3, 5,
-13, 15, 16, and 18 are `Active`** for a real accelerator generalization of the demo. The demo UI will accept two `Float`
-values, dispatch an asynchronous CBOR WebSocket request to a separate project-binary daemon, and render the
-daemon's result. The daemon is the same project binary in every placement: Apple Silicon runs a host-native
-Swift/Metal worker; Linux GPU skips the Incus VM, launches an `nvkind` cluster directly on the host, and
-runs a CUDA daemon pod from the CUDA base; Linux CPU keeps the Incus VM and runs a C++/clang daemon pod from
-the CPU base; Windows GPU runs a host-native CUDA worker. No fake in-process accelerator may satisfy the
-feature. Closure requires static protocol/codegen tests, integration tests that build and run the real
-worker in each lane, and a browser e2e test that fills the add UI, waits for the asynchronous result, and
-asserts daemon-returned backend/artifact metadata. See
+**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phase 2 is closed. Phase 3's
+Apple/Windows build-stack slice is closed, but Phase 3 remains `Active` for Sprint 3.7; phases **5, 13, 15,
+16, and 18 are also `Active`**. Implementation and static validation are complete across all six. The UI
+accepts two `Float` values, dispatches an asynchronous CBOR WebSocket request to a separate project-binary
+daemon, and renders the result plus backend/artifact metadata. The daemon is the same project binary in
+every placement: Apple Silicon and Windows GPU build and run it host-native; Linux CPU/GPU deploy it
+in-cluster, with Linux GPU skipping Incus for the direct `nvkind` path. No fake in-process accelerator can
+satisfy the browser assertion. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 
-Phase 3 has now closed the locally available Apple Silicon smoke gate: on 2026-07-10 an M1 Max host built
-the core with `cabal build all --ghc-options=-Werror` and `ensure apple-metal` reported
-`present (no-op)`. It remains `Active` only for the Windows GPU CudaWin smoke run.
+Phase 3's Apple/Windows accelerator build-stack slice is closed. On 2026-07-10 an M1 Max host built the core with `cabal build all
+--ghc-options=-Werror` and `ensure apple-metal` reported `present (no-op)`. The Windows GPU gate closed the
+same day on an RTX 3090 host: the hardened `ensure cudawin` installed the missing LLVM component, resolved
+CUDA 13.3 and Visual Studio VCTools through `vswhere`, compiled its `nvcc -ccbin` smoke artifact, and
+reported `present (no-op)`. Phase 3 is
+temporarily `Active` again (2026-07-11) for Sprint 3.7: `ensure cuda` must converge and verify the exact
+default-runtime/CDI/volume-mount device-injection contract consumed by `nvkind`, rather than accepting a
+merely registered Docker runtime. That implementation bootstraps NVIDIA's signed stable apt source/keyring,
+configures Docker with `nvidia-ctk runtime configure --runtime=docker --set-as-default --cdi.enabled`,
+enables `accept-nvidia-visible-devices-as-volume-mounts=true`, and verifies the official `/dev/null` device-
+injection smoke. The current `-Werror` static gate passes with all 357 core tests; a Linux GPU host must
+still prove the reconciler's verified no-op.
 
-Static and local runtime slices have landed for Phases 5, 13, 15, 16, and 18: Linux GPU
-cluster/exposure planning is implemented in core, the demo has the Accelerator tab and typed accelerator
-API records, the web service has a no-in-process-fallback CBOR WebSocket daemon ingress, the daemon can
-build/reuse workers and connect over a concrete WebSocket transport, the context layer has daemon/direct-
-container authority, and the lifecycle layer has post-handoff hooks, Linux GPU direct-chain selection, and
-Apple/Windows host-daemon start/stop scaffolding. The remaining open work is real host/in-cluster daemon
-integration, real worker build/run validation across the unavailable substrate lanes, Linux CPU/GPU live
-daemon connectivity, and browser e2e closure. Phase 18's runtime seam is implemented and unit-tested:
-`service run accelerator`, CBOR codecs/correlation, transport-injected reconnect/timeout/shutdown, and the
-concrete WebSocket transport path. The locally available Apple worker smoke also passed on 2026-07-10: the
-daemon helper built/reused the Swift/Metal worker and returned `Right 3.75` for `1.5 + 2.25`.
+The completed static implementation includes explicit placement configs, the direct Linux GPU
+control-plane + labelled-worker topology, split cordons, exact NVIDIA runtime probing, idempotent device
+plugin readiness/allocatable gates, CUDA-base/`--gpus=all` handoff, and a one-GPU daemon request. The real
+Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator AcceleratorServiceConfig`, and
+`withServiceConfig` dispatches `service run` without a positional variant. The web server links distinct
+public 8080 and private accelerator 8081 listeners, uses separate Service target ports, propagates either
+listener's failure, refuses public WebSocket upgrade to the private route, returns 503 when its single
+daemon is busy, and never computes an in-process fallback.
+
+The demo dynamically renders and applies web/daemon ConfigMaps from the validated parent topology, hashes
+the exact mounted bytes to roll subPath-mounted pods, and deploys/rollout-waits Linux CPU/GPU daemon
+Deployments that dial the distinct accelerator `ClusterIP`. Apple/Windows run the daemon from a host-native
+project-binary build with strict pid/owner/executable/argv identity, a shutdown sentinel, and no inherited
+output streams. Workers are persistent and use `Float32` semantics end to end; guarded coverage includes
+`2^24 + 1 -> 2^24`. A historical guarded gate built and ran CUDA on an RTX 3090
+(`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
+The Playwright Add assertion and fail-closed harness safety (`SafetyRefusal`, exclusive config ownership,
+direct-cluster detection, guarded cleanup, teardown verification) are implemented.
+
+The current 2026-07-11 gate is fourmolu/hlint/`-Werror` clean and passes **357 core + 83 demo tests**. Only
+honest live closure remains: run the implemented four-case/two-variant matrix on the current host-daemon
+lane and the unavailable Apple Silicon / native Linux CPU / native Linux GPU hardware. The harness expects
+`8/8`; no live `8/8` is recorded, and the latest completed live result remains the historical
+pre-accelerator `6/6` gate.
 
 ## Phases
 

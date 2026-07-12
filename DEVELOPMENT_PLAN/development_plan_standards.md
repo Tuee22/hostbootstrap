@@ -210,7 +210,7 @@ by `hostbootstrap-core`.
 that simply isn't installed.** Each host dependency is an idempotent `ensure` reconciler — a
 host-applicability predicate plus a reconcile action — exposed to projects as library primitives
 (`ensureDocker`, `ensureColima`, `ensureLima`, `ensureCuda`, `ensureCudaWin`, `ensureWsl2`,
-`ensureHomebrew`, `ensureGhc`, `ensureIncus`, and planned accelerator build-stack reconcilers such as
+`ensureHomebrew`, `ensureGhc`, `ensureIncus`, and the accelerator build-stack reconciler
 `ensureAppleMetal`) and as `ensure-*` step kinds composed into the lift chain. There is no
 top-level `ensure` command and there are no hidden commands. A reconcile action **installs** the dependency if absent and is a verified no-op if
 present (install-and-verify, not check-only), so an absent-but-installable dependency is **installed,
@@ -218,14 +218,20 @@ never a hard stop**. The **only** hard fail-fast surface in the entire system is
 host minimums (§ M) — the irreducible host floor that cannot be auto-installed. The *one* fail-fast
 inside the `ensure` suite is a reconciler run on the **wrong host** (an applicability misuse, e.g.
 the CudaWin reconciler on a Windows host without a GPU) — a one-line diagnostic and a non-zero exit — which is a misuse error, **not**
-an absent dependency; the two must never be conflated. `ensure incus` is the first reconciler applicable
+an absent dependency; the two must never be conflated. NVIDIA device/driver visibility is part of
+substrate detection: without a working `nvidia-smi`, a host is not classified as `linux-gpu` or
+`windows-gpu`, so the GPU reconciler rejects that substrate rather than claiming it can install a driver
+for hardware it cannot yet identify. Once a GPU substrate is established, its installable toolchain
+dependencies are reconciled normally. `ensure incus` is the first reconciler applicable
 on **both** apple-silicon and linux — on Apple it prepares the Colima-backed Incus provider for explicit
 Incus workflows, and on Linux it initializes the native daemon that encapsulates a fresh linux host (§ U).
 The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
-drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path;
-GPU-specific cluster tooling (`nvkind`) is the candidate a GPU consumer or the mid-layer
-(`daemon-substrate`) contributes via the extension-stream merge (§ T). The accelerator-daemon demo keeps
+drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path. The worked
+accelerator demo's CUDA base also carries `nvkind`; Phase 5 owns that cluster driver as an L0 lifecycle
+primitive, and the project selects it only for the explicit Linux GPU direct-container topology. Future
+project-specific GPU tools can still be contributed by a consumer or mid-layer (`daemon-substrate`)
+through the extension-stream merge (§ T). The accelerator-daemon demo keeps
 the same boundary: Apple Silicon and Windows GPU host daemons run host `ensure` for the Swift/Metal or
 CUDA build stack, while Linux CPU/GPU daemon pods do **not** run in-container ensure and instead trust the
 published hostbootstrap base image to contain `clang++` or `nvcc`. The `ensure` reconcilers are normally
@@ -288,8 +294,9 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
   base image) once it is running — the workload image and the mandatory code-check quality gate. The
   Python layer neither ensures Docker nor builds the container (§ M).
 - On Windows, CUDA is a **build-only host capability** — the **headless host build** (composition
-  pattern #7): `ensure cudawin` readies the NVIDIA driver, CUDA Toolkit, and MSVC; nvcc artifacts are
-  produced on the bare Windows host and staged into the cluster, and no workload runs in a build VM. On
+  pattern #7): NVIDIA device/driver visibility establishes the `windows-gpu` substrate, then `ensure
+  cudawin` readies the CUDA Toolkit, MSVC VCTools, and LLVM clang; nvcc artifacts are produced on the bare
+  Windows host and staged into the cluster, and no workload runs in a build VM. On
   native Windows GHC `System.Info.os` is `mingw32`, so the core's POSIX-only `unix` dependency is
   conditionalized at its three call sites to build the binary host-native.
 - Inside a managed Linux VM (§ U) the same host-native build applies — Lima on Apple Silicon,
@@ -347,8 +354,10 @@ introspection command and `check-code`. There are **no per-project verbs**: `hos
 CLI topology, so a project never adds a command. A project extends the core only through the
 **extension streams** carried by `ProjectSpec`: its **lift chain** (`chain :: cfg -> [Step]`, § Y),
 the **Dhall vocabulary**, the **schema-gen** `ConfigArtifact` registry, the **test seams** (a non-empty
-test suite), and the **service handlers** (the `ServiceType` registry, possibly empty, § AA) — alongside
-the project `check-code` action. The entrypoint validates those extension points before parser
+test suite), and the **service runtime seam**: a possibly empty `ServiceRegistry` of handler keys plus the
+project-owned `psServiceVariant :: cfg -> Either String String` projection attached with
+`withServiceConfig` (§ AA). The Dhall `ServiceType` ADT lives in the project's `cfg`; it is not the
+handler registry. These streams sit alongside the project `check-code` action. The entrypoint validates those extension points before parser
 construction: duplicate cases/artifacts/service variants are rejected, the test suite must be non-empty,
 and `check-code` is supplied by construction rather than silently defaulted. `ProjectSpec` carries **no**
 `ProjectCommand` deltas — the surface is closed (see
@@ -404,14 +413,15 @@ each: the **lift chain** (`chain :: cfg -> [Step]` — the level below's host-ma
 with the project's own step kinds appended, interleaved and interpreted by the core `project` lifecycle,
 § Y); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen**
 `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test-harness** `Seams`
-(threaded through a non-empty `TestSuite`); and the **service handlers** (the `ServiceType` registry
-dispatched by `service run`, possibly empty, § AA). A project integrates in one of two modes: freeze-import
+(threaded through a non-empty `TestSuite`); and the **service runtime seam** (an additive, possibly empty
+`ServiceRegistry` of handlers plus the final project's `psServiceVariant` projection from its Dhall
+`ServiceType` ADT, § AA). A project integrates in one of two modes: freeze-import
 + the base-image `LABEL`/`ENTRYPOINT` contract (no Cabal dependency), or `source-repository-package` + the
 `runHostBootstrapCLI` extension. The system runs one of four **run-models** — `OneShot` (one-shot
 `docker run`), `HostNative` (host-native build + host exec), `HostDaemon`/service (a long-running role,
-reached via `service run` as a leaf-frame pod entrypoint that the chain's `deploy-chart` step deploys,
-§ AA), `Cluster` (kind+Helm) — selected within `project up`'s step interpretation (and, for the service
-leaf, by the running pod's service-role config) by `(step × detected-substrate × library-layer ×
+reached via `service run` as a leaf-frame service or daemon entrypoint, either controller-managed in a pod
+or lifecycle-managed on the host, § AA), `Cluster` (kind+Helm) — selected within `project up`'s step
+interpretation (and, for a service leaf, by its local service-role config) by `(step × detected-substrate × library-layer ×
 generated-topology)`, never declared imperatively.
 
 ### U. Host-Provider Axis And The Self-Reference Lift
@@ -566,9 +576,14 @@ parameters.
 - `project down` — stop service controllers and provider VMs without deleting durable host state. VM
   frames use the provider **stop** operation (incus/Lima **stop**, not destroy); at the kind-cluster frame,
   `down` deletes the kind cluster while preserving `.data`, because kind has no reliable stop/restart
-  contract. Best-effort and idempotent so a partial stack always tears down.
+  contract. Best-effort and idempotent means every independent cleanup is attempted and any failures are
+  aggregated and reported; it never means silently swallowing cleanup failure.
 - `project destroy` — `down`, then delete everything that was spun up. Durable host `.data` is **always
   preserved** (the never-delete-`.data` invariant, § O).
+
+A normal root-frame `project up` failure runs the same delete teardown before it reports failure. A
+distinguished `SafetyRefusal`, however, means a post-ensure ownership probe discovered pre-existing
+operator state: automatic teardown is forbidden because the run never acquired that state.
 
 The **Step algebra** is the reuse unit: `hostbootstrap-core` ships the host-management step kinds
 (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, deploy-kind, deploy-chart,
@@ -597,9 +612,15 @@ second cluster-bring-up path.
 Two **hard fail-fast safety preconditions** are checked before *any* test runs, so a test never interferes
 with production: (1) a sibling `<project>.dhall` already exists → refuse (never overwrite a production
 config); (2) a production cluster is running → refuse (never touch production state). If either holds, **no
-tests run**. Teardown removes **only** the `<project>.dhall` and the `.test_data` durable directory the
-harness *created this run* — never a config or data directory it found (the delete-guard mirrors the
-never-delete-`.data` invariant, § O); test durable storage is always `.test_data`, never `.data`.
+tests run**. A later ownership probe may raise `SafetyRefusal`; that refusal is reported as a failed
+variant and deliberately skips teardown of state the harness did not create. Generated config and
+`.test_data` ownership are claimed with exclusive sibling lock directories. Cooperative ordinary config
+writers honor the config lock, and cleanup removes the generated config only when the ownership token is
+still present and its bytes still match; a replacement is preserved and reported. Teardown removes
+**only** the `<project>.dhall` and `.test_data` the harness created this run — never a config or data
+directory it found (the delete-guard mirrors the never-delete-`.data` invariant, § O); test durable storage
+is always `.test_data`, never `.data`. A teardown failure makes the variant fail rather than producing a
+green report with leaked state.
 
 `context` is a **read-only** command that treats **every** `<project>.dhall` uniformly: it introspects the
 explicit context and renders the global compositional sequence of lifts (`topologyFrames` / `parentChain`)
@@ -617,22 +638,28 @@ subcommand.
 - `service init` — writes a service-configured `<project>.dhall` from passed parameters (forwarded from a
   parent where applicable, § X).
 - `service schema` — prints the service config schema (reflected from the decoder so it cannot drift, § Q).
-- `service run` — runs the selected role. There is **no `service down`**: a service's lifetime is owned by
-  its Kubernetes controller (a `StatefulSet`/`Deployment`) and torn down by `project destroy` (§ Y).
+- `service run` — loads the effective config and runs its selected role. There is no positional variant
+  argument. There is **no `service down`**: lifetime is owned by the enclosing Kubernetes controller or
+  host project lifecycle and torn down by `project down` / `project destroy` (§ Y).
 
 `service run` is a **leaf-frame runtime command, never an orchestrator**: it assumes it is already placed
-in its frame (typically a k8s pod) and runs the role; it brings up no VM or cluster. It **fails fast**
+in its frame (a k8s pod or host daemon) and runs the role; it brings up no VM or cluster. It **fails fast**
 unless the effective `<project>.dhall` declares a **service role** and a valid **service variant** (the
 same gate discipline as `project`/`test`, § X). A binary defines **more than one** service type through a
-Dhall **ADT** (`ServiceType = < Web : … | WorkloadOrchestrator : … >`, with arbitrary per-variant
+Dhall **ADT** (`ServiceType = < Web : … | Accelerator : … >`, with arbitrary per-variant
 parameters); the project contributes the matching **service handlers** as a registry threaded through
-`ProjectSpec` (§ P, § T), and `service run` dispatches on the variant. The registry **may be empty** — the
+`ProjectSpec` with `withServices` and projects the effective `cfg` to a handler key with
+`withServiceConfig`. `service run` loads that config once for selection and dispatches to the selected
+handler; a missing, placement-invalid, or unknown variant fails before the handler runs. The registry **may be empty** — the
 fixed surface is unchanged and `service run` simply fails fast when no service is configured, so not every
 project ships a service.
 
 `project up` and `service` **compose, they do not overlap**: the chain's `deploy-chart` step deploys the
 pod whose entrypoint is `service run`, and the pod's config arrives as a **ConfigMap that overrides the
-image's baked container `<project>.dhall`** (§ X). `project up` *deploys* the service; `service run` *is*
+image's baked container `<project>.dhall`** (§ X). The project may render that ConfigMap dynamically from
+the validated parent-derived projection and fingerprint the exact mounted bytes on the pod template so a
+config change rolls the workload; a hand-maintained chart copy is not a second config authority.
+`project up` *deploys* the service; `service run` *is*
 the service. A project's long-running workload is therefore a service variant reached through this fixed
 command, not a per-project verb (the former demo `web serve` / `web bridge` verbs are dissolved — `web
 serve` → `service run` (`Web` variant); `web bridge` → the build-image chain step; see
@@ -654,9 +681,10 @@ listed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
   field fails the strict Dhall decode **before any side effect** (no `//`-merge, no `fromMaybe` in decode).
 - **Generic over the config type.** The extension contract is `ProjectSpec cfg tcfg`, parameterized over a
   project's config type `cfg` (its `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core
-  couples to `cfg` **only** through the lift authority — `cfg -> BinaryContext` and
-  `BinaryContext -> cfg -> cfg`. `ProjectConfig` / `Resources` / `DeployConfig` become the demo's concrete
-  instance, not core types.
+  couples to `cfg` through the `ProjectCfg` lift authority — `cfg -> BinaryContext` and
+  `BinaryContext -> cfg -> cfg` — plus explicit command-specific projections such as
+  `psServiceVariant :: cfg -> Either String String`; core still owns none of the projected field shapes.
+  `ProjectConfig` / `Resources` / `DeployConfig` become the demo's concrete instance, not core types.
 - **The resource budget is a provider concern (refines § O).** Budget/VM-cordoning is a field of a
   project's `cfg` carried by a provider lift (the demo's Lima/Incus wall), **not** a universal config
   field. A secrets-strict, RKE2/EKS-sized consumer carries no VM budget at all. § O's "one ceiling = the VM

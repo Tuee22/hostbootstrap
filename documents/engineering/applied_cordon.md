@@ -15,6 +15,8 @@
 - The ceiling is held by three rings of defense in depth: the compile ring (a Dhall `assert`), the
   bring-up ring (the pure `verifyBudget` / `fitsBudget` preflight), and the runtime ring (the applied
   VM and kind-node caps).
+- Multi-node clusters consume the cluster envelope once. Lifecycle splits it across the declared node
+  list and caps every node; the explicit `nvkind` topology is one control-plane plus one GPU worker.
 - Storage is cordoned per substrate and carries no `docker update` flag, so it is omitted from the
   kind-node argv while remaining in `verifyBudget`.
 
@@ -35,8 +37,10 @@ and [resource budgeting](resource_budgeting.md) for the budget field itself.
 ### Why One Parser
 
 One canonical `parseQuantity` decodes every quantity, and one arg-builder family (`colimaSizingArgs`,
-`limaSizingArgs`, `kindNodeCordonArgs`, `incusSizingArgs`, `wsl2SizingArgs`) emits the complete sizing
+`limaSizingArgs`, `kindNodeCordonArgsFor`, `incusSizingArgs`, `wsl2SizingArgs`) emits the complete sizing
 for every substrate (an argv for the VM/node providers; the `.wslconfig` `[wsl2]` body for WSL2).
+`HostBootstrap.Cluster.Lifecycle.clusterNodeCordonArgs` composes the node builder over the concrete node
+list after splitting the one cluster envelope.
 The Python bootstrapper builds no sizing argv. Because every interpreter is the same parser, the VM
 sizing and the Haskell-verified budget agree, and the one declared number is the one enforced ceiling.
 
@@ -98,13 +102,20 @@ preflight; the pure source mapping and live Apple `sysctl` read are unit-tested.
 
 The runtime ring is the cap actually applied to the live substrate.
 
-On Linux, `kindNodeCordonArgs clusterName resources` emits
-`docker update --cpus N --memory <bytes> --memory-swap <bytes> <clusterName>-control-plane`.
-`HostBootstrap.Cluster.Lifecycle`'s `applyLinuxCordon` applies it fail-closed AFTER `kind create` (and
-the kubeconfig export) and BEFORE Helm. `--memory-swap == --memory`, so an over-budget cluster
-self-limits instead of swapping past its ceiling. `<clusterName>` is the resolved `ClusterPlan` name, so
-a test cluster (the harness's `project up` under the Test profile) is cordoned the same way — to its slice
-within the VM wall.
+On Linux, `ClusterPlan` owns the explicit node suffixes. A kind plan has `control-plane`; the demo's
+`NvkindDriver` plan has `control-plane` and `worker`, matching `nvkind-in-cluster.yaml`. Lifecycle's
+`clusterNodeCordonArgs` parses the one cluster envelope, divides CPU, memory bytes, and storage bytes by
+the node count with integer floors, and refuses the plan if any dimension is smaller than that count.
+Flooring guarantees the combined node shares never exceed the declared slice; giving both nvkind nodes
+the full slice would double-count it.
+
+For each concrete name, `kindNodeCordonArgsFor` emits
+`docker update --cpus N --memory <bytes> --memory-swap <bytes> <node>`. `applyLinuxCordon` runs every argv
+fail-closed after kind/nvkind create (and kubeconfig export) and before workload deployment.
+`--memory-swap == --memory`, so no node can swap past its share. Storage is included in the split and
+positive-share gate but omitted from `docker update`, which has no storage flag. The resolved
+`ClusterPlan` profile supplies the names, so the harness's Test cluster is split and capped by the same
+path as Production.
 
 On Apple, a Lima VM sized by `limaSizingArgs` is the cordon — the substrate lift sizes the Lima VM to
 the budget, so the VM boundary, not a host-side kind-node cap, is the first cordon. The parallel
@@ -128,8 +139,9 @@ difference. See [wsl2](wsl2.md) for the provider detail.
 
 ## Per-Substrate Storage Cordon
 
-Storage carries no `docker update` flag, so it is dropped from the `kindNodeCordonArgs` argv. It is
-kept in `verifyBudget`, so the bring-up ring still checks the declared storage against the resolved capacity.
+Storage carries no `docker update` flag, so it is dropped from each `kindNodeCordonArgsFor` argv. It is
+kept in `verifyBudget` and in the multi-node split/minimum-share check, so the bring-up ring still checks
+the declared storage against the resolved capacity.
 Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |
@@ -154,6 +166,11 @@ launch — is implemented, unit-tested, and real-run-closed by
 `test run all` (`6/6`) → `project destroy` Windows lifecycle, closed 2026-07-01. The development plan
 for the pure parser/builder surface and the capacity predicate is
 [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
+
+The later explicit nvkind control-plane/worker topology and all-node envelope split are unit-validated
+in the current static baseline (357 core tests and 83 demo tests). That evidence does not replace the
+Phase-5 real-host gate: Phase 5.5 remains Active until pristine and warm Linux CPU/GPU runs prove the
+caps are applied to the live node containers.
 
 ## See Also
 

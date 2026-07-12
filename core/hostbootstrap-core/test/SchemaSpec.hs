@@ -5,6 +5,7 @@ module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import Fixture (
     DeployConfig (..),
     ProjectConfig (..),
@@ -21,8 +22,11 @@ import Fixture (
 import HostBootstrap.Config.Schema (
     parseConfigRole,
     projectConfigSnapshotHash,
+    removeProjectConfigFileIfOwned,
     renderProjectConfigSnapshotLog,
     validateProjectConfigForProject,
+    writeProjectConfigFile,
+    writeProjectConfigFileExclusive,
  )
 import HostBootstrap.Context (
     BinaryContext (..),
@@ -36,8 +40,9 @@ import HostBootstrap.Context (
     commandAllowed,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
-import System.Directory (doesFileExist, getCurrentDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeDirectory, removeFile)
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -182,6 +187,26 @@ tests =
             assertBool "path is logged" ("configPath=/run/demo.dhall" `T.isInfixOf` line)
             assertBool "hash is logged" (("configHash=" <> hash) `T.isInfixOf` line)
             assertBool "config content is not logged" (not ("secret" `T.isInfixOf` line))
+        , testCase "generated config ownership is exclusive and preserves replacements" $ do
+            tmp <- getTemporaryDirectory
+            (path, handle) <- openTempFile tmp "hostbootstrap-owned-config.dhall"
+            hClose handle
+            removeFile path
+            ownership <- writeProjectConfigFileExclusive path expected
+            ordinary <- try (writeProjectConfigFile path expected) :: IO (Either SomeException ())
+            assertBool "ordinary config writers must honor the ownership token" (isLeft ordinary)
+            second <- try (writeProjectConfigFileExclusive path expected >> pure ()) :: IO (Either SomeException ())
+            assertBool "exclusive creation must not overwrite an existing path" (isLeft second)
+            TIO.writeFile path "replacement\n"
+            removal <- removeProjectConfigFileIfOwned path ownership
+            assertBool "a replacement must be preserved" (isLeft removal)
+            let lockPath = path ++ ".hostbootstrap-test-owner"
+                quarantined = lockPath </> "payload"
+            doesFileExist path >>= (@?= False)
+            doesDirectoryExist lockPath >>= (@?= True)
+            TIO.readFile quarantined >>= (@?= "replacement\n")
+            removeFile quarantined
+            removeDirectory lockPath
         ]
   where
     badTypeConfig =

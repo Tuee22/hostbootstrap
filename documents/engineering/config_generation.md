@@ -119,8 +119,8 @@ off `pb project up` into the next frame (the VM, then the project container). Th
 delivered **in-place**: it is streamed into the child frame over the lift's `stdin` channel, and the
 descending binary writes it to its own sibling `<project>.dhall` before dispatch — only the narrowed
 projection crosses (never the parent's full config), on `stdin` only, with no host-side config file and no
-config bind-mount for the VM/container frames (the Kubernetes service pod keeps its ConfigMap override,
-§ AA). The same pure generation
+config bind-mount for the VM/container frames. Kubernetes service/daemon pods receive the same projected
+value through project-binary-rendered ConfigMaps; the exact mounted bytes are rollout-hashed (§ AA). The same pure generation
 code that `project init` uses projects the child from the parent:
 
 - it keeps the project settings the child needs;

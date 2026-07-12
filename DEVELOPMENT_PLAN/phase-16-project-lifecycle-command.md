@@ -67,7 +67,7 @@ that skips the Incus VM.
 
 ## Remaining Work
 
-**Accelerator lifecycle work — open.**
+**Accelerator lifecycle work — implementation complete; live gates open.**
 
 - Done statically: `HostBootstrap.Step.PostHandoff` / `postHandoffStep` and the `HostBootstrap.Chain`
   pre/post split run host-frame post-handoff hooks only after the recursive child frame returns
@@ -76,20 +76,23 @@ that skips the Incus VM.
 - Done statically: the demo now selects `demoChainFor` by detected substrate. `linux-gpu` skips the Incus VM
   and uses a direct host -> project-container chain with the Phase 15 direct Linux GPU context and the
   Phase 5 `NvkindDriver` plan; `linux-cpu` keeps the existing Incus VM-backed chain.
-- Done locally: Apple Silicon and Windows GPU host-daemon start/stop scaffolding is implemented in the
-  demo post-handoff hook. It stops an existing pid-file daemon, copies the current project binary into
-  `.build/accelerator-daemon/`, writes a daemon-authority sibling config, starts
-  `service run accelerator` with `HOSTBOOTSTRAP_ACCELERATOR_WS_URL`, records the pid, and best-effort stops
-  that pid from `project down`/`project destroy` through resolved host tools (`kill` or PowerShell).
-- Wire in-cluster Linux CPU/GPU daemon pod startup using the Phase 18 concrete WebSocket transport and the
-  Phase 5 `ClusterIP` ingress plan.
+- Done statically: Apple Silicon and Windows GPU use a host-native project-binary build and run path. The
+  post-handoff hook copies that host-native binary into `.build/accelerator-daemon/`, writes its
+  daemon-authority sibling config, and launches config-selected `service run` with
+  `HOSTBOOTSTRAP_ACCELERATOR_WS_URL`. Process ownership is fail-closed: strict pid parsing, an owner marker,
+  exact executable-plus-argv identity, a shutdown sentinel, no inherited output streams, singleton
+  replacement, and idempotent teardown are unit-tested.
+- Done statically: the Linux CPU and Linux GPU chains generate/apply their daemon ConfigMap, deploy and
+  rollout-wait an in-cluster daemon Deployment that dials the web service's distinct accelerator
+  `ClusterIP`, and fingerprint config bytes for rollout. The GPU workload requests one
+  `nvidia.com/gpu`.
 
-Validation completed for the static slice: `cabal build all --ghc-options=-Werror` and `cabal test all`
-from `core/` pass (328 tests); the demo `-Werror` build passes; `cabal test all` from `demo/` passes (44
-demo tests plus the embedded 328 core tests after the Phase 18 concrete WebSocket/reconnect tests).
-Remaining validation: real process lifecycle runs proving the host daemon connects through the local-only
-NodePort, in-cluster daemon pod startup, and integration/e2e tests proving the daemon serves the UI add
-request.
+Current validation (2026-07-11): `cabal build all --ghc-options=-Werror` and `cabal test all` pass from
+`core/` (357 tests); the demo `-Werror` build and test run pass with 83 demo tests plus the embedded
+357-core suite. Remaining work is only real execution: prove the host daemon connects through the
+local-only NodePort, prove the native Linux CPU/GPU daemon Deployments connect through `ClusterIP`, and run
+the implemented browser Add assertion as part of the four-case/two-variant `8/8` gate. No live `8/8`
+result is recorded yet.
 
 **Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
 
@@ -443,10 +446,20 @@ accelerator ingress exists and stopped during teardown.
 
 #### Remaining Work
 
-Static hook ordering, the direct Linux GPU chain, and host-daemon start/stop scaffolding are landed.
-Validation: core `-Werror` build and 328 tests; demo `-Werror` build and 44 demo tests plus embedded 328
-core tests. Open for real host-daemon process integration on Apple/Windows, in-cluster Linux CPU/GPU
-daemon pod startup, and integration/browser e2e closure.
+Implementation and static validation are complete. Hook ordering and chain selection are covered; the
+Apple/Windows host path builds and runs the project binary host-native, writes the daemon projection, and
+launches config-selected `service run` only after `expose-port`. Its singleton lifecycle uses strict pid
+parsing, an owner marker, exact executable-plus-argv identity, a shutdown sentinel, and no inherited output
+streams, so stale or unrelated processes are never killed. The Linux CPU/GPU
+`deploy-accelerator-daemon` step applies the dynamic daemon ConfigMap, deploys and rollout-waits the daemon
+workload dialing the distinct accelerator `ClusterIP`, and requests one GPU on the GPU lane. Config hashes
+roll subPath-mounted pods. The Windows worker path resolves the generated `.exe`, and build-#3 failures
+stream their captured output. Current static validation is 357 core + 83 demo tests.
+
+Open only for real-run closure (§ C): execute the host-daemon lifecycle through the local-only NodePort,
+execute the native Linux CPU/GPU in-cluster deployments, and run the implemented browser Add assertion in
+the full four-case/two-variant harness. The unavailable native Linux and Apple lanes prevent closure; no
+live `8/8` result has replaced the historical pre-accelerator `6/6` result.
 
 ## Documentation Requirements
 

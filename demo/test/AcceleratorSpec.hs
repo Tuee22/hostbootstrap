@@ -41,6 +41,14 @@ sourceCases =
         assertText "__global__ void hostbootstrap_add" (workerSource LinuxGpuBackend)
     , testCase "CUDA source includes the runtime API header" $
         assertText "#include <cuda_runtime.h>" (workerSource LinuxGpuBackend)
+    , testCase "all workers implement single-precision Float semantics" $ do
+        assertText "float left" (workerSource LinuxCpuBackend)
+        assertText "float left" (workerSource LinuxGpuBackend)
+        assertText "Float(parts[0])" (workerSource AppleMetalBackend)
+    , testCase "CUDA worker fails closed on runtime errors" $ do
+        assertText "CUDA_CHECK(cudaMalloc" (workerSource LinuxGpuBackend)
+        assertText "CUDA_CHECK(cudaGetLastError())" (workerSource LinuxGpuBackend)
+        assertText "CUDA_CHECK(cudaDeviceSynchronize())" (workerSource LinuxGpuBackend)
     , testCase "C++ source performs the worker add outside the web server" $
         assertText "std::cin >> left >> right" (workerSource LinuxCpuBackend)
     ]

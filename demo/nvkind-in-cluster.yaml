@@ -1,0 +1,27 @@
+# Production nvkind template for the direct Linux GPU lane. It follows
+# nvkind's default one-GPU-worker shape, adds the demo's public host mappings to
+# the control plane, and deliberately omits accelerator port 30081 because the
+# CUDA daemon dials the dedicated ClusterIP Service.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30500
+        hostPort: 30500
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+      - containerPort: 30080
+        hostPort: 30080
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+      - containerPort: 30900
+        hostPort: 30900
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+  - role: worker
+    labels:
+      nvidia.com/gpu.present: "true"
+    extraMounts:
+      - hostPath: /dev/null
+        containerPath: /var/run/nvidia-container-devices/all

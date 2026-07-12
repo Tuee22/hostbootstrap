@@ -270,7 +270,7 @@ The test harness obeys the same authority rules without a distinct lifted "TestH
 runs the **real `project up`** under a harness-generated root config, so its assertions execute in the
 normal host/VM/container frames the chain mints. A suite may declare **more than one config variant**; the
 harness stands each up, asserts, and tears it down in turn (the demo runs `message = "Hello, world!"` then
-`message = "Hello, Universe!"`, with the `message` flowing `<project>.dhall` → chart `ConfigMap` → the
+`message = "Hello, Universe!"`, with the `message` flowing `<project>.dhall` → binary-rendered `ConfigMap` → the
 `Web` service → the SPA `#message`, and the Playwright e2e-tabs assertion polymorphic over the exported
 `EXPECTED_MESSAGE`). Two preconditions protect production before any test runs — the harness refuses if the
 executable-sibling `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall`) already

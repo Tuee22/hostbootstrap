@@ -23,10 +23,10 @@ module HostBootstrap.Command (
 )
 where
 
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, fromException, mask)
 import Control.Exception.Safe (finally, try)
 import Control.Monad (unless, when)
-import Data.List (find, intercalate)
+import Data.List (find, intercalate, isInfixOf)
 import qualified Data.Text as T
 import qualified Dhall
 import HostBootstrap.Chain (renderChain, runChainFromFrame)
@@ -42,9 +42,11 @@ import HostBootstrap.Config.Schema (
     configRoleNames,
     parseConfigRole,
     projectConfigFileName,
+    removeProjectConfigFileIfOwned,
     siblingProjectConfigPath,
     withSiblingProjectConfigContext,
     writeProjectConfigFile,
+    writeProjectConfigFileExclusive,
  )
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
@@ -63,7 +65,7 @@ import qualified HostBootstrap.Ensure.Homebrew as Homebrew
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
-import HostBootstrap.Harness (ConfigVariant (..), TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection)
+import HostBootstrap.Harness (ConfigVariant (..), SafetyRefusal (..), TestSuite, allCasesSelector, allPassed, reportCard, runSuiteSelection, safetyRefusalMarker)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Lift (LiftContext, currentSelfRef)
 import HostBootstrap.Service (ServiceRegistry, lookupServiceHandler, serviceRun, serviceVariantNames)
@@ -71,7 +73,7 @@ import HostBootstrap.Step (Step, StepFrame)
 import HostBootstrap.Substrate (detect)
 import Numeric.Natural (Natural)
 import Options.Applicative
-import System.Directory (doesFileExist, removeFile, withCurrentDirectory)
+import System.Directory (doesFileExist, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
@@ -114,6 +116,7 @@ coreCommands ::
     TestSuite ->
     IO () ->
     ServiceRegistry ->
+    (cfg -> Either String String) ->
     (cfg -> [Step]) ->
     (cfg -> StepFrame -> LiftContext) ->
     (cfg -> Bool -> IO ()) ->
@@ -121,11 +124,11 @@ coreCommands ::
     (InitArgs -> tcfg) ->
     (tcfg -> IO [(T.Text, cfg)]) ->
     [Mod CommandFields (IO ())]
-coreCommands progName projectArtifacts suite checkCode services chain frameCtx teardown initBuilder testInit testConfig =
+coreCommands progName projectArtifacts suite checkCode services selectService chain frameCtx teardown initBuilder testInit testConfig =
     [ contextCommand @cfg progName projectArtifacts initBuilder
     , projectCommandGroup progName chain frameCtx teardown initBuilder
     , testCommand @cfg @tcfg progName suite initBuilder testInit testConfig
-    , serviceCommandGroup progName services initBuilder
+    , serviceCommandGroup progName services selectService initBuilder
     , checkCodeCommand @cfg progName checkCode
     ]
 
@@ -211,10 +214,14 @@ testCommand progName suite _initBuilder testInit testConfig =
         let variantFor (label, cfg) =
                 ConfigVariant
                     { variantLabel = label
-                    , variantWithConfig = \body -> do
-                        writeProjectConfigFile cfgPath cfg
-                        putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack label ++ ")")
-                        body `finally` removeGeneratedConfig cfgPath
+                    , variantWithConfig = \body ->
+                        mask $ \restore -> do
+                            ownedPayload <- restore (writeProjectConfigFileExclusive cfgPath cfg)
+                            restore
+                                ( putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack label ++ ")")
+                                    >> body
+                                )
+                                `finally` removeGeneratedConfig cfgPath ownedPayload
                     }
         outcome <- runSuiteSelection suite (map variantFor labeledCfgs) selector
         case outcome of
@@ -222,9 +229,9 @@ testCommand progName suite _initBuilder testInit testConfig =
             Right report -> do
                 putStr (reportCard report)
                 unless (allPassed report) (die "test: one or more cases failed")
-    removeGeneratedConfig cfgPath = do
-        present <- doesFileExist cfgPath
-        when present (removeFile cfgPath)
+    removeGeneratedConfig cfgPath ownedPayload = do
+        removed <- removeProjectConfigFileIfOwned cfgPath ownedPayload
+        either die pure removed
 
 {- | The defaultless @init@ flag bundle the @test init@ / harness path uses: no
 output/source-root/role overrides, so the project's builder supplies all
@@ -547,8 +554,13 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
         outcome <- try (runChainFromFrame cfg self (frameCtx projectCfg) current (chain projectCfg))
         case outcome of
             Right (Right ()) -> pure ()
-            Right (Left err) -> failChain cfg projectCfg ctx err
-            Left (exc :: SomeException) -> failChain cfg projectCfg ctx (show exc)
+            Right (Left err)
+                | safetyRefusalMarker `isInfixOf` err -> die err
+                | otherwise -> failChain cfg projectCfg ctx err
+            Left (exc :: SomeException) ->
+                case fromException exc of
+                    Just (SafetyRefusal reason) -> die (safetyRefusalMarker ++ " " ++ reason)
+                    Nothing -> failChain cfg projectCfg ctx (show exc)
     -- Run the best-effort `project destroy` teardown at the root frame, then die.
     failChain cfg projectCfg ctx reason = do
         when (null (Context.parentChain ctx)) $ do
@@ -574,37 +586,53 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     runDown =
         withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
-            withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx))
-            teardown projectCfg False
+            runTeardownAll
+                [ ("cluster down", withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx)))
+                , ("project frame teardown", teardown projectCfg False)
+                ]
     runDestroy =
         withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
-            withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx))
-            teardown projectCfg True
+            runTeardownAll
+                [ ("cluster delete", withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+                , ("project frame teardown", teardown projectCfg True)
+                ]
+    runTeardownAll actions = do
+        outcomes <- mapM runOne actions
+        let failures = [label ++ ": " ++ show err | (label, Left err) <- outcomes]
+        unless (null failures) $
+            die ("project teardown attempted every cleanup step but failed:\n" ++ unlines (map ("  - " ++) failures))
+      where
+        runOne (label, effect) = do
+            outcome <- try effect :: IO (Either SomeException ())
+            pure (label, outcome)
 
 {- | The @service@ lifecycle command (§ AA): the third DSL-driven core command,
 for a project's long-running roles (the @HostDaemon@/service run-model). @init@
 writes a service-configured @<project>.dhall@; @schema@ prints the service config
-schema (the in-scope artifact union, § Q) and the registered variants; @run
-\<variant\>@ runs the selected role. There is **no @service down@** — a service's
+schema (the in-scope artifact union, § Q) and the registered variants; @run@
+loads the effective project config and runs its selected role. There is **no
+@service down@** — a service's
 lifetime is owned by its Kubernetes controller and torn down by @project
 destroy@ (§ Y).
 
 @service run@ is a **leaf-frame runtime command, never an orchestrator**: the
 context gate refuses it unless the effective @<project>.dhall@ declares a service
 role (the 'Context.ServiceCommand' class, which only the @cluster-service@ /
-@daemon@ leaf contexts allow), so a host/VM/container orchestrator config — or a
-missing config — fails fast. It then dispatches on the variant; an unknown
-variant or an empty registry fails fast.
+  @daemon@ leaf contexts allow), so a host/VM/container orchestrator config — or a
+  missing config — fails fast. It then reads the variant from the project's
+  Dhall-owned service config; an absent/unknown variant or empty registry fails
+  fast. There is no variant CLI argument.
 -}
 serviceCommandGroup ::
     forall cfg.
     (ProjectCfg cfg) =>
     String ->
     ServiceRegistry ->
+    (cfg -> Either String String) ->
     (InitArgs -> cfg) ->
     Mod CommandFields (IO ())
-serviceCommandGroup progName registry initBuilder =
+serviceCommandGroup progName registry selectService initBuilder =
     command
         "service"
         ( info
@@ -624,13 +652,8 @@ serviceCommandGroup progName registry initBuilder =
         command
             "run"
             ( info
-                (runServiceRun <$> variantArg)
-                (progDesc "Run the named service variant (leaf-frame; needs a service-role config)")
-            )
-    variantArg =
-        strArgument
-            ( metavar "VARIANT"
-                <> help "service variant to run (one of the project's registered variants)"
+                (pure runServiceRun)
+                (progDesc "Run the config-selected service variant (leaf-frame; needs a service-role config)")
             )
     runSchema = do
         putStrLn "service variants:"
@@ -640,8 +663,9 @@ serviceCommandGroup progName registry initBuilder =
         putStrLn ""
         putStrLn "-- <project>.dhall (service-config schema, reflected from the decoder)"
         putStrLn (T.unpack (projectCfgSchemaText @cfg))
-    runServiceRun variant =
-        gate @cfg progName Context.ServiceCommand [] $
+    runServiceRun =
+        withSiblingProjectConfigContext (T.pack progName) Context.ServiceCommand [] $ \(projectCfg :: cfg) _ -> do
+            variant <- either (die . ("service run: " ++)) pure (selectService projectCfg)
             case lookupServiceHandler variant registry of
                 Just handler -> serviceRun handler
                 Nothing ->

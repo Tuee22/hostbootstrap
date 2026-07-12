@@ -20,7 +20,8 @@ extends the core only through the parallel extension streams threaded into its
     test config and asserts against the live stack, then @project destroy@
     (the harness owns no second bring-up path, § W);
   * the **service-handler registry** — 'demoServices' registers the long-running
-    @web@ role @service run web@ dispatches to (§ AA).
+    @web@ and @accelerator@ handler keys selected from the config's @ServiceType@
+    when @service run@ executes (§ AA).
 
 The former @incus@ / @vm@ provider verbs are dissolved: their IO is retained as
 the chain-step library functions 'runVmEnsure' / 'runVmUp' / 'runVmBootstrap'
@@ -33,11 +34,26 @@ Incus.
 module HostBootstrapDemo.Commands (
     demoChain,
     demoChainFor,
+    containerPlan,
     demoFrameContext,
+    demoTestFrameContext,
     demoTeardown,
     demoArtifacts,
     demoCheckCode,
     demoCases,
+    hostAcceleratorDaemonProcess,
+    hostAcceleratorSubstrate,
+    hostDaemonIdentityMatches,
+    readHostAcceleratorDaemonPid,
+    acceleratorDaemonManifest,
+    acceleratorHelmValuesForContext,
+    renderServiceConfigForContext,
+    serviceConfigMapManifest,
+    validateAcceleratorReplicaCount,
+    demoBaseImageFor,
+    demoDeployImage,
+    directClusterPresence,
+    directClusterTeardownArgs,
     demoServices,
     demoTestSuite,
     demoVM,
@@ -47,10 +63,13 @@ module HostBootstrapDemo.Commands (
 )
 where
 
-import Control.Exception (SomeException, finally, try)
+import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
+import Data.Char (isDigit, isSpace, toLower)
 import Data.List (intercalate, isInfixOf)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (
@@ -60,18 +79,32 @@ import HostBootstrap.Cluster.Cordon (
     preflightHostBudget,
     resolveHostCapacity,
  )
-import HostBootstrap.Cluster.Lifecycle (ClusterPlan (..), ClusterProfile (Production), clusterCreate, deployChart, resolveAcceleratorPlan, resolvePlan)
-import HostBootstrap.Config.Schema (siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
+import HostBootstrap.Cluster.Lifecycle (
+    AcceleratorDaemonPlacement (..),
+    AcceleratorIngressPlan (..),
+    ClusterDriver (NvkindDriver),
+    ClusterPlan (..),
+    ClusterProfile (Production),
+    acceleratorIngressPlan,
+    clusterCreate,
+    clusterNodeNames,
+    deployChart,
+    resolvePlan,
+    resolvePlanWithDriver,
+ )
+import HostBootstrap.Config.Schema (projectConfigSnapshotHash, renderProjectConfigSnapshotLog, siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
-import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin)
+import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin, toolPresent)
+import qualified HostBootstrap.Ensure.Cuda as EnsureCuda
+import qualified HostBootstrap.Ensure.Docker as EnsureDocker
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
-import HostBootstrap.Harness (Case (..), CaseResult (..), TestSuite (..), testSafetyPreconditions)
+import HostBootstrap.Harness (Case (..), CaseResult (..), SafetyRefusal (..), TestSuite (..), safetyRefusalMarker, testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
@@ -108,7 +141,7 @@ import HostBootstrap.Step (
     postHandoffStep,
     projectStep,
  )
-import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
+import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
     ExistsProbe (..),
     HostEffect (..),
@@ -122,28 +155,32 @@ import HostBootstrap.Substrate.Provider (
     vmShellArgs,
  )
 import HostBootstrap.Wsl2 (Wsl2VM (..), mergeWslConfig)
-import HostBootstrapDemo.Accelerator.Daemon (serveAcceleratorDaemon)
+import HostBootstrapDemo.Accelerator (backendName)
+import HostBootstrapDemo.Accelerator.Daemon (acceleratorBackendForSubstrate, serveAcceleratorDaemon)
 import HostBootstrapDemo.Config (
     DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
+    ServiceType (Web),
+    WebServiceConfig (WebServiceConfig),
     demoCaseIds,
     demoDefaultResources,
     envelopeOfResources,
     projectConfigFromContext,
-    renderDhallText,
     renderProjectConfig,
  )
 import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
-import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, removeFile, renameFile, setPermissions, withCurrentDirectory)
-import System.Environment (getEnvironment, getExecutablePath, setEnv)
+import Numeric.Natural (Natural)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (takeDirectory, (</>))
-import System.IO (hPutStr, stderr)
-import System.Process (CreateProcess (env), createProcess, getPid, proc, readProcessWithExitCode)
+import System.IO (hFlush, hPutStr, stderr, stdout)
+import System.Process (CreateProcess (env, std_err, std_in, std_out), StdStream (NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
+import System.Timeout (timeout)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
 for a static tab).
@@ -225,18 +262,20 @@ demoCases =
 demoProject :: String
 demoProject = "hostbootstrap-demo"
 
-{- | The demo's deploy: a contributed @chain :: ProjectConfig -> [Step]@ value the
-core @project up@ interprets recursively (§ Y). @project up --dry-run@ renders it.
-The chain descends three frames (the full fractal): the metal host-orchestrator
-provisions the VM and builds the pb (#2) + the project image (#3) in it; the in-VM
-@vm-orchestrator-1@ mints the project-container child config and hands off; the
-in-container @vm-project-container-2@ stands up the persistent stack —
-@deploy-kind@ → @deploy-minio@ → @deploy-registry@ → @push-image@ → @deploy-chart@ → @expose-port@ —
-ending at a live webservice on the NodePort. Each frame's binary runs only its
-own segment, then hands off @project up@ one level down via 'demoFrameContext'.
+{- | The VM-backed persistent stack shared by the Apple/Windows host-daemon chain
+('demoChain') and the Linux CPU in-cluster-daemon chain ('demoLinuxCpuChain') — a
+contributed @chain :: ProjectConfig -> [Step]@ value the core @project up@ interprets
+recursively (§ Y; @project up --dry-run@ renders it). It descends three frames (the
+full fractal): the metal host-orchestrator provisions the VM and builds the pb (#2) +
+the project image (#3); the in-VM @vm-orchestrator-1@ mints the project-container child
+config and hands off; the in-container @vm-project-container-2@ stands up the persistent
+stack (@deploy-kind@ → @deploy-minio@ → @deploy-registry@ → @push-image@ →
+@deploy-chart@ → @expose-port@), ending at a live webservice on the NodePort. The two
+chains differ ONLY in how the accelerator daemon is placed (host-resident vs.
+in-cluster), appended after this stack.
 -}
-demoChain :: ProjectConfig -> [Step]
-demoChain _ =
+demoVmBackedStack :: [Step]
+demoVmBackedStack =
     -- host-orchestrator-0 (metal): provision the VM, build the pb (#2) + image (#3) in it.
     [ deployVMStep "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (const runVmEnsure)
     , deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const runVmUp)
@@ -250,13 +289,57 @@ demoChain _ =
     , projectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame pushImageAction
     , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame deployChartAction
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame exposeAction
-    , postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame startHostAcceleratorDaemonAction
     ]
 
+{- | The Apple Silicon / Windows GPU chain: the VM-backed stack plus a HOST-resident
+accelerator daemon started after the web ingress is exposed. The host daemon reaches
+the in-VM cluster's local-only accelerator ingress because Lima and WSL2 forward the
+guest NodePort to the host loopback (Incus does not — hence Linux CPU uses an
+in-cluster pod, 'demoLinuxCpuChain'; accelerator_daemon.md § Cluster Exposure).
+-}
+demoChain :: ProjectConfig -> [Step]
+demoChain _ =
+    demoVmBackedStack
+        ++ [postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame startHostAcceleratorDaemonAction]
+
+{- | The Linux CPU chain: the same VM-backed stack, but the accelerator daemon runs
+as an IN-CLUSTER pod that dials the web service over ClusterIP — because Incus does
+not forward the guest NodePort to the host, a host-resident daemon could not reach
+the in-VM cluster. The pod is the CPU-base project image, whose @clang++@ builds the
+C++ worker (accelerator_daemon.md § Substrate Matrix).
+-}
+demoLinuxCpuChain :: ProjectConfig -> [Step]
+demoLinuxCpuChain _ =
+    demoVmBackedStack
+        ++ [projectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame deployAcceleratorDaemonAction]
+
+{- | Select the demo's chain. The chain shape must be a pure function of the ROOT
+parameters (§ Y): a WSL2 VM on a Windows GPU host detects @linux-gpu@ through GPU
+passthrough, and an Incus/Lima VM detects @linux-cpu@/@apple@ — so a nested frame's
+pb that re-derived the chain from its OWN locally detected substrate would build a
+frame-incompatible chain (e.g. the VM-less direct @linux-gpu@ chain, whose frames
+lack @vm-orchestrator-1@, under a metal handoff that targets @vm-orchestrator-1@),
+failing the recursive interpreter's frame check with no output. So only the ROOT
+(metal, empty @parentChain@) frame chooses the chain from the locally detected
+substrate; a nested frame recovers the shape the root chose from the topology
+providers forwarded in its config — the VM-orchestrator frame's provider
+(Wsl2/Lima ⇒ the host-daemon VM-backed chain, Incus ⇒ the in-cluster Linux CPU
+chain) or, with no VM-orchestrator frame, the direct Linux GPU chain.
+-}
 demoChainFor :: Substrate -> ProjectConfig -> [Step]
-demoChainFor sub
-    | substrateName sub == LinuxGpu = demoLinuxGpuChain
-    | otherwise = demoChain
+demoChainFor sub cfg
+    | not (null (Context.parentChain ctx)) = nestedChain cfg
+    | substrateName sub == LinuxGpu = demoLinuxGpuChain cfg
+    | substrateName sub == LinuxCpu = demoLinuxCpuChain cfg
+    | substrateName sub == WindowsCpu = demoVmBackedStack
+    | otherwise = demoChain cfg
+  where
+    ctx = context cfg
+    providers = map Context.topologyProvider (Context.topologyFrames ctx)
+    nestedChain
+        | Context.IncusVMProvider `elem` providers = demoLinuxCpuChain
+        | Context.Wsl2VMProvider `elem` providers || Context.LimaVMProvider `elem` providers = demoChain
+        | otherwise = demoLinuxGpuChain
 
 demoLinuxGpuChain :: ProjectConfig -> [Step]
 demoLinuxGpuChain _ =
@@ -268,6 +351,7 @@ demoLinuxGpuChain _ =
     , projectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame pushImageAction
     , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame deployChartAction
     , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame exposeAction
+    , projectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame deployAcceleratorDaemonAction
     ]
 
 demoMetalFrame :: StepFrame
@@ -317,6 +401,7 @@ containerConfigPayload cfg =
             (dockerfile cfg)
             (deploy cfg)
             (message cfg)
+            (service cfg)
             (Context.deriveContainerContext (context cfg) (T.pack containerSourceRoot))
         )
 
@@ -327,6 +412,7 @@ directContainerConfigPayload cfg =
             (dockerfile cfg)
             (deploy cfg)
             (message cfg)
+            (service cfg)
             (Context.deriveLinuxGpuContainerContext (context cfg) (T.pack containerSourceRoot))
         )
 
@@ -341,6 +427,15 @@ demoVMFrameContext sub =
     case selectSubstrateProvider sub demoStaticVMHandles of
         Right sp -> LiftContext [spLiftLayer sp]
         Left _ -> localContext
+
+{- | Assertions run where the production NodePorts are published: in the
+provider VM for VM-backed lanes, directly on the host for Linux GPU's
+VM-less nvkind lane.
+-}
+demoTestFrameContext :: Substrate -> LiftContext
+demoTestFrameContext sub
+    | substrateName sub == LinuxGpu = localContext
+    | otherwise = demoVMFrameContext sub
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): the project-container child
 @<project>.dhall@ is now streamed in-place into the container over the handoff
@@ -367,8 +462,47 @@ contextInitDirectAnnounce _ =
 Production profile (fixed name + the never-deleted @.data@ path, § O), rooted at
 the container's source root.
 -}
-containerPlan :: HostConfig -> Context.BinaryContext -> ClusterPlan
-containerPlan cfg ctx = resolveAcceleratorPlan demoProject (T.unpack (Context.sourceRoot ctx)) Production (hcSubstrate cfg)
+containerPlan :: Context.BinaryContext -> ClusterPlan
+containerPlan ctx =
+    basePlan{clusterConfigFile = Just configFile}
+  where
+    root = T.unpack (Context.sourceRoot ctx)
+    placement = acceleratorPlacementForContext ctx
+    basePlan
+        | Context.isExplicitLinuxGpuContainer ctx =
+            resolvePlanWithDriver demoProject root Production NvkindDriver
+        | otherwise = resolvePlan demoProject root Production
+    configFile
+        | Context.isExplicitLinuxGpuContainer ctx = "nvkind-in-cluster.yaml"
+        | placement == InClusterDaemon = "kind-in-cluster.yaml"
+        | otherwise = "kind.yaml"
+
+{- | Daemon placement is recovered from the validated topology, never from a
+nested frame's local substrate detection (a WSL2 VM can itself see the GPU).
+-}
+acceleratorPlacementForContext :: Context.BinaryContext -> AcceleratorDaemonPlacement
+acceleratorPlacementForContext ctx
+    | Context.isExplicitLinuxGpuContainer ctx = InClusterDaemon
+    | Context.IncusVMProvider `elem` providers = InClusterDaemon
+    | otherwise = HostResidentDaemon
+  where
+    providers = map Context.topologyProvider (Context.topologyFrames ctx)
+
+acceleratorHelmValuesForContext :: ProjectConfig -> Context.BinaryContext -> [(T.Text, T.Text)]
+acceleratorHelmValuesForContext projectCfg ctx =
+    [ ("service.port", T.pack (show publicPort'))
+    , ("service.accelerator.type", T.pack (ingressServiceType ingress))
+    , ("service.accelerator.port", T.pack (show (ingressServicePort ingress)))
+    , ("service.accelerator.targetPort", T.pack (show (ingressServicePort ingress)))
+    ]
+        ++ maybe [] (\nodePort -> [("service.accelerator.nodePort", T.pack (show nodePort))]) (ingressNodePort ingress)
+  where
+    serviceCfg = projectConfigForServiceContext projectCfg ctx
+    WebServiceConfig publicPort' acceleratorPort' =
+        case service serviceCfg of
+            Just (Web params) -> params
+            _ -> error "projectConfigForServiceContext did not produce a Web service config"
+    ingress = acceleratorIngressPlan (acceleratorPlacementForContext ctx) (fromIntegral acceleratorPort') 30081
 
 {- | Container-frame (@vm-project-container-2@) workload step actions. They run in
 the project container, where the VM's Docker socket is mounted (kind nodes are
@@ -385,7 +519,7 @@ deployKindAction _ = demoContext Context.ClusterLifecycleCommand [] $ \ctx -> do
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
     -- full budget — the budget is used once, as the VM wall (cordon #1).
     slice <- either die pure (clusterSliceOfBudget (resourcesFromContext ctx))
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan cfg ctx) (envelopeOfResources slice))
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterCreate cfg (containerPlan ctx) (envelopeOfResources slice))
 
 {- | The in-cluster OCI registry image: the single-binary, natively multi-arch
 CNCF @distribution@ registry. Because it ships one multi-arch manifest, it runs on
@@ -750,7 +884,7 @@ pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
     -- registry (the capability the demo demonstrates). A @localhost@ registry is
     -- insecure-by-default in Docker, and @registry:2@ is anonymous, so the HTTP
     -- NodePort needs no @docker login@ and no TLS.
-    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan cfg ctx)]
+    runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan ctx)]
     let ref = registryEndpoint ++ "/library/hostbootstrap-demo:demo"
     -- Poll GET /v2/ on the registry NodePort from this frame, minting the
     -- `Ready RegistryServing` witness `pushImageBlob` requires: the tag-and-push
@@ -817,20 +951,71 @@ pushImageBlob _serving cfg ref = do
     backoffNote _ = putStrLn "push-image: transient registry error; retrying after backoff"
     emitProgress out = unless (null out) (putStr out)
 
-{- | @deploy-chart@: install the web chart pod, templating the chart's embedded
-config from the live config's served @message@ (Sprint 20.2). The message is
-forwarded to helm as the generic @demoMessage@ extra-value (with the deploy's @haReplicas@ replica count forwarded alongside it); the ConfigMap template
-interpolates it into the pod's mounted @<project>.dhall@, so @service run web@
-reads the same message the host config carried, end to end.
+{- | Render the service projection from the actual validated parent topology.
+This replaces the chart's former hand-written Lima-only context: Incus, WSL2,
+and the direct Linux GPU topology now produce their own correct providers,
+parents, frame id, and witness.
+-}
+renderServiceConfigForContext :: ProjectConfig -> Context.BinaryContext -> (T.Text, T.Text)
+renderServiceConfigForContext projectCfg parentCtx =
+    ( renderProjectConfig serviceCfg
+    , Context.currentFrame serviceCtx
+    )
+  where
+    serviceCtx = Context.deriveServiceContext parentCtx (Context.sourceRoot parentCtx)
+    serviceCfg = projectConfigForServiceContext projectCfg parentCtx
+
+projectConfigForServiceContext :: ProjectConfig -> Context.BinaryContext -> ProjectConfig
+projectConfigForServiceContext projectCfg parentCtx =
+    projectConfigFromContext
+        (dockerfile projectCfg)
+        (deploy projectCfg)
+        (message projectCfg)
+        (service projectCfg)
+        (Context.deriveServiceContext parentCtx (Context.sourceRoot parentCtx))
+
+serviceConfigMapManifest :: T.Text -> String
+serviceConfigMapManifest serviceConfig =
+    unlines
+        [ "apiVersion: v1"
+        , "kind: ConfigMap"
+        , "metadata:"
+        , "  name: " ++ demoProject ++ "-config"
+        , "data:"
+        , "  hostbootstrap-demo.dhall: |"
+        ]
+        ++ indentBlock 4 serviceConfig
+
+{- | @deploy-chart@: derive and apply the web service's ConfigMap from the live
+parent context, then install the chart. The service frame and a stable config
+fingerprint are Helm values so the pod witness is exact and a changed config
+rolls the Deployment even though the ConfigMap is applied outside Helm.
 -}
 deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    let extraValues =
-            [ ("demoMessage", renderDhallText (message projectCfg))
-            , ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
+    either die pure (validateAcceleratorReplicaCount (haReplicas (deploy projectCfg)))
+    let (serviceConfig, serviceFrame) = renderServiceConfigForContext projectCfg ctx
+        extraValues =
+            [ ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
+            , ("service.currentFrame", serviceFrame)
+            , ("service.configHash", projectConfigSnapshotHash (configMapMountedText serviceConfig))
             ]
-    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan cfg ctx) extraValues)
+                ++ acceleratorHelmValuesForContext projectCfg ctx
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (serviceConfigMapManifest serviceConfig)
+    withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
+
+{- | The accelerator hub is process-local, so requests and the daemon connection
+must meet in one web pod. Reject an HA value that would make routing
+nondeterministic instead of deploying a topology that only works by chance.
+-}
+validateAcceleratorReplicaCount :: Natural -> Either String ()
+validateAcceleratorReplicaCount 1 = Right ()
+validateAcceleratorReplicaCount actual =
+    Left
+        ( "deploy-chart: accelerator routing requires exactly one web replica; configured haReplicas="
+            ++ show actual
+        )
 
 exposeAction :: HostConfig -> IO ()
 exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
@@ -838,43 +1023,190 @@ exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
     unless ready (die "expose-port: the web NodePort 30080 did not become reachable on the host")
     putStrLn "expose-port: web service reachable at http://localhost:30080/"
 
+{- | @deploy-accelerator-daemon@ (Linux CPU/GPU): deploy the accelerator daemon as an
+IN-CLUSTER pod rather than a host-resident process. Apple/Windows run the daemon on
+the host because Lima/WSL2 forward the guest NodePort so a host daemon can dial the
+local-only ingress; Incus does not forward guest ports, so the Linux daemon runs
+inside the cluster and dials the web service over its ClusterIP (accelerator_daemon.md
+§ Cluster Exposure). The pod is the project image running @service run@ with an
+@Accelerator@ config;
+its daemon-role @<project>.dhall@ is delivered as a ConfigMap overriding the baked
+container config (§ X / § AA), and @HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ points at the
+web ClusterIP accelerator port. Runs in the container frame (where @kubectl@
+resolves), the peer of @deploy-chart@.
+-}
+deployAcceleratorDaemonAction :: HostConfig -> IO ()
+deployAcceleratorDaemonAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
+    cfg <- resolveHostConfig
+    let daemonCtx = Context.deriveClusterDaemonContext ctx (Context.sourceRoot ctx)
+        gpuDaemon = Context.isExplicitLinuxGpuContainer ctx
+        daemonConfig =
+            renderProjectConfig
+                (projectConfigFromContext (dockerfile projectCfg) (deploy projectCfg) (message projectCfg) (service projectCfg) daemonCtx)
+        frame = T.unpack (Context.currentFrame daemonCtx)
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig)
+    pollRolloutOrDie
+        cfg
+        rolloutPoll
+        "deploy-accelerator-daemon: daemon not Ready yet (kubelet pulling / worker building); retrying"
+        "deploy-accelerator-daemon: the in-cluster accelerator daemon did not become Ready"
+        (stdoutProbe Kubectl ["rollout", "status", "deployment/accelerator-daemon", "--timeout=60s"])
+    putStrLn "deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)"
+
+{- | The in-cluster accelerator daemon manifest: a ConfigMap carrying the daemon's
+generated @<project>.dhall@ and a Deployment that runs config-selected @service run@ from
+the project image, mounting the ConfigMap over the baked container config and pointing
+@HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ at the web ClusterIP accelerator port.
+-}
+acceleratorDaemonManifest :: Bool -> String -> T.Text -> String
+acceleratorDaemonManifest gpuDaemon frame daemonConfig =
+    configMap ++ "---\n" ++ deployment
+  where
+    configMap =
+        unlines
+            [ "apiVersion: v1"
+            , "kind: ConfigMap"
+            , "metadata:"
+            , "  name: accelerator-daemon-config"
+            , "data:"
+            , "  hostbootstrap-demo.dhall: |"
+            ]
+            ++ indentBlock 4 daemonConfig
+    deployment =
+        unlines
+            [ "apiVersion: apps/v1"
+            , "kind: Deployment"
+            , "metadata:"
+            , "  name: accelerator-daemon"
+            , "  labels:"
+            , "    app: accelerator-daemon"
+            , "spec:"
+            , "  replicas: 1"
+            , "  selector:"
+            , "    matchLabels:"
+            , "      app: accelerator-daemon"
+            , "  template:"
+            , "    metadata:"
+            , "      labels:"
+            , "        app: accelerator-daemon"
+            , "      annotations:"
+            , "        hostbootstrap.io/config-hash: \"" ++ T.unpack (projectConfigSnapshotHash (configMapMountedText daemonConfig)) ++ "\""
+            , "    spec:"
+            , "      volumes:"
+            , "        - name: daemon-config"
+            , "          configMap:"
+            , "            name: accelerator-daemon-config"
+            , "      containers:"
+            , "        - name: daemon"
+            , "          image: \"" ++ demoProjectImage ++ "\""
+            , "          imagePullPolicy: IfNotPresent"
+            , "          args: [\"service\", \"run\"]"
+            , "          env:"
+            , "            - name: HOSTBOOTSTRAP_CURRENT_FRAME"
+            , "              value: \"" ++ frame ++ "\""
+            , "            - name: HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
+            , "              value: \"ws://" ++ demoProject ++ "-accelerator:8081/api/accelerator/daemon\""
+            , "          volumeMounts:"
+            , "            - name: daemon-config"
+            , "              mountPath: /usr/local/bin/hostbootstrap-demo.dhall"
+            , "              subPath: hostbootstrap-demo.dhall"
+            , "              readOnly: true"
+            ]
+            ++ gpuResources
+    gpuResources
+        | gpuDaemon =
+            unlines
+                [ "          resources:"
+                , "            limits:"
+                , "              nvidia.com/gpu: 1"
+                ]
+        | otherwise = ""
+
+{- | YAML's literal block scalar (@|@) mounts one final newline. Hash that exact
+payload so rollout annotations and the runtime snapshot log name the same
+bytes.
+-}
+configMapMountedText :: T.Text -> T.Text
+configMapMountedText value
+    | T.isSuffixOf "\n" value = value
+    | otherwise = value <> "\n"
+
+indentBlock :: Int -> T.Text -> String
+indentBlock n = unlines . map (replicate n ' ' ++) . lines . T.unpack
+
 startHostAcceleratorDaemonAction :: HostConfig -> IO ()
 startHostAcceleratorDaemonAction cfg
-    | isAppleSilicon (hcSubstrate cfg) || isWindows (hcSubstrate cfg) =
+    | hostAcceleratorSubstrate (hcSubstrate cfg) =
         demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
-            stopHostAcceleratorDaemon cfg ctx
-            daemonExe <- installHostAcceleratorDaemonBinary ctx
-            let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
-                daemonCfg =
-                    projectConfigFromContext
-                        (dockerfile projectCfg)
-                        (deploy projectCfg)
-                        (message projectCfg)
+            withHostAcceleratorDaemonOperation ctx $ do
+                stopHostAcceleratorDaemonUnlocked cfg ctx
+                daemonExe <- installHostAcceleratorDaemonBinary ctx
+                let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
+                    daemonCfg =
+                        projectConfigFromContext
+                            (dockerfile projectCfg)
+                            (deploy projectCfg)
+                            (message projectCfg)
+                            (service projectCfg)
+                            daemonCtx
+                    daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
+                    pidPath = hostAcceleratorDaemonPidPath ctx
+                    shutdownPath = hostAcceleratorDaemonShutdownPath ctx
+                    endpoint = "ws://127.0.0.1:30081/api/accelerator/daemon"
+                writeProjectConfigFile daemonCfgPath daemonCfg
+                daemonPayload <- TIO.readFile daemonCfgPath
+                TIO.putStrLn
+                    ( renderProjectConfigSnapshotLog
+                        daemonCfgPath
+                        (projectConfigSnapshotHash daemonPayload)
                         daemonCtx
-                daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
-                pidPath = hostAcceleratorDaemonPidPath ctx
-                endpoint = "ws://127.0.0.1:30081/api/accelerator/daemon"
-            writeProjectConfigFile daemonCfgPath daemonCfg
-            env0 <- getEnvironment
-            let daemonEnv =
-                    [ ("HOSTBOOTSTRAP_CURRENT_FRAME", T.unpack (Context.currentFrame daemonCtx))
-                    , ("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", endpoint)
-                    ]
-                        ++ filter
-                            ( \kv ->
-                                fst kv
-                                    `notElem` [ "HOSTBOOTSTRAP_CURRENT_FRAME"
-                                               , "HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
-                                               ]
-                            )
-                            env0
-            (_, _, _, ph) <- createProcess (proc daemonExe ["service", "run", "accelerator"]){env = Just daemonEnv}
-            mpid <- getPid ph
-            case mpid of
-                Nothing -> putStrLn "accelerator-daemon: started host daemon (process id unavailable)"
-                Just pid -> do
-                    writeFile pidPath (show pid ++ "\n")
-                    putStrLn ("accelerator-daemon: started host daemon pid " ++ show pid ++ " for " ++ endpoint)
+                    )
+                env0 <- getEnvironment
+                let daemonEnv =
+                        [ ("HOSTBOOTSTRAP_CURRENT_FRAME", T.unpack (Context.currentFrame daemonCtx))
+                        , ("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", endpoint)
+                        , ("HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE", shutdownPath)
+                        ]
+                            ++ filter
+                                ( \kv ->
+                                    fst kv
+                                        `notElem` [ "HOSTBOOTSTRAP_CURRENT_FRAME"
+                                                  , "HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
+                                                  , "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
+                                                  , harnessMutationGuardEnv
+                                                  ]
+                                )
+                                env0
+                claimHostAcceleratorDaemon ctx
+                mask $ \restore -> do
+                    (_, _, _, ph) <-
+                        restore (createProcess (hostAcceleratorDaemonProcess daemonExe daemonEnv))
+                            `onException` releaseHostAcceleratorDaemon ctx
+                    let abortUntracked = do
+                            removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
+                            _ <- try (terminateProcess ph) :: IO (Either SomeException ())
+                            waited <- timeout 5000000 (try (waitForProcess ph) :: IO (Either SomeException ExitCode))
+                            case (removed, waited) of
+                                (Right (), Just (Right _)) -> releaseHostAcceleratorDaemon ctx
+                                _ ->
+                                    ioError
+                                        ( userError
+                                            ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
+                                                ++ show removed
+                                                ++ ", process exit="
+                                                ++ show waited
+                                                ++ ")"
+                                            )
+                                        )
+                    mpid <- getPid ph `onException` abortUntracked
+                    case mpid of
+                        Nothing -> do
+                            abortUntracked
+                            die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
+                        Just pid -> do
+                            restore (writeFile pidPath (show pid ++ "\n"))
+                                `onException` abortUntracked
+                            putStrLn ("accelerator-daemon: started host daemon pid " ++ show pid ++ " for " ++ endpoint)
     | otherwise =
         putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
 
@@ -894,6 +1226,71 @@ hostAcceleratorDaemonPidPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonPidPath ctx =
     hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.pid"
 
+hostAcceleratorDaemonShutdownPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonShutdownPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.shutdown"
+
+hostAcceleratorDaemonOwnerPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonOwnerPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.owner"
+
+hostAcceleratorDaemonOperationPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonOperationPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.operation"
+
+withHostAcceleratorDaemonOperation :: Context.BinaryContext -> IO a -> IO a
+withHostAcceleratorDaemonOperation ctx action =
+    mask $ \restore -> do
+        let operationPath = hostAcceleratorDaemonOperationPath ctx
+        createDirectoryIfMissing True (hostAcceleratorDaemonDir ctx)
+        claimed <- try (createDirectory operationPath) :: IO (Either SomeException ())
+        case claimed of
+            Left _ -> die ("accelerator-daemon: lifecycle operation already active at " ++ operationPath)
+            Right () -> restore action `finally` removeDirectory operationPath
+
+claimHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
+claimHostAcceleratorDaemon ctx = do
+    let ownerPath = hostAcceleratorDaemonOwnerPath ctx
+    claimed <- try (createDirectory ownerPath) :: IO (Either SomeException ())
+    case claimed of
+        Right () -> pure ()
+        Left _ -> die ("accelerator-daemon: lifecycle ownership already held at " ++ ownerPath)
+
+releaseHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
+releaseHostAcceleratorDaemon ctx = do
+    let ownerPath = hostAcceleratorDaemonOwnerPath ctx
+    present <- doesDirectoryExist ownerPath
+    when present (removeDirectory ownerPath)
+
+hostAcceleratorSubstrate :: Substrate -> Bool
+hostAcceleratorSubstrate sub =
+    isAppleSilicon sub || substrateName sub == WindowsGpu
+
+{- | Build the detached host-daemon process specification. A host daemon must not
+inherit the @project up@ process's standard handles: the harness captures that
+command with 'readProcessWithExitCode', and an inherited writer keeps its pipe
+open after @project up@ exits, preventing the harness from ever observing EOF.
+Connecting all three streams to the null device gives the background daemon an
+independent lifetime while its pid file remains the explicit teardown handle.
+-}
+hostAcceleratorDaemonProcess :: FilePath -> [(String, String)] -> CreateProcess
+hostAcceleratorDaemonProcess daemonExe daemonEnv =
+    (proc daemonExe ["service", "run"])
+        { env = Just daemonEnv
+        , std_in = NoStream
+        , std_out = NoStream
+        , std_err = NoStream
+        }
+
+-- | Strictly read the teardown pid so Windows releases the pid-file handle.
+readHostAcceleratorDaemonPid :: FilePath -> IO String
+readHostAcceleratorDaemonPid pidPath = do
+    raw <- TIO.readFile pidPath
+    let value = T.unpack (T.strip raw)
+    if not (null value) && all isDigit value
+        then pure value
+        else ioError (userError ("accelerator-daemon: invalid pid file: " ++ pidPath))
+
 installHostAcceleratorDaemonBinary :: Context.BinaryContext -> IO FilePath
 installHostAcceleratorDaemonBinary ctx = do
     let daemonDir = hostAcceleratorDaemonDir ctx
@@ -905,26 +1302,108 @@ installHostAcceleratorDaemonBinary ctx = do
     pure daemonExe
 
 stopHostAcceleratorDaemon :: HostConfig -> Context.BinaryContext -> IO ()
-stopHostAcceleratorDaemon cfg ctx
-    | not (isAppleSilicon (hcSubstrate cfg) || isWindows (hcSubstrate cfg)) = pure ()
-    | otherwise = do
-        let pidPath = hostAcceleratorDaemonPidPath ctx
-        exists <- doesFileExist pidPath
-        when exists $ do
-            raw <- readFile pidPath
-            let pid = takeWhile (`elem` ['0' .. '9']) raw
-            unless (null pid) (stopPid pid)
-            removeFile pidPath
+stopHostAcceleratorDaemon cfg ctx =
+    withHostAcceleratorDaemonOperation ctx (stopHostAcceleratorDaemonUnlocked cfg ctx)
+
+stopHostAcceleratorDaemonUnlocked :: HostConfig -> Context.BinaryContext -> IO ()
+stopHostAcceleratorDaemonUnlocked cfg ctx = do
+    let pidPath = hostAcceleratorDaemonPidPath ctx
+        shutdownPath = hostAcceleratorDaemonShutdownPath ctx
+        daemonExe = hostAcceleratorDaemonExePath ctx
+    exists <- doesFileExist pidPath
+    ownerExists <- doesDirectoryExist (hostAcceleratorDaemonOwnerPath ctx)
+    when (not exists && ownerExists) $
+        die "accelerator-daemon: lifecycle ownership exists without a pid; refusing ambiguous cleanup"
+    when exists $ do
+        pid <- readHostAcceleratorDaemonPid pidPath
+        when (null pid) (die ("accelerator-daemon: invalid pid file; refusing lossy cleanup: " ++ pidPath))
+        TIO.writeFile shutdownPath "stop\n"
+        graceful <- waitForExit pid daemonExe 20
+        case graceful of
+            Left err -> die err
+            Right True -> removeFile pidPath
+            Right False -> do
+                stillOurs <- hostDaemonProcessRunning cfg pid daemonExe
+                case stillOurs of
+                    Left err -> die err
+                    -- Dead or a reused PID belonging to another executable: the
+                    -- stale pid file is ours to remove, but never signal the process.
+                    Right False -> removeFile pidPath
+                    Right True -> do
+                        stopPid pid
+                        forced <- waitForExit pid daemonExe 20
+                        case forced of
+                            Right True -> removeFile pidPath
+                            Right False -> die ("accelerator-daemon: pid " ++ pid ++ " remained live after forced stop; preserving pid file")
+                            Left err -> die err
+    removeIfExists shutdownPath
+    releaseHostAcceleratorDaemon ctx
   where
+    waitForExit :: String -> FilePath -> Int -> IO (Either String Bool)
+    waitForExit _ _ 0 = pure (Right False)
+    waitForExit pid daemonExe attempts = do
+        running <- hostDaemonProcessRunning cfg pid daemonExe
+        case running of
+            Left err -> pure (Left err)
+            Right False -> pure (Right True)
+            Right True -> threadDelay 250000 >> waitForExit pid daemonExe (attempts - 1)
     stopPid pid
-        | isWindows (hcSubstrate cfg) =
-            bestEffortTool
-                cfg
-                PowerShell
-                ["-NoProfile", "-Command", "Stop-Process -Id " ++ pid ++ " -Force -ErrorAction SilentlyContinue"]
-                ("accelerator-daemon: stopping host daemon pid " ++ pid)
-        | otherwise =
-            bestEffortTool cfg Kill [pid] ("accelerator-daemon: stopping host daemon pid " ++ pid)
+        | isWindows (hcSubstrate cfg) = do
+            putStrLn ("accelerator-daemon: stopping host daemon pid " ++ pid)
+            requireStop =<< runTool cfg PowerShell ["-NoProfile", "-Command", "Stop-Process -Id " ++ pid ++ " -Force -ErrorAction Stop"]
+        | otherwise = do
+            putStrLn ("accelerator-daemon: stopping host daemon pid " ++ pid)
+            requireStop =<< runTool cfg Kill [pid]
+    requireStop (Right (ExitSuccess, _, _)) = pure ()
+    requireStop (Right (ExitFailure n, _, err)) = die ("accelerator-daemon: forced stop failed (exit " ++ show n ++ "): " ++ err)
+    requireStop (Left err) = die ("accelerator-daemon: forced stop failed: " ++ err)
+
+hostDaemonProcessRunning :: HostConfig -> String -> FilePath -> IO (Either String Bool)
+hostDaemonProcessRunning cfg pid daemonExe = do
+    result <-
+        if isWindows (hcSubstrate cfg)
+            then
+                runTool
+                    cfg
+                    PowerShell
+                    [ "-NoProfile"
+                    , "-Command"
+                    , "$p = Get-CimInstance Win32_Process -Filter 'ProcessId = " ++ pid ++ "' -ErrorAction SilentlyContinue; if ($null -ne $p) { [Console]::WriteLine($p.ExecutablePath); [Console]::WriteLine($p.CommandLine) }"
+                    ]
+            else runTool cfg Ps ["-ww", "-p", pid, "-o", "command="]
+    pure $ case result of
+        Left err -> Left ("accelerator-daemon: process identity probe failed for pid " ++ pid ++ ": " ++ err)
+        Right (ExitFailure 1, out, err)
+            | not (isWindows (hcSubstrate cfg)) && null (trim (out ++ err)) -> Right False
+        Right (ExitFailure n, _, err) -> Left ("accelerator-daemon: process identity probe failed for pid " ++ pid ++ " (exit " ++ show n ++ "): " ++ err)
+        success -> Right (hostDaemonIdentityMatches (isWindows (hcSubstrate cfg)) daemonExe success)
+  where
+    trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+
+hostDaemonIdentityMatches :: Bool -> FilePath -> Either String (ExitCode, String, String) -> Bool
+hostDaemonIdentityMatches windows daemonExe result = case result of
+    Right (ExitSuccess, out, _) ->
+        if windows
+            then case filter (not . null) (map trim (lines out)) of
+                observedExe : observedCommand : _ ->
+                    map toLower observedExe == map toLower daemonExe
+                        && commandMatches True observedCommand
+                _ -> False
+            else commandMatches False (trim out)
+    _ -> False
+  where
+    trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+    commandMatches caseInsensitive observed =
+        let normalize = if caseInsensitive then map toLower else id
+            actual = normalize (trim observed)
+            bare = normalize (daemonExe ++ " service run")
+            quoted = normalize ("\"" ++ daemonExe ++ "\" service run")
+         in actual == bare || actual == quoted
+
+removeIfExists :: FilePath -> IO ()
+removeIfExists path = do
+    exists <- doesFileExist path
+    when exists (removeFile path)
 
 {- | Poll a URL by folding a 'reachLeaf' (@curl@) into @frame@ via the
 self-reference lift, so the probe runs in the frame where the NodePort is
@@ -1046,7 +1525,9 @@ demoTestSafety = do
     -- correctly generates its own. The running-cluster precondition still keys
     -- off the cwd-rooted production plan.
     cfgPath <- siblingProjectConfigPath (T.pack demoProject)
-    let prodPlan = resolvePlan demoProject root Production
+    let prodPlan
+            | substrateName (hcSubstrate cfg) == LinuxGpu = resolvePlanWithDriver demoProject root Production NvkindDriver
+            | otherwise = resolvePlan demoProject root Production
     testSafetyPreconditions
         cfgPath
         (productionClusterRunning cfg prodPlan)
@@ -1064,21 +1545,37 @@ collision — a second run is refused by the existing VM (and by the sibling-con
 precondition), so runs are mutually exclusive rather than racing.
 -}
 productionClusterRunning :: HostConfig -> ClusterPlan -> IO Bool
-productionClusterRunning cfg plan = do
-    metalKind <- clusterIsRunning cfg plan
-    if metalKind
-        then pure True
-        else do
-            sp <- demoProvider cfg
-            substrateExists cfg sp
+productionClusterRunning cfg plan
+    | substrateName (hcSubstrate cfg) == LinuxGpu =
+        if toolPresent cfg Docker then directClusterExists cfg plan else pure False
+    | otherwise = do
+        sp <- demoProvider cfg
+        case spExists sp of
+            ExistsProbe tool _ _
+                | toolPresent cfg tool -> substrateExists cfg sp
+                | otherwise -> pure False
 
--- | Whether a cluster of the plan's name is already running on the host's kind.
-clusterIsRunning :: HostConfig -> ClusterPlan -> IO Bool
-clusterIsRunning cfg plan = do
-    result <- runTool cfg Kind ["get", "clusters"]
-    pure $ case result of
-        Right (ExitSuccess, out, _) -> clusterName plan `elem` lines out
-        _ -> False
+{- | The direct lane has no Incus provider. Refuse the harness whenever Docker
+still has the managed kind/nvkind control-plane, running or stopped.
+-}
+directClusterExists :: HostConfig -> ClusterPlan -> IO Bool
+directClusterExists cfg plan
+    | not (toolPresent cfg Docker) =
+        die "test safety: Docker CLI is unavailable, so the direct production-cluster precondition cannot be proven"
+    | otherwise = do
+        result <- runTool cfg Docker ["ps", "-a", "--format", "{{.Names}}"]
+        either die pure (directClusterPresence (clusterNodeNames plan) result)
+
+{- | Fail-closed classifier for the direct harness safety probe. A missing Docker
+CLI means no Docker-backed production stack can exist and is handled by the
+caller; once the CLI is present, daemon/probe errors are ambiguous and must
+refuse the test rather than hiding a stopped control-plane or worker.
+-}
+directClusterPresence :: [String] -> Either String (ExitCode, String, String) -> Either String Bool
+directClusterPresence expected result = case result of
+    Right (ExitSuccess, out, _) -> Right (any (`elem` lines out) expected)
+    Right (ExitFailure n, _, err) -> Left ("test safety: Docker cluster probe failed (exit " ++ show n ++ "): " ++ err)
+    Left err -> Left ("test safety: Docker cluster probe failed: " ++ err)
 
 {- | Bring the test stack up by driving the **real** @project up@ (the same chain
 interpreter production uses, § W) through the binary's self-reference (§ U), then
@@ -1091,9 +1588,9 @@ demoTestUp :: T.Text -> IO CaseEnv
 demoTestUp label = do
     self <- getExecutablePath
     putStrLn ("test run: bringing the stack up via the real `project up` (variant message=" ++ T.unpack label ++ ")")
-    runSelfOrDie self ["project", "up"]
+    withHarnessMutationGuard (runSelfOrDie self ["project", "up"])
     cfg <- resolveHostConfig
-    pure (CaseEnv cfg (demoVMFrameContext (hcSubstrate cfg)) label)
+    pure (CaseEnv cfg (demoTestFrameContext (hcSubstrate cfg)) label)
 
 {- | Tear the test stack down by driving @project destroy@ (best-effort, so a
 partial stack always tears down; host @.data@ is preserved by the lifecycle, § O).
@@ -1104,7 +1601,58 @@ demoTestDown :: IO ()
 demoTestDown = do
     self <- getExecutablePath
     putStrLn "test run: tearing the stack down via `project destroy`"
-    runSelfBestEffort self ["project", "destroy"]
+    runSelfOrDie self ["project", "destroy"]
+    verifyHarnessTeardown
+
+harnessMutationGuardEnv :: String
+harnessMutationGuardEnv = "HOSTBOOTSTRAP_DEMO_HARNESS_MUTATION_GUARD"
+
+{- | Mark the child @project up@ so its post-ensure safety check can distinguish
+a harness bring-up (which must never reconcile pre-existing state) from an
+operator's idempotent production reconcile. Restore the caller's environment
+exactly after the child exits.
+-}
+withHarnessMutationGuard :: IO a -> IO a
+withHarnessMutationGuard body = do
+    previous <- lookupEnv harnessMutationGuardEnv
+    setEnv harnessMutationGuardEnv "1"
+    body `finally` maybe (unsetEnv harnessMutationGuardEnv) (setEnv harnessMutationGuardEnv) previous
+
+{- | A green variant requires a proven-empty teardown, not merely a zero exit
+from best-effort lifecycle cleanup.
+-}
+verifyHarnessTeardown :: IO ()
+verifyHarnessTeardown = do
+    cfg <- resolveHostConfig
+    root <- getCurrentDirectory
+    let daemonDir = root </> ".build" </> "accelerator-daemon"
+        daemonPid = daemonDir </> "hostbootstrap-demo.accelerator.pid"
+        daemonOwner = daemonDir </> "hostbootstrap-demo.accelerator.owner"
+        daemonOperation = daemonDir </> "hostbootstrap-demo.accelerator.operation"
+    pidRemaining <- doesFileExist daemonPid
+    ownerRemaining <- doesDirectoryExist daemonOwner
+    operationRemaining <- doesDirectoryExist daemonOperation
+    when (pidRemaining || ownerRemaining || operationRemaining) $
+        die "test teardown: host accelerator daemon ownership/PID/operation state remains after project destroy"
+    if substrateName (hcSubstrate cfg) == LinuxGpu
+        then do
+            unless (toolPresent cfg Docker) $
+                die "test teardown: Docker is unavailable, so absence of the direct nvkind stack cannot be proven"
+            let plan = resolvePlanWithDriver demoProject root Production NvkindDriver
+            remaining <- directClusterExists cfg plan
+            when remaining (die "test teardown: the direct nvkind stack still exists after project destroy")
+        else do
+            provider <- demoProvider cfg
+            case spExists provider of
+                ExistsProbe tool _ _ ->
+                    unless (toolPresent cfg tool) $
+                        die "test teardown: the provider probe is unavailable, so VM deletion cannot be proven"
+            remaining <- substrateExists cfg provider
+            when remaining (die ("test teardown: managed VM still exists after project destroy: " ++ spVmId provider))
+            when (isWindows (hcSubstrate cfg)) $ do
+                handles <- demoVMHandles
+                backupRemaining <- doesFileExist (vmhWslConfigPath handles ++ ".hostbootstrap-demo.bak")
+                when backupRemaining (die "test teardown: the original .wslconfig backup remains; restoration was not completed")
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
 up. Every case runs in the **VM frame** (the frame where the NodePort is
@@ -1139,19 +1687,66 @@ case 'Fail' (not a crashed matrix).
 -}
 assertE2EInVM :: HostConfig -> LiftContext -> T.Text -> IO CaseResult
 assertE2EInVM cfg frame expectedMessage = do
-    let script =
-            "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e EXPECTED_MESSAGE="
-                ++ shellQuote (T.unpack expectedMessage)
-                ++ " -e NODE_PATH="
-                ++ baseNodeModulesPath
-                ++ " "
-                ++ demoProjectImage
-                ++ " -lc 'cd /workspace/demo/playwright && playwright test'"
-    result <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
-    pure $ case result of
-        Right (ExitSuccess, _, _) -> Pass
-        Right (_, out, err) -> Fail ("e2e failed: " ++ takeWhile (/= '\n') (err ++ out))
-        Left err -> Fail ("e2e: " ++ err)
+    expectation <- resolveAcceleratorE2E cfg frame
+    case expectation of
+        Left failMsg -> pure (Fail failMsg)
+        Right mBackend -> do
+            let acceleratorEnv = case mBackend of
+                    Nothing -> ""
+                    Just backend -> " -e EXPECTED_ACCELERATOR_BACKEND=" ++ shellQuote (T.unpack backend)
+                script =
+                    "docker run --rm --network host --entrypoint sh -e BASE_URL=http://localhost:30080 -e EXPECTED_MESSAGE="
+                        ++ shellQuote (T.unpack expectedMessage)
+                        ++ acceleratorEnv
+                        ++ " -e NODE_PATH="
+                        ++ baseNodeModulesPath
+                        ++ " "
+                        ++ demoProjectImage
+                        ++ " -lc 'cd /workspace/demo/playwright && playwright test'"
+            result <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
+            pure $ case result of
+                Right (ExitSuccess, _, _) -> Pass
+                Right (_, out, err) -> Fail ("e2e failed: " ++ takeWhile (/= '\n') (err ++ out))
+                Left err -> Fail ("e2e: " ++ err)
+
+{- | Resolve the accelerator e2e expectation for the detected substrate, folded
+into the same VM frame the e2e runs in. A lane WITH a daemon backend must have a
+daemon actually serving before the browser e2e asserts the real add result, so we
+poll the ingress first — @/api/accelerator/add@ answers HTTP 200 only when a
+connected daemon returns a success (503 otherwise, § AA / accelerator_daemon.md),
+so a passing @curl -f@ probe is proof the whole daemon path (worker build →
+WebSocket connect → CBOR round-trip) is live. Returns:
+
+  * @Right Nothing@  — no accelerator lane on this substrate (windows-cpu): the
+    e2e keeps the no-in-process-fallback "unavailable" assertion.
+  * @Right (Just b)@ — a daemon is serving; the e2e asserts the real sum, the
+    backend @b@, and a non-empty artifact hash (a fake in-process path cannot pass).
+  * @Left msg@       — a lane exists but no daemon became ready in time: a real
+    failure (the accelerator path is broken), surfaced as a case 'Fail'.
+
+The host-resident daemon (Apple Silicon / Windows GPU) is started by the chain's
+@accelerator-daemon@ post-handoff step during @project up@ (§ Y), so by the time the
+harness runs @e2e-tabs@ it is already building/connecting; in-cluster daemon lanes
+(Linux CPU/GPU) start their pod during @deploy-chart@.
+-}
+resolveAcceleratorE2E :: HostConfig -> LiftContext -> IO (Either String (Maybe T.Text))
+resolveAcceleratorE2E cfg frame =
+    case acceleratorBackendForSubstrate (hcSubstrate cfg) of
+        Left _ -> pure (Right Nothing)
+        Right backend -> do
+            putStrLn "e2e: waiting for the accelerator daemon to build its worker and connect…"
+            ready <- waitWebReachable cfg frame acceleratorProbeUrl acceleratorReadyAttempts
+            pure $
+                if ready
+                    then Right (Just (backendName backend))
+                    else Left ("e2e: the accelerator daemon never served a result at " ++ acceleratorProbeUrl)
+  where
+    -- The add endpoint answers 200 only when a daemon computes the sum; the probe
+    -- values match the SPA defaults the e2e submits (1.5 + 2.25 = 3.75).
+    acceleratorProbeUrl = "http://localhost:30080/api/accelerator/add?requestId=e2e-probe&left=1.5&right=2.25"
+    -- 60 × 5 s (reachPoll) ≈ 5 min ceiling — ample for ensure (a verified no-op when
+    -- present) + the tiny worker build + the WebSocket connect.
+    acceleratorReadyAttempts = 60
 
 {- | The @registry-persistence@ case — the MinIO-backing proof. Confirm the pushed
 image's @tags/list@ is reachable (200), delete the registry pod and wait its
@@ -1191,16 +1786,9 @@ runSelfOrDie self args = do
     unless (null out) (putStr out)
     case code of
         ExitSuccess -> pure ()
-        ExitFailure n -> die (self ++ " " ++ unwords args ++ " failed (exit " ++ show n ++ ")\n" ++ err)
-
--- | Run the binary's own subcommand best-effort (teardown tolerates failure).
-runSelfBestEffort :: FilePath -> [String] -> IO ()
-runSelfBestEffort self args = do
-    (code, out, err) <- readProcessWithExitCode self args ""
-    unless (null out) (putStr out)
-    case code of
-        ExitSuccess -> pure ()
-        ExitFailure _ -> putStrLn ("  (teardown skipped: " ++ takeWhile (/= '\n') err ++ ")")
+        ExitFailure n
+            | safetyRefusalMarker `isInfixOf` err -> throwIO (SafetyRefusal err)
+            | otherwise -> die (self ++ " " ++ unwords args ++ " failed (exit " ++ show n ++ ")\n" ++ err)
 
 {- | The project image carries both the served demo app and the base image's
 Playwright installation, so the e2e runner never pulls an external Playwright
@@ -1239,16 +1827,16 @@ only destroy a VM/profile whose name starts with this.
 demoGuardPrefix :: String
 demoGuardPrefix = demoProject
 
-{- | The demo's service-handler registry (§ AA): the long-running @web@ role
-@service run web@ dispatches to the warp/wai webservice, and @service run
-accelerator@ dispatches to the accelerator daemon role. The @service run@
+{- | The demo's service-handler registry (§ AA): @service run@ maps the effective
+config's @Web@ or @Accelerator@ 'ServiceType' to the corresponding internal key,
+then dispatches to the warp/wai webservice or accelerator daemon. The @service run@
 context gate has already validated the service-role @<project>.dhall@ (the
 ConfigMap-delivered cluster-service or daemon config, § X) before the handler
 runs, so the handler is just the role body.
 -}
 demoServices :: ServiceRegistry
 demoServices =
-    [ ServiceHandler "web" (serveWeb 8080)
+    [ ServiceHandler "web" serveWeb
     , ServiceHandler "accelerator" serveAcceleratorDaemon
     ]
 
@@ -1369,23 +1957,22 @@ backupHostFileOnce path = do
     bakExists <- doesFileExist bak
     when (exists && not bakExists) (copyFile path bak)
 
--- | Restore @path@ from its backup (or remove it if there was none), best-effort.
+{- | Restore @path@ from its backup (or remove it if there was none). Copy before
+deleting the backup so a failed restore preserves the user's original bytes;
+failures propagate and make teardown non-green.
+-}
 restoreHostFile :: FilePath -> IO ()
 restoreHostFile path = do
     let bak = path ++ ".hostbootstrap-demo.bak"
     bakExists <- doesFileExist bak
-    outcome <-
-        try $
-            if bakExists
-                then renameFile bak path >> pure ("project destroy: restored " ++ path)
-                else do
-                    exists <- doesFileExist path
-                    if exists
-                        then removeFile path >> pure ("project destroy: removed " ++ path)
-                        else pure ""
-    case (outcome :: Either SomeException String) of
-        Right msg -> unless (null msg) (putStrLn msg)
-        Left _ -> pure ()
+    if bakExists
+        then do
+            copyFile bak path
+            removeFile bak
+            putStrLn ("project destroy: restored " ++ path)
+        else do
+            exists <- doesFileExist path
+            when exists (removeFile path >> putStrLn ("project destroy: removed " ++ path))
 
 -- | Probe whether the provider's VM already exists (idempotent reconcile).
 substrateExists :: HostConfig -> SubstrateProvider -> IO Bool
@@ -1393,9 +1980,11 @@ substrateExists cfg sp =
     case spExists sp of
         ExistsProbe tool args membership -> do
             r <- runTool cfg tool args
-            pure $ case r of
-                Right (ExitSuccess, out, _) -> spVmId sp `elem` membersOf membership out
-                _ -> False
+            case r of
+                Right (ExitSuccess, out, _) -> pure (spVmId sp `elem` membersOf membership out)
+                Right (ExitFailure n, _, err) ->
+                    die ("provider existence probe failed for " ++ spVmId sp ++ " (exit " ++ show n ++ "): " ++ err)
+                Left err -> die ("provider existence probe failed for " ++ spVmId sp ++ ": " ++ err)
 
 {- | Poll the provider's readiness probe until the VM answers, bounded by @n@
 two-second attempts (the substrate-generic peer of the former per-provider
@@ -1482,11 +2071,37 @@ buildProjectImage _dockerReady cfg provider mAuth buildImageScript =
     case mAuth of
         Just auth -> do
             putStrLn "pristine-bootstrap: build #3 — the project container FROM the base (authenticating the pull with the forwarded Docker Hub credential)"
-            runInDemoVMStdin cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
+            runBuildImageReporting cfg provider (dockerAuthStdinWrapper buildImageScript) (T.unpack (registryConfigPayload auth))
         Nothing -> do
             putStrLn "pristine-bootstrap: no host Docker Hub login found — build #3 pulls the base anonymously (Docker Hub rate limits may apply). Run `docker login` on the host (the standalone Docker CLI writes an inline token) for an authenticated, forwarded pull."
             putStrLn "pristine-bootstrap: build #3 — the project container FROM the pulled base (repo-root context, L0-direct; anonymous pull)"
-            runInDemoVM cfg provider buildImageScript
+            runBuildImageReporting cfg provider buildImageScript ""
+
+{- | Run the in-VM build #3 (project container) and, on failure, STREAM the captured
+build output to the metal binary's line-buffered stdout before dying. Build #3's
+@docker build@ output would otherwise be swallowed: 'runOrDieStdin' surfaces it via a
+@die@ to stderr, but the recursive @project up@ handoff + 'applyChain'\'s
+best-effort-teardown exception handler + the harness's per-variant failure handling
+unwind that stderr before it reaches the run log, leaving a bare "chain failed" with no
+cause. Printing the captured output on stdout (line-buffered, flushed) makes a build #3
+failure (base pull, the in-Dockerfile @check-code@ gate, or the web build) diagnosable
+in the run log (§ C).
+-}
+runBuildImageReporting :: HostConfig -> SubstrateProvider -> String -> String -> IO ()
+runBuildImageReporting cfg provider script input =
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
+        Nothing -> die ("runInDemoVM: " ++ spVmId provider ++ " is not a VM frame")
+        Just (tool, args) -> do
+            result <- runToolWithStdin cfg tool args input
+            case result of
+                Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+                Right (ExitFailure n, out, err) -> do
+                    putStrLn ("pristine-bootstrap: build #3 FAILED (exit " ++ show n ++ "); captured build output follows:")
+                    unless (null out) (putStr out)
+                    unless (null err) (putStr err)
+                    hFlush stdout
+                    die ("pristine-bootstrap: build #3 (project container) failed (exit " ++ show n ++ ")")
+                Left e -> die ("pristine-bootstrap: build #3 could not run: " ++ e)
 
 vmRepoRoot :: FilePath
 vmRepoRoot = "/root/hostbootstrap"
@@ -1626,22 +2241,19 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
     sp <- demoProvider cfg
     let lifecycleResources = resourcesFromContext ctx
         envelope = envelopeOfResources lifecycleResources
-    either die pure (requireDemoLifecycleResources lifecycleResources)
-    resolvedCapacity <- resolveHostCapacity cfg
-    -- Metal host preflight: `preflightHostBudget` gates the full budget + the host-OS
-    -- memory reserve (§ O) against total host RAM — the reserve is applied HERE (metal
-    -- sizing the VM), never to the in-VM cluster slice (which is already the reserved
-    -- subset, checked reserve-free by `clusterCreate`). On Windows the storage
-    -- dimension additionally reserves the WSL2 swap file's disk (vhdx + swap).
-    preflightResources <-
-        if isWindows (hcSubstrate cfg)
-            then either die pure (withWsl2SwapStorage lifecycleResources)
-            else pure lifecycleResources
-    either die pure (resolvedCapacity >>= preflightHostBudget (envelopeOfResources preflightResources))
+    preflightDemoLifecycleHost cfg lifecycleResources
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
     exists <- substrateExists cfg sp
+    harnessRun <- lookupEnv harnessMutationGuardEnv
+    when (harnessRun == Just "1" && exists) $
+        throwIO
+            ( SafetyRefusal
+                ( "managed VM appeared after provider ensure; refusing to reconcile pre-existing state: "
+                    ++ spVmId sp
+                )
+            )
     if exists
         then do
             putStrLn ("vm up: " ++ spVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
@@ -1668,6 +2280,20 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
     waitVMNetwork vmReady cfg sp
     putStrLn ("vm up: " ++ spVmId sp ++ " is up")
 
+{- | Shared metal-host floor/headroom gate for both VM-backed and direct Linux
+GPU chains. The direct lane has no VM wall, but it still must not consume a
+project budget that leaves no room for the host OS and image/cluster builds.
+-}
+preflightDemoLifecycleHost :: HostConfig -> Resources -> IO ()
+preflightDemoLifecycleHost cfg lifecycleResources = do
+    either die pure (requireDemoLifecycleResources lifecycleResources)
+    resolvedCapacity <- resolveHostCapacity cfg
+    preflightResources <-
+        if isWindows (hcSubstrate cfg)
+            then either die pure (withWsl2SwapStorage lifecycleResources)
+            else pure lifecycleResources
+    either die pure (resolvedCapacity >>= preflightHostBudget (envelopeOfResources preflightResources))
+
 {- | Apply a substrate's reconcile-time cordon whose global file only takes effect
 on a VM restart. No-op for Lima/Incus (@spReconcileCordon = Nothing@: their cordon
 is baked into the VM at create and they never idle-stop). For WSL2: probe the
@@ -1685,9 +2311,10 @@ applyReconcileCordon cfg sp =
         Nothing -> pure ()
         Just (ExistsProbe tool args membership, whenStopped) -> do
             r <- runTool cfg tool args
-            let running = case r of
-                    Right (ExitSuccess, out, _) -> spVmId sp `elem` membersOf membership out
-                    _ -> False
+            running <- case r of
+                Right (ExitSuccess, out, _) -> pure (spVmId sp `elem` membersOf membership out)
+                Right (ExitFailure n, _, err) -> die ("vm up: reconcile-state probe failed (exit " ++ show n ++ "): " ++ err)
+                Left err -> die ("vm up: reconcile-state probe failed: " ++ err)
             if running
                 then putStrLn ("vm up: " ++ spVmId sp ++ " is already running; its cordon is live — skipping the global `wsl --shutdown`")
                 else do
@@ -1803,9 +2430,21 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
 
 runDirectHostBootstrap :: IO ()
 runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
-    cfg <- resolveHostConfig
-    when (substrateName (hcSubstrate cfg) /= LinuxGpu) $
+    initialCfg <- resolveHostConfig
+    when (substrateName (hcSubstrate initialCfg) /= LinuxGpu) $
         die "direct-linux-gpu-bootstrap: this path is only valid on the linux-gpu substrate"
+    preflightDemoLifecycleHost initialCfg (resourcesFromContext ctx)
+    runEnsure EnsureDocker.reconciler
+    cfgAfterDocker <- resolveHostConfig
+    root <- getCurrentDirectory
+    let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+    harnessRun <- lookupEnv harnessMutationGuardEnv
+    when (harnessRun == Just "1") $ do
+        exists <- directClusterExists cfgAfterDocker directPlan
+        when exists $
+            throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
+    runEnsure EnsureCuda.reconciler
+    cfg <- resolveHostConfig
     let bridgeDir = T.unpack (Context.sourceRoot ctx) </> "web" </> "src" </> "Generated"
         repoRoot = takeDirectory (T.unpack (Context.sourceRoot ctx))
         repoRootCfg = parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
@@ -1835,6 +2474,7 @@ streamVMConfig cfg provider parentCfg ctx = do
                 (dockerfile parentCfg)
                 (deploy parentCfg)
                 (message parentCfg)
+                (service parentCfg)
                 (Context.deriveVMContextWithProvider (spProviderKind provider) ctx (T.pack vmDemoRoot))
     runInDemoVMStdin
         cfg
@@ -1855,8 +2495,18 @@ streamVMConfig cfg provider parentCfg ctx = do
 the detected VM architecture. The base is pulled inside the VM by build #3.
 -}
 demoBaseImage :: HostConfig -> String
-demoBaseImage cfg =
-    "docker.io/tuee22/hostbootstrap:basecontainer-cpu-" ++ renderArch (substrateArch (hcSubstrate cfg))
+demoBaseImage = demoBaseImageFor . hcSubstrate
+
+demoBaseImageFor :: Substrate -> String
+demoBaseImageFor sub =
+    "docker.io/tuee22/hostbootstrap:basecontainer-"
+        ++ flavor
+        ++ "-"
+        ++ renderArch (substrateArch sub)
+  where
+    flavor
+        | substrateName sub == LinuxGpu = "cuda"
+        | otherwise = "cpu"
 
 {- | The hostbootstrap monorepo root (holding @core/@ + @demo/@) given the project
 home. The demo is nested one level under the repo, and the binary now always runs
@@ -1974,17 +2624,61 @@ hard failure, so a partial stack always tears down.
 demoTeardown :: ProjectConfig -> Bool -> IO ()
 demoTeardown projectCfg destroyVM = do
     cfg <- resolveHostConfig
-    stopHostAcceleratorDaemon cfg (context projectCfg)
-    provider <- demoProvider cfg
-    let name = spVmId provider
-    if destroyVM
-        then case spDestroy provider of
-            -- The guard prefix refuses a VM name outside the managed namespace;
-            -- a refusal is a hard error (we will not delete an unguarded VM).
-            Left err -> die err
-            -- WSL2 destroy also restores the global @.wslconfig@ we backed up.
-            Right effs -> runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
-        else runEffectsBestEffort cfg ("project down: stopping " ++ name) (spStop provider)
+    daemonError <- captureCleanup "host accelerator daemon" (stopHostAcceleratorDaemon cfg (context projectCfg))
+    frameError <- captureCleanup "provider/direct cluster" (teardownFrames cfg)
+    let errors = [err | Just err <- [daemonError, frameError]]
+    unless (null errors) $
+        die ("project teardown attempted every cleanup step but failed:\n" ++ unlines (map ("  - " ++) errors))
+  where
+    captureCleanup label action = do
+        outcome <- try action :: IO (Either SomeException ())
+        pure $ case outcome of
+            Right () -> Nothing
+            Left err -> Just (label ++ ": " ++ show err)
+    teardownFrames cfg
+        | substrateName (hcSubstrate cfg) == LinuxGpu = do
+            putStrLn "project teardown: direct Linux GPU lane has no provider VM"
+            unless (toolPresent cfg Docker) $
+                die "project teardown: Docker is unavailable, so absence of the direct nvkind cluster cannot be proven"
+            let root = T.unpack (Context.sourceRoot (context projectCfg))
+                directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+            exists <- directClusterExists cfg directPlan
+            when exists $ do
+                putStrLn "project teardown: deleting the direct nvkind cluster through the project image"
+                runOrDie cfg Docker directClusterTeardownArgs
+            remaining <- directClusterExists cfg directPlan
+            when remaining (die "project teardown: direct nvkind node containers remain after deletion")
+        | otherwise = do
+            provider <- demoProvider cfg
+            let name = spVmId provider
+            if destroyVM
+                then case spDestroy provider of
+                    Left err -> die err
+                    Right effs -> do
+                        runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
+                        remaining <- substrateExists cfg provider
+                        when remaining (die ("project destroy: managed VM still exists after deletion: " ++ name))
+                else runEffectsBestEffort cfg ("project down: stopping " ++ name) (spStop provider)
+
+{- | The direct lane deliberately does not require host-installed kind/nvkind.
+Execute the image's pinned @kind@ against the host Docker socket so teardown
+uses the same toolchain image that created the nvkind cluster.
+-}
+directClusterTeardownArgs :: [String]
+directClusterTeardownArgs =
+    [ "run"
+    , "--rm"
+    , "--network=host"
+    , "-v"
+    , "/var/run/docker.sock:/var/run/docker.sock"
+    , "--entrypoint"
+    , "/usr/local/bin/kind"
+    , demoProjectImage
+    , "delete"
+    , "cluster"
+    , "--name"
+    , demoProject
+    ]
 
 {- | Run a teardown tool invocation best-effort: announce the intent, then tolerate
 a non-zero exit (a missing or already-stopped VM is not a failure for idempotent
@@ -2036,7 +2730,11 @@ demoDeployImage currentFrameId directLinuxGpu payload =
             , "HOSTBOOTSTRAP_CURRENT_FRAME=" ++ currentFrameId
             ]
                 ++ ( if directLinuxGpu
-                        then ["-e", "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"]
+                        then
+                            [ "--gpus=all"
+                            , "-e"
+                            , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
+                            ]
                         else []
                    )
                 ++ [ "-e"

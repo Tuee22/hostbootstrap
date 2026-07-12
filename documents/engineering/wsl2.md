@@ -202,9 +202,10 @@ Lima is the Apple Silicon VM provider and Incus the native Linux VM provider; WS
 On Windows the chain's `deploy-VM` step uses WSL2 because it is the native, first-class Linux VM the
 platform ships, just as `deploy-VM` uses Lima on Apple Silicon and Incus on native Linux. WSL2 is **its
 own provider**, not Incus-on-Windows: `ensure incus` stays applicable only on Apple Silicon and Linux.
-The CUDA host capability on Windows is a separate, **headless host build** (composition pattern #7) that
-runs nvcc on the bare Windows host and stages artifacts into the cluster — it does not run inside the
-WSL2 VM. See [ensure reconcilers](ensure_reconcilers.md) and
+The accelerator's CUDA capability on Windows is a separate **host-native daemon** (composition pattern #6):
+it runs nvcc and the generated worker on bare Windows and connects to the WSL2-hosted web service through
+the local-only NodePort. It does not stage that worker into the WSL2 cluster. Generic build-only staging
+remains pattern #7. See [ensure reconcilers](ensure_reconcilers.md) and
 [composition_patterns](composition_patterns.md).
 
 ## Current Status

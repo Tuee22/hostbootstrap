@@ -70,15 +70,21 @@ direct topology, and rejection of an unmarked host-backed project container.
 
 ## Remaining Work
 
-**Accelerator daemon context work — static substrate landed; integration open.**
+**Accelerator daemon context work — implementation complete; live integration open.**
 
-- Done statically: daemon role authority, host-resident daemon context projection, in-cluster daemon
-  projection, the explicit Linux GPU direct project-container context, strict VM-backed runtime-container
-  ancestry, and the pure/witness tests.
-- Remaining integration: Phase 16/18 have wired the host-daemon config/startup and concrete WebSocket
-  runtime paths locally; Phase 16 still must place Linux CPU/GPU in-cluster daemon pods, and Phase 13 must
-  close the real substrate/e2e gates proving each daemon placement reads its config and connects to the
-  web ingress.
+- Done statically: daemon role authority, host-resident and in-cluster daemon projections, the explicit
+  Linux GPU direct project-container context, strict VM-backed runtime-container ancestry, and the
+  pure/witness tests.
+- Done statically: the demo renders the web-service and daemon ConfigMaps dynamically from the validated
+  parent-derived projections and applies them from `HostBootstrapDemo.Commands`; the chart retains only
+  the Deployment mount, and a hash of the exact config bytes rolls a subPath-mounted pod when config
+  changes.
+- Done statically: Phase 16 places and rollout-waits the Linux CPU/GPU daemon Deployments, while the
+  Apple/Windows host path writes the host-daemon projection beside the host-native daemon binary. Phase 18
+  dispatches the config-selected service variant through the concrete WebSocket runtime.
+- Remaining (real-run-gated, § C): prove on the native substrate lanes that every daemon reads the
+  delivered projection and connects through the intended ingress. No context implementation or static-test
+  work remains.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
@@ -115,7 +121,8 @@ repeatable `--also-role ROLE`, so `project init --role host-orchestrator --also-
 `addRole`; the generated config carries `HostOrchestratorCommand` + `ClusterLifecycleCommand` +
 `ServiceCommand` and the service capabilities). The contract is documented in
 [binary_context_config.md](../documents/architecture/binary_context_config.md). The service-role config is
-consumed by [phase-18](phase-18-service-runtime-command.md) (Done). No remaining work.
+consumed by [phase-18](phase-18-service-runtime-command.md), whose base service command is delivered and
+whose accelerator reopening remains `Active` for live integration. No baseline multi-role work remains.
 
 The realigned contract built earlier remains valid and validated:
 
@@ -313,8 +320,8 @@ step-chain interpreter); the dissolved `cluster` and demo verbs are tracked in
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Container.hs`, `demo/docker/Dockerfile`,
-`demo/chart/templates/configmap.yaml`, `demo/chart/templates/deployment.yaml`,
-`demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`,
+`demo/chart/templates/deployment.yaml`, `demo/src/HostBootstrapDemo/Commands.hs` (dynamic ConfigMap
+render/apply), `core/hostbootstrap-core/test/ContextSpec.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/ContainerSpec.hs`
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`,
@@ -502,11 +509,21 @@ project-container topology.
 
 #### Remaining Work
 
-Static constructors, gates, and topology tests landed 2026-07-09. Validation: `cabal build all
---ghc-options=-Werror` and `cabal test all` from `core/` pass (326 tests; the current core suite is 328
-after the Phase 16 hook additions). Open only for the later integration checks that prove the Phase 16
-daemon lifecycle and Phase 18 concrete transport deliver these configs to real daemon placements and reach
-the web service.
+Static constructors, gates, and topology tests are complete (`deriveDaemonContext` /
+`deriveHostDaemonContext` / `deriveClusterDaemonContext` and the daemon `DaemonCommand`/`ServiceCommand`
+authority). The demo **materializes and delivers** every projection: the Apple/Windows post-handoff path
+writes the host-resident config beside the host-native daemon binary; the Linux CPU/GPU
+`deploy-accelerator-daemon` path renders the in-cluster config into a dynamically generated ConfigMap,
+applies it before the workload, and sets `HOSTBOOTSTRAP_CURRENT_FRAME` to the derived `daemon-<n>` frame so
+the in-pod runtime-witness gate passes. The web service config is likewise generated and applied by
+`HostBootstrapDemo.Commands` from the actual parent topology; the exact mounted bytes are hashed into the
+pod template so a subPath-mounted config change causes rollout. Current validation (2026-07-11): `cabal
+build all --ghc-options=-Werror` and `cabal test all` pass from `core/` (357) and `demo/` (82, plus the
+embedded 357-core suite).
+
+Open only for real-run integration proving each daemon placement **reads** its delivered config and
+**connects**: the current host-daemon durable gate and the native Linux CPU/GPU in-cluster daemon lanes,
+plus the unavailable Apple lane. No config implementation or static-test work remains.
 
 ## Documentation Requirements
 

@@ -85,6 +85,7 @@ enumCases =
                 , Incus
                 , Df
                 , Kill
+                , Ps
                 ]
     ]
 

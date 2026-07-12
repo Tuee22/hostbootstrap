@@ -22,8 +22,12 @@
 - A test config may override the budget (e.g. smaller resources); `test run` projects the override into the
   test `<project>.dhall` it writes, then drives the same sizing path as deploy.
 - The project binary verifies the active context has the spare budget available before proceeding, then
-  applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on Linux, WSL2 on
-  Windows, Colima for direct Apple Docker workloads), a kind-node cap, or a container cap.
+  applies the cordon — a dedicated VM (Lima for the Apple pristine demo, Incus on the Linux CPU lane,
+  WSL2 on Windows, Colima for direct Apple Docker workloads), a kind/nvkind-node cap, or a container cap.
+- A cluster with multiple node containers receives the cluster envelope **once**: lifecycle splits CPU,
+  memory, and storage evenly (flooring each share) and applies the CPU/memory cap to every node. The
+  `nvkind` direct GPU topology is one control-plane plus one GPU worker, so neither node receives the
+  full envelope.
 - The ceiling is enforced by three rings (compile, bring-up, runtime). The applied detail lives in
   [applied_cordon](applied_cordon.md).
 - Downstream binaries do not read the host config directly; they consume the budget projection in their
@@ -44,6 +48,13 @@ Concretely, the former core default budget `4/8/20` (now only a test fixture) co
 demo — the demo's `deploy-VM` gate requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19
 the default lives in the project-owned `psInit` and the demo's `psInit` returns its real budget. See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+
+The Phase-5 Linux GPU work extends the runtime ring without changing this model. A normal kind plan
+declares one `control-plane` node; the explicit `nvkind` plan declares `control-plane` and `worker`.
+`clusterNodeCordonArgs` divides the one cluster slice across the declared node list and refuses a slice
+whose CPU, memory, or storage cannot give every node a positive share. The split planner is covered by
+the current static baseline (357 core tests and 83 demo tests); Phase 5.5 remains Active until the
+pristine and warm real-Linux gates validate the applied caps.
 
 ## The Budget Field
 
@@ -132,13 +143,16 @@ bootstrapper.
 | Substrate | Cordoning mechanism |
 |-----------|---------------------|
 | `apple-silicon` | For the pristine demo environment, a dedicated Lima VM sized to `cpu` / `memory` / `storage`. For direct Apple Docker workloads, the Colima VM is the Docker-provider cordon. In both cases the VM boundary is the cordon, applied by the project binary, not by the Python bootstrapper. |
-| `linux-cpu` / `linux-gpu` | A kind-node cap applied during cluster bring-up: `docker update --cpus --memory --memory-swap` on the control-plane container, capping the cluster's consumption to the declared budget. |
+| `linux-cpu` / `linux-gpu` | A kind/nvkind node cap applied during cluster bring-up. The one cluster envelope is split evenly across the plan's declared nodes (`control-plane` for kind; `control-plane` + GPU `worker` for the demo's nvkind topology), flooring each share so the sum cannot exceed the envelope. `docker update --cpus --memory --memory-swap` is then applied fail-closed to every node. |
 | `windows-cpu` / `windows-gpu` | A project-owned WSL2 `Ubuntu-24.04` distro, cordoned by the project binary. WSL2 has **no** per-distro memory/CPU cap, so memory/CPU are the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling (`processors` / `memory` / `swap`, written and applied with `wsl --shutdown` at launch, backed up and restored on teardown) that sizes the shared utility VM; storage is a per-distro VHDX cap applied at registration via `wsl --install --vhd-size`. There is no `wsl --memory`/`--cpu` flag. See [wsl2](wsl2.md). |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows may use the per-project
-Colima VM; on Linux it is the kind-node cap applied during cluster bring-up, after `kind create` and
-before Helm, fail-closed. Storage is cordoned per substrate (Lima/Colima `--disk` on Apple, an incus `root,size` for an
-incus VM, a quota'd hostPath plus image GC on bare Linux). The cluster-side enforcement is part of the
-lifecycle semantics in [cluster_lifecycle](cluster_lifecycle.md); the full applied detail — the argv,
-the storage drop from the `docker update` flags, and the self-limiting `--memory-swap == --memory` — is
-in [applied_cordon](applied_cordon.md).
+Colima VM; on Linux the cluster-side cordon is applied after kind/nvkind create and before workload
+deployment, fail-closed. The lifecycle derives the concrete node names from `ClusterPlan`, splits the
+slice across them, and applies every generated `docker update` argv. Storage participates in the split
+and minimum-share check but has no `docker update` flag; it is cordoned per substrate (Lima/Colima
+`--disk` on Apple, an incus `root,size` for an incus VM, a quota'd hostPath plus image GC on bare Linux).
+The cluster-side enforcement is part of the lifecycle semantics in
+[cluster_lifecycle](cluster_lifecycle.md); the full applied detail — the argv, the storage drop from the
+runtime flags, and the self-limiting `--memory-swap == --memory` — is in
+[applied_cordon](applied_cordon.md).

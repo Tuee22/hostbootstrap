@@ -3,40 +3,45 @@
 
 module CLISpec (tests) where
 
-import Control.Exception (finally, try)
+import Control.Exception (finally, throwIO, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Fixture
 import HostBootstrap.CLI (
-    ProjectSpec,
+    ProjectSpec (psServices),
     projectSpec,
     runHostBootstrapCLI,
     withChain,
+    withServiceConfig,
     withServices,
+    withTeardown,
  )
 import HostBootstrap.Command (coreCommandNames)
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
 import HostBootstrap.Harness (
     Case (Case),
     CaseResult (Fail, Pass),
+    SafetyRefusal (SafetyRefusal),
     TestSuite (TestSuite),
  )
-import HostBootstrap.Service (ServiceHandler (ServiceHandler))
-import HostBootstrap.Step (Step, StepFrame (..), deployVMStep)
-import System.Directory (removeFile)
-import System.Environment (withArgs)
+import HostBootstrap.Service (ServiceHandler (ServiceHandler), serviceVariantNames)
+import HostBootstrap.Step (Step, StepFrame (..), deployVMStep, projectStep)
+import System.Directory (doesDirectoryExist, doesFileExist, removeFile)
+import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure), die)
 import System.FilePath (takeDirectory, (</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 
--- | The fixture-backed project spec the CLI tests drive (generic over the
--- core-internal 'Fixture.ProjectConfig' + 'Fixture.TestConfig'). The init builders
--- are the fixture's, so @project init@ / @test init@ / @test run@ exercise the
--- real generic command machinery against a concrete config.
+{- | The fixture-backed project spec the CLI tests drive (generic over the
+core-internal 'Fixture.ProjectConfig' + 'Fixture.TestConfig'). The init builders
+are the fixture's, so @project init@ / @test init@ / @test run@ exercise the
+real generic command machinery against a concrete config.
+-}
 specWith ::
     TestSuite ->
     IO () ->
@@ -71,6 +76,12 @@ tests =
                 try (withArgs ["--help"] (runHostBootstrapCLI "dup-svc" dup)) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
+        , testCase "service registries compose additively across layers" $ do
+            let layered =
+                    withServices
+                        [ServiceHandler "accelerator" (pure ())]
+                        (withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) []))
+            serviceVariantNames (psServices layered) @?= ["web", "accelerator"]
         , testCase "check-code runs the project-supplied hook" $ do
             ran <- newIORef False
             withProjectConfig "cli-check-hook" $ do
@@ -95,23 +106,25 @@ tests =
             cfgPath <- Schema.siblingProjectConfigPath "cli-test-init"
             let testPath = takeDirectory cfgPath </> "cli-test-init.test.dhall"
             ( do
-                result <-
-                    try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-init" (specWith passingSuite (pure ()) []))) ::
-                        IO (Either ExitCode ())
-                result @?= Right ()
+                    result <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-init" (specWith passingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result @?= Right ()
                 )
                 `finally` removeFile testPath
         , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ do
             cfgPath <- Schema.siblingProjectConfigPath "cli-test-fail"
             let testPath = takeDirectory cfgPath </> "cli-test-fail.test.dhall"
             ( do
-                _ <-
-                    try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
-                        IO (Either ExitCode ())
-                result <-
-                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
-                        IO (Either ExitCode ())
-                result @?= Left (ExitFailure 1)
+                    _ <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-fail" (specWith failingSuite (pure ()) []))) ::
+                            IO (Either ExitCode ())
+                    result @?= Left (ExitFailure 1)
+                    doesFileExist cfgPath >>= (@?= False)
+                    doesDirectoryExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "test run refuses to overwrite an existing sibling project config" $ do
@@ -119,16 +132,16 @@ tests =
             let testPath = takeDirectory cfgPath </> "cli-test-existing.test.dhall"
                 spec = specWith passingSuite (pure ()) []
             ( do
-                _ <-
-                    try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
-                        IO (Either ExitCode ())
-                Schema.writeProjectConfigFile
-                    cfgPath
-                    (Fixture.defaultProjectConfig "cli-test-existing" "/workspace/demo" HostOrchestrator)
-                result <-
-                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
-                        IO (Either ExitCode ())
-                result @?= Left (ExitFailure 1)
+                    _ <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                            IO (Either ExitCode ())
+                    Schema.writeProjectConfigFile
+                        cfgPath
+                        (Fixture.defaultProjectConfig "cli-test-existing" "/workspace/demo" HostOrchestrator)
+                    result <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-existing" spec)) ::
+                            IO (Either ExitCode ())
+                    result @?= Left (ExitFailure 1)
                 )
                 `finally` (removeFile testPath >> removeFile cfgPath)
         , testCase "service schema lists variants without a config" $ do
@@ -139,9 +152,61 @@ tests =
             result @?= Right ()
         , testCase "service run fails fast on a non-service-role config" $
             withProjectConfig "cli-svc-role" $ do
+                let spec = configuredService "web" (withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-role" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+        , testCase "service run dispatches exactly the selected variant from a multi-handler registry" $
+            withServiceProjectConfig "cli-svc-dispatch" $ do
+                webRan <- newIORef False
+                acceleratorRan <- newIORef False
+                let spec =
+                        configuredService "accelerator" $
+                            withServices
+                                [ ServiceHandler "web" (writeIORef webRan True)
+                                , ServiceHandler "accelerator" (writeIORef acceleratorRan True)
+                                ]
+                                (specWith passingSuite (pure ()) [])
+                result <-
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-dispatch" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                readIORef webRan >>= (@?= False)
+                readIORef acceleratorRan >>= (@?= True)
+        , testCase "service run rejects a legacy positional variant" $
+            withServiceProjectConfig "cli-svc-positional" $ do
+                let spec = configuredService "web" (withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["service", "run", "web"] (runHostBootstrapCLI "cli-svc-positional" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+        , testCase "service run fails fast for an empty registry" $
+            withServiceProjectConfig "cli-svc-empty" $ do
+                let spec = configuredService "accelerator" (specWith passingSuite (pure ()) [])
+                result <-
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-empty" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+        , testCase "service run fails fast for an unknown variant" $
+            withServiceProjectConfig "cli-svc-unknown" $ do
+                let spec = configuredService "accelerator" (withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-unknown" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+        , testCase "service run refuses a service-role config with no configured variant" $
+            withServiceProjectConfig "cli-svc-unconfigured" $ do
                 let spec = withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) [])
                 result <-
-                    try (withArgs ["service", "run", "web"] (runHostBootstrapCLI "cli-svc-role" spec)) ::
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-unconfigured" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+        , testCase "the fixed service surface has no down command" $
+            withServiceProjectConfig "cli-svc-no-down" $ do
+                let spec = withServices [ServiceHandler "web" (pure ())] (specWith passingSuite (pure ()) [])
+                result <-
+                    try (withArgs ["service", "down"] (runHostBootstrapCLI "cli-svc-no-down" spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "context render fails fast on an unknown artifact" $ do
@@ -161,12 +226,29 @@ tests =
                     try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-dryrun" (withChain sampleChain (specWith passingSuite (pure ()) [])))) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
+        , testCase "project up safety refusal skips automatic project teardown" $
+            withProjectConfig "cli-project-safety" $ do
+                teardownCalls <- newIORef (0 :: Int)
+                let frame = StepFrame "host-orchestrator-0" "metal"
+                    refusingChain _ = [projectStep "safety-refusal" "probe ownership" frame (\_ -> throwIO (SafetyRefusal "pre-existing state"))]
+                    spec =
+                        withTeardown
+                            (\_ _ -> writeIORef teardownCalls 1)
+                            (withChain refusingChain (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-safety" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                readIORef teardownCalls >>= (@?= 0)
         , testCase "project up fails fast without a sibling context" $ do
             result <-
                 try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-nocfg" (withChain sampleChain (specWith passingSuite (pure ()) [])))) ::
                     IO (Either ExitCode ())
             result @?= Left (ExitFailure 1)
         ]
+
+configuredService :: String -> ProjectSpec Fixture.ProjectConfig Fixture.TestConfig -> ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+configuredService variant = withServiceConfig (const (Right variant))
 
 -- A one-step demo-shaped chain used to prove `project up --dry-run` renders.
 sampleChain :: Fixture.ProjectConfig -> [Step]
@@ -198,11 +280,26 @@ emptySuiteFixture :: TestSuite
 emptySuiteFixture =
     TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) (pure ())
 
--- | Write a fixture project config at the executable sibling path for a
--- gate-needing command, then remove it.
+{- | Write a fixture project config at the executable sibling path for a
+gate-needing command, then remove it.
+-}
 withProjectConfig :: String -> IO () -> IO ()
 withProjectConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
     path <- Schema.siblingProjectConfigPath projectName
     let cfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
     (Schema.writeProjectConfigFile path cfg >> action) `finally` removeFile path
+
+withServiceProjectConfig :: String -> IO () -> IO ()
+withServiceProjectConfig rawProjectName action = do
+    let projectName = T.pack rawProjectName
+        witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
+        parentCfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+        cfg = parentCfg{Fixture.context = Context.deriveHostDaemonContext (Fixture.context parentCfg) "/workspace/demo"}
+        frame = T.unpack (Context.currentFrame (Fixture.context cfg))
+    path <- Schema.siblingProjectConfigPath projectName
+    previous <- lookupEnv witnessName
+    let restore = do
+            removeFile path
+            maybe (unsetEnv witnessName) (setEnv witnessName) previous
+    (Schema.writeProjectConfigFile path cfg >> setEnv witnessName frame >> action) `finally` restore

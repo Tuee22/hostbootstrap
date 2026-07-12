@@ -29,6 +29,8 @@ module HostBootstrap.Harness (
     testSuiteCaseCount,
     allCasesSelector,
     ConfigVariant (..),
+    SafetyRefusal (..),
+    safetyRefusalMarker,
     runSuiteSelection,
     testSafetyPreconditions,
     RunModel (..),
@@ -53,8 +55,9 @@ module HostBootstrap.Harness (
 )
 where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (Exception, SomeAsyncException, SomeException, fromException, mask, onException, tryJust)
 import Control.Exception.Safe (finally)
+import Control.Monad (unless)
 import Data.List (intercalate, isPrefixOf, partition)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Lifecycle (ClusterProfile (TestCase))
@@ -63,9 +66,9 @@ import HostBootstrap.Ensure (runTool)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker))
 import Numeric.Natural (Natural)
-import Control.Monad (unless)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectory, removePathForcibly)
 import System.Exit (ExitCode (ExitSuccess))
+import System.FilePath (takeDirectory)
 
 {- | A test case: an id, a budget-slicing weight, and whether it is indivisible
 (e.g. a GPU case that cannot share a device and runs serially at full budget).
@@ -159,10 +162,19 @@ a test never deletes durable state it did not create. The removal decision is th
 pure 'selfCreatedTestDataRemoval'; this is the thin IO bracket around it.
 -}
 withSelfCreatedTestData :: FilePath -> IO a -> IO a
-withSelfCreatedTestData path body = do
-    preexisting <- doesDirectoryExist path
-    unless preexisting (createDirectoryIfMissing True path)
-    body `finally` mapM_ removePathForcibly (selfCreatedTestDataRemoval preexisting path)
+withSelfCreatedTestData path body =
+    mask $ \restore -> do
+        let runLock = path ++ ".hostbootstrap-run-owner"
+        createDirectoryIfMissing True (takeDirectory path)
+        claimed <- trySynchronousIO (createDirectory runLock)
+        case claimed of
+            Left _ -> ioError (userError ("test data ownership is already active: " ++ path))
+            Right () -> do
+                preexisting <- doesDirectoryExist path `onException` removeDirectory runLock
+                unless preexisting (createDirectory path `onException` removeDirectory runLock)
+                let removeOwned = mapM_ removePathForcibly (selfCreatedTestDataRemoval preexisting path)
+                    release = removeOwned `finally` removeDirectory runLock
+                restore body `finally` release
 
 {- | Split a budget proportionally across weights by floor division (the Haskell
 mirror of @Core.dhall@ @split@; an empty/zero total yields zero slices).
@@ -242,12 +254,12 @@ runMatrix :: Seams env -> [Case] -> IO Report
 runMatrix seams cases = Report <$> mapM runOne cases
   where
     runOne c = do
-        esetup <- try (seamSetup seams c)
+        esetup <- trySynchronousIO (seamSetup seams c)
         case esetup of
             Left (err :: SomeException) -> pure (caseId c, Fail ("setup: " ++ show err))
             Right env -> do
                 result <-
-                    (try (seamRun seams env c) :: IO (Either SomeException CaseResult))
+                    trySynchronousIO (seamRun seams env c)
                         `finally` seamTeardown seams env c
                 pure (caseId c, either (Fail . show) id result)
 
@@ -295,13 +307,13 @@ The fields, in order:
 The bare binary ships 'emptySuite' through its explicit bare entrypoint.
 -}
 data TestSuite
-  = forall env.
-    TestSuite
-      (IO (Either String ()))
-      (T.Text -> IO env)
-      [Case]
-      (env -> Case -> IO CaseResult)
-      (IO ())
+    = forall env.
+        TestSuite
+        (IO (Either String ()))
+        (T.Text -> IO env)
+        [Case]
+        (env -> Case -> IO CaseResult)
+        (IO ())
 
 {- | The empty suite the bare @hostbootstrap@ binary ships: no safety obstacle, a
 trivial bring-up over no cases, so @test run all@ renders @0/0 passed@.
@@ -337,6 +349,20 @@ data ConfigVariant = ConfigVariant
     , variantWithConfig :: forall a. IO a -> IO a
     }
 
+{- | A post-ensure safety probe discovered pre-existing operator state. Cleanup
+must not run because the harness never acquired ownership of that state.
+-}
+newtype SafetyRefusal = SafetyRefusal {safetyRefusalReason :: String}
+    deriving (Eq)
+
+instance Show SafetyRefusal where
+    show (SafetyRefusal reason) = safetyRefusalMarker ++ " " ++ reason
+
+instance Exception SafetyRefusal
+
+safetyRefusalMarker :: String
+safetyRefusalMarker = "HOSTBOOTSTRAP_SAFETY_REFUSAL:"
+
 {- | The two hard fail-fast safety preconditions checked before any test runs
 (development_plan_standards § Z), so a test never interferes with production:
 
@@ -350,15 +376,15 @@ when neither obstacle is present.
 -}
 testSafetyPreconditions :: FilePath -> IO Bool -> IO (Either String ())
 testSafetyPreconditions configPath productionClusterRunning = do
-  cfgExists <- doesFileExist configPath
-  if cfgExists
-    then pure (Left ("a production config already exists at " ++ configPath ++ "; refusing to overwrite it"))
-    else do
-      running <- productionClusterRunning
-      pure $
-        if running
-          then Left "a production cluster is already running; refusing to touch production state"
-          else Right ()
+    cfgExists <- doesFileExist configPath
+    if cfgExists
+        then pure (Left ("a production config already exists at " ++ configPath ++ "; refusing to overwrite it"))
+        else do
+            running <- productionClusterRunning
+            pure $
+                if running
+                    then Left "a production cluster is already running; refusing to touch production state"
+                    else Right ()
 
 {- | Resolve a @test run@ selector against a suite, enforce the safety
 preconditions, then **loop over the labeled config variants** the command layer
@@ -383,74 +409,74 @@ the per-variant reports are aggregated into one 'Report', each row labeled with
 its variant.
 -}
 runSuiteSelection ::
-  TestSuite ->
-  [ConfigVariant] ->
-  String ->
-  IO (Either String Report)
+    TestSuite ->
+    [ConfigVariant] ->
+    String ->
+    IO (Either String Report)
 runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants selector =
-  case chosenCases of
-    Left err -> pure (Left err)
-    Right chosen -> do
-      safe <- safety
-      case safe of
-        Left reason -> pure (Left ("test run refused: " ++ reason))
-        -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
-        -- the self-created-only delete-guard, so the run's durable storage is
-        -- isolated and a `.test_data` (or `.data`) the run did not create is never
-        -- removed. Each variant's run config is generated inside its
-        -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
-        -- brought up against it; the variant reports are concatenated.
-        Right () -> withSelfCreatedTestData testDataRoot $ do
-          variantReports <- mapM (safeRunVariant chosen) variants
-          pure (Right (Report (concatMap reportResults variantReports)))
+    case chosenCases of
+        Left err -> pure (Left err)
+        Right chosen -> do
+            safe <- safety
+            case safe of
+                Left reason -> pure (Left ("test run refused: " ++ reason))
+                -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
+                -- the self-created-only delete-guard, so the run's durable storage is
+                -- isolated and a `.test_data` (or `.data`) the run did not create is never
+                -- removed. Each variant's run config is generated inside its
+                -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
+                -- brought up against it; the variant reports are concatenated.
+                Right () -> withSelfCreatedTestData testDataRoot $ do
+                    variantReports <- mapM (safeRunVariant chosen) variants
+                    pure (Right (Report (concatMap reportResults variantReports)))
   where
     -- A whole variant is isolated: an unexpected exception anywhere in it (the
     -- config bracket, an escaped teardown) fails only that variant's cases and the
     -- loop moves on to the next variant, rather than aborting the run.
     safeRunVariant chosen cv@(ConfigVariant label _) = do
-      e <- tryAnyIO (runVariant chosen cv)
-      pure $ case e of
-        Right report -> report
-        Left err -> labelReport label (allFail chosen ("variant failed: " ++ show err))
-    -- Bring-up is now **inside** the guaranteed teardown: a failed @project up@ runs
-    -- the same best-effort @project destroy@ (so the partial stack is not leaked)
-    -- and turns into a per-case 'Fail' for this variant, instead of throwing out of
-    -- the loop. Teardown runs env-independently and best-effort, so it also fires on
-    -- the bring-up-failure path and its own failure never aborts the remaining
-    -- variants.
+        e <- trySynchronousIO (runVariant chosen cv)
+        pure $ case e of
+            Right report -> report
+            Left err -> labelReport label (allFail chosen ("variant failed: " ++ show err))
+    -- Bring-up is **inside** the guaranteed teardown: a failed @project up@ runs
+    -- the same @project destroy@ and turns into a per-case 'Fail' for this variant.
+    -- A teardown exception also fails the variant (a green report may never hide a
+    -- leaked stack); 'safeRunVariant' still catches it so later variants can run.
     runVariant chosen (ConfigVariant label withGeneratedConfig) =
-      labelReport label
-        <$> withGeneratedConfig (runFrame chosen label `finally` ignoreExceptions tearDown)
+        labelReport label <$> withGeneratedConfig (runFrame chosen label)
     runFrame chosen label = do
-      eenv <- tryAnyIO (bringUp label)
-      case eenv of
-        Left err -> pure (allFail chosen ("bring-up failed: " ++ show err))
-        Right env -> runMatrix (assertSeams env) chosen
+        eenv <- trySynchronousIO (bringUp label)
+        case eenv of
+            Left err ->
+                case fromException err :: Maybe SafetyRefusal of
+                    Just refusal -> pure (allFail chosen ("bring-up refused: " ++ safetyRefusalReason refusal))
+                    Nothing -> pure (allFail chosen ("bring-up failed: " ++ show err)) `finally` tearDown
+            Right env -> runMatrix (assertSeams env) chosen `finally` tearDown
     -- Every chosen case fails with one reason (the bring-up / variant failure).
     allFail chosen reason = Report [(caseId c, Fail reason) | c <- chosen]
     chosenCases
-      | selector == allCasesSelector = Right cases
-      | otherwise = case filter ((== selector) . caseId) cases of
-          [] -> Left unknown
-          chosen -> Right chosen
+        | selector == allCasesSelector = Right cases
+        | otherwise = case filter ((== selector) . caseId) cases of
+            [] -> Left unknown
+            chosen -> Right chosen
     -- Reuse the per-case loop: the live stack `bringUp` produced is the shared
     -- env every case asserts against; teardown is the suite-level `project
     -- destroy`, so the per-case teardown is a no-op.
     assertSeams env =
-      Seams
-        { seamSetup = \_ -> pure env,
-          seamRun = assertCase,
-          seamTeardown = \_ _ -> pure ()
-        }
+        Seams
+            { seamSetup = \_ -> pure env
+            , seamRun = assertCase
+            , seamTeardown = \_ _ -> pure ()
+            }
     -- Prefix each case id with the variant label so the aggregated report card
     -- attributes every row to the variant it ran under.
     labelReport label (Report rs) =
-      Report [("[" ++ T.unpack label ++ "] " ++ cid, r) | (cid, r) <- rs]
+        Report [("[" ++ T.unpack label ++ "] " ++ cid, r) | (cid, r) <- rs]
     unknown =
-      "unknown test case "
-        ++ show selector
-        ++ "; available: "
-        ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
+        "unknown test case "
+            ++ show selector
+            ++ "; available: "
+            ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
 
 {- | The real L0 'OneShot' container-run seam: each case runs @docker run --rm@
 (budget-capped via 'oneShotRunArgs') through the resolved Docker tool, passing
@@ -473,17 +499,14 @@ oneShotSeams cfg specFor =
         , seamTeardown = \_ _ -> pure ()
         }
 
--- | 'try' pinned to 'SomeException' (the existential @env@ cannot be named in a
--- signature, so this monomorphic wrapper fixes the exception type for the
--- bring-up / teardown / variant guards).
-tryAnyIO :: IO a -> IO (Either SomeException a)
-tryAnyIO = try
-
--- | Run a teardown/cleanup action best-effort: swallow any exception so a failing
--- @project destroy@ never aborts the remaining variants (the safety preconditions,
--- not teardown, protect production state).
-ignoreExceptions :: IO () -> IO ()
-ignoreExceptions io = tryAnyIO io >> pure ()
+{- | Catch synchronous failures while allowing cancellation and user interrupts
+to propagate through the surrounding cleanup brackets.
+-}
+trySynchronousIO :: IO a -> IO (Either SomeException a)
+trySynchronousIO = tryJust $ \err ->
+    case fromException err :: Maybe SomeAsyncException of
+        Just _ -> Nothing
+        Nothing -> Just err
 
 -- | Whether every case passed.
 allPassed :: Report -> Bool

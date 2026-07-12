@@ -33,6 +33,7 @@ module HostBootstrap.CLI (
     withFrameContext,
     withTeardown,
     withServices,
+    withServiceConfig,
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
 )
@@ -69,27 +70,36 @@ data ProjectSpec cfg tcfg = ProjectSpec
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
     , psServices :: ServiceRegistry
+    , psServiceVariant :: cfg -> Either String String
+    {- ^ Resolve the service variant declared by the effective project config.
+    Core remains generic over @cfg@; the project owns its Dhall ServiceType
+    ADT and projects only the selected handler key through this seam.
+    -}
     , psChain :: cfg -> [Step]
     , psFrameContext :: cfg -> StepFrame -> LiftContext
-    , -- | The chain-frame teardown the @project down@ / @project destroy@
-      -- lifecycle runs after the recursive cluster teardown: stop (@False@) or
-      -- delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
-      -- and idempotent; the never-delete-@.data@ invariant (§ O) is the cluster
-      -- teardown's responsibility. Attach with 'withTeardown'.
-      psTeardown :: cfg -> Bool -> IO ()
-    , -- | The **only** default-bearing function: interpret the parsed @init@
-      -- flags into a concrete project config, supplying the project's defaults
-      -- for any omitted knob. Drives @project init@ / @service init@.
-      psInit :: InitArgs -> cfg
-    , -- | Interpret the parsed @init@ flags into the project's test config
-      -- (@test init@) — needs no pre-existing project config.
-      psTestInit :: InitArgs -> tcfg
-    , -- | Build the run's labeled project-config variants from the test config
-      -- (@test run@): a **non-empty** list of @(label, cfg)@ the harness loops
-      -- over, generating the sibling config, driving the stack, and tearing it
-      -- down once per variant. The label is the variant's expected message
-      -- (threaded into the per-variant assertion env).
-      psTestConfig :: tcfg -> IO [(T.Text, cfg)]
+    , psTeardown :: cfg -> Bool -> IO ()
+    {- ^ The chain-frame teardown the @project down@ / @project destroy@
+    lifecycle runs after the recursive cluster teardown: stop (@False@) or
+    delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
+    and idempotent; the never-delete-@.data@ invariant (§ O) is the cluster
+    teardown's responsibility. Attach with 'withTeardown'.
+    -}
+    , psInit :: InitArgs -> cfg
+    {- ^ The **only** default-bearing function: interpret the parsed @init@
+    flags into a concrete project config, supplying the project's defaults
+    for any omitted knob. Drives @project init@ / @service init@.
+    -}
+    , psTestInit :: InitArgs -> tcfg
+    {- ^ Interpret the parsed @init@ flags into the project's test config
+    (@test init@) — needs no pre-existing project config.
+    -}
+    , psTestConfig :: tcfg -> IO [(T.Text, cfg)]
+    {- ^ Build the run's labeled project-config variants from the test config
+    (@test run@): a **non-empty** list of @(label, cfg)@ the harness loops
+    over, generating the sibling config, driving the stack, and tearing it
+    down once per variant. The label is the variant's expected message
+    (threaded into the per-variant assertion env).
+    -}
     }
 
 {- | Build a project spec from the required streams (the test suite, code-check
@@ -112,6 +122,7 @@ projectSpec suite check arts initBuilder testInit testConfig =
         , psCheckCode = check
         , psArtifacts = arts
         , psServices = emptyServiceRegistry
+        , psServiceVariant = const (Left "project config does not declare a service variant")
         , psChain = const []
         , psFrameContext = const (const localContext)
         , psTeardown = \_ _ -> pure ()
@@ -144,13 +155,21 @@ error, so a partial stack always tears down.
 withTeardown :: (cfg -> Bool -> IO ()) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
 withTeardown f spec = spec{psTeardown = f}
 
-{- | Attach the project's service-handler registry (one of the extension streams,
-§ T, § AA): the long-running roles @service run \<variant\>@ dispatches over. The
-registry may be empty (not every project ships a service); the fixed @service@
-surface is unchanged either way.
+{- | Append a service-handler registry (one of the extension streams, § T, § AA):
+the long-running roles a config-selected @service run@ can dispatch over. Repeated calls
+compose library layers in registration order; duplicate names are rejected by
+'validateProjectSpec'. The registry may be empty (not every project ships a
+service); the fixed @service@ surface is unchanged either way.
 -}
 withServices :: ServiceRegistry -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withServices svcs spec = spec{psServices = svcs}
+withServices svcs spec = spec{psServices = psServices spec ++ svcs}
+
+{- | Attach the projection from the project's Dhall-owned @ServiceType@ ADT to
+the matching handler key. The effective config, not a CLI argument, is the
+source of truth for @service run@ (§ AA).
+-}
+withServiceConfig :: (cfg -> Either String String) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
+withServiceConfig select spec = spec{psServiceVariant = select}
 
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
@@ -169,6 +188,7 @@ runHostBootstrapCLI progName spec = do
         (psTestSuite spec)
         (psCheckCode spec)
         (psServices spec)
+        (psServiceVariant spec)
         (psChain spec)
         (psFrameContext spec)
         (psTeardown spec)
@@ -203,6 +223,7 @@ runBareHostBootstrapCLI progName = do
         emptySuite
         (putStrLn "check-code: bare core binary has no project checks")
         emptyServiceRegistry
+        (const (Left "bare core config has no service variant"))
         (const [])
         (const (const localContext))
         (\_ _ -> pure ())
@@ -246,6 +267,7 @@ runCLI ::
     TestSuite ->
     IO () ->
     ServiceRegistry ->
+    (cfg -> Either String String) ->
     (cfg -> [Step]) ->
     (cfg -> StepFrame -> LiftContext) ->
     (cfg -> Bool -> IO ()) ->
@@ -253,7 +275,7 @@ runCLI ::
     (InitArgs -> tcfg) ->
     (tcfg -> IO [(T.Text, cfg)]) ->
     IO ()
-runCLI progName projectArtifacts testSuite checkCode services chain frameCtx teardown initBuilder testInit testConfig =
+runCLI progName projectArtifacts testSuite checkCode services selectService chain frameCtx teardown initBuilder testInit testConfig =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
@@ -263,6 +285,7 @@ runCLI progName projectArtifacts testSuite checkCode services chain frameCtx tea
             testSuite
             checkCode
             services
+            selectService
             chain
             frameCtx
             teardown

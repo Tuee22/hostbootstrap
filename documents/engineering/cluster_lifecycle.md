@@ -42,9 +42,11 @@ at the container frame into `kubectl`/`helm`/`kind`.
 so the never-delete-`.data` invariant, the production-versus-test profile distinction, and the status
 shape are unit-tested; the IO drivers run `kind`/`Helm` through the `HostTool` enumeration. Accelerator
 plans also carry a pure cluster driver: normal paths use `KindDriver`; Linux GPU accelerator plans use
-`NvkindDriver`, which creates the cluster with `nvkind cluster create --name=<cluster>` after a Docker
-NVIDIA-runtime smoke while the health check, kubeconfig export, and teardown keep using the resulting kind
-cluster name. The
+`NvkindDriver`, which creates a control-plane plus GPU worker with `nvkind cluster create
+--name=<cluster>` after the official volume-mount NVIDIA-runtime smoke. The one cluster envelope is divided
+across both node containers, then bring-up installs the pinned NVIDIA device-plugin chart and requires a
+positive allocatable `nvidia.com/gpu`. Health checks, kubeconfig export, and teardown keep using the
+resulting kind cluster name. The
 semantics are shared so a project does not re-implement cluster orchestration; its chain selects a
 profile and supplies the chart, and the core interprets the step.
 
@@ -55,11 +57,11 @@ config fields into the chart without core learning the field:
 deployChart :: HostConfig -> ClusterPlan -> [(Text, Text)] -> IO ()
 ```
 
-The `[(Text, Text)]` is an opaque set of Helm values core forwards verbatim into the chart's ConfigMap;
-core never interprets the keys. The demo forwards its `message` field this way (`[("message", "Hello,
-world!")]`), so the chart templates `message` into the web service's ConfigMap and the `serveWeb` handler
-reads it from its delivered config — a project-extended field reaching the workload with no core-owned
-slot.
+The `[(Text, Text)]` is an opaque set of Helm values core forwards verbatim; core never interprets the
+keys. The demo uses it for rollout identity and placement values. The service ConfigMap itself is rendered
+from the exact parent-derived `ProjectConfig` by the project binary and applied with `kubectl apply -f -`
+before Helm runs. Its exact mounted bytes are fingerprinted into the Deployment annotation, so a config
+change rolls the pod without teaching core about `message` or `ServiceType`.
 
 ## `project up`: Fail-Closed, Idempotent Bring-Up
 
@@ -90,13 +92,14 @@ container frame the recursive interpreter reaches — not host tools (see
 
 ### Accelerator daemon ingress
 
-The planned accelerator demo adds a daemon WebSocket ingress on the web service. In-cluster daemon pods
-use a normal `ClusterIP` path to reach it. Host-resident Apple Silicon and Windows GPU daemons use a
-local-only `NodePort` whose kind host mapping binds `127.0.0.1`, so the host daemon can connect without
-publishing the accelerator ingress on the LAN. `acceleratorIngressPlan` is the pure renderer for that
-choice. The demo reserves NodePort `30081` in `demo/kind.yaml` with a `127.0.0.1` listen address for the
-host-daemon ingress; the existing web/registry/MinIO NodePorts keep their historical bindings. Linux GPU
-uses a direct host `nvkind` cluster rather than an Incus VM; Linux CPU keeps the Incus VM path.
+The accelerator demo adds a daemon WebSocket ingress on the web service. The chart renders it as a
+distinct Service from the public web NodePort. In-cluster daemon pods use `ClusterIP` port 8081;
+host-resident Apple Silicon and Windows GPU daemons use NodePort 30081. `acceleratorIngressPlan` is the
+pure renderer for that choice. Placement-specific kind configs publish 30081 only for host-daemon lanes,
+bound to `127.0.0.1`, so the daemon can connect without publishing the ingress on the LAN. In-cluster
+kind/nvkind configs omit the mapping; the existing web/registry/MinIO NodePorts keep their historical
+bindings. Linux GPU uses a direct host `nvkind` cluster rather than an Incus VM; Linux CPU keeps the Incus
+VM path.
 
 ## `project down`: Delete Kind, Preserve State
 
@@ -174,7 +177,7 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
 - **Behavior**: cluster bring-up and teardown are chain steps the recursive `project up`/`project
   down`/`project destroy` interpreter runs, with `down` deleting the kind cluster while preserving durable
   state and `destroy` deleting it too. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional;
-  the stop and teardown steps are best-effort. Read-only state is reported through `context inspect`,
+  teardown attempts every independent cleanup and aggregates failures. Read-only state is reported through `context inspect`,
   which renders the lift composition with the current frame marked, reports whether the resolved cluster
   is live alongside the preserved `.data` and derived paths, and never mutates state. The
   `clusterCreate`/`deployChart`/`clusterUp`/`clusterDown`/`clusterDelete` reconcilers live in
@@ -182,12 +185,14 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
   through its substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` value
   (`demo/src/HostBootstrapDemo/Commands.hs`), interpreted by the same `project` lifecycle. Under the
-  implemented generic project model, `deployChart` carries the `[(Text, Text)]` extra-values param so the demo
-  forwards its `message` field into the chart ConfigMap (see [schema](schema.md) and
-  [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)). The 2026-07-09 accelerator
-  lifecycle slice added the static Linux GPU `nvkind` cluster driver, NVIDIA Docker runtime probe, and
-  pure accelerator ingress exposure planning; live daemon connectivity remains gated by the accelerator
-  phases in the development plan.
+  implemented generic project model, the demo renders and applies its exact service config before
+  `deployChart`; Helm values carry only rollout/placement metadata (see [schema](schema.md) and
+  [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)). The accelerator lifecycle's
+  static slice now includes the direct Linux GPU `nvkind` cluster driver, official NVIDIA runtime probe,
+  control-plane/GPU-worker budget split, pinned device-plugin install/readiness/allocatable gate, CUDA
+  daemon GPU limit, and placement-specific ingress/config selection. The current `-Werror` gates pass
+  with 357 core tests and 83 demo tests; live Linux CPU/GPU daemon connectivity remains gated by the
+  accelerator phases in the development plan.
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
   in-cluster registry (NodePort 30500), the project image pushed to that registry, and the web

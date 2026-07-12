@@ -13,8 +13,9 @@
 - `hostbootstrap-core` is a **library of pure shapes + the lift algebra + the harness**. It owns **no
   default config values** and **no fixed config type** — the project supplies both.
 - The extension contract is `ProjectSpec cfg tcfg`, generic over the project's config type `cfg` (its
-  `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core couples to `cfg` only through the
-  **lift authority**: `cfg -> BinaryContext` and `BinaryContext -> cfg -> cfg`.
+  `<project>.dhall`) and test-config type `tcfg` (its `test.dhall`). Core couples to `cfg` through the
+  **lift authority** (`cfg -> BinaryContext` and `BinaryContext -> cfg -> cfg`) and the project-owned
+  `psServiceVariant :: cfg -> Either String String` selector.
 - Defaults live **only** in a project-owned `psInit :: InitArgs -> cfg`. `project init` calls it; the
   harness reuses it (DRY), so there is one config builder, not two that drift.
 - `test.dhall` is a **thin override**; the harness **generates** the run's `<project>.dhall` from it via
@@ -51,7 +52,7 @@ budget at all; the demo carries `Resources { cpu, memory, storage }`.
 
 A field a project's workload reads and renders is likewise a field of **its own** `cfg`, never a core slot.
 The demo's `cfg` carries a mandatory `message : Text` (its `psInit` default `"Hello, world!"`) that flows
-`<project>.dhall` → the chart `ConfigMap` → the `Web` service (whose `service run` handler reads its config)
+`<project>.dhall` → the binary-rendered `ConfigMap` → the `Web` service (whose `service run` handler reads its config)
 → `BudgetView.message` → the SPA `#message`. Core owns no project-specific field, and in particular **no
 generic `extra : Map Text Text` slot**: a map would re-couple core to a demo concern, and its lookup is a
 runtime `Maybe`, reintroducing exactly the decode-time optionality the strict-decode contract removes. A
@@ -85,6 +86,7 @@ data ProjectSpec cfg tcfg = ProjectSpec
   { psTestSuite     :: TestSuite                -- the project's runtime suite (safety, bring-up, [Case], assert, teardown)
   , psCheckCode     :: IO ()                    -- the project's code-check action
   , psArtifacts     :: [ConfigArtifact]         -- the project's schema-artifact delta
+  , psServiceVariant :: cfg -> Either String String -- config ServiceType -> internal handler key
   , psServices      :: ServiceRegistry          -- the project's service-handler registry
   , psChain         :: cfg -> [Step]            -- the project's lift chain
   , psFrameContext  :: cfg -> StepFrame -> LiftContext
@@ -95,9 +97,9 @@ data ProjectSpec cfg tcfg = ProjectSpec
   }
 ```
 
-Every field a project supplies is pure or project-owned. The universal coupling to `cfg` is **not** a
-`ProjectSpec` field — it is the project's `ProjectCfg` instance (`cfgContext :: cfg -> BinaryContext` and
-`cfgWithContext :: BinaryContext -> cfg -> cfg`) plus the `FromDhall`/`ToDhall` constraints core uses to
+Every field a project supplies is pure or project-owned. Context coupling is the project's `ProjectCfg`
+instance (`cfgContext :: cfg -> BinaryContext` and `cfgWithContext :: BinaryContext -> cfg -> cfg`);
+service dispatch is the `ProjectSpec`'s `psServiceVariant`. Together with the `FromDhall`/`ToDhall` constraints, core can
 strict-decode and render `<project>.dhall`. Core's command tree
 (`project`/`test`/`service`/`context`/`check-code`) stays fixed (§ P); only the **types** it threads become
 generic.

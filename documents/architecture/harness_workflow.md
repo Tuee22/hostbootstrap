@@ -6,7 +6,7 @@
 
 > **Purpose**: Describe the one standardized test engine — the per-config `runMatrix` loop that drives
 > the real `project up`, the seam-split between the L0 driver and project-supplied assertions, the two
-> fail-fast safety preconditions, and the self-created-only delete-guard — and the root-gated `test init`
+> fail-closed safety preconditions, exclusive ownership locks, and the self-created-only delete-guard — and the root-gated `test init`
 > / `test run` surface that drives it.
 
 ## TL;DR
@@ -30,12 +30,14 @@
   `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall`) already exists (never
   overwrite a production config), and refuse if a production cluster is running (never touch production
   state). Either → no tests run.
-- Teardown runs via `finally`, and bring-up is now bound **inside** it — a body (assertion) exception is
+- Generated config and `.test_data` use exclusive ownership directories for the run lifetime. Ordinary
+  config writers honor the same lock. A changed config is atomically quarantined and reported, never
+  deleted as run-owned bytes. `SafetyRefusal` records a failed variant but performs no project teardown.
+- Teardown runs via `finally`, and bring-up is bound **inside** it — a body (assertion) exception is
   recorded as `Fail`, never leaked, and teardown still runs; a failure *during* `project up` is covered too,
   because the Phase 16 guarded `applyChain` runs the same best-effort `project destroy` teardown at the ROOT
-  frame, so a bring-up failure leaves no provider VM + in-VM cluster registered. (Only an external process
-  kill still escapes the in-process teardown; the idempotent next-up reconcile — or a manual
-  `wsl --unregister` / `incus delete` — cleans up such a hard kill.) Teardown removes **only** the
+  frame, so a bring-up failure leaves no provider VM + in-VM cluster registered. An uncatchable process
+  kill is handled by the next idempotent reconcile. Teardown removes **only** the
   `<project>.dhall` and the `.test_data` directory the harness created this run, never anything it found.
 - The harness is the **one** representation of the test workflow because it *is* the deploy chain, driven
   with a test config. See [composition_methodology](composition_methodology.md) for the canonical model.
@@ -62,13 +64,13 @@ variant, in turn — so the demo's two messages each get their own fresh stack:
    Assertions are **polymorphic over what the variant set**: the harness exports `EXPECTED_MESSAGE` and the
    Playwright e2e-tabs spec asserts the SPA `#message` matches it, so the same spec proves both the
    `"Hello, world!"` and `"Hello, Universe!"` deployments.
-5. **`project destroy`** — runs via `finally` with bring-up (step 3) now bound **inside** it, so it executes
+5. **`project destroy`** — runs via `finally` with bring-up (step 3) bound **inside** it, so it executes
    whether bring-up fails or the assertion bodies succeed, fail, or throw, then removes the generated
    `<project>.dhall` and the `.test_data` the harness created this run. The next variant then spins up a
    fresh stack. A failure *inside* step 3 is covered too: the Phase 16 guarded `applyChain` runs the same
-   best-effort `project destroy` teardown at the ROOT frame, so it leaves no VM registered. (Only an external
-   kill still escapes the in-process teardown; clean up such a hard kill with the idempotent next-up
-   reconcile, or manually with `wsl --unregister` / `incus delete` / `limactl delete`.)
+   `project destroy` teardown at the ROOT frame, so it leaves no VM registered. Independent cleanup steps
+   are all attempted and failures aggregate; a teardown failure marks the variant failed. An external hard
+   kill is handled by the idempotent next-up reconcile.
 
 A body exception is caught and recorded as a `Fail` in the per-case result; it is never leaked out of
 `runMatrix`. The per-case results aggregate into a `Report`. `reportCard` renders the report (the bare
@@ -127,11 +129,15 @@ The harness cannot disturb or delete production state, enforced in code rather t
   `<project>.dhall` (`siblingProjectConfigPath`, i.e. `.build/<project>.dhall` — **not** the project root)
   already exists (it would have to overwrite a real config) or if a production cluster is running (it would
   share the host with a live deployment). Both are checked up front; failing either aborts the run.
-- **The self-created-only delete-guard.** Teardown removes only the generated `<project>.dhall` and the
+- **Exclusive ownership plus the self-created-only delete-guard.** Config and `.test_data` ownership
+  directories serialize runs. Teardown removes only the generated `<project>.dhall` and the
   `.test_data` directory the harness *created this run*, tracked from the act of creating them — never a
   config or data directory it found. This mirrors the never-delete-`.data` invariant in
   [cluster lifecycle](../engineering/cluster_lifecycle.md): `project destroy` already preserves `.data`,
-  and the harness additionally never deletes anything it did not author.
+  and the harness additionally never deletes anything it did not author. If config bytes differ during
+  cleanup, they remain in the locked ownership quarantine and the variant fails for explicit recovery.
+- **Distinguished safety refusal.** Missing tools/probe failures fail closed. A `SafetyRefusal` means the
+  state is provably pre-existing; the harness reports it but skips project teardown.
 
 > **WRONG**
 >
@@ -168,7 +174,7 @@ slice before bring-up.
 
 ## Current Status
 
-The `project up`-driven harness, the two preconditions, the self-created-only delete-guard, and `web
+The `project up`-driven harness, fail-closed preconditions, ownership locks, the self-created-only delete-guard, and `web
 serve` → `service run` are implemented. The `HostBootstrap.Harness` `runMatrix` loop, report aggregation,
 data-preserving teardown, harness-generated configs, multi-variant loop, and polymorphic message assertion
 are exercised by the core and demo tests and closed in
@@ -179,8 +185,9 @@ Under [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_p
 does not drive `project up` against a pre-existing config. Instead it GENERATES the run's `<project>.dhall`
 **functionally** from a thin `test.dhall` override via the project-owned `psTestConfig` (which reuses the
 project's `projectConfigForRole`/`psInit` builder — never shelling `project init`), drives the real
-`project up` over that generated config, and on teardown deletes the generated `<project>.dhall` plus the
-`.test_data` it created this run while keeping the authored `test.dhall`. A suite may declare more than one
+`project up` over that generated config, and on teardown removes only its still-owned config bytes plus the
+`.test_data` it created while keeping the authored `test.dhall`. Changed bytes are quarantined and reported.
+A suite may declare more than one
 variant; the harness stands each up, asserts (with `EXPECTED_MESSAGE` parameterizing the assertion), and
 tears it down in turn. The fail-fast precondition checks the executable-sibling `siblingProjectConfigPath`
 (`.build/<project>.dhall`), not the project root. See the

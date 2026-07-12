@@ -23,6 +23,13 @@ module HostBootstrap.Cluster.Lifecycle (
     acceleratorIngressPlan,
     nvidiaRuntimeProbeArgs,
     nvidiaRuntimeProbeReady,
+    nvidiaDevicePluginHelmArgs,
+    nvidiaDevicePluginReadyArgs,
+    nvidiaAllocatableProbeArgs,
+    nvidiaAllocatableReady,
+    clusterConfigPresence,
+    clusterNodeNames,
+    clusterNodeCordonArgs,
     teardown,
     statusReport,
     clusterHealthyFromProbe,
@@ -36,16 +43,18 @@ module HostBootstrap.Cluster.Lifecycle (
 where
 
 import Control.Monad (forM_, unless, when)
-import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (
-    kindNodeCordonArgs,
+    ResourceBudget (..),
+    budgetFromResources,
+    kindNodeCordonArgsFor,
     preflightBudget,
     resolveHostCapacity,
  )
-import HostBootstrap.Context (ResourceEnvelope)
+import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Ensure (runTool)
+import qualified HostBootstrap.Ensure.Cuda as Cuda
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
 import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
@@ -85,6 +94,8 @@ data ClusterPlan = ClusterPlan
     , derivedPaths :: [FilePath]
     , publishesHostPorts :: Bool
     , clusterDriver :: ClusterDriver
+    , clusterConfigFile :: Maybe FilePath
+    , clusterNodeSuffixes :: [String]
     }
     deriving (Eq, Show)
 
@@ -104,6 +115,8 @@ resolvePlanWithDriver project root profile driver = case profile of
             , derivedPaths = [root </> ".cluster" </> project]
             , publishesHostPorts = True
             , clusterDriver = driver
+            , clusterConfigFile = Just (driverConfigFile driver)
+            , clusterNodeSuffixes = driverNodeSuffixes driver
             }
     TestCase caseId ->
         ClusterPlan
@@ -112,7 +125,17 @@ resolvePlanWithDriver project root profile driver = case profile of
             , derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
             , publishesHostPorts = False
             , clusterDriver = driver
+            , clusterConfigFile = Nothing
+            , clusterNodeSuffixes = driverNodeSuffixes driver
             }
+
+driverConfigFile :: ClusterDriver -> FilePath
+driverConfigFile KindDriver = "kind.yaml"
+driverConfigFile NvkindDriver = "nvkind.yaml"
+
+driverNodeSuffixes :: ClusterDriver -> [String]
+driverNodeSuffixes KindDriver = ["control-plane"]
+driverNodeSuffixes NvkindDriver = ["control-plane", "worker"]
 
 {- | Resolve the accelerator cluster driver from the host substrate. Linux GPU is
 direct-host @nvkind@; every other substrate keeps the existing kind path.
@@ -142,19 +165,19 @@ data AcceleratorIngressPlan = AcceleratorIngressPlan
     }
     deriving (Eq, Show)
 
-acceleratorIngressPlan :: AcceleratorDaemonPlacement -> Int -> AcceleratorIngressPlan
-acceleratorIngressPlan InClusterDaemon port =
+acceleratorIngressPlan :: AcceleratorDaemonPlacement -> Int -> Int -> AcceleratorIngressPlan
+acceleratorIngressPlan InClusterDaemon servicePort _nodePort =
     AcceleratorIngressPlan
         { ingressServiceType = "ClusterIP"
-        , ingressServicePort = port
+        , ingressServicePort = servicePort
         , ingressNodePort = Nothing
         , ingressKindListenAddress = Nothing
         }
-acceleratorIngressPlan HostResidentDaemon port =
+acceleratorIngressPlan HostResidentDaemon servicePort nodePort =
     AcceleratorIngressPlan
         { ingressServiceType = "NodePort"
-        , ingressServicePort = port
-        , ingressNodePort = Just port
+        , ingressServicePort = servicePort
+        , ingressNodePort = Just nodePort
         , ingressKindListenAddress = Just "127.0.0.1"
         }
 
@@ -227,6 +250,7 @@ clusterCreate cfg plan resources = do
     -- first @kubectl apply@ / @helm install@ could otherwise hit an API server or CNI
     -- that is not yet up on a busy host. Block here until the nodes are Ready.
     waitNodesReady cfg plan
+    ensureNvidiaDevicePlugin cfg plan
 
 {- | Ensure a live kind cluster named by the plan exists, creating it if absent and
 **recreating** a listed-but-unhealthy one. @kind get clusters@ only lists names,
@@ -264,20 +288,27 @@ ensureCluster cfg plan = do
 {- | Create the kind cluster fresh (fail-closed). The production cluster publishes
 its NodePorts to the host (the in-VM registry/web endpoints the demo reaches on
 @localhost@) by shipping a @./kind.yaml@ with @extraPortMappings@; @kind create@
-uses it via @--config@. A test-case cluster ('publishesHostPorts' 'False') skips
-the config even when the file is present, so its node binds no fixed host port:
-several isolated case clusters then coexist on one host without colliding on the
-shared @kind.yaml@ ports (each case reaches its workload through the kind
-container network instead). Without a config a plain single-node cluster is
-created.
+uses it via @--config@. A test-case plan intentionally carries
+@clusterConfigFile = Nothing@, so its node binds no fixed host port and several
+isolated case clusters can coexist. An explicitly supplied config is always
+honored; this matters for a non-publishing nvkind test topology whose GPU worker
+still needs its label and device mount.
 -}
 createCluster :: HostConfig -> ClusterPlan -> IO ()
 createCluster cfg plan = do
-    hasKindConfig <- doesFileExist kindClusterConfig
+    configExists <- maybe (pure False) doesFileExist (clusterConfigFile plan)
+    hasKindConfig <- either die pure (clusterConfigPresence (clusterConfigFile plan) configExists)
     created <- runTool cfg (clusterCreateTool plan) (clusterCreateArgs plan hasKindConfig)
     requireStep (clusterCreateLabel plan) created
-  where
-    kindClusterConfig = "kind.yaml"
+
+{- | Interpret the filesystem probe for an optional cluster config. @Nothing@
+explicitly selects the driver's default template; @Just path@ is a contract
+and therefore fails closed when the file is missing.
+-}
+clusterConfigPresence :: Maybe FilePath -> Bool -> Either String Bool
+clusterConfigPresence Nothing _ = Right False
+clusterConfigPresence (Just _) True = Right True
+clusterConfigPresence (Just path) False = Left ("cluster up: required config file is missing: " ++ path)
 
 clusterCreateTool :: ClusterPlan -> HostTool
 clusterCreateTool plan = case clusterDriver plan of
@@ -292,12 +323,13 @@ clusterCreateArgs plan hasKindConfig = case clusterDriver plan of
         ["cluster", "create", "--name=" ++ clusterName plan] ++ nvkindConfigArgs
   where
     kindConfigArgs
-        | publishesHostPorts plan && hasKindConfig = ["--config", kindClusterConfig]
+        | useConfig = ["--config", kindClusterConfig]
         | otherwise = []
     nvkindConfigArgs
-        | publishesHostPorts plan && hasKindConfig = ["--config-template=" ++ kindClusterConfig]
+        | useConfig = ["--config-template=" ++ kindClusterConfig]
         | otherwise = []
-    kindClusterConfig = "kind.yaml"
+    useConfig = hasKindConfig && maybe False (const True) (clusterConfigFile plan)
+    kindClusterConfig = maybe "kind.yaml" id (clusterConfigFile plan)
 
 clusterCreateLabel :: ClusterPlan -> String
 clusterCreateLabel plan = case clusterDriver plan of
@@ -347,20 +379,10 @@ waitNodesReady cfg plan = do
 asks Kubernetes to run CUDA daemon pods.
 -}
 nvidiaRuntimeProbeArgs :: [String]
-nvidiaRuntimeProbeArgs =
-    [ "run"
-    , "--rm"
-    , "--runtime=nvidia"
-    , "-e"
-    , "NVIDIA_VISIBLE_DEVICES=all"
-    , "ubuntu:20.04"
-    , "nvidia-smi"
-    , "-L"
-    ]
+nvidiaRuntimeProbeArgs = Cuda.nvkindRuntimeProbeArgs
 
 nvidiaRuntimeProbeReady :: Either String (ExitCode, String, String) -> Bool
-nvidiaRuntimeProbeReady (Right (ExitSuccess, out, _)) = "GPU" `isInfixOf` out
-nvidiaRuntimeProbeReady _ = False
+nvidiaRuntimeProbeReady = Cuda.nvkindRuntimeProbeReady
 
 probeNvidiaRuntime :: HostConfig -> ClusterPlan -> IO ()
 probeNvidiaRuntime cfg plan =
@@ -368,6 +390,71 @@ probeNvidiaRuntime cfg plan =
         result <- runTool cfg Docker nvidiaRuntimeProbeArgs
         unless (nvidiaRuntimeProbeReady result) $
             die ("linux-gpu cluster up: Docker NVIDIA runtime probe failed; expected `docker " ++ unwords nvidiaRuntimeProbeArgs ++ "` to report a GPU")
+
+{- | Pinned NVIDIA device-plugin install for an @nvkind@ cluster. The plugin is
+what publishes @nvidia.com/gpu@ into node allocatable resources; creating the
+GPU-enabled kind nodes alone is not sufficient for pod scheduling.
+-}
+nvidiaDevicePluginHelmArgs :: [String]
+nvidiaDevicePluginHelmArgs =
+    [ "upgrade"
+    , "--install"
+    , "nvidia-device-plugin"
+    , "nvdp/nvidia-device-plugin"
+    , "--version"
+    , "0.19.3"
+    , "--namespace"
+    , "nvidia"
+    , "--create-namespace"
+    , "--wait"
+    , "--timeout"
+    , "3m"
+    ]
+
+nvidiaDevicePluginReadyArgs :: [String]
+nvidiaDevicePluginReadyArgs =
+    [ "rollout"
+    , "status"
+    , "daemonset/nvidia-device-plugin"
+    , "-n"
+    , "nvidia"
+    , "--timeout=120s"
+    ]
+
+nvidiaAllocatableProbeArgs :: [String]
+nvidiaAllocatableProbeArgs =
+    [ "get"
+    , "nodes"
+    , "-o"
+    , "jsonpath={range .items[*]}{.status.allocatable.nvidia\\.com/gpu}{\"\\n\"}{end}"
+    ]
+
+nvidiaAllocatableReady :: Either String (ExitCode, String, String) -> Bool
+nvidiaAllocatableReady (Right (ExitSuccess, out, _)) = any positiveQuantity (lines out)
+  where
+    positiveQuantity raw = case reads raw of
+        [(n, "")] -> n > (0 :: Integer)
+        _ -> False
+nvidiaAllocatableReady _ = False
+
+ensureNvidiaDevicePlugin :: HostConfig -> ClusterPlan -> IO ()
+ensureNvidiaDevicePlugin cfg plan =
+    when (clusterDriver plan == NvkindDriver) $ do
+        repo <- runTool cfg Helm ["repo", "add", "nvdp", "https://nvidia.github.io/k8s-device-plugin", "--force-update"]
+        requireStep "NVIDIA device-plugin helm repository" repo
+        installed <- runTool cfg Helm nvidiaDevicePluginHelmArgs
+        requireStep "NVIDIA device-plugin install" installed
+        ready <- runTool cfg Kubectl nvidiaDevicePluginReadyArgs
+        requireStep "NVIDIA device-plugin DaemonSet rollout" ready
+        outcome <- pollUntilReady nodePoll "NVIDIA GPU allocatable" probe cfg
+        case outcome of
+            Right () -> putStrLn "cluster up: NVIDIA device plugin Ready; nvidia.com/gpu is allocatable"
+            Left _ -> die "cluster up: NVIDIA device plugin became Ready but no node advertised nvidia.com/gpu"
+  where
+    probe c = classify <$> runTool c Kubectl nvidiaAllocatableProbeArgs
+    classify result
+        | nvidiaAllocatableReady result = ProbeReady ()
+        | otherwise = NotReady
 
 {- | Deploy the project's Helm chart if one is present. A project ships its chart
 at @./chart@ (relative to the directory the lifecycle runs in — the project root
@@ -412,16 +499,45 @@ deployChart cfg plan extraValues = do
         esc '\\' = "\\\\"
         esc c = [c]
 
-{- | Apply the Linux kind-node cordon: @docker update@ the budget caps onto the
-resolved control-plane container, fail-closed. On Apple the per-project Colima
-VM is the cordon (sized by @ensure docker@), so there is no kind-node cap.
+-- | The node containers the selected cluster driver creates.
+clusterNodeNames :: ClusterPlan -> [String]
+clusterNodeNames plan = map ((clusterName plan ++ "-") ++) (clusterNodeSuffixes plan)
+
+{- | Split the one cluster envelope evenly across every node container, flooring
+each dimension so the sum never exceeds the declared slice. An nvkind cluster
+has a control-plane plus one GPU worker; giving the full envelope to both would
+double-count the budget.
+-}
+clusterNodeCordonArgs :: ClusterPlan -> ResourceEnvelope -> Either String [[String]]
+clusterNodeCordonArgs plan resources = do
+    budget <- budgetFromResources resources
+    let names = clusterNodeNames plan
+        count = length names
+        naturalCount = fromIntegral count
+        integerCount = fromIntegral count
+    case () of
+        _ | count == 0 -> Left "cluster node cordon: the plan declares no nodes"
+        _ | budgetCpu budget < naturalCount -> Left "cluster node cordon: CPU slice is smaller than the node count"
+        _ | budgetMemoryBytes budget < integerCount -> Left "cluster node cordon: memory slice is smaller than the node count"
+        _ | budgetStorageBytes budget < integerCount -> Left "cluster node cordon: storage slice is smaller than the node count"
+        _ -> do
+            let perNode =
+                    ResourceEnvelope
+                        (budgetCpu budget `div` naturalCount)
+                        (T.pack (show (budgetMemoryBytes budget `div` integerCount)))
+                        (T.pack (show (budgetStorageBytes budget `div` integerCount)))
+            traverse (`kindNodeCordonArgsFor` perNode) names
+
+{- | Apply the Linux kind/nvkind node cordon: @docker update@ every node with its
+share of the one cluster slice, fail-closed. On Apple the provider VM is the
+cordon, so there is no host-side kind-node cap.
 -}
 applyLinuxCordon :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
 applyLinuxCordon cfg plan resources
     | isLinux (hcSubstrate cfg) =
-        case kindNodeCordonArgs (clusterName plan) resources of
+        case clusterNodeCordonArgs plan resources of
             Left err -> die ("cordon: " ++ err)
-            Right args -> do
+            Right argSets -> forM_ argSets $ \args -> do
                 result <- runTool cfg Docker args
                 case result of
                     Right (ExitSuccess, _, _) -> putStrLn ("cordon applied: docker " ++ unwords args)

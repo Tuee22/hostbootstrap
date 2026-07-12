@@ -1,9 +1,11 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module LifecycleSpec (tests) where
 
 import Data.List (isInfixOf)
 import HostBootstrap.Cluster.Lifecycle
+import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.HostTool (HostTool (..))
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import System.Exit (ExitCode (..))
@@ -37,6 +39,8 @@ tests =
         , testGroup "host-port publication" hostPortCases
         , testGroup "accelerator ingress" acceleratorIngressCases
         , testGroup "NVIDIA runtime probe" nvidiaRuntimeCases
+        , testGroup "NVIDIA device plugin" nvidiaDevicePluginCases
+        , testGroup "multi-node cordon" nodeCordonCases
         , testGroup "never-delete-.data" dataInvariantCases
         , testGroup "status report" statusCases
         , testGroup "health-check-and-recreate" healthProbeCases
@@ -65,10 +69,14 @@ planCases =
         dataPath prod @?= rootPath </> ".data"
         derivedPaths prod @?= [rootPath </> ".cluster" </> "demo"]
         clusterDriver prod @?= KindDriver
+        clusterConfigFile prod @?= Just "kind.yaml"
+        clusterNodeSuffixes prod @?= ["control-plane"]
     , testCase "test: per-case isolated name and path" $ do
         clusterName test1 @?= "demo-test-case1"
         dataPath test1 @?= rootPath </> ".test_data" </> "case1"
         derivedPaths test1 @?= [rootPath </> ".cluster" </> "demo-test-case1"]
+        clusterConfigFile test1 @?= Nothing
+        clusterNodeSuffixes test1 @?= ["control-plane"]
     ]
 
 driverCases :: [TestTree]
@@ -77,14 +85,29 @@ driverCases =
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxGpu Amd64)
         clusterDriver plan @?= NvkindDriver
         clusterCreateTool plan @?= Nvkind
-        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo", "--config-template=kind.yaml"]
+        clusterConfigFile plan @?= Just "nvkind.yaml"
+        clusterNodeSuffixes plan @?= ["control-plane", "worker"]
+        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo", "--config-template=nvkind.yaml"]
     , testCase "Linux CPU accelerator plan keeps kind" $ do
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxCpu Amd64)
         clusterDriver plan @?= KindDriver
         clusterCreateTool plan @?= Kind
         clusterCreateArgs plan True @?= ["create", "cluster", "--name", "demo", "--config", "kind.yaml"]
+    , testCase "a placement-specific cluster config is passed to kind/nvkind" $ do
+        let kindPlan = prod{clusterConfigFile = Just "kind-in-cluster.yaml"}
+            nvkindPlan = (resolvePlanWithDriver "demo" rootPath Production NvkindDriver){clusterConfigFile = Just "nvkind-in-cluster.yaml"}
+        clusterCreateArgs kindPlan True @?= ["create", "cluster", "--name", "demo", "--config", "kind-in-cluster.yaml"]
+        clusterCreateArgs nvkindPlan True @?= ["cluster", "create", "--name=demo", "--config-template=nvkind-in-cluster.yaml"]
     , testCase "test clusters do not publish fixed kind host ports" $
         clusterCreateArgs test1 True @?= ["create", "cluster", "--name", "demo-test-case1"]
+    , testCase "an explicit non-publishing nvkind topology is still honored" $ do
+        let plan = (resolvePlanWithDriver "demo" rootPath (TestCase "gpu") NvkindDriver){clusterConfigFile = Just "nvkind-test.yaml"}
+        publishesHostPorts plan @?= False
+        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo-test-gpu", "--config-template=nvkind-test.yaml"]
+    , testCase "an explicit cluster config is required and an intentional default is not" $ do
+        clusterConfigPresence Nothing False @?= Right False
+        clusterConfigPresence (Just "nvkind.yaml") True @?= Right True
+        clusterConfigPresence (Just "nvkind.yaml") False @?= Left "cluster up: required config file is missing: nvkind.yaml"
     ]
 
 hostPortCases :: [TestTree]
@@ -106,18 +129,18 @@ profileCases =
 acceleratorIngressCases :: [TestTree]
 acceleratorIngressCases =
     [ testCase "in-cluster daemon uses ClusterIP with no host mapping" $
-        acceleratorIngressPlan InClusterDaemon 30081
+        acceleratorIngressPlan InClusterDaemon 8081 30081
             @?= AcceleratorIngressPlan
                 { ingressServiceType = "ClusterIP"
-                , ingressServicePort = 30081
+                , ingressServicePort = 8081
                 , ingressNodePort = Nothing
                 , ingressKindListenAddress = Nothing
                 }
     , testCase "host daemon uses local-only NodePort" $
-        acceleratorIngressPlan HostResidentDaemon 30081
+        acceleratorIngressPlan HostResidentDaemon 8081 30081
             @?= AcceleratorIngressPlan
                 { ingressServiceType = "NodePort"
-                , ingressServicePort = 30081
+                , ingressServicePort = 8081
                 , ingressNodePort = Just 30081
                 , ingressKindListenAddress = Just "127.0.0.1"
                 }
@@ -125,13 +148,12 @@ acceleratorIngressCases =
 
 nvidiaRuntimeCases :: [TestTree]
 nvidiaRuntimeCases =
-    [ testCase "NVIDIA runtime probe uses docker --runtime=nvidia" $
+    [ testCase "NVIDIA runtime probe uses nvkind's volume-mount injection" $
         nvidiaRuntimeProbeArgs
             @?= [ "run"
                 , "--rm"
-                , "--runtime=nvidia"
-                , "-e"
-                , "NVIDIA_VISIBLE_DEVICES=all"
+                , "-v"
+                , "/dev/null:/var/run/nvidia-container-devices/all"
                 , "ubuntu:20.04"
                 , "nvidia-smi"
                 , "-L"
@@ -141,6 +163,75 @@ nvidiaRuntimeCases =
     , testCase "NVIDIA runtime probe rejects empty or failed output" $ do
         nvidiaRuntimeProbeReady (Right (ExitSuccess, "", "")) @?= False
         nvidiaRuntimeProbeReady (Right (ExitFailure 1, "", "nvidia runtime missing")) @?= False
+    ]
+
+nvidiaDevicePluginCases :: [TestTree]
+nvidiaDevicePluginCases =
+    [ testCase "pins and installs the NVIDIA device-plugin chart" $
+        nvidiaDevicePluginHelmArgs
+            @?= [ "upgrade"
+                , "--install"
+                , "nvidia-device-plugin"
+                , "nvdp/nvidia-device-plugin"
+                , "--version"
+                , "0.19.3"
+                , "--namespace"
+                , "nvidia"
+                , "--create-namespace"
+                , "--wait"
+                , "--timeout"
+                , "3m"
+                ]
+    , testCase "waits for the reconciled DaemonSet rollout and queries allocatable GPUs" $ do
+        nvidiaDevicePluginReadyArgs
+            @?= [ "rollout"
+                , "status"
+                , "daemonset/nvidia-device-plugin"
+                , "-n"
+                , "nvidia"
+                , "--timeout=120s"
+                ]
+        nvidiaAllocatableProbeArgs
+            @?= [ "get"
+                , "nodes"
+                , "-o"
+                , "jsonpath={range .items[*]}{.status.allocatable.nvidia\\.com/gpu}{\"\\n\"}{end}"
+                ]
+    , testCase "requires at least one positive allocatable GPU" $ do
+        nvidiaAllocatableReady (Right (ExitSuccess, "1\n", "")) @?= True
+        nvidiaAllocatableReady (Right (ExitSuccess, "0\n\n", "")) @?= False
+        nvidiaAllocatableReady (Right (ExitFailure 1, "", "not found")) @?= False
+    ]
+
+nodeCordonCases :: [TestTree]
+nodeCordonCases =
+    [ testCase "kind has one cordoned control-plane" $
+        clusterNodeNames prod @?= ["demo-control-plane"]
+    , testCase "nvkind splits the one slice across control-plane and GPU worker" $ do
+        let plan = resolvePlanWithDriver "demo" rootPath Production NvkindDriver
+            resources = ResourceEnvelope 6 "8GiB" "20GiB"
+            perNodeMemoryBytes = (4 * 1024 ^ (3 :: Int) :: Integer)
+            perNodeMemory = show perNodeMemoryBytes
+            perNodeSwap = show (2 * perNodeMemoryBytes)
+        clusterNodeNames plan @?= ["demo-control-plane", "demo-worker"]
+        clusterNodeCordonArgs plan resources
+            @?= Right
+                [ ["update", "--cpus", "3", "--memory", perNodeMemory, "--memory-swap", perNodeSwap, "demo-control-plane"]
+                , ["update", "--cpus", "3", "--memory", perNodeMemory, "--memory-swap", perNodeSwap, "demo-worker"]
+                ]
+    , testCase "multi-node cordon refuses a CPU slice smaller than its node count" $
+        assertBool "expected an undersized cordon to fail" $
+            case clusterNodeCordonArgs (resolvePlanWithDriver "demo" rootPath Production NvkindDriver) (ResourceEnvelope 1 "8GiB" "20GiB") of
+                Left _ -> True
+                Right _ -> False
+    , testCase "the plan owns node topology instead of inferring it from the driver" $ do
+        let plan = prod{clusterNodeSuffixes = ["control-plane", "worker", "worker2"]}
+        clusterNodeNames plan @?= ["demo-control-plane", "demo-worker", "demo-worker2"]
+    , testCase "cordoning rejects an empty declared topology" $
+        assertBool "expected an empty topology to fail" $
+            case clusterNodeCordonArgs (prod{clusterNodeSuffixes = []}) (ResourceEnvelope 6 "8GiB" "20GiB") of
+                Left _ -> True
+                Right _ -> False
     ]
 
 dataInvariantCases :: [TestTree]

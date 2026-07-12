@@ -72,9 +72,9 @@ guest (see [wsl2.md](wsl2.md)); it changes which VM the container runs in, not w
 `FROM`.
 
 The host-native Windows CUDA capability is a **separate concern** and likewise not a base-image flavor:
-it is the headless host-build pattern (composition pattern #7 — build platform-locked artifacts on the
-bare Windows host with `ensure cudawin`, then stage them into the cluster), which produces nvcc artifacts
-on the Windows host rather than inside any container. See
+the accelerator daemon uses `ensure cudawin`, builds and runs its worker on bare Windows, and connects to
+the WSL2-hosted service. It does not stage the worker into the cluster. Generic build-only host staging is
+still available as composition pattern #7. See
 [composition_patterns.md](composition_patterns.md). The four published tags above remain the complete
 flavor × arch set.
 

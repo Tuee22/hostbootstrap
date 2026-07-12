@@ -204,9 +204,14 @@ The exact generated value is owned by the binary. Use `<project> project init` f
 `<project> context schema` for the in-scope artifact union, and `<project> service schema` for the
 reflected type the decoder accepts; do not hand-maintain a parallel schema in project docs.
 
+The demo config also owns `service : Optional ServiceType`, where `ServiceType` is the real Dhall union
+`Web { publicPort, acceleratorPort } | Accelerator { requestTimeoutSeconds }`. Core sees only the
+project-owned selector that maps this payload to an internal handler key; `service run` has no positional
+variant and validates bounds/role compatibility before dispatch.
+
 The `message : Text` field is a worked example of a project-extended field flowing all the way to the
-workload, with no core-owned slot: `<project>.dhall` carries `message`, the chart's `deploy-chart` step
-forwards it into the web service's ConfigMap, the `serveWeb` handler reads its delivered config, the API's
+workload, with no core-owned slot: `<project>.dhall` carries `message`, the binary renders the exact child
+config into the web service's dynamically applied ConfigMap, the `serveWeb` handler reads it, the API's
 `BudgetView.message` carries it across the `purescript-bridge` round-trip, and the SPA renders it into its
 `#message` element. It is a mandatory field on the demo's OWN config type — core owns no project-specific
 field and ships no generic extra slot.

@@ -49,15 +49,16 @@ its own segment.
    storage + database + **registry foundation first**, mirror images through the in-cluster
    registry, then platform services, then the workload chart.
 6. **Host-native daemon bridged to an in-cluster coordinator** — the binary also runs as a long-lived
-   host daemon (singleton via a file lock) that connects to an in-cluster coordinator, used when a
-   capability is reachable only on the host. The planned accelerator demo is the small worked instance:
+   host daemon (singleton via lifecycle ownership directories plus strict PID identity) that connects to
+   an in-cluster coordinator, used when a capability is reachable only on the host. The accelerator demo is
+   the small implemented instance:
    Apple Silicon and Windows GPU daemons run host-native, connect to the web service over a local-only
    NodePort, exchange CBOR over WebSocket, and forward work to a generated native worker. See
    [accelerator_daemon](accelerator_daemon.md).
-7. **Headless host build for platform-locked artifacts** — build a platform-locked artifact on the bare
-   host (no build VM), stage it into the cluster, never run the workload in a VM — the headless
-   host-bridge shape. First worked instance: CUDA-on-Windows (`ensure cudawin` readies the NVIDIA driver
-   + CUDA Toolkit + MSVC via winget; nvcc artifacts are produced on the Windows host and copied out).
+7. **Headless host build for platform-locked artifacts** — a generic consumer may build a
+   platform-locked artifact on the bare host (no build VM) and stage it into a cluster. This is distinct
+   from pattern 6's accelerator: its Windows daemon uses the same `ensure cudawin` toolchain but builds
+   **and runs** the worker on the host rather than staging it into WSL2/kind.
    See [cuda](../languages/cuda.md) and [ensure_reconcilers](ensure_reconcilers.md).
 8. **GPU cluster variant** — substrate-select a GPU cluster (device-plugin / GPU-aware kind /
    `RuntimeClass`) and pin accelerator-owning pods; the same chains with a GPU node. For the demo's

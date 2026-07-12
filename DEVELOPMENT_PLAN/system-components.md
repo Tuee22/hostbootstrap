@@ -10,7 +10,9 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-21 reached `Done`. Phases 5, 9, 10, 11, 13, and 16 were temporarily reopened
+> Note: Phases 0-21 reached `Done` before the later accelerator reopening; Phase 3 is temporarily `Active`
+> for Sprint 3.7, and Phases 5, 13, 15, 16, and 18 are `Active` for accelerator closure. Phases 5, 9, 10,
+> 11, 13, and 16 were temporarily reopened
 > (2026-07-05) for cross-substrate reliability hardening and **closed the same day** by a decoupled Windows/WSL2
 > `test run all` reporting `6/6 passed` (`REALRUN_EXIT=0`) across both message variants — the node/CNI
 > readiness gate + health-recreate, the metal-vs-in-VM budget-reserve split + swap-headroom cordon, the
@@ -47,7 +49,8 @@
 > resource-SSoT** correction (phases 10/13/14/15/16/17/18) is complete — code-check-validated and
 > real-run-validated end-to-end (the
 > full `project up` lifecycle + `test run all` `3/3 passed` on both Incus/Linux and a 16 GiB Apple-Silicon
-> host (2026-06-20, pre-phase-20; current runs report `6/6`). The
+> host (2026-06-20, pre-phase-20; later pre-accelerator runs report `6/6`). The current
+> four-case/two-variant matrix expects `8/8`, but no live `8/8` result is recorded yet. The
 > command surface is **fixed** to `project` / `test` / `service` / `context` / `check-code` — no per-project
 > verbs; `hostbootstrap-core` is a **library of composable tools**, not a CLI topology (§ P). The test
 > harness **drives the real `project up`** under a test config rather than re-expressing bring-up (§ W); the
@@ -62,33 +65,25 @@
 > library consumed through `runHostBootstrapCLI progName projectSpec`. The single-representation rule is part
 > of the supported architecture: a project's deploy is its one pure `chain :: cfg -> [Step]` value
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
-> Reopened 2026-07-09: Phase 2 closed the substrate-specific accelerator host-tool coverage the same day
-> (`cabal test all`, 309 tests). Phase 3's reconciler implementation is also static-validated
-> (`cabal build all --ghc-options=-Werror`, current `cabal test all` core baseline 328 tests); the real
-> Apple Silicon smoke run closed 2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`), but
-> Phase 3 remains `Active` for the Windows GPU smoke run. Phase 5's static Linux GPU cluster/exposure primitives are
-> implemented (`NvkindDriver`, Docker NVIDIA-runtime probe, and `ClusterIP`/local-only-`NodePort`
-> exposure planning) but remain `Active` for live daemon connectivity and e2e gates. Phase 15's static
-> daemon/direct-container context substrate is implemented (`cabal build all --ghc-options=-Werror`,
-> `cabal test all`, 326 tests) but remains `Active` for runtime integration. Phase 16's hook/direct-chain
-> and host-daemon start/stop slices are implemented (`PostHandoff`, Linux GPU `demoChainFor` direct host ->
-> project-container selection, Apple/Windows host daemon pid/config startup and teardown, core 328 + demo 44
-> tests) but remain `Active` for real daemon process integration and in-cluster daemon pod startup. Phase
-> 18's protocol/runtime and concrete WebSocket slices are implemented (`service run accelerator`, CBOR
-> codecs/correlation, transport-injected daemon worker loop, concrete WebSocket client/server path, demo 44
-> tests) but remain `Active` for real host/in-cluster integration. Phase 13 also remains `Active` for the
-> accelerator daemon demo. The planned/open surfaces are live Linux CPU/GPU daemon connectivity, real
-> Windows GPU and Linux worker build/run validation, and demo integration/browser e2e tests proving the UI
-> add operation reaches a real JIT-built worker.
+> Reopened 2026-07-09: the accelerator implementation now includes the host tools, direct/in-cluster
+> placement plans, host-daemon start/stop, in-cluster daemon deployment, concrete socket path, and browser
+> workflow specification. Phase 3 Sprint 3.7 and Phases 5, 13, 15, 16, and 18 remain Active for their native
+> live-runtime gates, not for missing local implementation. The web deployment dynamically renders and
+> applies the actual parent-derived ConfigMap, hashes its exact mounted bytes into the pod template, and
+> runs config-selected `service run` with no positional variant. Its linked listeners keep public HTTP on
+> 8080/NodePort 30080 and private accelerator registration on 8081 through a cluster-only Service or
+> local-only NodePort 30081. The accelerator daemon uses a serialized persistent worker session with
+> configured per-request timeout and end-to-end `Float32` semantics.
 >
-> **Current suite SSoT:** `cabal test all` from `core/` reports 328 core tests after the Phase 16
-> post-handoff hook ordering additions. The prior 326-test core count followed the Phase 15
-> daemon/direct-container context additions, and the 321-test core count followed the Phase 5
-> accelerator cluster/exposure additions (the 2026-07-05 cross-substrate reliability hardening added
-> `Cordon`/`Lifecycle`/`Harness`/`Wsl2`/`Provider` cases — the node/CNI health probe, the
-> metal-vs-in-VM budget-reserve split, the `.wslconfig` merge, the swap-headroom cordon, and the
-> guaranteed-teardown harness); `cabal test all` from `demo/` reports 44 demo tests plus the embedded 328
-> core tests after the Phase 18 concrete WebSocket/reconnect additions.
+> Historical accelerator evidence is retained: the 2026-07-10 guarded `AcceleratorRuntimeSpec` built and
+> ran the real CUDA worker on the RTX 3090 host (`nvcc -ccbin <msvc>` → `Right 3.75`), and earlier completed
+> `6/6` lifecycle results remain valid pre-accelerator evidence. They do not close the current 4-case ×
+> 2-variant live matrix. The durable Windows GPU lifecycle, native Apple CPU/GPU, and Linux CPU/GPU
+> host/in-cluster socket plus browser gates remain open; no live `8/8` result is recorded.
+>
+> **Current suite SSoT:** the 2026-07-11 static gate reports 357 core tests and 83 demo tests, with the demo
+> gate also running the embedded 357-test core suite. Earlier 345/56, 331/46, 328/44, 326, and 321 counts
+> are historical snapshots from the incremental accelerator, lifecycle, context, and cluster slices.
 
 ## hostbootstrap-core Haskell module surface
 
@@ -97,7 +92,7 @@ surface; the column records whether the module exists in this repository.
 
 | Module | Phase | Implemented | Purpose |
 |--------|-------|-------------|---------|
-| `HostBootstrap.CLI` | 1, 16 | yes | `ProjectSpec`, `runHostBootstrapCLI progName projectSpec`, and `runBareHostBootstrapCLI`; validated optparse entrypoints. The surface is **fixed** (`project` / `test` / `service` / `context` / `check-code`); `ProjectSpec` carries no `ProjectCommand` deltas — a project extends core via the chain, Dhall vocabulary, schema-gen, test seams, and service handlers (§ P) |
+| `HostBootstrap.CLI` | 1, 16, 18 | yes | `ProjectSpec`, `runHostBootstrapCLI progName projectSpec`, and `runBareHostBootstrapCLI`; validated optparse entrypoints. The surface is **fixed** (`project` / `test` / `service` / `context` / `check-code`); `ProjectSpec` carries no `ProjectCommand` deltas — a project extends core via the chain, Dhall vocabulary, schema-gen, test seams, the handler registry (`withServices`), and narrow config projections such as `psServiceVariant` (`withServiceConfig`) (§ P) |
 | `HostBootstrap.HostTool` | 2, 5, 13, 16 | yes | closed `HostTool` enumeration; absolute-path resolution, including accelerator host tools (`Swiftc`, `Xcrun`, `SystemProfiler`, `Clang`, `Clangxx`, `MsvcCl`, `Vswhere`), the Phase-5 `Nvkind` cluster creator, and `Kill` for POSIX host-daemon teardown |
 | `HostBootstrap.HostConfig` | 2 | yes | typed host configuration (lifted from infernix) |
 | `HostBootstrap.HostPrereqs` | 2 | yes | fail-fast host minimum checks |
@@ -105,24 +100,24 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure` | 3 | yes | the `Reconciler` value type and library runner used by `ensure-*` chain steps |
 | `HostBootstrap.Ensure.Docker` | 3 | yes | `ensure docker` reconciler |
 | `HostBootstrap.Ensure.Colima` | 3 | yes | `ensure colima` reconciler |
-| `HostBootstrap.Ensure.Cuda` | 3 | yes | `ensure cuda` reconciler |
+| `HostBootstrap.Ensure.Cuda` | 3, 3.7 | yes | `ensure cuda` reconciler: bootstraps NVIDIA's signed stable Debian apt source/keyring, installs `nvidia-container-toolkit`, configures Docker with `nvidia-ctk runtime configure --runtime=docker --set-as-default --cdi.enabled`, enables `accept-nvidia-visible-devices-as-volume-mounts=true`, restarts Docker, and treats only the official nvkind `/dev/null:/var/run/nvidia-container-devices/all` GPU smoke as satisfied |
 | `HostBootstrap.Ensure.CudaWin` | 3, 3.6 | yes | `ensure cudawin` reconciler (CUDA-on-Windows headless host build; first instance of composition pattern #7), hardened for the accelerator daemon with CUDA Toolkit, MSVC VCTools, LLVM clang, and an `nvcc -ccbin` smoke compile |
 | `HostBootstrap.Ensure.Homebrew` | 3 | yes | `ensure homebrew` reconciler |
 | `HostBootstrap.Ensure.Ghc` | 3 | yes | `ensure ghc` reconciler |
 | `HostBootstrap.Ensure.Lima` | 11.6 | yes | `ensure lima` reconciler for the Apple Silicon Lima VM provider |
 | `HostBootstrap.Config.Schema` | 4, 8, 15 | yes | project-local `<project>.dhall` schema/default/projection substrate; sibling project-config discovery and command-gate loading |
-| `HostBootstrap.Config.Class` | 19 | yes | the `ProjectCfg` class coupling core to a project's config type only through `cfgContext` / `cfgWithContext` (the universal `BinaryContext` accessor + the child-config lift), the shared `InitArgs` record that `project init` and the harness interpret, and `projectCfgSchemaText` (the project config schema reflected generically from its encoder) |
+| `HostBootstrap.Config.Class` | 19 | yes | the `ProjectCfg` class supplies the universal `cfgContext` / `cfgWithContext` contextual-authority operations without fixing the project's config record, plus the shared `InitArgs` and generic `projectCfgSchemaText`. A fixed command may additionally use an explicit project-provided projection carried by `ProjectSpec`; `psServiceVariant` is the current example and does not make a service field universal |
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6, 15.8 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service/daemon constructors, explicit Linux GPU direct project-container topology, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
-| `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics, production/test cluster plans, `KindDriver`/`NvkindDriver` accelerator cluster selection, Docker NVIDIA-runtime probe classification, and accelerator ingress exposure planning (`ClusterIP` for in-cluster daemon pods, local-only `NodePort` for host daemons) |
-| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/`lima`/`incus`/`wsl2`/kind-node sizing builders (`wsl2SizingArgs` emits the `.wslconfig` `[wsl2]` ceiling with `swap`), `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware — `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux, CIM `NumberOfLogicalProcessors`/`TotalPhysicalMemory` on Windows), and the applied `docker update` kind-node cordon |
+| `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics; production/test plans with explicit fail-closed config paths; `KindDriver`/`NvkindDriver` selection; the shared exact NVIDIA-runtime smoke; a control-plane + GPU-worker nvkind topology; pinned device-plugin `0.19.3` install that is a no-op when a positive allocatable `nvidia.com/gpu` already exists and otherwise waits for plugin pods plus allocatable capacity; and accelerator ingress planning (`ClusterIP` for in-cluster daemon pods, local-only `NodePort` for host daemons) |
+| `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/`lima`/`incus`/`wsl2`/kind-node sizing builders (`wsl2SizingArgs` emits the `.wslconfig` `[wsl2]` ceiling with `swap`), `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware — `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux, CIM `NumberOfLogicalProcessors`/`TotalPhysicalMemory` on Windows), and the applied `docker update` cordon; nvkind divides the one declared slice across its control-plane and worker instead of applying the full envelope twice |
 | `HostBootstrap.Substrate.Provider` | 9 | yes | one pure lift per substrate (`SubstrateProvider`, `selectSubstrateProvider`): the per-substrate VM exists/launch/wait/stage/teardown as pure data (the `HostEffect` launch list — `WriteHostFile`/`RestoreHostFile`/`RunHostTool` — folds the WSL2 global `.wslconfig` write + `wsl --shutdown` into the same shape Lima/Incus use), so the consumer's VM lifecycle is a generic interpreter, not hand-branched per substrate |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
 | `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
-| `HostBootstrap.Harness` | 10 | yes | the kept pure cores — `runMatrix` + `Seams` + `sliceBudget` + `selectRunModel` + `guardTestDelete` + the L0 OneShot seam — plus the **recast stack-driven `TestSuite`** `(safety, bring-up, cases, assertion, tear-down)` and `runSuiteSelection`/`testSafetyPreconditions`/`emptySuite`. The engine drives the real `project up` (bring-up) / `project destroy` (tear-down) per test config, enforces the two fail-fast preconditions, owns the run's `.test_data` lifecycle under the self-created-only delete-guard (`testDataRoot` / `selfCreatedTestDataRemoval` / `withSelfCreatedTestData`), and reuses `runMatrix` for the per-case assertions — no second bring-up path (§ W). Built + unit-tested; real-run-validated by `test run all` (`3/3 passed`, 2026-06-20) |
-| `HostBootstrap.Service` | 18 | yes | `ServiceHandler` / `ServiceRegistry` (variant name + role action), `lookupServiceHandler` / `serviceVariantNames` / `duplicateServiceVariants`; threaded through `ProjectSpec` (`withServices`). Drives `HostBootstrap.Command.serviceCommandGroup` (`service init\|schema\|run`, no `service down`); `service run` gates as `Context.ServiceCommand` (leaf-frame) then dispatches on the variant (§ AA). Built + unit-tested; real-run-validated — the live web pod runs `service run web` and serves HTTP 200 (2026-06-20) |
+| `HostBootstrap.Harness` | 10 | yes | the stack-driven `TestSuite` engine drives the real `project up` / `project destroy` per test config and reuses `runMatrix` for assertions — no second bring-up path (§ W). It exclusively claims the generated-config and `.test_data` ownership boundaries, compares config bytes before removal and preserves replacements, skips automatic teardown on distinguished `SafetyRefusal`, fails a variant when teardown fails, and aggregates independent project cleanup failures. Historical real-run evidence: `test run all` `3/3` on 2026-06-20 |
+| `HostBootstrap.Service` | 18 | yes | A possibly empty internal `ServiceRegistry` maps handler keys to actions and is installed through `withServices`; it is distinct from any project-owned Dhall ADT. `service init\|schema\|run` is fixed, with no `service down`. Config-selected `service run` takes no positional variant: after the `Context.ServiceCommand` leaf gate it calls `psServiceVariant` (installed by `withServiceConfig`) and resolves the returned key. Historical live evidence: the pre-selector `service run web` pod served HTTP 200 on 2026-06-20; current live accelerator closure remains open (§ AA) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11, 14, 17 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure leaf fold `foldLeaf` over `LiftLeaf = SelfSub \| RawCmd` (place /any/ command in a frame — a self-subcommand handoff or a `RawCmd` such as a `reachLeaf` probe / `bash -lc`), with `foldLift` the `SelfSub` special case; the IO seams `liftLeaf` / `liftSubcommand` (`runSelf`) + `liftSubcommandWithAuth` (forwards a Docker Hub credential into a container-through-a-VM frame over stdin, never argv); the subcommand-level superset of `HostTarget`. Frame-placed `RawCmd` probes give provider-agnostic reachability assertions (`incus exec`/`limactl shell -- curl …`) — § 17 native-Linux test parity |
 | `HostBootstrap.Registry` | 14 | yes | the effect-only Docker Hub credential capability: opaque `RegistryAuth` (no Dhall codec, redacted `Show`), host-only discovery (`discoverHostRegistryAuth`, Docker-Hub-only projection), and the ephemeral forwarding seams (`dockerAuthStdinWrapper`, `withForwardedRegistryAuth`) that authenticate nested pulls without persisting, leaking, or representing the secret in Dhall |
@@ -134,11 +129,12 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 | `HostBootstrap.Ensure.Wsl2` | 11 | yes | `ensure wsl2` install-and-verify reconciler for the Windows WSL2 host-provider (the incus/lima peer) |
 | `HostBootstrap.Ensure.AppleMetal` | 3.6 | yes | `ensure-apple-metal` reconciler for the Apple Silicon accelerator daemon: visible Metal device, macOS SDK through `xcrun`, and a Swift + Metal compile/run probe; static-validated and real-run-validated on an M1 Max host 2026-07-10 (`present (no-op)`) |
-| `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); the effectful apply (recursive provisioning) and VM stop-without-delete are real-run-validated end-to-end on Incus/Linux and Apple Silicon |
+| `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); `down` / `destroy` attempt independent cleanup actions and report aggregate failures instead of stopping after the first; the effectful apply and VM stop-without-delete have historical Incus/Linux and Apple live evidence |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, the `PostHandoff` hook kind for after-child-frame lifecycle work, the pure `renderChainPlan` dry-run render, and `stepsForFrame`/`preHandoffStepsForFrame`/`postHandoffStepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; it runs pre-handoff steps, descends to the child frame, and runs `PostHandoff` hooks only after the child succeeds; end-to-end provisioning is real-run-validated |
-| `HostBootstrapDemo.Accelerator.Protocol` | 18.5 | yes | deterministic CBOR request/result/failure protocol, invalid-payload rejection, and request-id correlation for the demo accelerator daemon |
-| `HostBootstrapDemo.Accelerator.Daemon` | 18.5 | yes | demo project-binary daemon seam: `service run accelerator`, worker supervision, backend/artifact metadata propagation, transport-injected reconnect/timeout/shutdown loop, concrete WebSocket client transport, endpoint parsing, and substrate-specific worker build/run entrypoints; real host/in-cluster integration remains open |
+| `HostBootstrapDemo.Accelerator.Protocol` | 18.5 | yes | deterministic CBOR request/result/failure protocol, invalid-payload rejection, request-id correlation, and backend/artifact metadata. Arithmetic semantics are `Float32`; CBOR float64 is only a transport carrier |
+| `HostBootstrapDemo.Accelerator.Daemon` | 18.5 | yes | config-selected project-binary daemon with concrete WebSocket transport and a serialized persistent newline-delimited worker session. It reuses healthy workers, restarts once after worker failure, clears the session on configured request timeout/shutdown, keeps idle socket lifetime separate from request timeout, and surfaces Swift/C++/CUDA failures. Real host/in-cluster socket integration remains open |
+| `HostBootstrapDemo.Web.Server` | 18.5 | yes | two linked listeners: public HTTP on the configured public port and private accelerator registration on its own configured port. Registration is absent publicly; the private path rejects Origin headers. The process-local single-flight hub requires exactly one web replica, preserves an active request when a concurrent request receives 503, and never computes accelerator results in the web process |
 
 `HostBootstrap.HostTool`, `HostBootstrap.HostConfig`, and `HostBootstrap.HostPrereqs` are lifted from
 [`infernix`](https://github.com/Tuee22/infernix), which is the source of the host trio.
@@ -172,7 +168,7 @@ with a one-line diagnostic and a non-zero exit. See
 |------------|--------|-------|------------------|---------------|
 | `ensure docker` | `HostBootstrap.Ensure.Docker` | 3 | all substrates | n/a (universal) |
 | `ensure colima` | `HostBootstrap.Ensure.Colima` | 3 | `apple-silicon` | fail fast, non-zero |
-| `ensure cuda` | `HostBootstrap.Ensure.Cuda` | 3 | `linux-gpu` | fail fast, non-zero |
+| `ensure cuda` | `HostBootstrap.Ensure.Cuda` | 3, 3.7 | `linux-gpu` (direct nvkind host runtime) | fail fast, non-zero |
 | `ensure cudawin` | `HostBootstrap.Ensure.CudaWin` | 3 | `windows-gpu` (CUDA-on-Windows headless host build) | fail fast, non-zero |
 | `ensure homebrew` | `HostBootstrap.Ensure.Homebrew` | 3 | `apple-silicon` | fail fast, non-zero |
 | `ensure ghc` | `HostBootstrap.Ensure.Ghc` | 3 | `apple-silicon` (host-native build path) | fail fast, non-zero |
@@ -196,9 +192,9 @@ init` or generated by the test harness (`psTestConfig`). The built project binar
 > mandatory and fails the strict decode if omitted, defaults live only in a project-owned `psInit` (and
 > `project init` layers optional flag overrides over the project's `psInit` defaults), and secret fields use
 > the pure `SecretRef` vocabulary so a production config is plaintext-free
-> ([secrets.md](../documents/engineering/secrets.md)). Phase 20 adds the demo's own `message : Text` field
-> on top of this (a field on the demo's `cfg`, not a core field and not a generic extra slot — see the
-> `message` row below). The field families below are the **demo's** concrete `ProjectConfig`; the resource
+> ([secrets.md](../documents/engineering/secrets.md)). Phase 20 adds the demo's own `message : Text` field,
+> and Phase 18 adds its payload-bearing service ADT (both are fields on the demo's `cfg`, not core fields or
+> generic extra slots). The field families below are the **demo's** concrete `ProjectConfig`; the resource
 > envelope in particular is a provider concern carried by a project's `cfg`, not a universal field
 > (§ BB refines § O).
 
@@ -208,8 +204,9 @@ init` or generated by the test harness (`psTestConfig`). The built project binar
 | Build inputs | project binary | Dockerfile path, container resources, image/tag defaults, build roots |
 | Runtime context | project binary | parent chain, topology frames, current frame, runtime witnesses, context kind, role name, allowed command classes, local capabilities |
 | Resource envelope | project binary | host/VM/container/service budget limits and child projection defaults |
-| Deploy knobs | project binary | HA replicas, service sizing, generated child-config inputs |
-| `message` (demo's own field, phase 20) | project binary / service pod | user-visible SPA message; flows `<project>.dhall` -> the chart ConfigMap -> the `Web` service (`serveWeb`) -> `BudgetView.message` -> the SPA `#message` (config→web→SPA). A field on the demo's **own** `cfg`, not a core field and not a generic extra slot |
+| Deploy knobs | project binary | HA replicas, service sizing, generated child-config inputs. The process-local accelerator hub requires `haReplicas = 1` exactly |
+| `service : Optional ServiceType` (demo's mandatory field, phase 18) | project binary / selected service role | `ServiceType = < Web : WebServiceConfig \| Accelerator : AcceleratorServiceConfig >`; Web supplies distinct `publicPort` / `acceleratorPort` (defaults 8080/8081), while Accelerator supplies `requestTimeoutSeconds` (default 30). `configuredServiceVariant` validates placement and maps the payload-bearing constructor to an internal handler key |
+| `message` (demo's own field, phase 20) | project binary / service pod | user-visible SPA message; flows from the parent-derived `<project>.dhall` into the dynamically generated ConfigMap, then the `Web` service (`serveWeb`), `BudgetView.message`, and SPA `#message` (config→web→SPA). The exact rendered service-config bytes are hashed for rollout |
 
 ## Runtime context inside local config
 
@@ -221,9 +218,9 @@ The runtime authority is:
 | VM-local `<project>.dhall` | parent renders the narrowed projection, streamed over the VM shell's `stdin`; the in-VM binary writes it in-place | VM binary | fresh-host context and allowed VM-local work |
 | `/usr/local/bin/<project>.dhall` baked in image | project Dockerfiles via `<project> project init --role image-build-container --output /usr/local/bin/<project>.dhall` | project container binary during image build | build/code-quality and config-generation authority only |
 | `/usr/local/bin/<project>.dhall` streamed in-place at runtime | parent renders the narrowed projection, streamed on the `docker run` `stdin`; the container entrypoint writes it before dispatch | project container binary at runtime | frame-specific runtime authority, such as VM-project-container `test run all`, with topology witnesses (no config bind-mount) |
-| service sibling/mounted `<project>.dhall` | project binary/controller during cluster bring-up | service pod binary | service/daemon role context, local cluster capabilities, replica/resource knobs |
+| service sibling/mounted `<project>.dhall` | `HostBootstrapDemo.Commands` renders the actual parent-derived service config and dynamically applies its ConfigMap before Helm; Helm receives the exact config-byte hash | service pod binary | selected service payload, service/daemon role context, local cluster capabilities, replica/resource knobs, and deterministic rollout when mounted bytes change |
 | host daemon sibling `<project>.dhall` | host project binary after cluster ingress exists (Phase 16 host-daemon wiring implemented locally; real integration still open) | Apple/Windows accelerator daemon | daemon role context, local-only accelerator ingress endpoint, worker build cache root, and backend identity |
-| in-cluster accelerator daemon `<project>.dhall` | chart/controller during cluster bring-up (Phase 16 pod startup still open; Phase 18 transport implemented locally) | Linux CPU/GPU daemon pod | daemon role context, `ClusterIP` accelerator ingress endpoint, and resource/backend settings |
+| in-cluster accelerator daemon `<project>.dhall` | project deployer dynamically renders and applies a ConfigMap + Deployment manifest during cluster bring-up (startup path implemented; live integration open) | Linux CPU/GPU daemon pod | selected Accelerator payload, daemon role context, `ClusterIP` accelerator ingress endpoint, configured request timeout, and resource/backend settings |
 
 Every normal command must fail fast with exit code 1 when the sibling config is missing, malformed, for
 another project, claims unavailable capabilities, or does not authorize the requested command. Help,
@@ -303,7 +300,10 @@ cordon (see `documents/engineering/base_image.md`). `cluster up` runs the `verif
 total-capacity preflight and applies the Linux `docker update` kind-node cordon after `kind create`,
 before Helm, fail-closed (live `docker`/`incus` execution exercised in real runs). The preflight resolves
 host capacity per substrate (`sysctl` `hw.ncpu`/`hw.memsize` on Apple silicon, `/proc` on Linux, CIM
-`TotalPhysicalMemory` on Windows, and `df -P -k` free disk on Apple/Linux). The **metal** host preflight
+`TotalPhysicalMemory` on Windows, and `df -P -k` free disk on Apple/Linux). A normal kind plan cordons its
+single control-plane; the direct nvkind plan splits the one declared cluster slice evenly (flooring each
+dimension) across its control-plane and GPU worker, so the sum never exceeds the envelope. The **metal**
+host preflight
 (`preflightHostBudget`/`verifyHostBudget`) gates on `host RAM ≥ budget + ~4 GiB host-OS reserve` (§ O), so a
 tight host (e.g. a 10 GiB budget on 16 GiB) is refused before bring-up; the **in-VM** cluster-slice preflight
 (`preflightBudget`/`verifyBudget`) is reserve-free (the slice is already the reserved subset), so the two are
@@ -328,7 +328,7 @@ later builds (`FROM` the base) is accelerated by the warm store.
 | warm Cabal store, split `core.freeze` / `daemon.freeze` (Phase 12; generated in-image, never committed) | `core.freeze` warms base + `hostbootstrap-core` (imported by `mcts` and `daemon-substrate`); `daemon.freeze` warms the daemon-family deps (daemon apps only) |
 | GHC toolchain pinned to the core | matches `hostbootstrap-core`'s GHC pin |
 | `ormolu`/`fourmolu` + `hlint` | the static quality-gate formatters/linters (pinned) |
-| kube tools (`kubectl`, `helm`, `kind`) | cluster-lifecycle dependencies |
+| kube tools (`kubectl`, `helm`, `kind`, `nvkind`) | cluster-lifecycle dependencies; the CUDA/direct Linux GPU path uses `nvkind` |
 | Node web tooling + Playwright | `spago`, `esbuild`, and globally installed Playwright browsers (chromium, firefox, webkit) and packages used by derived project images and the demo e2e runner |
 
 The base image continues to publish `basecontainer-<flavor>-<arch>` tags (CPU and CUDA flavors). See
@@ -342,8 +342,9 @@ entrypoint `runHostBootstrapCLI progName projectSpec` (`HostBootstrap.CLI`, Phas
 The command surface is **fixed** for every binary — `project` / `test` / `service` / `context` /
 `check-code` — and a project adds **no verbs**: `hostbootstrap-core` is a library of composable tools, not
 a CLI topology (§ P). A project extends the core through `ProjectSpec` only — its lift chain, Dhall
-vocabulary, schema-gen `ConfigArtifact` delta, non-empty test suite, service-handler registry, and required
-`check-code` action; there are no `ProjectCommand` deltas. The entrypoint rejects empty project suites,
+vocabulary, schema-gen `ConfigArtifact` delta, non-empty test suite, service-handler registry,
+config-specific service selector, and required `check-code` action; there are no `ProjectCommand` deltas.
+The handler registry is additive and separate from the project-owned service ADT. The entrypoint rejects empty project suites,
 duplicate test cases, duplicate/shadowed artifacts, and duplicate service variants. The bare `hostbootstrap`
 binary (`hostbootstrap-core`'s own executable) uses `runBareHostBootstrapCLI`, built like any project
 binary rather than baked into the base image.
@@ -352,10 +353,10 @@ See
 
 | Core verb group (target) | Phase | Implemented | Source |
 |-----------------|-------|-------------|--------|
-| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate (tested); effectful apply real-run-validated end-to-end; `down` stops VM frames and deletes kind clusters while preserving durable state; subsumes `config init`, `cluster`, `context create` |
+| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate; `down` stops VM frames and deletes kind clusters while preserving durable state; `down` / `destroy` attempt all independent cleanup and aggregate errors. Historical effectful apply evidence remains valid; subsumes `config init`, `cluster`, `context create` |
 | `context` (read-only introspection) | 15, 16 | yes | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
 | `test init\|run <suite\|all>` | 10, 17 | yes | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
-| `service init\|schema\|run` | 18 | yes | long-running roles (`HostDaemon`/service run-model); `service run` is a leaf-frame pod entrypoint dispatched over a project-contributed `ServiceType` ADT; no `service down` (§ AA) |
+| `service init\|schema\|run` | 18 | yes | long-running roles (`HostDaemon`/service run-model); config-selected `service run` takes no positional variant and is a leaf process in either a pod or host daemon. A project projection validates its ADT value and returns an internal registry key; the enclosing controller/project lifecycle owns teardown. No `service down` (§ AA) |
 | `check-code` | 10 | yes | required project-defined body supplied through `ProjectSpec`, the image-build gate |
 
 The flat orchestration verbs (`config init`, `cluster up|down|delete|status`, `context create
@@ -377,26 +378,39 @@ project-container chain on `linux-gpu`; the former `incus`/`vm`/`harbor`/`web` v
 steps and the `service` variants — phase-13/16/18),
 the schema-gen concat (`context schema` / `context render --artifact demoWeb` over `coreArtifacts ++
 demoArtifacts`), the harness (`hostbootstrap-demo test run all` → `runMatrix` driving the real `project up`
-per test config, bound to the inherited `test` verb), and the service handlers (the demo's `Web` and
-`accelerator` service variants run by `service run web` / `service run accelerator`). The Phase 13/18
-accelerator static slices add
+per test config, bound to the inherited `test` verb), and the service seams: `withServiceConfig` validates
+and selects the demo's payload-bearing `Web` / `Accelerator` ADT constructor, while `withServices`
+resolves its lowercase internal handler key. Both roles run through argument-free `service run`. The
+Phase 13/18 accelerator static slices add
 `HostBootstrapDemo.Accelerator` (deterministic Swift/Metal, C++ and CUDA source templates, artifact hashes,
 and pure build-command builders), typed accelerator API result/failure records in
 `HostBootstrapDemo.Web.Api`, the SPA `Accelerator` tab, `HostBootstrapDemo.Accelerator.Protocol` CBOR
-codecs/correlation, `HostBootstrapDemo.Accelerator.Daemon` worker/client seams and concrete WebSocket
-client transport, and a web service that registers a daemon WebSocket and never computes accelerator sums
-in process.
-The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall`
-files (host, VM, container on the VM, and cluster-service pod, the last delivered by a ConfigMap). The chain
+codecs/correlation, `HostBootstrapDemo.Accelerator.Daemon` persistent worker/client runtime and concrete
+WebSocket client transport, and a web service that registers a daemon only on its private linked listener
+and never computes accelerator sums in process. Public application HTTP uses port 8080/NodePort 30080;
+private accelerator registration uses port 8081 through a cluster-only Service or local-only NodePort
+30081, rejects Origin-bearing clients, and is unavailable on the public listener. The process-local hub
+requires exactly one web replica and enforces single-flight requests without disrupting the active request.
+Its placement plans select `kind.yaml` for host-daemon NodePort ingress,
+`kind-in-cluster.yaml` for Linux CPU ClusterIP ingress, and `nvkind-in-cluster.yaml` for the direct Linux
+GPU control-plane + `nvidia.com/gpu.present=true` worker. The direct chain uses the CUDA base, runs the
+metal preflight plus `ensure docker`/`ensure cuda`, hands the project container `--gpus=all`, and deploys
+the daemon pod with `nvidia.com/gpu: 1`.
+The daemon keeps a serialized newline-delimited worker process, reuses it across requests, restarts it once
+after failure, and removes it on configured request timeout or shutdown. Arithmetic semantics are
+`Float32` across Haskell, Swift, C++, and CUDA; CBOR float64 is only the carrier, and worker/CUDA errors
+surface to the caller. The demo's runtime contexts are explicit sibling `hostbootstrap-demo.dhall` files
+(host, VM, container on the VM, and service/daemon frames). Cluster configs are rendered from the actual
+parent config and delivered by dynamically applied ConfigMaps; exact mounted bytes drive rollout hashes. The chain
 drives the live surface — the provider-aware VM axis (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows), applied budget
 cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-code` gate
 (`demo/docker/Dockerfile`), a `purescript-bridge`/`spago` webservice and SPA served by `service run`, and
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that
 inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside a
-managed Linux VM. The active accelerator reopening has the local CBOR WebSocket accelerator ingress and
-project-binary daemon path implemented; it still needs real worker build/run integration, per-substrate
-integration tests, and a browser e2e assertion that the UI result includes daemon-returned backend/artifact
-metadata.
+managed Linux VM. The active accelerator reopening has the local runtime and browser specification
+implemented; real socket/browser closure remains for the durable Windows GPU host-daemon lane and native
+Apple/Linux CPU/GPU placements. The harness has four cases across two variants, so closure requires a live
+`8/8`; the recorded `6/6` results are historical pre-accelerator gates and no current `8/8` is claimed.
 
 ## Update rule
 
