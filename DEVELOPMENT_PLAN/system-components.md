@@ -29,7 +29,8 @@
 > The **generic-project-model** work (phase 19, § BB) is `Done` —
 > phase-close code-check-validated (core 237 + demo 13) and real-run-validated 2026-06-23 (test run all 3/3 from a
 > harness-generated config) — and builds **forward**: it reopened, undid, or reversed no earlier phase.
-> Phases 4, 8, 10, 15, and 17 stay `Done` with forward-pointers. `hostbootstrap-core` owns **no hardcoded
+> Phases 4, 8, 10, and 17 stay `Done` with forward-pointers; Phase 15 is currently `Active` for the
+> accelerator config-delivery live gate. `hostbootstrap-core` owns **no hardcoded
 > defaults** and is parameterized over a project's own config type (`ProjectSpec cfg tcfg`), with `project
 > init` and the harness sharing one project-owned `psInit`, the harness **generating** the run's
 > `<project>.dhall` from a thin `test.dhall` override, a pure `SecretRef` vocabulary for secrets-strict
@@ -71,18 +72,21 @@
 > live-runtime gates, not for missing local implementation. The web deployment dynamically renders and
 > applies the actual parent-derived ConfigMap, hashes its exact mounted bytes into the pod template, and
 > runs config-selected `service run` with no positional variant. Its linked listeners keep public HTTP on
-> 8080/NodePort 30080 and private accelerator registration on 8081 through a cluster-only Service or
-> local-only NodePort 30081. The accelerator daemon uses a serialized persistent worker session with
-> configured per-request timeout and end-to-end `Float32` semantics.
+> the configured port (default 8080)/NodePort 30080 and private accelerator registration on the configured
+> port (default 8081) through a cluster-only Service or local-only NodePort 30081. `Recreate` rollout and
+> connection-owned readiness preserve the single-peer hub invariant. The accelerator daemon uses a
+> serialized persistent worker session with configured per-request timeout and end-to-end `Float32`
+> semantics.
 >
 > Historical accelerator evidence is retained: the 2026-07-10 guarded `AcceleratorRuntimeSpec` built and
 > ran the real CUDA worker on the RTX 3090 host (`nvcc -ccbin <msvc>` → `Right 3.75`), and earlier completed
-> `6/6` lifecycle results remain valid pre-accelerator evidence. They do not close the current 4-case ×
-> 2-variant live matrix. The durable Windows GPU lifecycle, native Apple CPU/GPU, and Linux CPU/GPU
-> host/in-cluster socket plus browser gates remain open; no live `8/8` result is recorded.
+> `6/6` lifecycle results remain valid pre-accelerator evidence. They do not close the current four-case ×
+> two-variant live matrix. The Apple Silicon host-daemon, Linux CPU/GPU in-cluster, and durable Windows GPU
+> host-daemon socket plus browser gates remain open; each lane must report `8/8`, and no current live
+> `8/8` result is recorded.
 >
-> **Current suite SSoT:** the 2026-07-11 static gate reports 357 core tests and 83 demo tests, with the demo
-> gate also running the embedded 357-test core suite. Earlier 345/56, 331/46, 328/44, 326, and 321 counts
+> **Current suite SSoT:** the 2026-07-12 static gate reports 359 core tests and 87 demo tests, with the demo
+> gate also running the embedded 359-test core suite. Earlier 358/86, 357/83, 345/56, 331/46, 328/44, 326, and 321 counts
 > are historical snapshots from the incremental accelerator, lifecycle, context, and cluster slices.
 
 ## hostbootstrap-core Haskell module surface
@@ -116,7 +120,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Config.Vocab` | 8 | yes | Haskell mirrors of the `Core.dhall` vocabulary record types (reflected for schema-gen) |
 | `HostBootstrap.Dhall.Gen` | 8 | yes | the Dhall-generation substrate + the `ConfigArtifact` registry (reflected schema + render); `config schema` also includes the reflected project-local config schema |
 | `HostBootstrap.Dhall.Hoist` | 8, 15 | yes | post-pass that hoists the repeated vocabulary unions (`ContextKind`/`ProviderKind`/`WitnessKind`/`Capability`/`CommandClass`) into top-level `let` bindings before pretty-printing, so generated `<project>.dhall`/context files stay compact and standalone; shared by `renderProjectConfig` and `renderContext` |
-| `HostBootstrap.Harness` | 10 | yes | the stack-driven `TestSuite` engine drives the real `project up` / `project destroy` per test config and reuses `runMatrix` for assertions — no second bring-up path (§ W). It exclusively claims the generated-config and `.test_data` ownership boundaries, compares config bytes before removal and preserves replacements, skips automatic teardown on distinguished `SafetyRefusal`, fails a variant when teardown fails, and aggregates independent project cleanup failures. Historical real-run evidence: `test run all` `3/3` on 2026-06-20 |
+| `HostBootstrap.Harness` | 10 | yes | the stack-driven `TestSuite` engine drives the real `project up` / `project destroy` per test config and reuses `runMatrix` for assertions — no second bring-up path (§ W). It exclusively claims the generated-config and `.test_data` ownership boundaries, atomically quarantines config before comparison, deletes only matching bytes, and leaves differing bytes in the reported locked quarantine; it skips automatic teardown on distinguished `SafetyRefusal`, fails a variant when teardown fails, and aggregates independent project cleanup failures. Historical real-run evidence: `test run all` `3/3` on 2026-06-20 |
 | `HostBootstrap.Service` | 18 | yes | A possibly empty internal `ServiceRegistry` maps handler keys to actions and is installed through `withServices`; it is distinct from any project-owned Dhall ADT. `service init\|schema\|run` is fixed, with no `service down`. Config-selected `service run` takes no positional variant: after the `Context.ServiceCommand` leaf gate it calls `psServiceVariant` (installed by `withServiceConfig`) and resolves the returned key. Historical live evidence: the pre-selector `service run web` pod served HTTP 200 on 2026-06-20; current live accelerator closure remains open (§ AA) |
 | `HostBootstrap.HostTarget` | 11 | yes | `Local \| InVM` target dispatch (`runInTarget`) + the reboot-to-ready loop (the tool-level lift) |
 | `HostBootstrap.Lift` | 11, 14, 17 | yes | the self-reference compositional lift: `LiftContext` (`Local`/provider VM/`InContainer` stack) + `SelfRef` + the pure leaf fold `foldLeaf` over `LiftLeaf = SelfSub \| RawCmd` (place /any/ command in a frame — a self-subcommand handoff or a `RawCmd` such as a `reachLeaf` probe / `bash -lc`), with `foldLift` the `SelfSub` special case; the IO seams `liftLeaf` / `liftSubcommand` (`runSelf`) + `liftSubcommandWithAuth` (forwards a Docker Hub credential into a container-through-a-VM frame over stdin, never argv); the subcommand-level superset of `HostTarget`. Frame-placed `RawCmd` probes give provider-agnostic reachability assertions (`incus exec`/`limactl shell -- curl …`) — § 17 native-Linux test parity |
@@ -387,8 +391,9 @@ and pure build-command builders), typed accelerator API result/failure records i
 `HostBootstrapDemo.Web.Api`, the SPA `Accelerator` tab, `HostBootstrapDemo.Accelerator.Protocol` CBOR
 codecs/correlation, `HostBootstrapDemo.Accelerator.Daemon` persistent worker/client runtime and concrete
 WebSocket client transport, and a web service that registers a daemon only on its private linked listener
-and never computes accelerator sums in process. Public application HTTP uses port 8080/NodePort 30080;
-private accelerator registration uses port 8081 through a cluster-only Service or local-only NodePort
+and never computes accelerator sums in process. Public application HTTP uses its configured port (default
+8080)/NodePort 30080; private accelerator registration uses its configured port (default 8081) through a
+cluster-only Service or local-only NodePort
 30081, rejects Origin-bearing clients, and is unavailable on the public listener. The process-local hub
 requires exactly one web replica and enforces single-flight requests without disrupting the active request.
 Its placement plans select `kind.yaml` for host-daemon NodePort ingress,
@@ -408,8 +413,8 @@ cordons (VM = budget wall, cluster = slice), an idiomatic in-Dockerfile `check-c
 Playwright e2e across all three browser engines (chromium, firefox, webkit) from the same project image that
 inherits the base-provided browser runtime — centered on a from-zero pristine-host bootstrap inside a
 managed Linux VM. The active accelerator reopening has the local runtime and browser specification
-implemented; real socket/browser closure remains for the durable Windows GPU host-daemon lane and native
-Apple/Linux CPU/GPU placements. The harness has four cases across two variants, so closure requires a live
+implemented; real socket/browser closure remains for the durable Windows GPU and native Apple Silicon
+host-daemon lanes plus the Linux CPU/GPU in-cluster lanes. The harness has four cases across two variants, so closure requires a live
 `8/8`; the recorded `6/6` results are historical pre-accelerator gates and no current `8/8` is claimed.
 
 ## Update rule

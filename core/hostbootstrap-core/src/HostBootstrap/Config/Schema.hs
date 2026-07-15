@@ -38,6 +38,7 @@ module HostBootstrap.Config.Schema (
 
     -- * Snapshot logging
     projectConfigSnapshotHash,
+    projectConfigSnapshotHashBytes,
     renderProjectConfigSnapshotLog,
 )
 where
@@ -45,10 +46,11 @@ where
 import Control.Exception (SomeAsyncException, SomeException, finally, fromException, mask, onException, tryJust)
 import Control.Monad (when)
 import Data.Bits (xor)
-import Data.Char (ord)
+import qualified Data.ByteString as BS
 import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
@@ -136,12 +138,12 @@ writeProjectConfigFile :: (Dhall.ToDhall cfg) => FilePath -> cfg -> IO ()
 writeProjectConfigFile path cfg =
     mask $ \restore -> do
         lockPath <- claimConfigWriteLock path
-        restore (TIO.writeFile path (renderProjectConfigFile cfg))
+        restore (BS.writeFile path (renderProjectConfigBytes cfg))
             `finally` removeDirectory lockPath
 
 data ProjectConfigOwnership = ProjectConfigOwnership
     { ownedPath :: FilePath
-    , ownedPayload :: Text
+    , ownedPayload :: BS.ByteString
     , ownedLockPath :: FilePath
     }
 
@@ -153,13 +155,13 @@ check. The token remains for the bracket lifetime and is consumed by cleanup.
 writeProjectConfigFileExclusive :: (Dhall.ToDhall cfg) => FilePath -> cfg -> IO ProjectConfigOwnership
 writeProjectConfigFileExclusive path cfg =
     mask $ \restore -> do
-        let payload = renderProjectConfigFile cfg
+        let payload = renderProjectConfigBytes cfg
         lockPath <- claimConfigWriteLock path
         present <- restore (doesPathExist path) `onException` removeDirectory lockPath
         if present
             then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
             else do
-                restore (TIO.writeFile path payload)
+                restore (BS.writeFile path payload)
                     `onException` removeExclusivePartial path lockPath
                 pure (ProjectConfigOwnership path payload lockPath)
 
@@ -200,7 +202,7 @@ removeProjectConfigFileIfOwned path ownership = do
                     else do
                         let quarantined = ownedLockPath ownership </> "payload"
                         renameFile path quarantined
-                        actual <- TIO.readFile quarantined
+                        actual <- BS.readFile quarantined
                         if actual == ownedPayload ownership
                             then do
                                 removeFile quarantined
@@ -234,6 +236,9 @@ configOwnerPath path = path ++ ".hostbootstrap-test-owner"
 
 renderProjectConfigFile :: (Dhall.ToDhall cfg) => cfg -> Text
 renderProjectConfigFile cfg = Hoist.renderHoisted Context.vocabUnions cfg <> "\n"
+
+renderProjectConfigBytes :: (Dhall.ToDhall cfg) => cfg -> BS.ByteString
+renderProjectConfigBytes = TE.encodeUtf8 . renderProjectConfigFile
 
 {- | Validate that the runtime context inside the config belongs to the derived
 project/binary identity. Generic: reaches the context via 'cfgContext'.
@@ -296,9 +301,12 @@ loadSiblingProjectConfig projectName cls caps = do
                 path
                 ("missing " ++ path ++ "; run `" ++ T.unpack projectName ++ " project init`")
         else do
-            rawResult <- trySynchronous (TIO.readFile path)
-            raw <- case rawResult of
+            rawResult <- trySynchronous (BS.readFile path)
+            rawBytes <- case rawResult of
                 Left err -> failProjectConfig path ("failed to read " ++ path ++ ": " ++ firstLine (show err))
+                Right content -> pure content
+            raw <- case TE.decodeUtf8' rawBytes of
+                Left err -> failProjectConfig path ("failed to decode UTF-8 in " ++ path ++ ": " ++ firstLine (show err))
                 Right content -> pure content
             let inputSettings =
                     setInputSourceName
@@ -323,7 +331,7 @@ loadSiblingProjectConfig projectName cls caps = do
                             when (shouldLogSnapshot cls cfgCtx) $
                                 TIO.hPutStrLn
                                     stderr
-                                    (renderProjectConfigSnapshotLog path (projectConfigSnapshotHash raw) cfgCtx)
+                                    (renderProjectConfigSnapshotLog path (projectConfigSnapshotHashBytes rawBytes) cfgCtx)
                             pure (validCfg, cfgCtx)
   where
     firstLine = takeWhile (/= '\n')
@@ -354,8 +362,12 @@ cryptographic digest; it exists to correlate a process with the exact config
 snapshot it loaded.
 -}
 projectConfigSnapshotHash :: Text -> Text
-projectConfigSnapshotHash content =
-    T.pack ("fnv64:" ++ leftPad16 (showHex (T.foldl' step offset content) ""))
+projectConfigSnapshotHash = projectConfigSnapshotHashBytes . TE.encodeUtf8
+
+-- | Hash the exact UTF-8 bytes read from disk or mounted into a ConfigMap.
+projectConfigSnapshotHashBytes :: BS.ByteString -> Text
+projectConfigSnapshotHashBytes content =
+    T.pack ("fnv64:" ++ leftPad16 (showHex (BS.foldl' step offset content) ""))
   where
     offset :: Word64
     offset = 14695981039346656037
@@ -363,8 +375,7 @@ projectConfigSnapshotHash content =
     prime :: Word64
     prime = 1099511628211
 
-    step :: Word64 -> Char -> Word64
-    step h ch = (h `xor` fromIntegral (ord ch)) * prime
+    step h byte = (h `xor` fromIntegral byte) * prime
 
     leftPad16 :: String -> String
     leftPad16 value = replicate (max 0 (16 - length value)) '0' ++ value

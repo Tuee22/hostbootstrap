@@ -17,7 +17,7 @@
 workload previously ran through the load-bearing `web serve` verb. The generic command now reaches every
 project role through the fixed surface (development_plan_standards § AA), not a per-project verb.
 
-The current implementation is built and statically validated (357 core tests and 83 demo tests):
+The current implementation is built and statically validated (359 core tests and 87 demo tests):
 
 - `HostBootstrap.Service` ships the possibly empty `ServiceRegistry` of internal handler keys and actions.
   `HostBootstrap.CLI` threads it through `ProjectSpec` with `withServices`, rejects duplicate keys, and
@@ -34,11 +34,14 @@ The current implementation is built and statically validated (357 core tests and
 - `demo/src/HostBootstrapDemo/Commands.hs` renders each parent-derived service config and its ConfigMap
   manifest at deployment time. Helm receives the current frame, exact config-byte hash, and placement;
   the hash annotation rolls the pod whenever the mounted bytes change. There is no static chart ConfigMap.
-- The web role binds linked public and private listeners: public HTTP is exposed on 8080/NodePort 30080;
-  accelerator WebSocket traffic uses 8081 through a cluster-only Service or a local-only NodePort 30081.
+- The web role binds linked public and private listeners: public HTTP uses its configured port (default
+  8080) behind NodePort 30080;
+  accelerator WebSocket traffic uses the configured distinct port (default 8081) through a cluster-only
+  Service or a local-only NodePort 30081.
   Registration is unavailable on the public listener, and the private listener rejects browser-originated
   registration. A process-local accelerator hub requires exactly one web replica and preserves an active
-  request when a concurrent request receives the single-flight 503 response.
+  request when a concurrent request receives the single-flight 503 response. `Recreate` rollouts prevent
+  temporary peer overlap, and daemon connection readiness is explicit for both pod and host placement.
 - The accelerator daemon keeps a serialized, persistent newline-delimited worker session, restarts it once
   after a worker failure, and clears it on request timeout. Worker arithmetic is semantically `Float32`
   across Haskell, Swift, C++, and CUDA; CBOR float64 is only the transport carrier. CUDA failures surface
@@ -48,7 +51,7 @@ Historical live evidence remains valid for the behavior it exercised: on 2026-06
 three-argument web entrypoint (`service run web`) served HTTP 200 at `localhost:30080` on the 16 GiB
 Apple-Silicon host ([phase-13](phase-13-hostbootstrap-demo.md)) while reading its ConfigMap-mounted config.
 That evidence predates the current config-selected two-argument entrypoint and the accelerator matrix; it
-is not a live validation claim for the current 4-by-2 substrate/placement gate.
+is not a live validation claim for the current four-lane accelerator gate.
 
 **Reopened 2026-07-09 for the accelerator daemon runtime.** The protocol, concrete socket path, dynamic
 configuration, two-listener web boundary, and persistent real-worker supervision are implemented and
@@ -62,9 +65,10 @@ workflow specification and guarded real-worker cases, is implemented. Completion
 - real socket integration through the in-cluster `ClusterIP` and host-daemon local-only `NodePort` paths;
 - the browser Add workflow against those live deployments, proving the result and metadata came from the
   selected JIT-built worker rather than from the web process; and
-- the native host/in-cluster matrix on Apple CPU/GPU and Linux CPU/GPU substrates, plus the durable
-  Windows GPU host-daemon run. The intended current matrix is 4 substrates × 2 placements = 8 cases; no
-  current `8/8` live result is claimed here.
+- the four required substrate/placement lanes: Apple Silicon host daemon, Linux CPU in-cluster daemon,
+  Linux GPU direct nvkind/in-cluster daemon, and Windows GPU host daemon. On each lane the harness runs
+  four cases across two message variants, so the required result is `8/8`; no current live `8/8` result
+  is claimed here.
 
 ## Phase Objective
 
@@ -258,7 +262,7 @@ worker session.
 
 #### Remaining Work
 
-The implementation and current static/local contract are complete and green (357 core tests, 83 demo
+The implementation and current static/local contract are complete and green (359 core tests, 87 demo
 tests). The effective config selects `Accelerator`; the existing `Context.ServiceCommand` gate rejects
 project-lifecycle authority; the dynamic manifest supplies the placement-specific connection target and
 timeout; and deterministic CBOR codecs preserve request IDs, metadata, and failures. The web process owns
@@ -280,8 +284,8 @@ reported 46 demo tests). That proves the native worker path used in that run; it
 socket, lifecycle, or browser-matrix result.
 
 The phase remains Active for real socket and browser closure across the in-cluster `ClusterIP` and
-host-daemon local-only `NodePort` routes, including the durable Windows GPU run and native Apple/Linux
-CPU/GPU cases. No new live `8/8` result is claimed.
+host-daemon local-only `NodePort` routes, including the durable Windows GPU run, native Apple Silicon
+host-daemon lane, and Linux CPU/GPU in-cluster lanes. No new live `8/8` result is claimed.
 
 ## Documentation Requirements
 

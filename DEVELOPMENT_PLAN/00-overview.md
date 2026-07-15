@@ -51,7 +51,7 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 The underlying correction landed and is code-check-validated; its 2026-07-02 in-place-delivery and
 2026-07-05 cross-substrate reliability reopenings closed successfully. The later accelerator reopening
 changes the current status: phases **3, 5, 13, 15, 16, and 18 are `Active`**, while phases 14 and 17 remain
-`Done`. All current accelerator implementation and static-test work is complete (357 core + 83 demo tests),
+`Done`. All current accelerator implementation and static-test work is complete (359 core + 87 demo tests),
 but the six active phases cannot close until their honest native/Apple live gates run. The historical full
 demo lifecycle ran end-to-end on native Incus/Linux and a 16 GiB Apple-Silicon host.
 The last completed pre-accelerator `test run all` gates report **`6/6 passed`** (three cases x two message
@@ -91,10 +91,11 @@ See [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 Static closure includes the browser Add assertion; persistent Swift/Metal, C++ and CUDA worker paths;
 linked public/private web listeners; no in-process fallback; dynamic web/daemon ConfigMap generation and
 application; config-hash rollout; Linux CPU/GPU daemon deployment and rollout waits; one-GPU scheduling;
-host-daemon ownership/identity/shutdown hardening; and fail-closed harness ownership, direct-cluster, and
-teardown safety. A guarded historical worker gate built and ran CUDA on an RTX 3090
+Recreate rollout and connection-owned readiness; host-daemon ownership/absolute identity/shutdown plus a
+pristine-install readiness bound; exact-byte harness ownership; direct-cluster and teardown safety. A
+guarded historical worker gate built and ran CUDA on an RTX 3090
 (`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
-The current `-Werror` evidence is **357 core + 83 demo tests**. Full closure still requires the live
+The current `-Werror` evidence is **359 core + 87 demo tests**. Full closure still requires the live
 four-case/two-variant runs on the native substrate hardware: the current host-daemon durable lifecycle and
 the unavailable Apple Silicon / Linux CPU / Linux GPU lanes. The matrix expects `8/8`; no live `8/8`
 result is recorded, and the latest completed live result remains the historical pre-accelerator `6/6`.
@@ -166,7 +167,7 @@ Apple Silicon smoke build closed 2026-07-10 on
 an M1 Max host (`ensure apple-metal: present
 (no-op)`), and the Windows GPU smoke build closed the same day on an RTX 3090 host after CUDA 13.3, LLVM,
 and the `vswhere`-resolved VCTools compiler produced the `nvcc -ccbin` smoke artifact (`ensure cudawin:
-present (no-op)`). The current `-Werror` static gate passes with all 357 core tests; Phase 3 stays `Active`
+present (no-op)`). The current `-Werror` static gate passes with all 359 core tests; Phase 3 stays `Active`
 until a Linux GPU Docker host reports `ensure cuda: present (no-op)` under the exact runtime contract.
 
 ### Phase 4 — project-local Dhall and command tree
@@ -197,7 +198,7 @@ slice across both node containers, runs the same official NVIDIA runtime smoke a
 idempotently installs pinned device-plugin chart `0.19.3` only when no positive allocatable
 `nvidia.com/gpu` is already present. The direct chain runs the metal preflight and `ensure docker`/`ensure
 cuda`, builds from the CUDA base, hands the project container `--gpus=all`, and schedules the daemon with a
-one-GPU limit. The current static gate passes 357 core + 83 demo tests. Live native Linux CPU/GPU daemon
+one-GPU limit. The current static gate passes 359 core + 87 demo tests. Live native Linux CPU/GPU daemon
 connectivity and the browser e2e `8/8` gate remain open; no live `8/8` result has yet replaced the historical
 `6/6` result.
 
@@ -257,7 +258,8 @@ standing up isolated per-case clusters via `Seams` — the harness owns no secon
 owns the run's `.test_data` lifecycle under a self-created-only delete-guard. Real-run-validated by
 `test run all` reporting `3/3 passed` (2026-06-20). It is `Done`; phase 19 (§ BB) builds **forward** on it,
 having the harness **generate** the run's `<project>.dhall` from the `test.dhall` override via the
-project-owned `psTestConfig` (reusing `psInit`) and delete the generated config on teardown, rather than
+project-owned `psTestConfig` (reusing `psInit`) and delete it on teardown only when the exact bytes still
+match (changed bytes remain in the reported locked quarantine), rather than
 driving `project up` against a pre-existing config. The 2026-07-05 reliability reopening also closed
 `Done`; new accelerator integration and e2e tests are demo-owned phase-13 work unless they require harness
 surface changes.
@@ -306,7 +308,7 @@ It is `Active` for the accelerator worked example, with implementation and stati
 SPA/browser assertion, CBOR WebSocket dispatch, linked public/private listeners, no-fallback and
 single-flight behavior, persistent `Float32` workers, dynamic service/daemon ConfigMaps, Linux CPU/GPU
 daemon Deployments, host-native Apple/Windows daemon lifecycle, and fail-closed harness safety are all
-implemented. The current gate passes 357 core + 83 demo tests. Remaining work is only live execution of
+implemented. The current gate passes 359 core + 87 demo tests. Remaining work is only live execution of
 the implemented four-case/two-variant matrix on each substrate; no live `8/8` is recorded.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
@@ -410,8 +412,9 @@ project's own config type. `ProjectSpec cfg tcfg` couples core to `cfg` through 
 (`cfg -> BinaryContext`, `BinaryContext -> cfg -> cfg`) and the project-owned `psServiceVariant` selector;
 defaults live only in a project-owned `psInit`,
 which `project init` and the harness both reuse (DRY); `test.dhall` is a thin override and the harness
-**generates** the run's `<project>.dhall` from it (`psTestConfig`), then deletes the generated config and
-self-created `.test_data` on teardown (closing the § Z code-vs-contract drift); a pure `SecretRef`
+**generates** the run's `<project>.dhall` from it (`psTestConfig`), then deletes matching run-owned config
+bytes and self-created `.test_data` on teardown, leaving changed
+config bytes in the reported locked quarantine (closing the § Z code-vs-contract drift); a pure `SecretRef`
 vocabulary keeps a secrets-strict consumer's production configs plaintext-free; and the Python bootstrapper
 no longer initializes config (Sprint 19.5 — Python builds the host-native binary and execs it, the binary
 owning its Dhall and failing fast when no sibling config exists) (§ BB). It is `Done` (phase-close code-check-validated — core 237

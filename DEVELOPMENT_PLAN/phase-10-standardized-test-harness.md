@@ -49,7 +49,11 @@ configuration** the engine writes a test-specific `<project>.dhall`, runs `proje
 self-reference lift, § U), and tears the stack down with `project destroy`. There is **one `project up` per
 distinct test config**, and the engine owns **no second cluster-bring-up path** — it reuses the core pure
 functional logic (the case matrix, the budget-slicing cores, the run-model selection, the delete-guard) and
-the chain production uses. The engine recast to drive the real `project up` landed in code and is real-run-validated; the current `test run all` reports `6/6 passed` (phase-20's second message variant brought the earlier single-variant `3/3` matrix to `6/6`; the dated 2026-06-20 `3/3` validation below stands).
+the chain production uses. The engine recast to drive the real `project up` landed in code and is
+real-run-validated; the last completed pre-accelerator `test run all` reported `6/6 passed` (phase-20's
+second message variant brought the earlier single-variant `3/3` matrix to `6/6`; the dated 2026-06-20
+`3/3` validation below stands). The current four-case/two-variant accelerator matrix requires `8/8` and
+has no completed live result yet.
 
 ## Remaining Work
 
@@ -81,7 +85,8 @@ turn). **None remaining.**
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on the harness (the generic project
 model, § BB): it *generates* the run's `<project>.dhall` from the `test.dhall` override via the
-project-owned `psTestConfig` (reusing `psInit`) and deletes the generated config on teardown. The
+project-owned `psTestConfig` (reusing `psInit`) and deletes only matching run-owned bytes on teardown;
+changed bytes remain in the reported locked quarantine. The
 superseded `test`-reuses-existing-config flow is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase is
 not reopened.**
@@ -130,7 +135,7 @@ lifecycle needs the full budget). Secrets are intentionally not carried as plain
 credential-forwarding doctrine keeps secrets out of Dhall, § U).
 
 The `project up` interpreter the engine drives is owned by
-[phase-16](phase-16-project-lifecycle-command.md) (Done); the test surface that invokes the engine is
+[phase-16](phase-16-project-lifecycle-command.md); the test surface that invokes the engine is
 co-owned with [phase-17](phase-17-chain-driven-test-and-context-introspection.md).
 
 ## Phase Objective

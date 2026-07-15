@@ -19,7 +19,7 @@ import HostBootstrap.CLI (
 import HostBootstrap.Command (coreCommandNames)
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
-import HostBootstrap.Context (ContextKind (HostOrchestrator))
+import HostBootstrap.Context (ContextKind (ClusterService, HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
 import HostBootstrap.Harness (
@@ -157,6 +157,15 @@ tests =
                     try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-role" spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
+        , testCase "service run rejects a multi-role orchestrator even when ServiceCommand is granted" $
+            withMultiRoleHostServiceConfig "cli-svc-multirole" $ do
+                handlerRan <- newIORef False
+                let spec = configuredService "web" (withServices [ServiceHandler "web" (writeIORef handlerRan True)] (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-multirole" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Left (ExitFailure 1)
+                readIORef handlerRan >>= (@?= False)
         , testCase "service run dispatches exactly the selected variant from a multi-handler registry" $
             withServiceProjectConfig "cli-svc-dispatch" $ do
                 webRan <- newIORef False
@@ -288,6 +297,14 @@ withProjectConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
     path <- Schema.siblingProjectConfigPath projectName
     let cfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+    (Schema.writeProjectConfigFile path cfg >> action) `finally` removeFile path
+
+withMultiRoleHostServiceConfig :: String -> IO () -> IO ()
+withMultiRoleHostServiceConfig rawProjectName action = do
+    let projectName = T.pack rawProjectName
+        baseCfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+        cfg = baseCfg{Fixture.context = Context.addRole ClusterService (Fixture.context baseCfg)}
+    path <- Schema.siblingProjectConfigPath projectName
     (Schema.writeProjectConfigFile path cfg >> action) `finally` removeFile path
 
 withServiceProjectConfig :: String -> IO () -> IO ()

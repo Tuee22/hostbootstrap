@@ -617,10 +617,10 @@ lifetime is owned by its Kubernetes controller and torn down by @project
 destroy@ (§ Y).
 
 @service run@ is a **leaf-frame runtime command, never an orchestrator**: the
-context gate refuses it unless the effective @<project>.dhall@ declares a service
-role (the 'Context.ServiceCommand' class, which only the @cluster-service@ /
-  @daemon@ leaf contexts allow), so a host/VM/container orchestrator config — or a
-  missing config — fails fast. It then reads the variant from the project's
+context gate first requires 'Context.ServiceCommand', then an explicit kind gate
+requires an actual @cluster-service@ or @daemon@ leaf. Thus even a multi-role
+host/VM/container orchestrator that carries extra service authority — or a missing
+config — fails fast. It then reads the variant from the project's
   Dhall-owned service config; an absent/unknown variant or empty registry fails
   fast. There is no variant CLI argument.
 -}
@@ -664,7 +664,13 @@ serviceCommandGroup progName registry selectService initBuilder =
         putStrLn "-- <project>.dhall (service-config schema, reflected from the decoder)"
         putStrLn (T.unpack (projectCfgSchemaText @cfg))
     runServiceRun =
-        withSiblingProjectConfigContext (T.pack progName) Context.ServiceCommand [] $ \(projectCfg :: cfg) _ -> do
+        withSiblingProjectConfigContext (T.pack progName) Context.ServiceCommand [] $ \(projectCfg :: cfg) serviceCtx -> do
+            unless (Context.contextKind serviceCtx `elem` [Context.ClusterService, Context.Daemon]) $
+                die
+                    ( "service run: contextKind "
+                        ++ show (Context.contextKind serviceCtx)
+                        ++ " is not a service leaf; expected ClusterService or Daemon"
+                    )
             variant <- either (die . ("service run: " ++)) pure (selectService projectCfg)
             case lookupServiceHandler variant registry of
                 Just handler -> serviceRun handler

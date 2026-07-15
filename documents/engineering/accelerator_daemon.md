@@ -164,16 +164,19 @@ The accelerator ingress is a web-service endpoint, not a daemon service exposed 
 For the demo's kind-based clusters, local-only means the kind `extraPortMappings` entry binds the host
 listener to `127.0.0.1`, so the daemon can connect from the host without exposing the ingress on the LAN.
 `HostBootstrap.Cluster.Lifecycle.acceleratorIngressPlan` is the pure implementation of this selection.
-The chart renders a distinct accelerator Service: in-cluster daemons use `ClusterIP` port 8081, while
-host-resident daemons use NodePort 30081. Placement-specific kind configs publish that NodePort only in
+The chart renders a distinct accelerator Service: in-cluster daemons use the Dhall-configured `ClusterIP`
+port (default 8081), while host-resident daemons use NodePort 30081. The generated daemon URL carries that
+same configured port. Placement-specific kind configs publish the NodePort only in
 the host-daemon topology, bound to `127.0.0.1`; the in-cluster kind/nvkind configs omit it. The existing
 web, registry, and MinIO NodePorts keep their current bindings.
 
-The web pod has two linked listeners sharing one process-local hub: public HTTP on container port 8080 and
-daemon WebSocket ingress on 8081. Public NodePort 30080 cannot upgrade daemon registration, and the private
+The web pod has two linked listeners sharing one process-local hub: public HTTP on its configured port
+(default 8080) and daemon WebSocket ingress on its distinct configured port (default 8081). Public
+NodePort 30080 cannot upgrade daemon registration, and the private
 listener rejects browser `Origin` headers. Local-only binding is network placement, not authentication.
 Because the hub is process-local, the demo rejects `haReplicas /= 1`; a production HA design would require
-authenticated ingress and shared routing state.
+authenticated ingress and shared routing state. Both web and daemon Deployments use `Recreate`, so a
+configuration/image rollout cannot overlap two process-local peers.
 
 ## Linux GPU Direct Cluster
 
@@ -215,6 +218,8 @@ Static tests:
 - real-socket public/private isolation, request/reply, busy-request, linked-listener failure, idle persistence,
   and graceful shutdown.
 - persistent session reuse/restart/timeout cleanup and always-on Float32 rounding at `2^24 + 1`.
+- connection-owned readiness markers: daemon disconnect/startup failure clears readiness, and the
+  in-cluster rollout waits for a built worker plus live WebSocket connection.
 
 Integration tests:
 
@@ -242,11 +247,12 @@ Implemented browser e2e specifications:
 
 ## Current Status
 
-The implementation is statically green at 357 core tests and 83 demo tests under `-Werror`. It includes
+The implementation is statically green at 359 core tests and 87 demo tests under `-Werror`. It includes
 config-selected `service run` with real `Web`/`Accelerator` Dhall payloads; separate linked listeners;
 dynamic rollout-hashed ConfigMaps; persistent workers; strict Float32 semantics; checked CUDA failures;
 direct Linux GPU `nvkind`; in-cluster Linux CPU/GPU daemon manifests; and serialized host-daemon lifecycle
-with strict PID identity, graceful shutdown, force fallback, and ambiguity preservation.
+with absolute PID identity, symmetric PID/owner witnesses, graceful shutdown, force fallback, ambiguity
+preservation, and a bounded 30-minute pristine-install/build/connect readiness gate.
 
 Historical Apple Metal and Windows CudaWin host-tool smokes passed on 2026-07-10. The owning phases remain
 `Active` because static evidence cannot replace the unavailable live closure matrix: a real Linux GPU

@@ -345,7 +345,7 @@ chain and the `nvkind` cluster plan instead of provisioning the Incus VM:
 | 7 | deploy kind | VM → container | bring up the kind cluster on the VM's Docker |
 | 8 | deploy registry | container | the demo's workload step: stand up the in-cluster registry (registry:2) |
 | 9 | push image | container | the demo's workload step: load the project image into kind and push it to the in-cluster registry |
-| 10 | deploy chart | container | apply the exact generated service ConfigMap and launch the web pod, whose config-selected entrypoint is `service run`; public HTTP is NodePort 30080 and private daemon ingress is NodePort 30081 / container port 8081 |
+| 10 | deploy chart | container | apply the exact generated service ConfigMap and launch the web pod, whose config-selected entrypoint is `service run`; public HTTP is NodePort 30080 and private daemon ingress is NodePort 30081 / the configured target port (default 8081) |
 | 11 | expose NodePort | container → host | verify the NodePort (30080) is reachable back on the host |
 | 12 | post-handoff accelerator hook | host | on Apple/Windows, start the singleton host daemon after ingress is reachable; Linux deploys the daemon in-cluster through its ClusterIP-only service |
 
@@ -435,8 +435,9 @@ carries two test layers:
   chain production uses. Two fail-fast safety preconditions run before any test: the harness refuses if a
   sibling `hostbootstrap-demo.dhall` already exists (checked at `siblingProjectConfigPath`) or if a
   production cluster is running. Probes fail closed; `SafetyRefusal` never tears down pre-existing state.
-  Generated config and `.test_data` are exclusively locked, and cleanup deletes only bytes/state the run
-  still owns while preserving replacements. A suite may
+  Generated config and `.test_data` are exclusively locked. Config cleanup atomically quarantines the
+  current path, deletes only matching run-owned bytes, and leaves differing bytes in the reported locked
+  quarantine for recovery. A suite may
   declare **more than one config variant** and the harness stands each up,
   asserts, then tears it down in turn: the demo runs **two** variants (`"Hello, world!"` then
   `"Hello, Universe!"`), with a full `project up` → assert → `project destroy` between them, each config

@@ -248,7 +248,8 @@ without making illegal states representable.
 - The full Apple Silicon Lima demo lifecycle validates the single-representation lift in a real VM:
   `test all` is lifted as one project-container workflow and reports `3/3 passed`, including e2e.
 
-Current validation: the frame/witness topology shape is implemented in Phase 15; `cabal test all` from
+Historical phase-close validation (superseded by the fixed command surface): the frame/witness topology
+shape is implemented in Phase 15; `cabal test all` from
 `core/` passes (199 tests); `cabal build all` from `demo/` passes; and `cabal run hostbootstrap-demo --
 deploy --dry-run` renders the six-step chain where the only lifted compute step remains `test all` and
 the preceding VM-local step materializes the runtime config.

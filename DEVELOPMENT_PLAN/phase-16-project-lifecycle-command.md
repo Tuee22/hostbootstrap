@@ -79,17 +79,20 @@ that skips the Incus VM.
 - Done statically: Apple Silicon and Windows GPU use a host-native project-binary build and run path. The
   post-handoff hook copies that host-native binary into `.build/accelerator-daemon/`, writes its
   daemon-authority sibling config, and launches config-selected `service run` with
-  `HOSTBOOTSTRAP_ACCELERATOR_WS_URL`. Process ownership is fail-closed: strict pid parsing, an owner marker,
-  exact executable-plus-argv identity, a shutdown sentinel, no inherited output streams, singleton
-  replacement, and idempotent teardown are unit-tested.
+  `HOSTBOOTSTRAP_ACCELERATOR_WS_URL`. It does not return until a readiness marker proves worker build plus
+  WebSocket connection, using a 30-minute pristine-install budget while repeatedly checking exact process
+  identity. Process ownership is fail-closed: strict pid parsing, symmetric pid/owner markers, an absolute
+  executable-plus-argv identity, masked acquisition, a shutdown sentinel, no inherited output streams,
+  singleton replacement, and idempotent teardown are unit-tested.
 - Done statically: the Linux CPU and Linux GPU chains generate/apply their daemon ConfigMap, deploy and
   rollout-wait an in-cluster daemon Deployment that dials the web service's distinct accelerator
-  `ClusterIP`, and fingerprint config bytes for rollout. The GPU workload requests one
+  configured `ClusterIP`, and fingerprint config bytes for rollout. A connection-owned readiness marker
+  makes rollout wait for the built worker and live WebSocket; `Recreate` prevents peer overlap. The GPU workload requests one
   `nvidia.com/gpu`.
 
-Current validation (2026-07-11): `cabal build all --ghc-options=-Werror` and `cabal test all` pass from
-`core/` (357 tests); the demo `-Werror` build and test run pass with 83 demo tests plus the embedded
-357-core suite. Remaining work is only real execution: prove the host daemon connects through the
+Current validation (2026-07-12): `cabal build all --ghc-options=-Werror` and `cabal test all` pass from
+`core/` (359 tests); the demo `-Werror` build and test run pass with 87 demo tests plus the embedded
+359-core suite. Remaining work is only real execution: prove the host daemon connects through the
 local-only NodePort, prove the native Linux CPU/GPU daemon Deployments connect through `ClusterIP`, and run
 the implemented browser Add assertion as part of the four-case/two-variant `8/8` gate. No live `8/8`
 result is recorded yet.
@@ -454,7 +457,7 @@ streams, so stale or unrelated processes are never killed. The Linux CPU/GPU
 `deploy-accelerator-daemon` step applies the dynamic daemon ConfigMap, deploys and rollout-waits the daemon
 workload dialing the distinct accelerator `ClusterIP`, and requests one GPU on the GPU lane. Config hashes
 roll subPath-mounted pods. The Windows worker path resolves the generated `.exe`, and build-#3 failures
-stream their captured output. Current static validation is 357 core + 83 demo tests.
+stream their captured output. Current static validation is 359 core + 87 demo tests.
 
 Open only for real-run closure (§ C): execute the host-daemon lifecycle through the local-only NodePort,
 execute the native Linux CPU/GPU in-cluster deployments, and run the implemented browser Add assertion in

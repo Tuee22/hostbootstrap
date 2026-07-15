@@ -91,8 +91,9 @@ The full statement is [development_plan_standards.md § BB](development_plan_sta
   `psTestConfig :: tcfg -> IO [(Text, cfg)]` (reusing `psInit`; `IO` so a project can read extra inputs
   such as a `test-secrets.dhall`), and exclusively claims the generated-config and `.test_data` ownership
   boundaries. For each variant it writes `<project>.dhall`, runs `project up`, asserts, and attempts
-  `project destroy` plus owned-artifact cleanup. Cleanup compares the current config bytes with the bytes
-  it wrote and preserves a replacement. Teardown errors fail the variant; independent teardown actions
+  `project destroy` plus owned-artifact cleanup. Cleanup atomically quarantines the current config under
+  its ownership lock, deletes it only when its bytes match, and leaves differing bytes locked in quarantine
+  for explicit recovery. Teardown errors fail the variant; independent teardown actions
   are all attempted and aggregated. A distinguished `SafetyRefusal` means ownership was never acquired,
   so automatic project teardown is deliberately skipped.
 - **Generic secrets shape.** Core offers a pure `SecretRef` union projects may embed in `cfg`; "no
@@ -192,7 +193,7 @@ the § Z code-vs-contract drift). Fix the harness existence precondition to chec
 - `test init` writes `test.dhall` from `psTestInit` without requiring an existing `<project>.dhall`.
 - `test run` exclusively claims its generated-config and `.test_data` ownership boundaries, then generates
   → `project up` → assert → `project destroy` → delete only matching owned artifacts; it keeps
-  `test.dhall` and preserves any config replacement.
+  `test.dhall`, and any differing config remains in the reported locked quarantine.
 - An ordinary failure after acquisition triggers root teardown; `SafetyRefusal` skips that teardown because
   the harness did not acquire ownership. Teardown failure fails the variant, while project teardown tries
   independent cleanup actions and reports their aggregate failures.
@@ -209,19 +210,21 @@ Validation substrate: linux-cpu (the harness real-run on native Incus/Linux).
 
 Code complete and validated (2026-06-23): `psInit` / `psTestInit` / `psTestConfig` added; `test init`
 needs no pre-existing `<project>.dhall`; `test run` generates the run's config via `psTestConfig`, drives
-the real `project up`, asserts, `project destroy`, then deletes the generated config (keeping `test.dhall`);
+the real `project up`, asserts, `project destroy`, then deletes matching run-owned config bytes (keeping
+`test.dhall`; changed bytes remain in the reported locked quarantine);
 `demoTestSafety` checks the executable-sibling `siblingProjectConfigPath`, not the project root. Verified
 at phase close by `cabal test all` (232) + the demo suite (13), and real-run-validated 2026-06-23 (`3/3`
 from a generated config).
 
 The current harness further hardens that delivered ownership model with exclusive ownership locks for the
-generated config and `.test_data`, byte-for-byte replacement preservation, distinguished
+generated config and `.test_data`, byte-for-byte quarantine of differing config, distinguished
 `SafetyRefusal`, variant-failing teardown errors, and aggregate independent cleanup. Those refinements are
 covered by the current suites without changing this sprint's Done status or its historical evidence.
 
 ### Sprint 19.4: Generic `SecretRef` and `test-secrets` seam [Done]
 
 **Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`
 **Docs to update**: `documents/engineering/secrets.md`, `documents/architecture/generic_project_model.md`
 
 #### Objective

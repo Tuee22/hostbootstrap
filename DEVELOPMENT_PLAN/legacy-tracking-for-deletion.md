@@ -55,7 +55,7 @@ These surfaces are intentionally present and are not cleanup obligations.
   `incus` verbs used to expose is **retained as the metal chain's step actions** the core `project up`
   interprets. Only the verbs were removed (see **Removed Surfaces**), not the IO.
 - **Demo web role + bridge IO** (`serveWeb` / `writeBridge`) — `serveWeb` is retained as the `web`
-  'ServiceHandler' in `demoServices` (`service run web`), and `writeBridge` is retained as the bridge
+  'ServiceHandler' in `demoServices` (selected by the config when `service run` starts), and `writeBridge` is retained as the bridge
   codegen the build-image chain step runs before the image build. Only the `web` verb was removed.
 - **`core/hostbootstrap-core/dhall/example.dhall`** — retained as a live project-config fixture decoded
   by `SchemaSpec` and guarded against renderer drift. The reflected `context schema` /
@@ -159,7 +159,8 @@ a plan update creates a new current owner for it.
   `demoTestUp` driving `project up` against that pre-existing config) — removed 2026-06-23 by the phase-19
   genericization. The harness now **generates** the run's `<project>.dhall` via the project-owned
   `psTestConfig` (reusing `psInit`, never shelling the CLI), runs the real `project up`, asserts, `project
-  destroy`, then deletes the generated config and self-created `.test_data` (keeping `test.dhall`);
+  destroy`, then deletes matching run-owned config bytes and self-created `.test_data` (keeping
+  `test.dhall`); changed config bytes remain in the reported locked quarantine;
   `test init` requires no pre-existing `<project>.dhall`, the fail-fast existence precondition checks
   `siblingProjectConfigPath`, and a suite may declare more than one config variant. Owning phase: phase-19,
   sprint 19.3.

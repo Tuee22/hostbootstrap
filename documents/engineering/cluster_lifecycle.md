@@ -93,8 +93,9 @@ container frame the recursive interpreter reaches — not host tools (see
 ### Accelerator daemon ingress
 
 The accelerator demo adds a daemon WebSocket ingress on the web service. The chart renders it as a
-distinct Service from the public web NodePort. In-cluster daemon pods use `ClusterIP` port 8081;
-host-resident Apple Silicon and Windows GPU daemons use NodePort 30081. `acceleratorIngressPlan` is the
+distinct Service from the public web NodePort. In-cluster daemon pods use the configured `ClusterIP` port
+(default 8081); host-resident Apple Silicon and Windows GPU daemons use NodePort 30081.
+`acceleratorIngressPlan` is the
 pure renderer for that choice. Placement-specific kind configs publish 30081 only for host-daemon lanes,
 bound to `127.0.0.1`, so the daemon can connect without publishing the ingress on the LAN. In-cluster
 kind/nvkind configs omit the mapping; the existing web/registry/MinIO NodePorts keep their historical
@@ -191,7 +192,7 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   static slice now includes the direct Linux GPU `nvkind` cluster driver, official NVIDIA runtime probe,
   control-plane/GPU-worker budget split, pinned device-plugin install/readiness/allocatable gate, CUDA
   daemon GPU limit, and placement-specific ingress/config selection. The current `-Werror` gates pass
-  with 357 core tests and 83 demo tests; live Linux CPU/GPU daemon connectivity remains gated by the
+  with 359 core tests and 87 demo tests; live Linux CPU/GPU daemon connectivity remains gated by the
   accelerator phases in the development plan.
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the

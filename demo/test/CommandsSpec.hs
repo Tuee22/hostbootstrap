@@ -2,7 +2,7 @@
 
 module CommandsSpec (tests) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, bracket, try)
 import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Text as T
 import HostBootstrap.Chain (renderChain)
@@ -14,6 +14,7 @@ import HostBootstrap.Service (serviceVariantNames)
 import HostBootstrap.Step (Step (..), chainFrames, frameId, postHandoffStepsForFrame, stepKindName)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrapDemo.Commands (
+    absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
     acceleratorHelmValuesForContext,
     containerPlan,
@@ -24,9 +25,11 @@ import HostBootstrapDemo.Commands (
     demoTestFrameContext,
     directClusterPresence,
     directClusterTeardownArgs,
+    hostAcceleratorDaemonPowerShellScript,
     hostAcceleratorDaemonProcess,
     hostAcceleratorSubstrate,
     hostDaemonIdentityMatches,
+    hostDaemonLifecycleStateConsistent,
     readHostAcceleratorDaemonPid,
     renderServiceConfigForContext,
     serviceConfigMapManifest,
@@ -42,10 +45,13 @@ import HostBootstrapDemo.Config (
     demoDefaultResources,
     projectConfigForRole,
  )
-import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import HostBootstrapDemo.Web.Bridge (writeBridge)
+import System.Directory (createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (ExitCode (..))
+import System.FilePath (isAbsolute, (</>))
 import System.IO (hClose, hPutStr, openTempFile)
-import System.Process (CmdSpec (RawCommand), CreateProcess (cmdspec, env, std_err, std_in, std_out), StdStream (NoStream))
+import System.Info (os)
+import System.Process (CmdSpec (RawCommand), CreateProcess (close_fds, cmdspec, env, std_err, std_in, std_out), StdStream (NoStream))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -86,10 +92,11 @@ tests =
                     , ("service.accelerator.port", "8081")
                     , ("service.accelerator.targetPort", "8081")
                     ]
-            acceleratorHelmValuesForContext hostCfg directCtx @?= clusterIpValues
-            acceleratorHelmValuesForContext hostCfg incusCtx @?= clusterIpValues
+            acceleratorHelmValuesForContext hostCfg directCtx @?= Right clusterIpValues
+            acceleratorHelmValuesForContext hostCfg incusCtx @?= Right clusterIpValues
             acceleratorHelmValuesForContext hostCfg wslCtx
-                @?= [ ("service.port", "8080")
+                @?= Right
+                    [ ("service.port", "8080")
                     , ("service.accelerator.type", "NodePort")
                     , ("service.accelerator.port", "8081")
                     , ("service.accelerator.targetPort", "8081")
@@ -97,11 +104,17 @@ tests =
                     ]
             let customPorts = hostCfg{service = Just (Web (WebServiceConfig 9090 9091))}
             acceleratorHelmValuesForContext customPorts directCtx
-                @?= [ ("service.port", "9090")
+                @?= Right
+                    [ ("service.port", "9090")
                     , ("service.accelerator.type", "ClusterIP")
                     , ("service.accelerator.port", "9091")
                     , ("service.accelerator.targetPort", "9091")
                     ]
+            let invalidPorts = hostCfg{service = Just (Web (WebServiceConfig 0 9091))}
+            assertBool "invalid configured ports fail before Helm" $
+                case acceleratorHelmValuesForContext invalidPorts directCtx of
+                    Left err -> "publicPort" `isInfixOf` err
+                    Right _ -> False
         , testCase "service ConfigMaps derive the actual parent topology and frame" $ do
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 incusCtx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
@@ -122,16 +135,19 @@ tests =
             serviceTemplate <- readFile ("chart" ++ "/templates/service.yaml")
             deploymentTemplate <- readFile ("chart" ++ "/templates/deployment.yaml")
             staticConfigMap <- doesFileExist ("chart" ++ "/templates/configmap.yaml")
+            playwrightConfig <- readFile ("playwright" ++ "/playwright.config.ts")
             inClusterKind <- readFile "kind-in-cluster.yaml"
             nvkindTemplate <- readFile "nvkind-in-cluster.yaml"
             hostKind <- readFile "kind.yaml"
             let hostListenAddress = ingressKindListenAddress (acceleratorIngressPlan HostResidentDaemon 8081 30081)
-            assertBool "chart renders the planned accelerator Service type" (".Values.service.accelerator.type" `isInfixOf` serviceTemplate)
+            assertBool "chart renders the configured accelerator Service type" (".Values.service.accelerator.type" `isInfixOf` serviceTemplate)
             assertBool "accelerator Service targets its isolated listener" (".Values.service.accelerator.targetPort" `isInfixOf` serviceTemplate)
             assertBool "chart omits nodePort unless the plan selects NodePort" ("if eq .Values.service.accelerator.type \"NodePort\"" `isInfixOf` serviceTemplate)
             assertBool "chart consumes the derived service frame" (".Values.service.currentFrame" `isInfixOf` deploymentTemplate)
             assertBool "chart rolls when the applied service config changes" (".Values.service.configHash" `isInfixOf` deploymentTemplate)
+            assertBool "single-peer web rollout cannot overlap replicas" ("type: Recreate" `isInfixOf` deploymentTemplate)
             assertBool "there is no hand-written topology ConfigMap" (not staticConfigMap)
+            assertBool "browser engines serialize against the single accelerator session" ("workers: 1" `isInfixOf` playwrightConfig)
             assertBool "in-cluster config has no accelerator host mapping" (not ("hostPort: 30081" `isInfixOf` inClusterKind))
             assertBool "nvkind template injects all GPUs into its worker" ("/var/run/nvidia-container-devices/all" `isInfixOf` nvkindTemplate)
             assertBool "nvkind GPU worker is selected by the device-plugin chart" ("nvidia.com/gpu.present: \"true\"" `isInfixOf` nvkindTemplate)
@@ -170,12 +186,16 @@ tests =
             assertBool "teardown deletes the managed name" $
                 ["delete", "cluster", "--name", "hostbootstrap-demo"] `isSuffixOf` directClusterTeardownArgs
         , testCase "accelerator daemon manifest requests a GPU only in the CUDA lane" $ do
-            let cpuManifest = acceleratorDaemonManifest False "daemon-3" "config"
-                gpuManifest = acceleratorDaemonManifest True "daemon-3" "config"
+            let cpuManifest = acceleratorDaemonManifest False "daemon-3" "config" 8081
+                gpuManifest = acceleratorDaemonManifest True "daemon-3" "config" 8081
+                customPortManifest = acceleratorDaemonManifest False "daemon-3" "config" 9091
             assertBool "CPU pod has no GPU request" (not ("nvidia.com/gpu" `isInfixOf` cpuManifest))
             assertBool "GPU pod requests one GPU" ("nvidia.com/gpu: 1" `isInfixOf` gpuManifest)
             assertBool "daemon dials the dedicated ClusterIP service" ("hostbootstrap-demo-accelerator:8081" `isInfixOf` gpuManifest)
+            assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-accelerator:9091" `isInfixOf` customPortManifest)
             assertBool "daemon config changes roll its subPath-mounted pod" ("hostbootstrap.io/config-hash" `isInfixOf` gpuManifest)
+            assertBool "daemon rollout cannot overlap reconnecting peers" ("type: Recreate" `isInfixOf` gpuManifest)
+            assertBool "daemon rollout waits for its connection readiness marker" ("HOSTBOOTSTRAP_ACCELERATOR_READY_FILE" `isInfixOf` gpuManifest && "readinessProbe:" `isInfixOf` gpuManifest)
         , testCase "accelerator topology rejects process-local HA routing" $ do
             validateAcceleratorReplicaCount 1 @?= Right ()
             assertBool "more than one web pod is unsupported" $
@@ -203,11 +223,40 @@ tests =
         , testCase "host accelerator daemon cannot inherit the project-up capture pipe" $ do
             let daemonEnv = [("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", "ws://127.0.0.1:30081")]
                 process = hostAcceleratorDaemonProcess "hostbootstrap-demo" daemonEnv
+                windowsScript =
+                    hostAcceleratorDaemonPowerShellScript
+                        "C:\\demo's\\hostbootstrap-demo"
+                        "C:\\demo's\\hostbootstrap-demo.accelerator.pid"
+                        daemonEnv
             cmdspec process @?= RawCommand "hostbootstrap-demo" ["service", "run"]
             env process @?= Just daemonEnv
             std_in process @?= NoStream
             std_out process @?= NoStream
             std_err process @?= NoStream
+            close_fds process @?= True
+            assertBool "Windows launches into an independent hidden process" ("Start-Process" `isInfixOf` windowsScript && "-WindowStyle Hidden" `isInfixOf` windowsScript)
+            assertBool "Windows persists the PID before reporting launch success" ("WriteAllText" `isInfixOf` windowsScript && "[Console]::WriteLine($p.Id)" `isInfixOf` windowsScript)
+            assertBool "Windows launch failure force-stops an otherwise untracked child" ("Stop-Process -Id $p.Id -Force" `isInfixOf` windowsScript)
+            assertBool "PowerShell literals escape apostrophes" ("'C:\\demo''s\\hostbootstrap-demo'" `isInfixOf` windowsScript)
+        , testCase "host accelerator identity resolves relative source roots absolutely" $ do
+            let relativeCfg =
+                    projectConfigForRole
+                        "hostbootstrap-demo"
+                        "hostbootstrap-demo"
+                        "."
+                        demoDefaultDockerfile
+                        demoDefaultResources
+                        demoDefaultDeployConfig
+                        demoDefaultMessage
+                        HostOrchestrator
+            daemonExe <- absoluteHostAcceleratorDaemonExePath (context relativeCfg)
+            assertBool "daemon identity path is absolute" (isAbsolute daemonExe)
+            assertBool "Windows copied daemons retain the executable extension" (os /= "mingw32" || ".exe" `isSuffixOf` daemonExe)
+        , testCase "host accelerator lifecycle requires matching pid and owner witnesses" $ do
+            hostDaemonLifecycleStateConsistent False False @?= True
+            hostDaemonLifecycleStateConsistent True True @?= True
+            hostDaemonLifecycleStateConsistent True False @?= False
+            hostDaemonLifecycleStateConsistent False True @?= False
         , testCase "host accelerator pid read releases the file before teardown removal" $ do
             tmp <- getTemporaryDirectory
             (pidPath, handle) <- openTempFile tmp "hostbootstrap-accelerator.pid"
@@ -227,15 +276,34 @@ tests =
         , testCase "host daemon teardown requires executable identity before a forced stop" $ do
             let exe = "C:\\repo\\.build\\accelerator-daemon\\hostbootstrap-demo"
                 validWindows = map toUpperAscii exe ++ "\r\n\"" ++ map toUpperAscii exe ++ "\" service run\r\n"
+                validCimWindows = exe ++ "\r\n\"" ++ exe ++ "\" \"service\" \"run\"\r\n"
             hostDaemonIdentityMatches True exe (Right (ExitSuccess, validWindows, "")) @?= True
+            hostDaemonIdentityMatches True exe (Right (ExitSuccess, validCimWindows, "")) @?= True
             hostDaemonIdentityMatches True exe (Right (ExitSuccess, exe ++ "\r\n\"" ++ exe ++ "\" project up\r\n", "")) @?= False
             hostDaemonIdentityMatches True exe (Right (ExitSuccess, "C:\\Windows\\System32\\notepad.exe\r\nnotepad.exe\r\n", "")) @?= False
             hostDaemonIdentityMatches False "/repo/daemon" (Right (ExitSuccess, "/repo/daemon service run\n", "")) @?= True
             hostDaemonIdentityMatches False "/repo/daemon" (Right (ExitSuccess, "/repo/daemon project up\n", "")) @?= False
             hostDaemonIdentityMatches False "/repo/daemon" (Right (ExitSuccess, "/repo/daemon-old service run\n", "")) @?= False
+        , testCase "web bridge maps Haskell Float into the PureScript numeric primitive" $
+            withBridgeTempDirectory $ \dir -> do
+                writeBridge dir
+                generated <- readFile (dir </> "HostBootstrapDemo" </> "Web" </> "Api.purs")
+                assertBool "Float fields use PureScript Number" ("result :: Number" `isInfixOf` generated)
+                assertBool "the generated module has no Haskell-only GHC.Types import" (not ("GHC.Types" `isInfixOf` generated))
         , testCase "demo registers web and accelerator service variants" $
             serviceVariantNames demoServices @?= ["web", "accelerator"]
         ]
+
+withBridgeTempDirectory :: (FilePath -> IO a) -> IO a
+withBridgeTempDirectory = bracket create removePathForcibly
+  where
+    create = do
+        tmp <- getTemporaryDirectory
+        (path, handle) <- openTempFile tmp "hostbootstrap-purescript-bridge"
+        hClose handle
+        removeFile path
+        createDirectory path
+        pure path
 
 toUpperAscii :: Char -> Char
 toUpperAscii c

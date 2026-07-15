@@ -74,8 +74,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/accelerator_daemon.md](engineering/accelerator_daemon.md) — the active demo
   generalization where the project binary also runs as a substrate-specific accelerator daemon, JIT-builds
   a real Swift/Metal, CUDA, or C++ worker, exchanges CBOR over WebSocket with the web service, and is
-  validated by integration and browser e2e tests; the UI/no-fallback/codegen shell is implemented, while
-  daemon runtime and real worker integration remain open.
+  validated by integration and browser e2e tests; the runtime and real-worker integration are implemented,
+  while the required live substrate matrix remains open.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
   step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
   `chain :: cfg -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.

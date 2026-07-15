@@ -107,9 +107,9 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
 
-Current static validation (2026-07-11): `cabal build all --ghc-options=-Werror` and `cabal test all
---ghc-options=-Werror` pass from `core/` with 357 tests; the demo `-Werror` build and test run pass with
-83 demo tests plus the embedded 357 core tests. Coverage includes fail-closed placement-specific cluster
+Current static validation (2026-07-12): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` with 359 tests; the demo `-Werror` build and test run pass with
+87 demo tests plus the embedded 359 core tests. Coverage includes fail-closed placement-specific cluster
 configs, service/NodePort separation, official NVIDIA runtime probing, pinned/idempotent device-plugin
 installation and allocatable-GPU classification, the worker label, two-node cordon splitting, direct-chain
 CUDA image/`--gpus=all` handoff, daemon GPU requests, and the implemented browser Add assertion. The live
@@ -340,9 +340,10 @@ Add the cluster/exposure substrate needed by the accelerator daemon demo, especi
 Static lifecycle work is complete: driver/config selection, official NVIDIA runtime probing, two-node
 cordon splitting, pinned/idempotent device-plugin install/readiness/allocatable gates, labelled GPU worker,
 direct CUDA image and `--gpus=all` handoff, and placement-specific service exposure are covered by the
-357-core/82-demo test gates above.
+359-core/87-demo test gates above.
 The web chart exposes a distinct local-only `127.0.0.1:30081` accelerator NodePort only for host-daemon
-lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on port 8081.
+lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on the configured port (default
+8081).
 
 Open (real-run-gated, § C): live Linux CPU daemon-pod connectivity by `ClusterIP`, the Linux GPU direct
 `nvkind` path with its CUDA-base and one-GPU daemon pod, and execution of the implemented browser e2e Add

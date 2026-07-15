@@ -122,11 +122,11 @@ superseded surfaces moved to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md): the 2026-07-11 static gate reports 357 core tests and 83
-demo tests (plus the demo run's embedded 357-test core suite).
+[system-components.md](system-components.md): the 2026-07-12 static gate reports 359 core tests and 87
+demo tests (plus the demo run's embedded 359-test core suite).
 
-Operator-scale activities such as publishing multi-arch base tags, running the full Harbor deployment,
-and pushing the multi-GB project image are release/demo operations, not open phase work. See
+Operator-scale activities such as publishing multi-arch base tags and pushing the multi-GB project image
+are release/demo operations, not open phase work; the former Harbor deployment is retired. See
 [00-overview.md](00-overview.md) for phase responsibilities and [system-components.md](system-components.md)
 for the component inventory.
 
@@ -182,7 +182,7 @@ default-runtime/CDI/volume-mount device-injection contract consumed by `nvkind`,
 merely registered Docker runtime. That implementation bootstraps NVIDIA's signed stable apt source/keyring,
 configures Docker with `nvidia-ctk runtime configure --runtime=docker --set-as-default --cdi.enabled`,
 enables `accept-nvidia-visible-devices-as-volume-mounts=true`, and verifies the official `/dev/null` device-
-injection smoke. The current `-Werror` static gate passes with all 357 core tests; a Linux GPU host must
+injection smoke. The current `-Werror` static gate passes with all 359 core tests; a Linux GPU host must
 still prove the reconciler's verified no-op.
 
 The completed static implementation includes explicit placement configs, the direct Linux GPU
@@ -190,21 +190,23 @@ control-plane + labelled-worker topology, split cordons, exact NVIDIA runtime pr
 plugin readiness/allocatable gates, CUDA-base/`--gpus=all` handoff, and a one-GPU daemon request. The real
 Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator AcceleratorServiceConfig`, and
 `withServiceConfig` dispatches `service run` without a positional variant. The web server links distinct
-public 8080 and private accelerator 8081 listeners, uses separate Service target ports, propagates either
+configured public and private listeners (defaults 8080/8081), uses separate Service target ports, propagates either
 listener's failure, refuses public WebSocket upgrade to the private route, returns 503 when its single
-daemon is busy, and never computes an in-process fallback.
+daemon is busy, and never computes an in-process fallback. `Recreate` rollouts preserve the single-peer
+hub invariant.
 
 The demo dynamically renders and applies web/daemon ConfigMaps from the validated parent topology, hashes
 the exact mounted bytes to roll subPath-mounted pods, and deploys/rollout-waits Linux CPU/GPU daemon
 Deployments that dial the distinct accelerator `ClusterIP`. Apple/Windows run the daemon from a host-native
-project-binary build with strict pid/owner/executable/argv identity, a shutdown sentinel, and no inherited
-output streams. Workers are persistent and use `Float32` semantics end to end; guarded coverage includes
+project-binary build with strict symmetric pid/owner and absolute executable/argv identity, a shutdown
+sentinel, no inherited output streams, and a bounded readiness wait. Pod and host readiness markers are
+set only after worker build plus WebSocket connection. Workers are persistent and use `Float32` semantics end to end; guarded coverage includes
 `2^24 + 1 -> 2^24`. A historical guarded gate built and ran CUDA on an RTX 3090
 (`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
 The Playwright Add assertion and fail-closed harness safety (`SafetyRefusal`, exclusive config ownership,
 direct-cluster detection, guarded cleanup, teardown verification) are implemented.
 
-The current 2026-07-11 gate is fourmolu/hlint/`-Werror` clean and passes **357 core + 83 demo tests**. Only
+The current 2026-07-12 gate is fourmolu/hlint/`-Werror` clean and passes **359 core + 87 demo tests**. Only
 honest live closure remains: run the implemented four-case/two-variant matrix on the current host-daemon
 lane and the unavailable Apple Silicon / native Linux CPU / native Linux GPU hardware. The harness expects
 `8/8`; no live `8/8` is recorded, and the latest completed live result remains the historical

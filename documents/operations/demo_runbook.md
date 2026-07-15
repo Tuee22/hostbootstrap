@@ -56,8 +56,9 @@ ConfigMap override). Validated by a live Windows/WSL2 `test run all` `6/6`.
 - **Config handling.** The harness owns the run's config and its `.test_data` root: it generates the
   `hostbootstrap-demo.dhall` from the thin `test.dhall` override **functionally**, through the
   project-owned `psTestConfig` (which reuses `psInit`), never by shelling the CLI, drives the real
-  `project up` → asserts → `project destroy`, then deletes the generated config and the `.test_data` it
-  created (keeping `test.dhall`). Ownership directories serialize config/data use, a `SafetyRefusal` skips
+  `project up` → asserts → `project destroy`, then deletes matching run-owned config bytes and the
+  `.test_data` it created (keeping `test.dhall`); changed bytes remain in the reported locked quarantine.
+  Ownership directories serialize config/data use, a `SafetyRefusal` skips
   teardown of pre-existing state, and changed config bytes are preserved in a locked quarantine for
   explicit recovery. It iterates that over more than one config **variant** — the demo runs
   two, `"Hello, world!"` then `"Hello, Universe!"`, with a full teardown and spin-up between. The fail-fast
@@ -84,7 +85,7 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 
 The accelerator UI/no-fallback path, deterministic atomic worker builds, concrete CBOR WebSocket
 transport, serialized host-daemon lifecycle, in-cluster Deployment, and persistent worker supervision are
-implemented and covered by the 357-core/83-demo static gate. The daemon path remains reopened until live runs build the real worker
+implemented and covered by the 359-core/87-demo static gate. The daemon path remains reopened until live runs build the real worker
 in each supported lane and the browser e2e test proves the UI add workflow receives daemon-returned backend
 metadata.
 
@@ -236,7 +237,7 @@ pod, and the verified NodePort:
 | deploy-minio | `vm-project-container-2` | install the in-cluster MinIO (S3) store (Deployment + PVC + Secret, NodePort 30900) and create the registry bucket — the registry's durable backing (see [in_cluster_registry.md](../engineering/in_cluster_registry.md)) |
 | deploy-registry | `vm-project-container-2` | install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO |
 | push-image | `vm-project-container-2` | load the project image into kind and push it to the in-cluster registry |
-| deploy-chart | `vm-project-container-2` | apply the exact parent-derived ConfigMap, then deploy the `warp` / `wai` web pod (public NodePort 30080; private accelerator service on container port 8081 / optional local NodePort 30081) |
+| deploy-chart | `vm-project-container-2` | apply the exact parent-derived ConfigMap, then deploy the `warp` / `wai` web pod (public NodePort 30080; private accelerator service on its configured target port, default 8081 / optional local NodePort 30081) |
 | expose-port | `vm-project-container-2` | verify the web NodePort 30080 is reachable, ending at the live webservice |
 
 The accelerator extension adds a daemon connection after the web endpoint exists. Linux CPU keeps the

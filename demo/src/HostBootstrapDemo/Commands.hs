@@ -41,8 +41,11 @@ module HostBootstrapDemo.Commands (
     demoArtifacts,
     demoCheckCode,
     demoCases,
+    absoluteHostAcceleratorDaemonExePath,
     hostAcceleratorDaemonProcess,
+    hostAcceleratorDaemonPowerShellScript,
     hostAcceleratorSubstrate,
+    hostDaemonLifecycleStateConsistent,
     hostDaemonIdentityMatches,
     readHostAcceleratorDaemonPid,
     acceleratorDaemonManifest,
@@ -66,8 +69,10 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
+import qualified Data.ByteString as BS
 import Data.Char (isDigit, isSpace, toLower)
 import Data.List (intercalate, isInfixOf)
+import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Dhall (FromDhall, ToDhall)
@@ -92,7 +97,7 @@ import HostBootstrap.Cluster.Lifecycle (
     resolvePlan,
     resolvePlanWithDriver,
  )
-import HostBootstrap.Config.Schema (projectConfigSnapshotHash, renderProjectConfigSnapshotLog, siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
+import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf)
@@ -163,6 +168,7 @@ import HostBootstrapDemo.Config (
     Resources (..),
     ServiceType (Web),
     WebServiceConfig (WebServiceConfig),
+    configuredServiceVariant,
     demoCaseIds,
     demoDefaultResources,
     envelopeOfResources,
@@ -174,12 +180,14 @@ import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), die)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (hFlush, hPutStr, stderr, stdout)
-import System.Process (CreateProcess (env, std_err, std_in, std_out), StdStream (NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
+import System.IO.Error (tryIOError)
+import System.Info (os)
+import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), StdStream (NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
@@ -488,21 +496,25 @@ acceleratorPlacementForContext ctx
   where
     providers = map Context.topologyProvider (Context.topologyFrames ctx)
 
-acceleratorHelmValuesForContext :: ProjectConfig -> Context.BinaryContext -> [(T.Text, T.Text)]
-acceleratorHelmValuesForContext projectCfg ctx =
-    [ ("service.port", T.pack (show publicPort'))
-    , ("service.accelerator.type", T.pack (ingressServiceType ingress))
-    , ("service.accelerator.port", T.pack (show (ingressServicePort ingress)))
-    , ("service.accelerator.targetPort", T.pack (show (ingressServicePort ingress)))
-    ]
-        ++ maybe [] (\nodePort -> [("service.accelerator.nodePort", T.pack (show nodePort))]) (ingressNodePort ingress)
+acceleratorHelmValuesForContext :: ProjectConfig -> Context.BinaryContext -> Either String [(T.Text, T.Text)]
+acceleratorHelmValuesForContext projectCfg ctx = do
+    WebServiceConfig publicPort' acceleratorPort' <- validatedWebServiceConfigForContext projectCfg ctx
+    let ingress = acceleratorIngressPlan (acceleratorPlacementForContext ctx) (fromIntegral acceleratorPort') 30081
+    pure $
+        [ ("service.port", T.pack (show publicPort'))
+        , ("service.accelerator.type", T.pack (ingressServiceType ingress))
+        , ("service.accelerator.port", T.pack (show (ingressServicePort ingress)))
+        , ("service.accelerator.targetPort", T.pack (show (ingressServicePort ingress)))
+        ]
+            ++ maybe [] (\nodePort -> [("service.accelerator.nodePort", T.pack (show nodePort))]) (ingressNodePort ingress)
+
+validatedWebServiceConfigForContext :: ProjectConfig -> Context.BinaryContext -> Either String WebServiceConfig
+validatedWebServiceConfigForContext projectCfg ctx =
+    case service serviceCfg of
+        Just (Web params) -> configuredServiceVariant serviceCfg >> pure params
+        _ -> Left "projectConfigForServiceContext did not produce a Web service config"
   where
     serviceCfg = projectConfigForServiceContext projectCfg ctx
-    WebServiceConfig publicPort' acceleratorPort' =
-        case service serviceCfg of
-            Just (Web params) -> params
-            _ -> error "projectConfigForServiceContext did not produce a Web service config"
-    ingress = acceleratorIngressPlan (acceleratorPlacementForContext ctx) (fromIntegral acceleratorPort') 30081
 
 {- | Container-frame (@vm-project-container-2@) workload step actions. They run in
 the project container, where the VM's Docker socket is mounted (kind nodes are
@@ -995,13 +1007,14 @@ deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     either die pure (validateAcceleratorReplicaCount (haReplicas (deploy projectCfg)))
+    acceleratorHelmValues <- either die pure (acceleratorHelmValuesForContext projectCfg ctx)
     let (serviceConfig, serviceFrame) = renderServiceConfigForContext projectCfg ctx
         extraValues =
             [ ("haReplicas", T.pack (show (haReplicas (deploy projectCfg))))
             , ("service.currentFrame", serviceFrame)
             , ("service.configHash", projectConfigSnapshotHash (configMapMountedText serviceConfig))
             ]
-                ++ acceleratorHelmValuesForContext projectCfg ctx
+                ++ acceleratorHelmValues
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (serviceConfigMapManifest serviceConfig)
     withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (deployChart cfg (containerPlan ctx) extraValues)
 
@@ -1038,13 +1051,15 @@ resolves), the peer of @deploy-chart@.
 deployAcceleratorDaemonAction :: HostConfig -> IO ()
 deployAcceleratorDaemonAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
+    WebServiceConfig _ acceleratorServicePort <- either die pure (validatedWebServiceConfigForContext projectCfg ctx)
     let daemonCtx = Context.deriveClusterDaemonContext ctx (Context.sourceRoot ctx)
         gpuDaemon = Context.isExplicitLinuxGpuContainer ctx
-        daemonConfig =
-            renderProjectConfig
-                (projectConfigFromContext (dockerfile projectCfg) (deploy projectCfg) (message projectCfg) (service projectCfg) daemonCtx)
+        daemonProjectCfg =
+            projectConfigFromContext (dockerfile projectCfg) (deploy projectCfg) (message projectCfg) (service projectCfg) daemonCtx
+        daemonConfig = renderProjectConfig daemonProjectCfg
         frame = T.unpack (Context.currentFrame daemonCtx)
-    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig)
+    _ <- either die pure (configuredServiceVariant daemonProjectCfg)
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort)
     pollRolloutOrDie
         cfg
         rolloutPoll
@@ -1058,8 +1073,8 @@ generated @<project>.dhall@ and a Deployment that runs config-selected @service 
 the project image, mounting the ConfigMap over the baked container config and pointing
 @HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ at the web ClusterIP accelerator port.
 -}
-acceleratorDaemonManifest :: Bool -> String -> T.Text -> String
-acceleratorDaemonManifest gpuDaemon frame daemonConfig =
+acceleratorDaemonManifest :: Bool -> String -> T.Text -> Natural -> String
+acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort =
     configMap ++ "---\n" ++ deployment
   where
     configMap =
@@ -1082,6 +1097,8 @@ acceleratorDaemonManifest gpuDaemon frame daemonConfig =
             , "    app: accelerator-daemon"
             , "spec:"
             , "  replicas: 1"
+            , "  strategy:"
+            , "    type: Recreate"
             , "  selector:"
             , "    matchLabels:"
             , "      app: accelerator-daemon"
@@ -1105,12 +1122,19 @@ acceleratorDaemonManifest gpuDaemon frame daemonConfig =
             , "            - name: HOSTBOOTSTRAP_CURRENT_FRAME"
             , "              value: \"" ++ frame ++ "\""
             , "            - name: HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
-            , "              value: \"ws://" ++ demoProject ++ "-accelerator:8081/api/accelerator/daemon\""
+            , "              value: \"ws://" ++ demoProject ++ "-accelerator:" ++ show acceleratorServicePort ++ "/api/accelerator/daemon\""
+            , "            - name: HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
+            , "              value: \"/tmp/hostbootstrap-accelerator.ready\""
             , "          volumeMounts:"
             , "            - name: daemon-config"
             , "              mountPath: /usr/local/bin/hostbootstrap-demo.dhall"
             , "              subPath: hostbootstrap-demo.dhall"
             , "              readOnly: true"
+            , "          readinessProbe:"
+            , "            exec:"
+            , "              command: [\"/usr/bin/test\", \"-f\", \"/tmp/hostbootstrap-accelerator.ready\"]"
+            , "            initialDelaySeconds: 1"
+            , "            periodSeconds: 2"
             ]
             ++ gpuResources
     gpuResources
@@ -1141,6 +1165,8 @@ startHostAcceleratorDaemonAction cfg
             withHostAcceleratorDaemonOperation ctx $ do
                 stopHostAcceleratorDaemonUnlocked cfg ctx
                 daemonExe <- installHostAcceleratorDaemonBinary ctx
+                shutdownPath <- makeAbsolute (hostAcceleratorDaemonShutdownPath ctx)
+                readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
                 let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
                     daemonCfg =
                         projectConfigFromContext
@@ -1150,63 +1176,105 @@ startHostAcceleratorDaemonAction cfg
                             (service projectCfg)
                             daemonCtx
                     daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
-                    pidPath = hostAcceleratorDaemonPidPath ctx
-                    shutdownPath = hostAcceleratorDaemonShutdownPath ctx
                     endpoint = "ws://127.0.0.1:30081/api/accelerator/daemon"
+                pidPath <- makeAbsolute (hostAcceleratorDaemonPidPath ctx)
+                _ <- either die pure (configuredServiceVariant daemonCfg)
+                removeIfExists readyPath
                 writeProjectConfigFile daemonCfgPath daemonCfg
-                daemonPayload <- TIO.readFile daemonCfgPath
+                daemonPayload <- BS.readFile daemonCfgPath
                 TIO.putStrLn
                     ( renderProjectConfigSnapshotLog
                         daemonCfgPath
-                        (projectConfigSnapshotHash daemonPayload)
+                        (projectConfigSnapshotHashBytes daemonPayload)
                         daemonCtx
                     )
                 env0 <- getEnvironment
-                let daemonEnv =
+                let daemonOverrides =
                         [ ("HOSTBOOTSTRAP_CURRENT_FRAME", T.unpack (Context.currentFrame daemonCtx))
                         , ("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", endpoint)
                         , ("HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE", shutdownPath)
+                        , ("HOSTBOOTSTRAP_ACCELERATOR_READY_FILE", readyPath)
                         ]
+                    daemonEnv =
+                        daemonOverrides
                             ++ filter
                                 ( \kv ->
                                     fst kv
                                         `notElem` [ "HOSTBOOTSTRAP_CURRENT_FRAME"
                                                   , "HOSTBOOTSTRAP_ACCELERATOR_WS_URL"
                                                   , "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
+                                                  , "HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
                                                   , harnessMutationGuardEnv
                                                   ]
                                 )
                                 env0
-                claimHostAcceleratorDaemon ctx
                 mask $ \restore -> do
-                    (_, _, _, ph) <-
-                        restore (createProcess (hostAcceleratorDaemonProcess daemonExe daemonEnv))
-                            `onException` releaseHostAcceleratorDaemon ctx
-                    let abortUntracked = do
-                            removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
-                            _ <- try (terminateProcess ph) :: IO (Either SomeException ())
-                            waited <- timeout 5000000 (try (waitForProcess ph) :: IO (Either SomeException ExitCode))
-                            case (removed, waited) of
-                                (Right (), Just (Right _)) -> releaseHostAcceleratorDaemon ctx
-                                _ ->
+                    claimHostAcceleratorDaemon ctx
+                    let abortTracked = do
+                            cleanup <- try (stopHostAcceleratorDaemonUnlocked cfg ctx) :: IO (Either SomeException ())
+                            case cleanup of
+                                Right () -> pure ()
+                                Left err ->
                                     ioError
                                         ( userError
-                                            ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
-                                                ++ show removed
-                                                ++ ", process exit="
-                                                ++ show waited
-                                                ++ ")"
+                                            ( "accelerator-daemon: startup failed and owned cleanup also failed; preserving lifecycle state: "
+                                                ++ show err
                                             )
                                         )
-                    mpid <- getPid ph `onException` abortUntracked
-                    case mpid of
-                        Nothing -> do
-                            abortUntracked
-                            die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
-                        Just pid -> do
-                            restore (writeFile pidPath (show pid ++ "\n"))
-                                `onException` abortUntracked
-                            putStrLn ("accelerator-daemon: started host daemon pid " ++ show pid ++ " for " ++ endpoint)
+                        finishTracked pid = do
+                            readiness <-
+                                restore (waitForHostAcceleratorDaemonReady cfg pid daemonExe readyPath hostDaemonReadyAttempts)
+                                    `onException` abortTracked
+                            case readiness of
+                                Left err -> abortTracked >> die err
+                                Right () ->
+                                    restore (putStrLn ("accelerator-daemon: host daemon ready at " ++ endpoint ++ " (pid " ++ pid ++ ")"))
+                                        `onException` abortTracked
+                    if isWindows (hcSubstrate cfg)
+                        then do
+                            let abortWindowsLaunch = do
+                                    tracked <- doesFileExist pidPath
+                                    if tracked
+                                        then abortTracked
+                                        else do
+                                            removeIfExists readyPath
+                                            releaseHostAcceleratorDaemon ctx
+                            pid <-
+                                restore (startWindowsHostAcceleratorDaemon cfg daemonExe pidPath daemonOverrides)
+                                    `onException` abortWindowsLaunch
+                            finishTracked pid
+                        else do
+                            (_, _, _, ph) <-
+                                restore (createProcess (hostAcceleratorDaemonProcess daemonExe daemonEnv))
+                                    `onException` releaseHostAcceleratorDaemon ctx
+                            let abortUntracked = do
+                                    removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
+                                    removedReady <- try (removeIfExists readyPath) :: IO (Either SomeException ())
+                                    _ <- try (terminateProcess ph) :: IO (Either SomeException ())
+                                    waited <- timeout 5000000 (try (waitForProcess ph) :: IO (Either SomeException ExitCode))
+                                    case (removed, removedReady, waited) of
+                                        (Right (), Right (), Just (Right _)) -> releaseHostAcceleratorDaemon ctx
+                                        _ ->
+                                            ioError
+                                                ( userError
+                                                    ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
+                                                        ++ show removed
+                                                        ++ ", readiness cleanup="
+                                                        ++ show removedReady
+                                                        ++ ", process exit="
+                                                        ++ show waited
+                                                        ++ ")"
+                                                    )
+                                                )
+                            mpid <- getPid ph `onException` abortUntracked
+                            case mpid of
+                                Nothing -> do
+                                    abortUntracked
+                                    die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
+                                Just pid -> do
+                                    restore (writeFile pidPath (show pid ++ "\n"))
+                                        `onException` abortUntracked
+                                    finishTracked (show pid)
     | otherwise =
         putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
 
@@ -1216,7 +1284,11 @@ hostAcceleratorDaemonDir ctx =
 
 hostAcceleratorDaemonExePath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonExePath ctx =
-    hostAcceleratorDaemonDir ctx </> demoProject
+    hostAcceleratorDaemonDir ctx </> daemonExecutableName
+  where
+    daemonExecutableName
+        | os == "mingw32" = demoProject ++ ".exe"
+        | otherwise = demoProject
 
 hostAcceleratorDaemonConfigPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonConfigPath ctx =
@@ -1229,6 +1301,10 @@ hostAcceleratorDaemonPidPath ctx =
 hostAcceleratorDaemonShutdownPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonShutdownPath ctx =
     hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.shutdown"
+
+hostAcceleratorDaemonReadyPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonReadyPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.ready"
 
 hostAcceleratorDaemonOwnerPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonOwnerPath ctx =
@@ -1243,7 +1319,7 @@ withHostAcceleratorDaemonOperation ctx action =
     mask $ \restore -> do
         let operationPath = hostAcceleratorDaemonOperationPath ctx
         createDirectoryIfMissing True (hostAcceleratorDaemonDir ctx)
-        claimed <- try (createDirectory operationPath) :: IO (Either SomeException ())
+        claimed <- tryIOError (createDirectory operationPath)
         case claimed of
             Left _ -> die ("accelerator-daemon: lifecycle operation already active at " ++ operationPath)
             Right () -> restore action `finally` removeDirectory operationPath
@@ -1251,7 +1327,7 @@ withHostAcceleratorDaemonOperation ctx action =
 claimHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
 claimHostAcceleratorDaemon ctx = do
     let ownerPath = hostAcceleratorDaemonOwnerPath ctx
-    claimed <- try (createDirectory ownerPath) :: IO (Either SomeException ())
+    claimed <- tryIOError (createDirectory ownerPath)
     case claimed of
         Right () -> pure ()
         Left _ -> die ("accelerator-daemon: lifecycle ownership already held at " ++ ownerPath)
@@ -1266,12 +1342,12 @@ hostAcceleratorSubstrate :: Substrate -> Bool
 hostAcceleratorSubstrate sub =
     isAppleSilicon sub || substrateName sub == WindowsGpu
 
-{- | Build the detached host-daemon process specification. A host daemon must not
-inherit the @project up@ process's standard handles: the harness captures that
-command with 'readProcessWithExitCode', and an inherited writer keeps its pipe
-open after @project up@ exits, preventing the harness from ever observing EOF.
-Connecting all three streams to the null device gives the background daemon an
-independent lifetime while its pid file remains the explicit teardown handle.
+{- | Build the POSIX host-daemon process specification. A host daemon must not
+inherit the @project up@ process's capture pipe: an inherited writer prevents
+the harness from ever observing EOF. 'NoStream' plus 'close_fds' closes that
+surface on POSIX. Windows uses 'hostAcceleratorDaemonPowerShellScript' instead,
+because @process@ only honors @close_fds@ there when all three streams are
+@Inherit@; hidden @Start-Process@ supplies the independent Windows lifetime.
 -}
 hostAcceleratorDaemonProcess :: FilePath -> [(String, String)] -> CreateProcess
 hostAcceleratorDaemonProcess daemonExe daemonEnv =
@@ -1280,7 +1356,60 @@ hostAcceleratorDaemonProcess daemonExe daemonEnv =
         , std_in = NoStream
         , std_out = NoStream
         , std_err = NoStream
+        , close_fds = True
         }
+
+{- | Render the Windows-only hidden launch script. The short-lived PowerShell
+parent receives the four daemon-specific environment overrides, removes the
+harness mutation guard, and uses @Start-Process@ without @-NoNewWindow@. That
+child does not retain the captured @project up@ pipe. The script writes the PID
+before reporting success and force-stops the child if PID persistence fails, so
+the Haskell lifecycle never creates an untrackable daemon.
+-}
+hostAcceleratorDaemonPowerShellScript :: FilePath -> FilePath -> [(String, String)] -> String
+hostAcceleratorDaemonPowerShellScript daemonExe pidPath overrides =
+    "$ErrorActionPreference = 'Stop'; "
+        ++ concatMap setOverride overrides
+        ++ "Remove-Item -LiteralPath "
+        ++ powerShellQuote ("Env:" ++ harnessMutationGuardEnv)
+        ++ " -ErrorAction SilentlyContinue; "
+        ++ "$p = Start-Process -FilePath "
+        ++ powerShellQuote daemonExe
+        ++ " -ArgumentList @('service', 'run') -WindowStyle Hidden -PassThru; "
+        ++ "try { [System.IO.File]::WriteAllText("
+        ++ powerShellQuote pidPath
+        ++ ", ([string]$p.Id + [Environment]::NewLine), [System.Text.Encoding]::ASCII); "
+        ++ "[Console]::WriteLine($p.Id) } catch { "
+        ++ "Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw }"
+  where
+    setOverride (name, value) = "$env:" ++ name ++ " = " ++ powerShellQuote value ++ "; "
+
+startWindowsHostAcceleratorDaemon :: HostConfig -> FilePath -> FilePath -> [(String, String)] -> IO String
+startWindowsHostAcceleratorDaemon cfg daemonExe pidPath overrides = do
+    result <-
+        runTool
+            cfg
+            PowerShell
+            [ "-NoProfile"
+            , "-Command"
+            , hostAcceleratorDaemonPowerShellScript daemonExe pidPath overrides
+            ]
+    pid <- case result of
+        Left err -> die ("accelerator-daemon: hidden Windows launch failed: " ++ err)
+        Right (ExitFailure n, _, err) -> die ("accelerator-daemon: hidden Windows launch failed (exit " ++ show n ++ "): " ++ err)
+        Right (ExitSuccess, out, _) -> pure (T.unpack (T.strip (T.pack out)))
+    unless (not (null pid) && all isDigit pid) $
+        die ("accelerator-daemon: hidden Windows launch returned an invalid pid: " ++ show pid)
+    recorded <- readHostAcceleratorDaemonPid pidPath
+    unless (recorded == pid) $
+        die ("accelerator-daemon: hidden Windows launch pid disagrees with its lifecycle file: " ++ pid ++ " /= " ++ recorded)
+    pure pid
+
+powerShellQuote :: String -> String
+powerShellQuote value = "'" ++ concatMap escape value ++ "'"
+  where
+    escape '\'' = "''"
+    escape c = [c]
 
 -- | Strictly read the teardown pid so Windows releases the pid-file handle.
 readHostAcceleratorDaemonPid :: FilePath -> IO String
@@ -1293,13 +1422,17 @@ readHostAcceleratorDaemonPid pidPath = do
 
 installHostAcceleratorDaemonBinary :: Context.BinaryContext -> IO FilePath
 installHostAcceleratorDaemonBinary ctx = do
-    let daemonDir = hostAcceleratorDaemonDir ctx
-        daemonExe = hostAcceleratorDaemonExePath ctx
+    daemonExe <- absoluteHostAcceleratorDaemonExePath ctx
+    let daemonDir = takeDirectory daemonExe
     createDirectoryIfMissing True daemonDir
     currentExe <- getExecutablePath
     copyFile currentExe daemonExe
     getPermissions currentExe >>= setPermissions daemonExe
     pure daemonExe
+
+-- | Resolve the copied daemon executable before launch and identity checks.
+absoluteHostAcceleratorDaemonExePath :: Context.BinaryContext -> IO FilePath
+absoluteHostAcceleratorDaemonExePath = makeAbsolute . hostAcceleratorDaemonExePath
 
 stopHostAcceleratorDaemon :: HostConfig -> Context.BinaryContext -> IO ()
 stopHostAcceleratorDaemon cfg ctx =
@@ -1307,13 +1440,14 @@ stopHostAcceleratorDaemon cfg ctx =
 
 stopHostAcceleratorDaemonUnlocked :: HostConfig -> Context.BinaryContext -> IO ()
 stopHostAcceleratorDaemonUnlocked cfg ctx = do
+    daemonExe <- absoluteHostAcceleratorDaemonExePath ctx
+    readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
     let pidPath = hostAcceleratorDaemonPidPath ctx
         shutdownPath = hostAcceleratorDaemonShutdownPath ctx
-        daemonExe = hostAcceleratorDaemonExePath ctx
     exists <- doesFileExist pidPath
     ownerExists <- doesDirectoryExist (hostAcceleratorDaemonOwnerPath ctx)
-    when (not exists && ownerExists) $
-        die "accelerator-daemon: lifecycle ownership exists without a pid; refusing ambiguous cleanup"
+    unless (hostDaemonLifecycleStateConsistent exists ownerExists) $
+        die "accelerator-daemon: pid and lifecycle ownership disagree; refusing ambiguous cleanup"
     when exists $ do
         pid <- readHostAcceleratorDaemonPid pidPath
         when (null pid) (die ("accelerator-daemon: invalid pid file; refusing lossy cleanup: " ++ pidPath))
@@ -1337,6 +1471,7 @@ stopHostAcceleratorDaemonUnlocked cfg ctx = do
                             Right False -> die ("accelerator-daemon: pid " ++ pid ++ " remained live after forced stop; preserving pid file")
                             Left err -> die err
     removeIfExists shutdownPath
+    removeIfExists readyPath
     releaseHostAcceleratorDaemon ctx
   where
     waitForExit :: String -> FilePath -> Int -> IO (Either String Bool)
@@ -1357,6 +1492,41 @@ stopHostAcceleratorDaemonUnlocked cfg ctx = do
     requireStop (Right (ExitSuccess, _, _)) = pure ()
     requireStop (Right (ExitFailure n, _, err)) = die ("accelerator-daemon: forced stop failed (exit " ++ show n ++ "): " ++ err)
     requireStop (Left err) = die ("accelerator-daemon: forced stop failed: " ++ err)
+
+-- | A daemon is either wholly absent or has both lifecycle witnesses.
+hostDaemonLifecycleStateConsistent :: Bool -> Bool -> Bool
+hostDaemonLifecycleStateConsistent pidPresent ownerPresent = pidPresent == ownerPresent
+
+waitForHostAcceleratorDaemonReady :: HostConfig -> String -> FilePath -> FilePath -> Int -> IO (Either String ())
+waitForHostAcceleratorDaemonReady _ pid _ _ 0 =
+    pure
+        ( Left
+            ( "accelerator-daemon: pid "
+                ++ pid
+                ++ " did not become ready within "
+                ++ show hostDaemonReadyTimeoutSeconds
+                ++ " seconds"
+            )
+        )
+waitForHostAcceleratorDaemonReady cfg pid daemonExe readyPath attempts = do
+    ready <- doesFileExist readyPath
+    running <- hostDaemonProcessRunning cfg pid daemonExe
+    case running of
+        Left err -> pure (Left err)
+        Right False -> pure (Left ("accelerator-daemon: pid " ++ pid ++ " exited before readiness"))
+        Right True
+            | ready -> pure (Right ())
+            | otherwise -> threadDelay hostDaemonReadyPollMicros >> waitForHostAcceleratorDaemonReady cfg pid daemonExe readyPath (attempts - 1)
+
+-- A pristine host may install CUDA, VS Build Tools, LLVM, or the Apple build stack before connecting.
+hostDaemonReadyTimeoutSeconds :: Int
+hostDaemonReadyTimeoutSeconds = 30 * 60
+
+hostDaemonReadyPollMicros :: Int
+hostDaemonReadyPollMicros = 5 * 1000000
+
+hostDaemonReadyAttempts :: Int
+hostDaemonReadyAttempts = hostDaemonReadyTimeoutSeconds `div` (hostDaemonReadyPollMicros `div` 1000000)
 
 hostDaemonProcessRunning :: HostConfig -> String -> FilePath -> IO (Either String Bool)
 hostDaemonProcessRunning cfg pid daemonExe = do
@@ -1386,7 +1556,7 @@ hostDaemonIdentityMatches windows daemonExe result = case result of
         if windows
             then case filter (not . null) (map trim (lines out)) of
                 observedExe : observedCommand : _ ->
-                    map toLower observedExe == map toLower daemonExe
+                    map toLower (normalise observedExe) == map toLower (normalise daemonExe)
                         && commandMatches True observedCommand
                 _ -> False
             else commandMatches False (trim out)
@@ -1397,8 +1567,10 @@ hostDaemonIdentityMatches windows daemonExe result = case result of
         let normalize = if caseInsensitive then map toLower else id
             actual = normalize (trim observed)
             bare = normalize (daemonExe ++ " service run")
-            quoted = normalize ("\"" ++ daemonExe ++ "\" service run")
-         in actual == bare || actual == quoted
+            quotedExe = normalize ("\"" ++ daemonExe ++ "\" service run")
+            quotedArgs = normalize (daemonExe ++ " \"service\" \"run\"")
+            quotedExeAndArgs = normalize ("\"" ++ daemonExe ++ "\" \"service\" \"run\"")
+         in actual `elem` [bare, quotedExe, quotedArgs, quotedExeAndArgs]
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists path = do
@@ -1706,8 +1878,14 @@ assertE2EInVM cfg frame expectedMessage = do
             result <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
             pure $ case result of
                 Right (ExitSuccess, _, _) -> Pass
-                Right (_, out, err) -> Fail ("e2e failed: " ++ takeWhile (/= '\n') (err ++ out))
+                Right (ExitFailure n, out, err) -> Fail ("e2e failed (exit " ++ show n ++ "):\n" ++ boundedDiagnostic (err ++ out))
                 Left err -> Fail ("e2e: " ++ err)
+  where
+    boundedDiagnostic output =
+        let meaningful = dropWhile isSpace output
+         in if null meaningful
+                then "(no subprocess output)"
+                else reverse (take 4000 (reverse meaningful))
 
 {- | Resolve the accelerator e2e expectation for the detected substrate, folded
 into the same VM frame the e2e runs in. A lane WITH a daemon backend must have a
@@ -2626,7 +2804,7 @@ demoTeardown projectCfg destroyVM = do
     cfg <- resolveHostConfig
     daemonError <- captureCleanup "host accelerator daemon" (stopHostAcceleratorDaemon cfg (context projectCfg))
     frameError <- captureCleanup "provider/direct cluster" (teardownFrames cfg)
-    let errors = [err | Just err <- [daemonError, frameError]]
+    let errors = catMaybes [daemonError, frameError]
     unless (null errors) $
         die ("project teardown attempted every cleanup step but failed:\n" ++ unlines (map ("  - " ++) errors))
   where

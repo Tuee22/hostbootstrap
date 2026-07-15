@@ -49,7 +49,7 @@ CUDA project image, and hands off with `--gpus=all`. In the child context, core 
 `NvkindDriver`, creates the explicit control-plane + GPU-worker topology, splits and applies the one
 cluster envelope across both node containers, installs NVIDIA device-plugin `0.19.3`, and gates on a
 positive allocatable `nvidia.com/gpu` before the project deploys its GPU-requesting daemon pod. These
-surfaces are unit/static-validated at 357 core tests and 83 demo tests; Phase 3.7 and Phase 5.5 remain
+surfaces are unit/static-validated at 359 core tests and 87 demo tests; Phase 3.7 and Phase 5.5 remain
 Active until pristine and warm real-Linux-GPU runs close their hardware gates.
 
 The Windows surface splits by responsibility: the `windows-cpu`/`windows-gpu` substrates and

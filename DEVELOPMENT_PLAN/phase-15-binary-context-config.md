@@ -353,7 +353,8 @@ Use the project-local `<project>.dhall` file as the single runtime config author
   record a Docker build smoke here when that image build is run.
 - Daemon logging tests verify startup metadata includes the config hash and excludes secret values.
 - Python tests prove no host context file is written by the bootstrapper.
-- Current validation: `cabal test all` from `core/` passes (159 tests); `cabal build all` from `demo/`
+- Historical phase-close validation (superseded by the fixed command surface): `cabal test all` from
+  `core/` passes (159 tests); `cabal build all` from `demo/`
   passes; `helm template hostbootstrap-demo demo/chart` renders only the service-role
   `hostbootstrap-demo.dhall` mount; `cabal run hostbootstrap-demo -- config init --role host-orchestrator
   --source-root /home/matt/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB
@@ -409,7 +410,8 @@ can fail fast when the process is not running in the declared frame.
 
 #### Validation
 
-Current validation: `cabal test all` from `core/` passes (199 tests); `cabal build all` from `demo/`
+Historical phase-close validation (superseded by in-place config delivery): `cabal test all` from `core/`
+passes (199 tests); `cabal build all` from `demo/`
 passes; `cabal run hostbootstrap-demo -- deploy --dry-run` renders the VM-local
 `context create container` step and mounts the generated runtime config plus `/run/hostbootstrap` witness
 directory into the lifted `docker run`; `ContextSpec` covers topology ancestor rejection, direct
@@ -517,9 +519,9 @@ writes the host-resident config beside the host-native daemon binary; the Linux 
 applies it before the workload, and sets `HOSTBOOTSTRAP_CURRENT_FRAME` to the derived `daemon-<n>` frame so
 the in-pod runtime-witness gate passes. The web service config is likewise generated and applied by
 `HostBootstrapDemo.Commands` from the actual parent topology; the exact mounted bytes are hashed into the
-pod template so a subPath-mounted config change causes rollout. Current validation (2026-07-11): `cabal
-build all --ghc-options=-Werror` and `cabal test all` pass from `core/` (357) and `demo/` (82, plus the
-embedded 357-core suite).
+pod template so a subPath-mounted config change causes rollout. Current validation (2026-07-12): `cabal
+build all --ghc-options=-Werror` and `cabal test all` pass from `core/` (359) and `demo/` (86, plus the
+embedded 359-core suite).
 
 Open only for real-run integration proving each daemon placement **reads** its delivered config and
 **connects**: the current host-daemon durable gate and the native Linux CPU/GPU in-cluster daemon lanes,

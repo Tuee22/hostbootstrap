@@ -5,7 +5,7 @@ module AcceleratorRuntimeSpec (tests) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (finally)
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Data.Either (isLeft)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
@@ -29,6 +29,7 @@ import HostBootstrapDemo.Accelerator.Daemon (
     runDaemonClientLoop,
     runWorkerRequest,
     startWorkerSession,
+    updateDaemonReadiness,
     webSocketDaemonTransportWithShutdown,
     workerSupervisor,
  )
@@ -44,8 +45,9 @@ import HostBootstrapDemo.Web.Api (
     AcceleratorAddRequest (..),
     AcceleratorAddResult (..),
  )
-import System.Directory (getTemporaryDirectory)
+import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -228,7 +230,24 @@ workerCases =
 
 loopCases :: [TestTree]
 loopCases =
-    [ testCase "client loop receives a request, runs the worker, sends a correlated response, and stops" $ do
+    [ testCase "connection events maintain the daemon readiness marker" $ do
+        tmp <- getTemporaryDirectory
+        (readyPath, handle) <- openTempFile tmp "hostbootstrap-accelerator-ready"
+        hClose handle
+        removeFile readyPath
+        let cleanup = do
+                present <- doesFileExist readyPath
+                when present (removeFile readyPath)
+        ( do
+                updateDaemonReadiness (Just readyPath) DaemonConnected
+                doesFileExist readyPath >>= (@?= True)
+                updateDaemonReadiness (Just readyPath) (DaemonRequestHandled "request")
+                doesFileExist readyPath >>= (@?= True)
+                updateDaemonReadiness (Just readyPath) DaemonDisconnected
+                doesFileExist readyPath >>= (@?= False)
+            )
+            `finally` cleanup
+    , testCase "client loop receives a request, runs the worker, sends a correlated response, and stops" $ do
         sentRef <- newIORef []
         eventsRef <- newIORef []
         receivedRef <- newIORef False

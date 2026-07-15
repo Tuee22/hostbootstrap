@@ -14,12 +14,12 @@ service:
   # config. The hash rolls the pod when the separately applied ConfigMap changes.
   currentFrame: cluster-service-3
   configHash: fnv64:0000000000000000
-  # The in-cluster service port (the webservice binds :8080) and the NodePort the
+  # The default in-cluster service port (the webservice binds the configured value) and the NodePort the
   # Playwright e2e reaches it through.
   port: 8080
   nodePort: 30080
   # Placement-specific accelerator ingress (a private listener in the same web
-  # pod, separate from the public :8080 application): the chain
+  # pod, separate from the configured public application port): the chain
   # overrides `type` from the validated topology. In-cluster Linux daemons use
   # ClusterIP; Apple/Windows host daemons use NodePort 30081, whose kind mapping
   # is bound to 127.0.0.1.

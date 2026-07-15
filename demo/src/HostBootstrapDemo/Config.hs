@@ -119,7 +119,7 @@ newtype AcceleratorServiceConfig = AcceleratorServiceConfig
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
--- | Maximum worker deadline; the web dispatch deadline adds a five-second transport margin.
+-- | Maximum worker deadline; the web dispatch deadline adds a ten-second cleanup/transport margin.
 maxAcceleratorRequestTimeoutSeconds :: Natural
 maxAcceleratorRequestTimeoutSeconds = 30
 
@@ -161,7 +161,7 @@ configuredServiceVariant cfg = case (Context.contextKind (context cfg), service 
     (Context.Daemon, Just serviceType@(Accelerator _)) -> validateServiceType serviceType
     (Context.ClusterService, Just (Accelerator _)) -> Left "cluster-service config declares the Accelerator variant"
     (Context.Daemon, Just (Web _)) -> Left "daemon config declares the Web variant"
-    (_, Just serviceType) -> validateServiceType serviceType
+    (_, Just _) -> Left "service selection requires a ClusterService or Daemon leaf context"
     (_, Nothing) -> Left "effective <project>.dhall declares no ServiceType variant"
 
 validateServiceType :: ServiceType -> Either String String

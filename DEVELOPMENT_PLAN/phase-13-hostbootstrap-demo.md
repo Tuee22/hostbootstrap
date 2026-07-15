@@ -80,11 +80,11 @@ demo's deploy is the contributed chain stream, now substrate-selected by
 interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
 pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy` (host
-`.data` preserved, § O). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and the demo's
-`deploy` / `harbor` / `role` noun verbs are deleted; the `web` verb (load-bearing for the chart pod + the
-Dockerfile) and the `vm` / `incus` debug hatches remain. The interpreter it rests on is
-[phase-16](phase-16-project-lifecycle-command.md) (Done). The original narrative below describes the shape
-that is now built.
+`.data` preserved, § O). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and all demo noun
+verbs are deleted; their still-required behavior lives in chain-step actions and config-selected service
+handlers. The interpreter it rests on is [phase-16](phase-16-project-lifecycle-command.md) (`Active` for
+the current live accelerator gate). The original narrative below describes the historical shape that led
+to the current implementation.
 
 `hostbootstrap-demo` lives under `demo/` with a repo-local build path at `demo/.build`. It extends
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
@@ -114,22 +114,16 @@ Inside that lifted `test all`, the harness runs `clusterUp` locally on the VM's 
 cluster lives in the VM. The demo uses sibling `hostbootstrap-demo.dhall` files for each runtime context:
 host, VM, VM project container, and service/daemon pod.
 
-The demo covers these supported surfaces:
+The demo covers these current supported surfaces through the fixed command tree:
 
-- `demo vm ensure`, `demo vm up`, and `demo vm down` exercise the selected VM provider and VM budget
-  cordon: Lima on Apple Silicon, native Incus on Linux, and WSL2 (Ubuntu-24.04) on Windows. The demo is
-  provider-parameterized — the Windows WSL2 provider and its real-run validation are owned by
-  [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)'s Windows WSL2 host-provider sprint,
-  with no demo code change.
-- `demo vm pristine-bootstrap` runs the first-run path inside a fresh Ubuntu VM and demonstrates the
-  three builds: metal orchestrator, in-VM host-native binary, and in-VM project container.
-- `hostbootstrap-demo test all` runs the standardized harness over `pristine-bootstrap`, `web-build`, and `e2e-tabs`
-  with guaranteed per-case teardown.
-- `demo web bridge`, `demo web serve`, and `demo/docker/Dockerfile` cover the `warp`/`wai` service,
-  `purescript-bridge`, Halogen, `spago`, `esbuild`, and the in-Dockerfile `check-code` gate.
-- `demo harbor install` and `demo harbor push` cover the registry verbs; full operator-scale Harbor runs
-  remain release/demo operations.
-- `demo role serve` and `demo role submit` exercise the L0 role-lifecycle skeleton.
+- `project up`, `project down`, and `project destroy` interpret the substrate-selected chain, including VM
+  provider reconciliation, host-native and project-image builds, kind/nvkind, the S3-backed registry, web
+  chart, exposure, and accelerator daemon placement.
+- `test run all` runs four harness cases over two generated config variants with fail-closed pre-existing
+  state probes, per-variant teardown, and an expected `8/8` live result.
+- Config-selected `service run` starts either the web role or accelerator daemon from the sibling Dhall
+  `ServiceType`; the same handlers are pod and host-daemon entrypoints.
+- `context` exposes generated schema/config artifacts, while `check-code` owns the project quality gate.
 
 The Apple Silicon path uses Lima (not an Incus VM), and the runtime context is topology-strict: a direct
 host/container fallback cannot run `test all` against the wrong Docker daemon, because a
@@ -147,8 +141,8 @@ feature.
 
 The implementation is complete statically. The SPA has an `Accelerator` tab with two numeric inputs, an
 Add action, pending/error/result states, and backend/artifact metadata. The Haskell web API has typed
-request/result/failure records and two linked listeners: public HTTP on 8080 and a private accelerator
-listener on 8081, exposed through distinct Service target ports. The public listener cannot upgrade the
+request/result/failure records and two linked configured listeners (defaults: public HTTP 8080 and private
+accelerator 8081), exposed through distinct Service target ports. The public listener cannot upgrade the
 private daemon WebSocket route; linked-listener failure propagates; and a second concurrent request fails
 with 503 while the single daemon is busy. The public add endpoint returns `accelerator daemon unavailable`
 instead of computing locally when no daemon is connected. `HostBootstrapDemo.Accelerator` supplies
@@ -176,7 +170,9 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
   positional service argument. The chart and daemon process both use `service run`.
 - **Landed (static):** the UI, typed CBOR protocol, request correlation, bounded timeouts, no-in-process
   fallback, linked public/private listeners, distinct Service target ports, fail-closed listener errors,
-  single-flight 503 behavior, and `haReplicas = 1` constraint. The browser spec fills both inputs and
+  single-flight 503 behavior, and `haReplicas = 1` constraint. Playwright runs its three browser
+  projects with one worker so their accelerator assertions exercise that single daemon serially instead
+  of manufacturing cross-engine contention. The browser spec fills both inputs and
   asserts the daemon-returned `Float` result, backend, and artifact hash.
 - **Landed (static):** deterministic Swift/Metal, C++ and CUDA generation; stable artifact hashing;
   persistent worker reuse; `Float32` protocol semantics (including `2^24 + 1 -> 2^24`); reconnect,
@@ -191,8 +187,8 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
   cleanup, a direct-cluster probe, and teardown verification prevent the accelerator gate from taking over
   or deleting operator state.
 
-Current validation (2026-07-11): the `-Werror` core gate passes 357 tests and the demo gate passes 83 tests
-plus the embedded 357-core suite. Remaining work is only the full live substrate execution required by
+Current validation (2026-07-12): the `-Werror` core gate passes 359 tests and the demo gate passes 87 tests
+plus the embedded 359-core suite. Remaining work is only the full live substrate execution required by
 § C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
 including the browser Add assertion. The native Linux and Apple hardware gates are unavailable in the
 current environment, and no current live `8/8` result is recorded; the dated `3/3` and `6/6` results below
@@ -868,7 +864,8 @@ running in the topology frame the Dhall declares.
 
 #### Validation
 
-- Current validation: `cabal build all` from `core/` passes; `cabal build all` from `demo/` passes;
+- Historical phase-close validation (superseded by the fixed command surface and in-place config
+  delivery): `cabal build all` from `core/` passes; `cabal build all` from `demo/` passes;
   Apple Silicon `deploy --dry-run` folds to `limactl shell hostbootstrap-demo-vm -- docker run
   --rm ... test all`. The first real Lima lifecycle reached the in-VM Docker ensure; that exposed and
   fixed the missing Linux `docker` group/current-session socket reconciliation in `ensure docker`
@@ -886,7 +883,8 @@ running in the topology frame the Dhall declares.
 
 The topology-strict split is implemented and covered by `ContextSpec` and `SchemaSpec`:
 `ImageBuildContainer` permits build-time `check-code`/config generation only, `context create container`
-is parent-derived, and `VMProjectContainer` requires a VM-orchestrator ancestor. Current validation:
+is parent-derived, and `VMProjectContainer` requires a VM-orchestrator ancestor. Historical phase-close
+validation (superseded by the fixed command surface and in-place config delivery):
 `cabal test all` from `core/` passes (199 tests); `cabal build all` from `demo/` passes; and
 `cabal run hostbootstrap-demo -- deploy --dry-run` renders the six-step chain with the VM-local
 `context create container` step and the runtime config/witness mounts on the lifted `docker run`.
@@ -1047,7 +1045,7 @@ Implementation and static validation are complete:
 - The real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
   AcceleratorServiceConfig`; `withServiceConfig` dispatches config-selected `service run`, and both the
   chart and host-daemon argv omit a positional variant.
-- The web server runs linked public (8080) and private accelerator (8081) listeners. Separate Service
+- The web server runs linked configured public and private listeners (defaults 8080/8081). Separate Service
   target ports and the local-only `127.0.0.1:30081` host mapping keep the daemon route private; the public
   listener cannot upgrade it. Listener failures propagate, a second concurrent request fails 503, and the
   single-daemon contract constrains HA replicas to one.
@@ -1056,12 +1054,14 @@ Implementation and static validation are complete:
   built CUDA with `nvcc -ccbin <msvc>` and returned `Right 3.75`.
 - `HostBootstrapDemo.Commands` dynamically generates/applies both service ConfigMaps before workload
   deployment and hashes the exact mounted bytes for rollout. Linux CPU/GPU daemon Deployments rollout-wait,
-  dial the distinct accelerator `ClusterIP`, and request one GPU on the GPU lane. Apple/Windows run the
-  project daemon from a host-native build with strict pid/owner/executable/argv identity and shutdown.
+  dial the distinct configured accelerator `ClusterIP`, and request one GPU on the GPU lane. `Recreate`
+  plus connection-owned readiness prevents overlapping/unconnected peers. Apple/Windows run the project
+  daemon from a host-native build with symmetric pid/owner and absolute executable/argv identity, shutdown,
+  and a bounded pristine-install/build/connect readiness gate.
 - The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. Harness ownership,
   direct-cluster detection, `SafetyRefusal`, and verified teardown are fail-closed.
 
-The current static gate is 357 core + 83 demo tests. Remaining work is only real-run closure (§ C): execute
+The current static gate is 359 core + 87 demo tests. Remaining work is only real-run closure (§ C): execute
 the current four-case/two-variant harness on the host-daemon and native Linux CPU/GPU placements, including
 the browser assertion. The native Linux and Apple gates are unavailable in the current environment; no
 live `8/8` has replaced the historical pre-accelerator `6/6` result.

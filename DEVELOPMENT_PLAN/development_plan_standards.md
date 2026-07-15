@@ -615,8 +615,10 @@ config); (2) a production cluster is running → refuse (never touch production 
 tests run**. A later ownership probe may raise `SafetyRefusal`; that refusal is reported as a failed
 variant and deliberately skips teardown of state the harness did not create. Generated config and
 `.test_data` ownership are claimed with exclusive sibling lock directories. Cooperative ordinary config
-writers honor the config lock, and cleanup removes the generated config only when the ownership token is
-still present and its bytes still match; a replacement is preserved and reported. Teardown removes
+writers honor the config lock. Config cleanup atomically moves the current path into the ownership
+directory before comparing bytes: the matching run-owned payload is deleted and the lock released, while
+differing bytes remain at the reported `payload` quarantine path with the ownership lock held for explicit
+recovery. Teardown removes
 **only** the `<project>.dhall` and `.test_data` the harness created this run — never a config or data
 directory it found (the delete-guard mirrors the never-delete-`.data` invariant, § O); test durable storage
 is always `.test_data`, never `.data`. A teardown failure makes the variant fail rather than producing a

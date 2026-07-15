@@ -26,6 +26,7 @@ module HostBootstrapDemo.Accelerator.Daemon (
     runWorkerRequest,
     serveAcceleratorDaemon,
     startWorkerSession,
+    updateDaemonReadiness,
     webSocketDaemonTransport,
     webSocketDaemonTransportWithShutdown,
     webSocketEndpointFromEnv,
@@ -132,6 +133,27 @@ data DaemonEvent
     | DaemonRequestFailed Text Text
     | DaemonStopping
     deriving (Eq, Show)
+
+{- | Maintain the optional Kubernetes readiness marker from connection events.
+The worker artifact is built before the loop starts, and only a live WebSocket
+connection creates the marker. Disconnect, retry failure, and shutdown clear it.
+-}
+updateDaemonReadiness :: Maybe FilePath -> DaemonEvent -> IO ()
+updateDaemonReadiness Nothing _ = pure ()
+updateDaemonReadiness (Just path) event =
+    case event of
+        DaemonConnected -> do
+            createDirectoryIfMissing True (takeDirectory path)
+            writeFile path "ready\n"
+        DaemonConnectFailed _ -> removeReadinessMarker path
+        DaemonDisconnected -> removeReadinessMarker path
+        DaemonStopping -> removeReadinessMarker path
+        _ -> pure ()
+
+removeReadinessMarker :: FilePath -> IO ()
+removeReadinessMarker path = do
+    present <- doesFileExist path
+    when present (removeFile path)
 
 data ReceiveOutcome
     = ReceiveCompleted (Maybe AcceleratorAddRequest)
@@ -683,39 +705,49 @@ WebSocket.
 -}
 serveAcceleratorDaemon :: IO ()
 serveAcceleratorDaemon = do
-    cfg <- loadAcceleratorConfig
-    timeoutSeconds <- case service cfg of
-        Just (Accelerator params) -> pure (requestTimeoutSeconds params)
-        _ -> die "service run: accelerator handler requires the Accelerator ServiceType variant"
-    detected <- detect
-    sub <- either die pure detected
-    backend <- either (die . T.unpack) pure (acceleratorBackendForSubstrate sub)
-    hostCfg <- buildHostConfig sub
-    let workerRoot = T.unpack (Context.sourceRoot (context cfg)) </> ".build" </> "accelerator"
-    spec <- buildWorkerWithHostConfig hostCfg workerRoot backend
-    endpoint <- webSocketEndpointFromEnv
-    shutdownFile <- lookupEnv "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
-    let shutdownCheck = maybe (pure False) doesFileExist shutdownFile
-    putStrLn
-        ( "accelerator daemon: connecting to ws://"
-            ++ endpointHost endpoint
-            ++ ":"
-            ++ show (endpointPort endpoint)
-            ++ endpointPath endpoint
-            ++ " as "
-            ++ T.unpack (backendName backend)
-            ++ " artifact "
-            ++ T.unpack (workerArtifactHash spec)
-        )
-    supervisor <- persistentWorkerSupervisor spec (startWorkerSession spec)
-    let clientConfig =
-            defaultDaemonClientConfig
-                { requestTimeoutMicros = fromIntegral timeoutSeconds * 1000000
-                }
-    runDaemonClientLoop
-        clientConfig
-        supervisor
-        (webSocketDaemonTransportWithShutdown endpoint shutdownCheck)
+    readinessFile <- lookupEnv "HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
+    maybe (pure ()) removeReadinessMarker readinessFile
+    serveWithReadiness readinessFile
+        `finally` maybe (pure ()) removeReadinessMarker readinessFile
+  where
+    serveWithReadiness readinessFile = do
+        cfg <- loadAcceleratorConfig
+        timeoutSeconds <- case service cfg of
+            Just (Accelerator params) -> pure (requestTimeoutSeconds params)
+            _ -> die "service run: accelerator handler requires the Accelerator ServiceType variant"
+        detected <- detect
+        sub <- either die pure detected
+        backend <- either (die . T.unpack) pure (acceleratorBackendForSubstrate sub)
+        hostCfg <- buildHostConfig sub
+        let workerRoot = T.unpack (Context.sourceRoot (context cfg)) </> ".build" </> "accelerator"
+        spec <- buildWorkerWithHostConfig hostCfg workerRoot backend
+        endpoint <- webSocketEndpointFromEnv
+        shutdownFile <- lookupEnv "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
+        let shutdownCheck = maybe (pure False) doesFileExist shutdownFile
+        putStrLn
+            ( "accelerator daemon: connecting to ws://"
+                ++ endpointHost endpoint
+                ++ ":"
+                ++ show (endpointPort endpoint)
+                ++ endpointPath endpoint
+                ++ " as "
+                ++ T.unpack (backendName backend)
+                ++ " artifact "
+                ++ T.unpack (workerArtifactHash spec)
+            )
+        supervisor <- persistentWorkerSupervisor spec (startWorkerSession spec)
+        let clientConfig =
+                defaultDaemonClientConfig
+                    { requestTimeoutMicros = fromIntegral timeoutSeconds * 1000000
+                    }
+        let baseTransport = webSocketDaemonTransportWithShutdown endpoint shutdownCheck
+            readinessTransport =
+                baseTransport
+                    { onDaemonEvent = \event -> do
+                        updateDaemonReadiness readinessFile event
+                        onDaemonEvent baseTransport event
+                    }
+        runDaemonClientLoop clientConfig supervisor readinessTransport
 
 loadAcceleratorConfig :: IO ProjectConfig
 loadAcceleratorConfig =

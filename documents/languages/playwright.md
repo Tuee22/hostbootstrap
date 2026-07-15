@@ -29,7 +29,7 @@ this Playwright runtime through the standardized test harness. The shared
 `project up` stack brings up an isolated kind cluster, loads the already-built
 `hostbootstrap-demo:local` project image into it, and deploys the web chart pod
 (the pod's entrypoint is the demo binary, which runs `service run` — the
-`Web` variant — to bind the warp/wai webservice on `:8080`), so the cluster's
+`Web` variant — to bind the warp/wai webservice on its configured public port, default `:8080`), so the cluster's
 NodePort serves before any case runs. The `e2e-tabs` case in the harness's case
 matrix does not bring up its own stack; it only starts the same project image as
 a one-off container with `--network host` (the VM host network). That container
@@ -38,11 +38,15 @@ sets `BASE_URL` to the NodePort the VM publishes on its own localhost
 `/opt/build/node/global/lib/node_modules` as above, and runs `playwright test`
 from `/workspace/demo/playwright`. Its `playwright.config.ts` declares one project
 per engine, so every spec runs on all three browsers the base image installs
-(Chromium, Firefox, WebKit) with no extra download at validation time.
+(Chromium, Firefox, WebKit) with no extra download at validation time. The config
+sets `workers: 1`, serializing those engine projects because the worked demo
+intentionally owns one accelerator daemon/worker session and rejects concurrent
+Add requests with its single-flight busy response.
 
-The current `e2e-tabs` spec also opens the Accelerator tab and asserts the Add
-path reports `accelerator daemon unavailable` rather than a web-computed sum; the
-real sum+metadata assertion remains the accelerator daemon integration gate.
+The current `e2e-tabs` spec also opens the Accelerator tab. When the harness has proved a daemon is
+connected, it asserts the real worker's `3.75` result, configured backend, 16-hex artifact hash, and
+Float32 rounding (`2^24 + 1 = 2^24`). On a lane without a daemon it instead asserts `accelerator daemon
+unavailable`, proving there is no web-computed fallback.
 
 The `e2e-tabs` spec is **polymorphic** across the suite's config variants. The
 harness exports `EXPECTED_MESSAGE` per variant, and the spec reads that env var

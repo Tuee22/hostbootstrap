@@ -24,7 +24,7 @@ where
 import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, myThreadId, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeAsyncException, SomeException, finally, fromException, mask, onException, throwIO, tryJust)
-import Control.Monad (join, void)
+import Control.Monad (join, void, when)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -82,7 +82,7 @@ data DaemonPeer = DaemonPeer
 
 acceleratorDispatchTimeoutMicros :: Int
 acceleratorDispatchTimeoutMicros =
-    fromIntegral (maxAcceleratorRequestTimeoutSeconds + 5) * 1000000
+    fromIntegral (maxAcceleratorRequestTimeoutSeconds + 10) * 1000000
 
 newAcceleratorHub :: IO AcceleratorHub
 newAcceleratorHub =
@@ -192,7 +192,7 @@ receiveDaemonResponses peer = do
             void (tryPutMVar (peerResponses peer) (Left (T.pack (show err))))
         Right raw -> do
             delivered <- tryPutMVar (peerResponses peer) (Right raw)
-            if delivered then receiveDaemonResponses peer else pure ()
+            when delivered (receiveDaemonResponses peer)
 
 trySynchronous :: IO a -> IO (Either SomeException a)
 trySynchronous = tryJust $ \err ->
@@ -294,8 +294,8 @@ indexHtml =
 
 {- | Serve the webservice as the @web@ cluster-service pod, with the public HTTP
 application on the supplied port (normally @8080@) and the daemon-only WebSocket
-ingress on @8081@. The two listeners share one hub, but only the dedicated
-accelerator Service targets @8081@; public NodePort @30080@ therefore cannot
+ingress on its separate supplied port (normally @8081@). The two listeners share one hub, but only the
+dedicated accelerator Service targets the private port; public NodePort @30080@ therefore cannot
 register a daemon. Binding all interfaces lets the in-cluster Playwright run reach
 the public listener. Reads its own mounted
 @<project>.dhall@ via the core generic loader (the cluster-service config the

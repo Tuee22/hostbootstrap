@@ -61,8 +61,8 @@ volume-injection smoke — `docker run --rm -v
 `nvidia` runtime is insufficient. The direct demo chain runs `ensure docker` and `ensure cuda` before it
 builds the CUDA-flavored project image and hands it off with `--gpus=all`.
 
-The Linux GPU install planner and no-op classifier are covered by the current 357-test core baseline,
-and the direct chain/base/handoff selection by the 83-test demo baseline. Phase 3.7 and Phase 5.5 remain
+The Linux GPU install planner and no-op classifier are covered by the current 359-test core baseline,
+and the direct chain/base/handoff selection by the 87-test demo baseline. Phase 3.7 and Phase 5.5 remain
 Active pending pristine and warm real-Linux-GPU validation.
 
 ## Apple Silicon Minimums

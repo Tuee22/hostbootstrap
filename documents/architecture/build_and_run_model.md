@@ -146,7 +146,7 @@ positive allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvid
 the dedicated ClusterIP Service, while the public web and registry ports remain on the control-plane.
 
 The runtime/install planners, topology selection, all-node cordon, plugin gate, CUDA image selection,
-GPU handoff, and daemon request are covered by the current static baseline (357 core tests and 83 demo
+GPU handoff, and daemon request are covered by the current static baseline (359 core tests and 87 demo
 tests). Phase 3.7 and Phase 5.5 remain Active pending pristine and warm validation on a real Linux GPU
 host; this static evidence is not recorded as real-host closure.
 
@@ -272,7 +272,7 @@ binary into `./.build/`, and execs it; the binary ensures Docker and builds the 
 `FROM` the base image, gating on `check-code`.
 
 The direct Linux GPU implementation now uses the CUDA base and the two-frame host → GPU-container chain
-described above. Its Phase-3/Phase-5 static gate is green at 357 core tests and 83 demo tests, but the
+described above. Its Phase-3/Phase-5 static gate is green at 359 core tests and 87 demo tests, but the
 pristine and warm real-Linux-GPU runs remain open; the development-plan phases therefore remain Active.
 
 The recursive `project` command and the `[Step]` chain interpreter described above have run end-to-end

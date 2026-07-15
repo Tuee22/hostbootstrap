@@ -40,7 +40,7 @@
 |-------|--------------|------------------|
 | `OneShot` | Build-if-needed, then `docker run --rm [-it] [mounts]` — a single container invocation that exits. | Budget-capped: the container runs within the project ceiling. |
 | `HostNative` | Host-native build (into `./.build/`) plus a host exec of the resulting binary. | Host process, sliced by the harness budget when run as a case. |
-| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores or a daemon/coordinator channel, run operationally via `service run` as a leaf-frame pod entrypoint or host daemon entrypoint. The planned accelerator demo uses this model for a project-binary daemon that connects to the web service over CBOR WebSocket and forwards work to a substrate-specific JIT worker. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
+| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores or a daemon/coordinator channel, run operationally via `service run` as a leaf-frame pod entrypoint or host daemon entrypoint. The implemented accelerator demo uses this model for a project-binary daemon that connects to the web service over CBOR WebSocket and forwards work to a substrate-specific JIT worker. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
 | `Cluster` | A kind cluster plus Helm releases — the full orchestrated substrate. | Cordoned per substrate; `fitsBudget` proves the concurrent set fits. |
 
 `OneShot` and `HostNative` differ only in **where the code runs**: `OneShot` runs inside a container

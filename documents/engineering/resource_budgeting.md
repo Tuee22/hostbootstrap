@@ -53,7 +53,7 @@ The Phase-5 Linux GPU work extends the runtime ring without changing this model.
 declares one `control-plane` node; the explicit `nvkind` plan declares `control-plane` and `worker`.
 `clusterNodeCordonArgs` divides the one cluster slice across the declared node list and refuses a slice
 whose CPU, memory, or storage cannot give every node a positive share. The split planner is covered by
-the current static baseline (357 core tests and 83 demo tests); Phase 5.5 remains Active until the
+the current static baseline (359 core tests and 87 demo tests); Phase 5.5 remains Active until the
 pristine and warm real-Linux gates validate the applied caps.
 
 ## The Budget Field

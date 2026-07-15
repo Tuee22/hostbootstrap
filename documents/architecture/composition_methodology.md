@@ -220,7 +220,7 @@ declares request/result topics and artifact buckets — the same algebra, differ
 in the one chain. A webservice/SPA is the same shape: a serving role whose API and UI are generated from
 typed Dhall (see [dhall_generation](dhall_generation.md)).
 
-The planned accelerator demo is the smallest hardware-backed instance of that runtime shape: the web
+The implemented accelerator demo is the smallest hardware-backed instance of that runtime shape: the web
 service accepts CBOR WebSocket connections from a project-binary daemon, dispatches an asynchronous
 `Float` add request, and receives the result from a generated substrate-specific worker. Apple Silicon and
 Windows GPU place that daemon on the host; Linux CPU/GPU place it in the cluster. The representation is
@@ -311,13 +311,14 @@ ships.
 The accelerator-daemon generalization is active plan work. The lifecycle/runtime extension is implemented
 locally: `PostHandoff` hooks run only after the recursive child frame succeeds, the demo selects a direct
 Linux GPU `nvkind` host -> project-container topology, Apple/Windows host daemons have pid/config
-start-stop scaffolding, and the daemon/web path uses CBOR WebSocket. Closure still requires real
-host/in-cluster integration tests plus browser e2e tests that prove the UI add operation reaches the
-daemon-built worker.
+start-stop scaffolding, and the daemon/web path uses CBOR WebSocket. Static/local socket and browser
+specifications are implemented; closure still requires the live host/in-cluster substrate runs proving
+the UI add operation reaches the daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `test.dhall`, generates each run's `<project>.dhall` via `psTestConfig` (reusing `psInit`),
-drives `project up` against that generated config, and deletes the generated config on teardown. The
+drives `project up` against that generated config, and deletes it on teardown only while the exact bytes
+still match; changed bytes remain in the reported locked quarantine. The
 pre-existing-config flow is removed and recorded in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and

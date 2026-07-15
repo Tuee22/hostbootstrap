@@ -10,6 +10,10 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
   reporter: "list",
+  // The demo intentionally has one accelerator daemon/worker session. Running
+  // browser projects concurrently would turn their three Add requests into
+  // artificial contention, so exercise the engines serially.
+  workers: 1,
   use: {
     baseURL: process.env.BASE_URL || "http://localhost:8080",
   },

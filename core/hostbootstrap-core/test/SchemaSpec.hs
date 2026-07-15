@@ -4,6 +4,7 @@
 module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
+import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Fixture (
@@ -187,6 +188,8 @@ tests =
             assertBool "path is logged" ("configPath=/run/demo.dhall" `T.isInfixOf` line)
             assertBool "hash is logged" (("configHash=" <> hash) `T.isInfixOf` line)
             assertBool "config content is not logged" (not ("secret" `T.isInfixOf` line))
+            assertBool "snapshot hash distinguishes physical line endings" $
+                projectConfigSnapshotHash "line\n" /= projectConfigSnapshotHash "line\r\n"
         , testCase "generated config ownership is exclusive and preserves replacements" $ do
             tmp <- getTemporaryDirectory
             (path, handle) <- openTempFile tmp "hostbootstrap-owned-config.dhall"
@@ -205,6 +208,23 @@ tests =
             doesFileExist path >>= (@?= False)
             doesDirectoryExist lockPath >>= (@?= True)
             TIO.readFile quarantined >>= (@?= "replacement\n")
+            removeFile quarantined
+            removeDirectory lockPath
+        , testCase "generated config ownership compares exact bytes, including line endings" $ do
+            tmp <- getTemporaryDirectory
+            (path, handle) <- openTempFile tmp "hostbootstrap-owned-config-bytes.dhall"
+            hClose handle
+            removeFile path
+            ownership <- writeProjectConfigFileExclusive path expected
+            original <- BS.readFile path
+            let crlf = BS.concatMap (\byte -> if byte == 10 then "\r\n" else BS.singleton byte) original
+            assertBool "test replacement changes only physical line endings" (crlf /= original)
+            BS.writeFile path crlf
+            removal <- removeProjectConfigFileIfOwned path ownership
+            assertBool "a byte-different replacement must be quarantined" (isLeft removal)
+            let lockPath = path ++ ".hostbootstrap-test-owner"
+                quarantined = lockPath </> "payload"
+            BS.readFile quarantined >>= (@?= crlf)
             removeFile quarantined
             removeDirectory lockPath
         ]

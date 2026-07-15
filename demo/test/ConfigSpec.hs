@@ -135,10 +135,14 @@ tests =
                 case configuredServiceVariant webCfg{service = Just (Accelerator (AcceleratorServiceConfig 30))} of
                     Left _ -> True
                     Right _ -> False
-        , testCase "multi-role host config carries its configured Web variant" $ do
+        , testCase "multi-role host config carries Web parameters but cannot select a service" $ do
             let cfg = demoInit (initArgsFor HostOrchestrator){alsoRoles = [ClusterService]}
             commandAllowed cfg.context ServiceCommand @?= True
-            configuredServiceVariant cfg @?= Right "web"
+            cfg.service @?= Just (Web (WebServiceConfig 8080 8081))
+            assertBool "an orchestrator is not a service leaf" $
+                case configuredServiceVariant cfg of
+                    Left _ -> True
+                    Right _ -> False
         , testCase "a primary service role wins over an additional daemon role" $ do
             let cfg = demoInit (initArgsFor ClusterService){alsoRoles = [Daemon]}
             configuredServiceVariant cfg @?= Right "web"

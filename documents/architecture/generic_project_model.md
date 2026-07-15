@@ -19,7 +19,8 @@
 - Defaults live **only** in a project-owned `psInit :: InitArgs -> cfg`. `project init` calls it; the
   harness reuses it (DRY), so there is one config builder, not two that drift.
 - `test.dhall` is a **thin override**; the harness **generates** the run's `<project>.dhall` from it via
-  the project's own init logic, runs the real `project up`, then deletes the generated config.
+  the project's own init logic, runs the real `project up`, then deletes only matching run-owned config
+  bytes; changed bytes remain in the reported locked quarantine.
 - A pure `SecretRef` vocabulary lets a secrets-strict consumer keep production configs plaintext-free; core
   never resolves secrets.
 

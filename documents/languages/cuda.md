@@ -87,7 +87,7 @@ through the dedicated in-cluster accelerator Service; no accelerator NodePort is
 lane.
 
 The planners, probes, topology choice, plugin gate, GPU request, CUDA base selection, and `--gpus=all`
-handoff are covered by the current static baseline (357 core tests and 83 demo tests). Phase 3.7 and
+handoff are covered by the current static baseline (359 core tests and 87 demo tests). Phase 3.7 and
 Phase 5.5 remain Active until the pristine and warm no-op gates complete on a real Linux GPU host.
 
 ## Windows Host-Build CUDA (headless)

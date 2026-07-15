@@ -57,7 +57,7 @@ default with CDI enabled, volume-mount device injection is enabled, and the sati
 same `/dev/null` mount smoke used by the cluster lifecycle. A pristine Debian-family host first receives
 NVIDIA's signed stable apt source/keyring (`/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg` and
 the signed-by-qualified stable list), so the package install is self-sufficient. `EnsureSpec` covers the
-exact plan and probe; the current static gate passes under `-Werror` with all 357 core tests. A Linux
+exact plan and probe; the current static gate passes under `-Werror` with all 359 core tests. A Linux
 GPU Docker host must still report the reconciler `present (no-op)` before the phase can return to `Done`.
 The other reconcilers remain closed.
 
@@ -346,7 +346,7 @@ Swift/Metal and Windows GPU CUDA.
 - `EnsureSpec` covers the Apple Metal SDK/probe builders and the CudaWin clang/vswhere/nvcc smoke builders.
 - `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on Windows GPU on
   2026-07-10; that phase-close snapshot reported 331 tests. The 2026-07-11 cumulative snapshot reported
-  345 tests; the current 2026-07-11 static gate reports 357 tests.
+  345 tests; the current 2026-07-12 static gate reports 359 tests.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
   hardened `ensure-cudawin` builds the CUDA worker on Windows GPU. The Apple Silicon gate closed
   2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`). The Windows GPU gate closed the
@@ -389,7 +389,7 @@ an installed runtime name.
 - `EnsureSpec` covers the exact install steps and volume-mount smoke arguments/classifier. **Passed
   2026-07-11.**
 - `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` pass from `core/`.
-  **Passed 2026-07-11: 345 tests; current 2026-07-11 cumulative gate: 357 tests.**
+  **Passed 2026-07-11: 345 tests; current 2026-07-12 cumulative gate: 359 tests.**
 - A Linux GPU host reports the reconciler `present (no-op)` after the smoke sees a GPU.
 
 #### Remaining Work
