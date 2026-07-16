@@ -519,9 +519,9 @@ writes the host-resident config beside the host-native daemon binary; the Linux 
 applies it before the workload, and sets `HOSTBOOTSTRAP_CURRENT_FRAME` to the derived `daemon-<n>` frame so
 the in-pod runtime-witness gate passes. The web service config is likewise generated and applied by
 `HostBootstrapDemo.Commands` from the actual parent topology; the exact mounted bytes are hashed into the
-pod template so a subPath-mounted config change causes rollout. Current validation (2026-07-12): `cabal
-build all --ghc-options=-Werror` and `cabal test all` pass from `core/` (359) and `demo/` (86, plus the
-embedded 359-core suite).
+pod template so a subPath-mounted config change causes rollout. Current validation (2026-07-15): `cabal
+build all --ghc-options=-Werror` and `cabal test all` pass from `core/` (364) and `demo/` (87, plus the
+embedded 364-core suite).
 
 Open only for real-run integration proving each daemon placement **reads** its delivered config and
 **connects**: the current host-daemon durable gate and the native Linux CPU/GPU in-cluster daemon lanes,

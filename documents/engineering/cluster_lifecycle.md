@@ -14,9 +14,10 @@
 - Cluster bring-up and teardown are **chain steps**. The core ships `deploy-kind`-class step kinds
   that the recursive `project up`/`project down`/`project destroy` interpreter runs at the container
   frame, where the chain bottoms out into `kubectl`/`helm`/`kind` leaves.
-- `project up` brings the cluster to *running* (idempotent, fail-closed). At the kind-cluster frame,
-  `project down` deletes the kind cluster while preserving durable state. `project destroy` also deletes
-  the kind cluster and its compute.
+- `project up` brings the cluster to *running* (idempotent, fail-closed). At the frame whose chain step
+  owns `deploy-kind`, `project down` deletes the kind cluster while preserving durable state and `project
+  destroy` also deletes its compute. A non-owning root frame skips core Kind lookup and delegates a nested
+  VM/project-container cluster to the project teardown hook.
 - The lifecycle never deletes a cluster's `.data` directory: persistent state survives bring-up,
   stop, and teardown.
 - A cluster runs under one of two profiles. The production profile uses `.data` and a fixed cluster
@@ -45,8 +46,10 @@ plans also carry a pure cluster driver: normal paths use `KindDriver`; Linux GPU
 `NvkindDriver`, which creates a control-plane plus GPU worker with `nvkind cluster create
 --name=<cluster>` after the official volume-mount NVIDIA-runtime smoke. The one cluster envelope is divided
 across both node containers, then bring-up installs the pinned NVIDIA device-plugin chart and requires a
-positive allocatable `nvidia.com/gpu`. Health checks, kubeconfig export, and teardown keep using the
-resulting kind cluster name. The
+positive allocatable `nvidia.com/gpu`. The allocatable probe runs before any Helm or `kubectl` mutation:
+an already-positive cluster is a true no-op, while an absent allocation takes the pinned
+install/readiness path and must become positive before scheduling. Health checks, kubeconfig export, and
+teardown keep using the resulting kind cluster name. The
 semantics are shared so a project does not re-implement cluster orchestration; its chain selects a
 profile and supplies the chart, and the core interprets the step.
 
@@ -76,8 +79,10 @@ process would read as success.
 install cannot race the API server or CNI. And because `kind get clusters` lists only names, a listed
 cluster is **health-probed** (`clusterHealthy`: export kubeconfig, then `kubectl get nodes`) rather than
 trusted: a listed-but-unhealthy cluster (stopped containers after the VM that hosts it was
-`project down`-stopped and restarted) is `kind delete`-d and recreated, so the idempotent re-run reconciles
-a stopped in-VM stack back to running. The pure classifier `clusterHealthyFromProbe` is unit-tested.
+`project down`-stopped and restarted) is deleted and recreated, so the idempotent re-run reconciles a
+stopped in-VM stack back to running. That deletion is fail-closed: `ensureCluster` requires the Kind delete
+to succeed before it issues recreate, so an unresolved or non-zero deletion cannot be followed by a
+misleading create attempt. The pure classifier `clusterHealthyFromProbe` is unit-tested.
 
 The deploy is **chart-conditional**: a project ships its chart at `./chart` (relative to the directory
 the cluster step runs in — the project root, or `/workspace/<project>` inside the project container)
@@ -104,28 +109,36 @@ VM path.
 
 ## `project down`: Delete Kind, Preserve State
 
-`project down` deletes the running kind cluster and its services while preserving durable state. Kind does
-not provide a reliable stop/restart contract for the cluster frame, so `down` uses `kind delete cluster`
-for compute and keeps the `.data` and derived paths in place. The next `project up` recreates the kind
-cluster from the chain. **In-VM topology:** when the kind cluster lives *inside* a provider VM (the demo
-topology), `project down` stops the VM before the host-side `kind delete` can reach it, so the in-VM cluster
-is left stopped rather than deleted; the re-run health-checks-and-recreates it — `clusterCreate` finds the
-listed cluster unhealthy (`clusterHealthy`/`clusterHealthyFromProbe`), `kind delete`s and recreates it, then
-gates on `waitNodesReady` before the first apply — rather than trusting `kind get clusters`. This VM-nested
+At the frame that owns `deploy-kind`, `project down` deletes the running kind cluster and its services
+while preserving durable state. Kind does not provide a reliable stop/restart contract for the cluster
+frame, so the owning frame uses `kind delete cluster` for compute and keeps `.data` and derived paths in
+place. The next `project up` recreates the kind cluster from the chain.
+
+Command dispatch is frame-aware: it compares the current frame with the chain's `deploy-kind` step before
+invoking core `clusterDown`. When the cluster belongs to a nested VM or project container, the non-owning
+root frame skips host-side Kind lookup and the project teardown hook owns that nested cleanup. **In-VM
+topology:** the project hook stops the VM, so the in-VM cluster is left stopped rather than deleted; the
+re-run health-checks-and-recreates it — `clusterCreate` finds the listed cluster unhealthy
+(`clusterHealthy`/`clusterHealthyFromProbe`), `kind delete`s and recreates it, then gates on
+`waitNodesReady` before the first apply — rather than trusting `kind get clusters`. This VM-nested
 `down`->`up` recreate is the same health-recreate path described under `project up` above, and is
-real-run-validated 2026-07-05 by the Windows/WSL2 `hostbootstrap-demo test run all` (6/6 passed). VM frames are different: they use provider stop-without-delete (`incus stop` /
+real-run-validated 2026-07-05 by the Windows/WSL2 `hostbootstrap-demo test run all` (6/6 passed). VM frames
+use provider stop-without-delete (`incus stop` /
 `limactl stop` / `wsl --terminate <distro>` (per-distro WSL2 stop)) on ascent after the inner cluster teardown (see
 [incus](incus.md), [lima](lima.md), [wsl2](wsl2.md)).
 
-Stop steps use the best-effort `reportStep`, which logs a failed step without aborting the rest of the
-descent, so a partial stack is tolerated and the operation stays idempotent.
+When the current frame owns `deploy-kind`, core teardown attempts every intended Kind and derived-path
+cleanup even when an earlier action fails. It collects unresolved-tool, non-zero-exit, and path-removal
+failures, preserves `.data`, and raises one aggregate error after the independent cleanup actions have
+run. A partial stack is tolerated for cleanup purposes, but failure is never reported as success.
 
-## `project destroy`: Best-Effort Teardown
+## `project destroy`: Aggregate Teardown
 
-`project destroy` stops, then **deletes** the kind cluster and its compute. The interpreter recurses
-in (frame still up), then deletes on ascent (the VM is stopped/destroyed last). Like `down`, teardown
-uses the best-effort `reportStep` so a failed step is logged without aborting the rest of teardown,
-tolerating a partially-up stack and staying idempotent.
+At an owning `deploy-kind` frame, `project destroy` stops, then **deletes** the kind cluster and its
+compute. The interpreter recurses in (frame still up), then deletes on ascent (the VM is
+stopped/destroyed last). A non-owning frame skips core `clusterDelete` and leaves the nested cluster to
+the project teardown hook. When core Kind/path cleanup is attempted, it aggregates every failure and
+raises the aggregate after cleanup instead of stopping at the first failure or silently succeeding.
 
 `destroy` removes the cluster and its compute but **never** deletes the cluster's `.data` directory
 (see below).
@@ -173,12 +186,15 @@ full budget. *(The harness recast is implemented and real-run-validated — phas
 
 ## Current Status
 
-The cluster-lifecycle semantics described above are real-run-validated end-to-end on real hardware.
+The established cluster lifecycle has historical end-to-end real-hardware validation. The 2026-07-15
+device-plugin and fail-closed cleanup hardening is statically validated; its owning native Linux
+accelerator gates remain open below.
 
 - **Behavior**: cluster bring-up and teardown are chain steps the recursive `project up`/`project
-  down`/`project destroy` interpreter runs, with `down` deleting the kind cluster while preserving durable
-  state and `destroy` deleting it too. The `deploy-kind`/`deploy-chart` steps are fail-closed and chart-conditional;
-  teardown attempts every independent cleanup and aggregates failures. Read-only state is reported through `context inspect`,
+  down`/`project destroy` interpreter runs. Core Kind cleanup runs only at the current frame that owns
+  `deploy-kind`; nested VM/project-container clusters remain owned by the project teardown hook, while an
+  attempted local cleanup aggregates every independent failure. The `deploy-kind`/`deploy-chart` steps are
+  fail-closed and chart-conditional. Read-only state is reported through `context inspect`,
   which renders the lift composition with the current frame marked, reports whether the resolved cluster
   is live alongside the preserved `.data` and derived paths, and never mutates state. The
   `clusterCreate`/`deployChart`/`clusterUp`/`clusterDown`/`clusterDelete` reconcilers live in
@@ -190,10 +206,13 @@ The cluster-lifecycle semantics described above are real-run-validated end-to-en
   `deployChart`; Helm values carry only rollout/placement metadata (see [schema](schema.md) and
   [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)). The accelerator lifecycle's
   static slice now includes the direct Linux GPU `nvkind` cluster driver, official NVIDIA runtime probe,
-  control-plane/GPU-worker budget split, pinned device-plugin install/readiness/allocatable gate, CUDA
-  daemon GPU limit, and placement-specific ingress/config selection. The current `-Werror` gates pass
-  with 359 core tests and 87 demo tests; live Linux CPU/GPU daemon connectivity remains gated by the
-  accelerator phases in the development plan.
+  control-plane/GPU-worker budget split, pre-mutation device-plugin no-op detection, pinned
+  install/readiness/allocatable gates, aggregate teardown failure propagation with `.data` preservation,
+  fail-closed unhealthy-cluster deletion before recreate, CUDA daemon GPU limit, and placement-specific
+  ingress/config selection. The current 2026-07-15 `-Werror` gates pass with 364 core tests and 87 demo
+  tests (plus the demo workspace's embedded 364-test core suite). Phase 5 remains Active until the native
+  Linux CPU Incus/ClusterIP/C++ lane and native Linux GPU direct-nvkind/CUDA/browser lane each report
+  `8/8`; WSL2 evidence is not represented as native Linux.
 - **Validated end-state**: a single `project up` on Incus/Linux stands up the live persistent stack —
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
   in-cluster registry (NodePort 30500), the project image pushed to that registry, and the web

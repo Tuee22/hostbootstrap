@@ -10,8 +10,9 @@
 > config, the thin Python bootstrapper surface, the base image and warm Cabal store, and the optparse
 > command tree projects extend.
 
-> Note: Phases 0-21 reached `Done` before the later accelerator reopening; Phase 3 is temporarily `Active`
-> for Sprint 3.7, and Phases 5, 13, 15, 16, and 18 are `Active` for accelerator closure. Phases 5, 9, 10,
+> Note: Phases 0-21 reached `Done` before the later accelerator reopening. Phase 3 returned to `Done` on
+> 2026-07-15 after Sprint 3.7's WSL2 `linux-gpu` install/no-op gate; Phases 5, 13, 15, 16, and 18 remain
+> `Active` for accelerator closure. Phases 5, 9, 10,
 > 11, 13, and 16 were temporarily reopened
 > (2026-07-05) for cross-substrate reliability hardening and **closed the same day** by a decoupled Windows/WSL2
 > `test run all` reporting `6/6 passed` (`REALRUN_EXIT=0`) across both message variants — the node/CNI
@@ -68,8 +69,12 @@
 > interpreted recursively by `project up`, and the standardized test harness drives that same chain.
 > Reopened 2026-07-09: the accelerator implementation now includes the host tools, direct/in-cluster
 > placement plans, host-daemon start/stop, in-cluster daemon deployment, concrete socket path, and browser
-> workflow specification. Phase 3 Sprint 3.7 and Phases 5, 13, 15, 16, and 18 remain Active for their native
-> live-runtime gates, not for missing local implementation. The web deployment dynamically renders and
+> workflow specification. Phase 3 Sprint 3.7 is `Done`: on 2026-07-15 a named Ubuntu 24.04 WSL2 guest
+> classified `linux-gpu` on an RTX 3090 Windows machine (a WSL2 guest, not native Linux) first reported
+> `ensure cuda: installing (8 step(s))` then `ensure cuda: installed and verified`, and its immediate second
+> run exited 0 with exactly `ensure cuda: present (no-op)`. Phases 5, 13, 15, 16, and 18 remain `Active` for
+> their native live-runtime gates, not for missing local implementation. The web deployment dynamically
+> renders and
 > applies the actual parent-derived ConfigMap, hashes its exact mounted bytes into the pod template, and
 > runs config-selected `service run` with no positional variant. Its linked listeners keep public HTTP on
 > the configured port (default 8080)/NodePort 30080 and private accelerator registration on the configured
@@ -85,8 +90,10 @@
 > host-daemon socket plus browser gates remain open; each lane must report `8/8`, and no current live
 > `8/8` result is recorded.
 >
-> **Current suite SSoT:** the 2026-07-12 static gate reports 359 core tests and 87 demo tests, with the demo
-> gate also running the embedded 359-test core suite. Earlier 358/86, 357/83, 345/56, 331/46, 328/44, 326, and 321 counts
+> **Current suite SSoT:** the 2026-07-15 Phase 5 gate reports 364 core tests under `-Werror`; the demo
+> workspace passes 87 demo tests plus the embedded 364-test core suite. Phase 3's 2026-07-15 closure
+> retains its historical 359-test evidence.
+> Earlier 358/86, 357/83, 345/56, 331/46, 328/44, 326, and 321 counts
 > are historical snapshots from the incremental accelerator, lifecycle, context, and cluster slices.
 
 ## hostbootstrap-core Haskell module surface
@@ -113,7 +120,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Config.Class` | 19 | yes | the `ProjectCfg` class supplies the universal `cfgContext` / `cfgWithContext` contextual-authority operations without fixing the project's config record, plus the shared `InitArgs` and generic `projectCfgSchemaText`. A fixed command may additionally use an explicit project-provided projection carried by `ProjectSpec`; `psServiceVariant` is the current example and does not make a service field universal |
 | `HostBootstrap.Context` | 15.1, 15.3, 15.4, 15.5, 15.6, 15.8 | yes | runtime context type embedded inside `<project>.dhall`: host/VM/container/image-build/service/daemon constructors, explicit Linux GPU direct project-container topology, topology frames, current-frame identity, runtime witnesses, validation, exit-code-1 failure helpers, and role/capability/command authority |
 | `HostBootstrap.Command` | 4, 15.4 | yes | the core command tree projects extend; normal core commands gate through the sibling binary context |
-| `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics; production/test plans with explicit fail-closed config paths; `KindDriver`/`NvkindDriver` selection; the shared exact NVIDIA-runtime smoke; a control-plane + GPU-worker nvkind topology; pinned device-plugin `0.19.3` install that is a no-op when a positive allocatable `nvidia.com/gpu` already exists and otherwise waits for plugin pods plus allocatable capacity; and accelerator ingress planning (`ClusterIP` for in-cluster daemon pods, local-only `NodePort` for host daemons) |
+| `HostBootstrap.Cluster.Lifecycle` | 5 | yes | kind/Helm cluster up/down/delete semantics; production/test plans with explicit fail-closed config paths; listed-but-unhealthy recovery that requires successful Kind deletion before recreate; `KindDriver`/`NvkindDriver` selection; the shared exact NVIDIA-runtime smoke; a control-plane + GPU-worker nvkind topology; pinned device-plugin `0.19.3` reconciliation that probes allocatable capacity before any Helm/`kubectl` mutation, returns a true no-op when positive, and otherwise waits for plugin pods plus allocatable capacity; teardown attempts all intended Kind/path cleanup, propagates aggregate failures, and preserves `.data`; and accelerator ingress planning (`ClusterIP` for in-cluster daemon pods, local-only `NodePort` for host daemons) |
 | `HostBootstrap.Cluster.Cordon` | 5, 9 | yes | the one canonical `parseQuantity`, budget verification, the full `colima`/`lima`/`incus`/`wsl2`/kind-node sizing builders (`wsl2SizingArgs` emits the `.wslconfig` `[wsl2]` ceiling with `swap`), `verifyBudget`/`fitsBudget`, `resolveHostCapacity` (substrate-aware — `sysctl` `hw.ncpu`/`hw.memsize` on Apple, `/proc` on Linux, CIM `NumberOfLogicalProcessors`/`TotalPhysicalMemory` on Windows), and the applied `docker update` cordon; nvkind divides the one declared slice across its control-plane and worker instead of applying the full envelope twice |
 | `HostBootstrap.Substrate.Provider` | 9 | yes | one pure lift per substrate (`SubstrateProvider`, `selectSubstrateProvider`): the per-substrate VM exists/launch/wait/stage/teardown as pure data (the `HostEffect` launch list — `WriteHostFile`/`RestoreHostFile`/`RunHostTool` — folds the WSL2 global `.wslconfig` write + `wsl --shutdown` into the same shape Lima/Incus use), so the consumer's VM lifecycle is a generic interpreter, not hand-branched per substrate |
 | `HostBootstrap.DocValidator` | 0 | yes | mechanical documentation validator run through the code-check |
@@ -133,7 +140,7 @@ surface; the column records whether the module exists in this repository.
 | `HostBootstrap.Ensure.Incus` | 11 | yes | `ensure incus` install-and-verify reconciler (Colima-backed provider on Apple, native daemon on Linux) |
 | `HostBootstrap.Ensure.Wsl2` | 11 | yes | `ensure wsl2` install-and-verify reconciler for the Windows WSL2 host-provider (the incus/lima peer) |
 | `HostBootstrap.Ensure.AppleMetal` | 3.6 | yes | `ensure-apple-metal` reconciler for the Apple Silicon accelerator daemon: visible Metal device, macOS SDK through `xcrun`, and a Swift + Metal compile/run probe; static-validated and real-run-validated on an M1 Max host 2026-07-10 (`present (no-op)`) |
-| `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); `down` / `destroy` attempt independent cleanup actions and report aggregate failures instead of stopping after the first; the effectful apply and VM stop-without-delete have historical Incus/Linux and Apple live evidence |
+| `HostBootstrap.Command` (project group) | 16 | yes | the `project init\|up\|down\|destroy` lifecycle command (§ Y): `project up --dry-run` renders the chain through the context gate; the chain is threaded through `ProjectSpec` (`psChain`/`psFrameContext`); `down` / `destroy` invoke core Kind cleanup only when the current frame owns a `deploy-kind` step, leave nested VM/project-container clusters to the project teardown hook, and aggregate attempted cleanup failures instead of stopping after the first; the effectful apply and VM stop-without-delete have historical Incus/Linux and Apple live evidence |
 | `HostBootstrap.Step` | 16 | yes | the `Step` algebra (§ Y): the closed core host-management `StepKind` set plus the open `ProjectStep` seam interleaved in one `[Step]`, the `PostHandoff` hook kind for after-child-frame lifecycle work, the pure `renderChainPlan` dry-run render, and `stepsForFrame`/`preHandoffStepsForFrame`/`postHandoffStepsForFrame`/`chainFrames` segmentation |
 | `HostBootstrap.Chain` | 16 | yes | the recursive chain interpreter (§ Y): pure `renderChain` (`--dry-run`), `nextFrameAfter` (descent order), `handoffDispatch` (the `project up` argv fold), and the `runChainFromFrame` effectful seam; it runs pre-handoff steps, descends to the child frame, and runs `PostHandoff` hooks only after the child succeeds; end-to-end provisioning is real-run-validated |
 | `HostBootstrapDemo.Accelerator.Protocol` | 18.5 | yes | deterministic CBOR request/result/failure protocol, invalid-payload rejection, request-id correlation, and backend/artifact metadata. Arithmetic semantics are `Float32`; CBOR float64 is only a transport carrier |
@@ -357,7 +364,7 @@ See
 
 | Core verb group (target) | Phase | Implemented | Source |
 |-----------------|-------|-------------|--------|
-| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate; `down` stops VM frames and deletes kind clusters while preserving durable state; `down` / `destroy` attempt all independent cleanup and aggregate errors. Historical effectful apply evidence remains valid; subsumes `config init`, `cluster`, `context create` |
+| `project init\|up\|down\|destroy` | 16 | yes | wired on the core tree; `up --dry-run` renders the chain through the gate; `down` stops VM frames and deletes kind clusters at the owning `deploy-kind` frame while preserving durable state; nested clusters stay with the project teardown hook, so non-owning host frames skip core Kind lookup; attempted `down` / `destroy` cleanup actions aggregate errors. Historical effectful apply evidence remains valid; subsumes `config init`, `cluster`, `context create` |
 | `context` (read-only introspection) | 15, 16 | yes | renders the composition from the sibling `<project>.dhall`; absorbs `config show\|schema\|render` |
 | `test init\|run <suite\|all>` | 10, 17 | yes | `HostBootstrap.Harness` (`runSuiteSelection`/`runMatrix`); root-gated; `test run` drives the real `project up` under a test config with two fail-fast preconditions + `.test_data` (§ Z) |
 | `service init\|schema\|run` | 18 | yes | long-running roles (`HostDaemon`/service run-model); config-selected `service run` takes no positional variant and is a leaf process in either a pod or host daemon. A project projection validates its ADT value and returns an internal registry key; the enclosing controller/project lifecycle owns teardown. No `service down` (§ AA) |

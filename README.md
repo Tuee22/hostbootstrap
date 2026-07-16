@@ -88,9 +88,12 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > `Done`. The original scope (phases 0 through 21) reached `Done`, and the 2026-07-05 cross-substrate
 > reliability reopening is also closed `Done`.
 >
-> **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phase 2's host-tool slice is
-> closed; phases 3, 5, 13, 15, 16, and 18 remain `Active` for a real substrate-specific accelerator path:
-> the demo UI accepts two `Float` values, the web server dispatches CBOR work over WebSocket to a separate
+> **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phases 2 and 3 are closed;
+> phases 5, 13, 15, 16, and 18 remain `Active` for a real substrate-specific accelerator path. Phase 3's
+> final gate closed 2026-07-15 in a named Ubuntu 24.04 WSL2 `linux-gpu` guest on an RTX 3090 Windows
+> machine — a WSL2 guest, not native Linux — after an eight-step install-and-verify run and an immediate
+> exit-0 `ensure cuda: present (no-op)` rerun. The still-open accelerator work has the demo UI accept two
+> `Float` values while the web server dispatches CBOR work over WebSocket to a separate
 > project-binary daemon, and the daemon JIT-builds and runs a real Swift/Metal, CUDA, or C++ worker
 > depending on substrate. There is no fake in-process accelerator fallback. The closure gate includes
 > live integration evidence for the real daemon lanes. The browser test already asserts the sum,

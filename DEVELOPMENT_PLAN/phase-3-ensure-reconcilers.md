@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 `HostBootstrap.Ensure` provides the `Reconciler` value type, the pure `decide` applicability function,
 the fail-fast `runReconciler`, the `runEnsure` library runner, and the shared
@@ -34,7 +34,8 @@ host build** (build on the bare Windows host, stage into the cluster, never run 
 VM); the direct Linux GPU host's `ensure cuda` (`HostBootstrap.Ensure.Cuda`, the NVIDIA container runtime
 consumed by the GPU-enabled project container and nvkind) stays a different concern.
 
-**Reopened 2026-07-11 for the `nvkind`-compatible Linux GPU runtime contract.** Phase 5 validation found
+**Reopened 2026-07-11 and closed 2026-07-15 for the `nvkind`-compatible Linux GPU runtime
+contract.** Phase 5 validation found
 that `ensure cuda` registered the Docker `nvidia` runtime but did not converge the two settings required by
 the implemented `nvkind` path: the NVIDIA runtime must be the Docker default with CDI enabled, and
 `accept-nvidia-visible-devices-as-volume-mounts` must be enabled. Its old satisfaction probe inspected only
@@ -51,14 +52,21 @@ base image.
 
 ## Remaining Work
 
-Open only for Sprint 3.7's real-host gate. The implementation now converges and verifies the exact
+None. Phase 3 closed on 2026-07-15. The implementation converges and verifies the exact
 NVIDIA-container-toolkit configuration consumed by `nvkind`: Docker's NVIDIA runtime is configured as the
 default with CDI enabled, volume-mount device injection is enabled, and the satisfaction probe runs the
 same `/dev/null` mount smoke used by the cluster lifecycle. A pristine Debian-family host first receives
 NVIDIA's signed stable apt source/keyring (`/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg` and
 the signed-by-qualified stable list), so the package install is self-sufficient. `EnsureSpec` covers the
-exact plan and probe; the current static gate passes under `-Werror` with all 359 core tests. A Linux
-GPU Docker host must still report the reconciler `present (no-op)` before the phase can return to `Done`.
+exact plan and probe. The reconciler host for the live gate was a named Ubuntu 24.04 WSL2 guest classified
+as `linux-gpu` on an RTX 3090 Windows machine; this was a WSL2 guest, **not native Linux**. Its first real
+run reported `ensure cuda: installing (8 step(s))` and then `ensure cuda: installed and verified`. The
+immediate second run exited 0 with exactly `ensure cuda: present (no-op)`, proving both absent-state
+installation and satisfied-state idempotence. This Phase 3 gate does not close the native Linux CPU/GPU
+`nvkind`, daemon, cordon, or browser lanes owned by Phases 5, 13, 15, 16, and 18.
+
+The phase-close static gate also passed from `core/` on Windows on 2026-07-15:
+`cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror`, with all 359 core tests.
 The other reconcilers remain closed.
 
 Real substrate validation now closed for the locally available Apple Silicon lane: on 2026-07-10, an
@@ -346,7 +354,7 @@ Swift/Metal and Windows GPU CUDA.
 - `EnsureSpec` covers the Apple Metal SDK/probe builders and the CudaWin clang/vswhere/nvcc smoke builders.
 - `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on Windows GPU on
   2026-07-10; that phase-close snapshot reported 331 tests. The 2026-07-11 cumulative snapshot reported
-  345 tests; the current 2026-07-12 static gate reports 359 tests.
+  345 tests; the current 2026-07-15 phase-close static gate reports 359 tests.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
   hardened `ensure-cudawin` builds the CUDA worker on Windows GPU. The Apple Silicon gate closed
   2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`). The Windows GPU gate closed the
@@ -358,9 +366,9 @@ Swift/Metal and Windows GPU CUDA.
 
 None.
 
-### Sprint 3.7: `nvkind`-compatible Linux GPU runtime reconciliation [Active]
+### Sprint 3.7: `nvkind`-compatible Linux GPU runtime reconciliation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`,
 `core/hostbootstrap-core/test/EnsureSpec.hs`
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`,
@@ -389,12 +397,16 @@ an installed runtime name.
 - `EnsureSpec` covers the exact install steps and volume-mount smoke arguments/classifier. **Passed
   2026-07-11.**
 - `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` pass from `core/`.
-  **Passed 2026-07-11: 345 tests; current 2026-07-12 cumulative gate: 359 tests.**
-- A Linux GPU host reports the reconciler `present (no-op)` after the smoke sees a GPU.
+  **Phase-close rerun passed on Windows on 2026-07-15 with all 359 tests.**
+- The live reconciler gate passed on 2026-07-15 in a named Ubuntu 24.04 WSL2 `linux-gpu` guest on an RTX
+  3090 Windows machine (not native Linux). The first run reported `ensure cuda: installing (8 step(s))`
+  followed by `ensure cuda: installed and verified`; the immediate second run exited 0 with exactly
+  `ensure cuda: present (no-op)`.
 
 #### Remaining Work
 
-Run the verified no-op gate on a Linux GPU Docker host. No implementation or static-test work remains.
+None. The WSL2 `linux-gpu` guest install-then-no-op gate closed this sprint on 2026-07-15. Native Linux
+accelerator lifecycle gates remain open only in their owning later phases.
 
 ## Documentation Requirements
 

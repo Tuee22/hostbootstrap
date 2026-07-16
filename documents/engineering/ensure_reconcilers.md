@@ -170,10 +170,13 @@ the Windows GPU smoke closed the same day on an RTX 3090 host after CUDA 13.3, L
 `vswhere`-resolved VCTools compiler built the `nvcc -ccbin` smoke artifact. These reconcilers run only on
 host-daemon lanes; Linux daemon pods trust the base image and never run ensure from inside the container.
 
-Phase 3 was temporarily reopened 2026-07-11 for the separate Linux GPU runtime contract. The direct
-Linux GPU metal step runs `ensure cuda` before entering the project container. It now converges the exact
+Phase 3 was temporarily reopened 2026-07-11 and closed 2026-07-15 for the separate Linux GPU runtime
+contract. The direct Linux GPU metal step runs `ensure cuda` before entering the project container. It now converges the exact
 default-runtime/CDI/volume-mount settings consumed by nvkind and verifies them with the official
-volume-mount smoke; only its Linux GPU real-host no-op gate remains open.
+volume-mount smoke. The live reconciler host was a named Ubuntu 24.04 WSL2 guest classified `linux-gpu` on
+an RTX 3090 Windows machine — a WSL2 guest, not native Linux. Its first run reported `ensure cuda:
+installing (8 step(s))` and then `ensure cuda: installed and verified`; its immediate second run exited 0
+with exactly `ensure cuda: present (no-op)`.
 
 Phase 2 supplies the closed host-tool surface these reconcilers consume: `Swiftc`, `Xcrun`, and
 `SystemProfiler` for Apple Silicon, `Clangxx` for the Linux CPU worker, and `NvidiaSmi`, `Nvcc`, `Clang`,
@@ -229,6 +232,7 @@ all` `6/6` -> `project destroy`). The former `ensure-tart` reconciler is dropped
 tracked as removed in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 The accelerator build-stack reconcilers are implemented, statically validated, and real-run-validated on
-Apple Silicon and Windows GPU. Reopened Phase 3 stays `Active` only until the tightened Linux `ensure
-cuda` contract reports `present (no-op)` on a Linux GPU Docker host; its static plan/probe coverage and
-340-test core gate passed 2026-07-11.
+Apple Silicon and Windows GPU. Phase 3 is `Done`: the tightened Linux `ensure cuda` contract completed its
+WSL2 `linux-gpu` install/no-op gate on 2026-07-15, and the same day's Windows phase-close static gate passed
+`cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` with all 359 core tests.
+Native Linux `nvkind` and accelerator lifecycle validation remains open only in its owning later phases.

@@ -17,7 +17,7 @@
 workload previously ran through the load-bearing `web serve` verb. The generic command now reaches every
 project role through the fixed surface (development_plan_standards § AA), not a per-project verb.
 
-The current implementation is built and statically validated (359 core tests and 87 demo tests):
+The current implementation is built and statically validated (364 core tests and 87 demo tests):
 
 - `HostBootstrap.Service` ships the possibly empty `ServiceRegistry` of internal handler keys and actions.
   `HostBootstrap.CLI` threads it through `ProjectSpec` with `withServices`, rejects duplicate keys, and
@@ -262,7 +262,7 @@ worker session.
 
 #### Remaining Work
 
-The implementation and current static/local contract are complete and green (359 core tests, 87 demo
+The implementation and current static/local contract are complete and green (364 core tests, 87 demo
 tests). The effective config selects `Accelerator`; the existing `Context.ServiceCommand` gate rejects
 project-lifecycle authority; the dynamic manifest supplies the placement-specific connection target and
 timeout; and deterministic CBOR codecs preserve request IDs, metadata, and failures. The web process owns

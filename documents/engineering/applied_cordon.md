@@ -168,9 +168,9 @@ for the pure parser/builder surface and the capacity predicate is
 [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
 
 The later explicit nvkind control-plane/worker topology and all-node envelope split are unit-validated
-in the current static baseline (359 core tests and 87 demo tests). That evidence does not replace the
-Phase-5 real-host gate: Phase 5.5 remains Active until pristine and warm Linux CPU/GPU runs prove the
-caps are applied to the live node containers.
+in the current static baseline (364 core tests and 87 demo tests). That evidence does not replace the
+Phase-5 real-host gate: Phase 5.5 remains Active until the native Linux CPU Incus/ClusterIP/C++ and native
+Linux GPU direct-nvkind/CUDA/browser lanes each report `8/8` and prove the caps on live node containers.
 
 ## See Also
 

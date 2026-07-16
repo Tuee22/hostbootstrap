@@ -47,10 +47,14 @@ The direct `linux-gpu` path is also represented by the same core surfaces, not a
 Its two-frame demo chain runs the metal resource preflight plus `Ensure.Docker`/`Ensure.Cuda`, builds the
 CUDA project image, and hands off with `--gpus=all`. In the child context, core selects
 `NvkindDriver`, creates the explicit control-plane + GPU-worker topology, splits and applies the one
-cluster envelope across both node containers, installs NVIDIA device-plugin `0.19.3`, and gates on a
-positive allocatable `nvidia.com/gpu` before the project deploys its GPU-requesting daemon pod. These
-surfaces are unit/static-validated at 359 core tests and 87 demo tests; Phase 3.7 and Phase 5.5 remain
-Active until pristine and warm real-Linux-GPU runs close their hardware gates.
+cluster envelope across both node containers, probes allocatable GPU before any Helm or `kubectl`
+mutation, installs NVIDIA device-plugin `0.19.3` only when that probe is not already positive, and gates
+on positive `nvidia.com/gpu` before the project deploys its GPU-requesting daemon pod. These surfaces are
+unit/static-validated at 364 core tests and 87 demo tests. Phase 3.7 closed on 2026-07-15: a
+named Ubuntu 24.04 WSL2 guest classified `linux-gpu` on an RTX 3090 Windows machine installed and verified
+the eight-step runtime plan, then immediately exited 0 with `ensure cuda: present (no-op)`. That WSL2 guest
+was not native Linux. Phase 5.5 remains `Active` until the native Linux CPU Incus/ClusterIP/C++ and native
+Linux GPU direct-nvkind/CUDA/browser lanes each report `8/8`.
 
 The Windows surface splits by responsibility: the `windows-cpu`/`windows-gpu` substrates and
 `Ensure.CudaWin` are implemented and validated on a real Windows GPU host, and the
@@ -95,7 +99,7 @@ on; the canonical inventory is tracked in
 | `HostBootstrap.Wsl2` | WSL2 VM lifecycle argv builders for the Windows pristine demo distro (`import`, `wsl -d <distro> --`, `terminate`, `shutdown`, guarded `unregister`) plus the `classifyWsl2Readiness` host-reboot classifier, invoked by the deploy-VM step kind. The Windows VM-provider peer of `HostBootstrap.Lima` / Incus. See [wsl2](../engineering/wsl2.md). |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/provider VM/`InContainer`) by invoking the binary again there. The `[Step]` interpreter lifts `pb project up` across each frame boundary through this seam. The pure argv fold is unit-tested. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over the harness-built `Seams` (`assertSeams`) wired from the project's `TestSuite` (case matrix + assertions). It **drives the real `project up`**: per config variant it **generates** the run's `<project>.dhall` functionally (via the project's own `psTestConfig`/`projectConfigForRole`, never shelling the CLI), runs `project up` over the project's own chain, runs the case assertions in the appropriate frame (reusing the self-reference lift, with `EXPECTED_MESSAGE` parameterizing the polymorphic assertion), and tears down with `project destroy` through `finally`. A suite may declare more than one variant; each is stood up and torn down in turn. It owns no second cluster-bring-up path; two fail-fast preconditions (refuse if the sibling `siblingProjectConfigPath` config exists or a production cluster is running) and a self-created-only delete-guard protect production. See [harness_workflow](harness_workflow.md). |
-| `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. No per-project verbs. |
+| `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. `project down|destroy` invokes core Kind cleanup only when the current frame owns `deploy-kind`; nested VM/project-container clusters remain with the project teardown hook, while attempted cleanup failures aggregate. No per-project verbs. |
 | `HostBootstrap.CLI` | The generic `ProjectSpec cfg tcfg`, `runHostBootstrapCLI`, and `runBareHostBootstrapCLI`; the entrypoint validates a project's `chain`, test suite, code-check, service registry, service selector, and artifact delta before merging them with `coreCommands`. The spec carries the project-owned config seams `psInit :: InitArgs -> cfg` (the **only** default-bearing function — core ships no defaults), `psTestInit :: InitArgs -> tcfg`, `psTestConfig :: tcfg -> IO [(Text, cfg)]`, and `psServiceVariant :: cfg -> Either String String`. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |
 

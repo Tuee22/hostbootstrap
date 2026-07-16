@@ -249,6 +249,18 @@ tests =
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
                 readIORef teardownCalls >>= (@?= 0)
+        , testCase "project down skips host kind cleanup when deploy-kind belongs to no current-frame step" $
+            withProjectConfig "cli-project-down-nested" $ do
+                teardownCalls <- newIORef (0 :: Int)
+                let spec =
+                        withTeardown
+                            (\_ _ -> writeIORef teardownCalls 1)
+                            (withChain sampleChain (specWith passingSuite (pure ()) []))
+                result <-
+                    try (withArgs ["project", "down"] (runHostBootstrapCLI "cli-project-down-nested" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                readIORef teardownCalls >>= (@?= 1)
         , testCase "project up fails fast without a sibling context" $ do
             result <-
                 try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-nocfg" (withChain sampleChain (specWith passingSuite (pure ()) [])))) ::

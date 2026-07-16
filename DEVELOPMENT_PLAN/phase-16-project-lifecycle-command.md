@@ -90,9 +90,9 @@ that skips the Incus VM.
   makes rollout wait for the built worker and live WebSocket; `Recreate` prevents peer overlap. The GPU workload requests one
   `nvidia.com/gpu`.
 
-Current validation (2026-07-12): `cabal build all --ghc-options=-Werror` and `cabal test all` pass from
-`core/` (359 tests); the demo `-Werror` build and test run pass with 87 demo tests plus the embedded
-359-core suite. Remaining work is only real execution: prove the host daemon connects through the
+Current validation (2026-07-15): `cabal build all --ghc-options=-Werror` and `cabal test all` pass from
+`core/` (364 tests); the demo `-Werror` build and test run pass with 87 demo tests plus the embedded
+364-core suite. Remaining work is only real execution: prove the host daemon connects through the
 local-only NodePort, prove the native Linux CPU/GPU daemon Deployments connect through `ClusterIP`, and run
 the implemented browser Add assertion as part of the four-case/two-variant `8/8` gate. No live `8/8`
 result is recorded yet.
@@ -457,7 +457,7 @@ streams, so stale or unrelated processes are never killed. The Linux CPU/GPU
 `deploy-accelerator-daemon` step applies the dynamic daemon ConfigMap, deploys and rollout-waits the daemon
 workload dialing the distinct accelerator `ClusterIP`, and requests one GPU on the GPU lane. Config hashes
 roll subPath-mounted pods. The Windows worker path resolves the generated `.exe`, and build-#3 failures
-stream their captured output. Current static validation is 359 core + 87 demo tests.
+stream their captured output. Current static validation is 364 core + 87 demo tests.
 
 Open only for real-run closure (§ C): execute the host-daemon lifecycle through the local-only NodePort,
 execute the native Linux CPU/GPU in-cluster deployments, and run the implemented browser Add assertion in

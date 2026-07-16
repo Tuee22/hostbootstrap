@@ -195,8 +195,10 @@ select `NvkindDriver`, run the official nvkind volume-mount NVIDIA-runtime smoke
 with `nvkind cluster create --name=<cluster>` plus `nvkind-in-cluster.yaml`. That template keeps the
 public demo mappings on a control-plane and gives a worker the nvkind device-injection mount. The one
 declared cluster envelope is divided across both node containers. Bring-up then installs the pinned
-NVIDIA device-plugin chart, waits for its pods, and refuses to proceed until a node advertises a positive
-allocatable `nvidia.com/gpu`. The CUDA daemon Deployment requests `nvidia.com/gpu: 1`.
+NVIDIA device-plugin chart only after an initial allocatable probe finds no positive GPU. A cluster with
+positive allocation returns before any Helm or `kubectl` mutation; otherwise bring-up waits for the
+plugin pods and refuses to proceed until a node advertises positive allocatable `nvidia.com/gpu`. The CUDA
+daemon Deployment requests `nvidia.com/gpu: 1`.
 
 The Phase 15 context primitive is also implemented: `deriveLinuxGpuContainerContext`
 represents the host-backed project container while the normal VM-backed container context still requires a
@@ -247,17 +249,23 @@ Implemented browser e2e specifications:
 
 ## Current Status
 
-The implementation is statically green at 359 core tests and 87 demo tests under `-Werror`. It includes
+The implementation is statically green at 364 core tests and 87 demo tests under `-Werror` (the demo
+workspace also runs the embedded 364-test core suite). It includes
 config-selected `service run` with real `Web`/`Accelerator` Dhall payloads; separate linked listeners;
 dynamic rollout-hashed ConfigMaps; persistent workers; strict Float32 semantics; checked CUDA failures;
 direct Linux GPU `nvkind`; in-cluster Linux CPU/GPU daemon manifests; and serialized host-daemon lifecycle
 with absolute PID identity, symmetric PID/owner witnesses, graceful shutdown, force fallback, ambiguity
 preservation, and a bounded 30-minute pristine-install/build/connect readiness gate.
 
-Historical Apple Metal and Windows CudaWin host-tool smokes passed on 2026-07-10. The owning phases remain
-`Active` because static evidence cannot replace the unavailable live closure matrix: a real Linux GPU
-`ensure cuda` no-op, native Linux CPU/GPU daemon connectivity and `nvkind` execution, Apple host-daemon
-lifecycle, and final per-substrate browser/harness runs. No live `8/8` result is recorded yet.
+Historical Apple Metal and Windows CudaWin host-tool smokes passed on 2026-07-10. Phase 3's separate
+`ensure cuda` gate closed on 2026-07-15 in a named Ubuntu 24.04 WSL2 `linux-gpu` guest on the RTX 3090
+Windows machine: the first run installed and verified its eight-step plan, and the immediate second run
+exited 0 with `ensure cuda: present (no-op)`. That WSL2 result is not a native Linux lifecycle run. Phases
+5, 13, 15, 16, and 18 remain `Active`. Phase 5 specifically still requires a native Linux CPU
+Incus/ClusterIP/C++ lane at `8/8` and a native Linux GPU direct-nvkind/CUDA/browser lane at `8/8`; WSL2
+does not satisfy either native gate. Apple host-daemon lifecycle, the durable Windows host-daemon lane,
+and the remaining per-substrate browser/harness runs stay in their owning phases. No live `8/8` result is
+recorded yet.
 
 ## See Also
 

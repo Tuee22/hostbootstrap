@@ -72,6 +72,20 @@ in-cluster daemons render a dedicated `ClusterIP`, while host-resident daemons r
 port from being published on in-cluster daemon lanes. Phase 5 remains `Active` only for the live daemon
 integration gates below.
 
+**Static hardening completed 2026-07-15.** The NVIDIA device-plugin reconciler now performs the
+allocatable-GPU probe before any Helm or `kubectl` mutation: an already-positive
+`nvidia.com/gpu` allocation returns as a true no-op, while an absent allocation takes the pinned
+install/readiness path and then requires positive capacity. Cluster `down` / `delete` now attempt every
+intended Kind and derived-path cleanup, preserve `.data`, aggregate all failures, and propagate the
+aggregate after cleanup instead of reporting false success. Recovery from a listed-but-unhealthy cluster
+now requires successful Kind deletion before recreation, so an unresolved or non-zero delete cannot be
+followed by a misleading create attempt. At the `project down|destroy` command layer, core Kind cleanup
+runs only when the current frame owns the chain's `deploy-kind` step. A root frame does not try to resolve
+Kind for a cluster nested in a VM or project container; that cluster remains owned by the project's
+teardown hook. When local core cleanup is attempted, its failures still aggregate and propagate. Focused
+`LifecycleSpec` / `CLISpec` regressions cover both device-plugin branches, failure aggregation, and
+frame-aware teardown ownership.
+
 ## Phase Objective
 
 Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
@@ -93,29 +107,40 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
   smoke before cluster creation, uses the CUDA base image and a `--gpus=all` project-container handoff,
   creates the control-plane + `nvidia.com/gpu.present=true` GPU-worker topology, and refuses to continue
   until `nvidia.com/gpu` is allocatable. Device-plugin `0.19.3` installation is idempotent: an already
-  positive allocation is a no-op; otherwise Helm installs/upgrades the chart and bring-up waits for both
-  plugin pods and positive allocatable capacity.
+  positive allocation is probed before any Helm or `kubectl` mutation and is a true no-op; otherwise Helm
+  installs/upgrades the chart and bring-up waits for both plugin pods and positive allocatable capacity.
 - **Landed (static):** the single cluster slice is divided across both nvkind node containers rather than
   applied in full to each node, preserving the one-budget/one-cordon contract.
 - **Landed (static):** the direct Linux GPU chain performs the metal preflight plus `ensure docker` and
   `ensure cuda`, skips Incus in its harness/safety/teardown paths, and deploys the CUDA daemon pod with a
   `nvidia.com/gpu: 1` limit.
-- **Remaining (real-run-gated):** exercise the Linux GPU direct `nvkind` path through the project-container
-  handoff and prove the CUDA daemon pod builds/runs its worker.
-- **Remaining (real-run-gated):** exercise Linux CPU daemon connectivity over the dedicated `ClusterIP`.
+- **Landed (static):** cluster `down` / `delete` attempt all intended Kind and derived-path cleanup,
+  aggregate failures, propagate the aggregate, and never remove `.data`.
+- **Landed (static):** `project down|destroy` invokes core Kind cleanup only when the current frame owns a
+  `deploy-kind` step. Nested VM/project-container clusters skip expected host-side Kind lookup and remain
+  owned by the project teardown hook; an attempted local cleanup still fails closed.
+- **Landed (static):** listed-but-unhealthy cluster recovery requires the Kind delete step to succeed
+  before recreation; unresolved or non-zero deletion fails closed.
+- **Remaining (real-run-gated):** on a **native Linux CPU** host, run the Incus-backed lane through
+  in-cluster daemon `ClusterIP` connectivity and the C++ worker; the four-case/two-variant matrix must
+  report `8/8`.
+- **Remaining (real-run-gated):** on a **native Linux GPU** host, run the direct `nvkind` lane through the
+  CUDA daemon/worker and browser Add assertion; the four-case/two-variant matrix must report `8/8`.
 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
 
-Current static validation (2026-07-12): `cabal build all --ghc-options=-Werror` and `cabal test all
---ghc-options=-Werror` pass from `core/` with 359 tests; the demo `-Werror` build and test run pass with
-87 demo tests plus the embedded 359 core tests. Coverage includes fail-closed placement-specific cluster
-configs, service/NodePort separation, official NVIDIA runtime probing, pinned/idempotent device-plugin
-installation and allocatable-GPU classification, the worker label, two-node cordon splitting, direct-chain
-CUDA image/`--gpus=all` handoff, daemon GPU requests, and the implemented browser Add assertion. The live
-native Linux CPU/GPU daemon and full browser e2e gates remain open. With four cases across two variants,
-the current full harness must report `8/8`; the latest completed live gate remains the historical
-pre-accelerator `6/6` result.
+Current static validation (2026-07-15): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` with 364 tests; the demo `-Werror` build and test run pass with
+87 demo tests plus the embedded 364 core tests. Coverage includes fail-closed placement-specific cluster
+configs, service/NodePort separation, official NVIDIA runtime probing, pre-mutation device-plugin
+idempotence, install/readiness/allocatable classification, aggregate teardown failure propagation with
+`.data` preservation, frame-aware command-level Kind ownership, fail-closed unhealthy-cluster deletion
+before recreation, the worker label, two-node cordon splitting, direct-chain CUDA
+image/`--gpus=all` handoff, daemon GPU requests, and the implemented browser Add assertion. The native
+Linux CPU Incus/ClusterIP/C++ and native Linux GPU direct-nvkind/CUDA/browser gates remain open. Each
+four-case/two-variant lane must report `8/8`; the latest completed live gate remains the historical
+pre-accelerator `6/6` result. The Phase 3 closure remains its historical 359-test snapshot.
 
 **Previously closed 2026-07-05 — cross-substrate cluster readiness + idempotency:**
 
@@ -127,7 +152,9 @@ pre-accelerator `6/6` result.
 - **Health-check-and-recreate — landed.** `clusterCreate` no longer trusts `kind get clusters`: a listed
   cluster is health-probed by `ensureCluster` → `clusterHealthy` (export kubeconfig, then
   `kubectl get nodes`; the pure classifier `clusterHealthyFromProbe` is unit-tested in `LifecycleSpec`), and
-  a listed-but-unhealthy cluster (stopped containers → connection refused) is `kind delete`-d and recreated.
+  a listed-but-unhealthy cluster (stopped containers → connection refused) is deleted and recreated. The
+  2026-07-15 hardening makes that delete fail-closed with `requireStep`: recreation does not proceed when
+  Kind is unresolved or deletion exits non-zero.
 - **Reconcile the down/up contract for the VM-nested cluster — landed.** The health-check-and-recreate above
   **is** the mechanism: after a `project down` that stopped the VM (leaving the in-VM kind cluster stopped),
   the next `project up`'s in-VM `clusterCreate` sees the cluster listed-but-unhealthy and recreates it. The
@@ -152,9 +179,11 @@ Specifically:
   `project` lifecycle interpreter performs over the chain (§ Y). The pure `resolvePlan`, `teardown`,
   `statusReport`, and cordon cores remain the implementation those steps call; they are not rewritten.
 - Split bring-down into two distinct capabilities: `project down` stops provider VMs but deletes kind
-  clusters while preserving durable state, and `project destroy` stops then deletes everything spun up.
-  The old `cluster down` collapsed lifecycle framing; the current cluster frame uses delete-on-down
-  because kind has no reliable stop/restart contract.
+  clusters at the frame that owns `deploy-kind`, while preserving durable state; `project destroy` stops
+  then deletes everything spun up. A root frame skips core Kind lookup when the cluster belongs to a
+  nested VM/project-container frame and delegates that nested cleanup to the project teardown hook. The
+  old `cluster down` collapsed lifecycle framing; an owning cluster frame uses delete-on-down because kind
+  has no reliable stop/restart contract.
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`; the
   durable host `.data` path is never placed in any removal set (§ O).
 - The `project` lifecycle command, its step interpreters, and the stop-without-delete capability **ship**,
@@ -282,7 +311,12 @@ kube tools are baked into the base image, not host tools — § L).
 
 - `cluster up` uses `requireStep` for `kind create cluster` and `helm upgrade --install`: a non-zero exit
   or an unresolved tool `die`s, so a broken deploy is loud and a lifting parent process sees a non-zero
-  exit. `reportStep` is retained only for best-effort teardown.
+  exit. Listed-but-unhealthy cluster recovery also requires successful Kind deletion before recreate.
+  Teardown attempts every intended Kind and derived-path cleanup, aggregates failures, and reports the
+  aggregate after all cleanup has been attempted.
+- `project down|destroy` runs that core Kind teardown only in the current frame that owns the chain's
+  `deploy-kind` step. Nested clusters are left to the project teardown hook, so expected host-side absence
+  of container-only Kind is not misreported as a cleanup failure.
 - The lifecycle is invoked in the project container via the self-reference lift (`HostBootstrap.Lift`,
   phase-11), so `helm`/`kind` resolve on the container `$PATH` rather than the host.
 
@@ -294,8 +328,10 @@ kube tools are baked into the base image, not host tools — § L).
 #### Remaining Work
 
 None. The fail-closed `requireStep` discipline now hangs off `deploy-kind` / `deploy-chart` under
-`project up`; the in-container path and best-effort teardown were exercised by the demo's completed real
-runs.
+`project up`; the in-container path was exercised by the demo's completed real runs. The 2026-07-15 static
+hardening makes teardown attempt every independent cleanup and propagate aggregate failures.
+The command-level ownership check invokes that core cleanup only in a frame that owns `deploy-kind`;
+nested cluster teardown remains project-owned.
 
 ### Sprint 5.5: Accelerator cluster exposure and Linux GPU nvkind [Active]
 
@@ -338,19 +374,22 @@ Add the cluster/exposure substrate needed by the accelerator daemon demo, especi
 #### Remaining Work
 
 Static lifecycle work is complete: driver/config selection, official NVIDIA runtime probing, two-node
-cordon splitting, pinned/idempotent device-plugin install/readiness/allocatable gates, labelled GPU worker,
-direct CUDA image and `--gpus=all` handoff, and placement-specific service exposure are covered by the
-359-core/87-demo test gates above.
+cordon splitting, pre-mutation device-plugin no-op detection, pinned install/readiness/allocatable gates,
+aggregate teardown failure propagation with `.data` preservation, fail-closed unhealthy-cluster deletion
+before recreation, frame-aware command-level Kind ownership, labelled GPU worker, direct CUDA image and
+`--gpus=all` handoff, and placement-specific service exposure are covered by the
+364-core/87-demo test gates above.
 The web chart exposes a distinct local-only `127.0.0.1:30081` accelerator NodePort only for host-daemon
 lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on the configured port (default
 8081).
 
-Open (real-run-gated, § C): live Linux CPU daemon-pod connectivity by `ClusterIP`, the Linux GPU direct
-`nvkind` path with its CUDA-base and one-GPU daemon pod, and execution of the implemented browser e2e Add
-workflow. The Windows GPU host-daemon-through-the-local-only-NodePort path is exercised by the decoupled
-Windows/WSL2 durable gate (Phase 13). The full current matrix is four cases × two variants and therefore
-must close at `8/8`; no live `8/8` result is recorded yet, so the historical `6/6` remains evidence only for
-the pre-accelerator matrix. No implementation or static-test work remains in this phase.
+Open (real-run-gated, § C): a native Linux CPU Incus lane proving daemon-pod connectivity by `ClusterIP`
+and the C++ worker at `8/8`, and a native Linux GPU direct-`nvkind` lane proving the CUDA-base,
+one-GPU daemon pod, CUDA worker, and browser e2e Add workflow at `8/8`. The Windows GPU
+host-daemon-through-the-local-only-NodePort path is exercised by the decoupled Windows/WSL2 durable gate
+(Phase 13). No WSL2 result is represented as native Linux. No live `8/8` result is recorded yet, so the
+historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
+work remains in this phase.
 
 ## Documentation Requirements
 

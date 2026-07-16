@@ -27,6 +27,8 @@ module HostBootstrap.Cluster.Lifecycle (
     nvidiaDevicePluginReadyArgs,
     nvidiaAllocatableProbeArgs,
     nvidiaAllocatableReady,
+    NvidiaDevicePluginOps (..),
+    ensureNvidiaDevicePluginWith,
     clusterConfigPresence,
     clusterNodeNames,
     clusterNodeCordonArgs,
@@ -42,7 +44,10 @@ module HostBootstrap.Cluster.Lifecycle (
 )
 where
 
+import Control.Exception (SomeException, displayException)
+import Control.Exception.Safe (try)
 import Control.Monad (forM_, unless, when)
+import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (
@@ -279,7 +284,7 @@ ensureCluster cfg plan = do
                                 ++ " is listed but unhealthy; deleting and recreating"
                             )
                         recreated <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
-                        reportStep "kind delete cluster (unhealthy)" recreated
+                        requireStep "kind delete cluster (unhealthy)" recreated
                         createCluster cfg plan
             | otherwise -> createCluster cfg plan
         Right (code, _, err) ->
@@ -437,19 +442,57 @@ nvidiaAllocatableReady (Right (ExitSuccess, out, _)) = any positiveQuantity (lin
         _ -> False
 nvidiaAllocatableReady _ = False
 
+{- | Injectable operations for the NVIDIA device-plugin reconciliation. Keeping
+the control flow separate from the concrete Helm and kubectl calls makes the
+idempotence contract directly testable: allocatable GPU capacity is probed
+first, and a positive result must bypass every mutating/readiness operation.
+-}
+data NvidiaDevicePluginOps m = NvidiaDevicePluginOps
+    { ndpProbeAllocatable :: m Bool
+    , ndpReconcilePlugin :: m ()
+    , ndpWaitPluginReady :: m ()
+    , ndpRequireAllocatable :: m ()
+    }
+
+{- | Reconcile the NVIDIA device plugin only when the read-only pre-probe does
+not already find positive allocatable GPU capacity. The post-reconcile
+allocation requirement is deliberately a distinct final operation: a Ready
+DaemonSet is not sufficient unless a node actually advertises
+@nvidia.com/gpu@.
+-}
+ensureNvidiaDevicePluginWith :: (Monad m) => NvidiaDevicePluginOps m -> m ()
+ensureNvidiaDevicePluginWith ops = do
+    alreadyAllocatable <- ndpProbeAllocatable ops
+    unless alreadyAllocatable $ do
+        ndpReconcilePlugin ops
+        ndpWaitPluginReady ops
+        ndpRequireAllocatable ops
+
 ensureNvidiaDevicePlugin :: HostConfig -> ClusterPlan -> IO ()
 ensureNvidiaDevicePlugin cfg plan =
-    when (clusterDriver plan == NvkindDriver) $ do
-        repo <- runTool cfg Helm ["repo", "add", "nvdp", "https://nvidia.github.io/k8s-device-plugin", "--force-update"]
-        requireStep "NVIDIA device-plugin helm repository" repo
-        installed <- runTool cfg Helm nvidiaDevicePluginHelmArgs
-        requireStep "NVIDIA device-plugin install" installed
-        ready <- runTool cfg Kubectl nvidiaDevicePluginReadyArgs
-        requireStep "NVIDIA device-plugin DaemonSet rollout" ready
-        outcome <- pollUntilReady nodePoll "NVIDIA GPU allocatable" probe cfg
-        case outcome of
-            Right () -> putStrLn "cluster up: NVIDIA device plugin Ready; nvidia.com/gpu is allocatable"
-            Left _ -> die "cluster up: NVIDIA device plugin became Ready but no node advertised nvidia.com/gpu"
+    when (clusterDriver plan == NvkindDriver) $
+        ensureNvidiaDevicePluginWith
+            NvidiaDevicePluginOps
+                { ndpProbeAllocatable = do
+                    result <- runTool cfg Kubectl nvidiaAllocatableProbeArgs
+                    let positive = nvidiaAllocatableReady result
+                    when positive $
+                        putStrLn "cluster up: nvidia.com/gpu is already allocatable; NVIDIA device plugin is unchanged"
+                    pure positive
+                , ndpReconcilePlugin = do
+                    repo <- runTool cfg Helm ["repo", "add", "nvdp", "https://nvidia.github.io/k8s-device-plugin", "--force-update"]
+                    requireStep "NVIDIA device-plugin helm repository" repo
+                    installed <- runTool cfg Helm nvidiaDevicePluginHelmArgs
+                    requireStep "NVIDIA device-plugin install" installed
+                , ndpWaitPluginReady = do
+                    ready <- runTool cfg Kubectl nvidiaDevicePluginReadyArgs
+                    requireStep "NVIDIA device-plugin DaemonSet rollout" ready
+                , ndpRequireAllocatable = do
+                    outcome <- pollUntilReady nodePoll "NVIDIA GPU allocatable" probe cfg
+                    case outcome of
+                        Right () -> putStrLn "cluster up: NVIDIA device plugin Ready; nvidia.com/gpu is allocatable"
+                        Left _ -> die "cluster up: NVIDIA device plugin became Ready but no node advertised nvidia.com/gpu"
+                }
   where
     probe c = classify <$> runTool c Kubectl nvidiaAllocatableProbeArgs
     classify result
@@ -548,21 +591,36 @@ applyLinuxCordon cfg plan resources
 
 -- | Tear the cluster down, preserving host @.data@.
 clusterDown :: HostConfig -> ClusterPlan -> IO ()
-clusterDown cfg plan = do
-    let (toRemove, _) = teardown Down plan
-    deleted <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
-    reportStep "kind delete cluster" deleted
-    removeAll toRemove
-    putStrLn ("cluster down: preserved " ++ dataPath plan)
+clusterDown = clusterTeardown Down
 
 -- | Thoroughly delete derived cluster state, still never deleting host @.data@.
 clusterDelete :: HostConfig -> ClusterPlan -> IO ()
-clusterDelete cfg plan = do
-    let (toRemove, _) = teardown Delete plan
+clusterDelete = clusterTeardown Delete
+
+{- | Run every independent cluster-cleanup action before reporting failure.
+
+Best-effort teardown means that a failed @kind delete@ cannot prevent derived
+paths from being considered, and one failed path removal cannot prevent the
+remaining removals. It does not mean success: after all actions have been
+attempted, their synchronous failures are raised together so the project
+lifecycle and test harness cannot report a green teardown with leaked state.
+-}
+clusterTeardown :: TeardownKind -> HostConfig -> ClusterPlan -> IO ()
+clusterTeardown teardownKind cfg plan = do
+    let (toRemove, _) = teardown teardownKind plan
+        operation = case teardownKind of
+            Down -> "cluster down"
+            Delete -> "cluster delete"
     deleted <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
-    reportStep "kind delete cluster" deleted
-    removeAll toRemove
-    putStrLn ("cluster delete: preserved " ++ dataPath plan)
+    deleteFailure <- reportStep "kind delete cluster" deleted
+    removalFailures <- removeAll toRemove
+    putStrLn (operation ++ ": preserved " ++ dataPath plan)
+    let failures = maybeToList deleteFailure ++ removalFailures
+    unless (null failures) $
+        ioError . userError $
+            operation
+                ++ " attempted every cleanup step but failed:\n"
+                ++ unlines (map ("  - " ++) failures)
 
 {- | Report the cluster status (read-only): whether the kind cluster is live, and
 the preserved @.data@ / derived paths. Never mutates state.
@@ -575,18 +633,29 @@ clusterStatus cfg plan = do
             _ -> False
     putStr (statusReport plan live)
 
-removeAll :: [FilePath] -> IO ()
-removeAll paths = forM_ paths $ \p -> do
-    exists <- doesDirectoryExist p
-    if exists
-        then removePathForcibly p >> putStrLn ("removed " ++ p)
-        else pure ()
+removeAll :: [FilePath] -> IO [String]
+removeAll paths = catMaybes <$> mapM removeOne paths
+  where
+    removeOne path = do
+        outcome <- try $ do
+            exists <- doesDirectoryExist path
+            when exists $ removePathForcibly path >> putStrLn ("removed " ++ path)
+        pure $ case (outcome :: Either SomeException ()) of
+            Right () -> Nothing
+            Left err -> Just ("remove " ++ path ++ ": " ++ displayException err)
 
-reportStep :: String -> Either String (ExitCode, String, String) -> IO ()
-reportStep label result = case result of
-    Right (ExitSuccess, _, _) -> putStrLn (label ++ ": ok")
-    Right (ExitFailure n, _, err) -> putStrLn (label ++ ": exit " ++ show n ++ " " ++ err)
-    Left err -> putStrLn (label ++ ": " ++ err)
+reportStep :: String -> Either String (ExitCode, String, String) -> IO (Maybe String)
+reportStep label result = do
+    let failure = case result of
+            Right (ExitSuccess, _, _) -> Nothing
+            Right (ExitFailure n, _, err) -> Just (label ++ ": exit " ++ show n ++ detail err)
+            Left err -> Just (label ++ ": " ++ err)
+        rendered = maybe (label ++ ": ok") id failure
+    putStrLn rendered
+    pure failure
+  where
+    detail "" = ""
+    detail err = " " ++ err
 
 {- | Like 'reportStep' but fail-closed: a non-zero exit or an unresolved tool
 aborts (the @cluster up@ helm/kind steps must match the fail-closed cordon, so

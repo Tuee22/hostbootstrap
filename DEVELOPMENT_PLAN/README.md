@@ -42,8 +42,9 @@ the Python bootstrapper is the metal-frame instance.
 
 The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 13, 14, 15, 16, 17, 18)
 landed and is code-check-validated; its 2026-07-02 in-place-delivery and 2026-07-05 cross-substrate
-reopenings closed successfully. The later accelerator reopening makes phases **3, 5, 13, 15, 16, and 18
-`Active`** until their live substrate gates run; phases 14 and 17 remain `Done`. The command surface is
+reopenings closed successfully. Phase 3's later accelerator reopening closed on 2026-07-15; phases **5,
+13, 15, 16, and 18 remain `Active`** until their live substrate gates run, while phases 14 and 17 remain
+`Done`. The command surface is
 **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
@@ -122,8 +123,9 @@ superseded surfaces moved to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md): the 2026-07-12 static gate reports 359 core tests and 87
-demo tests (plus the demo run's embedded 359-test core suite).
+[system-components.md](system-components.md): the 2026-07-15 Phase 5 gate reports 364 core tests, and the
+demo workspace reports 87 demo tests plus its embedded 364-test core suite. Phase 3's closure retains its
+historical 359-test evidence.
 
 Operator-scale activities such as publishing multi-arch base tags and pushing the multi-GB project image
 are release/demo operations, not open phase work; the former Harbor deployment is retired. See
@@ -162,9 +164,9 @@ truncated source-staging `tar`; a docker-poll shell-quoting break through the Wi
 path, moved to Haskell; and a host-reserve wrongly applied to the in-VM slice, split into a metal-only
 preflight).
 
-**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phase 2 is closed. Phase 3's
-Apple/Windows build-stack slice is closed, but Phase 3 remains `Active` for Sprint 3.7; phases **5, 13, 15,
-16, and 18 are also `Active`**. Implementation and static validation are complete across all six. The UI
+**Reopened 2026-07-09 — substrate-specific accelerator daemon demo.** Phases 2 and 3 are closed; phases
+**5, 13, 15, 16, and 18 remain `Active`**. Implementation and static validation are complete across the
+five active phases. The UI
 accepts two `Float` values, dispatches an asynchronous CBOR WebSocket request to a separate project-binary
 daemon, and renders the result plus backend/artifact metadata. The daemon is the same project binary in
 every placement: Apple Silicon and Windows GPU build and run it host-native; Linux CPU/GPU deploy it
@@ -172,22 +174,31 @@ in-cluster, with Linux GPU skipping Incus for the direct `nvkind` path. No fake 
 satisfy the browser assertion. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
 
-Phase 3's Apple/Windows accelerator build-stack slice is closed. On 2026-07-10 an M1 Max host built the core with `cabal build all
+Phase 3 is `Done`. Its Apple/Windows accelerator build-stack slice closed first: on 2026-07-10 an M1 Max
+host built the core with `cabal build all
 --ghc-options=-Werror` and `ensure apple-metal` reported `present (no-op)`. The Windows GPU gate closed the
 same day on an RTX 3090 host: the hardened `ensure cudawin` installed the missing LLVM component, resolved
 CUDA 13.3 and Visual Studio VCTools through `vswhere`, compiled its `nvcc -ccbin` smoke artifact, and
-reported `present (no-op)`. Phase 3 is
-temporarily `Active` again (2026-07-11) for Sprint 3.7: `ensure cuda` must converge and verify the exact
+reported `present (no-op)`. Sprint 3.7 then made `ensure cuda` converge and verify the exact
 default-runtime/CDI/volume-mount device-injection contract consumed by `nvkind`, rather than accepting a
 merely registered Docker runtime. That implementation bootstraps NVIDIA's signed stable apt source/keyring,
 configures Docker with `nvidia-ctk runtime configure --runtime=docker --set-as-default --cdi.enabled`,
 enables `accept-nvidia-visible-devices-as-volume-mounts=true`, and verifies the official `/dev/null` device-
-injection smoke. The current `-Werror` static gate passes with all 359 core tests; a Linux GPU host must
-still prove the reconciler's verified no-op.
+injection smoke. Its live gate closed 2026-07-15 in a named Ubuntu 24.04 WSL2 guest classified `linux-gpu`
+on an RTX 3090 Windows machine — a WSL2 guest, not native Linux. The first run reported `ensure cuda:
+installing (8 step(s))` and then `ensure cuda: installed and verified`; the immediate second run exited 0
+with exactly `ensure cuda: present (no-op)`. The phase-close Windows static gate passed
+`cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` with all 359 core tests.
+This closes Phase 3 only; the native Linux lifecycle lanes remain open in their owning later phases.
 
 The completed static implementation includes explicit placement configs, the direct Linux GPU
 control-plane + labelled-worker topology, split cordons, exact NVIDIA runtime probing, idempotent device
-plugin readiness/allocatable gates, CUDA-base/`--gpus=all` handoff, and a one-GPU daemon request. The real
+plugin readiness/allocatable gates, CUDA-base/`--gpus=all` handoff, and a one-GPU daemon request. The
+device-plugin path probes allocatable capacity before any Helm or `kubectl` mutation, so an already-positive
+cluster is a true no-op; cluster teardown attempts every intended Kind/path cleanup and propagates aggregate
+failures while preserving `.data`. Command-level teardown invokes that core Kind cleanup only in the frame
+that owns `deploy-kind`; nested VM/project-container clusters remain owned by the project teardown hook,
+so a root host does not need to resolve container-only Kind. The real
 Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator AcceleratorServiceConfig`, and
 `withServiceConfig` dispatches `service run` without a positional variant. The web server links distinct
 configured public and private listeners (defaults 8080/8081), uses separate Service target ports, propagates either
@@ -206,9 +217,11 @@ set only after worker build plus WebSocket connection. Workers are persistent an
 The Playwright Add assertion and fail-closed harness safety (`SafetyRefusal`, exclusive config ownership,
 direct-cluster detection, guarded cleanup, teardown verification) are implemented.
 
-The current 2026-07-12 gate is fourmolu/hlint/`-Werror` clean and passes **359 core + 87 demo tests**. Only
-honest live closure remains: run the implemented four-case/two-variant matrix on the current host-daemon
-lane and the unavailable Apple Silicon / native Linux CPU / native Linux GPU hardware. The harness expects
+The Phase 3 core gate was rerun on Windows on 2026-07-15 and passes all **359 core tests** under `-Werror`.
+The current Phase 5 `-Werror` gate passes **364 core + 87 demo tests** (the demo workspace also runs the
+embedded 364-test core suite). Only honest live closure for Phases 5, 13, 15, 16, and 18 remains: run the
+implemented four-case/two-variant matrix on the current host-daemon lane and the unavailable Apple
+Silicon, native Linux CPU, and native Linux GPU hardware. The harness expects
 `8/8`; no live `8/8` is recorded, and the latest completed live result remains the historical
 pre-accelerator `6/6` gate.
 
@@ -219,7 +232,7 @@ pre-accelerator `6/6` gate.
 | 0 | [Documentation and governance](phase-0-documentation-and-governance.md) | Done |
 | 1 | [hostbootstrap-core scaffolding](phase-1-hostbootstrap-core-scaffolding.md) | Done |
 | 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done |
-| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Active |
+| 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done |
 | 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active |
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done |

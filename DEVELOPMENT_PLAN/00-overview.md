@@ -50,9 +50,10 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 (§ X); and long-running roles run through config-selected `service run` with no positional variant (§ AA).
 The underlying correction landed and is code-check-validated; its 2026-07-02 in-place-delivery and
 2026-07-05 cross-substrate reliability reopenings closed successfully. The later accelerator reopening
-changes the current status: phases **3, 5, 13, 15, 16, and 18 are `Active`**, while phases 14 and 17 remain
-`Done`. All current accelerator implementation and static-test work is complete (359 core + 87 demo tests),
-but the six active phases cannot close until their honest native/Apple live gates run. The historical full
+changes the current status: Phase 3 is `Done`, while phases **5, 13, 15, 16, and 18 are `Active`** and
+phases 14 and 17 remain `Done`. All current accelerator implementation and static-test work is complete
+(364 core + 87 demo tests), but the five active phases cannot close until their honest native/Apple live
+gates run. The historical full
 demo lifecycle ran end-to-end on native Incus/Linux and a 16 GiB Apple-Silicon host.
 The last completed pre-accelerator `test run all` gates report **`6/6 passed`** (three cases x two message
 variants; phase 20 added the second message variant). The current harness is four cases across two variants,
@@ -80,8 +81,9 @@ the later accelerator reopening makes 5, 13, and 16 `Active` again. See the [REA
 note and each phase's `## Phase Status` / `## Remaining Work`.
 
 **Substrate-specific accelerator daemon reopening (2026-07-09) — `Active`.** Phase 2's host-tool slice is
-closed, and Phase 3's Apple/Windows host-build-stack slice closed 2026-07-10. Phases **3, 5, 13, 15, 16,
-and 18** remain active only for live closure. The implementation now runs the same project binary as either
+closed, Phase 3's Apple/Windows host-build-stack slice closed 2026-07-10, and its WSL2 Linux-GPU runtime
+gate closed 2026-07-15. Phases **5, 13, 15, 16, and 18** remain active only for live closure. The
+implementation now runs the same project binary as either
 the Web or Accelerator service selected by the real Dhall `ServiceType`; `service run` has no positional
 variant. The daemon JIT-builds and reuses a substrate-specific worker, connects to the web service over
 CBOR WebSocket, and performs `Float32` addition. Apple Silicon and Windows GPU use host-native daemon
@@ -95,9 +97,10 @@ Recreate rollout and connection-owned readiness; host-daemon ownership/absolute 
 pristine-install readiness bound; exact-byte harness ownership; direct-cluster and teardown safety. A
 guarded historical worker gate built and ran CUDA on an RTX 3090
 (`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
-The current `-Werror` evidence is **359 core + 87 demo tests**. Full closure still requires the live
+The current `-Werror` evidence is **364 core + 87 demo tests**. Full closure still requires the live
 four-case/two-variant runs on the native substrate hardware: the current host-daemon durable lifecycle and
-the unavailable Apple Silicon / Linux CPU / Linux GPU lanes. The matrix expects `8/8`; no live `8/8`
+the unavailable Apple Silicon, native Linux CPU, and native Linux GPU lanes. The matrix expects `8/8`; no
+live `8/8`
 result is recorded, and the latest completed live result remains the historical pre-accelerator `6/6`.
 
 The **generic-project-model** work (phase 19, § BB) is **implemented and validated** (`Done`) and builds
@@ -159,16 +162,20 @@ steps. A wrong-host invocation fails fast with a one-line diagnostic. The implem
 docker, colima, apple-metal, lima, cuda, cudawin, homebrew, ghc, incus, and wsl2. `ensure cudawin`
 (CUDA-on-Windows headless host build, the first instance of composition pattern #7) is present on
 `windows-gpu`; `ensure tart` is retired. The provider-specific `ensure incus` / `ensure wsl2` lifecycle
-validation is owned by Phase 11. Phase 3 is `Active` only for Sprint 3.7: the Apple Metal reconciler and hardened
-`ensure-cudawin` implementation are static- and real-run-validated; Linux `ensure cuda` now bootstraps
+validation is owned by Phase 11. Phase 3 is `Done`: the Apple Metal reconciler and hardened
+`ensure-cudawin` implementation are static- and real-run-validated; Linux `ensure cuda` bootstraps
 NVIDIA's signed stable apt source/keyring, configures the Docker NVIDIA runtime as default with CDI enabled,
 enables volume-mount device injection, and verifies the exact `/dev/null` mount smoke `nvkind` consumes. The
 Apple Silicon smoke build closed 2026-07-10 on
 an M1 Max host (`ensure apple-metal: present
 (no-op)`), and the Windows GPU smoke build closed the same day on an RTX 3090 host after CUDA 13.3, LLVM,
 and the `vswhere`-resolved VCTools compiler produced the `nvcc -ccbin` smoke artifact (`ensure cudawin:
-present (no-op)`). The current `-Werror` static gate passes with all 359 core tests; Phase 3 stays `Active`
-until a Linux GPU Docker host reports `ensure cuda: present (no-op)` under the exact runtime contract.
+present (no-op)`). Sprint 3.7 closed 2026-07-15 in a named Ubuntu 24.04 WSL2 guest classified `linux-gpu`
+on an RTX 3090 Windows machine — explicitly a WSL2 guest, not native Linux. Its first run reported
+`ensure cuda: installing (8 step(s))` then `ensure cuda: installed and verified`; the immediate second run
+exited 0 with exactly `ensure cuda: present (no-op)`. The same day's Windows `-Werror` phase-close gate
+passed `cabal build all` and `cabal test all` with all 359 core tests. Native Linux accelerator lifecycle
+lanes remain open in Phases 5, 13, 15, 16, and 18.
 
 ### Phase 4 — project-local Dhall and command tree
 
@@ -196,11 +203,17 @@ explicit fail-closed config path; host-daemon, Linux CPU, and direct Linux GPU p
 a control-plane plus a worker labelled `nvidia.com/gpu.present=true`; the lifecycle divides the one cluster
 slice across both node containers, runs the same official NVIDIA runtime smoke as `ensure cuda`, and
 idempotently installs pinned device-plugin chart `0.19.3` only when no positive allocatable
-`nvidia.com/gpu` is already present. The direct chain runs the metal preflight and `ensure docker`/`ensure
-cuda`, builds from the CUDA base, hands the project container `--gpus=all`, and schedules the daemon with a
-one-GPU limit. The current static gate passes 359 core + 87 demo tests. Live native Linux CPU/GPU daemon
-connectivity and the browser e2e `8/8` gate remain open; no live `8/8` result has yet replaced the historical
-`6/6` result.
+`nvidia.com/gpu` is already present; the allocatable probe runs before any Helm or `kubectl` mutation, so
+the already-positive branch is a true no-op. Cluster `down` / `delete` attempt every intended Kind/path
+cleanup and propagate aggregate failures while preserving `.data`; listed-but-unhealthy recovery requires
+successful Kind deletion before recreation. `project down|destroy` invokes core Kind cleanup only when the
+current frame owns `deploy-kind`; nested VM/project-container clusters remain owned by the project
+teardown hook. The direct chain runs the metal preflight and `ensure docker` / `ensure cuda`, builds from
+the CUDA base, hands the project container `--gpus=all`, and schedules the daemon with a one-GPU limit.
+The current static gate passes 364 core + 87 demo tests. The native Linux CPU
+Incus/ClusterIP/C++ lane and native Linux GPU
+direct-nvkind/CUDA/browser lane must each report `8/8`; no live `8/8` result has yet replaced the
+historical `6/6` result.
 
 ### Phase 6 — base image and thin Python bootstrapper
 
@@ -308,7 +321,7 @@ It is `Active` for the accelerator worked example, with implementation and stati
 SPA/browser assertion, CBOR WebSocket dispatch, linked public/private listeners, no-fallback and
 single-flight behavior, persistent `Float32` workers, dynamic service/daemon ConfigMaps, Linux CPU/GPU
 daemon Deployments, host-native Apple/Windows daemon lifecycle, and fail-closed harness safety are all
-implemented. The current gate passes 359 core + 87 demo tests. Remaining work is only live execution of
+implemented. The current gate passes 364 core + 87 demo tests. Remaining work is only live execution of
 the implemented four-case/two-variant matrix on each substrate; no live `8/8` is recorded.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
@@ -357,8 +370,9 @@ Phase 16 owns the `project init|up|down|destroy` lifecycle command and the `Step
 A project's deploy is a pure `chain :: cfg -> [Step]` value; `project up` interprets it recursively
 (run the current frame's steps, then provision → build the pb → hand off `pb project up` into the next
 frame — the fractal bootstrap), is idempotent, and renders the pure chain under `--dry-run`. `project
-down` stops VM frames and deletes kind clusters while preserving durable state; `project destroy` deletes
-but preserves `.data`. The `Step` algebra, the
+down` deletes kind at the owning `deploy-kind` frame, leaves nested cluster cleanup to the project
+teardown hook, and stops VM frames while preserving durable state; `project destroy` deletes but preserves
+`.data`. The `Step` algebra, the
 recursive interpreter, and the `project` command are built and real-run-validated (2026-06-18). It is
 `Active` for the accelerator lifecycle extension: the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of
@@ -467,7 +481,7 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
   phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done
   Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Done (closed 2026-07-01: full Windows/WSL2 project up -> test run all 6/6 -> project destroy with the .wslconfig budget wall applied)
-  Accelerator daemon reopening: phase-2 host tools -> phase-3 host build-stack ensure -> phase-5 Linux GPU nvkind/exposure -> phase-15 daemon/direct-container context -> phase-16 daemon lifecycle hooks -> phase-18 daemon runtime -> phase-13 demo UI + integration/e2e closure -- Active
+  Accelerator daemon reopening: phase-2 host tools (Done) -> phase-3 host build-stack/runtime ensure (Done 2026-07-15) -> phase-5 Linux GPU nvkind/exposure -> phase-15 daemon/direct-container context -> phase-16 daemon lifecycle hooks -> phase-18 daemon runtime -> phase-13 demo UI + integration/e2e closure -- Active in phases 5, 13, 15, 16, and 18
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

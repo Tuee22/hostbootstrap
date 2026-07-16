@@ -24,7 +24,8 @@
   **within `project up`'s interpretation of the lift chain's `[Step]`**, one step at a time, each a
   derived fact of the step being interpreted.
 - `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
-  leaving the VM, cluster, and services up. `project down` deletes kind compute and stops VM frames;
+  leaving the VM, cluster, and services up. `project down` deletes kind compute at its owning
+  `deploy-kind` frame and uses the project teardown hook for nested clusters before stopping VM frames;
   `project destroy` deletes everything spun up. `.data` is preserved across both.
 - The build/run model is the canonical home for **host-native build mechanics**; the chain model itself
   is owned by [composition_methodology](composition_methodology.md), which this doc defers to.
@@ -140,15 +141,19 @@ the container.
 The explicit template has one control-plane node for the public web/registry mappings and one GPU
 worker with `/dev/null` mounted at `/var/run/nvidia-container-devices/all`. Cluster lifecycle repeats
 the NVIDIA smoke, creates both nodes, splits the one cluster resource slice across both node containers,
-and applies each `docker update` cordon fail-closed. It then installs the pinned NVIDIA device-plugin
-chart `0.19.3`, waits for the plugin pods, and refuses to deploy the workload until a node advertises a
-positive allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gpu: 1` and dials
-the dedicated ClusterIP Service, while the public web and registry ports remain on the control-plane.
+and applies each `docker update` cordon fail-closed. It probes allocatable GPU before any Helm or `kubectl`
+mutation: a positive allocation is a no-op; otherwise it installs pinned NVIDIA device-plugin chart
+`0.19.3`, waits for the plugin pods, and refuses to deploy the workload until a node advertises positive
+allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gpu: 1` and dials the
+dedicated ClusterIP Service, while the public web and registry ports remain on the control-plane.
 
 The runtime/install planners, topology selection, all-node cordon, plugin gate, CUDA image selection,
-GPU handoff, and daemon request are covered by the current static baseline (359 core tests and 87 demo
-tests). Phase 3.7 and Phase 5.5 remain Active pending pristine and warm validation on a real Linux GPU
-host; this static evidence is not recorded as real-host closure.
+GPU handoff, and daemon request are covered by the current static baseline (364 core tests and 87 demo
+tests). Phase 3.7's reconciler gate is closed: on 2026-07-15 a named Ubuntu 24.04 WSL2 guest classified
+`linux-gpu` on an RTX 3090 Windows machine installed the eight-step CUDA runtime plan, verified it, and
+immediately returned exit 0 with `ensure cuda: present (no-op)`. This was a WSL2 guest, not native Linux.
+Phase 5.5 remains `Active` pending the native Linux CPU Incus/ClusterIP/C++ `8/8` gate and native Linux
+GPU direct-nvkind/CUDA/browser `8/8` gate; the WSL2 reconciler evidence does not close either gate.
 
 ## Run-Models Are Selected Within `project up`
 
@@ -196,12 +201,14 @@ The lifecycle verbs are split so the persistent stack has explicit stop and dele
 | Verb | Effect | `.data` |
 |------|--------|---------|
 | `project up` | Reconcile the chain to running; leave the persistent stack up. | preserved |
-| `project down` | Delete kind clusters and stop provider VMs (e.g. `incus stop` / `limactl stop`, or `wsl --shutdown` on Windows); preserve durable state. | preserved |
+| `project down` | Delete kind at the owning `deploy-kind` frame; use the project teardown hook for nested VM/project-container clusters; stop provider VMs; preserve durable state. | preserved |
 | `project destroy` | Stop, then delete everything spun up. | preserved |
 
 `.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
-frame is still up, then stops or deletes on ascent (the VM stopped last); it is best-effort and
-idempotent, tolerating a partial stack. (This applies to the explicit `down`/`destroy` verbs; a chain
+frame is still up, then stops or deletes on ascent (the VM stopped last). Core Kind cleanup runs only when
+the current frame owns `deploy-kind`; a non-owning root frame skips host-side Kind lookup and leaves the
+nested cluster to the project teardown hook. Attempted cleanup actions all run and aggregate failures,
+tolerating a partial stack without reporting false success. (This applies to the explicit `down`/`destroy` verbs; a chain
 failure *during* `project up` now runs the same best-effort `project destroy` teardown at the ROOT frame
 (guarded `applyChain`), so it leaves no leaked VM + in-VM cluster + global `.wslconfig` cordon; only a
 hard external process kill can still leave that state — clean up such an interrupted run with
@@ -272,8 +279,11 @@ binary into `./.build/`, and execs it; the binary ensures Docker and builds the 
 `FROM` the base image, gating on `check-code`.
 
 The direct Linux GPU implementation now uses the CUDA base and the two-frame host → GPU-container chain
-described above. Its Phase-3/Phase-5 static gate is green at 359 core tests and 87 demo tests, but the
-pristine and warm real-Linux-GPU runs remain open; the development-plan phases therefore remain Active.
+described above. The current Phase-5 static gate is green at 364 core tests and 87 demo tests; Phase 3's
+historical closure snapshot remains 359 core tests. Phase 3's install/no-op contract closed on 2026-07-15
+in the Windows-hosted WSL2 `linux-gpu` guest described above. Phase 5's native Linux CPU
+Incus/ClusterIP/C++ and native Linux GPU direct-nvkind/CUDA/browser `8/8` runs remain open, so Phase 5
+remains `Active`.
 
 The recursive `project` command and the `[Step]` chain interpreter described above have run end-to-end
 on real Incus/Linux hardware. A single `project up` on that VM-backed Linux lane stands up the live persistent stack — the cordoned

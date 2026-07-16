@@ -80,15 +80,19 @@ re-detecting the nested container as an ordinary CPU host.
 
 That template is explicit: one control-plane node carries the public web/registry mappings and one GPU
 worker carries `/dev/null` at `/var/run/nvidia-container-devices/all`. Cluster bring-up repeats the
-runtime smoke, waits for both nodes, installs the pinned NVIDIA device-plugin chart `0.19.3`, waits for
-its pods, and refuses to continue until at least one node advertises a positive allocatable
-`nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gpu: 1` and reaches the web process
-through the dedicated in-cluster accelerator Service; no accelerator NodePort is published for this
-lane.
+runtime smoke and waits for both nodes, then probes allocatable GPU before any Helm or `kubectl` mutation.
+An already-positive allocation is a no-op; otherwise cluster bring-up installs pinned NVIDIA device-plugin
+chart `0.19.3`, waits for its pods, and refuses to continue until at least one node advertises positive
+allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gpu: 1` and reaches the web
+process through the dedicated in-cluster accelerator Service; no accelerator NodePort is published for
+this lane.
 
 The planners, probes, topology choice, plugin gate, GPU request, CUDA base selection, and `--gpus=all`
-handoff are covered by the current static baseline (359 core tests and 87 demo tests). Phase 3.7 and
-Phase 5.5 remain Active until the pristine and warm no-op gates complete on a real Linux GPU host.
+handoff are covered by the current static baseline (364 core tests and 87 demo tests). Phase 3.7 closed on
+2026-07-15 in a named Ubuntu 24.04 WSL2 guest classified `linux-gpu` on an RTX 3090 Windows machine: the
+first run installed and verified the eight-step runtime plan, and the immediate second run exited 0 with
+`ensure cuda: present (no-op)`. This was a WSL2 guest, not native Linux. Phase 5.5 remains `Active` until
+the native Linux GPU direct-nvkind/CUDA/browser lane reports `8/8`.
 
 ## Windows Host-Build CUDA (headless)
 

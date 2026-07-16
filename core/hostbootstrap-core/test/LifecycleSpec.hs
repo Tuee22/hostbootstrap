@@ -3,15 +3,21 @@
 
 module LifecycleSpec (tests) where
 
+import Control.Exception (SomeException, displayException, try)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as Map
 import HostBootstrap.Cluster.Lifecycle
 import HostBootstrap.Context (ResourceEnvelope (..))
-import HostBootstrap.HostTool (HostTool (..))
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (..), mkAbsExe)
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 rootPath :: FilePath
 rootPath = rootDir </> "demo"
@@ -42,6 +48,7 @@ tests =
         , testGroup "NVIDIA device plugin" nvidiaDevicePluginCases
         , testGroup "multi-node cordon" nodeCordonCases
         , testGroup "never-delete-.data" dataInvariantCases
+        , testGroup "teardown failure propagation" teardownFailureCases
         , testGroup "status report" statusCases
         , testGroup "health-check-and-recreate" healthProbeCases
         ]
@@ -201,6 +208,35 @@ nvidiaDevicePluginCases =
         nvidiaAllocatableReady (Right (ExitSuccess, "1\n", "")) @?= True
         nvidiaAllocatableReady (Right (ExitSuccess, "0\n\n", "")) @?= False
         nvidiaAllocatableReady (Right (ExitFailure 1, "", "not found")) @?= False
+    , testCase "positive allocatable pre-probe is a verified no-op" $ do
+        events <- newIORef ([] :: [String])
+        let record event = modifyIORef' events (event :)
+        ensureNvidiaDevicePluginWith
+            NvidiaDevicePluginOps
+                { ndpProbeAllocatable = record "probe-allocatable" >> pure True
+                , ndpReconcilePlugin = record "reconcile-plugin"
+                , ndpWaitPluginReady = record "wait-plugin-ready"
+                , ndpRequireAllocatable = record "require-allocatable"
+                }
+        seen <- reverse <$> readIORef events
+        seen @?= ["probe-allocatable"]
+    , testCase "missing allocation reconciles, waits, then requires positive allocation" $ do
+        events <- newIORef ([] :: [String])
+        let record event = modifyIORef' events (event :)
+        ensureNvidiaDevicePluginWith
+            NvidiaDevicePluginOps
+                { ndpProbeAllocatable = record "probe-allocatable" >> pure False
+                , ndpReconcilePlugin = record "reconcile-plugin"
+                , ndpWaitPluginReady = record "wait-plugin-ready"
+                , ndpRequireAllocatable = record "require-allocatable"
+                }
+        seen <- reverse <$> readIORef events
+        seen
+            @?= [ "probe-allocatable"
+                , "reconcile-plugin"
+                , "wait-plugin-ready"
+                , "require-allocatable"
+                ]
     ]
 
 nodeCordonCases :: [TestTree]
@@ -251,6 +287,65 @@ dataInvariantCases =
         assertBool "down keeps test .data" (dataPath test1 `notElem` removeDown)
         assertBool "delete keeps test .data" (dataPath test1 `notElem` removeDel)
     ]
+
+teardownFailureCases :: [TestTree]
+teardownFailureCases =
+    [ testCase "cluster down turns an unresolved kind cleanup into a reported failure" $
+        withSystemTempDirectory "hostbootstrap-cluster-down" $ \root -> do
+            let durable = root </> ".data"
+                derived = root </> ".cluster" </> "demo"
+                plan = (resolvePlan "demo" root Production){dataPath = durable, derivedPaths = [derived]}
+                cfg = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+            createDirectoryIfMissing True durable
+            createDirectoryIfMissing True derived
+            outcome <- try (clusterDown cfg plan) :: IO (Either SomeException ())
+            case outcome of
+                Right () -> assertFailure "cluster down reported success after kind could not be resolved"
+                Left err -> do
+                    let message = displayException err
+                    assertBool "names the aggregate teardown failure" ("cluster down attempted every cleanup step but failed" `isInfixOf` message)
+                    assertBool "reports the unresolved kind tool" ("kind delete cluster: kind not found on this host" `isInfixOf` message)
+            doesDirectoryExist durable >>= (@?= True)
+            doesDirectoryExist derived >>= (@?= True)
+    , testCase "cluster delete attempts every path after a non-zero kind cleanup and then fails" $
+        withSystemTempDirectory "hostbootstrap-cluster-delete" $ \root -> do
+            failingProgram <- findExecutable teardownFailureProgram
+            case failingProgram >>= either (const Nothing) Just . mkAbsExe of
+                Nothing -> assertFailure ("could not resolve teardown failure fixture: " ++ teardownFailureProgram)
+                Just failingExe -> do
+                    let durable = root </> ".data"
+                        derivedOne = root </> ".cluster" </> "demo-a"
+                        derivedTwo = root </> ".cluster" </> "demo-b"
+                        plan =
+                            (resolvePlan "demo" root Production)
+                                { dataPath = durable
+                                , derivedPaths = [derivedOne, derivedTwo]
+                                }
+                        cfg =
+                            HostConfig
+                                (Substrate LinuxCpu Amd64)
+                                (Map.singleton Kind failingExe)
+                    createDirectoryIfMissing True durable
+                    createDirectoryIfMissing True derivedOne
+                    createDirectoryIfMissing True derivedTwo
+                    outcome <- try (clusterDelete cfg plan) :: IO (Either SomeException ())
+                    case outcome of
+                        Right () -> assertFailure "cluster delete reported success after kind exited non-zero"
+                        Left err -> do
+                            let message = displayException err
+                            assertBool "names the aggregate teardown failure" ("cluster delete attempted every cleanup step but failed" `isInfixOf` message)
+                            assertBool "reports the non-zero kind exit" ("kind delete cluster: exit" `isInfixOf` message)
+                    doesDirectoryExist durable >>= (@?= True)
+                    doesDirectoryExist derivedOne >>= (@?= False)
+                    doesDirectoryExist derivedTwo >>= (@?= False)
+    ]
+
+teardownFailureProgram :: String
+#ifdef mingw32_HOST_OS
+teardownFailureProgram = "where.exe"
+#else
+teardownFailureProgram = "false"
+#endif
 
 statusCases :: [TestTree]
 statusCases =

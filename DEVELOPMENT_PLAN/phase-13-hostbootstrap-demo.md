@@ -187,8 +187,8 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
   cleanup, a direct-cluster probe, and teardown verification prevent the accelerator gate from taking over
   or deleting operator state.
 
-Current validation (2026-07-12): the `-Werror` core gate passes 359 tests and the demo gate passes 87 tests
-plus the embedded 359-core suite. Remaining work is only the full live substrate execution required by
+Current validation (2026-07-15): the `-Werror` core gate passes 364 tests and the demo gate passes 87 tests
+plus the embedded 364-core suite. Remaining work is only the full live substrate execution required by
 § C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
 including the browser Add assertion. The native Linux and Apple hardware gates are unavailable in the
 current environment, and no current live `8/8` result is recorded; the dated `3/3` and `6/6` results below
@@ -1061,7 +1061,7 @@ Implementation and static validation are complete:
 - The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. Harness ownership,
   direct-cluster detection, `SafetyRefusal`, and verified teardown are fail-closed.
 
-The current static gate is 359 core + 87 demo tests. Remaining work is only real-run closure (§ C): execute
+The current static gate is 364 core + 87 demo tests. Remaining work is only real-run closure (§ C): execute
 the current four-case/two-variant harness on the host-daemon and native Linux CPU/GPU placements, including
 the browser assertion. The native Linux and Apple gates are unavailable in the current environment; no
 live `8/8` has replaced the historical pre-accelerator `6/6` result.

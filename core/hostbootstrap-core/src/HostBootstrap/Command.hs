@@ -69,7 +69,7 @@ import HostBootstrap.Harness (ConfigVariant (..), SafetyRefusal (..), TestSuite,
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.Lift (LiftContext, currentSelfRef)
 import HostBootstrap.Service (ServiceRegistry, lookupServiceHandler, serviceRun, serviceVariantNames)
-import HostBootstrap.Step (Step, StepFrame)
+import HostBootstrap.Step (Step (..), StepFrame (..), StepKind (DeployKind))
 import HostBootstrap.Substrate (detect)
 import Numeric.Natural (Natural)
 import Options.Applicative
@@ -565,7 +565,12 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     failChain cfg projectCfg ctx reason = do
         when (null (Context.parentChain ctx)) $ do
             putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
-            ignoreChainExc (withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+            ignoreChainExc
+                ( clusterTeardownForCurrentFrame
+                    projectCfg
+                    ctx
+                    (withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+                )
             ignoreChainExc (teardown projectCfg True)
         die reason
     -- Swallow a teardown step's exception (best-effort): the whole teardown must not
@@ -576,27 +581,47 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
             Right () -> pure ()
             Left e -> putStrLn ("  (teardown step skipped: " ++ show e ++ ")")
 
-    -- Teardown runs the cluster-lifecycle reconciler (clusterDown / clusterDelete,
-    -- which never remove host @.data@, § O), then the project's chain-frame
-    -- 'teardown' stops (down) or deletes (destroy) the provisioned frames. For a
-    -- project whose cluster lives inside a provider VM (the demo), the VM is the
-    -- wall: stopping or deleting the VM takes the in-VM cluster down with it, so
-    -- the host-side cluster reconciler is a no-op there and the VM teardown is the
-    -- effective one.
+    -- Teardown runs the cluster-lifecycle reconciler only when this binary's
+    -- current frame owns the chain's @deploy-kind@ step, then the project's
+    -- chain-frame 'teardown' stops (down) or deletes (destroy) the provisioned
+    -- outer frames. Kube tools intentionally live in the cluster-bearing project
+    -- container, not every host frame. A nested cluster is therefore owned by the
+    -- project teardown: stopping/deleting its provider VM takes a VM-backed
+    -- cluster with it, while direct-container projects can use their teardown hook
+    -- to invoke the pinned container toolchain. This distinction lets genuine
+    -- attempted cluster-cleanup failures propagate without treating expected
+    -- host-side tool absence as a failure.
     runDown =
         withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
             runTeardownAll
-                [ ("cluster down", withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx)))
+                [ ( "cluster down"
+                  , clusterTeardownForCurrentFrame
+                        projectCfg
+                        ctx
+                        (withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDown cfg (planForContext ctx)))
+                  )
                 , ("project frame teardown", teardown projectCfg False)
                 ]
     runDestroy =
         withSiblingProjectConfigContext (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg) ctx -> do
             cfg <- hostConfig
             runTeardownAll
-                [ ("cluster delete", withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+                [ ( "cluster delete"
+                  , clusterTeardownForCurrentFrame
+                        projectCfg
+                        ctx
+                        (withCurrentDirectory (T.unpack (Context.sourceRoot ctx)) (clusterDelete cfg (planForContext ctx)))
+                  )
                 , ("project frame teardown", teardown projectCfg True)
                 ]
+    clusterTeardownForCurrentFrame projectCfg ctx effect
+        | currentFrameOwnsCluster ctx (chain projectCfg) = effect
+        | otherwise =
+            putStrLn
+                ( "project teardown: cluster is owned by a different chain frame; skipping kind cleanup in "
+                    ++ T.unpack (Context.currentFrame ctx)
+                )
     runTeardownAll actions = do
         outcomes <- mapM runOne actions
         let failures = [label ++ ": " ++ show err | (label, Left err) <- outcomes]
@@ -606,6 +631,13 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
         runOne (label, effect) = do
             outcome <- try effect :: IO (Either SomeException ())
             pure (label, outcome)
+
+-- | Whether the current binary frame owns the chain's cluster lifecycle step.
+currentFrameOwnsCluster :: Context.BinaryContext -> [Step] -> Bool
+currentFrameOwnsCluster ctx = any ownsCluster
+  where
+    current = T.unpack (Context.currentFrame ctx)
+    ownsCluster step = stepKind step == DeployKind && frameId (stepFrame step) == current
 
 {- | The @service@ lifecycle command (§ AA): the third DSL-driven core command,
 for a project's long-running roles (the @HostDaemon@/service run-model). @init@

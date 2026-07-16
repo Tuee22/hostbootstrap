@@ -19,7 +19,7 @@ Phase 20 is **implemented and validated**. At phase close it was code-check-vali
 reported `6/6 passed` across the two message variants `"Hello, world!"` and `"Hello, Universe!"`, each a
 full `project up` → assert → `project destroy` with full teardown and spin-up between, with polymorphic
 e2e asserting the correct `#message`). Those counts and the `6/6` are historical phase-close evidence.
-The current dynamic-config implementation remains covered by the repository-wide 359-core / 87-demo
+The current dynamic-config implementation remains covered by the repository-wide 364-core / 87-demo
 static suites; no later live matrix result is inferred from that evidence. It builds **forward** on the demo (phase 13), the `service` command
 (phase 18), and the generic project model (phase 19); it reopened nothing. The demo's `message` is a
 field on the **demo's own `cfg`** (the concrete type phase 19 sprint 19.2 demoted out of core), never a

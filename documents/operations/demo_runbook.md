@@ -85,7 +85,7 @@ The operator surface below (`project init|up|down|destroy`, read-only `context`,
 
 The accelerator UI/no-fallback path, deterministic atomic worker builds, concrete CBOR WebSocket
 transport, serialized host-daemon lifecycle, in-cluster Deployment, and persistent worker supervision are
-implemented and covered by the 359-core/87-demo static gate. The daemon path remains reopened until live runs build the real worker
+implemented and covered by the 364-core/87-demo static gate. The daemon path remains reopened until live runs build the real worker
 in each supported lane and the browser e2e test proves the UI add workflow receives daemon-returned backend
 metadata.
 
