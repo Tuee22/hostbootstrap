@@ -19,7 +19,7 @@ reporting **`test report: 6/6 passed`** across both message variants: `deploy-re
 rollout complete at http://localhost:30500` and `push-image: kind-loaded hostbootstrap-demo:local and pushed
 localhost:30500/library/hostbootstrap-demo:demo` fired on **both** bring-ups (the single-binary `registry:2`
 + poll-to-Ready hardening), the web service was reachable at `localhost:30080`, and `project destroy` tore
-down with host `.data` preserved.
+down cleanly.
 The demo's `deploy-harbor` step became `deploy-registry`, replacing the 8-pod Harbor Helm stack + the
 `ghcr.io/octohelm/harbor/*` dual-arch mirror + the trivy scanner with a single `registry:2` (CNCF
 `distribution`) Deployment applied via `kubectl` — natively multi-arch, anonymous, HTTP. Harbor was never
@@ -64,7 +64,7 @@ config-selected `service run` serving the `Web` variant at **HTTP 200** on `loca
 run all` reports `3/3 passed`** —
 `pristine-bootstrap` + `web-build` (NodePort reachability from the harness frame) and `e2e-tabs` (the
 Playwright run across chromium/firefox/webkit lifted into the VM frame) — driving the same `project up` and
-tearing down with `project destroy` (host `.data` preserved). See `## Remaining Work` for the validated
+tearing down with `project destroy`. See `## Remaining Work` for the validated
 detail.
 
 Forward-pointer: the demo's config-driven `message` worked example — the demo's `cfg` gains a
@@ -79,8 +79,8 @@ demo's deploy is the contributed chain stream, now substrate-selected by
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]` (plus `demoFrameContext` / `demoTeardown`) and
 interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
-pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy` (host
-`.data` preserved, § O). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and all demo noun
+pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy`
+(§ Y). The hand-written `demoDeployChain` (`HostBootstrapDemo.Chain`) and all demo noun
 verbs are deleted; their still-required behavior lives in chain-step actions and config-selected service
 handlers. The interpreter it rests on is [phase-16](phase-16-project-lifecycle-command.md) (`Active` for
 the current live accelerator gate). The original narrative below describes the historical shape that led
@@ -188,11 +188,25 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
   or deleting operator state.
 
 Current validation (2026-07-15): the `-Werror` core gate passes 364 tests and the demo gate passes 87 tests
-plus the embedded 364-core suite. Remaining work is only the full live substrate execution required by
-§ C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
+plus the embedded 364-core suite. Remaining accelerator work is only the full live substrate execution
+required by § C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
 including the browser Add assertion. The native Linux and Apple hardware gates are unavailable in the
 current environment, and no current live `8/8` result is recorded; the dated `3/3` and `6/6` results below
 remain historical evidence for the pre-accelerator matrices.
+
+**Durable root across the demo chain's remaining boundaries — OPEN.** The demo carries no host-durable
+project state. `.data` is frame-relative — it resolves against the *owning* frame's source root, which on
+the demo's nested chain is the project container — and staging is one-way host → guest, so nothing written
+inside the stack has a path back to the developer's machine. Wiring a durable root through the demo means
+carrying it across each boundary the chain crosses: **VM → project container** (a `Mount` on the container
+launch), **project container → kind node** (`extraMounts` in `demo/kind.yaml`, which today declares only
+`extraPortMappings`), and **kind node → pod** (a host-backed volume in `demo/chart`). This consumes
+[phase-11](phase-11-incus-host-provider.md) Sprint 11.8 (the per-substrate host-path share primitive) and
+[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 (the durable-root contract), and
+is gated by the same real run (§ C) those sprints share: write state through the running stack, run
+`project destroy`, run `project up`, and read it back. Until that gate passes, no demo document may
+describe host-durable `.data` as available — see
+[durable_state](../documents/architecture/durable_state.md).
 
 **In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
 single-binary `registry:2` swap (Sprint 13.16) plus the demo-side reliability fixes are **real-run-validated
@@ -200,7 +214,7 @@ end to end**: a live Windows/WSL2 `hostbootstrap-demo test run all`, run **decou
 as a Windows Scheduled Task (so a harness stop could not abort it), reported **`test report: 6/6 passed`**
 across both message variants — `deploy-registry` stood up the pod-pulled `registry:2` (rollout complete on
 both bring-ups), `push-image` kind-loaded the project image and pushed it to `localhost:30500`, the web
-service served at `localhost:30080`, and `project destroy` tore down with host `.data` preserved. The
+service served at `localhost:30080`, and `project destroy` tore down cleanly. The
 retired Harbor / `kind load registry:2` surfaces move to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The demo-side reliability fixes that
 closed the gate:
@@ -272,7 +286,7 @@ gate green; verified on the real binary that the surface is fixed and `project u
 2×-budget VM did not). `test run all` reports **`3/3 passed`** — `pristine-bootstrap` and `web-build`
 (NodePort reachability from the harness frame) and `e2e-tabs` (the Playwright run across
 chromium/firefox/webkit lifted into the VM frame) — by driving the **same** `project up` (no second
-bring-up path, § W), then tearing the stack down with `project destroy` (host `.data` preserved). The
+bring-up path, § W), then tearing the stack down with `project destroy`. The
 harness's per-case assertions run in the frame appropriate to each (reachability from the harness frame, the
 e2e lifted into the VM via the self-reference lift, § U).
 
@@ -317,7 +331,7 @@ which is natively multi-arch and needs no mirror — see Sprint 13.16 and
 [in_cluster_registry.md](../documents/engineering/in_cluster_registry.md).** The full 8-pod Harbor →
   `push-image` → `deploy-chart` → `expose-port` lifecycle is also validated on the **Linux/amd64** path
   (2026-06-18), and those step actions are otherwise unchanged by this refactor (only `deploy-kind`'s cordon
-  changed, to the slice). `project destroy` then deleted the VM (host `.data` preserved, § O).
+  changed, to the slice). `project destroy` then deleted the VM and its disk (§ Y).
 - **Two real-run bugs in this refactor were found and fixed:** (1) `.dockerignore` excluded
   `demo/web/src/Generated/`, which the old in-image `web bridge` regenerated but the re-homed host-side
   bridge step needs in the build context; (2) `runVmUp` always issued a VM *create*, breaking idempotent
@@ -348,7 +362,9 @@ the **only fail-fast dependencies are the Python wrapper's host minimums**. The 
 provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows); (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
 installs Docker and builds the project container; (d) the project container spins up the kind cluster and
 deploys the webservice; (e) the project image's base-provided Playwright runtime runs e2e against it from
-a container on the VM; (f) hostbootstrap spins everything back down, preserving `.data`. Nothing in
+a container on the VM; (f) hostbootstrap spins everything back down, releasing every resource it created —
+`project destroy` deletes the provisioned VM **and its disk**, so nothing written inside the guest outlives
+teardown. Nothing in
 (a)–(f) is a host prerequisite beyond the
 Python minimums — every dependency is install-and-verify (the `ensure` suite, § L), so the binary is
 never blocked by an absent dependency.
@@ -476,7 +492,8 @@ registry.
 - **Cordon #2 + the kind lifecycle are live-validated.** Driven by the demo harness inside the VM, core
   `clusterUp` created isolated per-case kind clusters, each carrying the budget-derived cap (observed:
   `docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 <name>-control-plane`), and
-  `clusterDelete` tore them down preserving `.data`, leaving **no leftover clusters** (`kind get clusters`
+  `clusterDelete` tore them down preserving each case's `.test_data/<case>` path (the test profile's data
+  path), leaving **no leftover clusters** (`kind get clusters`
   → "No kind clusters found"). Harbor install + the arch-explicit image push to the in-VM registry remain
   (below).
 
@@ -539,7 +556,7 @@ already-built project image on the kind network against the in-cluster service v
 #### Deliverables
 
 - `demoSeams`: each case's `seamSetup` brings up an isolated per-case kind cluster and `seamTeardown`
-  **tears it down** (`clusterDelete`, preserving `.data`, guarded to the test-name prefix), guaranteed by
+  **tears it down** (`clusterDelete`, preserving `.test_data/<case>`, guarded to the test-name prefix), guaranteed by
   `runMatrix`'s `finally`. The webservice is deployed into the per-case kind cluster via `demo/chart` (the
   pod runs `web serve`); the Playwright runner is the same `hostbootstrap-demo:local` project image on the
   kind network, using the base image's global Playwright install and browser cache (chromium, firefox, webkit) against the in-cluster
@@ -550,7 +567,7 @@ already-built project image on the kind network against the in-cluster service v
 #### Validation
 
 - **Harness cluster lifecycle + cleanup done (live).** `hostbootstrap-demo test all` (rebuilt in-VM) ran all three
-  cases; each did `cluster up` (cordon #2 applied) → body → `cluster delete` (`.data` preserved), and
+  cases; each did `cluster up` (cordon #2 applied) → body → `cluster delete` (`.test_data/<case>` preserved), and
   after the run `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover
   clusters (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`)
   backs the always-cleans-up property. The per-case bodies are **real assertions**. **`demo test e2e-tabs`
@@ -757,7 +774,7 @@ vm ensure               local                                   -- reconciler on
 vm up                   local                                   -- cordon #1 (the VM is the wall)
 vm pristine-bootstrap   local -> VM                             -- build #2 (host-native) + build #3 (project image), IN the VM
 test all                inContainer img (inVM vm localContext)  -- the ONLY lifted compute step; folds through the VM provider, then docker run --rm <image> test all
-vm down                 local                                   -- guarded teardown (.data preserved)
+vm down                 local                                   -- guarded teardown (deletes the VM)
 ```
 
 #### Deliverables
@@ -904,7 +921,7 @@ where the harness brought up the per-case kind clusters on the **VM's** Docker (
 the in-container `kind`/e2e pulls authenticated through the same forwarded credential, consumed into an
 ephemeral `DOCKER_CONFIG`) and reported `test report: 3/3 passed` (`pristine-bootstrap`, `web-build`, and
 `e2e-tabs` — the e2e Playwright run is green across chromium, firefox, and webkit: 9 runs, 3 specs × 3
-engines) → guarded `vm down` (`.data` preserved). `DEMO_DEPLOY_EXIT=0`, no leftover VM.
+engines) → guarded `vm down`. `DEMO_DEPLOY_EXIT=0`, no leftover VM.
 
 ### Sprint 13.15: In-place child-config delivery [Done]
 
@@ -947,7 +964,7 @@ reported **`test report: 6/6 passed`** across both message variants (`"Hello, wo
 (`streamed parent-derived VM config …` and `context-init: … streamed … in-place on handoff (stdin, no config
 bind-mount)`), the container `docker run` carried **no** `-v …hostbootstrap-demo.dhall` mount, **no**
 `hostbootstrap-demo.vm.dhall`/`hostbootstrap-demo.runtime-container.dhall` were produced, and
-`project destroy` restored `.wslconfig` with host `.data` preserved.
+`project destroy` restored `.wslconfig`.
 
 ### Sprint 13.16: In-cluster registry — Harbor → single-binary registry:2 [Done]
 
@@ -994,7 +1011,7 @@ untouched.
 None. **Closed (real-run, § C, 2026-07-05):** a live `project up` → `test run all` → `project destroy` on
 Windows/WSL2, run **decoupled** as a Windows Scheduled Task, stood up the pod-pulled `registry:2`, pushed the
 project image to `localhost:30500`, and reported **`test report: 6/6 passed`** (`REALRUN_EXIT=0`) across both
-message variants, then tore down with host `.data` preserved. The four Harbor entries **and** the removed
+message variants, then tore down cleanly. The four Harbor entries **and** the removed
 `kind load registry:2` pre-load are moved from `## Pending` to `## Removed Surfaces` in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with this validation stamp.
 
@@ -1067,6 +1084,10 @@ the browser assertion. The native Linux and Apple gates are unavailable in the c
 live `8/8` has replaced the historical pre-accelerator `6/6` result.
 
 ## Documentation Requirements
+
+**Architecture docs to create/update:**
+- `documents/architecture/durable_state.md` - what `.data` is, the removal-set guarantee's exact scope,
+  frame relativity, and why the demo's chain has no host-durable project state today.
 
 **Engineering docs to create/update:**
 - `documents/engineering/derived_dockerfile.md` - the idiomatic derived Dockerfile (in-Dockerfile

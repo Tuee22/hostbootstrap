@@ -104,11 +104,13 @@ bytes carry `message` and are rollout-hashed (the `serveWeb` handler reads them 
 `#message`), and `exposePortStep` verifies the endpoint. `project up` ends at a live webservice on
 `localhost:30080`. The interpreter runs the steps in order and is restartable from any frame.
 
-`project down` walks the same chain to stop service/VM frames and tear down kind clusters while preserving
-durable host state; provider VMs use `incus`/`limactl` **stop**, while kind clusters are deleted because
-kind has no reliable stop/restart contract. `project destroy` stops then deletes everything spun up.
-Teardown recurses in while the frame is still up, then stops/deletes on ascent (the VM last); it is
-best-effort and idempotent, and `.data` is always preserved.
+`project down` walks the same chain to stop service/VM frames and tear down kind clusters; provider VMs
+use `incus`/`limactl` **stop**, while kind clusters are deleted because kind has no reliable stop/restart
+contract. `project destroy` stops then deletes everything spun up, including the provisioned frame and its
+disk. Teardown recurses in while the frame is still up, then stops/deletes on ascent (the VM last); it is
+best-effort and idempotent, and cluster teardown never places the plan's `.data` path in its removal set.
+That path is frame-relative — on a lifted topology it resolves inside the guest, so `project destroy`
+removes it along with the frame's disk. See [durable_state](../architecture/durable_state.md).
 
 ## Sketches
 
@@ -124,8 +126,9 @@ best-effort and idempotent, and `.data` is always preserved.
 
 Both are the same algebra — a `[Step]` chain interpreted recursively across a context topology — differing
 only in which steps the chain selects. The chain is a pure function of the root parameters, so structural
-variation lives in which steps it emits. The fail-fast frame check is applied at every boundary; teardown
-preserves `.data`.
+variation lives in which steps it emits. The fail-fast frame check is applied at every boundary; cluster
+teardown leaves the plan's `.data` path out of its removal set (see
+[durable_state](../architecture/durable_state.md)).
 
 ## Current Status
 

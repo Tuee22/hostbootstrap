@@ -122,7 +122,7 @@ runs, and its stop/delete are interpreter teardown operations:
 |---|---|---|
 | `project up` | `deploy-vm` step | bring the VM to *running* (idempotent), then hand off `pb project up` into the VM |
 | `project down` | stop the VM frame | **stop** the VM without deleting it (stop-without-delete) |
-| `project destroy` | delete the VM frame | stop the VM, then delete it and its compute (`.data` preserved) |
+| `project destroy` | delete the VM frame | stop the VM, then delete it and its root disk — nothing on that disk survives |
 
 `HostBootstrap.Incus` is the pure argv builders plus the `classifyDockerReadiness` classifier; the IO
 loop that runs them (`runInTarget`, `rebootDockerToReady`) lives in `HostBootstrap.HostTarget`. The
@@ -159,9 +159,13 @@ same VM in place. Stop-without-delete is the capability that distinguishes `proj
 `project destroy` stops the VM and then deletes it through the prefix-guarded `destroyVMArgs prefix vm`,
 reusing the harness `guardTestDelete` idiom (see
 [harness workflow](../architecture/harness_workflow.md)): `incus delete <name> --force` is refused
-unless the VM name carries the guard prefix. A non-prefixed name yields no argv at all. `.data` is
-preserved across teardown — the never-delete-`.data` invariant holds at the VM frame exactly as it
-does at the cluster frame (see [cluster lifecycle](cluster_lifecycle.md)).
+unless the VM name carries the guard prefix. A non-prefixed name yields no argv at all.
+
+That delete removes the VM's root disk along with the VM, and staging is one-way — `pushFileArgs` emits
+`incus file push` host → guest with no pull-from-guest counterpart — so on a lifted topology a
+guest-side `.data` has no host copy to fall back on. The never-delete-`.data` invariant governs the
+*cluster* teardown's removal set; a VM delete has no removal set to exclude a path from. See
+[durable state](../architecture/durable_state.md).
 
 ### WRONG / RIGHT
 
@@ -223,8 +227,10 @@ is the development plan for this surface.
 
 - [ensure reconcilers](ensure_reconcilers.md) — the reconciler contract `ensure incus` follows.
 - [applied cordon](applied_cordon.md) — the one canonical parser and the storage cordon.
-- [cluster lifecycle](cluster_lifecycle.md) — the cluster-frame chain steps and the shared
+- [cluster lifecycle](cluster_lifecycle.md) — the cluster-frame chain steps and the
   never-delete-`.data` invariant.
+- [durable state](../architecture/durable_state.md) — what the never-delete-`.data` invariant does and
+  does not guarantee, and where durable state actually lives on each substrate.
 - [build and run model](../architecture/build_and_run_model.md) — the `HostTarget` parameterization.
 - [harness workflow](../architecture/harness_workflow.md) — the `guardTestDelete` delete-guard idiom.
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the

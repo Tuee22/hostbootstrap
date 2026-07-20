@@ -170,5 +170,5 @@ A single `project up` on Incus/Linux interprets the VM-backed branch of
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]` across the three-frame fractal descent and stands up
 the live persistent stack: the cordoned kind cluster, the in-cluster registry, the project image pushed to
 that registry, and the web chart pod serving
-`localhost:30080`. `project down` deletes kind compute and stops the VM while preserving durable host
-`.data`; `project destroy` deletes the VM too. The schema and example surfaces are introspection under the read-only `context` command.
+`localhost:30080`. `project down` deletes kind compute and stops the VM; `project destroy` deletes the VM
+too. The schema and example surfaces are introspection under the read-only `context` command.

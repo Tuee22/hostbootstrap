@@ -11,7 +11,15 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened 2026-07-19 — host-path share primitive.** The governed docs asserted that a project's `.data`
+survived teardown as *host* state on every provider. It does not: every substrate stages **one way**
+(host → guest) and no provider exposes a reverse transfer or a shared filesystem for the project tree, so a
+guest-side write has no path back to the host. `SubstrateProvider` carries no share or mount field, and
+`HostEffect` has no constructor that could create one. Because this phase owns the per-substrate provider
+lift, the missing primitive is this phase's slice; the corrected doctrine is
+[durable_state](../documents/architecture/durable_state.md) and the remaining work is Sprint 11.8.
 
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
 provider-lifecycle gaps in this phase's scope: the VM-ready probe (`WaitProbe … true`) only proves the
@@ -63,6 +71,12 @@ ceiling applied.
 
 ## Remaining Work
 
+**Open (reopened 2026-07-19) — the per-substrate host-path share primitive.** No provider can attach a host
+directory to its guest today, so no substrate can offer host-durable project state. Sprint 11.8 owns the
+primitive; phase-5 Sprint 5.6 owns the durable-root contract that consumes it. The gate is a real run that
+writes state, runs `project destroy`, runs `project up`, and reads it back — a real-run gate under § C, so
+this phase stays `Active` until it passes.
+
 **Historical reopening 2026-07-05 — provider lifecycle reliability. Code landed, code-check-validated, and
 real-run-closed (§ C) 2026-07-05:**
 
@@ -108,7 +122,7 @@ built the in-distro host-native binary (build #2) and the project container (bui
 `fourmolu`/`hlint`/`cabal -Werror` gate passing) **without a session drop**, stood up in-distro
 kind/Harbor/web on the VM's Docker, ran the lifted project-container assertions, and reported
 **`test report: 6/6 passed`** across both message variants — then `project destroy` tore the stack down
-through the guarded `wsl --unregister` path, restoring `.wslconfig` with host `.data` preserved. Native
+through the guarded `wsl --unregister` path, restoring `.wslconfig`. Native
 Linux remains the Incus provider path and Apple Silicon uses Lima; WSL2 is the validated Windows peer.
 
 Static validation is clean: `cabal test all` and `cabal build all --ghc-options=-Werror` from `core/`,
@@ -459,7 +473,7 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   `wsl -d hostbootstrap-demo-vm -- ...` session ending non-zero or with `Wsl/Service/0x80072746`. A clean
   `wsl --shutdown` recovers the distro and `/root` remains writable. A direct `hostbootstrap-demo.exe
   project destroy` against the partial stack succeeds through the guarded WSL2 delete path
-  (`project destroy: deleting hostbootstrap-demo-vm`) and preserves `demo/.data`, but that partial
+  (`project destroy: deleting hostbootstrap-demo-vm`), but that partial
   teardown does not replace the missing successful `project up` -> `test run all` -> `project destroy`
   closure run.
 - **2026-07-01 closure run: the full Windows/WSL2 lifecycle closed `6/6`.** With Sprint 9.7's honest cordon
@@ -468,7 +482,7 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   the project image (build #3) **without the earlier utility-VM session drop**, stood up kind/Harbor/web on
   the VM's Docker, and reported `test report: 6/6 passed` across both message variants (`"Hello, world!"`
   and `"Hello, Universe!"`; `pristine-bootstrap`/`web-build`/`e2e-tabs` × 2), then `project destroy` tore
-  down through the guarded `wsl --unregister` path and restored `.wslconfig` with host `.data` preserved.
+  down through the guarded `wsl --unregister` path and restored `.wslconfig`.
   The intermittent `Wsl/Service/0x80072746` drop did not recur once the budget wall was applied.
 
 #### Remaining Work
@@ -479,11 +493,52 @@ None. The real Windows closure ran to completion on **2026-07-01**: with Sprint 
 in-distro Docker/kind **without the `Wsl/Service/0x80072746` session drop** (whose root cause — the cordon
 computed but never written — Sprint 9.7 fixed), deployed the workload, ran the lifted project-container
 assertions reporting **`6/6`**, and `project destroy` tore down through guarded `wsl --unregister`
-(restoring `.wslconfig`) with host `.data` preserved. The 10 GiB budget fit on the 16 GB host with the
+(restoring `.wslconfig`). The 10 GiB budget fit on the 16 GB host with the
 applied ceiling + swap, so no floor-lowering fallback was needed.
 
 This was Phase 11 work only; it did not block the closed Phase 2 bootstrap, Phase 3 CUDA-on-Windows
 reconciler, or Phase 9 Windows capacity/sizing surfaces.
+
+### Sprint 11.8: Per-substrate host-path share primitive [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`, `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`
+**Docs to update**: `documents/architecture/durable_state.md`, `documents/engineering/incus.md`, `documents/engineering/lima.md`, `documents/engineering/wsl2.md`
+
+#### Objective
+
+Give the provider lift a way to attach a host directory to its guest, so a durable root can be
+host-backed rather than frame-local.
+
+#### Deliverables
+
+- A share field on `SubstrateProvider`, shaped like the existing optional `spReconcileCordon` — the
+  three substrates differ in **when** a share may be declared, and the `Maybe` shape already encodes
+  "one substrate needs an extra step, the others do not":
+  - **Lima** — create-time only; `startVMArgs` builds the whole `limactl start` argv, so the mount is
+    an argument of instance creation.
+  - **Incus** — post-create; a disk device attached with `incus config device add <vm> <name> disk
+    source=… path=…`.
+  - **WSL2** — no effect required; drvfs already exposes host drives and `windowsPathToWslMount`
+    already performs the path rewrite. The share is a path resolution, not a command.
+- Pure argv builders for the Lima mount argument and the Incus disk device, unit-tested in the same
+  shape as the existing lifecycle builders.
+- The asymmetry documented honestly rather than implied to be uniform — a create-time-only share means
+  a running instance cannot gain one without recreation.
+
+#### Validation
+
+- `cabal test` from `core/` — argv shape for each builder, and provider-effect assertions in
+  `ProviderSpec` alongside the existing launch/stop/destroy cases.
+- Real-run gate (§ C), jointly with phase-5 Sprint 5.6: write state, `project destroy`, `project up`,
+  read it back.
+
+#### Remaining Work
+
+Implementation, provider argv/effect tests, and documentation are complete. The 2026-07-20 core
+`-Werror` build and all 374 core tests pass; the demo workspace also passes the embedded 374-test core
+suite and 89 demo tests. The joint real-run gate with phase-5 Sprint 5.6 remains: write state through the
+running service, `project destroy`, `project up`, and read it back from the host-backed root.
 
 ## Documentation Requirements
 
@@ -503,6 +558,8 @@ reconciler, or Phase 9 Windows capacity/sizing surfaces.
 **Architecture docs to create/update:**
 - `documents/architecture/build_and_run_model.md` - the `HostTarget` parameterization of the run-models,
   including the WSL2-backed `InVM` on Windows.
+- `documents/architecture/durable_state.md` - the per-substrate host↔guest transfer table and the share
+  primitive Sprint 11.8 adds; the canonical home for what `.data` does and does not guarantee.
 
 **Operations docs to create/update:**
 - `documents/operations/demo_runbook.md` - the demo's Windows/WSL2 provider path alongside the Lima/Incus

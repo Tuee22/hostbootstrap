@@ -14,6 +14,8 @@ module HostBootstrap.Cluster.Lifecycle (
     AcceleratorDaemonPlacement (..),
     AcceleratorIngressPlan (..),
     TeardownKind (..),
+    durableDataPath,
+    ensureDurableDataPath,
     resolvePlan,
     resolvePlanWithDriver,
     resolveAcceleratorPlan,
@@ -64,7 +66,7 @@ import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
 import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
 import HostBootstrap.Substrate (Substrate (substrateName), SubstrateName (LinuxGpu), isLinux)
-import System.Directory (doesDirectoryExist, doesFileExist, removePathForcibly)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
 import System.Exit (ExitCode (..), die)
 import System.FilePath ((</>))
 
@@ -83,8 +85,10 @@ the resulting kind cluster through @kind@/@kubectl@.
 data ClusterDriver = KindDriver | NvkindDriver
     deriving (Eq, Show)
 
-{- | A resolved cluster plan: the kind cluster name, the never-deleted host
-@.data@ path, the derived state safe to remove on @delete@, and whether this
+{- | A resolved cluster plan: the kind cluster name, the durable state path
+teardown never enumerates for removal (@.data@ under 'Production',
+@.test_data\/\<case\>@ under 'TestCase'), the derived state safe to remove on
+@delete@, and whether this
 cluster publishes the project's fixed host NodePorts (via @./kind.yaml@'s
 @extraPortMappings@). Only the production cluster does — it is the persistent
 stack the host reaches on @localhost:\<nodePort\>@. Test-case clusters set this
@@ -116,7 +120,7 @@ resolvePlanWithDriver project root profile driver = case profile of
     Production ->
         ClusterPlan
             { clusterName = project
-            , dataPath = root </> ".data"
+            , dataPath = durableDataPath root
             , derivedPaths = [root </> ".cluster" </> project]
             , publishesHostPorts = True
             , clusterDriver = driver
@@ -190,6 +194,20 @@ acceleratorIngressPlan HostResidentDaemon servicePort nodePort =
 data TeardownKind = Down | Delete
     deriving (Eq, Show)
 
+-- | The canonical host-owned durable root for a production project.
+durableDataPath :: FilePath -> FilePath
+durableDataPath root = root </> ".data"
+
+{- | Ensure the canonical host-owned durable root exists and return its path.
+Creating an existing directory is an idempotent no-op and never inspects or
+removes its contents.
+-}
+ensureDurableDataPath :: FilePath -> IO FilePath
+ensureDurableDataPath root = do
+    let path = durableDataPath root
+    createDirectoryIfMissing True path
+    pure path
+
 {- | Partition a teardown into the paths to remove and the paths to preserve.
 The @.data@ path is preserved under both @down@ and @delete@ — the
 never-delete-@.data@ invariant — so it never appears in the removal set.
@@ -199,15 +217,15 @@ teardown Down plan = ([], dataPath plan : derivedPaths plan)
 teardown Delete plan = (derivedPaths plan, [dataPath plan])
 
 {- | Render a read-only status report for a resolved plan, given whether the kind
-cluster is currently live. Pure, so the report shape is unit-tested; the
-preserved @.data@ path is always shown to make the never-delete invariant
-visible.
+cluster is currently live. Pure, so the report shape is unit-tested. The data
+line states only that cluster teardown omits the path; status does not inspect
+the path and therefore makes no claim that it currently exists or is intact.
 -}
 statusReport :: ClusterPlan -> Bool -> String
 statusReport plan live =
     unlines
         [ "cluster:    " ++ clusterName plan ++ (if live then " (running)" else " (absent)")
-        , "data:       " ++ dataPath plan ++ " (preserved)"
+        , "data:       " ++ dataPath plan ++ " (not removed by cluster teardown)"
         , "derived:    " ++ unwords (derivedPaths plan)
         ]
 
@@ -589,11 +607,11 @@ applyLinuxCordon cfg plan resources
     | otherwise =
         putStrLn "cordon: Apple substrate — the per-project Colima VM is sized by `ensure docker`"
 
--- | Tear the cluster down, preserving host @.data@.
+-- | Tear the cluster down. The removal set is empty, so no path is removed.
 clusterDown :: HostConfig -> ClusterPlan -> IO ()
 clusterDown = clusterTeardown Down
 
--- | Thoroughly delete derived cluster state, still never deleting host @.data@.
+-- | Thoroughly delete derived cluster state, still never removing the plan's @.data@ path.
 clusterDelete :: HostConfig -> ClusterPlan -> IO ()
 clusterDelete = clusterTeardown Delete
 
@@ -614,7 +632,7 @@ clusterTeardown teardownKind cfg plan = do
     deleted <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
     deleteFailure <- reportStep "kind delete cluster" deleted
     removalFailures <- removeAll toRemove
-    putStrLn (operation ++ ": preserved " ++ dataPath plan)
+    putStrLn (operation ++ ": did not remove " ++ dataPath plan)
     let failures = maybeToList deleteFailure ++ removalFailures
     unless (null failures) $
         ioError . userError $
@@ -623,7 +641,9 @@ clusterTeardown teardownKind cfg plan = do
                 ++ unlines (map ("  - " ++) failures)
 
 {- | Report the cluster status (read-only): whether the kind cluster is live, and
-the preserved @.data@ / derived paths. Never mutates state.
+the data / derived paths. The report states the cluster-teardown omission
+contract for the data path without claiming to have inspected it. Never mutates
+state.
 -}
 clusterStatus :: HostConfig -> ClusterPlan -> IO ()
 clusterStatus cfg plan = do

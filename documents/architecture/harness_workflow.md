@@ -133,9 +133,10 @@ The harness cannot disturb or delete production state, enforced in code rather t
   directories serialize runs. Teardown removes only the generated `<project>.dhall` and the
   `.test_data` directory the harness *created this run*, tracked from the act of creating them — never a
   config or data directory it found. This mirrors the never-delete-`.data` invariant in
-  [cluster lifecycle](../engineering/cluster_lifecycle.md): `project destroy` already preserves `.data`,
-  and the harness additionally never deletes anything it did not author. If config bytes differ during
-  cleanup, they remain in the locked ownership quarantine and the variant fails for explicit recovery.
+  [cluster lifecycle](../engineering/cluster_lifecycle.md): `project destroy`'s cluster-teardown removal
+  set never names `.data`, and the harness additionally never deletes anything it did not author. If
+  config bytes differ during cleanup, they remain in the locked ownership quarantine and the variant
+  fails for explicit recovery.
 - **Distinguished safety refusal.** Missing tools/probe failures fail closed. A `SafetyRefusal` means the
   state is provably pre-existing; the harness reports it but skips project teardown.
 

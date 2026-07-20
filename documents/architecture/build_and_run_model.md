@@ -26,7 +26,9 @@
 - `project up` runs deploy as a **persistent stack**: it reconciles the chain to running (idempotent),
   leaving the VM, cluster, and services up. `project down` deletes kind compute at its owning
   `deploy-kind` frame and uses the project teardown hook for nested clusters before stopping VM frames;
-  `project destroy` deletes everything spun up. `.data` is preserved across both.
+  `project destroy` deletes everything spun up. Neither teardown places the plan's data path in its
+  removal set, but on a lifted topology `.data` resolves inside the frame `destroy` deletes — see
+  [durable_state](durable_state.md).
 - The build/run model is the canonical home for **host-native build mechanics**; the chain model itself
   is owned by [composition_methodology](composition_methodology.md), which this doc defers to.
 
@@ -198,13 +200,15 @@ trusted — real-run-validated 2026-07-05 by the Windows/WSL2 `test run all` (`6
 
 The lifecycle verbs are split so the persistent stack has explicit stop and delete transitions:
 
-| Verb | Effect | `.data` |
-|------|--------|---------|
-| `project up` | Reconcile the chain to running; leave the persistent stack up. | preserved |
-| `project down` | Delete kind at the owning `deploy-kind` frame; use the project teardown hook for nested VM/project-container clusters; stop provider VMs; preserve durable state. | preserved |
-| `project destroy` | Stop, then delete everything spun up. | preserved |
+| Verb | Effect | Teardown removal set |
+|------|--------|----------------------|
+| `project up` | Reconcile the chain to running; leave the persistent stack up. | n/a |
+| `project down` | Delete kind at the owning `deploy-kind` frame; use the project teardown hook for nested VM/project-container clusters; stop provider VMs; preserve durable state. | empty |
+| `project destroy` | Stop, then delete everything spun up. | derived paths only — the data root is never in it, though on a lifted topology `destroy` deletes the frame it lives in |
 
-`.data` is preserved across `down` and `destroy` — a core invariant. Teardown recurses **in** while the
+Neither verb places the plan's data path in its teardown removal set, so an existing `.data` directory
+is left on disk; on a lifted topology that directory resolves inside the frame `destroy` deletes and
+goes with it (see [durable_state](durable_state.md)). Teardown recurses **in** while the
 frame is still up, then stops or deletes on ascent (the VM stopped last). Core Kind cleanup runs only when
 the current frame owns `deploy-kind`; a non-owning root frame skips host-side Kind lookup and leaves the
 nested cluster to the project teardown hook. Attempted cleanup actions all run and aggregate failures,
@@ -289,8 +293,7 @@ The recursive `project` command and the `[Step]` chain interpreter described abo
 on real Incus/Linux hardware. A single `project up` on that VM-backed Linux lane stands up the live persistent stack — the cordoned
 kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
 (NodePort 30500) → the project image pushed to the in-cluster registry → the web chart pod serving
-`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
-preserved.
+`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down.
 
 - **The `project` chain:** a single `chain :: cfg -> [Step]` value the core interprets,
   driven by `project init|up|down|destroy`, a read-only `context` introspection command that treats every

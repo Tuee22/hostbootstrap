@@ -188,7 +188,7 @@ no unit-file rendering tests or real service-manager integration tests.
   across the composed frame stack: on Incus/Linux a single `project up` stands up the cordoned kind
   cluster, the in-cluster registry (NodePort 30500), the project image pushed to that
   registry, and the web chart pod serving HTTP 200 at `localhost:30080`; `project down` /
-  `project destroy` tear it down with host `.data` preserved.
+  `project destroy` tear it down.
 
 Implemented under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md), `test init`

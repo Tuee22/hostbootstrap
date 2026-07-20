@@ -99,7 +99,7 @@ deploy-chart → expose-port), then the host-frame post-handoff hook runs. On `l
 selects a direct host -> project-container chain with the Phase 15 direct context and Phase 5 `nvkind`
 plan. Each frame's binary runs only its own segment, then hands off `project up` one level down. `project
 up` ends at a live webservice on `localhost:30080`. `project down` deletes the kind cluster and stops the
-VM while preserving host `.data`; `project destroy` deletes the VM too.
+VM, leaving its disk intact; `project destroy` deletes the VM **and its disk**.
 
 The core command tree is exactly `project`, `test`, `service`, `context`, and `check-code`. Cluster
 bring-up is the `deploy-kind` / `deploy-chart` chain steps; `project init` writes the root config;
@@ -210,7 +210,9 @@ installed, orchestrated, and torn back down by the chain:
   cluster;
 - **(e)** the **expose-port** step verifies the published NodePort, ending `project up` at a live
   webservice on `localhost:30080`;
-- **(f)** teardown spins everything back down, preserving host `.data`.
+- **(f)** teardown releases every resource the chain created; `project destroy` deletes the VM and its
+  disk, so state written inside the guest does not outlive it (see
+  [durable state](../architecture/durable_state.md)).
 
 Every dependency is install-and-verify (the `ensure` step kinds), so the binary is never blocked by an
 absent dependency.
@@ -293,10 +295,13 @@ The operator drives the chain through the `project` lifecycle.
 - **Accelerator e2e assertion (implemented in `e2e-tabs`)** — fills the two add inputs, clicks Add, waits for the asynchronous
   result, asserts `1.5 + 2.25` and Float32 `2^24 + 1` rounding, and checks backend metadata/artifact hash returned by the
   daemon so a fake in-process accelerator cannot pass.
-- **`project down`** — delete the kind cluster, stop the VM, and preserve host `.data`.
+- **`project down`** — delete the kind cluster and stop the VM; the VM's disk and its contents are left
+  intact.
 - **`project destroy`** — stop then delete everything the
   chain spun up. Tearing the VM down removes every container, kind cluster, and registry the chain stood
-  up inside it. Host `.data` is **preserved** (the never-delete-`.data` invariant). Teardown is
+  up inside it. `destroy` is **destructive**: it deletes the VM *and its disk* (`wsl --unregister`,
+  `incus delete --force`, `limactl delete --force`), so anything written inside the guest — including a
+  guest-side `.data` — goes with it (see [durable state](../architecture/durable_state.md)). Teardown is
   idempotent and tolerant of a partial stack; it attempts every independent cleanup and aggregates failures. **`project destroy` needs a sibling
   `<project>.dhall`**; a chain failure *during* `project up` now runs the same best-effort `project destroy`
   teardown at the root frame (the `applyChain` guard), leaving no orphaned VM, kind cluster, or `.wslconfig`.

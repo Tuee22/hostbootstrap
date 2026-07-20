@@ -73,8 +73,9 @@ S3-backed, the restarted pod re-reads the blobs from MinIO and the pushed tag
 survives. The `registry-persistence` harness case proves exactly this: push → delete
 the registry pod → the tag is still served. The MinIO PVC lives on the kind node's
 `local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
-which deletes the cluster (the in-VM cluster is ephemeral by design; only host
-`.data` persists).
+which deletes the cluster (the in-VM cluster is ephemeral by design; the registry's
+durable state lives inside the cluster, and the demo mirrors none of it back to the
+host — see [../architecture/durable_state.md](../architecture/durable_state.md)).
 
 **The design trade.** The original rationale above for `registry:2` was a
 *single-binary, not a multi-pod stack* store — minimal moving parts. MinIO-backing

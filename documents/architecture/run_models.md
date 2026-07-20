@@ -22,7 +22,7 @@
   and `ContainerOnly →` `HostNative` when a host-native build is in force, else `OneShot`.
 - **Deploy is a persistent stack.** `project up` stands up a long-lived stack and keeps it running
   (services, clusters, VMs stay up); `project down` deletes kind compute and stops VM frames, and
-  `project destroy` deletes everything spun up, both preserving `.data`. `test run all` is the separate
+  `project destroy` deletes everything spun up. `test run all` is the separate
   test surface, decoupled from deploy.
 - The `HostDaemon` model is reached operationally through the **`service` command**: `service run` is a
   **leaf-frame pod entrypoint** (not an orchestrator) that runs one long-running role, and it is deployed
@@ -194,7 +194,7 @@ A single `project up` on Incus/Linux stands up the live persistent stack — a c
 `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry (NodePort
 30500) → the project image pushed to the in-cluster registry → the web chart pod at `localhost:30080`
 serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` deletes kind
-compute and stops the VM while preserving host `.data`; `project destroy` deletes the VM too. The test harness
+compute and stops the VM; `project destroy` deletes the VM and its disk. The test harness
 drives this same `project up`: it writes a test `<project>.dhall`, refuses to run if a `<project>.dhall`
 already exists or a production cluster is running, runs `project up`, asserts in-frame via the
 self-reference lift, then runs `project destroy` (deleting only what it created this run) — using
@@ -211,5 +211,7 @@ durable test storage `.test_data`, never `.data`.
   `keyHostNative` reflects.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind/Helm lifecycle the `Cluster`
   model drives, expressed as `deploy-kind`/`deploy-chart` chain steps.
+- [durable state](durable_state.md) — what the never-delete-`.data` invariant does and does not
+  guarantee when `project down` and `project destroy` tear the stack down.
 - [library hierarchy](library_hierarchy.md) — the extension-stream merge whose stream 1 is the lift chain.
 - [testing](../engineering/testing.md) — the `test` surface that runs the harness over a project's matrix.

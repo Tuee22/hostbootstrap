@@ -54,6 +54,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
   `HostNative`, `HostDaemon`, `Cluster`) and the key that selects one, never declared in Dhall.
 - [architecture/harness_workflow.md](architecture/harness_workflow.md) — the per-case `runMatrix` loop,
   the seam-split (L0 driver vs cluster seams vs app matrix), the mechanical delete-guard, and budget-slicing.
+- [architecture/durable_state.md](architecture/durable_state.md) — the **canonical home of the
+  never-delete-`.data` invariant**: what teardown's removal set does and does not guarantee, why `.data` is
+  frame-relative (and therefore a guest path on a lifted topology), the one-way host→guest transfer on every
+  substrate, and the open work to make host-durable project state real.
 
 ## Engineering
 
@@ -141,8 +145,10 @@ The fixed core command surface is exactly five user-facing verbs: `project`, `te
 and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command. The recursive
 `project init|up|down|destroy` lifecycle interprets the project's `chain :: cfg -> [Step]` value
 across the three-frame descent: `project up` runs the current frame's steps then hands `pb project up` to
-the next frame, standing up the live persistent stack; `project down` / `project destroy` tear it down
-while preserving host `.data`.
+the next frame, standing up the live persistent stack; `project down` / `project destroy` tear it down —
+`down` stops the provider VM and deletes the kind cluster without removing any filesystem path, while
+`destroy` also deletes the provisioned frame and its disk (see
+[architecture/durable_state.md](architecture/durable_state.md)).
 
 - **The chain is the single representation.** Cluster bring-up runs as the `deploy-kind` and `deploy-chart`
   steps, the `context-init` step mints the child config, `deploy-registry` and `push-image` stand up and load

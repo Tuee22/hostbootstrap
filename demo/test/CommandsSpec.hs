@@ -7,9 +7,10 @@ import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Text as T
 import HostBootstrap.Chain (renderChain)
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver), acceleratorIngressPlan)
+import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Lift (ContainerLift (clExtraArgs), localContext)
+import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), localContext)
 import HostBootstrap.Service (serviceVariantNames)
 import HostBootstrap.Step (Step (..), chainFrames, frameId, postHandoffStepsForFrame, stepKindName)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
@@ -140,18 +141,27 @@ tests =
             nvkindTemplate <- readFile "nvkind-in-cluster.yaml"
             hostKind <- readFile "kind.yaml"
             let hostListenAddress = ingressKindListenAddress (acceleratorIngressPlan HostResidentDaemon 8081 30081)
+                countLines fragment = length . filter (isInfixOf fragment) . lines
             assertBool "chart renders the configured accelerator Service type" (".Values.service.accelerator.type" `isInfixOf` serviceTemplate)
             assertBool "accelerator Service targets its isolated listener" (".Values.service.accelerator.targetPort" `isInfixOf` serviceTemplate)
             assertBool "chart omits nodePort unless the plan selects NodePort" ("if eq .Values.service.accelerator.type \"NodePort\"" `isInfixOf` serviceTemplate)
             assertBool "chart consumes the derived service frame" (".Values.service.currentFrame" `isInfixOf` deploymentTemplate)
             assertBool "chart rolls when the applied service config changes" (".Values.service.configHash" `isInfixOf` deploymentTemplate)
-            assertBool "single-peer web rollout cannot overlap replicas" ("type: Recreate" `isInfixOf` deploymentTemplate)
+            assertBool "durable web identity is owned by a StatefulSet" ("kind: StatefulSet" `isInfixOf` deploymentTemplate)
+            assertBool "single-peer web rollout stays ordered" ("serviceName:" `isInfixOf` deploymentTemplate && "podManagementPolicy: OrderedReady" `isInfixOf` deploymentTemplate && "updateStrategy:" `isInfixOf` deploymentTemplate)
+            assertBool "web pod mounts the kind-node durable host path" ("path: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate && "type: DirectoryOrCreate" `isInfixOf` deploymentTemplate && "mountPath: /var/lib/hostbootstrap-demo-data/web" `isInfixOf` deploymentTemplate)
             assertBool "there is no hand-written topology ConfigMap" (not staticConfigMap)
             assertBool "browser engines serialize against the single accelerator session" ("workers: 1" `isInfixOf` playwrightConfig)
             assertBool "in-cluster config has no accelerator host mapping" (not ("hostPort: 30081" `isInfixOf` inClusterKind))
             assertBool "nvkind template injects all GPUs into its worker" ("/var/run/nvidia-container-devices/all" `isInfixOf` nvkindTemplate)
             assertBool "nvkind GPU worker is selected by the device-plugin chart" ("nvidia.com/gpu.present: \"true\"" `isInfixOf` nvkindTemplate)
             assertBool "nvkind accelerator remains ClusterIP-only" (not ("hostPort: 30081" `isInfixOf` nvkindTemplate))
+            countLines "hostPath: /var/tmp/hostbootstrap-demo-data" hostKind @?= 1
+            countLines "containerPath: /var/lib/hostbootstrap-demo-data" hostKind @?= 1
+            countLines "hostPath: /var/tmp/hostbootstrap-demo-data" inClusterKind @?= 1
+            countLines "containerPath: /var/lib/hostbootstrap-demo-data" inClusterKind @?= 1
+            countLines "hostPath: /var/tmp/hostbootstrap-demo-data" nvkindTemplate @?= 2
+            countLines "containerPath: /var/lib/hostbootstrap-demo-data" nvkindTemplate @?= 2
             assertBool "host-daemon config consumes the planned local-only address" $
                 case hostListenAddress of
                     Just address -> ("listenAddress: \"" ++ address ++ "\"") `isInfixOf` hostKind
@@ -166,10 +176,15 @@ tests =
             demoBaseImageFor (Substrate WindowsGpu Amd64)
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
         , testCase "direct project-container handoff passes the GPU and normal handoff does not" $ do
-            let directArgs = clExtraArgs (demoDeployImage "vm-project-container-1" True "cfg")
-                ordinaryArgs = clExtraArgs (demoDeployImage "vm-project-container-2" False "cfg")
+            let directLift = demoDeployImage "vm-project-container-1" True "cfg"
+                ordinaryLift = demoDeployImage "vm-project-container-2" False "cfg"
+                directArgs = clExtraArgs directLift
+                ordinaryArgs = clExtraArgs ordinaryLift
+                durableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
             assertBool "direct handoff has --gpus=all" ("--gpus=all" `elem` directArgs)
             assertBool "ordinary handoff has no GPU flag" ("--gpus=all" `notElem` ordinaryArgs)
+            assertBool "direct handoff carries the host durable root" (durableMount `elem` clMounts directLift)
+            assertBool "VM-backed handoff carries the provider-shared durable root" (durableMount `elem` clMounts ordinaryLift)
         , testCase "Linux GPU assertions stay local instead of entering Incus" $
             demoTestFrameContext (Substrate LinuxGpu Amd64) @?= localContext
         , testCase "direct-cluster safety checks every planned node and fails closed" $ do

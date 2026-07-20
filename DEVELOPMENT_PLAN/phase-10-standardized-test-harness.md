@@ -22,7 +22,7 @@ aborts the remaining variants); the demo harness drives the **Production** profi
 (see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2 `test run all` reporting
 **`6/6 passed`**: the guaranteed-teardown engine ran the two message variants in turn (each `project up` →
 assert → `project destroy`), the in-VM `productionClusterRunning` probe gated the run, and both variants tore
-down cleanly with host `.data` preserved.
+down cleanly.
 
 `HostBootstrap.Harness` provides `runMatrix :: Seams env -> [Case] -> IO Report`, which drives the case
 matrix, deriving an isolated per-case profile (`testCaseProfile` → `<project>-test-<case>` /

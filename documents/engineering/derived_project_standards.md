@@ -275,9 +275,9 @@ fixed, so it adds no verbs. The image-build hook runs as `project init --role im
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster
 (kind `extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry
 (NodePort 30500) → the project image pushed to that registry → the web chart pod →
-`localhost:30080` serving HTTP 200 — after which `project down` / `project destroy` tear it down with the
-durable host `.data` preserved. `test run all` **drives that same `project up`** under a test config (one
-per distinct test config), asserts the live stack, and tears it down — reusing the chain rather than a
+`localhost:30080` serving HTTP 200 — after which `project down` / `project destroy` tear it down.
+`test run all` **drives that same `project up`** under a test config (one per distinct test config),
+asserts the live stack, and tears it down — reusing the chain rather than a
 separate per-case cluster.
 `DEVELOPMENT_PLAN/` owns the phase status; this page describes the model and the worked `demo/` consumer
 that realizes it.

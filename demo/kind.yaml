@@ -29,3 +29,6 @@ nodes:
         hostPort: 30900
         listenAddress: "0.0.0.0"
         protocol: TCP
+    extraMounts:
+      - hostPath: /var/tmp/hostbootstrap-demo-data
+        containerPath: /var/lib/hostbootstrap-demo-data

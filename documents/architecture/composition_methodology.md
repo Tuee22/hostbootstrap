@@ -90,7 +90,10 @@ partial descent resumes cleanly. `project up --dry-run` renders `chain cfg` with
 VMs use `incus`/`limactl` **stop**, while kind clusters use `kind delete cluster`. `project destroy` stops
 then deletes everything the chain spun up. **Teardown recurses in** while each frame is still up, then
 stops/deletes on the ascent (the VM is stopped last); it is best-effort and idempotent, tolerating a
-partial stack, and `.data` is always preserved (the core invariant). (This covers the explicit
+partial stack, and neither verb places the plan's data path in its teardown removal set — `down`'s
+removal set is empty and `destroy`'s holds only derived paths, so an existing `.data` directory is left
+on disk (on a lifted frame it is the frame's deletion, not teardown, that takes it; see
+[durable_state](durable_state.md)). (This covers the explicit
 `down`/`destroy` verbs and the reconcile happy path; a chain failure *during* `project up` now runs the same
 best-effort `project destroy` teardown at the root frame — `applyChain` is guarded so no VM + in-VM cluster +
 global `.wslconfig` cordon is leaked — and the reconcile exists-path re-applies the WSL2 cordon and
@@ -270,7 +273,9 @@ demo contributes its deploy as the substrate-selected pure value
 `chain :: cfg -> [Step]` value: `project up` descends the 3-frame fractal topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`), `project down` stops service/VM
 frames and deletes kind clusters while preserving durable state, and `project destroy` deletes the
-provisioned compute frames — both preserving durable host `.data` (§ O).
+provisioned compute frames — neither places `.data` in its teardown removal set (§ Y), though on a
+lifted topology `destroy` deletes the frame `.data` resolves inside (see
+[durable_state](durable_state.md)).
 
 `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <suite>|all` runs the
@@ -285,7 +290,7 @@ A single `project up` stands up the live persistent stack end-to-end — a cordo
 budget-sized VM wall; kind `extraPortMappings` publish NodePorts to the VM localhost), the in-cluster
 registry (NodePort 30500), the project image pushed to the in-cluster registry, and the web chart
 pod at `localhost:30080` serving HTTP 200 via config-selected `service run` — then `project down`/`project destroy` tear
-it down with host `.data` preserved.
+it down.
 
 This is validated end-to-end on two of the three metal substrates:
 Incus/Linux and a 16 GiB Apple-Silicon Lima host (2026-06-20).

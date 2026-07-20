@@ -81,7 +81,7 @@ data ProjectSpec cfg tcfg = ProjectSpec
     {- ^ The chain-frame teardown the @project down@ / @project destroy@
     lifecycle runs after the recursive cluster teardown: stop (@False@) or
     delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
-    and idempotent; the never-delete-@.data@ invariant (§ O) is the cluster
+    and idempotent; the never-delete-@.data@ invariant (§ Y) is the cluster
     teardown's responsibility. Attach with 'withTeardown'.
     -}
     , psInit :: InitArgs -> cfg
@@ -148,7 +148,7 @@ withFrameContext f spec = spec{psFrameContext = f}
 {- | Attach the project's chain-frame teardown: how @project down@ (stop, @False@)
 and @project destroy@ (delete, @True@) tear down the frames the chain provisioned
 (for the demo: stop/delete the VM). Runs after the core's recursive cluster
-teardown (which preserves host @.data@, § O), so the outermost frame — the VM — is
+teardown (which keeps @.data@ out of its removal set, § Y), so the outermost frame — the VM — is
 stopped or deleted last. Best-effort and idempotent: a missing frame is not an
 error, so a partial stack always tears down.
 -}

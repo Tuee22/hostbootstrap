@@ -18,7 +18,10 @@
   `limactl list`, guarded `limactl delete`, and `limactl stop` (the stop-without-delete capability).
 - The VM lifecycle is driven by the core `deploy-VM` step kind plus the project teardown: `project up`
   brings the named instance up, `project down` stops it without deleting, and `project destroy` deletes
-  it. `.data` is always preserved.
+  the instance **and its disk** — nothing written inside the guest survives it.
+- Staging into the guest is one-way: `copyToVMArgs` emits `limactl copy` host → guest and has no
+  copy-from-guest counterpart, so a guest-side write has no path back to the host. See
+  [durable state](../architecture/durable_state.md).
 - On Apple Silicon a real Lima VM is the pristine host; native Linux uses the Incus VM path. The Step
   algebra is shared — only the provider builders differ.
 - The recursive `project` interpreter drives these steps across the composed frame stack.
@@ -71,8 +74,11 @@ bring-up, stop, and teardown:
   already-stopped stack tears down cleanly and idempotently.
 
 Teardown is best-effort and tolerates a partially-provisioned stack: a missing or already-stopped
-instance is reported and skipped, not an error. Across the whole lifecycle the demo's persistent `.data`
-is preserved — destroying the VM removes the compute frame, not the durable store.
+instance is reported and skipped, not an error. `limactl delete --force` removes the instance's disk
+along with the instance, so on a lifted topology nothing written inside the guest — including a
+guest-side `.data` — survives `project destroy`. The never-delete-`.data` invariant is a property of the
+*cluster* teardown's removal set, not of frame deletion; see
+[durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted
 with Incus builders on native Linux (see [incus](incus.md)). A project does not re-implement VM

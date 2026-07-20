@@ -94,6 +94,7 @@ import HostBootstrap.Cluster.Lifecycle (
     clusterCreate,
     clusterNodeNames,
     deployChart,
+    ensureDurableDataPath,
     resolvePlan,
     resolvePlanWithDriver,
  )
@@ -150,12 +151,15 @@ import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, Wi
 import HostBootstrap.Substrate.Provider (
     ExistsProbe (..),
     HostEffect (..),
+    HostPathShare (..),
+    ShareReconcile (..),
     StagedFile (..),
     SubstrateProvider (..),
     VMHandles (..),
     WaitProbe (..),
     membersOf,
     selectSubstrateProvider,
+    shareReconcileEffects,
     stageFileEffects,
     vmShellArgs,
  )
@@ -180,7 +184,7 @@ import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getSymbolicLinkTarget, makeAbsolute, pathIsSymbolicLink, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
@@ -467,7 +471,7 @@ contextInitDirectAnnounce _ =
         "context-init: the Linux GPU direct project-container config is streamed into the host-launched container with the direct topology witness"
 
 {- | The persistent cluster plan for the demo's container-frame steps: the
-Production profile (fixed name + the never-deleted @.data@ path, § O), rooted at
+Production profile (fixed name + the never-removed @.data@ path, § Y), rooted at
 the container's source root.
 -}
 containerPlan :: Context.BinaryContext -> ClusterPlan
@@ -1001,7 +1005,7 @@ serviceConfigMapManifest serviceConfig =
 {- | @deploy-chart@: derive and apply the web service's ConfigMap from the live
 parent context, then install the chart. The service frame and a stable config
 fingerprint are Helm values so the pod witness is exact and a changed config
-rolls the Deployment even though the ConfigMap is applied outside Helm.
+rolls the StatefulSet even though the ConfigMap is applied outside Helm.
 -}
 deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
@@ -1765,7 +1769,7 @@ demoTestUp label = do
     pure (CaseEnv cfg (demoTestFrameContext (hcSubstrate cfg)) label)
 
 {- | Tear the test stack down by driving @project destroy@ (best-effort, so a
-partial stack always tears down; host @.data@ is preserved by the lifecycle, § O).
+partial stack always tears down).
 Env-independent (§ Y): @project destroy@ re-detects the stack itself, so the harness
 can run this even after a failed @project up@ — the guaranteed-teardown path.
 -}
@@ -2067,6 +2071,114 @@ demoProvider :: HostConfig -> IO SubstrateProvider
 demoProvider cfg = do
     handles <- demoVMHandles
     either die pure (selectSubstrateProvider (hcSubstrate cfg) handles)
+
+{- | Stable daemon-host path used at the two Docker boundaries. The provider
+share exposes the project-owned host @.data@ at a substrate-specific guest path;
+the VM bootstrap creates this alias to that path. The direct Linux GPU lane
+creates the same alias on the metal host. Keeping the Docker-visible path fixed
+lets the checked-in kind configs carry one byte-for-byte mount contract while
+the actual durable directory remains @<host project root>/.data@.
+-}
+durableDockerHostPath :: FilePath
+durableDockerHostPath = "/var/tmp/hostbootstrap-demo-data"
+
+{- | Reconcile the provider-specific post-create part of a host-path share.
+Incus probes its instance device names and adds the managed disk device only
+when absent. Lima declares its mount at create time and WSL2 already exposes the
+Windows drive, so both are no-ops here. Probe failure is ambiguous and therefore
+fails closed.
+-}
+reconcileDurableShare :: HostConfig -> HostPathShare -> IO ()
+reconcileDurableShare cfg share =
+    case hpsReconcile share of
+        Nothing -> pure ()
+        Just (ShareReconcile (ExistsProbe tool args _) _ _) -> do
+            result <- runTool cfg tool args
+            output <- case result of
+                Right (ExitSuccess, out, _) -> pure out
+                Right (ExitFailure n, _, err) ->
+                    die ("vm up: durable-share probe failed (exit " ++ show n ++ "): " ++ err)
+                Left err -> die ("vm up: durable-share probe failed: " ++ err)
+            runEffects cfg (shareReconcileEffects share output)
+
+{- | Verify the provider share from inside the ready VM and mint the stable
+Docker-host alias without replacing anything already present. An existing
+correct link is an idempotent no-op; an old Lima VM without the create-time
+mount, a wrong link, or a non-link collision fails closed instead of running a
+stack whose writes would disappear with the VM.
+-}
+prepareVMDurableAlias :: HostConfig -> SubstrateProvider -> HostPathShare -> IO ()
+prepareVMDurableAlias cfg provider share =
+    runInDemoVM
+        cfg
+        provider
+        ( "set -eu; durable_target="
+            ++ shellQuote (hpsGuestPath share)
+            ++ "; durable_alias="
+            ++ shellQuote durableDockerHostPath
+            ++ "; test -d \"$durable_target\"; test -w \"$durable_target\"; "
+            ++ "if [ -L \"$durable_alias\" ]; then "
+            ++ "test \"$(readlink \"$durable_alias\")\" = \"$durable_target\"; "
+            ++ "elif [ -e \"$durable_alias\" ]; then "
+            ++ "echo \"durable alias collision: $durable_alias\" >&2; exit 1; "
+            ++ "else ln -s \"$durable_target\" \"$durable_alias\"; fi; "
+            ++ "test -d \"$durable_alias\"; test -w \"$durable_alias\""
+        )
+
+{- | Direct Linux GPU counterpart of 'prepareVMDurableAlias'. Directory links
+are created through the typed filesystem API, never by replacing a pre-existing
+path. A stale link to a different checkout is reported for operator resolution.
+-}
+prepareLocalDurableAlias :: FilePath -> IO ()
+prepareLocalDurableAlias durableTarget = do
+    linked <- pathIsSymbolicLink durableDockerHostPath
+    if linked
+        then do
+            actual <- getSymbolicLinkTarget durableDockerHostPath
+            unless (normalise actual == normalise durableTarget) $
+                die
+                    ( "durable alias "
+                        ++ durableDockerHostPath
+                        ++ " points to "
+                        ++ actual
+                        ++ ", expected "
+                        ++ durableTarget
+                    )
+        else do
+            directoryCollision <- doesDirectoryExist durableDockerHostPath
+            fileCollision <- doesFileExist durableDockerHostPath
+            when (directoryCollision || fileCollision) $
+                die ("durable alias collision: " ++ durableDockerHostPath ++ " already exists and is not a symbolic link")
+            createDirectoryLink durableTarget durableDockerHostPath
+    accessible <- doesDirectoryExist durableDockerHostPath
+    unless accessible (die ("durable alias is not an accessible directory: " ++ durableDockerHostPath))
+
+{- | Remove the direct lane's derived alias on @project destroy@, but only when
+it is still the exact link this project owns. The host @.data@ target is never
+removed. A collision or retargeted link is left untouched and reported.
+-}
+removeLocalDurableAliasIfOwned :: FilePath -> IO ()
+removeLocalDurableAliasIfOwned durableTarget = do
+    linked <- pathIsSymbolicLink durableDockerHostPath
+    if linked
+        then do
+            actual <- getSymbolicLinkTarget durableDockerHostPath
+            if normalise actual == normalise durableTarget
+                then removeFile durableDockerHostPath
+                else
+                    die
+                        ( "refusing to remove durable alias "
+                            ++ durableDockerHostPath
+                            ++ ": it points to "
+                            ++ actual
+                            ++ ", expected "
+                            ++ durableTarget
+                        )
+        else do
+            directoryCollision <- doesDirectoryExist durableDockerHostPath
+            fileCollision <- doesFileExist durableDockerHostPath
+            when (directoryCollision || fileCollision) $
+                die ("refusing to remove durable alias collision at " ++ durableDockerHostPath)
 
 {- | Run a list of pure host effects, dying on the first failure (the launch /
 staging path). 'WriteHostFile' backs up any existing file once (the global
@@ -2417,7 +2529,10 @@ runVmUp :: IO ()
 runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx -> do
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
-    let lifecycleResources = resourcesFromContext ctx
+    projectRoot <- makeAbsolute =<< getCurrentDirectory
+    hostDurableRoot <- ensureDurableDataPath projectRoot
+    let durableShare = spShare sp hostDurableRoot
+        lifecycleResources = resourcesFromContext ctx
         envelope = envelopeOfResources lifecycleResources
     preflightDemoLifecycleHost cfg lifecycleResources
     -- Idempotent reconcile-to-running (§ Y): if the VM already exists, ensure it
@@ -2443,19 +2558,21 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
             -- crashed-run distro left stopped would otherwise idle-stop mid-recovery),
             -- while a RUNNING one already has it live. Lima/Incus carry no launch file
             -- effects and never idle-stop, so both steps are a no-op there.
-            reCordon <- either die pure (spLaunch sp envelope)
+            reCordon <- either die pure (spLaunch sp envelope (Just durableShare))
             runEffects cfg (fileEffectsOnly reCordon)
             applyReconcileCordon cfg sp
             runEffectsBestEffort cfg ("vm up: starting existing " ++ spVmId sp) (spStartExisting sp)
         else do
-            launch <- either die pure (spLaunch sp envelope)
+            launch <- either die pure (spLaunch sp envelope (Just durableShare))
             when (isWindows (hcSubstrate cfg)) discloseWslShutdown
             putStrLn ("vm up: launching " ++ spVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
             runEffects cfg launch
+    reconcileDurableShare cfg durableShare
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
     vmReady <- substrateWait cfg sp
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " network to come up")
     waitVMNetwork vmReady cfg sp
+    prepareVMDurableAlias cfg sp durableShare
     putStrLn ("vm up: " ++ spVmId sp ++ " is up")
 
 {- | Shared metal-host floor/headroom gate for both VM-backed and direct Linux
@@ -2614,7 +2731,9 @@ runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Cont
     preflightDemoLifecycleHost initialCfg (resourcesFromContext ctx)
     runEnsure EnsureDocker.reconciler
     cfgAfterDocker <- resolveHostConfig
-    root <- getCurrentDirectory
+    root <- makeAbsolute =<< getCurrentDirectory
+    hostDurableRoot <- ensureDurableDataPath root
+    prepareLocalDurableAlias hostDurableRoot
     let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
     harnessRun <- lookupEnv harnessMutationGuardEnv
     when (harnessRun == Just "1") $ do
@@ -2719,6 +2838,7 @@ stageSource cfg provider = do
             , "--exclude=.build"
             , "--exclude=node_modules"
             , "--exclude=.test_data"
+            , "--exclude=.data"
             , "--exclude=.role-bus"
             , "--exclude=.venv"
             , -- Transient host-side caches: never staged into the VM, and (being
@@ -2795,9 +2915,11 @@ dockerCommand args = unwords (map shellQuote ("docker" : args))
 metal frame's only provisioned resource is the VM, so @down@ (@False@) /stops/ it
 (the stop-without-delete capability) and @destroy@ (@True@) /deletes/ it
 (guard-prefixed). The core runs this after the recursive cluster teardown — which
-preserves host @.data@ (§ O) — so the VM is the last frame torn down. Best-effort
-and idempotent: a missing or already-stopped VM is reported and skipped, never a
-hard failure, so a partial stack always tears down.
+never enumerates the plan's @.data@ path for removal (§ Y) — so the VM is the last
+frame torn down. The project @.data@ root is host-owned and merely shared
+through that VM, so deleting the frame removes the guest mount/alias but not the
+durable target. Best-effort and idempotent: a missing or already-stopped VM is
+reported and skipped, never a hard failure, so a partial stack always tears down.
 -}
 demoTeardown :: ProjectConfig -> Bool -> IO ()
 demoTeardown projectCfg destroyVM = do
@@ -2818,14 +2940,15 @@ demoTeardown projectCfg destroyVM = do
             putStrLn "project teardown: direct Linux GPU lane has no provider VM"
             unless (toolPresent cfg Docker) $
                 die "project teardown: Docker is unavailable, so absence of the direct nvkind cluster cannot be proven"
-            let root = T.unpack (Context.sourceRoot (context projectCfg))
-                directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+            root <- makeAbsolute (T.unpack (Context.sourceRoot (context projectCfg)))
+            let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
             exists <- directClusterExists cfg directPlan
             when exists $ do
                 putStrLn "project teardown: deleting the direct nvkind cluster through the project image"
                 runOrDie cfg Docker directClusterTeardownArgs
             remaining <- directClusterExists cfg directPlan
             when remaining (die "project teardown: direct nvkind node containers remain after deletion")
+            when destroyVM (removeLocalDurableAliasIfOwned (root </> ".data"))
         | otherwise = do
             provider <- demoProvider cfg
             let name = spVmId provider
@@ -2889,8 +3012,9 @@ host networking. The project-container child @<project>.dhall@ is delivered
 **in-place** via 'clConfigDelivery' — the narrowed projection (@payload@) is piped
 on the handoff @stdin@ and the entrypoint writes it to
 @/usr/local/bin/hostbootstrap-demo.dhall@ before @exec@ing @project up@, so there is
-**no config bind-mount** (only the docker-socket and @/run/hostbootstrap@ witness
-mounts remain). It also forwards the Docker Hub credential by /name/ only
+**no config bind-mount**. The remaining mounts are the Docker socket, the
+host-backed durable root, and (for VM-backed lanes) the provider witness. It also
+forwards the Docker Hub credential by /name/ only
 (@-e HOSTBOOTSTRAP_REGISTRY_AUTH@) — never the value — so the in-container kind/curl
 pulls authenticate; with no host login the variable is unset and pulls stay
 anonymous (see "HostBootstrap.Registry").
@@ -2900,8 +3024,10 @@ demoDeployImage currentFrameId directLinuxGpu payload =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
         , clMounts =
-            Mount "/var/run/docker.sock" "/var/run/docker.sock" False
-                : [Mount "/run/hostbootstrap" "/run/hostbootstrap" True | not directLinuxGpu]
+            [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
+            , Mount (T.pack durableDockerHostPath) (T.pack (containerSourceRoot ++ "/.data")) False
+            ]
+                ++ [Mount "/run/hostbootstrap" "/run/hostbootstrap" True | not directLinuxGpu]
         , clExtraArgs =
             [ "--network=host"
             , "-e"

@@ -29,6 +29,8 @@ module HostBootstrap.Substrate.Provider (
     WaitProbe (..),
     FileTransfer (..),
     StagedFile (..),
+    ShareReconcile (..),
+    HostPathShare (..),
 
     -- * The one pure lift per substrate
     VMHandles (..),
@@ -37,6 +39,7 @@ module HostBootstrap.Substrate.Provider (
 
     -- * Pure interpreters over the provider's data
     membersOf,
+    shareReconcileEffects,
     stageFileEffects,
     vmShellArgs,
     windowsPathToWslMount,
@@ -57,7 +60,9 @@ import HostBootstrap.Context (ProviderKind (..), ResourceEnvelope)
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (
     IncusVM (..),
+    addDiskDeviceArgs,
     createVMArgs,
+    deviceListArgs,
     destroyVMArgs,
     execVMArgs,
     pushFileArgs,
@@ -99,8 +104,9 @@ data Membership
       WslRunningMember
     deriving (Eq, Show)
 
-{- | An idempotency probe: list with @tool args@, then test the VM id against the
-parsed output by 'Membership'.
+{- | An idempotency probe: list with @tool args@, then test a caller-owned
+membership key (a VM id or managed device name) against the parsed output by
+'Membership'.
 -}
 data ExistsProbe = ExistsProbe HostTool [String] Membership
     deriving (Eq, Show)
@@ -131,6 +137,31 @@ data StagedFile = StagedFile
     }
     deriving (Eq, Show)
 
+{- | An optional post-create share reconciliation. The probe lists membership
+keys, 'srMember' is the managed key to look for, and 'srWhenMissing' is the
+effect list to run only when that key is absent. Incus uses this to make its
+post-create disk-device attachment idempotent; Lima declares the share at VM
+creation and WSL2 already exposes the host drive, so both use 'Nothing'.
+-}
+data ShareReconcile = ShareReconcile
+    { srProbe :: ExistsProbe
+    , srMember :: String
+    , srWhenMissing :: [HostEffect]
+    }
+    deriving (Eq, Show)
+
+{- | One host-backed directory as seen on both sides of a provider boundary.
+Lima and Incus preserve the absolute path in the guest; WSL2 projects a Windows
+drive path into its DrvFs mount. 'hpsReconcile' captures only an extra
+/post-create/ step; Lima's create-time option is folded into 'spLaunch'.
+-}
+data HostPathShare = HostPathShare
+    { hpsHostPath :: FilePath
+    , hpsGuestPath :: FilePath
+    , hpsReconcile :: Maybe ShareReconcile
+    }
+    deriving (Eq, Show)
+
 {- | The consumer-supplied handles the pure selection needs: the per-substrate VM
 identities, the delete-guard prefix, and the resolved @.wslconfig@ path (an
 environment lookup the consumer performs; unused off Windows).
@@ -144,17 +175,20 @@ data VMHandles = VMHandles
     }
     deriving (Eq, Show)
 
-{- | The one pure lift into a substrate. Every field is data except 'spLaunch',
-which is a function only because the sized launch depends on the active
-'ResourceEnvelope' (its 'Left' carries a budget-parse error). The teardown
-'spDestroy' is 'Left' when the guard prefix refuses the VM name.
+{- | The one pure lift into a substrate. 'spLaunch' is a function because the
+sized launch depends on the active 'ResourceEnvelope' and an optional host-path
+share; 'spShare' projects a caller-supplied absolute host path into the
+provider-specific pure share plan. The launch 'Left' carries a budget-parse
+error. The teardown 'spDestroy' is 'Left' when the guard prefix refuses the VM
+name.
 -}
 data SubstrateProvider = SubstrateProvider
     { spVmId :: String
     , spProviderKind :: ProviderKind
     , spLiftLayer :: LiftLayer
     , spExists :: ExistsProbe
-    , spLaunch :: ResourceEnvelope -> Either String [HostEffect]
+    , spLaunch :: ResourceEnvelope -> Maybe HostPathShare -> Either String [HostEffect]
+    , spShare :: FilePath -> HostPathShare
     , spStartExisting :: [HostEffect]
     , -- | @Nothing@ where the cordon is baked into the VM at create (Lima/Incus,
       -- which never idle-stop). @Just@ for WSL2, whose cordon is the GLOBAL
@@ -187,9 +221,11 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spProviderKind = LimaVMProvider
                 , spLiftLayer = ViaLimaVM vm
                 , spExists = ExistsProbe Lima ["list", "-q"] LinesMember
-                , spLaunch = \env -> do
+                , spLaunch = \env share -> do
                     sizing <- limaSizingArgs env
-                    pure [RunHostTool Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"]))]
+                    let mount = maybe [] (Lima.writableMountArgs . hpsHostPath) share
+                    pure [RunHostTool Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"] ++ mount))]
+                , spShare = \source -> HostPathShare source source Nothing
                 , spStartExisting = [RunHostTool Lima ["start", limaName vm]]
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Lima (Lima.shellVMArgs vm ["true"])
@@ -205,9 +241,23 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spProviderKind = IncusVMProvider
                 , spLiftLayer = ViaVM vm
                 , spExists = ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
-                , spLaunch = \env -> do
+                , spLaunch = \env _ -> do
                     sizing <- incusSizingArgs env
                     pure [RunHostTool Incus (createVMArgs vm (concatMap toLaunchFlag sizing))]
+                , spShare = \source ->
+                    let device = "durable-data"
+                        target = source
+                     in HostPathShare
+                            { hpsHostPath = source
+                            , hpsGuestPath = target
+                            , hpsReconcile =
+                                Just
+                                    ShareReconcile
+                                        { srProbe = ExistsProbe Incus (deviceListArgs vm) LinesMember
+                                        , srMember = device
+                                        , srWhenMissing = [RunHostTool Incus (addDiskDeviceArgs vm device source target)]
+                                        }
+                            }
                 , spStartExisting = [RunHostTool Incus (startVMArgs vm)]
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Incus (execVMArgs vm ["true"])
@@ -225,7 +275,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spProviderKind = Wsl2VMProvider
                 , spLiftLayer = ViaWsl2VM vm
                 , spExists = ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
-                , spLaunch = \env -> do
+                , spLaunch = \env _ -> do
                     body <- wsl2SizingArgs env
                     budget <- budgetFromResources env
                     let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
@@ -234,6 +284,12 @@ selectSubstrateProvider sub h = case substrateName sub of
                         , RunHostTool Wsl Wsl2.wslShutdownArgs
                         , RunHostTool Wsl (Wsl2.wslInstallArgs distro vhd)
                         ]
+                , spShare = \source ->
+                    HostPathShare
+                        { hpsHostPath = source
+                        , hpsGuestPath = windowsPathToWslMount source
+                        , hpsReconcile = Nothing
+                        }
                 , -- WSL2 has no explicit "start"; the readiness probe (@wsl -d … true@)
                   -- boots the distro on demand.
                   spStartExisting = []
@@ -273,6 +329,21 @@ membersOf :: Membership -> String -> [String]
 membersOf LinesMember = lines
 membersOf WslQuietMember = Wsl2.wslListDistros
 membersOf WslRunningMember = Wsl2.wslRunningDistros
+
+{- | Classify a successful share-presence probe into the effects still needed.
+No post-create plan means no effects. For an Incus plan, an output containing
+the managed device name is already reconciled; otherwise emit its one add
+effect. Probe execution and non-zero handling remain in the IO interpreter.
+-}
+shareReconcileEffects :: HostPathShare -> String -> [HostEffect]
+shareReconcileEffects share output =
+    case hpsReconcile share of
+        Nothing -> []
+        Just reconcile ->
+            case srProbe reconcile of
+                ExistsProbe _ _ membership
+                    | srMember reconcile `elem` membersOf membership output -> []
+                    | otherwise -> srWhenMissing reconcile
 
 {- | Plan one host→guest file transfer (pure). Lima/Incus push to @dst@; WSL2 reads
 @src@ in place through its @/mnt@ drive mount, so it emits no host effect.

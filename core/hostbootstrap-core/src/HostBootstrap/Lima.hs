@@ -7,6 +7,7 @@ the argv through resolved 'HostTool' values.
 module HostBootstrap.Lima (
     LimaVM (..),
     startVMArgs,
+    writableMountArgs,
     stopVMArgs,
     shellVMArgs,
     copyToVMArgs,
@@ -27,6 +28,14 @@ newtype LimaVM = LimaVM
 startVMArgs :: LimaVM -> [String] -> [String]
 startVMArgs vm sizing =
     ["start", "-y", "--timeout", "15m", "--name=" ++ limaName vm, "--containerd", "none"] ++ sizing ++ ["template:ubuntu-24.04"]
+
+{- | Mount exactly one host directory into a newly created Lima instance with
+write access. @--mount-only@ replaces Lima's default read-only host-home mount,
+so a project path below that home does not overlap an existing mount and no
+unrelated host directory becomes writable.
+-}
+writableMountArgs :: FilePath -> [String]
+writableMountArgs source = ["--mount-only", source ++ ":w"]
 
 -- | Stop a named Lima instance without deleting it — the @project down@
 -- teardown stops the VM (it does not destroy it; that is @project destroy@).

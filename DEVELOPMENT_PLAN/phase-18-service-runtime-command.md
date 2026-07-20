@@ -78,7 +78,7 @@ project-owned service ADT value; a project-supplied projection maps it to an int
 command is gated to a service/daemon frame, and deployment config is delivered by a dynamically rendered
 ConfigMap that overrides the image's baked container `<project>.dhall`. There is no `service down`: the
 leaf process may run in a Kubernetes pod or as a host daemon, and its enclosing controller or project
-lifecycle owns teardown (§ O, § Y).
+lifecycle owns teardown (§ Y).
 
 For the accelerator reopening, extend that surface with a daemon variant that connects to the web service
 instead of serving HTTP itself. The daemon is still a leaf role: it performs no cluster bring-up and no

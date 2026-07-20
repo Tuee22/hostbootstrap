@@ -15,6 +15,8 @@ module HostBootstrap.Incus
     stopVMArgs,
     execVMArgs,
     pushFileArgs,
+    deviceListArgs,
+    addDiskDeviceArgs,
     rebootVMArgs,
     destroyVMArgs,
     classifyDockerReadiness,
@@ -53,6 +55,26 @@ execVMArgs vm cmd = ["exec", vmName vm, "--"] ++ cmd
 -- | @incus file push <src> <name>/<dst>@.
 pushFileArgs :: IncusVM -> FilePath -> FilePath -> [String]
 pushFileArgs vm src dst = ["file", "push", src, vmName vm ++ dst]
+
+-- | List the device names configured on an instance.
+deviceListArgs :: IncusVM -> [String]
+deviceListArgs vm = ["config", "device", "list", vmName vm]
+
+{- | Attach a host directory to an instance as a disk device. Incus mounts the
+host @source@ at @target@ inside the VM; the caller guards this add with
+'deviceListArgs' so reconciling an existing device is a no-op.
+-}
+addDiskDeviceArgs :: IncusVM -> String -> FilePath -> FilePath -> [String]
+addDiskDeviceArgs vm device source target =
+  [ "config",
+    "device",
+    "add",
+    vmName vm,
+    device,
+    "disk",
+    "source=" ++ source,
+    "path=" ++ target
+  ]
 
 -- | @incus restart <name>@ — reboot the guest.
 rebootVMArgs :: IncusVM -> [String]

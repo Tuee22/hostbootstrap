@@ -34,6 +34,20 @@ argvCases =
     testCase "file push targets <name><dst>" $
       pushFileArgs vm "./wrapper.pyz" "/root/wrapper.pyz"
         @?= ["file", "push", "./wrapper.pyz", "hostbootstrap-demo-vm/root/wrapper.pyz"],
+    testCase "device list targets the named instance" $
+      deviceListArgs vm
+        @?= ["config", "device", "list", "hostbootstrap-demo-vm"],
+    testCase "disk device shares a host directory at the requested guest path" $
+      addDiskDeviceArgs vm "durable-data" "/srv/demo/.data" "/srv/demo/.data"
+        @?= [ "config",
+              "device",
+              "add",
+              "hostbootstrap-demo-vm",
+              "durable-data",
+              "disk",
+              "source=/srv/demo/.data",
+              "path=/srv/demo/.data"
+            ],
     testCase "restart reboots the guest" $
       rebootVMArgs vm @?= ["restart", "hostbootstrap-demo-vm"],
     testCase "stop halts the VM without deleting it (project down)" $

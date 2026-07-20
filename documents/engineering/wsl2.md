@@ -20,7 +20,7 @@
   (stop-without-delete).
 - The VM lifecycle is driven by the core `deploy-VM` step kind plus the project teardown: `project up`
   brings the named distro up, `project down` shuts it down without deleting, and `project destroy`
-  unregisters it. `.data` is always preserved.
+  unregisters it.
 - The first `wsl --install` may require a **host reboot**; the provider detects the reboot-required
   state, instructs the operator, and exits non-zero (the structural peer of the Incus `NeedsReboot`
   reconcile), rather than rebooting Windows itself.
@@ -100,8 +100,12 @@ bring-up, stop, and teardown:
   or already-stopped stack tears down cleanly and idempotently.
 
 Teardown is best-effort and tolerates a partially-provisioned stack: a missing or already-terminated
-distro is reported and skipped, not an error. Across the whole lifecycle the demo's persistent `.data`
-is preserved — unregistering the distro removes the compute frame, not the durable store.
+distro is reported and skipped, not an error. Cluster teardown itself removes no data path — `down`
+removes nothing at all and `destroy` removes only derived paths — but that guarantee stops at the frame
+boundary. Staging into the distro is **one way**: the working tree is extracted from a tar into the
+distro's ext4 vhdx, no reverse transfer exists, and nothing bind-mounts `.data`. `wsl --unregister`
+deletes the vhdx, so a `.data` written inside the distro goes with it. See
+[durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a WSL2-specific command: the same kind is interpreted
 with Lima builders on Apple Silicon (see [lima](lima.md)) and Incus builders on native Linux (see
@@ -234,8 +238,8 @@ and `project destroy`. The earlier `Wsl/Service/0x80072746` session drop during 
 was diagnosed as the WSL2 utility VM being terminated under memory pressure because the budget cordon was
 **computed but never written**; Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`,
 plus the stable total-memory preflight) fixed the root cause, and the closure run brought up in-distro
-Docker/kind/registry/web **without a session drop**, restoring `.wslconfig` on teardown with host `.data`
-preserved. (The Windows/WSL2 path is real but remains the most memory-sensitive substrate on a 16 GiB host;
+Docker/kind/registry/web **without a session drop**, restoring `.wslconfig` on teardown.
+(The Windows/WSL2 path is real but remains the most memory-sensitive substrate on a 16 GiB host;
 the `push-image` stage can still stall intermittently under memory pressure, though the single-binary in-cluster registry is far lighter than the multi-pod stack it replaced.) Static validation remains clean: the core and demo Cabal
 test/build gates and `poetry run python -m hostbootstrap.check_code` pass.
 

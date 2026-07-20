@@ -90,8 +90,8 @@
 > host-daemon socket plus browser gates remain open; each lane must report `8/8`, and no current live
 > `8/8` result is recorded.
 >
-> **Current suite SSoT:** the 2026-07-15 Phase 5 gate reports 364 core tests under `-Werror`; the demo
-> workspace passes 87 demo tests plus the embedded 364-test core suite. Phase 3's 2026-07-15 closure
+> **Current suite SSoT:** the 2026-07-20 Phase 5/11 durable-state gate reports 374 core tests under `-Werror`; the demo
+> workspace passes 89 demo tests plus the embedded 374-test core suite. Phase 3's 2026-07-15 closure
 > retains its historical 359-test evidence.
 > Earlier 358/86, 357/83, 345/56, 331/46, 328/44, 326, and 321 counts
 > are historical snapshots from the incremental accelerator, lifecycle, context, and cluster slices.
@@ -322,9 +322,12 @@ not double-counted (closed phase-9, 2026-07-05). On Windows the applied memory/C
 `.wslconfig` `[wsl2]` ceiling (WSL2 has no per-distro cap; `processors`/`memory`/`swap`/`vmIdleTimeout=-1`),
 **merged** into the user's file (other sections preserved), written and applied with `wsl --shutdown` at
 bring-up via the one pure lift (`HostBootstrap.Substrate.Provider`), and restored on `project down` **and**
-`project destroy` (crash-recoverable; closed phase-11, 2026-07-05). The cluster lifecycle
-never deletes host `.data`. The production-vs-test cluster profile distinction selects fixed names /
-`.data` paths for production and per-case isolated paths for the test profile. See
+`project destroy` (crash-recoverable; closed phase-11, 2026-07-05). Cluster teardown never places the
+plan's `.data` path in its removal set, so an existing `.data` directory is left on disk; that is not a
+claim about host visibility or survival of `project destroy`
+([durable_state.md](../documents/architecture/durable_state.md)). The production-vs-test cluster profile
+distinction selects fixed names / `.data` paths for production and per-case isolated paths for the test
+profile. See
 `HostBootstrap.Cluster.Cordon` and `HostBootstrap.Cluster.Lifecycle` (Phase 5).
 
 ## Base image and warm Cabal store

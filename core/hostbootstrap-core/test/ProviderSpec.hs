@@ -47,12 +47,18 @@ apple = sel (Substrate AppleSilicon Arm64)
 linux = sel (Substrate LinuxCpu Amd64)
 windows = sel (Substrate WindowsCpu Amd64)
 
+appleShare, linuxShare, windowsShare :: HostPathShare
+appleShare = spShare apple "/Users/me/demo/.data"
+linuxShare = spShare linux "/srv/demo/.data"
+windowsShare = spShare windows "C:\\repo\\demo\\.data"
+
 tests :: TestTree
 tests =
     testGroup
         "ProviderSpec"
         [ testGroup "identity / provider kind / lift layer" identityCases
         , testGroup "launch effect lists (byte-for-byte)" launchCases
+        , testGroup "host-path shares" shareCases
         , testGroup "teardown (stop / guarded destroy)" teardownCases
         , testGroup "exists / wait probes" probeCases
         , testGroup "pure interpreters" interpreterCases
@@ -75,7 +81,64 @@ identityCases =
 launchCases :: [TestTree]
 launchCases =
     [ testCase "lima launch reproduces the sized startVMArgs argv" $
-        spLaunch apple env
+        spLaunch apple env (Just appleShare)
+            @?= Right
+                [ RunHostTool
+                    Lima
+                    [ "start"
+                    , "-y"
+                    , "--timeout"
+                    , "15m"
+                    , "--name=demo-vm"
+                    , "--containerd"
+                    , "none"
+                    , "--cpus"
+                    , "6"
+                    , "--memory"
+                    , "10"
+                    , "--disk"
+                    , "80"
+                    , "--vm-type"
+                    , "vz"
+                    , "--mount-only"
+                    , "/Users/me/demo/.data:w"
+                    , "template:ubuntu-24.04"
+                    ]
+                ]
+    , testCase "incus launch reproduces the sized createVMArgs argv" $
+        spLaunch linux env (Just linuxShare)
+            @?= Right
+                [ RunHostTool
+                    Incus
+                    [ "launch"
+                    , "images:ubuntu/24.04"
+                    , "demo-vm"
+                    , "--vm"
+                    , "-c"
+                    , "limits.cpu=6"
+                    , "-c"
+                    , "limits.memory=10GiB"
+                    , "-d"
+                    , "root,size=80GiB"
+                    ]
+                ]
+    , testCase "wsl2 launch merges the .wslconfig ceiling (+swap), shuts down, then installs with the VHDX cap" $
+        spLaunch windows env (Just windowsShare)
+            @?= Right
+                [ MergeWslConfig
+                    "C:\\Users\\me\\.wslconfig"
+                    ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
+                , RunHostTool Wsl ["--shutdown"]
+                , RunHostTool
+                    Wsl
+                    ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
+                ]
+    , testCase "lima/incus do not write any host file at launch; wsl2 merges .wslconfig" $ do
+        fmap (any isWrite) (spLaunch apple env (Just appleShare)) @?= Right False
+        fmap (any isWrite) (spLaunch linux env (Just linuxShare)) @?= Right False
+        fmap (any isWrite) (spLaunch windows env (Just windowsShare)) @?= Right True
+    , testCase "an omitted optional share preserves the former Lima launch argv" $
+        spLaunch apple env Nothing
             @?= Right
                 [ RunHostTool
                     Lima
@@ -97,38 +160,6 @@ launchCases =
                     , "template:ubuntu-24.04"
                     ]
                 ]
-    , testCase "incus launch reproduces the sized createVMArgs argv" $
-        spLaunch linux env
-            @?= Right
-                [ RunHostTool
-                    Incus
-                    [ "launch"
-                    , "images:ubuntu/24.04"
-                    , "demo-vm"
-                    , "--vm"
-                    , "-c"
-                    , "limits.cpu=6"
-                    , "-c"
-                    , "limits.memory=10GiB"
-                    , "-d"
-                    , "root,size=80GiB"
-                    ]
-                ]
-    , testCase "wsl2 launch merges the .wslconfig ceiling (+swap), shuts down, then installs with the VHDX cap" $
-        spLaunch windows env
-            @?= Right
-                [ MergeWslConfig
-                    "C:\\Users\\me\\.wslconfig"
-                    ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
-                , RunHostTool Wsl ["--shutdown"]
-                , RunHostTool
-                    Wsl
-                    ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
-                ]
-    , testCase "lima/incus do not write any host file at launch; wsl2 merges .wslconfig" $ do
-        fmap (any isWrite) (spLaunch apple env) @?= Right False
-        fmap (any isWrite) (spLaunch linux env) @?= Right False
-        fmap (any isWrite) (spLaunch windows env) @?= Right True
     , testCase "only wsl2 needs an explicit reconcile-to-running effect set to empty" $ do
         spStartExisting windows @?= []
         spStartExisting apple @?= [RunHostTool Lima ["start", "demo-vm"]]
@@ -140,6 +171,57 @@ launchCases =
     isWrite (WriteHostFile _ _) = True
     isWrite (MergeWslConfig _ _) = True
     isWrite _ = False
+
+shareCases :: [TestTree]
+shareCases =
+    [ testCase "Lima exposes the same absolute path with no post-create effect" $ do
+        hpsHostPath appleShare @?= "/Users/me/demo/.data"
+        hpsGuestPath appleShare @?= "/Users/me/demo/.data"
+        hpsReconcile appleShare @?= Nothing
+        shareReconcileEffects appleShare "anything" @?= []
+    , testCase "Incus plans one idempotent post-create disk device" $ do
+        hpsHostPath linuxShare @?= "/srv/demo/.data"
+        hpsGuestPath linuxShare @?= "/srv/demo/.data"
+        hpsReconcile linuxShare
+            @?= Just
+                ShareReconcile
+                    { srProbe = ExistsProbe Incus ["config", "device", "list", "demo-vm"] LinesMember
+                    , srMember = "durable-data"
+                    , srWhenMissing =
+                        [ RunHostTool
+                            Incus
+                            [ "config"
+                            , "device"
+                            , "add"
+                            , "demo-vm"
+                            , "durable-data"
+                            , "disk"
+                            , "source=/srv/demo/.data"
+                            , "path=/srv/demo/.data"
+                            ]
+                        ]
+                    }
+    , testCase "Incus adds a missing share but leaves an existing device untouched" $ do
+        shareReconcileEffects linuxShare "root\neth0\n"
+            @?= [ RunHostTool
+                    Incus
+                    [ "config"
+                    , "device"
+                    , "add"
+                    , "demo-vm"
+                    , "durable-data"
+                    , "disk"
+                    , "source=/srv/demo/.data"
+                    , "path=/srv/demo/.data"
+                    ]
+                ]
+        shareReconcileEffects linuxShare "root\ndurable-data\neth0\n" @?= []
+    , testCase "WSL2 projects the host directory through DrvFs with no host effect" $ do
+        hpsHostPath windowsShare @?= "C:\\repo\\demo\\.data"
+        hpsGuestPath windowsShare @?= "/mnt/c/repo/demo/.data"
+        hpsReconcile windowsShare @?= Nothing
+        shareReconcileEffects windowsShare "anything" @?= []
+    ]
 
 teardownCases :: [TestTree]
 teardownCases =

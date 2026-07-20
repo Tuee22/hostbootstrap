@@ -84,6 +84,13 @@ planCases =
         derivedPaths test1 @?= [rootPath </> ".cluster" </> "demo-test-case1"]
         clusterConfigFile test1 @?= Nothing
         clusterNodeSuffixes test1 @?= ["control-plane"]
+    , testCase "production maps host, VM, and container roots to their canonical .data child" $ do
+        let vmRoot = rootDir </> "vm" </> "demo"
+            containerRoot = rootDir </> "workspace" </> "demo"
+            resolvedData root = dataPath (resolvePlan "demo" root Production)
+        resolvedData rootPath @?= durableDataPath rootPath
+        resolvedData vmRoot @?= durableDataPath vmRoot
+        resolvedData containerRoot @?= durableDataPath containerRoot
     ]
 
 driverCases :: [TestTree]
@@ -272,7 +279,17 @@ nodeCordonCases =
 
 dataInvariantCases :: [TestTree]
 dataInvariantCases =
-    [ testCase "down removes nothing on disk and preserves .data" $ do
+    [ testCase "ensuring the durable root is idempotent and leaves existing content intact" $
+        withSystemTempDirectory "hostbootstrap-durable-root" $ \root -> do
+            first <- ensureDurableDataPath root
+            first @?= root </> ".data"
+            doesDirectoryExist first >>= (@?= True)
+            let marker = first </> "marker"
+            writeFile marker "durable-content"
+            second <- ensureDurableDataPath root
+            second @?= first
+            readFile marker >>= (@?= "durable-content")
+    , testCase "down removes nothing on disk and preserves .data" $ do
         let (remove, preserve) = teardown Down prod
         remove @?= []
         assertBool ".data preserved" (dataPath prod `elem` preserve)
@@ -349,13 +366,17 @@ teardownFailureProgram = "false"
 
 statusCases :: [TestTree]
 statusCases =
-    [ testCase "running cluster reports (running) and preserves .data" $ do
+    [ testCase "running cluster reports only the data-path teardown omission contract" $ do
         let report = statusReport prod True
         assertBool "names the cluster" ("demo" `isInfixOf` report)
         assertBool "marks it running" ("(running)" `isInfixOf` report)
-        assertBool "shows preserved .data" (((rootPath </> ".data") ++ " (preserved)") `isInfixOf` report)
-    , testCase "absent cluster reports (absent), still preserving .data" $ do
+        assertBool
+            "states that cluster teardown does not remove .data"
+            (((rootPath </> ".data") ++ " (not removed by cluster teardown)") `isInfixOf` report)
+        assertBool "does not claim the uninspected path is preserved" (not ("(preserved)" `isInfixOf` report))
+    , testCase "absent cluster reports (absent) without claiming data was inspected" $ do
         let report = statusReport prod False
         assertBool "marks it absent" ("(absent)" `isInfixOf` report)
-        assertBool "still preserves .data" ("(preserved)" `isInfixOf` report)
+        assertBool "still states the teardown contract" ("(not removed by cluster teardown)" `isInfixOf` report)
+        assertBool "does not claim the uninspected path is preserved" (not ("(preserved)" `isInfixOf` report))
     ]

@@ -1,13 +1,15 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}-web
   labels:
     app: {{ .Release.Name }}-web
 spec:
+  serviceName: {{ .Release.Name }}-web
   replicas: {{ .Values.haReplicas }}
-  strategy:
-    type: Recreate
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app: {{ .Release.Name }}-web
@@ -22,6 +24,10 @@ spec:
         - name: demo-config
           configMap:
             name: {{ .Release.Name }}-config
+        - name: durable-data
+          hostPath:
+            path: /var/lib/hostbootstrap-demo-data/web
+            type: DirectoryOrCreate
       containers:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -39,6 +45,8 @@ spec:
               mountPath: /usr/local/bin/hostbootstrap-demo.dhall
               subPath: hostbootstrap-demo.dhall
               readOnly: true
+            - name: durable-data
+              mountPath: /var/lib/hostbootstrap-demo-data/web
           ports:
             - name: web
               containerPort: {{ .Values.service.port }}

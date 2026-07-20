@@ -573,13 +573,22 @@ parameters.
   then for the next nested frame provision it, build/install the pb in it, and hand off `pb project up`
   (the fractal bootstrap, § U). It is **idempotent** (reconcile-to-running); `--dry-run` renders the pure
   chain without acting.
-- `project down` — stop service controllers and provider VMs without deleting durable host state. VM
-  frames use the provider **stop** operation (incus/Lima **stop**, not destroy); at the kind-cluster frame,
-  `down` deletes the kind cluster while preserving `.data`, because kind has no reliable stop/restart
-  contract. Best-effort and idempotent means every independent cleanup is attempted and any failures are
-  aggregated and reported; it never means silently swallowing cleanup failure.
-- `project destroy` — `down`, then delete everything that was spun up. Durable host `.data` is **always
-  preserved** (the never-delete-`.data` invariant, § O).
+- `project down` — stop service controllers and provider VMs without deleting them. VM frames use the
+  provider **stop** operation (incus/Lima **stop**, WSL2 `--terminate`; never destroy or unregister), so
+  the guest and its disk survive. At the kind-cluster frame, `down` deletes the kind cluster, because kind
+  has no reliable stop/restart contract; its removal set is **empty**, so no filesystem path is removed.
+  Cluster-local persistence (for example a PVC on kind's default `local-path` provisioner) lives **inside
+  the kind node container** and does not survive that delete. Best-effort and idempotent means every
+  independent cleanup is attempted and any failures are aggregated and reported; it never means silently
+  swallowing cleanup failure.
+- `project destroy` — `down`, then delete everything that was spun up, **including the provisioned frame
+  and its disk** (`incus delete --force`, `limactl delete --force`, `wsl --unregister`, which removes the
+  vhdx). Cluster teardown never places the plan's data path in its removal set and leaves an existing
+  `.data` directory untouched (the never-delete-`.data` invariant, unit-tested on disk) — **that
+  non-enumeration is the whole of the guarantee**. It is not host mirroring, and it is not survival of
+  frame deletion: the data path resolves against the owning frame's source root, so on a lifted topology
+  it names a guest path that `destroy` removes with the guest. No production code path creates it. The
+  canonical home is [durable_state](../documents/architecture/durable_state.md).
 
 A normal root-frame `project up` failure runs the same delete teardown before it reports failure. A
 distinguished `SafetyRefusal`, however, means a post-ensure ownership probe discovered pre-existing
@@ -620,7 +629,7 @@ directory before comparing bytes: the matching run-owned payload is deleted and 
 differing bytes remain at the reported `payload` quarantine path with the ownership lock held for explicit
 recovery. Teardown removes
 **only** the `<project>.dhall` and `.test_data` the harness created this run — never a config or data
-directory it found (the delete-guard mirrors the never-delete-`.data` invariant, § O); test durable storage
+directory it found (the delete-guard mirrors the never-delete-`.data` invariant, § Y); test durable storage
 is always `.test_data`, never `.data`. A teardown failure makes the variant fail rather than producing a
 green report with leaked state.
 

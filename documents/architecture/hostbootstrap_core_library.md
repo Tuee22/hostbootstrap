@@ -40,8 +40,8 @@ the project-local `<project>.dhall` schema decoder/encoder back the interpreter.
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
 in-cluster registry, the project image pushed to the in-cluster registry, and the web chart pod
-serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down with host
-`.data` preserved. Each host reconciler runs as a chain step under the recursive interpreter.
+serving HTTP 200 on `localhost:30080` — and `project down` / `project destroy` tear it down. Each host
+reconciler runs as a chain step under the recursive interpreter.
 
 The direct `linux-gpu` path is also represented by the same core surfaces, not a second orchestrator.
 Its two-frame demo chain runs the metal resource preflight plus `Ensure.Docker`/`Ensure.Cuda`, builds the
@@ -235,8 +235,8 @@ core command tree.
 | `context` | Read-only introspection over the sibling `.dhall`: `inspect` renders the lift composition with the current frame marked, and `path`/`show`/`schema`/`render` print the canonical config filename, the config, the schema, and static examples of the reusable Dhall artifacts. |
 | `project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fails fast unless run on a fresh host-level binary with no sibling `.dhall`. Layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults). |
 | `project up` | Recursively interpret `chain projectCfg` from the current frame; idempotent (reconcile-to-running). `--dry-run` renders the chain. Stands up the persistent stack (deploy-kind/nvkind → deploy-registry → push-image → deploy-chart → expose-port, plus the accelerator-daemon placement selected by project topology). |
-| `project down` | Stop service/VM frames and delete kind clusters while preserving durable host state (`.data`). |
-| `project destroy` | Stop, then delete everything spun up; `.data` is always preserved. |
+| `project down` | Stop service/VM frames and delete kind clusters; `down`'s removal set is empty, so it deletes no filesystem path at all. See [durable_state](durable_state.md). |
+| `project destroy` | Stop, then delete everything spun up — on a lifted topology that includes the provisioned frame *and its disk*, so a guest-side `.data` goes with it. See [durable_state](durable_state.md). |
 | `test init` | Needs **no** pre-existing `<project>.dhall`; writes `<project>.test.dhall` (the case matrix plus thin config overrides) via the project-owned `psTestInit`. `project init` writes via `psInit`, whose defaults the harness later reuses (through `psTestConfig`) to generate the run config. |
 | `test run <suite>\|all` | Root-only, needs `<project>.test.dhall`; `all` runs the whole matrix. Per config variant it **generates** the run's `<project>.dhall` functionally (via `psTestConfig`, never shelling the CLI), **drives the real `project up`**, asserts in-frame, then `project destroy`; a suite may declare more than one variant (the demo runs two) and each is stood up and torn down in turn. Two fail-fast preconditions protect production — the existence check is the executable-sibling `siblingProjectConfigPath` (`.build/<project>.dhall`); durable storage is `.test_data`. Fail-fast on any failing case. |
 | `service init\|schema\|run` | Run a long-running role; `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT; fail-fast unless the config declares a service role + variant; no `service down`. The handler **reads its effective config** and renders it — the demo's `Web` handler reads `cfg.message` and serves it through `BudgetView.message` to the SPA `#message`. |

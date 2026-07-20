@@ -23,6 +23,22 @@
   phase-16 Sprint 16.5. Validation: context tests reject accidental direct host containers unless the
   Linux GPU direct topology is declared, and the Linux GPU integration test launches `nvkind` directly on
   the host.
+- **`Capability.DurableStore` declared but never required** (`core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+  granted by `capabilitiesForKind` for `ClusterService` and `Daemon`, reflected into the golden
+  `config_schema.dhall` and `dhall/example.dhall`) — pending wiring once the host-durable state surface lands.
+  The capability is currently inert: no command's `requiredCapabilities` names it, so the membership gate in
+  `validateContext` never consults it, and it must not be read as enforcement of any `.data` durability
+  guarantee. Owning phases: phase-5 Sprint 5.6 (the durable-state surface) and phase-15 (the gate).
+  Validation: a command gating on durable placement refuses a context that does not declare the capability.
+- **The "host `.data`" framing and the `.data`-adjacent `§ O` citations** — retired in favour of the § Y
+  removal-set wording plus the canonical home
+  [durable_state](../documents/architecture/durable_state.md). `.data` is frame-relative, never
+  host-mirrored on a lifted frame, and not survivable across `project destroy` of a provisioned frame; the
+  invariant guarantees only that cluster teardown never enumerates the path for removal. `§ O` is
+  "Resource Budget and Cordoning" and never owned this invariant — § Y does. Owning phases: phase-5
+  (invariant owner) and phase-21 (the reconciliation). Validation: the mechanical documentation validator
+  through `cabal test`, plus a grep floor asserting no `host \`.data\`` phrasing and no `.data`-adjacent
+  `§ O` citation remains outside this ledger.
 - **Web-only demo UI and service path as the final demo surface** — pending extension, not deletion of the
   web service. The current message/tab UI stays, but it is no longer sufficient as the final worked demo:
   the demo must add a real accelerator Add workflow whose result comes from daemon-returned backend/artifact

@@ -154,8 +154,8 @@ interpreted by `project up`, with `project init` writing the root config, the co
 child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
 stands up the live persistent stack — a cordoned kind cluster, the in-cluster registry, the
 project image pushed to that registry, and the web chart pod serving `localhost:30080` — and
-`project down` / `project destroy` tear it back down with durable host `.data` preserved. The topology
-data and per-frame fail-fast above are the substrate the chain interpreter builds on. `test run all`
+`project down` / `project destroy` tear it back down. The topology data and per-frame fail-fast above
+are the substrate the chain interpreter builds on. `test run all`
 **drives the same `project up`** under a test-written config (one `project up` per distinct test config),
 asserts the live stack, and tears it down — it reuses the chain rather than standing up a separate per-case
 cluster. Child configs are generated from passed parameters, some **forwarded from the parent** context's

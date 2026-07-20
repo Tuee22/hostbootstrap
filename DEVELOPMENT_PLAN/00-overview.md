@@ -52,7 +52,7 @@ The underlying correction landed and is code-check-validated; its 2026-07-02 in-
 2026-07-05 cross-substrate reliability reopenings closed successfully. The later accelerator reopening
 changes the current status: Phase 3 is `Done`, while phases **5, 13, 15, 16, and 18 are `Active`** and
 phases 14 and 17 remain `Done`. All current accelerator implementation and static-test work is complete
-(364 core + 87 demo tests), but the five active phases cannot close until their honest native/Apple live
+(374 core + 89 demo tests), but the active phases cannot close until their honest native/Apple live
 gates run. The historical full
 demo lifecycle ran end-to-end on native Incus/Linux and a 16 GiB Apple-Silicon host.
 The last completed pre-accelerator `test run all` gates report **`6/6 passed`** (three cases x two message
@@ -97,7 +97,7 @@ Recreate rollout and connection-owned readiness; host-daemon ownership/absolute 
 pristine-install readiness bound; exact-byte harness ownership; direct-cluster and teardown safety. A
 guarded historical worker gate built and ran CUDA on an RTX 3090
 (`nvcc -ccbin <msvc>` → `Right 3.75`), and the Apple worker smoke returned the same value on 2026-07-10.
-The current `-Werror` evidence is **364 core + 87 demo tests**. Full closure still requires the live
+The current `-Werror` evidence is **374 core + 89 demo tests**. Full closure still requires the live
 four-case/two-variant runs on the native substrate hardware: the current host-daemon durable lifecycle and
 the unavailable Apple Silicon, native Linux CPU, and native Linux GPU lanes. The matrix expects `8/8`; no
 live `8/8`
@@ -124,7 +124,7 @@ and the 2026-07-05 reliability reopening is also closed:
 earlier `Wsl/Service/0x80072746` utility-VM session drop), registered/entered the managed Ubuntu-24.04
 distro, built the in-distro binary and project image **without a session drop**, stood up in-distro
 kind/Harbor/web, reported **`6/6`** across both message variants, and `project destroy` restored
-`.wslconfig` with host `.data` preserved. In the same pass **Tart
+`.wslconfig`. In the same pass **Tart
 retires** — it was core-only and latent — and composition pattern #7 **re-anchors to a headless host build**, with `ensure cudawin`
 (CUDA-on-Windows) its first instance.
 
@@ -210,7 +210,7 @@ successful Kind deletion before recreation. `project down|destroy` invokes core 
 current frame owns `deploy-kind`; nested VM/project-container clusters remain owned by the project
 teardown hook. The direct chain runs the metal preflight and `ensure docker` / `ensure cuda`, builds from
 the CUDA base, hands the project container `--gpus=all`, and schedules the daemon with a one-GPU limit.
-The current static gate passes 364 core + 87 demo tests. The native Linux CPU
+The current static gate passes 374 core + 89 demo tests. The native Linux CPU
 Incus/ClusterIP/C++ lane and native Linux GPU
 direct-nvkind/CUDA/browser lane must each report `8/8`; no live `8/8` result has yet replaced the
 historical `6/6` result.
@@ -287,7 +287,7 @@ by the Apple Silicon demo path is implemented and validated through the full dem
 Lima/Incus, depending on Phase 2's Windows substrate detection and pre-binary toolchain bootstrap;
 `ensure wsl2` reconciled Windows hypervisor launch readiness, and the real provider lifecycle **closed** on
 the live distro — `project up` → in-distro Docker/kind/Harbor/web → lifted `test run all` (`6/6`) →
-`project destroy` (guarded `wsl --unregister`, `.wslconfig` restored, `.data` preserved) — with the earlier
+`project destroy` (guarded `wsl --unregister`, `.wslconfig` restored) — with the earlier
 in-distro-build session drop resolved by applying the Sprint 9.7 `.wslconfig` budget wall. The 2026-07-05
 reliability reopening also closed `Done`.
 
@@ -321,7 +321,7 @@ It is `Active` for the accelerator worked example, with implementation and stati
 SPA/browser assertion, CBOR WebSocket dispatch, linked public/private listeners, no-fallback and
 single-flight behavior, persistent `Float32` workers, dynamic service/daemon ConfigMaps, Linux CPU/GPU
 daemon Deployments, host-native Apple/Windows daemon lifecycle, and fail-closed harness safety are all
-implemented. The current gate passes 364 core + 87 demo tests. Remaining work is only live execution of
+implemented. The current gate passes 374 core + 89 demo tests. Remaining work is live execution of
 the implemented four-case/two-variant matrix on each substrate; no live `8/8` is recorded.
 
 ### Phase 14 — Composable-operation algebra and composition methodology
@@ -371,8 +371,10 @@ A project's deploy is a pure `chain :: cfg -> [Step]` value; `project up` interp
 (run the current frame's steps, then provision → build the pb → hand off `pb project up` into the next
 frame — the fractal bootstrap), is idempotent, and renders the pure chain under `--dry-run`. `project
 down` deletes kind at the owning `deploy-kind` frame, leaves nested cluster cleanup to the project
-teardown hook, and stops VM frames while preserving durable state; `project destroy` deletes but preserves
-`.data`. The `Step` algebra, the
+teardown hook, and stops VM frames while preserving durable state; `project destroy` additionally deletes
+any provisioned frame *and its disk* (`wsl --unregister`, `incus delete --force`, `limactl delete --force`),
+so a guest-side `.data` goes with it — cluster teardown keeping the data path out of its removal set is not
+a survival guarantee ([durable_state.md](../documents/architecture/durable_state.md)). The `Step` algebra, the
 recursive interpreter, and the `project` command are built and real-run-validated (2026-06-18). It is
 `Active` for the accelerator lifecycle extension: the command surface is **fixed and closed** — `project` / `test` / `service` / `context` /
 `check-code`, with `ProjectSpec` carrying no `ProjectCommand` deltas (`hostbootstrap-core` is a library of

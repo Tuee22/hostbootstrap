@@ -3,18 +3,24 @@
 module WebServerSpec (tests) where
 
 import Control.Concurrent (MVar, forkFinally, forkIO, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, finally, try)
+import Control.Exception (SomeException, bracket, finally, try)
 import qualified Data.ByteString as BS
-import Data.IORef (newIORef, readIORef, writeIORef)
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as LBS
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import HostBootstrapDemo.Accelerator (AcceleratorBackend (LinuxCpuBackend), workerSpec)
 import HostBootstrapDemo.Accelerator.Daemon (DaemonClientConfig (DaemonClientConfig), WebSocketEndpoint (WebSocketEndpoint), runDaemonClientLoop, webSocketDaemonTransportWithShutdown, workerSupervisor)
 import HostBootstrapDemo.Accelerator.Protocol (AcceleratorMessage (..), decodeAcceleratorMessage, encodeAcceleratorMessage)
 import HostBootstrapDemo.Web.Api (AcceleratorAddResult (AcceleratorAddResult), addRequestId, mkAcceleratorAddRequest)
-import HostBootstrapDemo.Web.Server (acceleratorDaemonConnected, acceleratorDispatch, acceleratorIngressApp, app, newAcceleratorHub, runLinkedListeners)
-import Network.HTTP.Types (status200, status503)
-import Network.Wai (responseStatus)
+import HostBootstrapDemo.Web.Server (acceleratorDaemonConnected, acceleratorDispatch, acceleratorIngressApp, app, appAtDurableRoot, newAcceleratorHub, runLinkedListeners)
+import Network.HTTP.Types (Method, methodGet, methodPost, methodPut, status200, status404, status405, status503)
+import Network.Wai (Application, Response, defaultRequest, pathInfo, requestMethod, responseStatus, responseToStream)
 import Network.Wai.Handler.Warp (testWithApplication)
+import Network.Wai.Internal (ResponseReceived (ResponseReceived))
 import qualified Network.WebSockets as WS
+import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
+import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -27,6 +33,25 @@ tests =
             hub <- newAcceleratorHub
             response <- acceleratorDispatch hub (mkAcceleratorAddRequest "no-daemon" 1.5 2.25)
             responseStatus response @?= status503
+        , testCase "durable marker POST writes on disk and GET reads it" $
+            withTemporaryDirectory $ \root -> do
+                hub <- newAcceleratorHub
+                let durableApp = appAtDurableRoot root "test" hub
+                    expected = "hostbootstrap-destroy-up-v1" :: BS.ByteString
+                posted <- requestDurableMarker durableApp methodPost
+                responseStatus posted @?= status200
+                BS.readFile (root </> "marker") >>= (@?= expected)
+                fetched <- requestDurableMarker durableApp methodGet
+                responseStatus fetched @?= status200
+                responseBody fetched >>= (@?= LBS.fromStrict expected)
+        , testCase "durable marker returns 404 before write and rejects unsupported methods" $
+            withTemporaryDirectory $ \root -> do
+                hub <- newAcceleratorHub
+                let durableApp = appAtDurableRoot root "test" hub
+                missing <- requestDurableMarker durableApp methodGet
+                responseStatus missing @?= status404
+                rejected <- requestDurableMarker durableApp methodPut
+                responseStatus rejected @?= status405
         , testCase "dedicated ingress carries a real WebSocket request" $ do
             hub <- newAcceleratorHub
             testWithApplication (pure (acceleratorIngressApp hub)) $ \port -> do
@@ -108,6 +133,37 @@ tests =
                     Just (Right ()) -> assertFailure "linked listeners returned success after the private bind failed"
                     Just (Left _) -> pure ()
         ]
+
+requestDurableMarker :: Application -> Method -> IO Response
+requestDurableMarker application method = do
+    response <- newEmptyMVar
+    _ <-
+        application
+            defaultRequest
+                { requestMethod = method
+                , pathInfo = ["api", "durable", "marker"]
+                }
+            (\result -> putMVar response result >> pure ResponseReceived)
+    takeMVar response
+
+responseBody :: Response -> IO LBS.ByteString
+responseBody response = do
+    let (_, _, withBody) = responseToStream response
+    withBody $ \streamBody -> do
+        chunks <- newIORef mempty
+        streamBody (\chunk -> modifyIORef' chunks (<> chunk)) (pure ())
+        Builder.toLazyByteString <$> readIORef chunks
+
+withTemporaryDirectory :: (FilePath -> IO a) -> IO a
+withTemporaryDirectory = bracket create removePathForcibly
+  where
+    create = do
+        tmp <- getTemporaryDirectory
+        (path, handle) <- openTempFile tmp "hostbootstrap-durable-marker"
+        hClose handle
+        removeFile path
+        createDirectory path
+        pure path
 
 fakeDaemon :: MVar () -> Int -> IO ()
 fakeDaemon ready port =

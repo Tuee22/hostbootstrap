@@ -350,8 +350,8 @@ The model described above is real-run-validated end-to-end on real hardware:
 
 A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster, the
 in-cluster registry, the project image pushed to the in-cluster registry, and the web chart pod serving
-`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down with host `.data`
-preserved. The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
+`localhost:30080` with HTTP 200 — and `project down` / `project destroy` tear it down.
+The phase records live in `DEVELOPMENT_PLAN/`, which owns implementation status; this document
 describes the authority contract.
 
 The accelerator-daemon context substrate is implemented in

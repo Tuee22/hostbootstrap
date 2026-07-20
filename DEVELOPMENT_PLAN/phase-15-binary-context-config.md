@@ -86,6 +86,16 @@ direct topology, and rejection of an unmarked host-backed project container.
   delivered projection and connects through the intended ingress. No context implementation or static-test
   work remains.
 
+**`Capability.DurableStore` is declared but never required — open.** `capabilitiesForKind` grants
+`DurableStore` to the `ClusterService` and `Daemon` context kinds, but no command's `requiredCapabilities`
+names it, so the membership gate in `validateContext` never consults it. The capability is **descriptive,
+not enforcing**, and must not be read as backing any `.data` durability guarantee — see
+[durable_state](../documents/architecture/durable_state.md) for what the invariant does and does not say.
+Promoting it to a real gate is sequenced after
+[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 lands a durable-state surface,
+and is tracked in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`. Gate: a
+command gating on durable placement refuses a context that does not declare the capability.
+
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
 `ProjectSpec cfg tcfg`, so the gate is expressed over a project-defined config type. The superseded
@@ -536,6 +546,8 @@ plus the unavailable Apple lane. No config implementation or static-test work re
 - `documents/architecture/build_and_run_model.md` - host-native build followed by project-binary config
   initialization when needed.
 - `documents/architecture/composition_methodology.md` - self-reference lift plus explicit local context.
+- `documents/architecture/durable_state.md` - what the `.data` invariant does and does not guarantee, and
+  why the declared-but-unrequired `DurableStore` capability is not enforcement.
 - `documents/engineering/accelerator_daemon.md` - daemon context authority and direct-container topology.
 
 **Engineering docs to create/update:**

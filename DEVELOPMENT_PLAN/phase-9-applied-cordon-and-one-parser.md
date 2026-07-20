@@ -350,8 +350,8 @@ one pure lift so the WSL2 difference is data, not a hand-branched special case.
 None. The applied `.wslconfig` wall on a **live** WSL2 distro — the full `project up` → `test run all` →
 `project destroy` Windows closure — was validated **2026-07-01**: the run wrote the `.wslconfig` ceiling,
 registered/sized the distro, brought up in-distro Docker/kind without a utility-VM session drop, reported
-**`test report: 6/6 passed`** across both message variants, and `project destroy` restored `.wslconfig` with
-host `.data` preserved (jointly with [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)
+**`test report: 6/6 passed`** across both message variants, and `project destroy` restored the host
+`.wslconfig` (jointly with [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)
 Sprint 11.7).
 
 ## Documentation Requirements

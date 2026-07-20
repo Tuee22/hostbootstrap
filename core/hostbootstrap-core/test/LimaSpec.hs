@@ -21,6 +21,29 @@ argvCases =
     [ testCase "start uses the named Ubuntu 24.04 template" $
         startVMArgs vm ["--cpus", "4", "--memory", "8", "--disk", "20"]
             @?= ["start", "-y", "--timeout", "15m", "--name=hostbootstrap-demo-vm", "--containerd", "none", "--cpus", "4", "--memory", "8", "--disk", "20", "template:ubuntu-24.04"]
+    , testCase "writable host share replaces the default home mount at create" $ do
+        writableMountArgs "/Users/me/demo/.data"
+            @?= ["--mount-only", "/Users/me/demo/.data:w"]
+        startVMArgs
+            vm
+            (["--cpus", "4", "--memory", "8", "--disk", "20"] ++ writableMountArgs "/Users/me/demo/.data")
+            @?= [ "start"
+                , "-y"
+                , "--timeout"
+                , "15m"
+                , "--name=hostbootstrap-demo-vm"
+                , "--containerd"
+                , "none"
+                , "--cpus"
+                , "4"
+                , "--memory"
+                , "8"
+                , "--disk"
+                , "20"
+                , "--mount-only"
+                , "/Users/me/demo/.data:w"
+                , "template:ubuntu-24.04"
+                ]
     , testCase "stop halts the named instance without deleting it (project down)" $
         stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
     , testCase "shell dispatches a root in-VM command through limactl shell" $

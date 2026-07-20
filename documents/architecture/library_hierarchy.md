@@ -183,7 +183,7 @@ describes, exercised end-to-end on real hardware:
   `accelerator` service variants and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
   persistent stack — deploy-kind →
   deploy-registry → push-image → deploy-chart → expose-port ending at a live web service on
-  `localhost:30080` — and `project down` / `project destroy` tear it down with host `.data` preserved.
+  `localhost:30080` — and `project down` / `project destroy` tear it down.
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
   `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
   renders and projections surface through the read-only `context` command and the context-init step.

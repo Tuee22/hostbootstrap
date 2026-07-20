@@ -11,6 +11,7 @@ servant) so a derived project's container build hits the base-image warm store.
 module HostBootstrapDemo.Web.Server (
     AcceleratorHub,
     app,
+    appAtDurableRoot,
     acceleratorIngressApp,
     serveWeb,
     newAcceleratorHub,
@@ -24,7 +25,7 @@ where
 import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, myThreadId, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.STM (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Exception (SomeAsyncException, SomeException, finally, fromException, mask, onException, throwIO, tryJust)
-import Control.Monad (join, void, when)
+import Control.Monad (join, unless, void, when)
 import Data.Aeson (encode)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -50,11 +51,14 @@ import HostBootstrapDemo.Web.Api (
     budgetView,
     mkAcceleratorAddRequest,
  )
-import Network.HTTP.Types (Status, hContentType, hOrigin, status200, status400, status404, status503)
-import Network.Wai (Application, Request, Response, pathInfo, queryString, responseFile, responseLBS)
+import Network.HTTP.Types (Status, hContentType, hOrigin, methodGet, methodPost, status200, status400, status404, status405, status503)
+import Network.Wai (Application, Request, Response, pathInfo, queryString, requestMethod, responseFile, responseLBS)
 import Network.Wai.Handler.Warp (run)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import qualified Network.WebSockets as WS
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
+import System.FilePath ((</>))
+import System.IO.Error (isDoesNotExistError, tryIOError)
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
 
@@ -64,6 +68,16 @@ config-selected @service run@ runs from
 -}
 bundlePath :: FilePath
 bundlePath = "web/public/app.js"
+
+-- | The pod-visible root backed by the kind-node host mount.
+durableRoot :: FilePath
+durableRoot = "/var/lib/hostbootstrap-demo-data/web"
+
+durableMarkerToken :: BS8.ByteString
+durableMarkerToken = "hostbootstrap-destroy-up-v1"
+
+durableMarkerPath :: FilePath -> FilePath
+durableMarkerPath root = root </> "marker"
 
 {- | The @wai@ application, parameterized by the config-driven served @message@
 (Sprint 20.1): the budget JSON endpoint (which carries the message), the SPA
@@ -92,7 +106,11 @@ acceleratorDaemonConnected :: AcceleratorHub -> IO Bool
 acceleratorDaemonConnected hub = isJust <$> readTVarIO (connectedDaemon hub)
 
 app :: Text -> AcceleratorHub -> Application
-app = httpApp
+app = appAtDurableRoot durableRoot
+
+-- | The public application with an injectable durable root for on-disk tests.
+appAtDurableRoot :: FilePath -> Text -> AcceleratorHub -> Application
+appAtDurableRoot = httpApp
 
 {- | The daemon-registration listener. It is deliberately a different WAI
 application and TCP port from 'app': the public web NodePort can never upgrade
@@ -105,18 +123,44 @@ acceleratorIngressApp hub =
     privateNotFound _ respond =
         respond (responseLBS status404 [(hContentType, "text/plain")] "not found")
 
-httpApp :: Text -> AcceleratorHub -> Application
-httpApp msg hub req respond = case pathInfo req of
+httpApp :: FilePath -> Text -> AcceleratorHub -> Application
+httpApp durableRoot' msg hub req respond = case pathInfo req of
     ["api", "budget"] ->
         respond (responseLBS status200 [(hContentType, "application/json")] (encode (budgetView msg)))
     ["api", "accelerator", "add"] ->
         acceleratorAddResponse hub req >>= respond
+    ["api", "durable", "marker"] ->
+        durableMarkerResponse durableRoot' req >>= respond
     ["app.js"] ->
         respond (responseFile status200 [(hContentType, "application/javascript")] bundlePath Nothing)
     [] ->
         respond (responseLBS status200 [(hContentType, "text/html; charset=utf-8")] indexHtml)
     _ ->
         respond (responseLBS status404 [(hContentType, "text/plain")] "not found")
+
+durableMarkerResponse :: FilePath -> Request -> IO Response
+durableMarkerResponse root req
+    | requestMethod req == methodPost = do
+        BS8.writeFile (durableMarkerPath root) durableMarkerToken
+        pure (markerResponse status200 (LBS.fromStrict durableMarkerToken))
+    | requestMethod req == methodGet = do
+        result <- tryIOError (BS8.readFile (durableMarkerPath root))
+        case result of
+            Right marker -> pure (markerResponse status200 (LBS.fromStrict marker))
+            Left err
+                | isDoesNotExistError err -> pure (markerResponse status404 "not found")
+                | otherwise -> ioError err
+    | otherwise =
+        pure
+            ( responseLBS
+                status405
+                [(hContentType, "text/plain"), ("Allow", "GET, POST")]
+                "method not allowed"
+            )
+
+markerResponse :: Status -> LBS.ByteString -> Response
+markerResponse status body =
+    responseLBS status [(hContentType, "text/plain; charset=utf-8")] body
 
 acceleratorDaemonServer :: AcceleratorHub -> WS.ServerApp
 acceleratorDaemonServer hub pending
@@ -308,12 +352,16 @@ serveWeb = do
         Schema.requireSiblingProjectConfig
             (T.pack "hostbootstrap-demo")
             Context.ServiceCommand
-            [] ::
+            [Context.DurableStore] ::
             IO ProjectConfig
     WebServiceConfig publicPort' acceleratorPort' <-
         case service cfg of
             Just (Web params) -> pure params
             _ -> ioError (userError "service run: Web handler requires the Web ServiceType variant")
+    createDirectoryIfMissing True durableRoot
+    durableRootExists <- doesDirectoryExist durableRoot
+    unless durableRootExists $
+        ioError (userError ("service run: durable root is not a directory: " ++ durableRoot))
     let msg = message cfg
         publicPort = fromIntegral publicPort'
         acceleratorPort = fromIntegral acceleratorPort'

@@ -44,7 +44,8 @@ The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 1
 landed and is code-check-validated; its 2026-07-02 in-place-delivery and 2026-07-05 cross-substrate
 reopenings closed successfully. Phase 3's later accelerator reopening closed on 2026-07-15; phases **5,
 13, 15, 16, and 18 remain `Active`** until their live substrate gates run, while phases 14 and 17 remain
-`Done`. The command surface is
+`Done`. Phases **11 and 21 reopened 2026-07-19** for the `.data` durability doctrine (see the reopening
+note below). The command surface is
 **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
@@ -101,7 +102,7 @@ reliability hardening (see below), by the full Windows/WSL2 lifecycle: `hostboot
 `Wsl/Service/0x80072746` utility-VM session drop, whose root cause was the cordon computed but never
 written), registered/entered the managed Ubuntu-24.04 distro, built the in-distro binary and project image
 **without a session drop**, stood up in-distro kind/Harbor/web, reported **`6/6`** across both message
-variants, and `project destroy` restored `.wslconfig` with host `.data` preserved. The work was woven into
+variants, and `project destroy` restored `.wslconfig`. The work was woven into
 the existing phases, not a new phase. See
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md),
 [phase-20-config-driven-demo-worked-example.md](phase-20-config-driven-demo-worked-example.md),
@@ -123,8 +124,8 @@ superseded surfaces moved to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 The current Haskell suite count is tracked in
-[system-components.md](system-components.md): the 2026-07-15 Phase 5 gate reports 364 core tests, and the
-demo workspace reports 87 demo tests plus its embedded 364-test core suite. Phase 3's closure retains its
+[system-components.md](system-components.md): the 2026-07-20 Phase 5/11 durable-state gate reports 374 core tests, and the
+demo workspace reports 89 demo tests plus its embedded 374-test core suite. Phase 3's closure retains its
 historical 359-test evidence.
 
 Operator-scale activities such as publishing multi-arch base tags and pushing the multi-GB project image
@@ -157,7 +158,7 @@ Windows Scheduled Task so a harness stop could not abort it — reported **`test
 (`docker daemon ready`), the node/CNI readiness gate (`nodes Ready`), the metal host-headroom preflight + the
 reserve-free in-VM slice cordon (`docker update … --memory-swap` 2× the RAM cap), `deploy-registry` +
 `push-image` (single-binary `registry:2`), the web service at `localhost:30080`, the guaranteed harness
-teardown, and `project destroy` restoring `.wslconfig` with host `.data` preserved. **At that reliability
+teardown, and `project destroy` restoring `.wslconfig`. **At that reliability
 closure, phases 5, 9, 10, 11, 13, and 16 were `Done`;** the accelerator reopening later made 5, 13, and 16
 `Active` again. Three fixes-to-the-fixes the real run surfaced were caught and closed on the way (a
 truncated source-staging `tar`; a docker-poll shell-quoting break through the Windows PowerShell→`wsl`→`bash`
@@ -173,6 +174,20 @@ every placement: Apple Silicon and Windows GPU build and run it host-native; Lin
 in-cluster, with Linux GPU skipping Incus for the direct `nvkind` path. No fake in-process accelerator can
 satisfy the browser assertion. See
 [accelerator_daemon.md](../documents/engineering/accelerator_daemon.md).
+
+**Reopened 2026-07-19 — the `.data` durability doctrine.** Governed docs asserted that a project's `.data`
+was host state, was bind-mounted while a cluster ran, and survived `project destroy`. None of that is
+implemented: `.data` resolves against the **owning frame's** source root, every substrate stages one way
+(host → guest) with no reverse-transfer primitive, nothing bind-mounts it, and `destroy` deletes the
+provisioned frame together with its disk. What *is* real — and is unit-tested on disk — is narrower:
+cluster teardown never enumerates the path for removal. The corrected contract has a single canonical home,
+[durable_state](../documents/architecture/durable_state.md). Phase **11** reopened (`Active`) to add the
+per-substrate host-path share primitive its provider lift lacks (Sprint 11.8); phase **21** reopened
+(`Active`) because a false mechanism claim survived its consistency sweep (Sprint 21.3); phase **5** gained
+Sprint 5.6 for the durable-root contract. Phases 9 and 10 stay `Done` — their `.data` mentions were riders
+on closure narratives, and `.test_data` is genuinely host-created because the harness runs at the root
+frame. Until a real run writes state, destroys, brings up, and reads it back, no governed document may
+describe host-durable `.data` as available (§ J).
 
 Phase 3 is `Done`. Its Apple/Windows accelerator build-stack slice closed first: on 2026-07-10 an M1 Max
 host built the core with `cabal build all
@@ -218,8 +233,8 @@ The Playwright Add assertion and fail-closed harness safety (`SafetyRefusal`, ex
 direct-cluster detection, guarded cleanup, teardown verification) are implemented.
 
 The Phase 3 core gate was rerun on Windows on 2026-07-15 and passes all **359 core tests** under `-Werror`.
-The current Phase 5 `-Werror` gate passes **364 core + 87 demo tests** (the demo workspace also runs the
-embedded 364-test core suite). Only honest live closure for Phases 5, 13, 15, 16, and 18 remains: run the
+The current Phase 5/11 `-Werror` gate passes **374 core + 89 demo tests** (the demo workspace also runs the
+embedded 374-test core suite). Only honest live closure for Phases 5, 13, 15, 16, and 18 remains: run the
 implemented four-case/two-variant matrix on the current host-daemon lane and the unavailable Apple
 Silicon, native Linux CPU, and native Linux GPU hardware. The harness expects
 `8/8`; no live `8/8` is recorded, and the latest completed live result remains the historical
@@ -240,7 +255,7 @@ pre-accelerator `6/6` gate.
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
-| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
@@ -250,7 +265,7 @@ pre-accelerator `6/6` gate.
 | 18 | [Service runtime command](phase-18-service-runtime-command.md) | Active |
 | 19 | [Generic project model and no core defaults](phase-19-generic-project-model.md) | Done |
 | 20 | [Config-driven demo worked example and multi-variant harness](phase-20-config-driven-demo-worked-example.md) | Done |
-| 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Done |
+| 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Active |
 
 ## Governance
 

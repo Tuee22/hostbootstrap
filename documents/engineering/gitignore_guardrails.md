@@ -36,10 +36,16 @@ Every project that adopts hostbootstrap must keep these out of git:
   resets the full build state, deps included — see
   [build_and_run_model.md](../architecture/build_and_run_model.md)), so the
   existing `.build/` ignore already covers the store; no separate entry is needed.
-* `.data/` — host persistent state. It is bind-mounted while a cluster is
-  running and must **never** be deleted by cluster teardown; the
-  never-delete-`.data` invariant is owned by `hostbootstrap-core`'s
-  cluster-lifecycle semantics (see [cluster_lifecycle.md](cluster_lifecycle.md)).
+* `.data/` — the production profile's durable state directory, resolved as
+  `<owning frame's source root>/.data`. It is **not** a host mirror: nothing
+  bind-mounts it, and on a lifted frame it names a path inside the guest.
+  Cluster teardown never lists it for removal; the never-delete-`.data`
+  invariant is owned by `hostbootstrap-core`'s cluster-lifecycle semantics
+  (see [cluster_lifecycle.md](cluster_lifecycle.md), and
+  [../architecture/durable_state.md](../architecture/durable_state.md) for what
+  that invariant does and does not guarantee). No production code path creates
+  the directory; the ignore entry is a guardrail so a project that does
+  materialize one never commits it.
 * `.test_data/` — the test harness's durable test root, written by `test run`
   in place of `.data/` so the suite never touches production state. The harness
   creates it per run and deletes only the `.test_data` it created (see

@@ -6,8 +6,12 @@
 
 > **Purpose**: Define the kind/Helm cluster-lifecycle semantics `hostbootstrap-core` provides as
 > chain steps under `project up`/`project down`/`project destroy`, including kind
-> teardown-on-down with durable-state preservation, the never-delete-`.data` invariant, and the
-> production-versus-test profile concept.
+> teardown-on-down with the data path excluded from the removal set, the never-delete-`.data`
+> invariant, and the production-versus-test profile concept.
+
+**What `.data` is, and what the invariant does and does not guarantee, is owned by
+[durable_state](../architecture/durable_state.md).** This document describes the cluster steps that
+implement it.
 
 ## TL;DR
 
@@ -15,11 +19,13 @@
   that the recursive `project up`/`project down`/`project destroy` interpreter runs at the container
   frame, where the chain bottoms out into `kubectl`/`helm`/`kind` leaves.
 - `project up` brings the cluster to *running* (idempotent, fail-closed). At the frame whose chain step
-  owns `deploy-kind`, `project down` deletes the kind cluster while preserving durable state and `project
+  owns `deploy-kind`, `project down` deletes the kind cluster and removes no filesystem path, and `project
   destroy` also deletes its compute. A non-owning root frame skips core Kind lookup and delegates a nested
   VM/project-container cluster to the project teardown hook.
-- The lifecycle never deletes a cluster's `.data` directory: persistent state survives bring-up,
-  stop, and teardown.
+- The lifecycle never deletes a cluster's `.data` directory: teardown never places the plan's data
+  path in its removal set, so an existing `.data` directory is left on disk. That is the whole of the
+  guarantee — it is not host mirroring, and not survival of `project destroy`, which deletes the
+  provisioned frame and its disk. See [durable_state](../architecture/durable_state.md).
 - A cluster runs under one of two profiles. The production profile uses `.data` and a fixed cluster
   name; the test profile uses `.test_data` and a test-scoped cluster name.
 - The chain `[Step]` value is the project; cluster steps interleave with host-management steps in
@@ -110,7 +116,7 @@ VM path.
 ## `project down`: Delete Kind, Preserve State
 
 At the frame that owns `deploy-kind`, `project down` deletes the running kind cluster and its services
-while preserving durable state. Kind does not provide a reliable stop/restart contract for the cluster
+while removing no filesystem path. Kind does not provide a reliable stop/restart contract for the cluster
 frame, so the owning frame uses `kind delete cluster` for compute and keeps `.data` and derived paths in
 place. The next `project up` recreates the kind cluster from the chain.
 
@@ -145,17 +151,47 @@ raises the aggregate after cleanup instead of stopping at the first failure or s
 
 ## The Never-Delete-`.data` Invariant
 
-Neither `down` nor `destroy` deletes a cluster's data directory.
+The canonical statement of this contract is [durable_state](../architecture/durable_state.md); this
+section records the mechanism the cluster steps implement.
 
-- Production state lives in `.data`.
-- Deleting the kind cluster on `down`, or tearing it down with `destroy` and recreating it with a later
-  `up`, preserves the data directory so persistent state survives the cluster's lifecycle.
+Neither `down` nor `destroy` deletes a cluster's data directory. The mechanism is the pure teardown
+partition in `HostBootstrap.Cluster.Lifecycle`, which splits a plan's paths into a removal set and a
+preserve set:
+
+- `teardown Down` returns an **empty** removal set — `down` removes no filesystem path at all.
+- `teardown Delete` returns **only** the derived paths; the data path is never among them.
+
+`clusterTeardown` hands only the removal set to `removeAll`, so the data path is excluded by
+construction and an existing `.data` directory is left exactly where it was. `LifecycleSpec` proves
+this on disk as well as in the pure partition: it creates a real `.data` directory in a temporary
+root, runs the real `clusterDown`/`clusterDelete` drivers, and asserts the directory still exists
+afterwards — with the derived paths also intact after `clusterDown`, and removed after
+`clusterDelete`.
 
 - **WRONG**: a teardown step removes the data directory along with the cluster. This is wrong because
   it destroys persistent state that must outlive the cluster, conflating compute lifecycle with data
   lifecycle.
 - **RIGHT**: teardown removes only the cluster; the data directory is left in place for the next
   bring-up.
+
+### Scope
+
+The invariant governs the cluster teardown's removal set, and nothing beyond it.
+
+- **`.data` is frame-relative.** It resolves as `<owning frame's source root>/.data`. When the chain
+  binds the cluster step inside a lifted VM or project container, that names a **guest** path, not a
+  path on the developer's machine. Staging is one-way host → guest on every substrate (WSL2 tar into
+  the distro's vhdx, `incus file push`, `limactl copy`); no reverse-transfer primitive exists, and
+  nothing bind-mounts the data path.
+- **On a lifted topology, `project destroy` deletes the frame and its disk.** `incus delete
+  --force`, `limactl delete --force`, and on Windows `wsl --unregister` (which removes the distro's
+  vhdx) take a guest-side `.data` with them. The invariant has no authority over frame deletion.
+- **Nothing creates `.data`.** No production code path materializes the directory, so the guarantee
+  is vacuously satisfied when the path never existed. Contrast `.test_data`, which the standardized
+  harness genuinely does create.
+- **The direct-host lane is the exception.** The Linux GPU direct `nvkind` lane provisions no VM and
+  no project container — the cluster step runs on the metal host. There `.data` genuinely *is* a host
+  path and genuinely *does* outlive `project destroy`, because there is no frame to delete.
 
 ## Production vs Test Profiles
 
@@ -194,9 +230,12 @@ accelerator gates remain open below.
   down`/`project destroy` interpreter runs. Core Kind cleanup runs only at the current frame that owns
   `deploy-kind`; nested VM/project-container clusters remain owned by the project teardown hook, while an
   attempted local cleanup aggregates every independent failure. The `deploy-kind`/`deploy-chart` steps are
-  fail-closed and chart-conditional. Read-only state is reported through `context inspect`,
-  which renders the lift composition with the current frame marked, reports whether the resolved cluster
-  is live alongside the preserved `.data` and derived paths, and never mutates state. The
+  fail-closed and chart-conditional. `context inspect` is read-only and renders the lift composition
+  with the current frame marked; it reports no cluster state. The cluster status report — whether the
+  resolved cluster is live, alongside the `.data` and derived paths — is the separate pure
+  `statusReport` and its `clusterStatus` driver in `HostBootstrap.Cluster.Lifecycle`, and the
+  `(preserved)` label it prints beside the data path names that path's membership in the teardown
+  preserve set, not a filesystem stat. The
   `clusterCreate`/`deployChart`/`clusterUp`/`clusterDown`/`clusterDelete` reconcilers live in
   `HostBootstrap.Cluster.Lifecycle` and the chain-step actions invoke them. The never-delete-`.data`
   invariant and the production/test profiles are unit-tested and in force. The demo reaches this path
@@ -217,10 +256,13 @@ accelerator gates remain open below.
   the cordoned kind cluster (kind `extraPortMappings` publish NodePorts to the VM localhost), the
   in-cluster registry (NodePort 30500), the project image pushed to that registry, and the web
   chart pod serving HTTP 200 at `localhost:30080` — and `project down` / `project destroy` tear it down
-  with host `.data` preserved.
+  with the data path excluded from the teardown removal set. On this lane the cluster step runs inside
+  the Incus VM, so that path is a guest path and goes with the VM on `project destroy`.
 
 ## See also
 
+- [durable_state](../architecture/durable_state.md) — the canonical home of the never-delete-`.data`
+  contract, frame relativity, and what actually persists on each substrate.
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical home of the
   chain-is-the-project model and the recursive `project up` interpreter.
 - [resource_budgeting](resource_budgeting.md) — the cordon the cluster steps apply.

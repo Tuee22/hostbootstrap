@@ -259,8 +259,8 @@ vocabulary, schema-gen artifacts, test seams, and service handlers, never bespok
 |---|---|
 | `<binary> project init` | Write the root `<project>.dhall` (host-orchestrator, no parent); fail-fast unless a fresh host-level binary with no sibling `.dhall`; layers optional `--cpu/--memory/--storage/--ha-replicas` overrides over the project's `psInit` defaults (core ships no defaults) |
 | `<binary> project up` | Recursively interpret `chain cfg` from the current frame; idempotent (reconcile-to-running); `--dry-run` renders the chain instead of running it |
-| `<binary> project down` | Stop service/VM frames and tear down kind clusters while preserving durable host state (`.data`) |
-| `<binary> project destroy` | Stop, then delete everything brought up; host `.data` is always preserved |
+| `<binary> project down` | Stop service/VM frames and tear down kind clusters; teardown's removal set is empty, so `down` removes no filesystem path (see [durable state](documents/architecture/durable_state.md)) |
+| `<binary> project destroy` | Stop, then delete everything brought up — including the provisioned VM/distro and its disk |
 | `<binary> test init` | Write `<project>.test.dhall` (the case matrix + config overrides) via the project's `psTestInit` builder (which shares `psInit`'s defaults); needs no pre-existing `<project>.dhall` |
 | `<binary> test run <suite>\|all` | Root-gated; per distinct test config, drives the real `project up` under a test-written `.dhall`, asserts in-frame, then `project destroy`; two fail-fast safety preconditions (refuse if a sibling `.build/<project>.dhall` exists — checked at `siblingProjectConfigPath`, not the project root — or a production cluster is running); uses `.test_data` |
 | `<binary> service init\|schema\|run` | Run a long-running role: `service run` is a leaf-frame pod entrypoint dispatched over the project's `ServiceType` ADT, fail-fast unless the config declares a service role + variant; no `service down` (the controller owns lifetime) |
@@ -388,7 +388,7 @@ hostbootstrap run -- project init \
 hostbootstrap run -- project up --dry-run   # renders chain cfg without running it
 hostbootstrap run -- project up             # interprets the chain recursively, brings up the stack
 hostbootstrap run -- context                # render the lift composition, current frame highlighted
-hostbootstrap run -- project destroy        # stop then delete; host .data preserved
+hostbootstrap run -- project destroy        # stop then delete, including the VM/distro disk
 ```
 
 The harness lifecycle is a separate alternative and must start from zero; it refuses an existing production
@@ -432,7 +432,7 @@ carries two test layers:
   `hostbootstrap-demo test run <suite>`). The harness is the **one** test engine and it *is* the chain,
   driven under a test config: per distinct test config it writes a test-specific `hostbootstrap-demo.dhall`,
   runs `project up` over the demo's own chain, runs the case assertions in the appropriate frame, and tears
-  the stack down with `project destroy` (including failed bring-up, preserving host `.data`; an uncatchable
+  the stack down with `project destroy` (including failed bring-up; an uncatchable
   external kill is reconciled by the next idempotent lifecycle run). There is no
   separate `seamSetup` that stands a cluster up a second way — the bring-up a test exercises is the same
   chain production uses. Two fail-fast safety preconditions run before any test: the harness refuses if a

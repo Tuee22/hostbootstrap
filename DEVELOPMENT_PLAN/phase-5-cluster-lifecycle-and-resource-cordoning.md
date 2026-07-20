@@ -20,14 +20,14 @@ trusts `kind get clusters` with no health check (a stopped in-VM cluster reads a
 stops the VM). The fixes landed (see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2
 `hostbootstrap-demo test run all` reporting **`test report: 6/6 passed`** across both message variants — the
 `cluster up: nodes Ready for hostbootstrap-demo` gate fired on each of the two bring-ups before the first
-apply, then `project destroy` tore down with host `.data` preserved.
+apply, then `project destroy` tore down cleanly.
 
 The cluster lifecycle is now reached **only** as `deploy-kind` / `deploy-chart` chain steps under
 `project up` (the flat `cluster` verb group is removed; read-only liveness moved under `context`), and the
 real-run gate is **met (2026-06-18)**: a live `project up` on Incus/Linux brought the cordoned kind cluster
 up in the container frame (`clusterCreate` preflight + `kind create` + `kind export kubeconfig` + the Linux
-cordon, then the registry + web charts), and `project down` / `project destroy` tore it down with host `.data`
-preserved (§ O). The pure cores below are unchanged and unit-tested.
+cordon, then the registry + web charts), and `project down` / `project destroy` tore it down. The pure
+cores below are unchanged and unit-tested.
 
 `HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,
 `kindNodeCordonArgs`, `incusSizingArgs`) and `verifyBudget` checks spare capacity;
@@ -92,8 +92,10 @@ Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
 [development_plan_standards.md § O](development_plan_standards.md)). `hostbootstrap` verifies the host
 has the spare budget declared in `resources` and cordons it — on Apple by sizing a dedicated
 per-project VM wall on Apple, on Linux by applying kind node resource limits — drives kind/Helm cluster
-lifecycle, never deletes host `.data`, and distinguishes the production cluster profile (fixed name /
-`.data` path) from the test profile (per-case isolated paths).
+lifecycle, never enumerates the plan's `.data` path for removal, and distinguishes the production cluster
+profile (fixed name / `.data` path) from the test profile (per-case isolated paths). What that
+non-enumeration does and does not guarantee is
+[durable_state](../documents/architecture/durable_state.md).
 
 ## Remaining Work
 
@@ -130,9 +132,9 @@ lifecycle, never deletes host `.data`, and distinguishes the production cluster 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
 
-Current static validation (2026-07-15): `cabal build all --ghc-options=-Werror` and `cabal test all
---ghc-options=-Werror` pass from `core/` with 364 tests; the demo `-Werror` build and test run pass with
-87 demo tests plus the embedded 364 core tests. Coverage includes fail-closed placement-specific cluster
+Current static validation (2026-07-20): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` with 374 tests; the demo `-Werror` build and test run pass with
+89 demo tests plus the embedded 374 core tests. Coverage includes fail-closed placement-specific cluster
 configs, service/NodePort separation, official NVIDIA runtime probing, pre-mutation device-plugin
 idempotence, install/readiness/allocatable classification, aggregate teardown failure propagation with
 `.data` preservation, frame-aware command-level Kind ownership, fail-closed unhealthy-cluster deletion
@@ -184,8 +186,10 @@ Specifically:
   nested VM/project-container frame and delegates that nested cleanup to the project teardown hook. The
   old `cluster down` collapsed lifecycle framing; an owning cluster frame uses delete-on-down because kind
   has no reliable stop/restart contract.
-- The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`; the
-  durable host `.data` path is never placed in any removal set (§ O).
+- The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`: the
+  plan's `.data` path is never placed in any removal set (§ Y). That is the whole of the guarantee — it is
+  not host mirroring, and `destroy` still deletes the provisioned frame the path lives in
+  ([durable_state](../documents/architecture/durable_state.md)).
 - The `project` lifecycle command, its step interpreters, and the stop-without-delete capability **ship**,
   and the flat `cluster` verb group is **removed** (§ Sprint 5.2). Phase 16 owns the interpreter; the
   dissolved `cluster` verbs are recorded under
@@ -238,8 +242,8 @@ never-delete-`.data` invariant and the production-vs-test profile distinction.
 #### Command Surface
 
 - `hostbootstrap cluster up` — bring the stack to running (idempotent), within the cordoned budget.
-- `hostbootstrap cluster down` — tear the cluster down; preserve host `.data`.
-- `hostbootstrap cluster delete` — thorough teardown of derived state; still never deletes `.data`.
+- `hostbootstrap cluster down` — tear the cluster down; the removal set is empty, so no path is removed.
+- `hostbootstrap cluster delete` — thorough teardown of derived state; still never enumerates `.data`.
 
 #### Deliverables
 
@@ -378,7 +382,7 @@ cordon splitting, pre-mutation device-plugin no-op detection, pinned install/rea
 aggregate teardown failure propagation with `.data` preservation, fail-closed unhealthy-cluster deletion
 before recreation, frame-aware command-level Kind ownership, labelled GPU worker, direct CUDA image and
 `--gpus=all` handoff, and placement-specific service exposure are covered by the
-364-core/87-demo test gates above.
+374-core/89-demo test gates above.
 The web chart exposes a distinct local-only `127.0.0.1:30081` accelerator NodePort only for host-daemon
 lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on the configured port (default
 8081).
@@ -389,9 +393,55 @@ one-GPU daemon pod, CUDA worker, and browser e2e Add workflow at `8/8`. The Wind
 host-daemon-through-the-local-only-NodePort path is exercised by the decoupled Windows/WSL2 durable gate
 (Phase 13). No WSL2 result is represented as native Linux. No live `8/8` result is recorded yet, so the
 historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
-work remains in this phase.
+work remains in this sprint.
+
+### Sprint 5.6: Host-durable project state [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/kind.yaml`, `demo/chart/`
+**Docs to update**: `documents/architecture/durable_state.md`, `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Make `.data` mean what the governed docs long claimed it meant: project state that genuinely outlives
+`project destroy`. Today the never-delete-`.data` invariant guarantees only that cluster teardown does
+not enumerate the path for removal — a real property, but a much narrower one. Nothing creates the
+directory, and on a lifted topology it resolves inside a frame that `destroy` deletes.
+
+#### Deliverables
+
+- A durable-root contract that resolves to a **host** path regardless of which frame owns the cluster
+  step, consuming the share primitive from phase-11 Sprint 11.8.
+- The durable root carried across every boundary a nested chain crosses: VM → project container
+  (a `Mount` on the container launch), container → kind node (`extraMounts` in the kind config, which
+  today declares only `extraPortMappings`), kind node → pod (a host-backed volume in the chart).
+- A create-on-`up` path, so the root exists rather than being vacuously preserved.
+- `Capability.DurableStore` promoted from a declared-but-unread context capability to one a command
+  actually requires (with phase-15), and removed from the `Pending` ledger when it lands.
+- The teardown status line stops reporting `preserved` for a path it never inspected.
+
+#### Validation
+
+- `cabal test` from `core/` — the existing `LifecycleSpec` on-disk teardown cases continue to pass
+  unchanged; new cases cover durable-root resolution across frames.
+- Real-run gate (§ C), jointly with phase-11 Sprint 11.8: write state through the running stack, run
+  `project destroy`, run `project up`, and read the same state back.
+
+#### Remaining Work
+
+Implementation and static validation are complete. The provider share from phase-11 Sprint 11.8 is
+carried through the VM, project container, kind node, and web pod; the web service exposes the marker
+write/read probe used by the real-run gate. The 2026-07-20 static gates pass: core `-Werror` build plus
+374 tests, demo `-Werror` build plus 89 demo tests and the embedded 374 core tests, the Python code-check,
+and all 180 Python tests. The joint real-run gate remains: write the marker through the running service,
+run `project destroy`, run `project up`, and read the same marker from the host-backed root. Until that
+gate passes, no governed document may describe host-durable `.data` as validated (§ J).
 
 ## Documentation Requirements
+
+**Architecture docs to create/update:**
+- `documents/architecture/durable_state.md` - the canonical home of the never-delete-`.data` invariant:
+  the removal-set guarantee, frame-relativity, and the Sprint 5.6 durable-root contract.
 
 **Engineering docs to create/update:**
 - `documents/engineering/resource_budgeting.md` - budget verification, Colima per-project VM sizing

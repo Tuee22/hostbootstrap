@@ -192,8 +192,8 @@ The `chain :: cfg -> [Step]` value, the recursive `project up` interpreter, the 
 algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
 compose end-to-end: a single `project up` on Incus/Linux stands up the live persistent stack — a
 cordoned kind cluster, the in-cluster registry, the project image pushed to that registry, and
-the web chart pod serving `localhost:30080` — and `project down`/`project destroy` tear it down with
-host `.data` preserved. The demo's status is tracked in
+the web chart pod serving `localhost:30080` — and `project down`/`project destroy` tear it down. The
+demo's status is tracked in
 [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
 development plan.
 

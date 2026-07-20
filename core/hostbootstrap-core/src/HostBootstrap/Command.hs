@@ -490,9 +490,12 @@ initParserInfo progName commandLabel defaultRole initBuilder =
 the recursive interpreter brings the chain @up@ / @down@ / @destroy@. @project up
 --dry-run@ renders the pure @chain cfg@ plan (the single representation, § W);
 @project up@ interprets it recursively from the current frame; @project down@
-stops service/VM frames and tears down kind clusters while preserving durable
-host @.data@; @project destroy@ deletes everything spun up while preserving host
-@.data@.
+stops service/VM frames and tears down kind clusters, removing no filesystem path
+(the teardown removal set is empty); @project destroy@ also deletes everything the
+chain provisioned — for a VM-backed project, the provider VM and its disk. Cluster
+teardown never enumerates the plan's @.data@ path for removal, which is the whole
+of the never-delete-@.data@ invariant: it is not host mirroring, and the path
+still lives inside whatever frame @destroy@ deletes.
 -}
 projectCommandGroup ::
     forall cfg.
@@ -522,11 +525,11 @@ projectCommandGroup progName chain frameCtx teardown initBuilder =
     pDown =
         command
             "down"
-            (info (pure runDown) (progDesc "Stop service/VM frames and tear down kind clusters; preserve host .data"))
+            (info (pure runDown) (progDesc "Stop service/VM frames and tear down kind clusters; remove no filesystem path"))
     pDestroy =
         command
             "destroy"
-            (info (pure runDestroy) (progDesc "Stop then delete everything spun up; preserve host .data"))
+            (info (pure runDestroy) (progDesc "Stop then delete everything the chain provisioned, including any provider VM and its disk"))
 
     -- @project up@ is the recursive interpreter that runs in EVERY orchestration
     -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand',
