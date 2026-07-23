@@ -10,7 +10,15 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
+
+**Reopened 2026-07-19, CLOSED `Done` 2026-07-23.** The `.data` durability doctrine sweep (Sprint 21.3) plus
+the 2026-07-21 readiness/legible-failure/type-level-config-validity reconciliation are complete: the grep
+floor is clean (no `host \`.data\`` phrasing and no `.data`-adjacent `§ O` citation outside this ledger), the
+new doctrine has canonical homes ([readiness](../documents/architecture/readiness.md), § CC/§ DD,
+[durable_state](../documents/architecture/durable_state.md)), the `Budget/fitsWithin` compile-ring is
+reconciled to the realized decode-ring/bring-up-ring shape, and `DocValidatorSpec` + the `-Werror` build pass.
+The underlying code closed on a live Windows/WSL2 `test run all` **`8/8`** (2026-07-23, phases 9/10/11).
 
 **Reopened 2026-07-19 — the `.data` durability doctrine.** This phase's charter is making code comments,
 governed docs, and phase narrative agree with implemented behavior, and a false **mechanism** claim
@@ -35,11 +43,12 @@ surfaces are recorded in
 
 ## Remaining Work
 
-**Open — Sprint 21.3.** The `.data` doctrine sweep across `README.md`, `documents/`, and
-`DEVELOPMENT_PLAN/`, plus the `.data`-adjacent `§ O` → `§ Y` citation repoint. Closure requires the
-mechanical documentation validator green through `cabal test` **and** a grep floor showing no `host
-\`.data\`` phrasing and no `.data`-adjacent `§ O` citation outside
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+**CLOSED (Sprint 21.3, 2026-07-23).** The `.data` doctrine sweep across `README.md`, `documents/`, and
+`DEVELOPMENT_PLAN/`, the `.data`-adjacent `§ O` → `§ Y` citation repoint, and the 2026-07-21
+readiness/legible-failure/type-level-config-validity reconciliation are complete: `DocValidatorSpec` is green
+through `cabal test`, the `-Werror` build passes, and the grep floor holds (no `host \`.data\`` phrasing and
+no `.data`-adjacent `§ O` citation outside
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). **None remaining.**
 
 ## Sprints
 
@@ -102,16 +111,19 @@ parallel canonical home.
 
 None.
 
-### Sprint 21.3: `.data` durability doctrine reconciliation [Planned]
+### Sprint 21.3: `.data` durability doctrine reconciliation [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `README.md`, `documents/`, `DEVELOPMENT_PLAN/`, `core/hostbootstrap-core/src/HostBootstrap/`, `demo/src/HostBootstrapDemo/Commands.hs`
-**Docs to update**: `documents/architecture/durable_state.md`, `documents/engineering/cluster_lifecycle.md`, `documents/engineering/gitignore_guardrails.md`, `documents/operations/demo_runbook.md`, `README.md`
+**Docs to update**: `documents/architecture/durable_state.md`, `documents/architecture/readiness.md`, `documents/architecture/harness_workflow.md`, `documents/engineering/cluster_lifecycle.md`, `documents/engineering/applied_cordon.md`, `documents/architecture/dhall_generation.md`, `documents/engineering/gitignore_guardrails.md`, `documents/operations/demo_runbook.md`, `README.md`
 
 #### Objective
 
 Make every governed statement about `.data` match implemented behavior, and give the contract one
-canonical home so the four provider docs stop restating it and drifting apart independently.
+canonical home so the four provider docs stop restating it and drifting apart independently. Extend the same
+reconciliation (2026-07-21) to the readiness-gated-lifecycle, legible-failure, and type-level-config-validity
+doctrine (§ CC, § DD): every governed statement matches implemented behavior, with the new doctrine given
+canonical homes.
 
 #### Deliverables
 
@@ -128,6 +140,13 @@ canonical home so the four provider docs stop restating it and drifting apart in
   alone.
 - Haddock and the two `progDesc` strings that shipped the old host-durability phrasing in the binary's
   own `--help` are corrected.
+- **(2026-07-21 extension)** The readiness/legible-failure doctrine has a canonical home
+  (`documents/architecture/readiness.md`, standards § CC) and the durable-share primitive is de-staled in
+  `durable_state.md` (standards § DD); provider, harness, cordon, and Dhall-generation docs defer to them.
+- No governed document claims a bring-up failure is legible, the `Budget/fitsWithin` assert is attached at
+  render, or the durable alias/primitive is delivered — each is corrected to its honest reopened state. The
+  `ExitFailure 1` collapse, the never-attached § O `fitsWithin`, and the ad-hoc `set -eu` alias are recorded
+  in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 #### Validation
 
@@ -139,7 +158,9 @@ canonical home so the four provider docs stop restating it and drifting apart in
 
 #### Remaining Work
 
-The whole sprint.
+None (closed 2026-07-23). The doctrine sweep, the `§ O` compile-ring reconciliation, and the readiness /
+legible-failure / config-validity homes are in place; `DocValidatorSpec` and the `-Werror` build pass, and
+the grep floor holds.
 
 ## Documentation Requirements
 

@@ -47,11 +47,14 @@ test("the Accelerator tab computes via the daemon (or reports no in-process fall
     await expect(page.locator("#add-result")).toHaveText("3.75");
     await expect(page.locator("#add-backend")).toHaveText(expectedBackend);
     await expect(page.locator("#add-artifact")).toHaveText(/^[0-9a-f]{16}$/);
-    // The whole API/worker chain is Float32: 2^24 + 1 rounds back to 2^24.
+    // The whole API/worker chain is Float32: 2^24 + 1 rounds back to 2^24
+    // (proving the rounding: 16777216, NOT 16777217). The SPA renders the Float
+    // result with PureScript `show`, so a whole result displays as "16777216.0"
+    // (consistent with the "3.75" case above, which is also `show`-formatted).
     await page.locator("#add-left").fill("16777216");
     await page.locator("#add-right").fill("1");
     await page.locator("#add-button").click();
-    await expect(page.locator("#add-result")).toHaveText("16777216");
+    await expect(page.locator("#add-result")).toHaveText("16777216.0");
   } else {
     // No daemon: no in-process fallback — the endpoint reports unavailable.
     await expect(page.locator("#add-error")).toHaveText("accelerator daemon unavailable");

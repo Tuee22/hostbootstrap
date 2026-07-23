@@ -58,6 +58,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
   never-delete-`.data` invariant**: what teardown's removal set does and does not guarantee, why `.data` is
   frame-relative (and therefore a guest path on a lifted topology), the one-way host→guest transfer on every
   substrate, and the open work to make host-durable project state real.
+- [architecture/readiness.md](architecture/readiness.md) — the `Ready`-witness readiness discipline
+  (sealed phantom witness, retrying probes) and the legible-failure contract that keeps a bring-up failure
+  from collapsing to `ExitFailure 1`.
 
 ## Engineering
 

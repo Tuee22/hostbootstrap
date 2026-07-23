@@ -96,5 +96,5 @@ in  { dockerfile = "docker/demo.Dockerfile"
         , ContextKind.TestHarness
         ]
       }
-    , deploy.haReplicas = 2
+    , deploy.haReplicas = 1
     }

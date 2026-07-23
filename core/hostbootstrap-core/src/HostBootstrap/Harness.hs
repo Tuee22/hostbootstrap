@@ -31,6 +31,8 @@ module HostBootstrap.Harness (
     ConfigVariant (..),
     SafetyRefusal (..),
     safetyRefusalMarker,
+    LifecycleFailure (..),
+    lifecycleFailureMarker,
     runSuiteSelection,
     testSafetyPreconditions,
     RunModel (..),
@@ -55,7 +57,7 @@ module HostBootstrap.Harness (
 )
 where
 
-import Control.Exception (Exception, SomeAsyncException, SomeException, fromException, mask, onException, tryJust)
+import Control.Exception (Exception, SomeAsyncException, SomeException, displayException, fromException, mask, onException, tryJust)
 import Control.Exception.Safe (finally)
 import Control.Monad (unless)
 import Data.List (intercalate, isPrefixOf, partition)
@@ -363,6 +365,29 @@ instance Exception SafetyRefusal
 safetyRefusalMarker :: String
 safetyRefusalMarker = "HOSTBOOTSTRAP_SAFETY_REFUSAL:"
 
+{- | A structured bring-up failure carrying its cause across the self-reference
+subprocess boundary and the harness catch — the peer of 'SafetyRefusal'
+(development_plan_standards § CC). A lifecycle step that fails throws this instead
+of a message-less @die@ ('System.Exit.die' throws @ExitFailure 1@ with no cause),
+so the report card renders the reason via 'displayException' rather than the
+literal @"ExitFailure 1"@. Its 'Show' prints the 'lifecycleFailureMarker' so the
+cause survives the subprocess round-trip exactly as 'SafetyRefusal' does: a parent
+runner detects the marker in the child's stderr and re-raises the carried reason
+(never a bare exit code). 'displayException' is the marker-free cause the harness
+report card renders.
+-}
+newtype LifecycleFailure = LifecycleFailure {lifecycleFailureReason :: String}
+    deriving (Eq)
+
+instance Show LifecycleFailure where
+    show (LifecycleFailure reason) = lifecycleFailureMarker ++ " " ++ reason
+
+instance Exception LifecycleFailure where
+    displayException (LifecycleFailure reason) = reason
+
+lifecycleFailureMarker :: String
+lifecycleFailureMarker = "HOSTBOOTSTRAP_LIFECYCLE_FAILURE:"
+
 {- | The two hard fail-fast safety preconditions checked before any test runs
 (development_plan_standards § Z), so a test never interferes with production:
 
@@ -450,7 +475,11 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
             Left err ->
                 case fromException err :: Maybe SafetyRefusal of
                     Just refusal -> pure (allFail chosen ("bring-up refused: " ++ safetyRefusalReason refusal))
-                    Nothing -> pure (allFail chosen ("bring-up failed: " ++ show err)) `finally` tearDown
+                    -- Render the CAUSE, not @show err@: a 'LifecycleFailure' (or any
+                    -- structured exception) surfaces its reason via 'displayException'
+                    -- rather than collapsing to the literal @"ExitFailure 1"@ a
+                    -- message-less @die@ would print (development_plan_standards § CC).
+                    Nothing -> pure (allFail chosen ("bring-up failed: " ++ displayException err)) `finally` tearDown
             Right env -> runMatrix (assertSeams env) chosen `finally` tearDown
     -- Every chosen case fails with one reason (the bring-up / variant failure).
     allFail chosen reason = Report [(caseId c, Fail reason) | c <- chosen]

@@ -207,6 +207,29 @@ suiteCases =
         readIORef teardownCalls >>= (@?= 0)
         readIORef configEntries >>= (@?= 1)
         readIORef configExits >>= (@?= 1)
+    , testCase "a bring-up LifecycleFailure renders its cause, never a bare ExitFailure 1" $ do
+        -- The peer of the SafetyRefusal case (development_plan_standards § CC): a
+        -- lifecycle step that throws a structured 'LifecycleFailure' must reach the
+        -- report card as its carried reason (via 'displayException'), never the
+        -- message-less "ExitFailure 1" a bare `die` would collapse to.
+        let cause = "durable alias collision: /var/tmp/hostbootstrap-demo-data"
+            suite =
+                TestSuite
+                    (pure (Right ()))
+                    (\_ -> throwIO (LifecycleFailure cause))
+                    [Case "a" 1 False]
+                    (\_ _ -> pure Pass)
+                    (pure ())
+        outcome <- runSuiteSelection suite [oneVariant] allCasesSelector
+        case outcome of
+            Right (Report rs) ->
+                case lookup "[v0] a" rs of
+                    Just (Fail msg) -> do
+                        assertBool ("carries the cause: " ++ msg) (cause `isInfixOf` msg)
+                        assertBool ("no bare ExitFailure: " ++ msg) (not ("ExitFailure" `isInfixOf` msg))
+                        assertBool ("no leaked marker: " ++ msg) (not (lifecycleFailureMarker `isInfixOf` msg))
+                    other -> assertFailure ("expected a legible lifecycle failure, got " ++ show other)
+            Left err -> assertFailure ("expected Right, got Left " ++ err)
     , testCase "an unknown case fails fast, listing the valid ids and `all`" $ do
         outcome <- runSuiteSelection twoCaseSuite [oneVariant] "nope"
         case outcome of

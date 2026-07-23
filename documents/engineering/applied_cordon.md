@@ -44,6 +44,21 @@ list after splitting the one cluster envelope.
 The Python bootstrapper builds no sizing argv. Because every interpreter is the same parser, the VM
 sizing and the Haskell-verified budget agree, and the one declared number is the one enforced ceiling.
 
+### Target: Type-Level Config Validity
+
+The parser and rings described here are today's *runtime* discipline: `parseQuantity` decodes a `Text`
+quantity and a bad unit or a below-floor budget is caught at bring-up. The **target** contract is
+stronger — configuration invalidity is type-level (unrepresentable), not a runtime `die`. `memory` /
+`storage` become a typed `Quantity` newtype whose bad unit is rejected at Dhall decode rather than
+mid-bring-up by the text→bytes `parseQuantity`; the lifecycle resource floor becomes a smart-constructor
+invariant so a below-floor `Resources` cannot be constructed at all; and `haReplicas`, service ports, and
+timeouts become bounded newtypes rather than unbounded `Natural` validated at runtime. The compile ring
+completes the picture: its `Budget/fitsWithin` assertion is attached to **every** generated config, so an
+over-budget config fails to type-check. The newtype-smart-constructor precedent is `AbsExe` (see
+[hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md)). Today these checks all run
+at runtime; making config validity type-level is reopened as phase-9 Sprint 9.9 (see
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+
 ## The Three Rings
 
 The single ceiling is held by three independent rings, so no one mechanism is the only line of

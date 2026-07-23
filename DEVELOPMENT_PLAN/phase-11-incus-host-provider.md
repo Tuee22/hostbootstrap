@@ -11,7 +11,20 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
+
+**Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — the guest-side durable alias as pure, readiness-gated
+provider data.** The 2026-07-19 host-path share primitive (Sprint 11.8) delivered only the **host-side** half
+(`spShare`/`ShareReconcile`). The **guest-side** durable alias that makes the share usable at the Docker
+boundary was then added (commit `6f08375`) as a demo-local `set -eu` shell step — ungated, one-shot, and it
+**collapsed to a bare `ExitFailure 1`** on the Windows/WSL2 `test run all` gate (0/8). Sprint 11.9 recast it
+as a pure `AliasState` primitive gated by a `Ready DurableShareMounted` witness
+([development_plan_standards](development_plan_standards.md) § CC/§ DD), folding the three hand-coded copies of
+the alias state machine into one classifier; it depends on the legible-failure surface (phase-10 Sprint 10.8)
+and the readiness framework (phase-9 Sprint 9.8). **CLOSED** on a live Windows/WSL2 `test run all` reporting
+**`8/8 passed`** (2026-07-23): the durable alias now links cleanly —
+`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/Users/Matt/hostbootstrap/demo/.data` —
+on both variants, the exact step that collapsed `0/8` before.
 
 **Reopened 2026-07-19 — host-path share primitive.** The governed docs asserted that a project's `.data`
 survived teardown as *host* state on every provider. It does not: every substrate stages **one way**
@@ -71,11 +84,13 @@ ceiling applied.
 
 ## Remaining Work
 
-**Open (reopened 2026-07-19) — the per-substrate host-path share primitive.** No provider can attach a host
-directory to its guest today, so no substrate can offer host-durable project state. Sprint 11.8 owns the
-primitive; phase-5 Sprint 5.6 owns the durable-root contract that consumes it. The gate is a real run that
-writes state, runs `project destroy`, runs `project up`, and reads it back — a real-run gate under § C, so
-this phase stays `Active` until it passes.
+**CLOSED `Done` (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
+(`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
+`AliasState` provider data (replacing the defective demo-local `set -eu` shell step that failed the
+Windows/WSL2 gate 0/8 by collapsing to `ExitFailure 1`). Both closed on a live Windows/WSL2 `test run all`
+reporting **`8/8 passed`** (2026-07-23): the share mounts (a `Ready DurableShareMounted` probe) and the alias
+links cleanly on both variants. The end-to-end durable-root **read-back** contract (write → `project destroy`
+→ `project up` → read) is phase-5 Sprint 5.6's; its share/alias mechanism is now validated here.
 
 **Historical reopening 2026-07-05 — provider lifecycle reliability. Code landed, code-check-validated, and
 real-run-closed (§ C) 2026-07-05:**
@@ -499,9 +514,9 @@ applied ceiling + swap, so no floor-lowering fallback was needed.
 This was Phase 11 work only; it did not block the closed Phase 2 bootstrap, Phase 3 CUDA-on-Windows
 reconciler, or Phase 9 Windows capacity/sizing surfaces.
 
-### Sprint 11.8: Per-substrate host-path share primitive [Active]
+### Sprint 11.8: Per-substrate host-path share primitive [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`, `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`
 **Docs to update**: `documents/architecture/durable_state.md`, `documents/engineering/incus.md`, `documents/engineering/lima.md`, `documents/engineering/wsl2.md`
 
@@ -535,10 +550,73 @@ host-backed rather than frame-local.
 
 #### Remaining Work
 
-Implementation, provider argv/effect tests, and documentation are complete. The 2026-07-20 core
-`-Werror` build and all 374 core tests pass; the demo workspace also passes the embedded 374-test core
-suite and 89 demo tests. The joint real-run gate with phase-5 Sprint 5.6 remains: write state through the
-running service, `project destroy`, `project up`, and read it back from the host-backed root.
+The **host-side** share (`spShare` / `HostPathShare` / `ShareReconcile` — the Lima create-time mount, the
+Incus disk device, the WSL2 drvfs path rewrite) is implemented and unit-tested (`ProviderSpec`); the
+2026-07-20 core `-Werror` build and all 374 core tests pass. The **guest-side** durable alias that makes the
+share usable at the Docker boundary was added (`6f08375`) as a demo-local `set -eu` shell step and is
+**defective** — ungated, one-shot, and it collapsed to a bare `ExitFailure 1` on the Windows/WSL2
+`test run all` gate (0/8). Recasting it as pure, readiness-gated provider data is **Sprint 11.9**. The joint
+real-run gate with phase-5 Sprint 5.6 (write→destroy→up→read) remains and depends on 11.9.
+
+### Sprint 11.9: Guest-side durable alias as pure, readiness-gated provider data [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ProviderSpec.hs`
+**Docs to update**: `documents/architecture/readiness.md`, `documents/architecture/durable_state.md`, `documents/engineering/wsl2.md`, `documents/engineering/incus.md`, `documents/engineering/lima.md`
+
+#### Objective
+
+Recast the guest-side durable alias — the stable Docker-visible symlink to the host-backed share — as pure
+provider data gated by a readiness witness, replacing the defective demo-local `set -eu` shell step that
+raced and collapsed on the Windows/WSL2 gate. Fold the three hand-coded copies of the alias state machine
+into one classifier.
+
+#### Deliverables
+
+- A pure `AliasState = AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere FilePath | AliasOccupied`
+  with a total `classifyAlias` and a create/remove planner in `HostBootstrap.Substrate.Provider` — the
+  guest-side peer of `shareReconcileEffects` (development_plan_standards § DD).
+- The **same** classifier interprets both lanes: the VM-shell lane reads the alias facts with **trivial**
+  guest probes (`test -L`, `readlink`, `test -e` — no compound `set -eu`, no nested `"$(…)"`, so it survives
+  the Windows PowerShell→`wsl`→`bash` quoting path, § CC) and executes `ln -s`; the direct Linux-GPU lane
+  reads via `System.Directory` and executes `createDirectoryLink`. The triplicated `prepareVMDurableAlias` /
+  `prepareLocalDurableAlias` / `removeLocalDurableAliasIfOwned` are folded onto it (see
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+- Mount-readiness: a retrying `Probe` proves the guest share is a writable directory and mints a
+  `Ready DurableShareMounted` witness (§ CC); `waitVMNetwork` mints a `Ready NetworkReady` the mount probe
+  consumes; `mintDurableAlias` requires the mount witness — so the
+  `substrateWait → waitVMNetwork → awaitDurableShareMounted → mintDurableAlias` order is **type-enforced**
+  and the alias cannot race the mount.
+- A collision (`AliasLinkedElsewhere` / `AliasOccupied`) is a `Failed` message, never a bare exit code.
+
+#### Validation
+
+- `cabal test` from `core/` — `ProviderSpec` (or a new alias spec) covers all four `AliasState` cases, the
+  create/remove planner, and the mount/alias probe classification; the witness threading makes an
+  out-of-order bring-up a type error.
+- Real-run gate (§ C), jointly with phase-5 Sprint 5.6 and phase-10 Sprint 10.8: the Windows/WSL2
+  `test run all` reaches `8/8`, or fails with a legible `LifecycleFailure` naming the cause — never a bare
+  `ExitFailure 1`.
+
+#### Remaining Work
+
+**Code landed and static-validated (2026-07-22).** `HostBootstrap.Substrate.Provider` gains a pure
+`AliasState` (`AliasAbsent` / `AliasLinkedCorrectly` / `AliasLinkedElsewhere` / `AliasOccupied`) with the
+total `classifyAlias` over `AliasFacts` plus the `planAliasEnsure` / `planAliasRemove` planners — a collision
+is a legible `Left`, never a bare exit code. The demo's three hand-coded copies (`prepareVMDurableAlias` /
+`prepareLocalDurableAlias` / `removeLocalDurableAliasIfOwned`) are folded onto that one classifier: the
+VM-shell lane reads facts with **trivial** guest probes (`test -L` / `readlink` / `test -e` — no compound
+`set -eu`, no nested `"$(…)"`, so it survives the Windows PowerShell→`wsl`→`bash` path), the direct Linux-GPU
+lane via `System.Directory`; both execute the same plan. Readiness is type-enforced:
+`waitVMNetwork` mints `Ready NetworkReady`, `awaitDurableShareMounted` consumes it and mints
+`Ready DurableShareMounted` (a retrying `test -d && test -w` probe), and `mintDurableAlias` requires the mount
+witness — so the alias cannot race the mount (an out-of-order bring-up is a compile error). A residual failure
+is legible via phase-10 Sprint 10.8's `LifecycleFailure`. Static gate green:
+`cabal test all --ghc-options=-Werror` **core 382** (7 new `ProviderSpec` alias cases) **+ demo 98**.
+**Real-run gate MET (§ C, 2026-07-23):** the live Windows/WSL2 `test run all` reported **`8/8 passed`** with
+the alias linking cleanly on both variants
+(`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/…/demo/.data`) — the exact step that
+failed `0/8` before. **None remaining.**
 
 ## Documentation Requirements
 
@@ -560,6 +638,8 @@ running service, `project destroy`, `project up`, and read it back from the host
   including the WSL2-backed `InVM` on Windows.
 - `documents/architecture/durable_state.md` - the per-substrate host↔guest transfer table and the share
   primitive Sprint 11.8 adds; the canonical home for what `.data` does and does not guarantee.
+- `documents/architecture/readiness.md` - **(new)** the `Ready`-witness readiness discipline that gates the
+  mount/alias steps (Sprint 11.9) and the legible-failure contract, cross-referenced by the provider docs.
 
 **Operations docs to create/update:**
 - `documents/operations/demo_runbook.md` - the demo's Windows/WSL2 provider path alongside the Lima/Incus

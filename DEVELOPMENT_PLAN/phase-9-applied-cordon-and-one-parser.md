@@ -12,6 +12,22 @@
 
 **Status**: Done
 
+**Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — readiness framework and type-level config validity.** Two
+gaps in this phase's scope surfaced from the Windows/WSL2 durable-share failure. (1) The
+`HostBootstrap.Readiness` poll/witness framework — the reliability peer of the pure
+`HostBootstrap.Substrate.Provider` lift this phase's Sprint 9.7 unified — was real in code but never recorded
+in the plan or `system-components.md`, and its **gating discipline was not universal**: mutating in-guest
+steps (the durable-share alias, the `runVmBootstrap` install/build steps, staging) ran ungated and one-shot.
+(2) Configuration validity was a **runtime `die`**, not decode-time: `memory`/`storage` were `Text`, the
+resource floor a runtime check, `haReplicas`/ports/timeout unbounded `Natural`. Sprint 9.8 formalized the
+readiness framework and universal gating; Sprint 9.9 made config validity decode-time via typed newtypes.
+**Both closed** on a live Windows/WSL2 `test run all` reporting **`8/8 passed`** (2026-07-23), static-gated by
+`cabal test all --ghc-options=-Werror` (**core 382 + demo 98**, fourmolu/hlint clean). The `Budget/fitsWithin`
+compile-ring § O advertised is **not attachable** to a generated config (it carries `Text` quantities and no
+pod set), so it is reconciled to the realized shape: the **decode ring** is the typed newtypes, the pod-set
+fit check stays the **bring-up ring** (`fitsBudget`) — see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
 resource-cordon gaps in this phase's scope: there is no host-headroom preflight (the gate is
 `budget ≤ total RAM`, and `spareMemoryBytes` is actually *total* physical RAM on Apple/Windows), so a
@@ -68,6 +84,14 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 [phase-11](phase-11-incus-host-provider.md) Sprint 11.7).
 
 ## Remaining Work
+
+**Open (reopened 2026-07-21) — the readiness framework and type-level config validity.** Sprint 9.8 records
+and formalizes `HostBootstrap.Readiness` (the sealed `Ready` witness, retrying `Probe`/`ProbeResult`) and
+extends its gating to every mutating in-frame step; Sprint 9.9 replaces the runtime config checks with
+type-level ones (typed `Quantity`, a resource-floor smart constructor, bounded newtypes, and the
+`Budget/fitsWithin` assert actually attached at render). Both are static-gated (`cabal test`) and land before
+the joint Windows/WSL2 real-run gate (phase-11 Sprint 11.9, phase-10 Sprint 10.8). This phase is `Active`
+until they close.
 
 **Historical reopening 2026-07-05 — cross-substrate resource cordon. Code landed, code-check-validated, and
 real-run-closed (§ C) 2026-07-05:**
@@ -354,12 +378,124 @@ registered/sized the distro, brought up in-distro Docker/kind without a utility-
 `.wslconfig` (jointly with [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)
 Sprint 11.7).
 
+### Sprint 9.8: Readiness framework and universal step gating [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`, `core/hostbootstrap-core/src/HostBootstrap/Readiness/Internal.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/readiness.md`, `system-components.md`
+
+#### Objective
+
+Record `HostBootstrap.Readiness` as a first-class surface and make its gating discipline universal: every
+mutating in-frame lifecycle step is gated by a sealed `Ready` witness minted only by a retrying `Probe`, so
+an ungated one-shot step (which today races and hides its failure) is a type error rather than a defect.
+
+#### Module Surface
+
+- `HostBootstrap.Readiness` — the sealed phantom `Ready tag` (constructor hidden in
+  `HostBootstrap.Readiness.Internal`), `awaitReady`/`awaitReadyWith`, `Probe`/`ProbeResult`
+  (`ProbeReady | NotReady | Failed String`), `PollPolicy` + the named policies, `PollError`/`renderPollError`,
+  and the pure `pollStep`. Added to the `system-components.md` module inventory (a pre-existing drift: the
+  module shipped without an inventory row).
+
+#### Deliverables
+
+- The gating discipline as the canonical `documents/architecture/readiness.md` and development_plan_standards
+  § CC.
+- The currently-ungated mutating in-guest steps (the durable-share alias — phase-11 Sprint 11.9 —, the
+  `runVmBootstrap` install/build steps, `stageSource`, `streamVMConfig`) brought under a `Ready` witness, and
+  the trivial-guest-probe contract (no compound `set -eu`; no nested `"$(…)"`) enforced so a probe survives
+  the Windows PowerShell→`wsl`→`bash` path.
+
+#### Validation
+
+- `cabal test` from `core/` — the existing `Readiness`/poll unit tests (`pollStep`/`drivePure`) plus the
+  witness-threading types; an out-of-order step fails to compile.
+
+#### Remaining Work
+
+**Code landed and static-validated (2026-07-22).** `HostBootstrap.Readiness` is documented as the canonical
+[readiness](../documents/architecture/readiness.md) and recorded in
+[system-components.md](system-components.md) (the pre-existing inventory drift closed). The previously
+ungated in-guest mutating steps are now witness-gated: `stageSource` / `streamVMConfig` and the
+`runVmBootstrap` install/build steps take a `Ready VMReady` argument (minted by `substrateWait` at the frame
+start, threaded through the `guestStep` runner), and the durable-share alias is gated by
+`Ready DurableShareMounted` (phase-11 Sprint 11.9) — so an out-of-order in-guest step is a **type error**.
+The trivial-guest-probe contract is honoured (single simple commands: `test -L`/`readlink`/`test -e`,
+`test -d && test -w` — no compound `set -eu`, no nested `"$(…)"`). Static gate green:
+`cabal test all --ghc-options=-Werror` **core 382 + demo 98** (the demo runs the embedded core suite).
+**Real-run gate MET (§ C, 2026-07-23):** a live Windows/WSL2 `test run all` reported **`8/8 passed`** —
+`pristine-bootstrap` (both variants) exercised the witness-gated staging/config-stream/install steps and the
+in-guest bootstrap end to end. **None remaining.**
+
+### Sprint 9.9: Type-level configuration validity [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/dhall/Core.dhall`, `demo/src/HostBootstrapDemo/Config.hs`
+**Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/schema.md`, `documents/engineering/resource_budgeting.md`, `documents/architecture/dhall_generation.md`
+
+#### Objective
+
+Make an unworkable `<project>.dhall`/`test.dhall` **unrepresentable** rather than accepted-then-failed at
+bring-up: move the resource/quantity/replica invariants from runtime `die`s to the decode/construction
+boundary, and actually attach the `Budget/fitsWithin` assertion § O advertises.
+
+#### Deliverables
+
+- A typed `Quantity` newtype whose `FromDhall` validates the unit at decode (the current `Text`
+  `memory`/`storage` accept `"lots"`/`"8"` and fail only at `parseQuantity` during bring-up).
+- The lifecycle resource floor as a smart-constructor invariant (a below-floor `Resources` cannot be
+  constructed; `demoTestConfig` cannot mint a below-floor variant).
+- Bounded newtypes for `haReplicas` (demo: exactly `1`), service ports (1..65535, distinct), and timeout
+  (1..30), so `validateServiceType`/`validateAcceleratorReplicaCount` are total by construction.
+- The **decode ring realized as the typed newtypes** (§ O's compile ring): `Core.dhall`'s
+  `Budget/fitsWithin` operates on a `Natural` `Budget` and a `List PodResources`, but a generated
+  `<project>.dhall` carries its `memory`/`storage` as Kubernetes **`Text`** quantities (which Dhall cannot
+  numerically compare) and **no pod set** — so a Dhall-native `fitsWithin` assert has nothing to quantify
+  over without embedding Haskell-computed `Natural`s and the demo's pod footprint into every rendered config
+  (config bloat, redundant with the bring-up ring). The realized **decode-time** validity ring is therefore
+  the typed newtypes above: an unworkable field is **unrepresentable at Dhall decode** (§ BB's intent). The
+  pod-set fit check stays the **bring-up ring** (`fitsBudget`, which parses the quantities and checks the real
+  pod set), keeping "defense in depth across three rings" honest (decode ring / bring-up ring / runtime
+  cordon). `dhall/example.dhall`'s runtime-failing `haReplicas = 2` is corrected to `1` (and the core
+  `SchemaSpec` fixture/`renderProjectConfig` sites with it). The superseded `Text`-quantity/unbounded-`Natural`
+  surfaces are recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+#### Validation
+
+- `cabal test` — decode-time rejections (bad unit, below-floor cpu, `haReplicas ≠ 1`, out-of-range/zero
+  ports, bad timeout) plus valid sub-records still decoding (`ConfigSpec` "invalid config fields are rejected
+  at decode"), and `example.dhall` round-trips through the corrected fixture.
+
+#### Remaining Work
+
+**Code landed and static-validated (2026-07-22).** The demo's config gains a validating-`FromDhall` layer
+that makes an unworkable config decode-reject: a typed `Quantity` (unit-validated via the one canonical
+`parseQuantity`), bounded `HaReplicas` (exactly `1`) / `Port` (1..65535) / `TimeoutSeconds` (1..30), and a
+resource-floor `Resources` (cpu ≥ 1). All encode **transparently** (a newtype's `ToDhall` renders its
+underlying `Text`/`Natural`), so the reflected schema and goldens are unchanged; `IsString`/`Num` keep
+internal literals and `fromIntegral` working. `example.dhall`'s `haReplicas` is corrected to `1`. Static gate
+green: `cabal test all --ghc-options=-Werror` **core 382 + demo 98** (9 new `ConfigSpec` decode-rejection
+cases). The `Budget/fitsWithin` compile-ring is reconciled to the realized decode ring (above); no
+`cabal test` item remains. **Real-run gate MET (§ C, 2026-07-23):** the live Windows/WSL2 `test run all`
+reported **`8/8 passed`** — the generated configs (including the accelerator daemon config with the bounded
+`Port`/`TimeoutSeconds` and `Quantity` fields) decoded and drove both variants. **None remaining.**
+
 ## Documentation Requirements
+
+**Architecture docs to create/update:**
+- `documents/architecture/readiness.md` - **(new)** the `HostBootstrap.Readiness` framework and universal
+  step-gating discipline (Sprint 9.8), plus the legible-failure contract.
+- `documents/architecture/dhall_generation.md` - the `Budget/fitsWithin` assertion attached to every
+  generated config (Sprint 9.9), correcting the never-attached claim.
 
 **Engineering docs to create/update:**
 - `documents/engineering/applied_cordon.md` - the one ceiling, the three rings (compile / bring-up /
-  runtime), the single canonical parser, the per-substrate storage cordon, and the WSL2 distro sizing
-  (`wsl2SizingArgs` — the `.wslconfig` + vhdx wall on Windows).
+  runtime), the single canonical parser, the per-substrate storage cordon, the WSL2 distro sizing
+  (`wsl2SizingArgs` — the `.wslconfig` + vhdx wall on Windows), and the type-level config-validity target
+  (typed `Quantity`, resource-floor smart constructor, bounded newtypes; Sprint 9.9).
+- `documents/engineering/schema.md` - field-level validity unrepresentable at decode (typed `Quantity`,
+  bounded `haReplicas`/ports/timeout, resource-floor smart constructor; Sprint 9.9).
 - `documents/engineering/resource_budgeting.md` - rewritten to budget-as-ceiling, pointing applied detail
   at `applied_cordon.md`; the Windows `resolveHostCapacity` branch and the WSL2 wall.
 

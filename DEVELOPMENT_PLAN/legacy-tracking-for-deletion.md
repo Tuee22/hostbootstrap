@@ -45,6 +45,12 @@
   metadata over CBOR WebSocket. Owning phase: phase-13 Sprint 13.17. Validation: browser e2e fills the two
   float inputs, clicks Add, and asserts the daemon-backed result.
 
+The seven 2026-07-21-reopening cleanup entries (the ad-hoc `set -eu` alias, the triplicated alias state
+machine, the stderr-folding `die` collapse, the ungated in-guest steps, the `Text` memory/storage quantities,
+the unbounded `Natural` config fields, and the never-attached `Budget/fitsWithin` assert) **landed / were
+reconciled and moved to Removed Surfaces** on 2026-07-23 (validated by the live Windows/WSL2 `test run all`
+**`8/8`**).
+
 The in-cluster-registry doctrine switch (Harbor → single-binary `registry:2`, phase-13 Sprint 13.16) was the
 previous pending cleanup; it **closed 2026-07-05** on a live decoupled Windows/WSL2 `test run all` reporting
 **`test report: 6/6 passed`** (`REALRUN_EXIT=0`) standing up `registry:2` and pushing the project image, so

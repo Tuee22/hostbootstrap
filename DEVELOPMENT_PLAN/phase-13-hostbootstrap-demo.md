@@ -201,9 +201,13 @@ inside the stack has a path back to the developer's machine. Wiring a durable ro
 carrying it across each boundary the chain crosses: **VM → project container** (a `Mount` on the container
 launch), **project container → kind node** (`extraMounts` in `demo/kind.yaml`, which today declares only
 `extraPortMappings`), and **kind node → pod** (a host-backed volume in `demo/chart`). This consumes
-[phase-11](phase-11-incus-host-provider.md) Sprint 11.8 (the per-substrate host-path share primitive) and
-[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 (the durable-root contract), and
-is gated by the same real run (§ C) those sprints share: write state through the running stack, run
+[phase-11](phase-11-incus-host-provider.md) Sprint 11.8 (the host-side share) and **Sprint 11.9** (the
+guest-side durable alias as pure, readiness-gated provider data — the demo's current alias is the defective
+`set -eu` step that collapsed the Windows/WSL2 gate to `ExitFailure 1` (0/8), which the demo rewires onto
+the core `AliasState` primitive), plus
+[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 (the durable-root contract) and the
+demo's adoption of the type-level config newtypes (phase-9 Sprint 9.9). It is gated by the same real run
+(§ C) those sprints share: write state through the running stack, run
 `project destroy`, run `project up`, and read it back. Until that gate passes, no demo document may
 describe host-durable `.data` as available — see
 [durable_state](../documents/architecture/durable_state.md).

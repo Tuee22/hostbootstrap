@@ -67,11 +67,11 @@ module HostBootstrapDemo.Commands (
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, finally, mask, onException, throwIO, try)
+import Control.Exception (SomeException, evaluate, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import Data.Char (isDigit, isSpace, toLower)
-import Data.List (intercalate, isInfixOf)
+import Data.List (dropWhileEnd, intercalate, isInfixOf, isPrefixOf)
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -108,7 +108,7 @@ import qualified HostBootstrap.Ensure.Docker as EnsureDocker
 import qualified HostBootstrap.Ensure.Incus as Incus
 import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
-import HostBootstrap.Harness (Case (..), CaseResult (..), SafetyRefusal (..), TestSuite (..), safetyRefusalMarker, testSafetyPreconditions)
+import HostBootstrap.Harness (Case (..), CaseResult (..), LifecycleFailure (..), SafetyRefusal (..), TestSuite (..), lifecycleFailureMarker, safetyRefusalMarker, testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Sudo), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
@@ -149,6 +149,9 @@ import HostBootstrap.Step (
  )
 import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
+    AliasAction (..),
+    AliasFacts (..),
+    AliasRemoval (..),
     ExistsProbe (..),
     HostEffect (..),
     HostPathShare (..),
@@ -157,7 +160,10 @@ import HostBootstrap.Substrate.Provider (
     SubstrateProvider (..),
     VMHandles (..),
     WaitProbe (..),
+    classifyAlias,
     membersOf,
+    planAliasEnsure,
+    planAliasRemove,
     selectSubstrateProvider,
     shareReconcileEffects,
     stageFileEffects,
@@ -168,7 +174,10 @@ import HostBootstrapDemo.Accelerator (backendName)
 import HostBootstrapDemo.Accelerator.Daemon (acceleratorBackendForSubstrate, serveAcceleratorDaemon)
 import HostBootstrapDemo.Config (
     DeployConfig (..),
+    HaReplicas (..),
+    Port (..),
     ProjectConfig (..),
+    Quantity (..),
     Resources (..),
     ServiceType (Web),
     WebServiceConfig (WebServiceConfig),
@@ -188,10 +197,10 @@ import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, cr
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
-import System.IO (hFlush, hPutStr, stderr, stdout)
+import System.IO (hFlush, hGetContents, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.Info (os)
-import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), StdStream (NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), StdStream (CreatePipe, Inherit, NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
@@ -766,6 +775,17 @@ data MinioReady
 
 data RegistryServing
 
+-- The durable-share readiness order (§ CC/§ DD): the VM answers ('VMReady'), then
+-- the network is up ('NetworkReady'), then the host-backed share is a writable
+-- guest directory ('DurableShareMounted') — only then can the alias be minted.
+-- Each tag is distinct, so @mintDurableAlias@ requiring 'Ready DurableShareMounted'
+-- cannot run before 'awaitDurableShareMounted' observed the mount, which itself
+-- consumes the 'Ready NetworkReady' 'waitVMNetwork' mints: an out-of-order bring-up
+-- is a type error.
+data NetworkReady
+
+data DurableShareMounted
+
 {- | The demo's readiness probes and rollout waits share these small combinators over
 "HostBootstrap.Readiness". 'exitZeroProbe' treats an exit-0 run as ready; 'stdoutProbe'
 additionally carries the captured stdout so rollout progress still prints; 'reachProbe'
@@ -1010,7 +1030,7 @@ rolls the StatefulSet even though the ConfigMap is applied outside Helm.
 deployChartAction :: HostConfig -> IO ()
 deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
-    either die pure (validateAcceleratorReplicaCount (haReplicas (deploy projectCfg)))
+    either die pure (validateAcceleratorReplicaCount (haReplicasNat (haReplicas (deploy projectCfg))))
     acceleratorHelmValues <- either die pure (acceleratorHelmValuesForContext projectCfg ctx)
     let (serviceConfig, serviceFrame) = renderServiceConfigForContext projectCfg ctx
         extraValues =
@@ -1063,7 +1083,7 @@ deployAcceleratorDaemonAction _ = demoConfigContext Context.ClusterLifecycleComm
         daemonConfig = renderProjectConfig daemonProjectCfg
         frame = T.unpack (Context.currentFrame daemonCtx)
     _ <- either die pure (configuredServiceVariant daemonProjectCfg)
-    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort)
+    runOrDieStdin cfg Kubectl ["apply", "-f", "-"] (acceleratorDaemonManifest gpuDaemon frame daemonConfig (portNat acceleratorServicePort))
     pollRolloutOrDie
         cfg
         rolloutPoll
@@ -1610,7 +1630,7 @@ demoAction cls caps body =
 resourcesFromContext :: Context.BinaryContext -> Resources
 resourcesFromContext ctx =
     let envelope = Context.resourceEnvelope ctx
-     in Resources (Context.cpu envelope) (Context.memory envelope) (Context.storage envelope)
+     in Resources (Context.cpu envelope) (Quantity (Context.memory envelope)) (Quantity (Context.storage envelope))
 
 {- | The full demo lifecycle pulls the large base image, builds the project
 image, and duplicates layers through kind. Smaller budgets fail late in
@@ -1646,8 +1666,8 @@ clusterSliceOfBudget r = do
     pure
         ( Resources
             sliceCpu
-            (T.pack (show sliceMem ++ "GiB"))
-            (T.pack (show sliceStore ++ "GiB"))
+            (Quantity (T.pack (show sliceMem ++ "GiB")))
+            (Quantity (T.pack (show sliceStore ++ "GiB")))
         )
 
 {- | On Windows the WSL2 swap file (sized to the memory budget) lands on the system
@@ -1659,7 +1679,7 @@ withWsl2SwapStorage :: Resources -> Either String Resources
 withWsl2SwapStorage r@(Resources c m _) = do
     b <- budgetFromResources (envelopeOfResources r)
     let store = gibibytes (budgetStorageBytes b) + gibibytes (budgetMemoryBytes b)
-    pure (Resources c m (T.pack (show store ++ "GiB")))
+    pure (Resources c m (Quantity (T.pack (show store ++ "GiB"))))
 
 {- | A case's live environment: the resolved host config, the **VM frame** lift
 context (so every assertion reaches the live persistent stack @project up@ brought
@@ -1961,16 +1981,51 @@ assertRegistrySurvivesRestart cfg frame = do
                     then Pass
                     else Fail "registry-persistence: the pushed image was LOST after a registry pod restart (storage is not durable)"
 
--- | Run the binary's own subcommand (the self-reference, § U), dying on failure.
+{- | Run the binary's own subcommand (the self-reference, § U), streaming its
+output and surfacing a **legible** failure (development_plan_standards § CC,
+stream-then-die). The child's stdout is inherited so a long recursive @project up@
+is observable in real time instead of block-buffered until it exits; its stderr is
+captured to detect the structured-failure markers and carry the cause. A failure
+is thrown as a structured exception, never a message-less @die@ (@ExitFailure 1@):
+a 'SafetyRefusal' round-trips as before, a child that already carried a
+'LifecycleFailure' is re-raised with its inner reason (no per-frame envelope
+accretion), and any other non-zero exit becomes a 'LifecycleFailure' carrying the
+child's stderr — so the harness report card renders /why/ the bring-up failed.
+-}
 runSelfOrDie :: FilePath -> [String] -> IO ()
 runSelfOrDie self args = do
-    (code, out, err) <- readProcessWithExitCode self args ""
-    unless (null out) (putStr out)
+    (_, _, mErr, ph) <-
+        createProcess (proc self args){std_out = Inherit, std_err = CreatePipe}
+    err <- maybe (pure "") hGetContents mErr
+    _ <- evaluate (length err)
+    code <- waitForProcess ph
     case code of
-        ExitSuccess -> pure ()
+        ExitSuccess -> unless (null err) (hPutStr stderr err >> hFlush stderr)
         ExitFailure n
             | safetyRefusalMarker `isInfixOf` err -> throwIO (SafetyRefusal err)
-            | otherwise -> die (self ++ " " ++ unwords args ++ " failed (exit " ++ show n ++ ")\n" ++ err)
+            | Just reason <- afterMarker lifecycleFailureMarker err -> throwIO (LifecycleFailure reason)
+            | otherwise ->
+                throwIO
+                    ( LifecycleFailure
+                        (self ++ " " ++ unwords args ++ " failed (exit " ++ show n ++ ")\n" ++ err)
+                    )
+
+{- | Extract the reason a child process carried after a structured-failure marker in
+its stderr (the § CC subprocess round-trip). Returns the text after the **last**
+marker occurrence, so a 'LifecycleFailure' re-raised through several nested frames
+is not re-wrapped with an extra @failed (exit 1)@ envelope at each hop. 'Nothing'
+when the marker is absent (a plain child @die@, which the caller wraps once).
+-}
+afterMarker :: String -> String -> Maybe String
+afterMarker marker = go Nothing
+  where
+    go found str
+        | marker `isPrefixOf` str =
+            let rest = drop (length marker) str
+             in go (Just (dropWhile isSpace rest)) rest
+        | otherwise = case str of
+            [] -> found
+            (_ : t) -> go found t
 
 {- | The project image carries both the served demo app and the base image's
 Playwright installation, so the e2e runner never pulls an external Playwright
@@ -2101,84 +2156,144 @@ reconcileDurableShare cfg share =
                 Left err -> die ("vm up: durable-share probe failed: " ++ err)
             runEffects cfg (shareReconcileEffects share output)
 
-{- | Verify the provider share from inside the ready VM and mint the stable
-Docker-host alias without replacing anything already present. An existing
-correct link is an idempotent no-op; an old Lima VM without the create-time
-mount, a wrong link, or a non-link collision fails closed instead of running a
-stack whose writes would disappear with the VM.
+{- | Prove the host-backed durable share is a writable directory INSIDE the guest,
+then mint the 'Ready DurableShareMounted' witness the alias step requires
+(development_plan_standards § CC/§ DD). The probe is a single trivial guest command
+(@test -d X && test -w X@ — no compound @set -eu@, no nested @"$(…)"@, so it survives
+the Windows PowerShell→@wsl@→@bash@ quoting path), retried within the network poll
+budget so a not-yet-visible drvfs/disk mount is tolerated rather than raced.
+Consumes the 'Ready NetworkReady' witness, so it cannot run before the network is up.
 -}
-prepareVMDurableAlias :: HostConfig -> SubstrateProvider -> HostPathShare -> IO ()
-prepareVMDurableAlias cfg provider share =
-    runInDemoVM
-        cfg
-        provider
-        ( "set -eu; durable_target="
-            ++ shellQuote (hpsGuestPath share)
-            ++ "; durable_alias="
-            ++ shellQuote durableDockerHostPath
-            ++ "; test -d \"$durable_target\"; test -w \"$durable_target\"; "
-            ++ "if [ -L \"$durable_alias\" ]; then "
-            ++ "test \"$(readlink \"$durable_alias\")\" = \"$durable_target\"; "
-            ++ "elif [ -e \"$durable_alias\" ]; then "
-            ++ "echo \"durable alias collision: $durable_alias\" >&2; exit 1; "
-            ++ "else ln -s \"$durable_target\" \"$durable_alias\"; fi; "
-            ++ "test -d \"$durable_alias\"; test -w \"$durable_alias\""
-        )
+awaitDurableShareMounted ::
+    Ready NetworkReady -> HostConfig -> SubstrateProvider -> HostPathShare -> IO (Ready DurableShareMounted)
+awaitDurableShareMounted _net cfg provider share =
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", mountProbe] of
+        Nothing -> throwIO (LifecycleFailure ("vm up: " ++ spVmId provider ++ " is not a VM frame; cannot probe the durable share"))
+        Just (tool, args) -> do
+            outcome <- awaitReady networkPoll ("vm up: durable share mounted in " ++ spVmId provider) (exitZeroProbe tool args) cfg
+            either
+                (\e -> throwIO (LifecycleFailure ("vm up: durable share not mounted/writable in " ++ spVmId provider ++ ": " ++ renderPollError e)))
+                pure
+                outcome
+  where
+    q = shellQuote (hpsGuestPath share)
+    mountProbe = "test -d " ++ q ++ " && test -w " ++ q
 
-{- | Direct Linux GPU counterpart of 'prepareVMDurableAlias'. Directory links
-are created through the typed filesystem API, never by replacing a pre-existing
-path. A stale link to a different checkout is reported for operator resolution.
+{- | Mint the stable Docker-visible alias to the host-backed share, from the pure
+'classifyAlias' + 'planAliasEnsure' state machine over facts gathered by TRIVIAL
+guest probes (@test -L@, @readlink@, @test -e@ — one simple command each, § CC;
+branching lives in the Haskell classifier, not shell @if/elif@). Requires the
+'Ready DurableShareMounted' witness, so it cannot race the mount. An idempotent
+correct link is a no-op; a collision surfaces as a legible 'LifecycleFailure',
+never the bare @ExitFailure 1@ the former one-shot @set -eu@ step collapsed to.
 -}
-prepareLocalDurableAlias :: FilePath -> IO ()
-prepareLocalDurableAlias durableTarget = do
-    linked <- pathIsSymbolicLink durableDockerHostPath
-    if linked
-        then do
-            actual <- getSymbolicLinkTarget durableDockerHostPath
-            unless (normalise actual == normalise durableTarget) $
-                die
-                    ( "durable alias "
-                        ++ durableDockerHostPath
-                        ++ " points to "
-                        ++ actual
-                        ++ ", expected "
-                        ++ durableTarget
-                    )
-        else do
-            directoryCollision <- doesDirectoryExist durableDockerHostPath
-            fileCollision <- doesFileExist durableDockerHostPath
-            when (directoryCollision || fileCollision) $
-                die ("durable alias collision: " ++ durableDockerHostPath ++ " already exists and is not a symbolic link")
+mintDurableAlias :: Ready DurableShareMounted -> HostConfig -> SubstrateProvider -> HostPathShare -> IO ()
+mintDurableAlias _mounted cfg provider share = do
+    let shareTarget = hpsGuestPath share
+    facts <- gatherVMAliasFacts cfg provider durableDockerHostPath
+    case planAliasEnsure durableDockerHostPath shareTarget (classifyAlias shareTarget facts) of
+        Left msg -> throwIO (LifecycleFailure msg)
+        Right AliasLeaveLinked ->
+            putStrLn ("vm up: durable alias " ++ durableDockerHostPath ++ " already links to the share")
+        Right AliasCreateLink -> do
+            runInDemoVM cfg provider ("ln -s " ++ shellQuote shareTarget ++ " " ++ shellQuote durableDockerHostPath)
+            putStrLn ("vm up: linked durable alias " ++ durableDockerHostPath ++ " -> " ++ shareTarget)
+
+{- | Gather the alias facts from the guest via trivial probes (§ CC): @test -L@ for
+symlink-ness, @readlink@ for the target, @test -e@ for existence — each a single
+simple command. The pure 'classifyAlias' does the branching.
+-}
+gatherVMAliasFacts :: HostConfig -> SubstrateProvider -> FilePath -> IO AliasFacts
+gatherVMAliasFacts cfg provider aliasPath = do
+    let q = shellQuote aliasPath
+    isSym <- inVMExitZero cfg provider ("test -L " ++ q)
+    linkTarget <-
+        if isSym
+            then either (const (Just "")) (Just . trimBlank) <$> captureInVMStdout cfg provider ("readlink " ++ q)
+            else pure Nothing
+    exists <- inVMExitZero cfg provider ("test -e " ++ q)
+    pure (AliasFacts linkTarget exists)
+  where
+    trimBlank = dropWhileEnd isSpace . dropWhile isSpace
+
+-- | Run a trivial guest command and report whether it exited zero (§ CC).
+inVMExitZero :: HostConfig -> SubstrateProvider -> String -> IO Bool
+inVMExitZero cfg provider script =
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
+        Nothing -> pure False
+        Just (tool, args) -> do
+            r <- runTool cfg tool args
+            pure $ case r of
+                Right (ExitSuccess, _, _) -> True
+                _ -> False
+
+-- | Capture a trivial guest command's stdout (used for @readlink@ in the facts probe).
+captureInVMStdout :: HostConfig -> SubstrateProvider -> String -> IO (Either String String)
+captureInVMStdout cfg provider script =
+    case vmShellArgs (spLiftLayer provider) ["bash", "-lc", script] of
+        Nothing -> pure (Left (spVmId provider ++ " is not a VM frame"))
+        Just (tool, args) -> do
+            r <- runTool cfg tool args
+            pure $ case r of
+                Right (ExitSuccess, out, _) -> Right out
+                Right (ExitFailure n, _, err) -> Left ("exit " ++ show n ++ ": " ++ err)
+                Left err -> Left err
+
+{- | Prove the direct-lane host durable root is a writable directory and mint the
+'Ready DurableShareMounted' witness 'mintLocalDurableAlias' requires. The root was
+created by @ensureDurableDataPath@, so this is a fast local check; it still goes
+through 'awaitReady' so the witness discipline is uniform across both lanes (§ CC).
+-}
+awaitLocalDurableShareMounted :: HostConfig -> FilePath -> IO (Ready DurableShareMounted)
+awaitLocalDurableShareMounted cfg dir =
+    either
+        (\e -> throwIO (LifecycleFailure ("direct durable share not ready at " ++ dir ++ ": " ++ renderPollError e)))
+        pure
+        =<< awaitReady (networkPoll `withAttempts` 3) ("direct durable share " ++ dir) probe cfg
+  where
+    probe _ = do
+        ok <- doesDirectoryExist dir
+        pure (if ok then ProbeReady () else NotReady)
+
+{- | Direct Linux GPU alias — the guest-lane 'mintDurableAlias' peer over the SAME
+'classifyAlias' / 'planAliasEnsure' state machine, but reading facts through
+'System.Directory'. Requires the 'Ready DurableShareMounted' witness. A collision
+is a legible 'LifecycleFailure', never a bare exit code.
+-}
+mintLocalDurableAlias :: Ready DurableShareMounted -> FilePath -> IO ()
+mintLocalDurableAlias _mounted durableTarget = do
+    facts <- gatherLocalAliasFacts durableDockerHostPath
+    case planAliasEnsure durableDockerHostPath durableTarget (classifyAlias durableTarget facts) of
+        Left msg -> throwIO (LifecycleFailure msg)
+        Right AliasLeaveLinked ->
+            putStrLn ("direct durable alias " ++ durableDockerHostPath ++ " already links to " ++ durableTarget)
+        Right AliasCreateLink -> do
             createDirectoryLink durableTarget durableDockerHostPath
-    accessible <- doesDirectoryExist durableDockerHostPath
-    unless accessible (die ("durable alias is not an accessible directory: " ++ durableDockerHostPath))
+            accessible <- doesDirectoryExist durableDockerHostPath
+            unless accessible (throwIO (LifecycleFailure ("durable alias is not an accessible directory: " ++ durableDockerHostPath)))
+            putStrLn ("direct durable alias " ++ durableDockerHostPath ++ " -> " ++ durableTarget)
 
-{- | Remove the direct lane's derived alias on @project destroy@, but only when
-it is still the exact link this project owns. The host @.data@ target is never
-removed. A collision or retargeted link is left untouched and reported.
+-- | Gather the alias facts on the direct host lane via 'System.Directory' (§ DD).
+gatherLocalAliasFacts :: FilePath -> IO AliasFacts
+gatherLocalAliasFacts path = do
+    isSym <- pathIsSymbolicLink path
+    linkTarget <- if isSym then Just <$> getSymbolicLinkTarget path else pure Nothing
+    dirEx <- doesDirectoryExist path
+    fileEx <- doesFileExist path
+    pure (AliasFacts linkTarget (isSym || dirEx || fileEx))
+
+{- | Remove the direct lane's derived alias on @project destroy@, folded onto the
+same 'classifyAlias' / 'planAliasRemove' state machine: unlink only the exact link
+this project owns, keep an absent/foreign-occupant path (with a reason), and refuse
+a retargeted link — the host @.data@ target is never removed (§ Y).
 -}
 removeLocalDurableAliasIfOwned :: FilePath -> IO ()
 removeLocalDurableAliasIfOwned durableTarget = do
-    linked <- pathIsSymbolicLink durableDockerHostPath
-    if linked
-        then do
-            actual <- getSymbolicLinkTarget durableDockerHostPath
-            if normalise actual == normalise durableTarget
-                then removeFile durableDockerHostPath
-                else
-                    die
-                        ( "refusing to remove durable alias "
-                            ++ durableDockerHostPath
-                            ++ ": it points to "
-                            ++ actual
-                            ++ ", expected "
-                            ++ durableTarget
-                        )
-        else do
-            directoryCollision <- doesDirectoryExist durableDockerHostPath
-            fileCollision <- doesFileExist durableDockerHostPath
-            when (directoryCollision || fileCollision) $
-                die ("refusing to remove durable alias collision at " ++ durableDockerHostPath)
+    facts <- gatherLocalAliasFacts durableDockerHostPath
+    case planAliasRemove durableDockerHostPath durableTarget (classifyAlias durableTarget facts) of
+        Left msg -> throwIO (LifecycleFailure msg)
+        Right (AliasKeep reason) -> putStrLn ("project destroy: " ++ reason)
+        Right AliasUnlink -> removeFile durableDockerHostPath
 
 {- | Run a list of pure host effects, dying on the first failure (the launch /
 staging path). 'WriteHostFile' backs up any existing file once (the global
@@ -2315,16 +2430,19 @@ resolve the apt mirror, so the first in-VM @apt@/@ghcup@/@curl@ step of the
 pristine bootstrap cannot race a not-yet-configured network. Bounded by @n@
 three-second attempts.
 -}
-waitVMNetwork :: Ready VMReady -> HostConfig -> SubstrateProvider -> IO ()
+waitVMNetwork :: Ready VMReady -> HostConfig -> SubstrateProvider -> IO (Ready NetworkReady)
 waitVMNetwork _vmReady cfg sp =
     case vmShellArgs (spLiftLayer sp) ["bash", "-lc", netProbe] of
-        Nothing -> pure ()
+        Nothing -> throwIO (LifecycleFailure ("vm up: " ++ spVmId sp ++ " is not a VM frame; cannot wait for network"))
         Just (tool, args) -> do
-            outcome <- pollUntilReady networkPoll ("vm up: " ++ spVmId sp ++ " network") (exitZeroProbe tool args) cfg
-            either
-                (const (die ("vm up: " ++ spVmId sp ++ " network did not come up (DNS still unresolved)")))
-                (const (putStrLn ("vm up: " ++ spVmId sp ++ " network is up")))
-                outcome
+            outcome <- awaitReady networkPoll ("vm up: " ++ spVmId sp ++ " network") (exitZeroProbe tool args) cfg
+            ready <-
+                either
+                    (\e -> throwIO (LifecycleFailure ("vm up: " ++ spVmId sp ++ " network did not come up (DNS still unresolved): " ++ renderPollError e)))
+                    pure
+                    outcome
+            putStrLn ("vm up: " ++ spVmId sp ++ " network is up")
+            pure ready
   where
     netProbe =
         "command -v cloud-init >/dev/null 2>&1 && timeout 90 sudo cloud-init status --wait >/dev/null 2>&1; "
@@ -2432,18 +2550,24 @@ runOrDieStdin cfg tool args input = do
     result <- runToolWithStdin cfg tool args input
     case result of
         Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+        -- A failed host-tool step surfaces a structured 'LifecycleFailure' carrying its
+        -- captured output (§ CC) rather than a message-less @die@: propagated to the top
+        -- of a nested @project up@ it prints its marker to stderr, and the parent
+        -- 'runSelfOrDie' round-trips the carried cause up to the harness report card.
         Right (ExitFailure n, out, err) ->
-            die
-                ( toolCommandName tool
-                    ++ " "
-                    ++ unwords args
-                    ++ " failed (exit "
-                    ++ show n
-                    ++ ")\n"
-                    ++ out
-                    ++ err
+            throwIO
+                ( LifecycleFailure
+                    ( toolCommandName tool
+                        ++ " "
+                        ++ unwords args
+                        ++ " failed (exit "
+                        ++ show n
+                        ++ ")\n"
+                        ++ out
+                        ++ err
+                    )
                 )
-        Left err -> die err
+        Left err -> throwIO (LifecycleFailure err)
 
 {- | Ensure a usable Incus provider (the IO behind the dissolved @incus ensure@
 verb, reused by the metal chain's @ensure-the-VM-provider@ step on Linux): run
@@ -2571,8 +2695,13 @@ runVmUp = demoContext Context.HostOrchestratorCommand [Context.HostTools] $ \ctx
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
     vmReady <- substrateWait cfg sp
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " network to come up")
-    waitVMNetwork vmReady cfg sp
-    prepareVMDurableAlias cfg sp durableShare
+    netReady <- waitVMNetwork vmReady cfg sp
+    -- The readiness order is type-enforced (§ CC/§ DD): the mount witness consumes
+    -- the network witness, and 'mintDurableAlias' consumes the mount witness — so the
+    -- alias cannot race the share, and an out-of-order bring-up is a compile error.
+    putStrLn ("vm up: waiting for the durable share to mount in " ++ spVmId sp)
+    mounted <- awaitDurableShareMounted netReady cfg sp durableShare
+    mintDurableAlias mounted cfg sp durableShare
     putStrLn ("vm up: " ++ spVmId sp ++ " is up")
 
 {- | Shared metal-host floor/headroom gate for both VM-backed and direct Linux
@@ -2636,9 +2765,9 @@ requireDemoLifecycleResources actualResources = do
                     ++ "; regenerate the host config with `hostbootstrap run --project-root demo -- project init --role host-orchestrator --output .build/hostbootstrap-demo.dhall --source-root demo --dockerfile docker/Dockerfile --cpu "
                     ++ show reqCpu
                     ++ " --memory "
-                    ++ T.unpack reqMem
+                    ++ T.unpack (quantityText reqMem)
                     ++ " --storage "
-                    ++ T.unpack reqSto
+                    ++ T.unpack (quantityText reqSto)
                     ++ " --ha-replicas 1 --force`"
   where
     Resources reqCpu reqMem reqSto = demoFullLifecycleResources
@@ -2652,6 +2781,17 @@ requireDemoLifecycleResources actualResources = do
             ]
         | otherwise = []
     showGiB bytes = show (gibibytes bytes) ++ "GiB"
+
+{- | Run a mutating in-guest bootstrap step behind a proof the VM is ready (§ CC):
+the 'Ready VMReady' witness is a required argument, so a step cannot be issued
+before 'substrateWait' observed the guest answering. The command stays a single
+@bash -lc@ invocation — retry and branching live in Haskell, not the shell — and a
+non-zero exit surfaces legibly through 'runInDemoVM' → 'runOrDieStdin' (§ 10.8).
+-}
+guestStep :: Ready VMReady -> HostConfig -> SubstrateProvider -> String -> String -> IO ()
+guestStep _vmReady cfg provider label script = do
+    putStrLn ("pristine-bootstrap: " ++ label)
+    runInDemoVM cfg provider script
 
 {- | The IO behind the dissolved @vm pristine-bootstrap@ verb: the from-zero first-run flow inside the VM
 (the project source is staged at @/root/hostbootstrap@; see the runbook).
@@ -2678,11 +2818,14 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     putStrLn ("build-image: generating the PureScript bridge into " ++ bridgeDir)
     createDirectoryIfMissing True bridgeDir
     writeBridge bridgeDir
-    stageSource cfg provider
-    streamVMConfig cfg provider parentCfg ctx
-    let vmStep label script = do
-            putStrLn ("pristine-bootstrap: " ++ label)
-            runInDemoVM cfg provider script
+    -- Re-establish the VM-ready proof at this frame's start, then gate every mutating
+    -- in-guest step on it (§ CC): staging, config streaming, and each install/build
+    -- step now REQUIRE the 'Ready VMReady' witness, so none can be issued before the
+    -- guest is observed answering (an out-of-order call is a type error, not a race).
+    vmReady <- substrateWait cfg provider
+    stageSource vmReady cfg provider
+    streamVMConfig vmReady cfg provider parentCfg ctx
+    let vmStep = guestStep vmReady cfg provider
     vmStep
         "apt install pipx + GHC build prerequisites"
         "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq pipx python3-venv build-essential curl libgmp-dev libtinfo-dev libncurses-dev zlib1g-dev pkg-config git ca-certificates"
@@ -2733,7 +2876,8 @@ runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Cont
     cfgAfterDocker <- resolveHostConfig
     root <- makeAbsolute =<< getCurrentDirectory
     hostDurableRoot <- ensureDurableDataPath root
-    prepareLocalDurableAlias hostDurableRoot
+    mounted <- awaitLocalDurableShareMounted cfgAfterDocker hostDurableRoot
+    mintLocalDurableAlias mounted hostDurableRoot
     let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
     harnessRun <- lookupEnv harnessMutationGuardEnv
     when (harnessRun == Just "1") $ do
@@ -2763,8 +2907,8 @@ and @cat@s the config to the VM's sibling @<project>.dhall@. No host-side
 sub-pipeline has its own @stdin@, so the outer @stdin@ stays intact for the final
 @cat@, which writes the config bytes verbatim.
 -}
-streamVMConfig :: HostConfig -> SubstrateProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
-streamVMConfig cfg provider parentCfg ctx = do
+streamVMConfig :: Ready VMReady -> HostConfig -> SubstrateProvider -> ProjectConfig -> Context.BinaryContext -> IO ()
+streamVMConfig _vmReady cfg provider parentCfg ctx = do
     let remotePath = vmDemoRoot ++ "/.build/hostbootstrap-demo.dhall"
         vmCfg =
             projectConfigFromContext
@@ -2822,8 +2966,8 @@ documents the source as "staged at @/root/hostbootstrap@", and this is where
 that staging happens. The binary runs with cwd = the project home (@demo/@), so the
 repo root is 'repoRootOfProjectRoot' of the cwd (cwd-consistent, not cwd-fragile).
 -}
-stageSource :: HostConfig -> SubstrateProvider -> IO ()
-stageSource cfg provider = do
+stageSource :: Ready VMReady -> HostConfig -> SubstrateProvider -> IO ()
+stageSource _vmReady cfg provider = do
     cwd <- getCurrentDirectory
     let repoRoot = repoRootOfProjectRoot cwd
         tarball = repoRoot ++ "/.hostbootstrap-src.tgz"

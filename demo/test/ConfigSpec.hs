@@ -14,6 +14,7 @@ module ConfigSpec (tests) where
 
 import Control.Exception (SomeException, try)
 import qualified Data.Text as T
+import qualified Dhall
 import HostBootstrap.Config.Class (InitArgs (..))
 import HostBootstrap.Context (
     BinaryContext (..),
@@ -203,6 +204,33 @@ tests =
             commandAllowed (context serviceCfg) ServiceCommand @?= True
             commandAllowed (context serviceCfg) HostOrchestratorCommand @?= False
             assertBool "service keeps the kubernetes capability" (KubernetesAPI `elem` capabilities (context serviceCfg))
+        , -- Type-level configuration validity (development_plan_standards § BB/§ O): an
+          -- unworkable field is rejected at DECODE via the typed newtypes' validating
+          -- 'FromDhall' (typed 'Quantity', bounded 'HaReplicas'/'Port'/'TimeoutSeconds',
+          -- resource-floor 'Resources'), not accepted-then-failed at bring-up.
+          testGroup
+            "invalid config fields are rejected at decode"
+            [ testCase "a valid Resources still decodes to the expected value" $ do
+                r <- (Dhall.input Dhall.auto "{ cpu = 4, memory = \"8GiB\", storage = \"20GiB\" }" :: IO Resources)
+                r @?= Resources 4 "8GiB" "20GiB"
+            , testCase "a bad resource-quantity unit fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ cpu = 4, memory = \"lots\", storage = \"20GiB\" }" :: IO Resources)
+            , testCase "a below-floor cpu (0) fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ cpu = 0, memory = \"8GiB\", storage = \"20GiB\" }" :: IO Resources)
+            , testCase "haReplicas other than 1 fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ haReplicas = 2 }" :: IO DeployConfig)
+            , testCase "a valid haReplicas = 1 still decodes" $ do
+                d <- (Dhall.input Dhall.auto "{ haReplicas = 1 }" :: IO DeployConfig)
+                d @?= DeployConfig 1
+            , testCase "an out-of-range service port fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ publicPort = 70000, acceleratorPort = 8081 }" :: IO WebServiceConfig)
+            , testCase "a zero service port fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ publicPort = 0, acceleratorPort = 8081 }" :: IO WebServiceConfig)
+            , testCase "a request timeout above 30 fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ requestTimeoutSeconds = 45 }" :: IO AcceleratorServiceConfig)
+            , testCase "a request timeout of 0 fails to decode" $
+                assertDecodeFails (Dhall.input Dhall.auto "{ requestTimeoutSeconds = 0 }" :: IO AcceleratorServiceConfig)
+            ]
         ]
 
 -- | A defaultless 'InitArgs' for a chosen role.
@@ -224,6 +252,14 @@ initArgsFor kind =
 
 isInfixOfS :: String -> String -> Bool
 isInfixOfS needle hay = T.pack needle `T.isInfixOf` T.pack hay
+
+-- | Assert a Dhall decode is rejected (throws), not silently accepted.
+assertDecodeFails :: forall a. (Show a) => IO a -> IO ()
+assertDecodeFails action = do
+    result <- try action :: IO (Either SomeException a)
+    case result of
+        Left _ -> pure ()
+        Right v -> assertFailure ("expected a decode rejection, but it decoded to " ++ show v)
 
 expectRight :: Either String a -> IO a
 expectRight = either assertFailure pure

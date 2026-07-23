@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [incus](incus.md), [lima](lima.md), [demo runbook](../operations/demo_runbook.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [documents-index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [incus](incus.md), [lima](lima.md), [demo runbook](../operations/demo_runbook.md), [readiness](../architecture/readiness.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
 
 > **Purpose**: Describe the WSL2 host-provider VM used on Windows to represent a pristine Linux
 > environment — the peer of Lima (Apple Silicon) and Incus (native Linux) — and how its lifecycle is
@@ -79,6 +79,10 @@ Unlike the Incus in-VM reboot loop (which reboots the *guest* with `incus restar
 operator reboots Windows and re-runs `project up`. It does not reboot the host itself. This mirrors the
 `NeedsReboot` shape without taking the destructive host action.
 
+Like every other per-substrate `classify*Readiness` verdict, `classifyWsl2Readiness` defers to the one
+readiness discipline ([readiness](../architecture/readiness.md)): its `Ready` arm is the platform-readiness
+precondition a bring-up step consumes before it acts.
+
 ## VM Lifecycle In The Chain
 
 The WSL2 VM lifecycle runs through the core `deploy-VM` step kind that the chain interprets, plus the
@@ -106,6 +110,16 @@ boundary. Staging into the distro is **one way**: the working tree is extracted 
 distro's ext4 vhdx, no reverse transfer exists, and nothing bind-mounts `.data`. `wsl --unregister`
 deletes the vhdx, so a `.data` written inside the distro goes with it. See
 [durable state](../architecture/durable_state.md).
+
+WSL2's host-side share reconcile is `Nothing`: drvfs already exposes the host drive at `/mnt/<letter>/…`
+(`windowsPathToWslMount` rewrites the Windows path), so no post-create attach is needed — the
+`ShareReconcile` half the other lanes carry is empty here. The stable Docker-visible alias is instead minted
+**guest-side** as a pure `AliasState`, and the guest share is proven present and writable by a retrying
+`Ready` witness (mount-readiness) before the alias is minted, so the alias step cannot race a not-yet-visible
+mount. The guest probes that feed that witness stay **trivial**: because `wsl -d <distro> -- bash -lc <cmd>`
+crosses PowerShell's native-argument quoting, each probe is a single simple command (`test -d`, `test -w`,
+`readlink`), never a compound `set -eu` script with nested `"$(… "…")"` — retry and the `AliasState`
+branching live in Haskell. See [readiness](../architecture/readiness.md).
 
 The `deploy-VM` step kind is the reuse unit, not a WSL2-specific command: the same kind is interpreted
 with Lima builders on Apple Silicon (see [lima](lima.md)) and Incus builders on native Linux (see

@@ -159,8 +159,8 @@ durableMarkerResponse root req
             )
 
 markerResponse :: Status -> LBS.ByteString -> Response
-markerResponse status body =
-    responseLBS status [(hContentType, "text/plain; charset=utf-8")] body
+markerResponse status =
+    responseLBS status [(hContentType, "text/plain; charset=utf-8")]
 
 acceleratorDaemonServer :: AcceleratorHub -> WS.ServerApp
 acceleratorDaemonServer hub pending

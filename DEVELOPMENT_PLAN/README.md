@@ -44,8 +44,9 @@ The **unified-harness / fixed-surface / resource-SSoT** correction (phases 10, 1
 landed and is code-check-validated; its 2026-07-02 in-place-delivery and 2026-07-05 cross-substrate
 reopenings closed successfully. Phase 3's later accelerator reopening closed on 2026-07-15; phases **5,
 13, 15, 16, and 18 remain `Active`** until their live substrate gates run, while phases 14 and 17 remain
-`Done`. Phases **11 and 21 reopened 2026-07-19** for the `.data` durability doctrine (see the reopening
-note below). The command surface is
+`Done`. Phases **11 and 21 reopened 2026-07-19** for the `.data` durability doctrine, and phases **9, 10, and 11
+reopened 2026-07-21** for the readiness-gated-lifecycle / durable-share-alias / legible-failure /
+type-level-config-validity doctrine (see the reopening notes below). The command surface is
 **fixed** to `project` / `test` / `service` /
 `context` / `check-code` (no per-project verbs; `hostbootstrap-core` is a library of composable tools, § P);
 the test harness **drives the real `project up`** under the test surface rather than re-expressing bring-up
@@ -59,8 +60,10 @@ config-selected `service run` with the `Web` variant), with the in-cluster regis
 single-binary `registry:2` (Sprint 13.16 closed). The last completed pre-accelerator `test run all` gates
 report **`6/6 passed`** (three cases x two message variants; phase 20 added the second message variant).
 The current harness has four cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, and
-`registry-persistence`) across those two variants, so the next full gate must report **`8/8 passed`**; no
-live `8/8` result is recorded yet. The **`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and
+`registry-persistence`) across those two variants: a live Windows/WSL2 `test run all` reported
+**`test report: 8/8 passed`** (2026-07-23), closing the 2026-07-21 reopening and validating the
+Windows-GPU accelerator host-daemon lane end to end (see the reopening-closure note below). The
+**`3/3 passed`** figures on Apple-Silicon/Lima (2026-06-20) and
 native Incus/Linux (2026-06-21) are pre-phase-20 historical snapshots: every
 case (incl. the two reachability checks and the Playwright e2e) runs in the **VM frame** via the
 self-reference lift, so it reaches the in-cluster NodePort regardless of whether the provider forwards the
@@ -189,6 +192,42 @@ on closure narratives, and `.test_data` is genuinely host-created because the ha
 frame. Until a real run writes state, destroys, brings up, and reads it back, no governed document may
 describe host-durable `.data` as available (§ J).
 
+**Reopened 2026-07-21 — readiness-gated lifecycle, the durable-share alias, legible failure, and
+unrepresentable invalid config.** The Windows/WSL2 `test run all` failed **0/8** in the newly-added
+durable-share *alias preparation* (commit `6f08375`), and the cause was hidden: the harness collapsed it to
+`bring-up failed: ExitFailure 1`. The failure exposed four gaps whose doctrine the standards now carry
+(§ CC, § DD): (1) the durable-share alias runs as an ungated, one-shot `set -eu` shell step — no `Ready`
+witness, no retry, and a compound script that does not survive the Windows PowerShell→`wsl`→`bash` quoting
+path; (2) `HostBootstrap.Readiness` (the sealed `Ready` witness, retrying `Probe`) exists in code but was
+never recorded in the plan or [system-components.md](system-components.md), and its gating discipline is not
+universal; (3) a bring-up failure collapses to a message-less `ExitFailure 1`; (4) configuration validity is
+a runtime `die`, not type-level, and the `Budget/fitsWithin` assert § O advertises is never attached. Phases
+**9 and 10 reopened (`Active`)** — 9 for the readiness framework / universal gating (Sprint 9.8) and
+type-level config validity (Sprint 9.9), 10 for legible `LifecycleFailure` (Sprint 10.8); phase **11** gained
+**Sprint 11.9** (the guest-side alias as pure `AliasState` provider data, correcting Sprint 11.8's
+host-side-only scope); phases **5** (Sprint 5.6) and **21** (Sprint 21.3) refined. The canonical homes are
+the new [readiness](../documents/architecture/readiness.md) doc and the de-staled
+[durable_state](../documents/architecture/durable_state.md); superseded surfaces are in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+**CLOSED `Done` (2026-07-23) — the 2026-07-21 reopening closed on a live Windows/WSL2 `test run all` reporting
+`test report: 8/8 passed`.** All four sprints landed and are static-gated (`cabal test all --ghc-options=-Werror`,
+**core 382 + demo 98**, fourmolu/hlint clean) and real-run-closed: the durable-share alias — the `0/8`
+collapse's root cause — now links cleanly via the pure, readiness-gated `AliasState` primitive
+(`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/.../demo/.data`); the ungated
+in-guest steps are `Ready VMReady`-gated; a bring-up failure surfaces a legible `LifecycleFailure` (proven by
+an intermediate `6/8` run whose failure named its cause, not `ExitFailure 1`); and the typed config newtypes
+(`Quantity` / bounded `HaReplicas`/`Port`/`TimeoutSeconds` / resource-floor `Resources`) reject an unworkable
+config at decode. **Phases 9, 10, 11, and 21 are `Done`.** The same run **also validated the Windows-GPU
+accelerator host-daemon lane end to end** (the host daemon built its worker, connected over CBOR WebSocket,
+and computed both `1.5 + 2.25 = 3.75` and the Float32 `2^24 + 1 → 2^24` rounding, asserted in the browser).
+Phases **5, 13, 15, 16, and 18 stay `Active`** only for the accelerator lanes that need hardware unavailable
+here — native **Linux CPU** (Incus/ClusterIP/C++), native **Linux GPU** (direct `nvkind`/CUDA), and
+**Apple Silicon** (Lima). The `Budget/fitsWithin` compile-ring was reconciled to its realized shape: the
+**decode ring** is the typed config newtypes, and the pod-set fit check lives in the **bring-up ring**
+(`fitsBudget`), because a generated config carries `Text` quantities and no pod set (see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+
 Phase 3 is `Done`. Its Apple/Windows accelerator build-stack slice closed first: on 2026-07-10 an M1 Max
 host built the core with `cabal build all
 --ghc-options=-Werror` and `ensure apple-metal` reported `present (no-op)`. The Windows GPU gate closed the
@@ -233,12 +272,13 @@ The Playwright Add assertion and fail-closed harness safety (`SafetyRefusal`, ex
 direct-cluster detection, guarded cleanup, teardown verification) are implemented.
 
 The Phase 3 core gate was rerun on Windows on 2026-07-15 and passes all **359 core tests** under `-Werror`.
-The current Phase 5/11 `-Werror` gate passes **374 core + 89 demo tests** (the demo workspace also runs the
-embedded 374-test core suite). Only honest live closure for Phases 5, 13, 15, 16, and 18 remains: run the
-implemented four-case/two-variant matrix on the current host-daemon lane and the unavailable Apple
-Silicon, native Linux CPU, and native Linux GPU hardware. The harness expects
-`8/8`; no live `8/8` is recorded, and the latest completed live result remains the historical
-pre-accelerator `6/6` gate.
+The current `-Werror` gate passes **382 core + 98 demo tests** (the demo workspace also runs the embedded
+382-test core suite), fourmolu/hlint clean. A live Windows/WSL2 `test run all` reported
+**`test report: 8/8 passed`** (2026-07-23) — the four-case/two-variant matrix on the Windows-GPU
+host-daemon lane — closing the 2026-07-21 reopening (phases 9/10/11/21 `Done`) and validating the
+Windows-GPU accelerator host-daemon lane. Honest live closure for Phases 5, 13, 15, 16, and 18 remains
+**only** on the hardware unavailable here: native Linux CPU (Incus/ClusterIP/C++), native Linux GPU
+(direct `nvkind`/CUDA), and Apple Silicon (Lima). Each such lane must independently report `8/8`.
 
 ## Phases
 
@@ -255,7 +295,7 @@ pre-accelerator `6/6` gate.
 | 8 | [Dhall generation and the extension contract](phase-8-dhall-generation-and-extension.md) | Done |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Done |
-| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Active |
+| 11 | [incus first-class host-provider](phase-11-incus-host-provider.md) | Done |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Done |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active |
 | 14 | [Composable-operation algebra and composition methodology](phase-14-composition-methodology.md) | Done |
@@ -265,7 +305,7 @@ pre-accelerator `6/6` gate.
 | 18 | [Service runtime command](phase-18-service-runtime-command.md) | Active |
 | 19 | [Generic project model and no core defaults](phase-19-generic-project-model.md) | Done |
 | 20 | [Config-driven demo worked example and multi-variant harness](phase-20-config-driven-demo-worked-example.md) | Done |
-| 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Active |
+| 21 | [Documentation/code consistency reconciliation](phase-21-documentation-code-consistency-reconciliation.md) | Done |
 
 ## Governance
 

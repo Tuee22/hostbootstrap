@@ -49,11 +49,14 @@ the **one ceiling = the VM wall** with the cluster a **slice within it** (no dou
 `<project>.dhall` carries an explicit, possibly multi-role context generated from forwarded parameters
 (§ X); and long-running roles run through config-selected `service run` with no positional variant (§ AA).
 The underlying correction landed and is code-check-validated; its 2026-07-02 in-place-delivery and
-2026-07-05 cross-substrate reliability reopenings closed successfully. The later accelerator reopening
-changes the current status: Phase 3 is `Done`, while phases **5, 13, 15, 16, and 18 are `Active`** and
-phases 14 and 17 remain `Done`. All current accelerator implementation and static-test work is complete
-(374 core + 89 demo tests), but the active phases cannot close until their honest native/Apple live
-gates run. The historical full
+2026-07-05 cross-substrate reliability reopenings closed successfully. The 2026-07-21 readiness / durable-share-alias / legible-failure / type-level-config-validity reopening
+**closed `Done` (2026-07-23)** on a live Windows/WSL2 `test run all` reporting **`8/8 passed`**: phases
+**9, 10, 11, and 21 are `Done`**. Phase 3 is `Done`, phases 14 and 17 remain `Done`, and phases
+**5, 13, 15, 16, and 18 stay `Active`** only for the **accelerator** lanes that need hardware unavailable
+here — native Linux CPU (Incus/ClusterIP/C++), native Linux GPU (direct `nvkind`/CUDA), and Apple Silicon
+(Lima). The current gate passes 382 core + 98 demo tests (fourmolu/hlint clean). The same `8/8` run **also
+validated the Windows-GPU accelerator host-daemon lane end to end** (worker built, CBOR WebSocket connect,
+`1.5 + 2.25 = 3.75` and the Float32 `2^24 + 1 → 2^24` browser assertion). The historical full
 demo lifecycle ran end-to-end on native Incus/Linux and a 16 GiB Apple-Silicon host.
 The last completed pre-accelerator `test run all` gates report **`6/6 passed`** (three cases x two message
 variants; phase 20 added the second message variant). The current harness is four cases across two variants,
@@ -248,8 +251,8 @@ Phase 9 owns the enforced budget ceiling: one canonical `parseQuantity`, shared 
 `verifyBudget` and `fitsBudget`, and the Linux `docker update` kind-node cordon applied by `cluster up`
 after `kind create` and before Helm. `resolveHostCapacity` is substrate-aware: Apple silicon reads
 `sysctl` `hw.ncpu`/`hw.memsize` through the resolved `HostTool Sysctl`, while Linux reads `/proc`.
-It is **`Done`** (reopened 2026-06-30 for Sprint 9.7, the honest WSL2 cordon, and closed 2026-07-01 on the
-live-distro real run): the substrate-aware
+It is **`Done`** (Sprint 9.7, the honest WSL2 cordon, closed 2026-07-01 on the
+live-distro real run; the 2026-07-21 reopening below closed 2026-07-23): the substrate-aware
 host-capacity read extends to Windows (`windows-cpu`/`windows-gpu`) alongside Apple silicon and Linux.
 The Windows predicate now reads stable **total** physical memory (not volatile free RAM), the WSL2
 `wsl2SizingArgs` emits the real `.wslconfig` `[wsl2]` ceiling with `swap` (no invalid `vhdx-size` key;
@@ -258,7 +261,12 @@ lift (`HostBootstrap.Substrate.Provider`) so the WSL2 `.wslconfig` write + `wsl 
 first-class effect. Static validation is closed (274 tests, `ProviderSpec` byte-for-byte Lima/Incus);
 the applied wall on a real distro closed **2026-07-01** together with Phase 11 Sprint 11.7 (the full
 `project up` → `test run all` `6/6` → `project destroy` Windows lifecycle). The 2026-07-05 reliability
-reopening also closed `Done`.
+reopening also closed `Done`. **Reopened 2026-07-21, CLOSED `Done` 2026-07-23** for the `HostBootstrap.Readiness` framework
+and universal step gating (Sprint 9.8) and type-level configuration validity — a typed `Quantity`, a
+resource-floor validating decoder, and bounded newtypes for `haReplicas`/ports/timeout (Sprint 9.9). The
+`Budget/fitsWithin` compile-ring is reconciled to the realized decode-ring (the typed newtypes) + bring-up
+ring (`fitsBudget`), since a generated config carries `Text` quantities and no pod set. Closed by the live
+Windows/WSL2 `test run all` **`8/8`**.
 
 ### Phase 10 — Standardized test harness and run-models
 
@@ -275,7 +283,10 @@ project-owned `psTestConfig` (reusing `psInit`) and delete it on teardown only w
 match (changed bytes remain in the reported locked quarantine), rather than
 driving `project up` against a pre-existing config. The 2026-07-05 reliability reopening also closed
 `Done`; new accelerator integration and e2e tests are demo-owned phase-13 work unless they require harness
-surface changes.
+surface changes. It is `Done` (**reopened 2026-07-21, closed 2026-07-23**) for legible lifecycle failure — the report card
+renders a structured `LifecycleFailure` via `displayException` instead of collapsing to `ExitFailure 1`, plus
+the stream-then-die runner contract (Sprint 10.8). Closed by the live Windows/WSL2 `test run all` **`8/8`**;
+an intermediate `6/8` run's failures each named their cause legibly.
 
 ### Phase 11 — incus first-class host-provider
 
@@ -289,7 +300,11 @@ Lima/Incus, depending on Phase 2's Windows substrate detection and pre-binary to
 the live distro — `project up` → in-distro Docker/kind/Harbor/web → lifted `test run all` (`6/6`) →
 `project destroy` (guarded `wsl --unregister`, `.wslconfig` restored) — with the earlier
 in-distro-build session drop resolved by applying the Sprint 9.7 `.wslconfig` budget wall. The 2026-07-05
-reliability reopening also closed `Done`.
+reliability reopening also closed `Done`. It is `Done` (**reopened 2026-07-19** for the host-path share
+primitive, Sprint 11.8, and **2026-07-21** for the guest-side durable alias as pure, readiness-gated
+`AliasState` provider data, Sprint 11.9 — replacing the defective `set -eu` shell alias that failed the
+Windows/WSL2 gate 0/8; **closed 2026-07-23** by the live Windows/WSL2 `test run all` **`8/8`**, the alias now
+linking cleanly on both variants).
 
 ### Phase 12 — Layered warm store
 
@@ -481,9 +496,10 @@ the global-architecture phases fan in on the inversion buildout and converge on 
   phase-18 (builds on 15, 16; service runtime + handler registry) ← Active for accelerator live gates; config-selected Web run historically real-run-validated
   phase-19 (builds forward on 4, 8, 10, 15, 17; the generic project model: no core defaults, ProjectSpec cfg/tcfg, harness-generated config, Python auto-init removal) -- Done
   phase-20 (depends on 13, 18, 19; the config-driven demo worked example: message field, config→web→SPA, two-variant run, polymorphic Playwright) -- Done
-  phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Done
+  phase-21 (depends on 3, 4, 8, 16, 18, 19, 20; documentation/code consistency reconciliation) -- Active (reopened for the .data doctrine + the 2026-07-21 doctrine reconciliation)
   Windows third-substrate: phase-2 owns Windows pre-binary bootstrap + substrate detection + firmware virtualization as a host-floor fact -- Done; phase-3 `ensure cudawin` depends on 2 -- Done; phase-11 `ensure wsl2` host-provider depends on 2 + 9 -- Done (closed 2026-07-01: full Windows/WSL2 project up -> test run all 6/6 -> project destroy with the .wslconfig budget wall applied)
   Accelerator daemon reopening: phase-2 host tools (Done) -> phase-3 host build-stack/runtime ensure (Done 2026-07-15) -> phase-5 Linux GPU nvkind/exposure -> phase-15 daemon/direct-container context -> phase-16 daemon lifecycle hooks -> phase-18 daemon runtime -> phase-13 demo UI + integration/e2e closure -- Active in phases 5, 13, 15, 16, and 18
+  Readiness / durable-share reopening (2026-07-21): phase-9 readiness framework + universal gating (9.8) + type-level config validity (9.9) -> phase-10 legible LifecycleFailure (10.8) -> phase-11 guest-side AliasState alias (11.9, on the 11.8 host-side share) -> phase-5 durable-root (5.6) -> phase-13 demo wiring -- CLOSED `Done` 2026-07-23 (phases 9/10/11/21) by the Windows/WSL2 `8/8` real run (§ C); phase-5 Sprint 5.6 stays Active only for the end-to-end durable-root read-back assertion
 ```
 
 Each edge is a hard prerequisite: the later phase consumes a surface the earlier phase delivers. The

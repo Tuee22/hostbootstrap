@@ -12,6 +12,18 @@
 
 **Status**: Done
 
+**Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — legible lifecycle failure.** The harness owned the report
+card, and it collapsed a bring-up failure to a message-less `ExitFailure 1`: `runSuiteSelection` rendered
+`show err` on the `ExitCode` a `die` throws, so the Windows/WSL2 durable-share failure reported
+`bring-up failed: ExitFailure 1` with no cause. Sprint 10.8 made bring-up failure legible — a structured
+`LifecycleFailure` carried across the subprocess and harness boundary (the peer of `SafetyRefusal`), rendered
+via `displayException`, plus the stream-then-die runner contract
+([development_plan_standards](development_plan_standards.md) § CC). **CLOSED** on a live Windows/WSL2
+`test run all` reporting **`8/8 passed`** (2026-07-23); the contract was additionally proven by an
+intermediate **`6/8`** run whose two failures **named their cause** (`e2e failed (exit 1): the Accelerator
+tab computes via the daemon`) rather than collapsing to `ExitFailure 1`. Also fixed the block-buffered gate
+`.out` — `runSelfOrDie` now inherits the child's stdout, so a long recursive `project up` streams live.
+
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
 harness gaps in this phase's scope: teardown is **not** guaranteed on a bring-up failure or external kill (the
 harness binds `env <- bringUp` outside its `finally`, so a failed `project up` leaks the VM/cluster and
@@ -88,8 +100,9 @@ model, § BB): it *generates* the run's `<project>.dhall` from the `test.dhall` 
 project-owned `psTestConfig` (reusing `psInit`) and deletes only matching run-owned bytes on teardown;
 changed bytes remain in the reported locked quarantine. The
 superseded `test`-reuses-existing-config flow is recorded in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase is
-not reopened.**
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase built
+forward through phase 19 and was not reopened for it; it is reopened 2026-07-21 for legible lifecycle failure
+(Sprint 10.8, below).**
 
 The split command surface (`test init` / `test run <suite>|all`) and the pure harness cores (the case
 matrix, `sliceBudget`, `selectRunModel`, `guardTestDelete`, the data-preserving `teardown` partition, the
@@ -379,12 +392,61 @@ in the worked demo.
 None. The harness `seamSetup`-in-`try` isolation is unit-tested; the demo's per-case seams are exercised
 in the demo's live run.
 
+### Sprint 10.8: Legible lifecycle failure [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/harness_workflow.md`, `documents/architecture/readiness.md`
+
+#### Objective
+
+Stop a bring-up failure from collapsing to a message-less `ExitFailure 1`. The cause must survive the
+self-reference subprocess boundary and the harness catch and reach the report card.
+
+#### Deliverables
+
+- A structured `LifecycleFailure` exception (the peer of `SafetyRefusal`, with its own stderr marker for the
+  subprocess round-trip) carrying the cause; `runSelfOrDie`'s generic-failure branch throws it instead of
+  `die`, and `runSuiteSelection` renders it via `displayException` rather than `show err`
+  (development_plan_standards § CC).
+- The **stream-then-die** runner contract generalized from the existing image-build reporter / `check-code`
+  runner: a runner that captures a child's output streams it (line-buffered, flushed) then dies with the exit
+  context, rather than folding it into a stderr the recursive handoff and harness teardown unwind. The
+  superseded stderr-folding `die` collapse is recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+#### Validation
+
+- `cabal test` from `core/` — `HarnessSpec` asserts a bring-up `LifecycleFailure` round-trips to a rendered
+  cause (not `ExitFailure 1`), the peer of the existing `SafetyRefusal` case.
+- Real-run gate (§ C), jointly with phase-11 Sprint 11.9: the Windows/WSL2 `test run all` reports `8/8`, or a
+  failing variant names its cause.
+
+#### Remaining Work
+
+**Code landed and static-validated (2026-07-22).** `HostBootstrap.Harness` gains a structured
+`LifecycleFailure` (the peer of `SafetyRefusal`, with its own `lifecycleFailureMarker` for the subprocess
+round-trip); `runSuiteSelection` renders a bring-up failure via `displayException` (the carried cause), not
+`show err` (the `ExitFailure 1` collapse). The demo's `runSelfOrDie` is recast to **stream-then-die** —
+the child's stdout is inherited (so a long recursive `project up` is observable live instead of block-
+buffered), its stderr captured to detect the `SafetyRefusal` / `LifecycleFailure` markers and re-raise the
+carried reason (no per-frame envelope accretion); `runOrDieStdin` throws a `LifecycleFailure` carrying the
+failed step's output instead of a message-less `die`. The core `failChain` already re-emits the marker via
+`show exc`, so the cause round-trips end to end. Static gate green: `cabal test all --ghc-options=-Werror`
+**core 382** (new `HarnessSpec` case: a bring-up `LifecycleFailure` renders its cause, never a bare
+`ExitFailure 1`, and leaks no marker) **+ demo 98** `-Werror`. **Real-run gate MET (§ C, 2026-07-23):** the
+live Windows/WSL2 `test run all` reported **`8/8 passed`**; an intermediate `6/8` run's two failures each
+named their cause legibly. **None remaining.**
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/run_models.md` - the four run-models matrix and the selection key.
 - `documents/architecture/harness_workflow.md` - the per-case loop, the seam-split (L0 driver vs cluster
-  seams vs app matrix), and budget-slicing.
+  seams vs app matrix), budget-slicing, and the report card rendering a legible `LifecycleFailure` instead of
+  `ExitFailure 1` (Sprint 10.8).
+- `documents/architecture/readiness.md` - **(new)** the legible-failure contract (`LifecycleFailure`,
+  stream-then-die) shared with the readiness discipline.
 
 **Engineering docs to create/update:**
 - `documents/engineering/testing.md` - rewritten to the standardized harness and the `test` verb.

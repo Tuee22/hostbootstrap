@@ -134,6 +134,13 @@ preserving the host-tool absolute-path rule. The preflight runs inside `clusterC
 substrate is touched. See [applied_cordon](applied_cordon.md) for the bring-up ring and
 [cluster_lifecycle](cluster_lifecycle.md) for where it runs.
 
+As a **target** (reopened as phase-9 Sprint 9.9), the lifecycle resource floor becomes a
+smart-constructor invariant — a below-floor `Resources` is *unrepresentable* rather than a runtime
+reject — and `memory` / `storage` become a typed `Quantity` rejected at Dhall decode rather than a
+parsed `Text`; the runtime preflight above is today's mechanism, not a type-level guarantee. See
+[applied_cordon](applied_cordon.md) and
+[development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+
 ## Cordoning per Substrate
 
 The budget is enforced — cordoned — so a project's workload cannot exceed its declared share. The cordon

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [composition_methodology](composition_methodology.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md), [phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)
+**Referenced by**: [documents index](../README.md), [composition_methodology](composition_methodology.md), [readiness](readiness.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md), [phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)
 
 > **Purpose**: Describe the one standardized test engine — the per-config `runMatrix` loop that drives
 > the real `project up`, the seam-split between the L0 driver and project-supplied assertions, the two
@@ -75,6 +75,13 @@ variant, in turn — so the demo's two messages each get their own fresh stack:
 A body exception is caught and recorded as a `Fail` in the per-case result; it is never leaked out of
 `runMatrix`. The per-case results aggregate into a `Report`. `reportCard` renders the report (the bare
 binary's empty matrix renders `test report: 0/0 passed`) and `allPassed` checks it.
+
+A bring-up failure is carried the same way a refusal is: as a structured `LifecycleFailure` — the peer of
+the `SafetyRefusal` round-trip — that crosses the self-reference subprocess boundary and the harness catch
+carrying its cause, and `reportCard` renders that cause with `displayException`, so a failed variant
+**states why it failed** rather than collapsing to a message-less `ExitFailure 1`. This is the
+legible-failure half of the `Ready`-witness discipline ([readiness](readiness.md)); it is **reopened work**
+(phase-10 Sprint 10.8), not yet delivered — a bring-up failure today still renders as `ExitFailure 1`.
 
 Test durable storage is always `.test_data`, never `.data` (the production data directory); see
 [cluster lifecycle](../engineering/cluster_lifecycle.md) for the production-versus-test profile

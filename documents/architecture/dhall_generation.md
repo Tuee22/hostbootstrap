@@ -28,8 +28,11 @@
 - The vocabulary **types** (`Budget`, `PodResources`, `KindNode`, `Mount`, `SecretRef`) are **reflected from the
   Haskell decoders**, so the emitted schema equals the type the decoder accepts and cannot drift.
 - The budget **functions** (`fitsWithin`, `split`) are **hand-written Dhall** in `Core.dhall` and
-  drift-controlled by evaluation tests, not reflection. Every generated config carries
-  `assert : C.fitsWithin budget pods === True`, so an over-budget config fails to type-check.
+  drift-controlled by evaluation tests, not reflection. `Core.dhall` **defines** `fitsWithin`; the
+  **target** is that every generated config carries `assert : C.fitsWithin budget pods === True` so an
+  over-budget config fails to type-check, but attaching that per-config assert is reopened work (phase-9
+  Sprint 9.9) — today no generated config embeds the assertion, so the fit check runs only as the Haskell
+  `fitsBudget` mirror at bring-up.
 
 ## Three Roles Of `.dhall`: Parameters, Context, Witness
 
@@ -135,9 +138,12 @@ nuance of the model:
 - **Functions are hand-written and assert-controlled.** `fitsWithin` and `split` are written by hand
   in `Core.dhall` (Dhall has no facility to reflect a Haskell function into a Dhall function). They
   are drift-controlled by **evaluation tests** that run them against fixtures — an over-budget input is
-  rejected. At render time, every generated deploy config embeds
-  `assert : C.fitsWithin budget pods === True`, so the assertion is checked when Dhall evaluates the
-  config: an over-budget deploy **fails to type-check** rather than reaching the cluster.
+  rejected. `Core.dhall` **defines** `fitsWithin`, but attaching it as an
+  `assert : C.fitsWithin budget pods === True` carried by every generated deploy config is reopened work
+  (phase-9 Sprint 9.9): today no generated config embeds the assertion, so the fit check currently runs
+  only as the Haskell `fitsBudget` mirror at bring-up. The **target** is that every generated deploy
+  config embeds the assert, so the check runs when Dhall evaluates the config and an over-budget deploy
+  **fails to type-check** rather than reaching the cluster.
 
 - **WRONG**: hand-write the schema type next to the decoder (`schemaText = "{ cpu : Natural, … }"`) to
   "document" what the decoder accepts. This is wrong because the literal and the decoder are two
@@ -147,8 +153,9 @@ nuance of the model:
   printed schema is definitionally the decoder's accepted type.
 
 This split is why the model is robust: the part that *can* be reflected (types) is, eliminating an
-entire class of drift; the part that *cannot* (functions) is pinned by evaluation tests and enforced
-whenever a deploy config is rendered by a Dhall-level assert. See
+entire class of drift; the part that *cannot* (functions) is pinned by evaluation tests and, as the
+**target**, enforced whenever a deploy config is rendered by a Dhall-level assert (the per-config assert
+is reopened as phase-9 Sprint 9.9; today the `fitsBudget` mirror is the live gate). See
 [config_generation](../engineering/config_generation.md) for the `ConfigArtifact` registry and the
 context-init projection that realize this, and
 [resource_budgeting](../engineering/resource_budgeting.md) for the budget the assertion guards.

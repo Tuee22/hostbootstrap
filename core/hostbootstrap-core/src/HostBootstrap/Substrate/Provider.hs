@@ -43,11 +43,20 @@ module HostBootstrap.Substrate.Provider (
     stageFileEffects,
     vmShellArgs,
     windowsPathToWslMount,
+
+    -- * Guest-side durable alias (one pure state machine, § DD)
+    AliasState (..),
+    AliasFacts (..),
+    classifyAlias,
+    AliasAction (..),
+    planAliasEnsure,
+    AliasRemoval (..),
+    planAliasRemove,
 )
 where
 
 import Data.Char (isAsciiUpper)
-import Data.List (isPrefixOf)
+import Data.List (dropWhileEnd, isPrefixOf)
 import HostBootstrap.Cluster.Cordon (
     ResourceBudget (..),
     budgetFromResources,
@@ -365,6 +374,100 @@ vmShellArgs (ViaVM vm) cmd = Just (Incus, execVMArgs vm cmd)
 vmShellArgs (ViaLimaVM vm) cmd = Just (Lima, Lima.shellVMArgs vm cmd)
 vmShellArgs (ViaWsl2VM vm) cmd = Just (Wsl, Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) cmd)
 vmShellArgs (ViaContainer _) _ = Nothing
+
+-- ---------------------------------------------------------------------------
+-- Guest-side durable alias: one pure state machine (§ DD).
+--
+-- A host-backed durable share is only usable at the Docker boundary through a
+-- stable Docker-visible alias — a symlink from a fixed path to the share. The
+-- alias is minted by two lanes: the VM-shell lane (trivial guest probes:
+-- @test -L@, @readlink@, @test -e@ — no compound @set -eu@, no nested @"$(…)"@,
+-- so it survives the Windows PowerShell→@wsl@→@bash@ quoting path, § CC) and the
+-- direct Linux-GPU lane (@System.Directory@). Both feed the SAME classifier and
+-- planners here, so the absent/linked/collision/ownership logic is written ONCE,
+-- not re-implemented per lane (it replaces three hand-coded shell/@System.Directory@
+-- copies). Every step is readiness-gated by the consumer (§ CC): the alias cannot
+-- be minted before a @Ready DurableShareMounted@ witness proves the share is a
+-- writable directory.
+-- ---------------------------------------------------------------------------
+
+{- | The observed state of the stable Docker-visible alias that points at a
+host-backed durable share (§ DD).
+-}
+data AliasState
+    = -- | nothing exists at the alias path
+      AliasAbsent
+    | -- | a symlink already pointing at the expected share target (idempotent no-op)
+      AliasLinkedCorrectly
+    | -- | a symlink pointing somewhere else — a stale/foreign link (a collision)
+      AliasLinkedElsewhere FilePath
+    | -- | a non-symlink file or directory occupies the path (a collision)
+      AliasOccupied
+    deriving (Eq, Show)
+
+{- | The raw facts a lane's probes gather about the alias path, classified the same
+way by 'classifyAlias'. 'afSymlinkTarget' is @Just t@ exactly when the path is a
+symlink (@t@ its @readlink@ / 'getSymbolicLinkTarget' target, or @""@ if the link
+is present but its target could not be read); 'afExists' is whether the path exists
+as anything at all (@test -e@ / a dir-or-file-or-symlink test).
+-}
+data AliasFacts = AliasFacts
+    { afSymlinkTarget :: Maybe FilePath
+    , afExists :: Bool
+    }
+    deriving (Eq, Show)
+
+{- | Classify the alias path against the expected share target. Total. Trailing
+slashes are trimmed before comparison; both lanes create the link with the exact
+expected target string, so a correctly-linked alias compares equal.
+-}
+classifyAlias :: FilePath -> AliasFacts -> AliasState
+classifyAlias expected facts = case afSymlinkTarget facts of
+    Just t
+        | trimTrailingSlash t == trimTrailingSlash expected -> AliasLinkedCorrectly
+        | otherwise -> AliasLinkedElsewhere t
+    Nothing
+        | afExists facts -> AliasOccupied
+        | otherwise -> AliasAbsent
+
+trimTrailingSlash :: FilePath -> FilePath
+trimTrailingSlash = dropWhileEnd (`elem` ("/\\" :: String))
+
+{- | The action a lane takes to make the alias correct, from its 'AliasState'. An
+idempotent correct link is 'AliasLeaveLinked'; an absent path is 'AliasCreateLink';
+a collision ('AliasLinkedElsewhere' / 'AliasOccupied') is a 'Left' message — a
+deterministic @Failed@ condition (§ CC), surfaced legibly, never a bare exit code.
+Pure.
+-}
+data AliasAction = AliasLeaveLinked | AliasCreateLink
+    deriving (Eq, Show)
+
+planAliasEnsure :: FilePath -> FilePath -> AliasState -> Either String AliasAction
+planAliasEnsure aliasPath target state = case state of
+    AliasAbsent -> Right AliasCreateLink
+    AliasLinkedCorrectly -> Right AliasLeaveLinked
+    AliasLinkedElsewhere other ->
+        Left ("durable alias " ++ aliasPath ++ " points to " ++ other ++ ", expected " ++ target)
+    AliasOccupied ->
+        Left ("durable alias collision: " ++ aliasPath ++ " already exists and is not a symbolic link to " ++ target)
+
+{- | The teardown action: remove the alias **only** when it is still the exact link
+this project owns ('AliasLinkedCorrectly' → 'AliasUnlink'); an absent path or a
+foreign non-symlink occupant is left in place with a reason ('AliasKeep'); a
+retargeted link is a 'Left' refusal (never silently clobbered). Pure. Mirrors the
+never-delete-@.data@ discipline (§ Y): the host target itself is never removed here.
+-}
+data AliasRemoval = AliasKeep String | AliasUnlink
+    deriving (Eq, Show)
+
+planAliasRemove :: FilePath -> FilePath -> AliasState -> Either String AliasRemoval
+planAliasRemove aliasPath target state = case state of
+    AliasAbsent -> Right (AliasKeep ("durable alias " ++ aliasPath ++ " is already absent"))
+    AliasLinkedCorrectly -> Right AliasUnlink
+    AliasLinkedElsewhere other ->
+        Left ("refusing to remove durable alias " ++ aliasPath ++ ": it points to " ++ other ++ ", expected " ++ target)
+    AliasOccupied ->
+        Right (AliasKeep ("durable alias path " ++ aliasPath ++ " is occupied by a non-symlink; leaving it untouched"))
 
 {- | Rewrite a Windows path (@C:\\…@) to its WSL2 drive mount (@/mnt/c/…@), so a
 distro reads a host file in place without a copy tool. Pure.

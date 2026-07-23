@@ -80,6 +80,13 @@ guest-side `.data` — survives `project destroy`. The never-delete-`.data` inva
 *cluster* teardown's removal set, not of frame deletion; see
 [durable state](../architecture/durable_state.md).
 
+A host directory reaches the Lima guest through the same host-path share primitive the other lanes use.
+Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
+`ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
+**same** pure `AliasState` classifier every lane shares; and **mount-readiness** gates it, a retrying
+`Ready` witness proving the share present and writable before the alias is minted. See
+[readiness](../architecture/readiness.md) and [durable state](../architecture/durable_state.md).
+
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted
 with Incus builders on native Linux (see [incus](incus.md)). A project does not re-implement VM
 management; it places `deploy-VM` in its chain and the interpreter selects the provider for the current

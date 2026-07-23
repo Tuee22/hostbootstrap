@@ -29,8 +29,10 @@
   frame, carrying resource budget and deploy knobs. The **context-init step** inside `project up` mints
   each **child** `<project>.dhall` for the next frame just before the chain hands off into it: it narrows
   the parent config to the child frame and appends that frame's topology and witnesses.
-- `deployConfigText` renders a config carrying `assert : C.fitsWithin budget pods === True`, so an
-  over-budget config fails to type-check. A render → decode → re-render round-trip is byte-stable.
+- `deployConfigText` is designed to render a config carrying `assert : C.fitsWithin budget pods === True`
+  so an over-budget config fails to type-check; attaching that per-config assert is reopened work (phase-9
+  Sprint 9.9), so today the gate is the Haskell `fitsBudget` check at bring-up, not a Dhall-embedded
+  assert. A render → decode → re-render round-trip is byte-stable.
 
 ## The `ConfigArtifact` Registry
 
@@ -201,6 +203,13 @@ time:
 - **RIGHT**: embed `assert : C.fitsWithin budget pods === True` in the rendered config, so an
   over-budget pod set makes the config itself fail to type-check at Dhall evaluation and never produces a
   value. See [resource_budgeting](resource_budgeting.md) for the budget the assertion guards.
+
+**Honest current state.** The per-config attachment of `assert : C.fitsWithin budget pods === True`
+described here is the **target**, reopened as phase-9 Sprint 9.9: today no generated config embeds the
+assert, so the fit check is the Haskell `fitsBudget` gate at bring-up rather than a Dhall-embedded
+assertion. `Core.dhall` defines `fitsWithin`; wiring it into every rendered config is the reopened work.
+See the reopened-work ledger
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 
 ## The Round-Trip Guarantee
 

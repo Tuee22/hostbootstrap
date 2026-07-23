@@ -101,6 +101,15 @@ fully-populated value that `project init` writes and the test harness seeds (see
 [generic_project_model.md](../architecture/generic_project_model.md) design). The on-disk config a normal
 command reads is therefore a complete value, not a sparse override.
 
+The decode is strict about field **presence** today; field-level **validity** is a **target**, not yet
+implemented. The aim is that invalidity is unrepresentable at decode — `memory` / `storage` a typed
+`Quantity` (a bad unit rejected at decode), `haReplicas`, the service ports, and timeouts bounded
+newtypes, and the lifecycle resource floor a smart constructor — so an unworkable config cannot be
+*constructed* rather than decoding cleanly and failing mid-bring-up. This is reopened as phase-9 Sprint
+9.9; today those fields are unbounded `Natural`/`Text` validated at runtime. See
+[development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md) and
+[applied_cordon.md](applied_cordon.md).
+
 A host-level config has the same top-level shape as the project's config type (for the demo, the demoted
 `ProjectConfig` schema). A project may add its own mandatory fields with no core change: the demo carries a
 `message : Text` field its web service renders, shown below.

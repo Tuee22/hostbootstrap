@@ -83,7 +83,7 @@ expected =
                 , resourceEnvelope = ResourceEnvelope 4 "8GiB" "20GiB"
                 , childContextKinds = [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
                 }
-        , deploy = DeployConfig{haReplicas = 2}
+        , deploy = DeployConfig{haReplicas = 1}
         }
 
 tests :: TestTree
@@ -230,7 +230,7 @@ tests =
         ]
   where
     badTypeConfig =
-        T.unpack (T.replace "haReplicas = 2" "haReplicas = \"two\"" (renderProjectConfig expected))
+        T.unpack (T.replace "haReplicas = 1" "haReplicas = \"two\"" (renderProjectConfig expected))
 
 decodeFixture :: IO ()
 decodeFixture = do

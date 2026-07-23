@@ -84,9 +84,10 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > witnesses.
 >
 > The chain work is `Done`; **phase-19 (the generic project model)**, **phase-20 (the config-driven demo
-> worked example)**, and **phase-21 (documentation/code consistency reconciliation)** are implemented and
-> `Done`. The original scope (phases 0 through 21) reached `Done`, and the 2026-07-05 cross-substrate
-> reliability reopening is also closed `Done`.
+> worked example)** are implemented and `Done`, and **phase-21 (documentation/code consistency
+> reconciliation)** is implemented but reopened `Active` for the doctrine reconciliations below. The original
+> scope (phases 0 through 21) reached `Done`, and the 2026-07-05 cross-substrate reliability reopening is
+> also closed `Done`.
 >
 > **Reopened 2026-07-09 for the accelerator-daemon demo generalization.** Phases 2 and 3 are closed;
 > phases 5, 13, 15, 16, and 18 remain `Active` for a real substrate-specific accelerator path. Phase 3's
@@ -104,6 +105,19 @@ authenticate the pull — an effect-only capability that is never in Dhall, neve
 > persistent real-worker supervision, in-cluster daemon deployment, host-daemon lifecycle, and browser
 > assertions are implemented and statically validated. The remaining gates are live substrate runs on
 > Apple Silicon, native Linux CPU/GPU, and Windows GPU.
+>
+> **Reopened 2026-07-19 (`.data` durability) and 2026-07-21 (readiness / durable-share alias / legible
+> failure / config validity).** Governed docs claimed `.data` was host-durable and that the durable-share
+> alias worked; neither holds. The Windows/WSL2 `test run all` failed **0/8** in the durable-share alias
+> step, hidden behind a `bring-up failed: ExitFailure 1` collapse. Phases **5, 9, 10, 11, and 21** are
+> `Active` for the corrected doctrine: a per-substrate host-path share primitive whose guest-side alias is a
+> pure `AliasState` gated by a sealed `Ready` witness, a structured `LifecycleFailure` (never an
+> `ExitFailure 1` collapse), and type-level config validity (typed `Quantity`, bounded newtypes, the attached
+> `Budget/fitsWithin` assert). Canonical homes:
+> [`documents/architecture/readiness.md`](documents/architecture/readiness.md) and
+> [`documents/architecture/durable_state.md`](documents/architecture/durable_state.md). No host-durable
+> `.data`, legible-failure, or `fitsWithin`-at-render capability is claimed until a real Windows/WSL2 run
+> validates it (§ J). See [`DEVELOPMENT_PLAN/README.md`](DEVELOPMENT_PLAN/README.md).
 
 Each consuming project ships **one binary** that extends `hostbootstrap-core` with its own
 subcommands. The bare `hostbootstrap` binary is `hostbootstrap-core`'s own executable — the same

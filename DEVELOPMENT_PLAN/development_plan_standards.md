@@ -322,8 +322,15 @@ separately, the **host** must have headroom above the budget — `host RAM ≥ b
 leaves no room for the host OS, Docker, and the orchestrator and is a known gap the preflight closes
 (phase-9). The project binary reads the budget
 from its active config and projects narrower resource envelopes into child configs (§ X). It is enforced
-with defense in depth: a Dhall-time `assert` (`Budget/fitsWithin`) at render, the pure
-`verifyBudget`/`fitsBudget` before bring-up, and the applied wall at runtime — a sized Lima VM on Apple
+with defense in depth across three rings: the **decode** ring — the typed config newtypes (a typed
+`Quantity` unit-validated at decode, bounded `haReplicas`/service-port/timeout newtypes, and a resource-floor
+`Resources`) that make an unworkable config **unrepresentable at Dhall decode** rather than accepted-then-
+failed at bring-up (§ BB; phase-9 Sprint 9.9). A Dhall-native `Budget/fitsWithin` *assert* is **not**
+attachable to a generated config — the config carries its `memory`/`storage` as Kubernetes `Text` quantities
+(which Dhall cannot numerically compare) and no pod set — so the pod-set fit check lives in the **bring-up**
+ring, not the render step (the never-attached-`fitsWithin` reconciliation, see
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)); the **bring-up** ring — the pure
+`verifyBudget`/`fitsBudget` before bring-up; and the **runtime** ring — the applied wall: a sized Lima VM on Apple
 Silicon, a sized Incus VM on Linux, a WSL2 Ubuntu-24.04 distro on Windows (§ U), the applied
 `docker update` kind-node cap, or `docker run` caps (one-shot). The wall's strength differs by substrate:
 Incus and Lima apply a **hard per-VM** memory/CPU cap, but WSL2 has **no per-distro** memory/CPU cap — its
@@ -342,6 +349,16 @@ Storage is cordoned where the substrate allows (Colima `--disk` / incus `root,si
 vhdx cap via `wsl --install --vhd-size` on Windows / a quota'd hostPath on Linux), since `docker update`
 has no storage flag. The budget flows from the local host config into
 child config projections, then into both the spinup cordon and the binary-generated configs.
+
+Configuration validity is **decode-time**, not a runtime `die`: the `memory`/`storage` quantities are a
+typed `Quantity` (a bad unit is rejected at Dhall decode via the one canonical `parseQuantity`, not
+mid-bring-up), the lifecycle resource floor is a validating-decoder invariant (a below-floor `Resources`
+fails the decode), and `haReplicas` / service ports / timeouts are bounded newtypes whose `FromDhall` rejects
+an out-of-range value — so an unworkable config is **unrepresentable at decode** rather than accepted-then-
+failed at runtime (§ Q, § BB; the newtype-smart-constructor precedent is `AbsExe`,
+[hostbootstrap_core_library.md](../documents/architecture/hostbootstrap_core_library.md)). Each newtype
+encodes **transparently** (its `ToDhall` renders the underlying `Text`/`Natural`), so the reflected schema and
+goldens are unchanged. This landed in phase-9 Sprint 9.9 (2026-07-22).
 
 ### P. Fixed Command Surface And The Extension Streams
 
@@ -728,3 +745,57 @@ The canonical design home is
 representation / harness drives the chain), § X (binary context), § Y (the lifecycle command), and § Z (the
 chain-driven test surface) are unchanged in shape — this section makes the **types** they thread generic
 and removes core-owned defaults.
+
+### CC. Readiness-Gated Lifecycle Steps and Legible Failure
+
+Every lifecycle step that **mutates a frame** — provisions it, stages into it, installs into it, or
+reconciles its state — runs only behind a proof that the dependency it needs is ready. That proof is a
+**sealed, phantom-tagged `Ready` witness** (`HostBootstrap.Readiness`): the constructor is hidden and a
+`Ready tag` is minted **only** by `awaitReady`, which polls a `Probe` to success. A mutating step takes the
+witness it depends on as an argument, so "act before the dependency is ready" is a **type error**, not a
+convention. The witness carries no value; it exists purely to order effects at the type level — as
+`Ready DockerDaemon` already gates the in-VM project-image build and `Ready RegistryServing` already gates
+the image push, so must the durable-share mount gate the alias step (§ DD).
+
+A probe is **retrying and total**: `Probe a = HostConfig -> IO (ProbeResult a)` with
+`ProbeResult = ProbeReady a | NotReady | Failed String`. A transient condition (a mount not yet visible, a
+socket not yet listening) is `NotReady` and is **retried** within a bounded `PollPolicy`; a deterministic
+error is `Failed msg` and **stops immediately** with its message. The two are never conflated into a bare
+exit code. A one-shot in-guest step that runs a compound `set -eu` script with no witness and no retry is a
+**defect**: it races the readiness it assumes and hides the reason it failed.
+
+Guest probes stay **trivial** so they survive the host→guest command path unchanged. On Windows the
+`wsl -d <distro> -- bash -lc <script>` invocation crosses PowerShell's native-argument quoting, so a probe
+is a single simple command (`docker info >/dev/null 2>&1`, `test -d <path>`, `readlink <path>`) — never a
+multi-statement script with nested `"$(… "…")"` quoting. Retry and branching live in Haskell (the
+`awaitReady` loop plus a pure classifier over the probe output), not in an inline shell loop.
+
+**Failure is legible.** A bring-up failure never collapses to a message-less `ExitFailure 1`. Lifecycle
+failures are a structured exception (`LifecycleFailure`, the peer of the `SafetyRefusal` round-trip, § Z)
+that carries the cause across the subprocess and harness boundary, and a runner that captures a child's
+output **streams it, then dies with it** rather than folding it into a stderr the harness unwinds. The test
+report card renders the carried message (`displayException`), so a failed variant states *why*. The
+canonical homes are [readiness](../documents/architecture/readiness.md) and
+[harness_workflow](../documents/architecture/harness_workflow.md).
+
+### DD. The Durable-Share Primitive
+
+A host directory reaches a guest through **one** per-substrate share primitive on `SubstrateProvider` /
+`HostPathShare`, modeled as pure data and interpreted generically (the lifecycle peer of the launch/cordon
+effect lists, § U). It has three parts, and the substrates differ only in which parts they need:
+
+- a **host-side reconcile** (`ShareReconcile`, the optional field shaped like the cordon-reconcile of § O) —
+  Incus attaches a disk device post-create; Lima declares the mount at instance create; WSL2 needs none
+  (drvfs already exposes the drive and the path rewrite already exists);
+- a **guest-side alias reconcile** — the stable Docker-visible path is a symlink to the share, modeled as a
+  pure `AliasState` (`AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere | AliasOccupied`) with a
+  total classifier and a create/remove planner. The **same** classifier serves the VM-shell lane (trivial
+  guest probes) and the direct Linux-GPU lane (`System.Directory`), so the state machine is written **once**,
+  not re-implemented per lane;
+- a **mount-readiness** probe (§ CC) — the guest share is proven present and writable before the alias is
+  minted, so the alias step cannot race the mount.
+
+Every step of the share is readiness-gated (§ CC) and fails legibly. The primitive is what makes a durable
+root host-backed rather than frame-local; until a real destroy→up→read run validates it end to end, no
+governed document describes host-durable `.data` as available (§ C, § J). The canonical home is
+[durable_state](../documents/architecture/durable_state.md).

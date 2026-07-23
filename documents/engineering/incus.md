@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [ensure reconcilers](ensure_reconcilers.md), [applied cordon](applied_cordon.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [ensure reconcilers](ensure_reconcilers.md), [applied cordon](applied_cordon.md), [wsl2](wsl2.md), [readiness](../architecture/readiness.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
 
 > **Purpose**: Describe the `incus` host-provider axis — the typed `HostTarget` that parameterizes
 > every linux-host operation by `Local` or `InVM`, the `ensure incus` cross-substrate reconciler, the
@@ -167,6 +167,13 @@ guest-side `.data` has no host copy to fall back on. The never-delete-`.data` in
 *cluster* teardown's removal set; a VM delete has no removal set to exclude a path from. See
 [durable state](../architecture/durable_state.md).
 
+The host-path share primitive is what gives a guest directory a host home. On Incus its **host-side
+reconcile** attaches a disk device to the VM after create (the `ShareReconcile` half, shaped like the
+cordon-reconcile); the **guest-side alias** — the stable Docker-visible `/var/tmp/<project>-data` symlink —
+is modeled as the **same** pure `AliasState` classifier every lane shares; and **mount-readiness** gates it,
+a retrying `Ready` witness proving the share present and writable before the alias is minted. Its canonical
+home is [durable state](../architecture/durable_state.md).
+
 ### WRONG / RIGHT
 
 - **WRONG**: invoke a bare `$PATH` `incus` on the host and emit an unguarded
@@ -195,6 +202,10 @@ classifyDockerReadiness :: (ExitCode, String, String) -> Ready | NeedsReboot | U
 `rebootDockerToReady` is the IO loop around it: it probes `docker info` in the VM, runs
 `incus restart` on `NeedsReboot` and retries bounded by `maxReboots`, succeeds on `Ready`, and fails
 fast on `Unsatisfiable`. The classifier is pure and unit-tested; the loop is the only IO.
+
+Like the other per-substrate `classify*Readiness` verdicts, `classifyDockerReadiness` defers to the one
+readiness discipline ([readiness](../architecture/readiness.md)): its `Ready` arm is the precondition a
+bring-up step consumes before it acts, minted only after the probe succeeds.
 
 ## `incusSizingArgs` Budget Cordon
 

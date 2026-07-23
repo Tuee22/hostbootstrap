@@ -1,6 +1,8 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -20,6 +22,10 @@ module HostBootstrapDemo.Config (
     ProjectConfig (..),
     DeployConfig (..),
     Resources (..),
+    Quantity (..),
+    HaReplicas (..),
+    Port (..),
+    TimeoutSeconds (..),
     TestConfig (..),
     ServiceType (..),
     WebServiceConfig (..),
@@ -64,34 +70,137 @@ module HostBootstrapDemo.Config (
 where
 
 import Data.Maybe (fromMaybe)
+import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Dhall (FromDhall, ToDhall, auto, inputFile)
+import Dhall (FromDhall (autoWith), ToDhall, auto, field, inputFile, record)
 import qualified Dhall
 import qualified Dhall.Core
+import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import Dhall.Marshal.Encode (Encoder (declared, embed))
 import GHC.Generics (Generic)
+import HostBootstrap.Cluster.Cordon (parseQuantity)
 import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..))
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
 import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric.Natural (Natural)
 
--- | The per-project resource budget.
+{- | Refine a base 'Decoder' at DECODE time (development_plan_standards § BB/§ O):
+decode the underlying value, then validate it, failing the Dhall **extract** (not a
+runtime @die@) when it violates the contract — so an unworkable @<project>.dhall@ /
+@test.dhall@ is rejected at decode rather than accepted-then-failed at bring-up. The
+matching 'ToDhall' stays transparent (each newtype encodes its underlying
+@Text@/@Natural@ via @deriving newtype ToDhall@), so the reflected @context schema@
+and the golden are **unchanged**: these types are decode-time refinements only.
+-}
+refiningDecoder :: Decoder a -> (a -> Either String b) -> Decoder b
+refiningDecoder base refine =
+    Decoder
+        { extract = \expr -> fromMonadic $ do
+            a <- toMonadic (extract base expr)
+            either (toMonadic . extractError . T.pack) Right (refine a)
+        , expected = expected base
+        }
+
+{- | A typed Kubernetes-style resource quantity (memory / storage). Its 'FromDhall'
+validates the unit at DECODE via the one canonical 'parseQuantity', so a bad unit
+(@"lots"@, @"10Gitten"@) fails to decode rather than only at bring-up. 'IsString'
+constructs known-good internal literals; the transparent 'ToDhall' encodes the
+underlying 'Text', so the schema is unchanged. (Replaces the former @Text@
+memory/storage fields — legacy-tracking-for-deletion.md.)
+-}
+newtype Quantity = Quantity {quantityText :: Text}
+    deriving stock (Eq)
+    deriving newtype (Show, IsString, ToDhall)
+
+instance FromDhall Quantity where
+    autoWith n = refiningDecoder (autoWith n) validate
+      where
+        validate t = case parseQuantity t of
+            Right _ -> Right (Quantity t)
+            Left err -> Left ("invalid resource quantity " ++ show (T.unpack t) ++ ": " ++ err)
+
+{- | @haReplicas@ bounded to the demo's single-HA invariant (**exactly 1**): the
+'FromDhall' rejects any other value at decode, so a decoded config satisfies
+@validateAcceleratorReplicaCount@ by construction. 'Num' lets internal code write the
+literal @1@; the transparent 'ToDhall' encodes the underlying 'Natural'.
+-}
+newtype HaReplicas = HaReplicas {haReplicasNat :: Natural}
+    deriving stock (Eq)
+    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+
+instance FromDhall HaReplicas where
+    autoWith n = refiningDecoder (autoWith n) validate
+      where
+        validate r
+            | r == (1 :: Natural) = Right (HaReplicas r)
+            | otherwise = Left ("haReplicas must be exactly 1 (the demo runs a single HA replica), got " ++ show r)
+
+{- | A service port bounded to @1..65535@ at decode. 'Num'/'Integral' let internal
+literals and @fromIntegral port@ (Warp wants an 'Int') work unchanged; transparent
+'ToDhall'. Cross-field distinctness stays a 'validateServiceType' check (a single
+newtype cannot express "these two differ").
+-}
+newtype Port = Port {portNat :: Natural}
+    deriving stock (Eq)
+    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+
+instance FromDhall Port where
+    autoWith n = refiningDecoder (autoWith n) validate
+      where
+        validate p
+            | p >= 1 && p <= 65535 = Right (Port p)
+            | otherwise = Left ("service port must be between 1 and 65535, got " ++ show p)
+
+-- | The accelerator request timeout bounded to @1..30@ seconds at decode.
+newtype TimeoutSeconds = TimeoutSeconds {timeoutSecondsNat :: Natural}
+    deriving stock (Eq)
+    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+
+instance FromDhall TimeoutSeconds where
+    autoWith n = refiningDecoder (autoWith n) validate
+      where
+        validate s
+            | s >= 1 && s <= maxAcceleratorRequestTimeoutSeconds = Right (TimeoutSeconds s)
+            | otherwise = Left ("requestTimeoutSeconds must be between 1 and 30, got " ++ show s)
+
+{- | The per-project resource budget. @memory@/@storage@ are typed 'Quantity's
+(unit-validated at decode). A custom 'FromDhall' additionally enforces the resource
+floor (@cpu ≥ 1@) so a below-floor budget is rejected at decode, not accepted then
+failed at bring-up (§ BB). 'ToDhall' is the transparent generic derivation (the Dhall
+type stays @{ cpu : Natural, memory : Text, storage : Text }@).
+-}
 data Resources = Resources
     { cpu :: Natural
-    , memory :: Text
-    , storage :: Text
+    , memory :: Quantity
+    , storage :: Quantity
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (ToDhall)
+
+instance FromDhall Resources where
+    autoWith n = refiningDecoder base validate
+      where
+        base =
+            Dhall.record
+                ( Resources
+                    <$> Dhall.field "cpu" (autoWith n)
+                    <*> Dhall.field "memory" (autoWith n)
+                    <*> Dhall.field "storage" (autoWith n)
+                )
+        validate r
+            | cpu r >= 1 = Right r
+            | otherwise = Left "resources.cpu must be at least 1 (the lifecycle resource floor)"
 
 {- | Project deployment knobs that are authored at the host level and projected
 into narrower child configs when a boundary is crossed.
 -}
 newtype DeployConfig = DeployConfig
-    { haReplicas :: Natural
+    { haReplicas :: HaReplicas
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 {- | The per-project @test.dhall@ shape (development_plan_standards § Z): the
 selectable suites (the case ids plus @all@) plus the **test-config resource
@@ -102,22 +211,26 @@ data TestConfig = TestConfig
     { testSuites :: [Text]
     , testResources :: Resources
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 {- | Parameters owned by the demo's web service variant. They are deliberately
-part of the Dhall ADT payload rather than hidden in the handler registry.
+part of the Dhall ADT payload rather than hidden in the handler registry. The
+ports are bounded 'Port's (1..65535 at decode).
 -}
 data WebServiceConfig = WebServiceConfig
-    { publicPort :: Natural
-    , acceleratorPort :: Natural
+    { publicPort :: Port
+    , acceleratorPort :: Port
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 -- | Parameters owned by the accelerator daemon variant.
 newtype AcceleratorServiceConfig = AcceleratorServiceConfig
-    { requestTimeoutSeconds :: Natural
+    { requestTimeoutSeconds :: TimeoutSeconds
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 -- | Maximum worker deadline; the web dispatch deadline adds a ten-second cleanup/transport margin.
 maxAcceleratorRequestTimeoutSeconds :: Natural
@@ -129,7 +242,8 @@ only 'configuredServiceVariant' through the generic ProjectSpec seam.
 data ServiceType
     = Web WebServiceConfig
     | Accelerator AcceleratorServiceConfig
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 {- | The supported project-local config shape.
 
@@ -146,7 +260,8 @@ data ProjectConfig = ProjectConfig
     , message :: Text
     , service :: Maybe ServiceType
     }
-    deriving (Eq, Show, Generic, FromDhall, ToDhall)
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromDhall, ToDhall)
 
 {- | The demo's 'ProjectCfg' instance: the core reaches the embedded context
 through these two methods and otherwise never touches the demo's fields.
@@ -171,10 +286,10 @@ validateServiceType (Web (WebServiceConfig public accelerator))
     | public == accelerator = Left "Web publicPort and acceleratorPort must be distinct"
     | otherwise = Right "web"
   where
-    validPort port = port >= 1 && port <= 65535
+    validPort port = portNat port >= 1 && portNat port <= 65535
 validateServiceType (Accelerator (AcceleratorServiceConfig timeoutSeconds))
-    | timeoutSeconds < 1 = Left "Accelerator requestTimeoutSeconds must be positive"
-    | timeoutSeconds > maxAcceleratorRequestTimeoutSeconds = Left "Accelerator requestTimeoutSeconds must not exceed 30"
+    | timeoutSecondsNat timeoutSeconds < 1 = Left "Accelerator requestTimeoutSeconds must be positive"
+    | timeoutSecondsNat timeoutSeconds > maxAcceleratorRequestTimeoutSeconds = Left "Accelerator requestTimeoutSeconds must not exceed 30"
     | otherwise = Right "accelerator"
 
 {- | Render a project-local config to Dhall source text, hoisting the repeated
@@ -227,8 +342,8 @@ envelopeOfResources :: Resources -> Context.ResourceEnvelope
 envelopeOfResources Resources{cpu = resourceCpu, memory = resourceMemory, storage = resourceStorage} =
     Context.ResourceEnvelope
         { Context.cpu = resourceCpu
-        , Context.memory = resourceMemory
-        , Context.storage = resourceStorage
+        , Context.memory = quantityText resourceMemory
+        , Context.storage = quantityText resourceStorage
         }
 
 {- | Convert a runtime authority envelope back into the project-level resource
@@ -238,8 +353,8 @@ resourcesFromEnvelope :: Context.ResourceEnvelope -> Resources
 resourcesFromEnvelope envelope =
     Resources
         { cpu = Context.cpu envelope
-        , memory = Context.memory envelope
-        , storage = Context.storage envelope
+        , memory = Quantity (Context.memory envelope)
+        , storage = Quantity (Context.storage envelope)
         }
 
 {- | Build a project-local config for a selected local role. The @message@ is
@@ -368,9 +483,9 @@ renderProjectConfigSummary
                 , "resources:    cpu="
                     <> T.pack (show cfgResources.cpu)
                     <> " memory="
-                    <> cfgResources.memory
+                    <> quantityText cfgResources.memory
                     <> " storage="
-                    <> cfgResources.storage
+                    <> quantityText cfgResources.storage
                 , "ha-replicas:  " <> T.pack (show cfgDeploy.haReplicas)
                 , "message:      " <> cfgMessage
                 , "service:      " <> T.pack (show cfgService)
@@ -423,10 +538,10 @@ demoInitWithMessage cfgMessage args =
     let cfgResources =
             Resources
                 { cpu = fromMaybe demoDefaultResources.cpu args.mCpu
-                , memory = fromMaybe demoDefaultResources.memory args.memory
-                , storage = fromMaybe demoDefaultResources.storage args.storage
+                , memory = maybe demoDefaultResources.memory Quantity args.memory
+                , storage = maybe demoDefaultResources.storage Quantity args.storage
                 }
-        cfgDeploy = DeployConfig{haReplicas = fromMaybe demoDefaultDeployConfig.haReplicas args.haReplicas}
+        cfgDeploy = DeployConfig{haReplicas = maybe demoDefaultDeployConfig.haReplicas HaReplicas args.haReplicas}
         cfgDockerfile = fromMaybe demoDefaultDockerfile args.dockerfile
         root = fromMaybe "." args.sourceRoot
         baseCfg =
@@ -506,10 +621,10 @@ demoTestConfig tc =
                 , output = Nothing
                 , sourceRoot = Just "."
                 , mCpu = Just tc.testResources.cpu
-                , memory = Just tc.testResources.memory
-                , storage = Just tc.testResources.storage
+                , memory = Just (quantityText tc.testResources.memory)
+                , storage = Just (quantityText tc.testResources.storage)
                 , dockerfile = Just demoDefaultDockerfile
-                , haReplicas = Just demoDefaultDeployConfig.haReplicas
+                , haReplicas = Just (haReplicasNat demoDefaultDeployConfig.haReplicas)
                 , force = True
                 , ifMissing = False
                 }

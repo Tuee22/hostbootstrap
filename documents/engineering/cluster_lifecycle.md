@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [resource_budgeting](resource_budgeting.md), [dhall_topology](dhall_topology.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [testing](testing.md)
+**Referenced by**: [documents-index](../README.md), [resource_budgeting](resource_budgeting.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md), [testing](testing.md), [readiness](../architecture/readiness.md)
 
 > **Purpose**: Define the kind/Helm cluster-lifecycle semantics `hostbootstrap-core` provides as
 > chain steps under `project up`/`project down`/`project destroy`, including kind
@@ -89,6 +89,11 @@ trusted: a listed-but-unhealthy cluster (stopped containers after the VM that ho
 stopped in-VM stack back to running. That deletion is fail-closed: `ensureCluster` requires the Kind delete
 to succeed before it issues recreate, so an unresolved or non-zero deletion cannot be followed by a
 misleading create attempt. The pure classifier `clusterHealthyFromProbe` is unit-tested.
+
+Both gates follow the one `Ready`-witness readiness discipline ([readiness](../architecture/readiness.md)):
+`waitNodesReady` is a retrying probe that proves node/CNI readiness before any mutating step runs, and the
+durable-root step likewise waits on mount-readiness before it writes. A step that fails surfaces a legible
+`LifecycleFailure` carrying its cause across the harness boundary, never a bare `ExitFailure 1`.
 
 The deploy is **chart-conditional**: a project ships its chart at `./chart` (relative to the directory
 the cluster step runs in — the project root, or `/workspace/<project>` inside the project container)

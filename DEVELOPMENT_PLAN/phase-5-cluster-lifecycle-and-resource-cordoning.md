@@ -399,7 +399,7 @@ work remains in this sprint.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/kind.yaml`, `demo/chart/`
-**Docs to update**: `documents/architecture/durable_state.md`, `documents/engineering/cluster_lifecycle.md`
+**Docs to update**: `documents/architecture/durable_state.md`, `documents/architecture/readiness.md`, `documents/engineering/cluster_lifecycle.md`
 
 #### Objective
 
@@ -429,19 +429,26 @@ directory, and on a lifted topology it resolves inside a frame that `destroy` de
 
 #### Remaining Work
 
-Implementation and static validation are complete. The provider share from phase-11 Sprint 11.8 is
-carried through the VM, project container, kind node, and web pod; the web service exposes the marker
-write/read probe used by the real-run gate. The 2026-07-20 static gates pass: core `-Werror` build plus
-374 tests, demo `-Werror` build plus 89 demo tests and the embedded 374 core tests, the Python code-check,
-and all 180 Python tests. The joint real-run gate remains: write the marker through the running service,
-run `project destroy`, run `project up`, and read the same marker from the host-backed root. Until that
-gate passes, no governed document may describe host-durable `.data` as validated (§ J).
+The durable-root carry (VM → project container → kind node → web pod) and the **host-side** provider share
+(phase-11 Sprint 11.8) are implemented and static-gated (core `-Werror` build plus 382 tests, demo `-Werror`
+build plus 98 demo tests, fourmolu/hlint clean). Its **share/alias mechanism is now validated** by the live
+Windows/WSL2 `test run all` **`8/8`** (2026-07-23): the recast pure, readiness-gated `AliasState` alias
+(phase-11 Sprint 11.9) links cleanly on both variants
+(`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/…/demo/.data`) — the ungated
+`set -eu` step that collapsed `0/8` is gone — and a residual failure is now legible (phase-10 Sprint 10.8).
+**Remaining (real-run-gated, § C):** the end-to-end durable-root **read-back** (write a marker through the
+running service → `project destroy` → `project up` → read the same marker from the host-backed root) is not
+yet a harness case (`registry-persistence` proves MinIO/registry durability, not `.data`), so this sprint
+stays `Active` for that dedicated durability assertion. Until it passes, no governed document may describe
+host-durable `.data` as validated (§ J).
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/durable_state.md` - the canonical home of the never-delete-`.data` invariant:
   the removal-set guarantee, frame-relativity, and the Sprint 5.6 durable-root contract.
+- `documents/architecture/readiness.md` - the readiness discipline gating the durable-root's mount/alias
+  steps (phase-11 Sprint 11.9) and its legible-failure contract.
 
 **Engineering docs to create/update:**
 - `documents/engineering/resource_budgeting.md` - budget verification, Colima per-project VM sizing

@@ -9,6 +9,7 @@ with @wsl --shutdown@ before install (the honest WSL2 wall).
 -}
 module ProviderSpec (tests) where
 
+import Data.List (isInfixOf)
 import HostBootstrap.Context (ProviderKind (..), ResourceEnvelope (..))
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
@@ -62,6 +63,7 @@ tests =
         , testGroup "teardown (stop / guarded destroy)" teardownCases
         , testGroup "exists / wait probes" probeCases
         , testGroup "pure interpreters" interpreterCases
+        , testGroup "guest-side durable alias state machine" aliasCases
         ]
 
 identityCases :: [TestTree]
@@ -296,3 +298,39 @@ interpreterCases =
     , testCase "windowsPathToWslMount rewrites a drive path to its /mnt mount" $
         windowsPathToWslMount "C:\\Users\\Matt\\f.tgz" @?= "/mnt/c/Users/Matt/f.tgz"
     ]
+
+{- | The one pure alias state machine (§ DD) both lanes share: all four
+'AliasState' cases from raw 'AliasFacts', and the create/remove planners over
+each — an idempotent correct link, a fresh create, and a collision surfaced as a
+legible 'Left' (never a bare exit code).
+-}
+aliasCases :: [TestTree]
+aliasCases =
+    [ testCase "classifyAlias: absent path" $
+        classifyAlias target (AliasFacts Nothing False) @?= AliasAbsent
+    , testCase "classifyAlias: symlink to the expected target (trailing slash tolerated)" $ do
+        classifyAlias target (AliasFacts (Just target) True) @?= AliasLinkedCorrectly
+        classifyAlias target (AliasFacts (Just (target ++ "/")) True) @?= AliasLinkedCorrectly
+    , testCase "classifyAlias: symlink to a different target" $
+        classifyAlias target (AliasFacts (Just "/some/other/path") True) @?= AliasLinkedElsewhere "/some/other/path"
+    , testCase "classifyAlias: a non-symlink occupant" $
+        classifyAlias target (AliasFacts Nothing True) @?= AliasOccupied
+    , testCase "planAliasEnsure: absent creates, correct is a no-op" $ do
+        planAliasEnsure alias target AliasAbsent @?= Right AliasCreateLink
+        planAliasEnsure alias target AliasLinkedCorrectly @?= Right AliasLeaveLinked
+    , testCase "planAliasEnsure: a collision is a legible Left, never an exit code" $ do
+        assertLeftHas "points to" (planAliasEnsure alias target (AliasLinkedElsewhere "/elsewhere"))
+        assertLeftHas "collision" (planAliasEnsure alias target AliasOccupied)
+    , testCase "planAliasRemove: unlink only the owned link; keep absent; refuse a retarget" $ do
+        planAliasRemove alias target AliasLinkedCorrectly @?= Right AliasUnlink
+        case planAliasRemove alias target AliasAbsent of
+            Right (AliasKeep _) -> pure ()
+            other -> assertBool ("expected AliasKeep for absent, got " ++ show other) False
+        assertLeftHas "refusing to remove" (planAliasRemove alias target (AliasLinkedElsewhere "/elsewhere"))
+    ]
+  where
+    target = "/var/tmp/hostbootstrap-demo-data-actual"
+    alias = "/var/tmp/hostbootstrap-demo-data"
+    assertLeftHas needle e = case e of
+        Left msg -> assertBool ("expected " ++ show needle ++ " in " ++ msg) (needle `isInfixOf` msg)
+        Right ok -> assertBool ("expected a Left, got " ++ show ok) False
