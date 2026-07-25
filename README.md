@@ -171,6 +171,11 @@ builds the project image, creates kind/nvkind, deploys MinIO and the anonymous H
 pushes the image, deploys the web and accelerator services, and verifies exposure. In current manifests,
 the registry, web, and MinIO host mappings are not all loopback-only, and MinIO defaults are
 source-hardcoded; the target security repair is plan-owned.
+The current S3 route also permits Distribution to redirect the host Docker client to cluster-only
+`minio.default.svc`, so a repeated push can fail even when `/v2/` is Ready. The reopened target binds
+client scope, exposure, backend, and delivery in one opaque plan; this topology can select only registry
+proxy delivery. See [network reachability](documents/architecture/network_reachability.md) and the
+[in-cluster registry guide](documents/engineering/in_cluster_registry.md).
 
 The stable `/var/tmp/hostbootstrap-demo-data` pathname is a provider-guest projection of the project's
 host-backed durable root, not a portable direct-host path or the canonical store. The target resolves

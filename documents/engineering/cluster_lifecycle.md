@@ -26,6 +26,11 @@ deploy-kind or nvkind
 backend. Linux CPU/GPU append an in-cluster accelerator-daemon deployment; Apple Silicon and Windows GPU
 start a host daemon after the web and private daemon ingress are reachable.
 
+The current registry wait proves only Deployment readiness and can be followed by `/v2/` success while
+blob `HEAD` redirects the host client to cluster-only MinIO. The target chain requires the exact
+`ReadyBlobRoute` derived from the finalized registry plan before `push-image`; see
+[network reachability](../architecture/network_reachability.md).
+
 Cluster creation is fail-closed around command exit status. Existing named clusters are health-probed;
 an unhealthy one is deleted before recreation. Kind creation is followed by a bounded node readiness
 wait. Nvkind adds the NVIDIA runtime smoke, a control-plane/GPU-worker topology, per-node CPU/memory

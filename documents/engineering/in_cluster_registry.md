@@ -2,22 +2,40 @@
 
 **Status**: Supporting reference
 **Supersedes**: harbor.md
-**Referenced by**: [../README.md](../README.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
+**Referenced by**: [../README.md](../README.md), [../architecture/network_reachability.md](../architecture/network_reachability.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
 
 > **Purpose**: Document the in-cluster OCI registry a downstream project stands up to push its own
-> arch-explicit image, and make clear that hostbootstrap core never pushes project images.
+> arch-explicit image, describe the current broken redirect topology, and define how the downstream
+> project consumes core's target reachability-safe registry plan without transferring image ownership
+> to core.
+
+## Current Status
+
+The demo resources and push step exist, but the end-to-end registry route is not currently valid.
+Distribution's S3 driver redirects repeated blob requests to `http://minio.default.svc:9000`. That
+name is cluster-only, while the Docker client pushing through `localhost:30500` runs in host scope.
+The registry therefore answers a blob `HEAD` with `307`, and the client fails DNS resolution for
+`minio.default.svc`.
+
+The target is the typed plan in
+[network reachability](../architecture/network_reachability.md): core owns the generic endpoint,
+client, delivery, and readiness vocabulary; the demo owns its registry resources, project-image
+operation, and topology-specific plan. For this topology, proxy delivery is selected by construction
+and rendering necessarily emits `storage.redirect.disable: true`. The owning Phase 13 and Phase 14
+follow-on sprints remain open until live repeated-push and persistence evidence closes the defect.
 
 The hostbootstrap core **does not build or push your project image.** The thin Python bootstrapper
 materializes the host-native project binary. Once that binary is running, a project-supplied build-image
 chain action may build a project container `FROM` the base tag and run its code-check gate; core only
 interprets the contributed action. Whether and how the resulting image reaches a registry is the
-**downstream project's** job. This page is convention, not enforcement: core has no project-image push
-command and no registry configuration of its own.
+**downstream project's** job. Core has no project-image push command. Its target responsibility is
+generic enforcement: it supplies reachability-safe planning and readiness types, while the consumer
+supplies and interprets its own concrete registry resources and push operation.
 
 A project that wants its container in a registry contributes its own chain steps
 that push it as part of the project's deploy. The `hostbootstrap-demo` consumer
-does exactly this: its `deploy-registry` and `push-image` steps stand up an
-in-cluster registry and push the project image during `project up`.
+registers `deploy-registry` and `push-image` for that purpose, but its current raw
+configuration does not yet satisfy the end-to-end route contract.
 
 ## The registry: single-binary `registry:2`
 
@@ -30,7 +48,7 @@ per-component image override and no emulation. It runs **anonymous over HTTP**. 
 Reachability beyond the VM/host depends on provider networking and firewall policy; there is no registry
 authentication or TLS boundary.
 
-The `hostbootstrap-demo` consumer (`demo/`) drives this end-to-end. Its
+The `hostbootstrap-demo` consumer (`demo/`) is intended to drive this end-to-end. Its
 `deploy-registry` and `push-image` steps belong to the container frame of
 `demoChainFor :: Substrate -> ProjectConfig -> [Step]`, the demo's contributed chain, and `project
 up` interprets them as it descends into that frame. `deploy-registry` applies a
@@ -41,14 +59,15 @@ platform from the multi-arch manifest. It is **not** `kind load`-ed: `kind load
 docker-image` (a `docker save` + `ctr import --all-platforms`) cannot import a
 multi-arch image (it fails `content digest … not found`).
 `push-image` loads the project image into the kind nodes, tags it, and pushes it to
-`localhost:30500/library/hostbootstrap-demo:demo`. The push runs as part of the
-live persistent stack that `project up` stands up.
+`localhost:30500/library/hostbootstrap-demo:demo`. The push is registered in the
+live stack that `project up` stands up, but registration and `/v2/` readiness are
+not proof that the blob route works.
 
-`hostbootstrap-core` does not own the registry — it is a property of the demo's
+`hostbootstrap-core` does not own the registry resource — it is a property of the demo's
 contributed chain step (`deployRegistryAction` in
-`demo/src/HostBootstrapDemo/Commands.hs`), consistent with the core never owning
-registry configuration. A derived project that deploys a registry contributes the
-same single-binary `registry:2` step in its own chain.
+`demo/src/HostBootstrapDemo/Commands.hs`). A derived project that deploys a registry contributes its
+own resource step, but the target API requires it to construct that step from core's opaque registry
+plan rather than independently choosing endpoint strings and redirect flags.
 
 ## Persistent storage: MinIO-backed
 
@@ -72,6 +91,12 @@ yields two drivers and the registry refuses to start — hence the ConfigMap rep
 the whole config file.) The `deploy-minio` step is ordered first because the s3
 driver requires the bucket to pre-exist.
 
+The current ConfigMap omits Distribution's `storage.redirect.disable` setting. Its default redirect
+behavior is illegal for the host-client/cluster-only-store topology. The target DSL does not expose
+that setting as a boolean: `ProxyThroughRegistry` is the only constructible delivery strategy, and
+the renderer derives `disable: true`. See
+[network reachability](../architecture/network_reachability.md) for the type-level rule.
+
 The target derives a per-run credential from scoped secret authority and binds it to the exact plan.
 Public anonymous registry mode remains an explicit development-only policy. A requested strong
 loopback-only mode must be rejected as unsupported unless the substrate can prove the listener binding
@@ -79,9 +104,10 @@ and namespace; a client spelling of `localhost` is not that proof.
 
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.
-S3-backed, the restarted pod re-reads the blobs from MinIO and the pushed tag
-survives. The `registry-persistence` harness case proves exactly this: push → delete
-the registry pod → the tag is still served. The MinIO PVC lives on the kind node's
+S3-backed, the restarted pod can re-read the blobs from MinIO and the pushed tag
+should survive. The `registry-persistence` harness case is intended to prove exactly this: push →
+delete the registry pod → the tag is still served. That claim remains open until the blob route
+succeeds for both initial and repeated pushes. The MinIO PVC lives on the kind node's
 `local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
 which deletes the cluster (the in-VM cluster is ephemeral by design; the registry's
 durable state lives inside the cluster, and the demo mirrors none of it back to the
@@ -139,6 +165,21 @@ are **not** covered here. hostbootstrap publishes those itself via
 and [base_image.md](base_image.md). A project never re-pushes the large base
 image — it pulls the base from Docker Hub and pushes only its own thin
 layer(s).
+
+## Validation
+
+The registry topology is closed only when one live supported host proves all of the following through
+the same finalized plan:
+
+1. the exact host Docker client reaches the exact published registry exposure;
+2. the registry reaches the exact MinIO endpoint and bucket;
+3. an initial push and a repeated push of the same image both complete;
+4. blob responses expose no cluster-only MinIO URL to the host client;
+5. a pull and tag lookup succeed after deleting and recreating the registry pod;
+6. compile-fail and golden tests prove the illegal redirect topology and an independent raw redirect
+   flag cannot be constructed.
+
+A successful `GET /v2/`, Deployment Ready condition, or initial empty-registry push is insufficient.
 
 ## See also
 

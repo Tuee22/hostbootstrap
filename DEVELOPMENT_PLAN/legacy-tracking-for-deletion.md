@@ -10,6 +10,17 @@
 
 ## Pending
 
+- **Raw registry reachability, independently selected redirect behavior, and `/v2/`-only readiness**
+  (`demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/RegistrySpec.hs`,
+  `demo/test/HarnessSpec.hs`) — the demo separately renders a host-facing NodePort, the cluster-only
+  `minio.default.svc` endpoint, and Distribution's implicit redirect default. A repeated blob `HEAD`
+  can therefore return `307` to a name the host Docker client cannot resolve, while Deployment Ready or
+  `/v2/` can still be mistaken for route readiness. Replacement: opaque scope-indexed endpoint/client/
+  exposure values, proof-gated `BlobDelivery`, one finalized registry plan whose renderer derives
+  `storage.redirect.disable`, and an exact revision-/registry-/store-indexed `ReadyBlobRoute` required
+  before push. Delete raw endpoint/redirect assembly and tests that treat initial push or `/v2/` as
+  persistence proof. Owning sprints: 9.10 (plan-owned readiness/preconditions), 14.7 (generic algebra),
+  and 13.20 (demo migration/live proof).
 - **Direct-host durable compatibility alias and repeated raw root reconstruction**
   (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,

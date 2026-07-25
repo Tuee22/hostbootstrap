@@ -40,6 +40,8 @@ Open operator-significant defects are:
 - the demo harness resolves the Production profile and `.data`;
 - no live gate proves workload write → destroy → up → host-and-workload readback;
 - bare Linux has no runtime storage quota or image-GC wall.
+- the registry may redirect a repeated host-client blob request to cluster-only
+  `minio.default.svc`; `/v2/` and Deployment readiness do not prove the blob route.
 
 ## Build and Config
 

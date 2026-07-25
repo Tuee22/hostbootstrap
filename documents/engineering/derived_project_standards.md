@@ -317,6 +317,10 @@ A single `project up` is intended to stand up the live persistent stack — a co
 (NodePort 30500) → the project image pushed to that registry → the web chart pod →
 `localhost:30080` serving HTTP 200. Current teardown performs owned current-frame cleanup plus a project
 hook; the target recursive child-first inverse remains open.
+The target registry step is contributed from an opaque finalized plan that jointly binds client scope,
+verified exposure, backing endpoint, and blob delivery. A consumer must not pass raw endpoints or
+choose `storage.redirect.disable` independently; see
+[network reachability](../architecture/network_reachability.md).
 `test run all` drives that same chain, but the demo currently resolves its cluster with the Production
 profile and `.data`; see [harness workflow](../architecture/harness_workflow.md).
 `DEVELOPMENT_PLAN/` owns the phase status; this page describes the model and the worked `demo/` consumer
@@ -331,7 +335,8 @@ that realizes it.
 * [warm_store.md](warm_store.md) — the Cabal store cache-hit contract
 * [code_check_doctrine.md](code_check_doctrine.md) — the build-time code-check gate
 * [linking_and_optimization.md](linking_and_optimization.md) — linking and optimisation defaults
-* [in_cluster_registry.md](in_cluster_registry.md) — pushing the project image (out of scope for hostbootstrap itself)
+* [in_cluster_registry.md](in_cluster_registry.md) — consumer-owned project-image push resources over
+  core's target reachability-safe planning vocabulary
 * [binary_context_config](../architecture/binary_context_config.md) — the exact split between config-free
   writers/static routes, file readers, the harness-generated route, and commands gated by the runtime
   sibling config

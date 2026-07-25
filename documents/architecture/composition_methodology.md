@@ -144,6 +144,11 @@ Opacity/redaction prevents ordinary config serialization but cannot make arbitra
 unrepresentable. See
 [registry_credentials](../engineering/registry_credentials.md).
 
+Networked operations likewise cannot be assembled from unrelated strings. A finalized operation plan
+jointly binds client scope, verified exposure, backend scope, and delivery strategy; redirect delivery
+requires a reachability proof, and runtime admission requires the exact route observation. The
+canonical algebra is [network reachability](network_reachability.md).
+
 ## Fractal Bootstrap
 
 Every descent is the *same* three-beat pattern: **provision the frame → build/install the `pb` in it →

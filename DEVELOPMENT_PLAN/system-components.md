@@ -46,6 +46,7 @@ a cleanup obligation. A target row is not an implementation claim.
 | `HostBootstrap.Config.*` | Partial | Generic config classes/vocabulary/schema; typed case/variant IDs and removal of dead `testSuites` are Phase 19.6, while scope-indexed `SecretRef`/project config is Phase 19.7 |
 | `HostBootstrap.Dhall.*` | Partial | Dhall generation/hoisting exists; Sprint 8.7 adds one validated encoder/decoder schema witness and complete `Core.dhall` drift coverage |
 | `HostBootstrap.Registry` | Partial | Docker Hub credential discovery/forwarding exists, but raw-text/substring classification and environment transport remain open in Sprints 15.9/19.7; schema/artifact registration lives in `HostBootstrap.Dhall.Gen` |
+| `HostBootstrap.Network` / `HostBootstrap.RegistryPlan` | Target only | Sprint 14.7 owns scope-indexed endpoints/clients/exposures, proof-gated blob delivery, opaque finalized registry plans, and route-specific readiness; Sprint 13.20 consumes them in the demo |
 | `HostBootstrap.DocValidator` | Implemented | Mechanical documentation checks; new drift floors are Phase 21.4 |
 
 ## Lifecycle Type Contract
@@ -242,6 +243,9 @@ MinIO-backed registry storage, a web SPA, service ConfigMaps, and accelerator wo
 
 Open demo contracts:
 
+- the host Docker client can currently receive a `307` redirect to cluster-only
+  `minio.default.svc`; Sprint 13.20 replaces the raw topology and proves repeated push/pull plus
+  registry-pod persistence;
 - thread one typed Production plan and a harness-only `TestComponent`;
 - derive every cluster/root/port identity from the opaque lifecycle profile;
 - pull and resolve the published base to a digest before derived build;

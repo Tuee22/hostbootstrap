@@ -39,6 +39,8 @@ each item below is a target contract rather than a claim about the current imple
   down only their verified receipts;
 - base publication is native-architecture, fully gated, pulled, and consumed by digest;
 - host and container Cabal projects are distinct and warm-store inputs are reproducible;
+- network endpoints and clients are scope-indexed, and redirect delivery requires a proof that the
+  client can reach the backing endpoint;
 - test case/variant identity is typed and the demo matrix is generated from decoded config; and
 - governed status has one authority, while historical counts remain dated evidence.
 
@@ -122,12 +124,13 @@ ways, and observable cache reuse.
 
 Owns the demo's scope-polymorphic plan shape instantiated separately for Production and each Harness run,
 the harness-only test component, pulled digest-qualified base consumption, current registry/MinIO
-metadata and persistence assertions, the threaded static test component, plus the remaining native
+metadata, reachability-safe rendering and persistence proof, the threaded static test component, plus the remaining native
 accelerator demo lanes.
 
 ### Phase 14 — Composition methodology
 
-Owns the reusable operation algebra and the rule that one representation drives deployment. The current
+Owns the reusable operation algebra, scope-indexed network endpoints and proof-gated blob delivery, and
+the rule that one representation drives deployment. The current
 chain is the single forward ordering; Phase 16 owns replacing its independent context/teardown callbacks
 with one scoped opaque plan. Sprint 14.6 owns integrating the definition-only role phase skeleton into
 the fixed service runtime.
@@ -202,9 +205,11 @@ live; it does not make every cross-phase reference a start dependency. The stric
    Sprint 17.4 consumes typed cases, command authority, and structured harness outcomes. Sprint 18.6
    joins Sprints 14.6, 15.9, 17.4, and 19.8 for validated service dispatch. Sprint 20.5 then consumes
    Sprints 10.9, 18.6, and 19.6–19.8 for typed/scoped config and harness-indexed execution.
-7. Sprint 13.18 lands only after Sprints 5.7, 6.7, 10.9, 12.4, 13.19, 14.6, 15.9, 16.6, 17.4, and 20.5.
+7. Sprints 9.10 and 19.8 enable Sprint 14.7's generic reachability/delivery algebra; Sprint 14.7
+   enables Sprint 13.20's concrete demo renderer and live blob-route proof.
+8. Sprint 13.18 lands only after Sprints 5.7, 6.7, 10.9, 12.4, 13.19–13.20, 14.6, 15.9, 16.6, 17.4, and 20.5.
    It is the worked-demo integration gate, not a foundation for those APIs.
-8. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.
+9. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.
 
 The real-run lanes owned by Phases 5, 13, 15, 16, and 18 are independent unless a sprint's exact
 `Blocked by` line names one. A run on one provider/architecture closes only that named lane.

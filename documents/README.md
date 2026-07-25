@@ -74,6 +74,10 @@ defers to it rather than re-deriving it. The command surface is summarized in
   for ownership-/phase-indexed handles, opaque resource capabilities, total observations, explicit
   idempotent reconcile outcomes, one-use session/fence permits, project-mode exclusion, exhaustive
   migration/close recovery, verified ownership receipts, recursive teardown, and their validation gates.
+- [architecture/network_reachability.md](architecture/network_reachability.md) — the canonical target
+  for scope-indexed endpoints and clients, proof-gated registry blob delivery, opaque finalized
+  registry plans, and route-specific readiness that makes an external client redirect to a
+  cluster-only object store unrepresentable.
 
 ## Engineering
 

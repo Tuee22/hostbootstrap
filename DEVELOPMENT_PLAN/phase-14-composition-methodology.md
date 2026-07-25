@@ -14,6 +14,11 @@
 **Status**: Blocked
 **Blocked by**: Sprints 9.10, 15.9, and 19.7–19.8
 
+**Extended 2026-07-25.** Sprint 14.7 reopens the generic network-planning boundary: raw endpoint text
+and an independently serialized redirect default currently permit a host-local registry client to be
+redirected to a cluster-only object store. The target makes delivery a reachability-proof-gated part of
+the same finalized plan.
+
 **Reopened 2026-07-24.** The methodology documents remain valid, but the L0 `RoleLifecycle` skeleton has
 no production consumer after the demo `Role` module and appended role verbs were removed. Sprint 14.6
 owns integration into the fixed `service run` path with phase-indexed state; a definition-only public
@@ -61,8 +66,9 @@ whose first worked instance is the Windows `ensure cudawin` CUDA host build — 
 ## Remaining Work
 
 Sprint 14.6 integrates the definition-only role skeleton into the fixed service runtime with the same
-plan/phase authority model. The harness/chain methodology itself remains complete; open ownership,
-profile-isolation, and recursive-teardown defects remain owned by Phases 9, 10, 13, and 16.
+plan/phase authority model. Sprint 14.7 adds scope-indexed endpoints and proof-gated blob delivery.
+Open ownership, profile-isolation, and recursive-teardown defects remain owned by Phases 9, 10, 13,
+and 16.
 
 ## Phase Objective
 
@@ -372,6 +378,49 @@ measured-instance activation authority, scoped codec, and finalized plan contrac
 role phase machine into `service run`,
 hide/remove the definition-only surface, and migrate the unit tests to the opaque phase API.
 
+### Sprint 14.7: Scope-indexed endpoints and registry blob delivery [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 9.10 and 19.8
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
+`core/hostbootstrap-core/test/RegistryPlanSpec.hs`
+**Docs to update**: `documents/architecture/network_reachability.md`,
+`documents/architecture/composition_methodology.md`,
+`documents/engineering/derived_project_standards.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make it impossible for a finalized operation plan to redirect a client to a backend outside that
+client's verified network scope.
+
+#### Deliverables
+
+- Add closed reachability kinds and opaque scope-indexed endpoint, client, and exposure values; no raw
+  hostname, `localhost`, or `.svc` convention may mint reachability authority.
+- Add proof-gated `BlobDelivery`, with no `ReachableFrom HostLocal ClusterOnly`, and expose only
+  topology-specific smart constructors for opaque `RegistryPlan`.
+- Derive Distribution redirect configuration and every workload projection from the finalized plan;
+  remove raw redirect booleans and independently assembled registry/store endpoint fields.
+- Integrate the route with Sprint 9.10's identity-bound operation preconditions so only the exact
+  client/exposure/store/revision observation can yield `ReadyBlobRoute`.
+
+#### Validation
+
+- Compile-fail tests reject host-local→cluster-only redirects, endpoint-kind substitution, plan mixing,
+  raw redirect selection, and reuse of a route witness across a replacement revision.
+- Constructor/property tests cover every supported reachability pair; golden tests prove that delivery
+  strategy uniquely determines rendered redirect configuration.
+- Negative adapter tests prove `/v2/` readiness cannot prepare a push when blob `HEAD` yields an
+  out-of-scope `307`.
+
+#### Remaining Work
+
+Blocked on opaque finalized-plan identity and plan-owned readiness/precondition foundations. Once they
+land, implement the algebra and migrate the demo through Sprint 13.20; do not add a temporary raw
+redirect flag.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
@@ -379,6 +428,8 @@ hide/remove the definition-only surface, and migrate the unit tests to the opaqu
   and the deploy ≡ business-logic unification, including the single-representation doctrine — the
   project-owned `[Step]` lifecycle plan is the representation, and the harness drives it without a
   parallel deployment graph (cross-references standards § W, § T, § U).
+- `documents/architecture/network_reachability.md` - scope-indexed endpoints, proof-gated blob
+  delivery, finalized registry plans, and route-specific readiness (created; implementation open).
 
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the shape cookbook (created).

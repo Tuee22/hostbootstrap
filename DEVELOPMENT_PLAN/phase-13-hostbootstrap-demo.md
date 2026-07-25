@@ -169,6 +169,10 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 plan/`TestComponent`, consume pulled digest-qualified bases, and reconcile MinIO/registry metadata and
 persistence assertions.
 
+**Registry route repair — open (Sprint 13.20).** Replace the raw host-client/cluster-only-backend
+combination with the Phase 14.7 finalized plan, then prove initial and repeated push, pull, and
+registry-pod recreation. `/v2/` readiness and the historical initial-push run do not close this route.
+
 **Accelerator daemon demo — implementation complete; honest live gates open.**
 
 - **Landed (static):** the real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
@@ -224,6 +228,10 @@ service served at `localhost:30080`, and `project destroy` tore down cleanly. Th
 retired Harbor / `kind load registry:2` surfaces move to **Removed Surfaces** in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The demo-side reliability fixes that
 closed the gate:
+
+This dated closure proves the Harbor replacement and then-tested initial push path only. The later
+repeated-blob failure discovered on 2026-07-25 is distinct follow-on scope in Sprint 13.20; it reopens
+the route/persistence claim without falsifying Sprint 13.16's historical evidence.
 
 - **Harden `deploy-registry` — landed.** The fixed fatal `rollout status --timeout=120s` is replaced by
   `waitRegistryRollout` (poll-to-Ready with backoff: 6 × up-to-60 s + 5 s backoff, so an unauthenticated
@@ -1136,7 +1144,7 @@ registry/MinIO metadata/provenance repair. Native Apple/Linux accelerator gates 
 ### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.7, 6.7, 10.9, 12.4, 13.19, 14.6, 15.9, 16.6, 17.4, and 20.5
+**Blocked by**: Sprints 5.7, 6.7, 10.9, 12.4, 13.19–13.20, 14.6, 15.9, 16.6, 17.4, and 20.5
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/app/Main.hs`, `demo/docker/Dockerfile`,
 `demo/kind*.yaml`, `demo/nvkind-in-cluster.yaml`
@@ -1232,12 +1240,54 @@ Warp server tests require.
 Update the test-component Cabal stanza, run the canonical static suite, and record the dated result in
 this sprint.
 
+### Sprint 13.20: Reachability-safe registry route and persistence proof [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint 14.7
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/test/RegistrySpec.hs`,
+`demo/test/HarnessSpec.hs`
+**Docs to update**: `README.md`, `documents/engineering/in_cluster_registry.md`,
+`documents/operations/demo_runbook.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Replace the demo's independently rendered registry exposure, cluster-only MinIO endpoint, and implicit
+redirect default with one reachability-safe finalized registry plan.
+
+#### Deliverables
+
+- Construct the host-client→NodePort-registry→cluster-only-MinIO topology through Sprint 14.7's opaque
+  API; proxy delivery must be selected by construction and render
+  `storage.redirect.disable: true`.
+- Require the exact `ReadyBlobRoute` before project-image push; Deployment Ready and `/v2/` alone must
+  not authorize the operation.
+- Remove raw registry/store endpoint assembly and stale tests that treat an initial empty-registry push
+  as persistence evidence.
+
+#### Validation
+
+- Golden tests prove the demo manifests derive exposure, MinIO endpoint, and proxy configuration from
+  one plan and contain no independently selected redirect flag.
+- A negative live fixture returns an out-of-scope `307` and proves push admission refuses.
+- On at least one supported native lane, initial push, repeated push, pull, tag lookup, registry-pod
+  recreation, and post-recreation pull all pass; client-visible responses contain no cluster-only MinIO
+  location.
+
+#### Remaining Work
+
+Blocked until Sprint 14.7 supplies the generic algebra. The concrete failure is reproduced: repeated
+blob `HEAD` is redirected to `http://minio.default.svc:9000`, which the host Docker client cannot
+resolve. Do not close this sprint with `/v2/` readiness or an initial push alone.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/durable_state.md` - what `.data` is, the removal-set guarantee's exact scope,
   the implemented host-root/provider-share/container/Kind/pod carry, and the still-open
   write→destroy→up→read-back and ownership proof.
+- `documents/architecture/network_reachability.md` - the reachability and delivery doctrine consumed
+  by the demo registry plan.
 
 **Engineering docs to create/update:**
 - `documents/engineering/derived_dockerfile.md` - the idiomatic derived Dockerfile (in-Dockerfile

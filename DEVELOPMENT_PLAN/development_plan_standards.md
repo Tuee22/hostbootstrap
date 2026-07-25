@@ -1904,3 +1904,26 @@ host project never imports container-only `/opt/basecontainer/...` freeze paths;
 does. Each project declares which layered freeze fragments it consumes, and validation exercises both
 solvers. Phase 6 owns publish/native-architecture/immutable-reference enforcement; Phase 12 owns this
 host/container project split and warm-store reproducibility.
+
+### GG. Scope-Indexed Network Reachability and Blob Delivery
+
+A network endpoint is not interchangeable text. Core models the scope from which a client can reach an
+endpoint (`ClusterOnly`, `ProviderLocal`, `HostLocal`, or `Public`) and keeps that index on opaque
+endpoint, exposure, and client values. A finalized registry plan jointly binds the client, verified
+published exposure, backing object-store endpoint, credential authority, and blob-delivery strategy.
+Consumers may contribute concrete registry resources and image operations, but may not independently
+select endpoint strings or a serialized redirect boolean.
+
+`RedirectToBackend` is constructible only from a proof that the client scope can reach the backend
+scope. There is no proof from `HostLocal` to `ClusterOnly`; that topology can construct only
+`ProxyThroughRegistry`. Rendering is total over delivery strategy, so proxy delivery emits
+`storage.redirect.disable: true` and redirect delivery emits `false`. The boolean is output, never an
+input to the DSL.
+
+Static coherence does not replace runtime identity. The plan-owned route probe verifies the exact
+client→exposure and registry→store paths, rejects an out-of-scope redirect, and yields a
+revision-/plan-/registry-/store-indexed `ReadyBlobRoute`. A bare `/v2/` response cannot satisfy an image
+operation precondition. Phase 14 owns the generic reachability and delivery algebra, Phase 9 owns the
+identity-bound readiness/precondition machinery, and Phase 13 owns the demo renderer and live
+host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
+[network_reachability](../documents/architecture/network_reachability.md).

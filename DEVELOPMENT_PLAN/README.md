@@ -53,8 +53,8 @@ defer status to this table.
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 ready; 10.9 waits on Sprints 5.7, 9.10, 15.9, and 19.6–19.8 |
 | 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Blocked | Sprint 11.10 guest projections/direct-alias deletion: waiting on Sprint 9.10 |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Blocked | Sprint 12.4: waiting on Sprint 6.7 |
-| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprints 13.17 active and 13.19 ready; 13.18 waits on the integration chain |
-| 14 | [Composition methodology](phase-14-composition-methodology.md) | Blocked | Sprint 14.6: waiting on Sprints 9.10, 15.9, and 19.7–19.8 |
+| 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprint 13.17 active; 13.19 ready; 13.20 registry route waits on 14.7; 13.18 waits on the integration chain |
+| 14 | [Composition methodology](phase-14-composition-methodology.md) | Blocked | Sprint 14.6 waits on 9.10, 15.9, and 19.7–19.8; Sprint 14.7 waits on 9.10 and 19.8 |
 | 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active | Sprint 15.8 active; 15.9 waits on Sprints 5.6.1–5.7 and type foundations |
 | 16 | [Project lifecycle command](phase-16-project-lifecycle-command.md) | Active | Sprint 16.5 active; 16.6 waits on Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8 |
 | 17 | [Chain-driven test and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Blocked | Sprint 17.4: waiting on Sprints 10.9, 15.9, 19.6, and 19.8 |
@@ -79,8 +79,10 @@ be closed by replaying that Windows result.
 - Phases 10, 17, 19, and 20 split test work: engine isolation plus the Harness mode/profile opener;
   command semantics; generic typed case/variant and production/harness secret-scope contracts; and demo
   config consumption.
-- Phase 13 owns the worked demo's Production plan, test component, pulled base, and current
-  registry/MinIO assertions.
+- Phase 13 owns the worked demo's Production plan, test component, pulled base, and concrete
+  reachability-safe registry/MinIO renderer and live route proof.
+- Phase 14 owns the generic scope-indexed endpoint and proof-gated blob-delivery algebra; Phase 9 owns
+  the identity-bound readiness/precondition value it consumes.
 - Phase 21 follows the implementation phases and reconciles governed documentation, comments/help, and
   mechanical drift guards.
 
