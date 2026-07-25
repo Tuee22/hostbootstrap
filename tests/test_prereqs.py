@@ -141,6 +141,15 @@ def test_homebrew_check(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_homebrew()
 
 
+def test_curl_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "curl")
+    prereqs._check_curl()
+
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
+    with pytest.raises(prereqs.PrereqError, match="curl"):
+        prereqs._check_curl()
+
+
 def test_winget_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "winget")
     prereqs._check_winget()
@@ -161,19 +170,21 @@ def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_run_linux_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     # The Linux floor is the build floor on every substrate: only Ubuntu +
-    # passwordless sudo. KVM and the linux-gpu NVIDIA runtime moved to the
+    # passwordless sudo plus curl for the pinned GHCup download. KVM and the linux-gpu NVIDIA runtime moved to the
     # binary's ``ensure`` logic, so there is no CPU/GPU distinction here.
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_ubuntu_2404", lambda: calls.append("ubuntu"))
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
+    monkeypatch.setattr(prereqs, "_check_curl", lambda: calls.append("curl"))
 
     for name in (SubstrateName.LINUX_CPU, SubstrateName.LINUX_GPU):
         calls.clear()
         result = await prereqs._run_linux(Substrate(name, "amd64"))
-        assert calls == ["ubuntu", "sudo"]
+        assert calls == ["ubuntu", "sudo", "curl"]
         assert result.messages == (
             "Ubuntu 24.04: OK",
             "passwordless sudo: OK",
+            "curl: OK",
         )
 
 

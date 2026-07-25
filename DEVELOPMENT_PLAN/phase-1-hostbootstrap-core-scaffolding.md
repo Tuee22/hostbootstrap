@@ -1,4 +1,4 @@
-# Phase 1: hostbootstrap-core Scaffolding
+# Phase 1: hostbootstrap-core scaffolding
 
 **Status**: Authoritative source
 **Supersedes**: N/A

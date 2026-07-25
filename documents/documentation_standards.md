@@ -40,6 +40,9 @@ Rules:
 - `**Status**:` is required
 - `**Supersedes**:` is required; use `N/A` when nothing is superseded
 - `**Referenced by**:` is required, even when there is only one cross-reference
+- `**Referenced by**:` is a curated, non-exhaustive ownership/navigation list of documents that
+  conceptually consume the page's contract; it is not a mechanically reciprocal graph, and a listed
+  consumer need not contain a literal return link
 - the purpose blockquote is required
 - Document metadata uses the metadata block, not YAML front-matter
 
@@ -134,9 +137,12 @@ Rules:
 
 ## Content Rules
 
-- write current-state declarative guidance, not migration diaries
+- state implemented behavior and target contracts declaratively, and label the boundary between them;
+  keep implementation chronology out of governed topic documents
 - keep one canonical home per topic
-- move implementation status discussion into `DEVELOPMENT_PLAN/`
+- keep mutable phase/sprint status, dependency order, closure criteria, and dated implementation
+  evidence in `DEVELOPMENT_PLAN/`; a topic document may summarize the current defect only as needed to
+  prevent its target contract from being mistaken for implemented behavior
 - describe `hostbootstrap` as the reusable host-management layer: a Haskell `hostbootstrap-core`
   library plus a thin Python bootstrapper, consumed by project binaries that extend the core
 - the supported configuration substrate is typed Dhall; no governed doc may present shell-inherited
@@ -184,14 +190,17 @@ runs through the project's canonical code-check. It verifies:
   `architecture`, `engineering`, `operations`, `languages` (the declared
   `allowedTaxonomy` set)
 
-The validator checks that `**Referenced by**:` exists and that forward links resolve. It does not enforce
-backlink reciprocity mechanically; when a backlink is stale, correct either the metadata or the forward
-link in the same documentation change.
+The validator checks that `**Referenced by**:` exists and that its links resolve. It deliberately does
+not enforce literal backlink reciprocity: this field is curated conceptual-consumer metadata, not a
+complete graph. Remove an entry when the named document no longer consumes the contract conceptually;
+do not manufacture a reciprocal prose link solely to satisfy metadata.
 
 The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
 `checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
 from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
 family.
 
-Running `cabal test` (the canonical Haskell code-check) fails when any governed document drifts from
-the rules above.
+From `core/`, `cabal test all` exercises the validator through the Haskell test suites and fails when a
+governed document drifts from the rules above. That command is the test leg, not the complete Haskell
+quality gate: the canonical code-check also runs the formatter check, linter, and a warnings-as-errors
+build.

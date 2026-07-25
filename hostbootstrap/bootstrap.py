@@ -24,9 +24,11 @@ and applying the budget cordon are the project binary's job once it is running.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -54,20 +56,21 @@ _WINDOWS_TOOLCHAIN_PATHS: tuple[Path, ...] = (
 )
 _WINDOWS_GHCUP: str = r"C:\ghcup\bin\ghcup.exe"
 _WINDOWS_CABAL: str = r"C:\ghcup\bin\cabal.exe"
-_GHCUP_WINDOWS_BOOTSTRAP: str = (
-    "New-Item -ItemType Directory -Force C:/ghcup/bin | Out-Null; "
-    "$ghcup = 'C:/ghcup/bin/ghcup.exe'; "
-    "if ((Test-Path $ghcup) -and ((Get-Item $ghcup).Length -gt 0)) { exit 0 }; "
-    "Invoke-WebRequest "
-    "https://downloads.haskell.org/ghcup/0.2.6.2/x86_64-mingw64-ghcup-0.2.6.2.exe "
-    "-OutFile $ghcup"
-)
-# The POSIX ghcup bootstrap (Linux): install ghcup itself, non-interactively and
-# without pulling GHC/Cabal (the ghcup_steps below install the pinned toolchain).
-_GHCUP_POSIX_BOOTSTRAP: str = (
-    "curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org "
-    "| BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh"
-)
+_GHCUP_VERSION: str = "0.2.6.2"
+_GHCUP_DOWNLOADS: dict[tuple[str, str], tuple[str, str]] = {
+    ("linux", "amd64"): (
+        f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/x86_64-linux-ghcup-{_GHCUP_VERSION}",
+        "9ed5da5449b48043a0d17e767c05d2ef585e25a639bb934329496c6d2fad9cf8",
+    ),
+    ("linux", "arm64"): (
+        f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/aarch64-linux-ghcup-{_GHCUP_VERSION}",
+        "65a5f05120288ee4f1a81d28825374b6af317456a351a586adfce90c6dc29e3b",
+    ),
+    ("windows", "amd64"): (
+        f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/x86_64-mingw64-ghcup-{_GHCUP_VERSION}.exe",
+        "94da902a2853b1de1df509d04da900a05258480759efdb4f654e66956b6f30db",
+    ),
+}
 
 
 class ProjectDiscoveryError(RuntimeError):
@@ -154,14 +157,7 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
         return (
             ToolchainStep(
                 probe=(_WINDOWS_GHCUP, "--version"),
-                install=(
-                    _POWERSHELL,
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    _GHCUP_WINDOWS_BOOTSTRAP,
-                ),
+                install=(),
             ),
             *ghcup_steps,
         )
@@ -170,7 +166,7 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
     return (
         ToolchainStep(
             probe=(_GHCUP, "--version"),
-            install=("sh", "-c", _GHCUP_POSIX_BOOTSTRAP),
+            install=(),
         ),
         *ghcup_steps,
     )
@@ -273,7 +269,46 @@ async def _ensure_toolchain(sub: Substrate) -> None:
     for step in toolchain_ensure_steps(sub):
         if await _already_present(step.probe):
             continue
+        if not step.install:
+            await _install_verified_ghcup(sub)
+            continue
         await process.run_checked(step.install, env=_toolchain_env())
+
+
+async def _install_verified_ghcup(sub: Substrate) -> None:
+    """Retrieve the pinned GHCup binary, verify its SHA-256, then install it."""
+    platform_key = "windows" if sub.is_windows else "linux"
+    try:
+        url, expected_sha256 = _GHCUP_DOWNLOADS[(platform_key, sub.arch)]
+    except KeyError as exc:
+        raise RuntimeError(f"no pinned GHCup download for {platform_key}/{sub.arch}") from exc
+
+    destination = Path(_WINDOWS_GHCUP) if sub.is_windows else Path.home() / ".ghcup/bin/ghcup"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="hostbootstrap-ghcup-") as temp_dir:
+        downloaded = Path(temp_dir) / destination.name
+        command: tuple[str, ...]
+        if sub.is_windows:
+            command = (
+                _POWERSHELL,
+                "-NoProfile",
+                "-Command",
+                f"Invoke-WebRequest -Uri '{url}' -OutFile '{downloaded}'",
+            )
+        else:
+            curl = shutil.which("curl")
+            if curl is None:
+                raise RuntimeError("curl disappeared after the prerequisite check")
+            command = (curl, "--proto", "=https", "--tlsv1.2", "-fsSL", url, "-o", str(downloaded))
+        await process.run_checked(command, env=_toolchain_env())
+        actual_sha256 = hashlib.sha256(downloaded.read_bytes()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"GHCup download digest mismatch: expected {expected_sha256}, got {actual_sha256}"
+            )
+        if not sub.is_windows:
+            downloaded.chmod(0o755)
+        shutil.copy2(downloaded, destination)
 
 
 async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,7 +114,7 @@ def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
     assert bootstrap.toolchain_ensure_steps(sub) == (
         bootstrap.ToolchainStep(
             probe=("ghcup", "--version"),
-            install=("sh", "-c", bootstrap._GHCUP_POSIX_BOOTSTRAP),
+            install=(),
         ),
         bootstrap.ToolchainStep(
             probe=("ghcup", "whereis", "ghc", "9.12.4"),
@@ -130,14 +131,7 @@ def test_toolchain_ensure_steps_windows() -> None:
     assert bootstrap.toolchain_ensure_steps(WINDOWS_CPU) == (
         bootstrap.ToolchainStep(
             probe=(bootstrap._WINDOWS_GHCUP, "--version"),
-            install=(
-                bootstrap._POWERSHELL,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                bootstrap._GHCUP_WINDOWS_BOOTSTRAP,
-            ),
+            install=(),
         ),
         bootstrap.ToolchainStep(
             probe=(bootstrap._WINDOWS_GHCUP, "whereis", "ghc", "9.12.4"),
@@ -158,9 +152,7 @@ def test_windows_toolchain_env_prepends_installed_tool_dirs(
 
     env = bootstrap._toolchain_env()
 
-    expected_prefix = bootstrap.os.pathsep.join(
-        str(p) for p in bootstrap._WINDOWS_TOOLCHAIN_PATHS
-    )
+    expected_prefix = bootstrap.os.pathsep.join(str(p) for p in bootstrap._WINDOWS_TOOLCHAIN_PATHS)
     assert env["PATH"].startswith(expected_prefix + bootstrap.os.pathsep)
     assert env["PATH"].endswith("C:/existing")
 
@@ -183,6 +175,52 @@ def test_posix_toolchain_env_prepends_ghcup_bins(
     expected_prefix = sep.join(str(p) for p in expected_dirs)
     assert env["PATH"].startswith(expected_prefix + sep)
     assert env["PATH"].endswith("/usr/bin")
+
+
+async def test_verified_ghcup_download_installs_only_matching_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = b"pinned ghcup"
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setitem(
+        bootstrap._GHCUP_DOWNLOADS,
+        ("linux", "amd64"),
+        ("https://downloads.haskell.org/ghcup/pinned", digest),
+    )
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        Path(command[-1]).write_bytes(payload)
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _download)
+    await bootstrap._install_verified_ghcup(LINUX_CPU)
+
+    installed = tmp_path / ".ghcup/bin/ghcup"
+    assert installed.read_bytes() == payload
+    assert installed.stat().st_mode & 0o111
+
+
+async def test_verified_ghcup_download_rejects_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setitem(
+        bootstrap._GHCUP_DOWNLOADS,
+        ("linux", "amd64"),
+        ("https://downloads.haskell.org/ghcup/pinned", "0" * 64),
+    )
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        Path(command[-1]).write_bytes(b"tampered")
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _download)
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        await bootstrap._install_verified_ghcup(LINUX_CPU)
+    assert not (tmp_path / ".ghcup/bin/ghcup").exists()
 
 
 def test_native_build_command() -> None:
@@ -297,7 +335,6 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
     doctored: list[Substrate] = []
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
-
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
@@ -420,13 +457,18 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
     doctored: list[Substrate] = []
     execed: list[list[str]] = []
     _patch_seams(monkeypatch, LINUX_CPU, doctored=doctored, execed=execed)
+    installed: list[Substrate] = []
+
+    async def _install(sub: Substrate) -> None:
+        installed.append(sub)
+
+    monkeypatch.setattr(bootstrap, "_install_verified_ghcup", _install)
 
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     assert recorded_commands_fresh_host == [
         ("ghcup", "--version"),
-        ("sh", "-c", bootstrap._GHCUP_POSIX_BOOTSTRAP),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
         ("ghcup", "whereis", "cabal"),
@@ -435,6 +477,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
+    assert installed == [LINUX_CPU]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "play"]]
 
 

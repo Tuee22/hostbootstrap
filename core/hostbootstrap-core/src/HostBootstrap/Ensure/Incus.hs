@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- | The @ensure incus@ reconciler: the host-provider tool, applicable on
 -- **both** apple-silicon and linux (the first cross-substrate reconciler).
 --
@@ -29,7 +31,6 @@ import HostBootstrap.Ensure
     toolPresent,
   )
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostPrereqs (KvmStatus (..), kvmDeviceStatus)
 import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo))
 import HostBootstrap.Substrate
   ( Substrate,
@@ -41,6 +42,26 @@ import HostBootstrap.Substrate
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
+#ifndef mingw32_HOST_OS
+import System.Directory (doesPathExist)
+import System.Posix.Files (fileAccess)
+#endif
+
+data KvmStatus = KvmOk | KvmAbsent | KvmUnwritable
+  deriving (Eq, Show)
+
+kvmDeviceStatus :: IO KvmStatus
+#ifdef mingw32_HOST_OS
+kvmDeviceStatus = pure KvmAbsent
+#else
+kvmDeviceStatus = do
+  present <- doesPathExist "/dev/kvm"
+  if not present
+    then pure KvmAbsent
+    else do
+      readWrite <- fileAccess "/dev/kvm" True True False
+      pure (if readWrite then KvmOk else KvmUnwritable)
+#endif
 
 appleIncusProfile :: String
 appleIncusProfile = "incus"

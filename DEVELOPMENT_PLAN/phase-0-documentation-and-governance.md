@@ -1,4 +1,4 @@
-# Phase 0: Documentation and Governance
+# Phase 0: Documentation and governance
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -16,8 +16,12 @@ Phase 0's governance is complete and active as the documentation floor for the r
 unified metadata-block standard, the canonical `DEVELOPMENT_PLAN/` tree, and the mechanical
 documentation validator (`HostBootstrap.DocValidator`) that runs through the canonical code-check. It also
 defines the family doc-floor and taxonomy gate and keeps the governed suite clear on two load-bearing
-doctrines: Python does only the minimum to **build** the binary, and the project binary is **never blocked
-by an un-installed dependency** because the `ensure` suite is install-and-verify. This phase is `Done`.
+doctrines: the ordinary Python project path does only the minimum to **build and invoke** the binary
+(separate explicit update and maintainer base-image surfaces do not enter that lifecycle), and the project
+binary is **never blocked by a dependency that is merely absent when its selected frame has a supported
+install plan**. Wrong
+host, non-installable prerequisites, conflicts, unsupported strong-ownership backends, failed probes,
+and failed verification still refuse. This phase is `Done`.
 
 ## Phase Objective
 
@@ -41,8 +45,8 @@ language; cleanup obligations and obsolete surface names live in
 
 Rewrite `documents/documentation_standards.md` to the unified metadata-block standard, then convert
 every existing governed doc from YAML front-matter to the metadata block, make links relative, and
-add `Referenced by` lines. Declare `languages/` as a documented extra category alongside the five
-canonical categories.
+add `Referenced by` lines. Declare `languages/` as a documented extra category alongside the other
+three canonical categories, making four canonical categories in total.
 
 #### Deliverables
 
@@ -112,9 +116,9 @@ root-document metadata, relative-link resolution, the root `README.md` reference
 
 - `HostBootstrap.DocValidator` (`validateRepo`, `findRepoRoot`, `Violation`) implements the checks
   listed in `documents/documentation_standards.md § Validation`.
-- `DocValidatorSpec` wires it into the `hostbootstrap-core-test` suite so `cabal test` (the canonical
-  Haskell code-check) fails on drift. The spec carries a negative case proving each check is not
-  vacuous.
+- `DocValidatorSpec` wires it into the `hostbootstrap-core-test` suite so `cabal test` (the test leg of
+  the canonical Haskell code-check) fails on drift. The spec carries a negative case proving each check
+  is not vacuous.
 
 #### Validation
 
@@ -174,19 +178,20 @@ None.
 Make two load-bearing doctrines read unmistakably across every governed doc, and reconcile the
 inventory to the implemented Phase 6 bootstrapper work and Phase 9 cordon work: (1) the Python wrapper
 does only the **minimum to build the project binary**; (2) the project binary is **never blocked by a
-dependency that simply isn't installed** — the purpose of the `ensure` suite (install-and-verify) —
-with the Python host minimums as the **only** hard fail-fast surface (a reconciler's only fail-fast is a
-wrong-host misuse, not an absent dependency).
+dependency that is merely absent and has a supported install plan** — the purpose of the `ensure` suite's
+install-and-reprobe loop. The Python host minimums are the only intentionally non-installing pre-binary
+gate; reconcilers still fail closed on wrong-host use, non-installable prerequisites, conflicts, safety
+refusals, and failed verification.
 
 #### Deliverables
 
-- `§ L` leads with the never-blocked purpose and names the only-fail-fast surface; `§ M` states the
+- `§ L` leads with the installable-absence purpose and names the reconciler failure classes; `§ M` states the
   wrapper's minimum-to-build role and cross-links `§ L`; `§ C` adds the real-run/real-build-gated
   `Active` clause (in scope, open — never out of scope).
-- `ensure_reconcilers.md` and `prerequisites.md` TL;DRs **lead** with "never blocked by an un-installed
-  dependency; the only fail-fast surface is the host minimums"; `python_haskell_boundary.md` states it in
-  the TL;DR + ownership matrix and adds the binary-owned lifecycle rows (incus VM, webservice, e2e,
-  teardown).
+- `ensure_reconcilers.md` and `prerequisites.md` distinguish the irreducible pre-binary floor from
+  installable post-binary dependencies and fail-closed reconciler outcomes;
+  `python_haskell_boundary.md` states it in the TL;DR + ownership matrix and adds the binary-owned
+  lifecycle rows (incus VM, webservice, e2e, teardown).
 - `README.md` and the `DEVELOPMENT_PLAN/README.md` Validation Policy state both doctrines and the
   two-gate model; `system-components.md` carries current component ownership; the demo runbook shows the
   full hostbootstrap-owned lifecycle including teardown.

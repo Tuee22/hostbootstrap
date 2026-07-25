@@ -1,4 +1,4 @@
-# Phase 5: Cluster Lifecycle and Resource Cordoning
+# Phase 5: Cluster lifecycle and resource cordoning
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -17,7 +17,8 @@
 `--wait 0s`) is followed by an immediate `kubectl apply` with no node-Ready/CNI gate; `clusterCreate`
 trusts `kind get clusters` with no health check (a stopped in-VM cluster reads as running); and the
 `down`-deletes-kind / `up`-recreates contract does not hold for the VM-nested demo cluster (`down` only
-stops the VM). The fixes landed (see `## Remaining Work`) and **closed 2026-07-05** by a live Windows/WSL2
+stops the VM at the root while the nested owning frame is not recursively invoked). The owning-frame
+delete/recreate fixes landed and **closed their dated scope 2026-07-05** by a live Windows/WSL2
 `hostbootstrap-demo test run all` reporting **`test report: 6/6 passed`** across both message variants — the
 `cluster up: nodes Ready for hostbootstrap-demo` gate fired on each of the two bring-ups before the first
 apply, then `project destroy` tore down cleanly.
@@ -30,11 +31,16 @@ cordon, then the registry + web charts), and `project down` / `project destroy` 
 cores below are unchanged and unit-tested.
 
 `HostBootstrap.Cluster.Cordon` derives the substrate-specific cordon (`colimaSizingArgs`,
-`kindNodeCordonArgs`, `incusSizingArgs`) and `verifyBudget` checks spare capacity;
+`kindNodeCordonArgs`, `incusSizingArgs`) and `verifyBudget` checks resolved substrate capacity;
 `HostBootstrap.Cluster.Lifecycle` provides cluster bring-up/teardown with the
-never-delete-`.data` invariant (per-case test data is under `./.test_data/<case>/`) and the
-production-versus-test profile distinction. The pure cores (`parseQuantity`, `verifyBudget`,
-`resolvePlan`, `teardown`, `statusReport`) are unit-tested. Bring-up runs the spare-capacity preflight
+never-delete-`.data` removal-set invariant and an initial, forgeable production-versus-test profile
+distinction. Sprint 5.7 replaces the underlying cluster/storage mutations with ownership-aware backend
+operations and receipts. Sprint 10.9 consumes those primitives to replace the profile distinction with
+opaque `Production projectId | Harness projectId runId` mode/profile authority over Phase 15.9's root
+gate;
+the current harness must not be described as isolated merely because a path has a `.test_data` name.
+The pure cores (`parseQuantity`, `verifyBudget`,
+`resolvePlan`, `teardown`, `statusReport`) are unit-tested. Bring-up runs the resolved-capacity preflight
 and applies the Linux `docker update` kind-node cordon after `kind create` and before Helm, fail-closed.
 The incus VM storage cordon is provided by [Phase 11](phase-11-incus-host-provider.md). The kube tools are
 container tools (§ L), so lifecycle operations run in the active context reached by the self-reference
@@ -42,12 +48,17 @@ lift when the workflow is lifted.
 
 Under the "the chain is the project" model (§ Y, § W), cluster bring-up and teardown are no longer a
 standalone `cluster` verb group: they become **chain steps** (`deploy-kind`, `deploy-chart`) interpreted
-by the core `project` lifecycle command, driven by `project up` (bring up), `project down` (stop without
-delete), and `project destroy` (delete). The flat `cluster` verb is **removed** (phase-4), and the new
+by the core `project` lifecycle command. Current `project up` follows the chain recursively in the forward
+direction. Current `project down` / `project destroy` do **not** derive and recurse through a reverse plan:
+they attempt Kind cleanup only for the current owning frame, then invoke the independently supplied
+`psTeardown` hook to stop or destroy the provider. Phase 16 Sprint 16.6 replaces those separable views with
+one lifecycle plan whose reverse traversal is derived from the same resource identities as forward
+execution. The flat `cluster` verb is **removed** (phase-4), and the
 **stop-without-delete capability** is implemented as the pure `stopVMArgs` argv builders in
 `HostBootstrap.Incus` / `HostBootstrap.Lima`, unit-tested in `IncusSpec` / `LimaSpec`. The cordon derivation
-and the never-delete-`.data` invariant carry forward unchanged. This work is **Done**: Phase 16 owns the
-`project` lifecycle interpreter, and the container-frame apply is real-run-validated by the demo.
+and the never-delete-`.data` invariant carry forward unchanged. This phase's cluster semantics are
+**Done**; the lifecycle-plan unification remains Phase 16.6 work, and the container-frame apply is
+real-run-validated by the demo.
 
 **Reopened 2026-07-09 for the accelerator Linux GPU cluster path.** The Linux GPU accelerator lane skips
 the Incus VM and launches an `nvkind` cluster directly on the host through the project container. This phase
@@ -69,8 +80,8 @@ positive allocatable `nvidia.com/gpu` before workloads may schedule. The same mo
 accelerator-ingress plan:
 in-cluster daemons render a dedicated `ClusterIP`, while host-resident daemons render a distinct local-only
 `NodePort` with kind listen address `127.0.0.1`. Placement-specific kind templates prevent that host-only
-port from being published on in-cluster daemon lanes. Phase 5 remains `Active` only for the live daemon
-integration gates below.
+port from being published on in-cluster daemon lanes. Phase 5 remains `Active` for the live daemon gates,
+the durable readback gate, and the storage/ownership work in Sprints 5.6–5.7.
 
 **Static hardening completed 2026-07-15.** The NVIDIA device-plugin reconciler now performs the
 allocatable-GPU probe before any Helm or `kubectl` mutation: an already-positive
@@ -82,7 +93,8 @@ now requires successful Kind deletion before recreation, so an unresolved or non
 followed by a misleading create attempt. At the `project down|destroy` command layer, core Kind cleanup
 runs only when the current frame owns the chain's `deploy-kind` step. A root frame does not try to resolve
 Kind for a cluster nested in a VM or project container; that cluster remains owned by the project's
-teardown hook. When local core cleanup is attempted, its failures still aggregate and propagate. Focused
+independently supplied teardown hook. Phase 16.6 derives that child-first cleanup from the unified plan.
+When local core cleanup is attempted, its failures still aggregate and propagate. Focused
 `LifecycleSpec` / `CLISpec` regressions cover both device-plugin branches, failure aggregation, and
 frame-aware teardown ownership.
 
@@ -90,14 +102,23 @@ frame-aware teardown ownership.
 
 Land the cluster-lifecycle and resource contracts in `hostbootstrap-core` (see
 [development_plan_standards.md § O](development_plan_standards.md)). `hostbootstrap` verifies the host
-has the spare budget declared in `resources` and cordons it — on Apple by sizing a dedicated
+has capacity for the budget declared in `resources` under the substrate-specific reserve policy and
+cordons it — on Apple by sizing a dedicated
 per-project VM wall on Apple, on Linux by applying kind node resource limits — drives kind/Helm cluster
 lifecycle, never enumerates the plan's `.data` path for removal, and distinguishes the production cluster
-profile (fixed name / `.data` path) from the test profile (per-case isolated paths). What that
-non-enumeration does and does not guarantee is
+profile (fixed name / `.data` path) from the run-named test profile. Those names are not exclusive
+ownership. Sprint 5.7 owns the identity-bearing backend receipts; Sprint 10.9 owns lifecycle-mode/profile
+opening over Sprint 15.9's root authority.
+What non-enumeration and the landed host-root carry do and do not guarantee is
 [durable_state](../documents/architecture/durable_state.md).
 
 ## Remaining Work
+
+**Durable read-back — open (Sprint 5.6).** Add the command-level write → destroy → up → read assertion.
+
+**Storage/ownership reconciliation — blocked (Sprint 5.7).** Implement typed backend reconcile outcomes,
+exclusive ownership, conditional cleanup, provider storage enforcement, and backend-level durable
+preservation. The later integration tranche reruns Sprint 5.6's command proof through the typed plan.
 
 **Accelerator cluster/exposure work — implementation complete; real-host gates open.**
 
@@ -120,20 +141,22 @@ non-enumeration does and does not guarantee is
   aggregate failures, propagate the aggregate, and never remove `.data`.
 - **Landed (static):** `project down|destroy` invokes core Kind cleanup only when the current frame owns a
   `deploy-kind` step. Nested VM/project-container clusters skip expected host-side Kind lookup and remain
-  owned by the project teardown hook; an attempted local cleanup still fails closed.
+  owned by the independently supplied project teardown hook; an attempted local cleanup still fails
+  closed. Phase 16.6 owns deriving the reverse traversal from the forward lifecycle plan.
 - **Landed (static):** listed-but-unhealthy cluster recovery requires the Kind delete step to succeed
   before recreation; unresolved or non-zero deletion fails closed.
 - **Remaining (real-run-gated):** on a **native Linux CPU** host, run the Incus-backed lane through
-  in-cluster daemon `ClusterIP` connectivity and the C++ worker; the four-case/two-variant matrix must
-  report `8/8`.
+  in-cluster daemon `ClusterIP` connectivity and the C++ worker; the five-case/two-variant matrix must
+  report `10/10`.
 - **Remaining (real-run-gated):** on a **native Linux GPU** host, run the direct `nvkind` lane through the
-  CUDA daemon/worker and browser Add assertion; the four-case/two-variant matrix must report `8/8`.
+  CUDA daemon/worker, browser Add assertion, and durable readback; the five-case/two-variant matrix must
+  report `10/10`.
 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
 
-Current static validation (2026-07-20): `cabal build all --ghc-options=-Werror` and `cabal test all
---ghc-options=-Werror` pass from `core/` with 374 tests; the demo `-Werror` build and test run pass with
+Dated static validation evidence (2026-07-20): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` passed from `core/` with 374 tests; the demo `-Werror` build and test run passed with
 89 demo tests plus the embedded 374 core tests. Coverage includes fail-closed placement-specific cluster
 configs, service/NodePort separation, official NVIDIA runtime probing, pre-mutation device-plugin
 idempotence, install/readiness/allocatable classification, aggregate teardown failure propagation with
@@ -141,16 +164,17 @@ idempotence, install/readiness/allocatable classification, aggregate teardown fa
 before recreation, the worker label, two-node cordon splitting, direct-chain CUDA
 image/`--gpus=all` handoff, daemon GPU requests, and the implemented browser Add assertion. The native
 Linux CPU Incus/ClusterIP/C++ and native Linux GPU direct-nvkind/CUDA/browser gates remain open. Each
-four-case/two-variant lane must report `8/8`; the latest completed live gate remains the historical
+five-case/two-variant lane must report `10/10`; the latest completed live gate remains the historical
 pre-accelerator `6/6` result. The Phase 3 closure remains its historical 359-test snapshot.
 
 **Previously closed 2026-07-05 — cross-substrate cluster readiness + idempotency:**
 
 - **Node/CNI readiness gate — landed.** `clusterCreate` now runs `waitNodesReady`
   (`kubectl wait --for=condition=Ready node --all --timeout=30s`, bounded-retry × 10 with a 3 s backoff,
-  fail-closed) **after** `kind create` (`--wait 0s`) and the cordon and **before** it returns, so the chain's
-  first `kubectl apply` / Helm install cannot race the API server or CNI on a busy host
-  (`HostBootstrap.Cluster.Lifecycle.clusterCreate`).
+  fail-closed) **after** `kind create` (`--wait 0s`) and the cordon and **before** it returns, so the
+  chain's first `kubectl apply` / Helm install is not scheduled before an initial node/API/CNI-ready
+  observation (`HostBootstrap.Cluster.Lifecycle.clusterCreate`). This orders the call graph; it does not
+  guarantee an external control plane cannot fail after observation.
 - **Health-check-and-recreate — landed.** `clusterCreate` no longer trusts `kind get clusters`: a listed
   cluster is health-probed by `ensureCluster` → `clusterHealthy` (export kubeconfig, then
   `kubectl get nodes`; the pure classifier `clusterHealthyFromProbe` is unit-tested in `LifecycleSpec`), and
@@ -177,19 +201,22 @@ as real `deploy-kind` / `deploy-chart` / teardown step actions under `project up
 Specifically:
 
 - The standalone `cluster up|down|delete|status` verb group is dissolved; cluster bring-up becomes the
-  `deploy-kind` / `deploy-chart` step kinds, and teardown becomes the descent-then-ascent stop/delete the
-  `project` lifecycle interpreter performs over the chain (§ Y). The pure `resolvePlan`, `teardown`,
-  `statusReport`, and cordon cores remain the implementation those steps call; they are not rewritten.
+  `deploy-kind` / `deploy-chart` step kinds. Current `project up` performs forward recursive descent;
+  current teardown performs owning-current-frame Kind cleanup plus the independently supplied
+  `psTeardown` hook, not a child-first reverse traversal projected from the chain. Phase 16.6 owns that
+  derived reverse plan (§ Y). The pure `resolvePlan`, `teardown`, `statusReport`, and cordon cores remain
+  the implementation those steps call; they are not rewritten.
 - Split bring-down into two distinct capabilities: `project down` stops provider VMs but deletes kind
   clusters at the frame that owns `deploy-kind`, while preserving durable state; `project destroy` stops
   then deletes everything spun up. A root frame skips core Kind lookup when the cluster belongs to a
-  nested VM/project-container frame and delegates that nested cleanup to the project teardown hook. The
-  old `cluster down` collapsed lifecycle framing; an owning cluster frame uses delete-on-down because kind
-  has no reliable stop/restart contract.
+  nested VM/project-container frame and delegates that nested cleanup to the independently supplied
+  project teardown hook. The old `cluster down` collapsed lifecycle framing; an owning cluster frame uses
+  delete-on-down because kind has no reliable stop/restart contract.
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`: the
-  plan's `.data` path is never placed in any removal set (§ Y). That is the whole of the guarantee — it is
-  not host mirroring, and `destroy` still deletes the provisioned frame the path lives in
-  ([durable_state](../documents/architecture/durable_state.md)).
+  plan's `.data` path is never placed in any removal set (§ Y). The demo now creates `.data` at the host
+  project root and carries it through the provider share/guest alias, project-container mount, Kind node,
+  and pod. That transport is implemented, but the write→destroy→up→read-back proof and exclusive
+  ownership remain open ([durable_state](../documents/architecture/durable_state.md)).
 - The `project` lifecycle command, its step interpreters, and the stop-without-delete capability **ship**,
   and the flat `cluster` verb group is **removed** (§ Sprint 5.2). Phase 16 owns the interpreter; the
   dissolved `cluster` verbs are recorded under
@@ -205,12 +232,13 @@ Specifically:
 
 #### Objective
 
-Land `HostBootstrap.Cluster.Cordon`: verify the host has the spare `resources` budget and cordon it
-to the project.
+Land `HostBootstrap.Cluster.Cordon`: verify the resolved substrate capacity can admit the `resources`
+budget and cordon it to the project.
 
 #### Deliverables
 
-- Budget verification reading `resources {cpu, memory, storage}` and checking spare host capacity.
+- Budget verification reading `resources {cpu, memory, storage}` and checking the substrate's resolved
+  CPU/memory/storage capacity under the applicable host-reserve policy.
 - Apple cordoning: **derive** the sizing for the dedicated VM wall from the budget.
 - Linux cordoning: **derive** kind node resource limits from the budget.
 
@@ -219,7 +247,7 @@ provider flows.
 
 #### Validation
 
-- `CordonSpec` asserts a budget exceeding spare capacity fails fast naming the over-committed
+- `CordonSpec` asserts a budget exceeding resolved capacity fails fast naming the over-committed
   dimension, and that `colimaSizingArgs` / `kindNodeCordonArgs` reflect the declared budget. `cabal test`
   passes.
 
@@ -239,9 +267,13 @@ None.
 Land `HostBootstrap.Cluster.Lifecycle`: kind/Helm `up`/`down`/`delete` semantics with the
 never-delete-`.data` invariant and the production-vs-test profile distinction.
 
-#### Command Surface
+#### Historical Command Surface
 
-- `hostbootstrap cluster up` — bring the stack to running (idempotent), within the cordoned budget.
+The following command spellings describe the surface at this sprint's original closure. They were later
+removed; the retained lifecycle functions now run only under `project up|down|destroy`.
+
+- `hostbootstrap cluster up` — attempt reconcile-to-running within the cordoned budget; the historical
+  implementation did not provide receipt-preserving idempotence.
 - `hostbootstrap cluster down` — tear the cluster down; the removal set is empty, so no path is removed.
 - `hostbootstrap cluster delete` — thorough teardown of derived state; still never enumerates `.data`.
 
@@ -249,20 +281,24 @@ never-delete-`.data` invariant and the production-vs-test profile distinction.
 
 - kind/Helm lifecycle driving cluster creation, Helm release management, and teardown.
 - The never-delete-`.data` invariant enforced on both `down` and `delete`.
-- A `ClusterProfile` distinguishing production (fixed name / `.data` path) from test (per-case
-  isolated paths), so the harness-driven test profile never collides with a production cluster.
+- A forgeable `ClusterProfile` distinguishing production (fixed name / `.data` path) from test
+  (per-case-named paths). It provides naming separation only; Sprints 9.10/10.9 replace it with opaque
+  scope/profile authority, while Sprint 5.7 supplies the receipt-aware backend operations that authority
+  will enter.
 
 #### Validation
 
 - `LifecycleSpec` asserts `teardown Down` / `teardown Delete` never place `.data` in the removal set
   (for both profiles), and that the production and test profiles resolve distinct cluster names and
-  host paths. `cabal test` passes; `hostbootstrap cluster --help` lists `up`/`down`/`delete`.
+  host paths. At the historical closure, `cabal test` passed and `hostbootstrap cluster --help` listed
+  `up`/`down`/`delete`.
 
 #### Remaining Work
 
-None. The pure lifecycle/teardown cores and never-delete-`.data` invariant carry forward; the completed
-Phase 16 interpreter now owns their `project up|down|destroy` command surface, and the container-frame
-apply was real-run-validated by the demo.
+None within Sprint 5.2's historical scope. The pure lifecycle/teardown cores and
+never-delete-`.data` invariant carry forward; Phase 16's landed command interpreter owns their current
+`project up|down|destroy` surface, while open Sprint 16.6 owns the replacement typed recursive
+interpreter. The container-frame apply was real-run-validated by the demo.
 
 ### Sprint 5.3: Read-only `cluster status` [Done]
 
@@ -273,6 +309,10 @@ apply was real-run-validated by the demo.
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`, `system-components.md`
 
 #### Objective
+
+Historical delivery record: the standalone `cluster status` verb was later removed. The pure status
+renderer remains, and current read-only lifecycle/context inspection is exposed through the fixed
+`context` surface.
 
 Add a read-only `cluster status` verb that reports whether the resolved cluster is live without
 mutating any state, completing the Phase-5-owned command surface (the applied cordon and the
@@ -308,6 +348,10 @@ and the dissolved `cluster status` verb is recorded in
 
 #### Objective
 
+Historical delivery record: the standalone `cluster up` spelling was later removed. Its fail-closed
+Kind/Helm behavior is retained as lifecycle functions invoked by the `deploy-kind`/`deploy-chart` plan
+steps under `project up`.
+
 Make `cluster up` fail-closed on its helm/kind steps, and run the lifecycle in the in-container path (the
 kube tools are baked into the base image, not host tools — § L).
 
@@ -319,8 +363,9 @@ kube tools are baked into the base image, not host tools — § L).
   Teardown attempts every intended Kind and derived-path cleanup, aggregates failures, and reports the
   aggregate after all cleanup has been attempted.
 - `project down|destroy` runs that core Kind teardown only in the current frame that owns the chain's
-  `deploy-kind` step. Nested clusters are left to the project teardown hook, so expected host-side absence
-  of container-only Kind is not misreported as a cleanup failure.
+  `deploy-kind` step. Nested clusters are left to the independently supplied project teardown hook, so
+  expected host-side absence of container-only Kind is not misreported as a cleanup failure. Phase 16.6
+  replaces that hook with reverse cleanup derived from the unified lifecycle plan.
 - The lifecycle is invoked in the project container via the self-reference lift (`HostBootstrap.Lift`,
   phase-11), so `helm`/`kind` resolve on the container `$PATH` rather than the host.
 
@@ -335,7 +380,8 @@ None. The fail-closed `requireStep` discipline now hangs off `deploy-kind` / `de
 `project up`; the in-container path was exercised by the demo's completed real runs. The 2026-07-15 static
 hardening makes teardown attempt every independent cleanup and propagate aggregate failures.
 The command-level ownership check invokes that core cleanup only in a frame that owns `deploy-kind`;
-nested cluster teardown remains project-owned.
+nested cluster teardown remains in the independently supplied project hook until Phase 16.6 derives it
+from the lifecycle plan.
 
 ### Sprint 5.5: Accelerator cluster exposure and Linux GPU nvkind [Active]
 
@@ -388,10 +434,11 @@ lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on th
 8081).
 
 Open (real-run-gated, § C): a native Linux CPU Incus lane proving daemon-pod connectivity by `ClusterIP`
-and the C++ worker at `8/8`, and a native Linux GPU direct-`nvkind` lane proving the CUDA-base,
-one-GPU daemon pod, CUDA worker, and browser e2e Add workflow at `8/8`. The Windows GPU
+and the C++ worker at `10/10`, and a native Linux GPU direct-`nvkind` lane proving the CUDA-base,
+one-GPU daemon pod, CUDA worker, browser e2e Add workflow, and durable readback at `10/10`. The Windows GPU
 host-daemon-through-the-local-only-NodePort path is exercised by the decoupled Windows/WSL2 durable gate
-(Phase 13). No WSL2 result is represented as native Linux. No live `8/8` result is recorded yet, so the
+(Phase 13). No WSL2 result is represented as native Linux. No qualifying native-Linux `8/8` result is
+recorded yet, so the
 historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
 work remains in this sprint.
 
@@ -403,10 +450,9 @@ work remains in this sprint.
 
 #### Objective
 
-Make `.data` mean what the governed docs long claimed it meant: project state that genuinely outlives
-`project destroy`. Today the never-delete-`.data` invariant guarantees only that cluster teardown does
-not enumerate the path for removal — a real property, but a much narrower one. Nothing creates the
-directory, and on a lifted topology it resolves inside a frame that `destroy` deletes.
+Finish and validate the host-durable `.data` contract. The host root creation, provider share, alias, and
+VM→container→kind→pod carry have landed; the remaining closure criterion is a dedicated
+write→destroy→up→read-back proof.
 
 #### Deliverables
 
@@ -414,15 +460,13 @@ directory, and on a lifted topology it resolves inside a frame that `destroy` de
   step, consuming the share primitive from phase-11 Sprint 11.8.
 - The durable root carried across every boundary a nested chain crosses: VM → project container
   (a `Mount` on the container launch), container → kind node (`extraMounts` in the kind config, which
-  today declares only `extraPortMappings`), kind node → pod (a host-backed volume in the chart).
+  accompanies its port mappings), kind node → pod (a host-backed volume in the chart).
 - A create-on-`up` path, so the root exists rather than being vacuously preserved.
-- `Capability.DurableStore` promoted from a declared-but-unread context capability to one a command
-  actually requires (with phase-15), and removed from the `Pending` ledger when it lands.
 - The teardown status line stops reporting `preserved` for a path it never inspected.
 
 #### Validation
 
-- `cabal test` from `core/` — the existing `LifecycleSpec` on-disk teardown cases continue to pass
+- `cabal test all` from `core/` — the existing `LifecycleSpec` on-disk teardown cases continue to pass
   unchanged; new cases cover durable-root resolution across frames.
 - Real-run gate (§ C), jointly with phase-11 Sprint 11.8: write state through the running stack, run
   `project destroy`, run `project up`, and read the same state back.
@@ -430,17 +474,148 @@ directory, and on a lifted topology it resolves inside a frame that `destroy` de
 #### Remaining Work
 
 The durable-root carry (VM → project container → kind node → web pod) and the **host-side** provider share
-(phase-11 Sprint 11.8) are implemented and static-gated (core `-Werror` build plus 382 tests, demo `-Werror`
-build plus 98 demo tests, fourmolu/hlint clean). Its **share/alias mechanism is now validated** by the live
+(phase-11 Sprint 11.8) are implemented and statically gated. Its **share/alias mechanism is historically
+validated** by the live
 Windows/WSL2 `test run all` **`8/8`** (2026-07-23): the recast pure, readiness-gated `AliasState` alias
 (phase-11 Sprint 11.9) links cleanly on both variants
 (`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/…/demo/.data`) — the ungated
 `set -eu` step that collapsed `0/8` is gone — and a residual failure is now legible (phase-10 Sprint 10.8).
 **Remaining (real-run-gated, § C):** the end-to-end durable-root **read-back** (write a marker through the
-running service → `project destroy` → `project up` → read the same marker from the host-backed root) is not
-yet a harness case (`registry-persistence` proves MinIO/registry durability, not `.data`), so this sprint
-stays `Active` for that dedicated durability assertion. Until it passes, no governed document may describe
-host-durable `.data` as validated (§ J).
+running service → `project destroy` → `project up` → read the same marker from the host-backed root) is
+implemented as the `durable-readback` harness case. Static validation passed on 2026-07-25 with 100 demo
+tests. The native Linux GPU live attempt reached the direct Docker handoff and failed because Docker
+rejects the compatibility symlink `/var/tmp/hostbootstrap-demo-data` as a bind source while the pure
+frame-context API has only relative `sourceRoot = "."` and therefore cannot supply the canonical absolute
+host `.data` path. The gate remains open until the root-authority/profile tranche supplies that absolute,
+verified root and the case passes. Until then no governed document may describe host-durable `.data` as
+validated (§ J).
+
+That result is the handoff prerequisite for Phase 15.9 to promote the descriptive `DurableStore` label
+into opaque mutation authority. This sprint does not own that later command-gate change and can close
+when the durability proof itself passes.
+
+### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 9.10 and 11.10
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
+**Docs to update**: `documents/architecture/durable_state.md`,
+`documents/engineering/cluster_lifecycle.md`, `documents/engineering/applied_cordon.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Turn durable storage and cluster mutation into typed, ownership-aware **backend reconciliation**
+instead of path conventions and optimistic create/delete behavior. This sprint supplies the
+provider/storage primitives and receipts consumed by the later run-lease/handoff/recursive-plan tranche;
+it does not construct lifecycle profiles, root/test authority, or the final `ProjectPlan`.
+
+#### Deliverables
+
+- Apply the declared storage ceiling on every supported provider and report unsupported enforcement as a
+  typed outcome, never as silent success.
+- Have cluster/storage reconcilers return `Either ReconcileError ReconcileResult`:
+  `ManagedResult` carries a `Managed` handle, receipt, and `Changed (Created | Repaired | Adopted)` or
+  `Unchanged`; `ForeignResult` carries only an `Unmanaged` handle and observation. `Conflict`,
+  `SafetyRefusal`, `Unsupported`, and `Failure` remain distinct. A foreign handle cannot authorize
+  mutation or cleanup; explicit adoption requires matching opaque authority.
+- Expose the provider/storage reconcilers only over Phase 9's opaque resource identity, generation,
+  classification, and receipt inputs. Do not mint `LifecycleProfile`, root/test authority, or
+  `ProjectPlan` here: Sprint 10.9 owns Production/Harness mode/profile construction, and the coordinated
+  10.9/15.9/16.6 tranche binds these backend operations to the final plan and command authority.
+- Acquire the backend's resource-authoritative reservation before mutating a cluster, durable root, or
+  global cordon and require its receipt for cleanup. Use provider CAS/create-if-absent plus conditional
+  delete with immutable generation identity, an OS-enforced global-setting lock, or a filesystem
+  namespace/conditional operation that excludes same-privilege replacement. Bare exclusive
+  create/rename or compare-then-unlink is insufficient; a backend without the full primitive reports
+  `Unsupported`. A local sidecar is not universal exclusion, and a conflict or safety refusal never
+  tears down operator-owned state.
+- At the backend-contract level, prove that the host-owned durable root survives provider
+  destroy/recreate and that conditional cleanup rejects a replaced generation. Sprint 5.6 retains the
+  existing command-level write → `project destroy` → `project up` → read gate; the coordinated
+  integration tranche later reruns it through the typed plan.
+- Expose storage-wall, reservation, and conditional-cleanup backend operations over already validated
+  budget/exposure inputs and return the exact typed result/receipt. Each strong backend operation must
+  accept the conditional target/dependency version sealed by the later
+  `PreparedOperation`/`PreparedPreconditions` pair and reject or deduplicate a mismatch; a backend that
+  cannot bind its effect to that prepared version reports `Unsupported`. This sprint does not assemble the
+  workload set, issue a plan mutation permit, or render Kubernetes manifests; the coordinated
+  10.9/15.9/16.6 tranche owns generic plan/permit integration and Sprint 13.18 owns the demo's complete
+  workload-to-manifest wiring.
+- Replace current same-name kind adoption/deletion with total ownership classification: a healthy
+  unowned cluster is `ForeignResult`; an unhealthy/unverifiable same-name cluster is `Conflict`, never
+  automatically deleted. Supply backend operations that retain loopback binding and accept only an
+  already authorized exposure/credential input. Secret generation, endpoint policy selection, and
+  registry/web/MinIO manifest wiring remain Sprint 13.18 work over Sprints 15.9 and 19.7.
+
+#### Validation
+
+- Pure tests cover created/repaired/adopted `Changed`, managed `Unchanged`, `ForeignResult`, explicit
+  adoption, `Conflict`, `SafetyRefusal`, `Unsupported`, `Failure`, and storage-limit argument generation.
+- Backend tests prove storage-wall inputs produce the expected provider operations/results and that the
+  default exposure primitive binds loopback; they do not claim config-to-plan-to-manifest agreement.
+  Sprint 13.18 owns that final agreement and the over-budget no-permit assertion.
+- Compile-time negative fixtures prove a foreign/unmanaged handle or a receipt for another
+  resource/generation cannot enter a provider/storage mutation or cleanup.
+- Backend race fixtures prove a dependency/target version replacement after prepare cannot execute as
+  though readiness were current; the conditional operation either applies to the exact prepared version,
+  returns a typed mismatch for journal recovery, or is `Unsupported`.
+- Failure-injection tests prove a foreign path/cluster is retained and owned partial state is unwound.
+- Native provider real runs verify the applied storage wall and backend-level durable preservation;
+  Sprint 5.6 and the later integration tranche own command/plan-level read-back. Accelerator-only live
+  lanes remain separately owned by Sprint 5.5.
+
+#### Remaining Work
+
+Blocked until Sprints 9.10 and 11.10 land the result/ownership algebra and total provider/alias
+primitive. Then wire every cluster/storage backend mutation through those inputs and complete its
+conditional-ownership/storage-wall gates. Profile/root/test authority and `ProjectPlan` integration
+remain explicitly outside this sprint in the coordinated 10.9/15.9/16.6 tranche, avoiding a dependency
+back into this foundation. Sprint 5.5 remains independently Active for the unavailable native
+accelerator lanes; neither lane can close this phase by proxy for the other.
+
+### Sprint 5.8: Applied per-project Apple provider budget [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint 9.10
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
+**Docs to update**: `documents/engineering/resource_budgeting.md`,
+`documents/engineering/prerequisites.md`, `documents/engineering/applied_cordon.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Turn the existing pure Colima sizing arguments into the per-project Apple Docker-provider wall instead of
+starting an unsized shared default profile.
+
+#### Deliverables
+
+- Derive a stable project-specific Colima profile identity from validated `ProjectIdentity`.
+- Reconcile that profile with the declared CPU, memory, and storage budget; an already running profile
+  with a conflicting wall is a structured conflict, not silently accepted.
+- Route direct Apple Docker operations through the reconciled profile and its socket/context, while the
+  pristine demo's separate Lima wall remains unchanged.
+- Return typed changed/unchanged/foreign/unsupported outcomes and retain the matching receipt for
+  `down`/`destroy`; no bare `colima start` default-profile fallback satisfies the contract.
+
+#### Validation
+
+- Pure argv tests bind profile, CPU, memory, and disk to one validated budget and reject omissions or
+  conflicting existing settings.
+- A concurrency test proves two project invocations converge on one owned profile or report structured
+  conflict; an unrelated profile is never mutated.
+- An Apple real run verifies the observed VM limits and Docker endpoint match the project config, then
+  reruns idempotently and tears down only the owned profile.
+
+#### Remaining Work
+
+Blocked until Sprint 9.10 lands the ownership/result algebra. Then wire the existing sizing builder into
+the Colima reconciler/provider path and run the Apple gate. Sprint 5.1 remains Done for its pure
+derivation contract.
 
 ## Documentation Requirements
 

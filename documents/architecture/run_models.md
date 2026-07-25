@@ -1,217 +1,196 @@
-# Run Models
+# Run-Model Taxonomy
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
+**Supersedes**: the claim that `selectRunModel` is wired into `project up` and that `RunModel` is absent from Dhall
+**Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
 
-> **Purpose**: Define the four run-models every `hostbootstrap` binary selects between, and where that
-> selection happens — within a `Step`'s interpretation as `project up` walks the lift chain — so the
-> run-model is derived from detected facts and never declared in Dhall.
+> **Purpose**: Define the four useful execution-shape names, record the current definition-only selector
+> honestly, and preserve the project chain as the sole executable representation.
 
 ## TL;DR
 
-- There are exactly four run-models: `OneShot`, `HostNative`, `HostDaemon`, and `Cluster`.
-- The run-model is **selected**, never declared. `selectRunModel :: RunModelKey -> RunModel` derives
-  it from a `RunModelKey { keyTopology, keyHostNative }` that collapses the full
-  `(verb × detected-substrate × library-layer × generated-topology)` key.
-- The **selection happens within `project up`'s step interpretation.** A binary's identity is its lift
-  chain `chain :: cfg -> [Step]`; `project up` interprets that `[Step]` recursively, and the
-  run-model is the shape a given compute step takes once its topology and substrate are known. The
-  chain is the canonical model — see [composition_methodology](composition_methodology.md).
-- The **generated topology is the spine**: `ClusterTopology → Cluster`, `DaemonTopology → HostDaemon`,
-  and `ContainerOnly →` `HostNative` when a host-native build is in force, else `OneShot`.
-- **Deploy is a persistent stack.** `project up` stands up a long-lived stack and keeps it running
-  (services, clusters, VMs stay up); `project down` deletes kind compute and stops VM frames, and
-  `project destroy` deletes everything spun up. `test run all` is the separate
-  test surface, decoupled from deploy.
-- The `HostDaemon` model is reached operationally through the **`service` command**: `service run` is a
-  **leaf-frame pod entrypoint** (not an orchestrator) that runs one long-running role, and it is deployed
-  into the cluster by `project up`'s `deploy-chart` step. The role and its variant come from a Dhall
-  `ServiceType` ADT resolved against a **service-handler registry**. See
-  [The `service` Command And Service Handlers](#the-service-command-and-service-handlers) below.
-- The model feeds the test harness through `Seams`, but the harness **drives the real `project up`**: it
-  writes a test `<project>.dhall`, runs `project up`, asserts in-frame via the self-reference lift, then
-  runs `project destroy`. It does not stand up isolated per-case clusters via a separate seam path. See
-  [harness workflow](harness_workflow.md).
-
-## The Four Run-Models
-
-| Model | What it does | Budget treatment |
-|-------|--------------|------------------|
-| `OneShot` | Build-if-needed, then `docker run --rm [-it] [mounts]` — a single container invocation that exits. | Budget-capped: the container runs within the project ceiling. |
-| `HostNative` | Host-native build (into `./.build/`) plus a host exec of the resulting binary. | Host process, sliced by the harness budget when run as a case. |
-| `HostDaemon` | A long-running service role (not a one-shot exec): a stateless service over durable external stores or a daemon/coordinator channel, run operationally via `service run` as a leaf-frame pod entrypoint or host daemon entrypoint. The implemented accelerator demo uses this model for a project-binary daemon that connects to the web service over CBOR WebSocket and forwards work to a substrate-specific JIT worker. See [The `service` Command And Service Handlers](#the-service-command-and-service-handlers). | Holds its share for its lifetime. |
-| `Cluster` | A kind cluster plus Helm releases — the full orchestrated substrate. | Cordoned per substrate; `fitsBudget` proves the concurrent set fits. |
-
-`OneShot` and `HostNative` differ only in **where the code runs**: `OneShot` runs inside a container
-the binary builds; `HostNative` runs the host binary directly. `HostDaemon` differs from `HostNative`
-in **lifetime**: a daemon stays up rather than running to completion. `Cluster` is the only model that
-stands up an orchestrated multi-node substrate; it is realized by the cluster lifecycle in
-[cluster lifecycle](../engineering/cluster_lifecycle.md), driven by the `deploy-kind`/`deploy-chart`
-steps the chain interprets.
-
-The `Cluster` model is **context-agnostic**: it is stood up by the real `project up` against whatever
-Docker the running process sees. The harness drives that same `project up` rather than maintaining a
-parallel "bring up a cluster" path — there is one representation, exercised as a unit (see
-[composition_methodology](composition_methodology.md)).
-
-## The `service` Command And Service Handlers
-
-The `HostDaemon` run-model is the long-running-service shape; the **`service` command** is how that shape
-is run in production and in tests.
-
-- `service run` is a **leaf-frame pod entrypoint**, not an orchestrator. It runs exactly one long-running
-  role inside the pod it was deployed into. It **fails fast** unless the active `<project>.dhall` declares
-  a service role with a valid variant. The service handler **reads its effective config** and renders it
-  (the demo's `Web` handler serves `cfg.message` to the SPA `#message`).
-- A daemon variant is the same leaf-frame shape with a different placement. An in-cluster daemon runs as a
-  pod and receives its config by ConfigMap; a host-resident daemon reads a host sibling config and is
-  started by the host project binary after the web-service ingress exists. It still brings up no VM or
-  cluster; it connects to the coordinator endpoint and serves until stopped by the surrounding lifecycle.
-- Multiple service types are expressed as a Dhall **`ServiceType` ADT**; `service run` resolves the
-  declared variant against a **service-handler registry** (each variant maps to one handler) and runs that
-  handler. There is **no `service down`** — a service's lifetime is the pod's lifetime, and teardown is
-  `project down`/`project destroy` of the enclosing stack.
-- A service is **deployed by `project up`'s `deploy-chart` step**. The pod's container is the baked project
-  image whose entrypoint is `service run`; the active config is delivered as a **ConfigMap** that overrides
-  the baked container `<project>.dhall`, so the deployed role/variant is config-selected at deploy time.
-
-In the demo, `web serve` maps to `service run` with the `Web` variant (the long-running HTTP role), and
-`web bridge` maps to the build-image step (a build-time role, not a service). The `service` command is a
-fixed core verb; a project extends it by **registering service handlers**, not by adding service
-sub-commands.
-
-## Selection Happens Inside The Step Chain
-
-The run-model is not a top-level mode the operator picks. It is the shape a **compute step** takes when
-`project up` interprets the lift chain and reaches a step whose topology and substrate are now known.
-
-- A binary's identity is its chain value `chain :: cfg -> [Step]` — an ordered list of steps that
-  interleaves core host-management step kinds (deploy-VM, ensure-X, copy-source, build-pb, build-image,
-  context-init, deploy-kind, deploy-chart, expose-port) with the project's own step kinds (deploy-registry,
-  push-image, …). This ordered `[Step]` is the extension-stream's **lift chain** (stream 1); see
-  [library hierarchy](library_hierarchy.md).
-- `project up` interprets that chain recursively (the fractal interpreter): it runs the current frame's
-  steps, then hands off `pb project up` into the next frame, where each nested binary owns its segment.
-- When interpretation reaches a compute step, `selectRunModel` derives one of the four models from the
-  generated topology and the detected substrate. The four run-models are thus the **vocabulary of compute
-  shapes** a step can resolve to; the chain decides *which* steps run and in what frame, and selection
-  decides *how* each compute step executes.
-
-The chain is the canonical representation of the project; `project up --dry-run` renders `chain cfg`
-without acting. The chain shape itself lives in [composition_methodology](composition_methodology.md),
-which this document defers to; here we only define the four models a compute step resolves to.
-
-## The Selection Key
-
-The run-model is a function of detected facts, not a configured value. The full conceptual key is
-`(verb × detected-substrate × library-layer × generated-topology)`. `RunModelKey` collapses that to
-the two fields that actually discriminate:
-
-- `keyTopology` — the **generated** topology: `ClusterTopology`, `DaemonTopology`, or `ContainerOnly`.
-- `keyHostNative` — whether a host-native build is in force.
-
-`selectRunModel` resolves the key with the generated topology as the spine:
-
-| `keyTopology` | `keyHostNative` | Selected model |
-|---------------|-----------------|----------------|
-| `ClusterTopology` | (any) | `Cluster` |
-| `DaemonTopology` | (any) | `HostDaemon` |
-| `ContainerOnly` | host-native build in force | `HostNative` |
-| `ContainerOnly` | otherwise | `OneShot` |
-
-The topology is **generated** (decoded from the project's Dhall and reflected into the binary), so the
-selection consumes a derived fact rather than a literal model name. See
-[dhall generation](dhall_generation.md) for how topology is generated and
-[library hierarchy](library_hierarchy.md) for the library-layer dimension the full key folds in.
-
-## Selected, Never Declared
-
-The run-model does not appear in Dhall. A project declares its **topology** and resource **budget**;
-the binary detects its **substrate** and whether a host-native build is in force; `selectRunModel`
-turns those into one of the four models. Declaring a model directly would let a project name a model
-its substrate or topology cannot honour (for example asking for `Cluster` from a `ContainerOnly`
-topology), so the model is always derived.
-
-> **WRONG**
->
-> A project's Dhall declares the run-model literally:
->
-> ```dhall
-> { runModel = "Cluster"
-> , topology = ContainerOnly
-> }
-> ```
->
-> This is wrong because the declared model can contradict the generated topology and the detected
-> substrate: a `ContainerOnly` project would claim a kind/Helm `Cluster` run that nothing stands up,
-> and the harness would have no consistent `Seams` to drive.
-
-> **RIGHT**
->
-> The project declares topology and budget; the binary selects the model as it interprets a step:
->
-> ```haskell
-> selectRunModel RunModelKey
->   { keyTopology   = ContainerOnly     -- generated from project Dhall
->   , keyHostNative = True              -- detected: host-native build in force
->   }
-> -- => HostNative
-> ```
->
-> The generated topology is the spine and the detected `keyHostNative` breaks the `ContainerOnly`
-> tie, so the model can never contradict the facts it was derived from.
+- `OneShot`, `HostNative`, `HostDaemon`, and `Cluster` are useful names for four execution shapes.
+- The repository currently defines and tests `RunModel`, `RunModelKey`, and `selectRunModel`, but
+  production `project up` does not call the selector. The demo selects concrete chain steps directly.
+- `Core.dhall` currently exports a `RunModel` union. Therefore “a run model never appears in Dhall” is
+  false; it is vocabulary even though the demo runtime config does not contain a run-model field.
+- The target keeps `chain :: cfg -> [Step]` as the only executable plan. It removes the unconsumed
+  parallel selector and Dhall literal rather than allowing topology, steps, and a run-model value to
+  disagree.
 
 ## Current Status
 
-The behavior described above is implemented. The `service`-command service run-model uses a leaf-frame
-`service run` entrypoint, a `ServiceType` ADT plus service-handler registry, deploy via `deploy-chart` with
-a ConfigMap override, and no `service down`. The harness **drives the real `project up`** under generated
-test configs rather than standing up isolated per-case clusters. The reconciliation that spanned phases
-10, 13, 14, 15, 16, 17, 18, 19, and 20 is closed in the development plan.
+`HostBootstrap.Harness` exposes:
 
-The accelerator-daemon generalization is tracked as reopened phase work. It extends the `HostDaemon` shape
-with a host/in-cluster placement matrix, CBOR WebSocket dispatch, and a real substrate-specific worker. The
-local daemon/web transport and Apple/Windows host-daemon start-stop path are implemented, but the work is
-not closed until integration tests build the worker in each lane and a browser e2e test proves the UI add
-operation is served by daemon-returned backend metadata.
+```haskell
+data RunModel = OneShot | HostNative | HostDaemon | Cluster
 
-The **fixed core command surface** is exactly `project`, `test`, `service`, `context`, and `check-code` —
-there are **no per-project verbs**. `project init|up|down|destroy` drives the lifecycle; `service run`
-runs a long-running service role; the read-only `context` command introspects uniformly across every
-`<project>.dhall`; and `test` drives the harness. A project extends core through streams (lift chain,
-Dhall vocabulary, schema-gen, test seams, and service handlers), never by adding command verbs.
+data RunModelKey = RunModelKey
+  { keyTopology :: Topology
+  , keyHostNative :: Bool
+  }
 
-The four run-models and `selectRunModel` are exercised by the core tests; selection consumes the
-generated topology plus detected substrate, reached through the recursive `project up` interpreter over
-an explicit `chain :: cfg -> [Step]` value. In the demo, the deploy sequence is the substrate-selected
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` value in
-`demo/src/HostBootstrapDemo/Commands.hs`, interpreted recursively by `project up`; config-selected
-`service run` maps `Web` or `Accelerator` to the registered handler, and `web bridge` folds into
-the build-image step.
+selectRunModel :: RunModelKey -> RunModel
+```
 
-A single `project up` on Incus/Linux stands up the live persistent stack — a cordoned kind cluster (kind
-`extraPortMappings` publish NodePorts to the VM localhost) → the in-cluster registry (NodePort
-30500) → the project image pushed to the in-cluster registry → the web chart pod at `localhost:30080`
-serving HTTP 200, with the service deployed by the `deploy-chart` step. `project down` deletes kind
-compute and stops the VM; `project destroy` deletes the VM and its disk. The test harness
-drives this same `project up`: it writes a test `<project>.dhall`, refuses to run if a `<project>.dhall`
-already exists or a production cluster is running, runs `project up`, asserts in-frame via the
-self-reference lift, then runs `project destroy` (deleting only what it created this run) — using
-durable test storage `.test_data`, never `.data`.
+Unit tests cover the mapping, but no production interpreter consumes its result. The real demo path uses
+`demoChainFor :: Substrate -> ProjectConfig -> [Step]`; that function selects VM/direct-container,
+kind/nvkind, service, and host-daemon steps. `project up` interprets those concrete steps.
+
+`Core.dhall` also exports `RunModel`. No current demo `<project>.dhall` field selects it, but its presence
+in the public vocabulary means a downstream schema can declare it. This is a definition-only parallel
+surface, not proof that runtime selection is wired.
+
+Current status and cleanup ownership live in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+## The Four Names
+
+| Name | Execution shape | Current concrete examples |
+|---|---|---|
+| `OneShot` | A bounded container invocation that exits | `oneShotRunArgs`; definition-only `oneShotSeams` helper |
+| `HostNative` | A host-native binary is built and executed on that host | the Python bootstrap handoff and host worker builds |
+| `HostDaemon` | A long-running service/daemon process | config-selected `service run`, in a pod or host placement |
+| `Cluster` | A kind/nvkind cluster plus deployed workloads | `deploy-kind`/`deploy-chart` and demo workload steps |
+
+This table is a taxonomy. It does not imply that a `RunModel` value controls those paths today.
+
+## Single-Representation Rule
+
+The current forward representation is the project chain:
+
+```haskell
+chain :: cfg -> [Step]
+```
+
+The chain's rows currently determine:
+
+- frame ids and their first-appearance descent order (while provider handoff details remain in the
+  independently supplied `psFrameContext`);
+- whether work is host-native, containerized, daemonized, or clustered;
+- the order in which those operations run.
+
+A current `Step` carries no resource envelope. Actions reload or close over config/context values, while
+`psFrameContext` and resource slicing are separately supplied, so step identity and applied budget can
+disagree. The target opaque `ProjectPlan` derives each operation's exact `ResourceSlice` alongside its
+frame/dependencies/effect set; only then does the single representation determine resources.
+
+A second configurable `RunModel` can contradict those facts. For example, a Dhall value could say
+`Cluster` while the chain contains only a one-shot container, or a selector could return `HostNative`
+while the interpreter still executes a container step. Keeping both values would violate the
+single-representation contract.
+
+The chain itself is not yet a validated single representation: public constructors permit an empty
+chain, repeated/noncontiguous frames, duplicate/render-shadowing kinds, and `psFrameContext`/teardown
+callbacks that can disagree with it. The target cleanup therefore consumes the same opaque
+`ProjectPlan` used by render/apply/reverse traversal; it does not merely delete `RunModel` while leaving
+those illegal shapes public.
+
+The target therefore treats the four names as derived documentation/reporting labels, not configuration
+or a second dispatch input:
+
+```text
+cfg + detected substrate
+        │
+        ▼
+one validated chain/plan
+        │
+        ├─ interpreter consumes the plan
+        └─ renderer may classify its concrete steps for display
+```
+
+If a future typed classifier is needed, it must consume the exact plan the interpreter will execute and
+return a non-authoritative view. It must not independently choose behavior.
+
+## Service And Daemon Shape
+
+`service run` is a leaf process, not a second orchestrator. The effective project config selects a
+project-owned service variant, and `ProjectSpec` maps it to a registered handler. In current core this
+means an arbitrary `psServiceVariant :: cfg -> Either String String` function followed by a string lookup.
+Core checks the primary context is a `ClusterService`/`Daemon` leaf, but it does not prove a service
+field/capability/registry relation. The demo selector performs additional checks by convention, then its
+handlers reopen the sibling config; selection and execution can therefore observe different bytes.
+
+- An in-cluster service or daemon receives a projected ConfigMap and runs inside the controller-owned
+  pod.
+- A host daemon receives a host-resident projected config and is started/stopped by the surrounding
+  project lifecycle.
+- There is no `service down`; `project down`/`destroy` own the enclosing lifecycle.
+
+The demo accelerator uses both placements depending on substrate. This behavior exists independently of
+the unused `selectRunModel` value.
+
+The target replaces that convention with
+an internal existential
+`SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
+fields`. A validated
+parent projects only a role-specific descriptive wire; the child verifies those exact mounted bytes
+through the same finalized runtime spec and a separate verified secret bundle, then locally constructs
+`ValidatedServiceRequest specDigest configId secretDigest fields service` under a fresh `configId`. The request inseparably contains
+`RoleParams specDigest configId secretDigest fields service` filtered from the codec's hidden field row. The selected package
+binds that request to a matching
+`ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
+service effects` and closed
+`ServiceProgram` handler; the selection proves the program's exact effect row is authorized by verified
+placement and the one-use workload-instance/Serve command authority. The mounted wire contains
+mandatory `FrameworkValidation` fields plus fields visible to that service; the handler's narrower
+`RoleParams` contains only the latter. Framework-only metadata therefore cannot enter the payload, and
+plan/build/deploy-only fields cross neither boundary. The handler receives neither the full config nor
+raw `IO`/config-read capability. Before any acquisition, a one-use lifecycle-admission compare-and-swap
+binds the measured process instance; a later Serve reservation prevents duplicate handler start. In the
+final API the package and phase eliminators are not exposed: core-owned `runVerifiedRuntimeRole`
+privately invokes `selectAndRunService` with identity-indexed ready handles, the Serve cursor, and the
+inseparable retained receipt/lease package under masking. Selection failure, completion, typed failure, or
+catchable shutdown all return an opaque `RoleAdvance ... ServePhase DrainPhase`; drain consumes the
+retained package, attempts every independent release while aggregating failures, and is the sole
+transition to Exit. Serve cannot expose bind/spawn to a handler. A restartable worker instead uses a
+stable ready supervisor handle; only a prepared core transition may replace and reprobe its child.
+Mutating effects first seal the exact target/arguments behind an operation key and call digest, then
+require a matching prepared journal value minted from a Ready session and the retained live lease/fence.
+The adapter receives that sealed call only through the prepared value and returns an indexed advance.
+Prepare rejection/unknown and call-outcome unknown retain the sole session/resource package in typed
+Drain/recovery states; only exact full-lineage reprobe can authorize same-key retry. A serve result cannot
+be observed on a path that skips drain.
+
+## Harness Relationship
+
+The harness drives the real project chain:
+
+```text
+generate run config
+  -> project up
+  -> assert compiled cases
+  -> project destroy
+```
+
+It does not need a separate run-model dispatch to bring up a parallel test topology. Current
+Production/`.data`, ownership, and recursive-teardown defects are documented in
+[harness workflow](harness_workflow.md); the presence of the four-name taxonomy does not close them.
+
+## Target Cleanup
+
+The owning development sprint must:
+
+1. remove `RunModel` from `Core.dhall` unless a downstream decoded field has a documented, consumed
+   contract;
+2. remove the unconsumed `RunModelKey`/`selectRunModel` API, or replace it only with a read-only
+   classifier over the exact executable plan;
+3. prove no runtime/config field can disagree with the chain; and
+4. update tests to exercise the chain constructors/interpreter rather than a detached selection table.
+
+## Validation
+
+- A source/API test proves there is no unconsumed runtime selector or configurable Dhall run-model
+  literal.
+- Plan/interpreter tests prove each supported topology is expressed by concrete steps and the same plan
+  is rendered and executed.
+- The harness continues to invoke the real `project up`, with no second per-model bring-up path.
+- The Haskell quality gate and documentation validator pass.
 
 ## See Also
 
-- [composition_methodology](composition_methodology.md) — the canonical home of the chain-is-the-project
-  model, the recursive `project up` interpreter, and the single-representation doctrine; `HostDaemon` is
-  the long-running-service model.
-- [harness workflow](harness_workflow.md) — how `Seams` realize the selected model per case while the
-  harness drives the real `project up`.
-- [build and run model](build_and_run_model.md) — the host-native build into `./.build/` that
-  `keyHostNative` reflects.
-- [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind/Helm lifecycle the `Cluster`
-  model drives, expressed as `deploy-kind`/`deploy-chart` chain steps.
-- [durable state](durable_state.md) — what the never-delete-`.data` invariant does and does not
-  guarantee when `project down` and `project destroy` tear the stack down.
-- [library hierarchy](library_hierarchy.md) — the extension-stream merge whose stream 1 is the lift chain.
-- [testing](../engineering/testing.md) — the `test` surface that runs the harness over a project's matrix.
+- [composition methodology](composition_methodology.md) — the current chain ordering and target opaque
+  lifecycle plan.
+- [harness workflow](harness_workflow.md) — the test transaction and its current gaps.
+- [cluster lifecycle](../engineering/cluster_lifecycle.md) — concrete kind/nvkind operations.
+- [build and run model](build_and_run_model.md) — host-native and container build paths.

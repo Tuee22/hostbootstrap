@@ -18,9 +18,9 @@
   `limactl list`, guarded `limactl delete`, and `limactl stop` (the stop-without-delete capability).
 - The VM lifecycle is driven by the core `deploy-VM` step kind plus the project teardown: `project up`
   brings the named instance up, `project down` stops it without deleting, and `project destroy` deletes
-  the instance **and its disk** — nothing written inside the guest survives it.
-- Staging into the guest is one-way: `copyToVMArgs` emits `limactl copy` host → guest and has no
-  copy-from-guest counterpart, so a guest-side write has no path back to the host. See
+  the instance **and its disk**. Host durable `.data` is mounted from outside that disk.
+- Source staging through `copyToVMArgs` is one-way. Durable data uses a separate Lima host-path mount,
+  which is visible from both host and guest through the stable alias. See
   [durable state](../architecture/durable_state.md).
 - On Apple Silicon a real Lima VM is the pristine host; native Linux uses the Incus VM path. The Step
   algebra is shared — only the provider builders differ.
@@ -37,7 +37,10 @@ the VM-level steps of that chain.
 The pure command shapes are:
 
 ```text
+# create a new instance
 limactl start -y --timeout 15m --name=<instance> --containerd none --cpus N --memory GiB --disk GiB --vm-type vz template:ubuntu-24.04
+# start an existing instance
+limactl start <instance>
 limactl shell <instance> -- sudo -H <command>
 limactl copy <source> <instance>:<target>
 limactl stop <instance>
@@ -61,30 +64,30 @@ bring-up, stop, and teardown:
 
 | Phase | Lima builder | Effect | Driven by |
 |---|---|---|---|
-| bring-up | `limactl start …` | start the named instance and wait for it to answer | `project up` |
+| first bring-up | sized `limactl start … template:ubuntu-24.04` | create the named instance with CPU/memory/disk arguments and wait for it to answer | `project up` |
+| existing bring-up | `limactl start <instance>` | start the existing instance without comparing or changing its resource wall | `project up` |
 | stop | `limactl stop <instance>` | stop the instance, delete nothing | `project down` |
 | delete | guarded `limactl delete <instance> --force` | delete the instance | `project destroy` |
 
-- `deploy-VM` runs `limactl start` to bring the named instance up and waits for the VM to answer a shell
-  before the chain proceeds.
+- `deploy-VM` runs the sized template start only when the instance is absent. For an existing instance it
+  runs the unsized start and waits for the VM to answer a shell before the chain proceeds. Current code
+  does not observe/resize/refuse a stale CPU, memory, or disk wall; Sprint 9.10 owns that reconcile result.
 - `project down` is the **stop-without-delete** path. It halts the VM so the host reclaims CPU and
   memory, but preserves the instance and its disk; a subsequent `project up` brings the same instance
   back.
-- `project destroy` routes deletion through the prefix-guarded `limactl delete` builder, so a partial or
-  already-stopped stack tears down cleanly and idempotently.
+- `project destroy` routes provider deletion through the prefix-guarded `limactl delete` builder. The
+  broader lifecycle does not yet return typed idempotent results or recursively visit every child.
 
-Teardown is best-effort and tolerates a partially-provisioned stack: a missing or already-stopped
-instance is reported and skipped, not an error. `limactl delete --force` removes the instance's disk
-along with the instance, so on a lifted topology nothing written inside the guest — including a
-guest-side `.data` — survives `project destroy`. The never-delete-`.data` invariant is a property of the
-*cluster* teardown's removal set, not of frame deletion; see
-[durable state](../architecture/durable_state.md).
+Teardown is best-effort. `limactl delete --force` removes the instance's own disk, but the demo's
+canonical `<project-root>/.data` is a host directory mounted into Lima and is not intentionally removed
+with the VM. The cluster removal set also excludes it. End-to-end reattachment and readback after destroy
+remain unvalidated; see [durable state](../architecture/durable_state.md).
 
 A host directory reaches the Lima guest through the same host-path share primitive the other lanes use.
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
 `ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
-**same** pure `AliasState` classifier every lane shares; and **mount-readiness** gates it, a retrying
-`Ready` witness proving the share present and writable before the alias is minted. See
+**same** alias state vocabulary used by the other lane. Mount polling precedes alias reconciliation, but
+the readiness constructor is currently exposed and the direct-host absence probe is partial; see
 [readiness](../architecture/readiness.md) and [durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted

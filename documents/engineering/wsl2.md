@@ -1,285 +1,99 @@
 # WSL2 Host Provider
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [incus](incus.md), [lima](lima.md), [demo runbook](../operations/demo_runbook.md), [readiness](../architecture/readiness.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Supersedes**: the cached-rootfs/`wsl --import` runtime narrative
+**Referenced by**: [documents index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [durable state](../architecture/durable_state.md)
 
-> **Purpose**: Describe the WSL2 host-provider VM used on Windows to represent a pristine Linux
-> environment — the peer of Lima (Apple Silicon) and Incus (native Linux) — and how its lifecycle is
-> expressed through the core `deploy-VM` step kind of the `project` lift chain.
-
-## TL;DR
-
-- The Windows VM provider is WSL2, reached through the resolved `HostTool Wsl`
-  (`toolCommandName Wsl = "wsl"`). It is the third metal substrate's VM frame — the structural peer of
-  Lima on Apple Silicon and Incus on native Linux.
-- `ensure wsl2` enables the WSL2 / Virtual Machine Platform feature and verifies WSL2 platform readiness.
-  The project-owned VM step registers that project's own named `Ubuntu-24.04` distro when absent.
-- `HostBootstrap.Wsl2` owns pure argv builders for `wsl --import`, `wsl -d <distro> --`,
-  `wsl --terminate`, guarded `wsl --unregister`, and the `wsl --shutdown` managed-stop
-  (stop-without-delete).
-- The VM lifecycle is driven by the core `deploy-VM` step kind plus the project teardown: `project up`
-  brings the named distro up, `project down` shuts it down without deleting, and `project destroy`
-  unregisters it.
-- The first `wsl --install` may require a **host reboot**; the provider detects the reboot-required
-  state, instructs the operator, and exits non-zero (the structural peer of the Incus `NeedsReboot`
-  reconcile), rather than rebooting Windows itself.
-- Docker, kind, and the workload live **inside** the Ubuntu-24.04 distro (detected `linux-cpu`), exactly
-  as on the Lima/Incus VM. The Step algebra is shared — only the provider builders differ.
-
-## Provider Contract
-
-WSL2 is the Windows VM provider for the pristine Linux host. The chain provisions a named
-`Ubuntu-24.04` distro derived from the project identity (for the demo, `hostbootstrap-demo-vm`), stages the working tree into the guest, builds the project binary in the distro,
-ensures Docker in the distro, builds the project image, and runs the workload against the distro's
-Docker daemon. Each of those is a [`Step`](../architecture/composition_methodology.md), and the WSL2
-provider supplies the VM-level steps of that chain.
-
-The pure command shapes are:
-
-```text
-winget install --id Microsoft.WSL --exact  # install the WSL package when absent
-wsl --install --no-distribution            # enable WSL2 + Virtual Machine Platform (may require a host reboot)
-bcdedit /set hypervisorlaunchtype auto     # ensure the Windows hypervisor is allowed to launch
-wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>  # project-owned distro registration (storage cordon) when absent
-wsl --set-default-version 2
-wsl --import <distro> <install-dir> <rootfs.tar.gz> --version 2
-wsl -d <distro> -- <command>
-wsl --terminate <distro>
-wsl --shutdown
-wsl --unregister <distro>
-```
-
-A pristine distro is imported from a cached Ubuntu-24.04 root filesystem tarball (a downloaded WSL
-rootfs, or a one-time `wsl --export` of a provisioned base), so each run starts from a known-clean
-guest rather than a user-mutated default distro.
-
-Deletion is prefix-guarded. A caller supplies the project guard prefix, and the builder refuses to emit
-`wsl --unregister` for any distro name outside that namespace. `wsl --terminate` and `wsl --shutdown`
-carry no such guard because they are non-destructive — they halt the guest and leave it (and its vhdx)
-intact for a later `project up` to bring back to running.
-
-## Reboot-to-Ready
-
-Enabling the WSL2 feature on a host that has never had it can require a **host** reboot before a distro
-can launch. A pure classifier reduces a `wsl --status` / install result to a verdict:
-
-```text
-classifyWsl2Readiness :: (ExitCode, String, String) -> Ready | NeedsReboot | Unsatisfiable
-```
-
-- firmware virtualization is present, OS features and hypervisor launch state are ready, and a distro can
-  launch → `Ready`;
-- WSL/VMP features or Windows hypervisor boot state were just changed, or Windows reports a restart is
-  required → `NeedsReboot`;
-- firmware/CPU virtualization is unavailable, or the OS feature cannot be enabled → `Unsatisfiable`.
-
-Unlike the Incus in-VM reboot loop (which reboots the *guest* with `incus restart`), a WSL2
-`NeedsReboot` is a **host** reboot: the reconciler prints a clear instruction and exits non-zero so the
-operator reboots Windows and re-runs `project up`. It does not reboot the host itself. This mirrors the
-`NeedsReboot` shape without taking the destructive host action.
-
-Like every other per-substrate `classify*Readiness` verdict, `classifyWsl2Readiness` defers to the one
-readiness discipline ([readiness](../architecture/readiness.md)): its `Ready` arm is the platform-readiness
-precondition a bring-up step consumes before it acts.
-
-## VM Lifecycle In The Chain
-
-The WSL2 VM lifecycle runs through the core `deploy-VM` step kind that the chain interprets, plus the
-project teardown that `project down` and `project destroy` drive. The same provider builders serve
-bring-up, stop, and teardown:
-
-| Phase | WSL2 builder | Effect | Driven by |
-|---|---|---|---|
-| bring-up | `wsl --import …` then `wsl -d <distro> -- …` | import (if absent) and enter the named distro | `project up` |
-| stop | `wsl --terminate <distro>` (or `wsl --shutdown`) | halt the distro, delete nothing | `project down` |
-| delete | guarded `wsl --unregister <distro>` | unregister the distro and its vhdx | `project destroy` |
-
-- `deploy-VM` imports the named distro from the cached rootfs when absent, then enters it via
-  `wsl -d <distro> -- …` and waits for the guest to answer before the chain proceeds.
-- `project down` is the **stop-without-delete** path. It terminates the distro so the host reclaims CPU
-  and memory, but preserves the distro and its vhdx; a subsequent `project up` brings the same distro
-  back.
-- `project destroy` routes deletion through the prefix-guarded `wsl --unregister` builder, so a partial
-  or already-stopped stack tears down cleanly and idempotently.
-
-Teardown is best-effort and tolerates a partially-provisioned stack: a missing or already-terminated
-distro is reported and skipped, not an error. Cluster teardown itself removes no data path — `down`
-removes nothing at all and `destroy` removes only derived paths — but that guarantee stops at the frame
-boundary. Staging into the distro is **one way**: the working tree is extracted from a tar into the
-distro's ext4 vhdx, no reverse transfer exists, and nothing bind-mounts `.data`. `wsl --unregister`
-deletes the vhdx, so a `.data` written inside the distro goes with it. See
-[durable state](../architecture/durable_state.md).
-
-WSL2's host-side share reconcile is `Nothing`: drvfs already exposes the host drive at `/mnt/<letter>/…`
-(`windowsPathToWslMount` rewrites the Windows path), so no post-create attach is needed — the
-`ShareReconcile` half the other lanes carry is empty here. The stable Docker-visible alias is instead minted
-**guest-side** as a pure `AliasState`, and the guest share is proven present and writable by a retrying
-`Ready` witness (mount-readiness) before the alias is minted, so the alias step cannot race a not-yet-visible
-mount. The guest probes that feed that witness stay **trivial**: because `wsl -d <distro> -- bash -lc <cmd>`
-crosses PowerShell's native-argument quoting, each probe is a single simple command (`test -d`, `test -w`,
-`readlink`), never a compound `set -eu` script with nested `"$(… "…")"` — retry and the `AliasState`
-branching live in Haskell. See [readiness](../architecture/readiness.md).
-
-The `deploy-VM` step kind is the reuse unit, not a WSL2-specific command: the same kind is interpreted
-with Lima builders on Apple Silicon (see [lima](lima.md)) and Incus builders on native Linux (see
-[incus](incus.md)). A project does not re-implement VM management; it places `deploy-VM` in its chain
-and the interpreter selects the provider for the current substrate. The model itself — the chain as the
-project, the recursive interpreter, and the single representation — is owned by
-[composition_methodology](../architecture/composition_methodology.md); this document describes the WSL2
-provider's contribution to it.
-
-## Resource Cordon
-
-The `resources` budget (cordon #1, "the VM is the wall") is applied differently on WSL2 than on Lima or
-Incus, and the WSL2 provider is **honest about the difference** rather than pretending parity. Incus
-(`limits.memory`) and Lima (`--memory`) give each VM a hard, per-instance memory/CPU cap. **WSL2 has no
-per-distro memory or CPU cap** — there is no `wsl --memory`/`--cpu`. The only lever is the *global*,
-per-user `%UserProfile%\.wslconfig` `[wsl2]` block, which sizes the **single shared utility VM** that
-hosts every distro on the machine. So the WSL2 wall is two cordons of different strengths:
-
-| Dimension | WSL2 mechanism | Strength |
-|---|---|---|
-| CPU / memory | the global `.wslconfig` `[wsl2]` `processors` / `memory` / `swap` ceiling | global utility-VM ceiling (shared across all distros), not a per-distro wall |
-| storage | per-distro VHDX cap, applied at registration via `wsl --install --vhd-size <GB>` | a real per-distro wall |
-
-`wsl2SizingArgs` (the one canonical builder, fed by `parseQuantity`) emits the `[wsl2]` body:
-`processors` and `memory` from the budget, plus `swap` sized to the memory budget for OOM headroom — so
-a build that fits the budget is not killed by the host reclaiming the under-provisioned utility VM. The
-`.wslconfig` carries **no** `vhdx-size` key (it is not a `.wslconfig` setting); storage is the
-`--vhd-size` install flag instead.
-
-`wsl2SizingArgs` also emits **two idle-timeout keys, in two sections**, both required to keep a live demo
-up after `project up` returns. `[wsl2] vmIdleTimeout=-1` pins the shared **utility VM** alive across the
-gaps between the separate `wsl -d` steps a lifecycle runs; `[general] instanceIdleTimeout=-1` keeps the
-individual **distro instance** alive after the last `wsl` session ends. `vmIdleTimeout` governs only the
-utility VM, so with it alone the distro (and its in-VM kind cluster) idle-stops ~15–60 s after `project up`
-and the kind control plane does **not** recover on the next cold start — the `instanceIdleTimeout` peer is
-what closes that gap ([microsoft/WSL #8659](https://github.com/microsoft/WSL/discussions/8659)). Because
-both are `.wslconfig` keys, `mergeWslConfig` now manages **both** the `[general]` and `[wsl2]` sections
-(replacing exactly the sections our body declares, still preserving a user's unrelated sections). If a WSL
-build regresses even with both keys set, the fallback is a managed keep-alive that holds a session open in
-the distro; the native `.wslconfig` keys are tried first.
-
-Because `.wslconfig` is global and requires `wsl --shutdown` to take effect, the WSL2 launch is a
-**list of effects**, not a single argv — the structural reason the unified per-substrate lift
-(`SubstrateProvider.spLaunch`) returns `[HostEffect]`:
-
-1. write `%UserProfile%\.wslconfig` with the `[general]`+`[wsl2]` ceiling, **backing up** any pre-existing
-   file to `<path>.hostbootstrap-demo.bak` (a user's own `.wslconfig` is never clobbered irretrievably). The
-   write **merges** (`mergeWslConfig`) our managed sections into any existing file rather than replacing the
-   whole file, so a user's unrelated sections and keys are preserved for the duration;
-2. `wsl --shutdown` — note this stops **every** distro on the machine and the shared utility VM, not just
-   this one (an unguarded global side-effect, disclosed here rather than silently taken);
-3. register the distro with its `--vhd-size` storage cap. The `swap` size is on the Windows system drive and
-   **is** counted in the Windows storage preflight, so the swapfile's footprint is budgeted alongside the VHDX.
-
-Both `project down` and `project destroy` restore the backed-up `.wslconfig` (or remove the one we wrote if
-there was none), and the restore is crash-recoverable — a backup-once discipline keeps the true original, so an
-interrupted or `down`-but-not-destroyed run does not leave the global ceiling applied throttling other
-distros.
-The preflight predicate that decides whether the host can satisfy the budget reads **total** physical
-memory on Windows (CIM `Win32_ComputerSystem.TotalPhysicalMemory`), mirroring Apple's stable
-`hw.memsize` — a host whose total RAM cannot fit the budget fails fast before the expensive build rather
-than passing on transient free RAM. The metal host preflight (`preflightHostBudget` / `verifyHostBudget`)
-gates on `budget + ~4 GiB host-OS reserve ≤ total`, so a budget that fits under total RAM but would leave the
-host short is refused rather than passed — behavior real-run-validated 2026-07-05 by the Windows/WSL2
-`test run all` (**6/6**). The enforcement mechanics, the three rings, and the per-substrate table are owned by
-[applied_cordon](applied_cordon.md); this section is the WSL2-specific instance.
-
-## `ensure wsl2`
-
-`ensure wsl2` (`HostBootstrap.Ensure.Wsl2`) is the install-and-verify reconciler for the provider: it
-probes firmware virtualization, Windows feature state, Windows hypervisor launch readiness, and
-`wsl --status`. Firmware virtualization is a host-floor fact: if the
-CPU/firmware support is absent, the reconciler reports `Unsatisfiable` because the project binary cannot
-change BIOS/UEFI state. OS-level readiness is reconciler-owned: when absent, it installs the
-`Microsoft.WSL` package, enables the WSL2 / Virtual Machine Platform feature, ensures the Windows
-hypervisor is configured to launch (for example `hypervisorlaunchtype auto` or an equivalent verified
-state), sets WSL default version 2, and then re-verifies. It applies on `windows-cpu` and `windows-gpu`
-(`appliesTo = isWindows`) and fails fast on a wrong host. It runs as part of the `deploy-VM` bring-up in
-`project up`, ahead of the project-owned distro registration. The project VM step then registers its own
-named Ubuntu-24.04 distro (`wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>`) if absent and enters it with
-`wsl -d <distro> -- …`. On a host that has never enabled WSL2 or whose hypervisor boot state was changed,
-it can return the `NeedsReboot` verdict described above. See [ensure reconcilers](ensure_reconcilers.md)
-for the reconciler contract.
-
-## winget And The Pre-Binary Frame
-
-WSL2 is the *VM* frame the running binary owns — not pre-binary work. On Windows the thin Python
-bootstrapper's pre-binary job mirrors the Apple Silicon path: it asserts the host minimums and ensures
-the host build toolchain with **winget** (the Homebrew-analog package manager — a one-time
-pipx-via-winget install brings up the bootstrapper itself), then builds the native `hostbootstrap.exe`
-host-native and execs it. Enabling WSL2 and importing the distro are reconcilers the **exe** owns
-(`ensure wsl2`), exactly as `ensure lima` is owned by the binary on Apple Silicon, not by the Python
-layer. See [python_haskell_boundary](../architecture/python_haskell_boundary.md).
-
-## Relationship To Lima And Incus
-
-Lima is the Apple Silicon VM provider and Incus the native Linux VM provider; WSL2 is the Windows peer.
-On Windows the chain's `deploy-VM` step uses WSL2 because it is the native, first-class Linux VM the
-platform ships, just as `deploy-VM` uses Lima on Apple Silicon and Incus on native Linux. WSL2 is **its
-own provider**, not Incus-on-Windows: `ensure incus` stays applicable only on Apple Silicon and Linux.
-The accelerator's CUDA capability on Windows is a separate **host-native daemon** (composition pattern #6):
-it runs nvcc and the generated worker on bare Windows and connects to the WSL2-hosted web service through
-the local-only NodePort. It does not stage that worker into the WSL2 cluster. Generic build-only staging
-remains pattern #7. See [ensure reconcilers](ensure_reconcilers.md) and
-[composition_patterns](composition_patterns.md).
+> **Purpose**: Describe the active Windows WSL2 provider and distinguish it from unused import
+> builders and historical validation claims.
 
 ## Current Status
 
-The WSL2 host provider is the Windows VM frame for the third metal substrate; it is owned by the
-development plan ([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)). The
-`HostBootstrap.Wsl2` argv builders (including the prefix-guarded `unregister`), the
-`classifyWsl2Readiness` classifier, `HostTool Wsl` System32 resolution, and `ensure wsl2` are
-unit-tested as pure values exactly as their Lima/Incus peers are. Live validation on 2026-06-26 and
-2026-06-28 enabled the Windows WSL/VMP features, installed `Microsoft.WSL`, reconciled
-`hypervisorlaunchtype Auto`, and stopped at the required host reboot. Post-reboot validation on
-2026-06-29 crosses that platform gate: `HyperVisorPresent = True`,
-`Win32_Processor.VirtualizationFirmwareEnabled = True`, `wsl --status` succeeds with default WSL version
-2, and `wsl --list --verbose` can enumerate the managed WSL2 distro.
+Windows uses a project-owned named Ubuntu 24.04 WSL2 distro as the VM provider frame. The active
+registration path uses:
 
-The demo's binary-owned chain selects WSL2 on Windows, composes the managed distro name from the project
-identity (`hostbootstrap-demo-vm`), registers that Ubuntu-24.04 distro if absent, hands off through
-`wsl -d <distro> -- ...`, stages source/config under `/root/hostbootstrap`, installs the local Python
-bootstrapper through `pipx`, builds the in-distro host-native demo binary, installs Docker in the distro,
-and starts the project image build from `docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64`. One live
-run reached a tagged `hostbootstrap-demo:local` image and a running kind control-plane; the in-Dockerfile
-gate reached pinned `fourmolu`, `hlint` (`No hints`), `cabal -Werror`, `spago build`, and `esbuild`.
+```text
+wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>
+```
 
-Phase 11 **closed 2026-07-01**: the Windows lifecycle completed end to end through `test run all` (`6/6`)
-and `project destroy`. The earlier `Wsl/Service/0x80072746` session drop during the in-distro Docker build
-was diagnosed as the WSL2 utility VM being terminated under memory pressure because the budget cordon was
-**computed but never written**; Sprint 9.7's honest cordon (write `.wslconfig` + `wsl --shutdown` + `swap`,
-plus the stable total-memory preflight) fixed the root cause, and the closure run brought up in-distro
-Docker/kind/registry/web **without a session drop**, restoring `.wslconfig` on teardown.
-(The Windows/WSL2 path is real but remains the most memory-sensitive substrate on a 16 GiB host;
-the `push-image` stage can still stall intermittently under memory pressure, though the single-binary in-cluster registry is far lighter than the multi-pod stack it replaced.) Static validation remains clean: the core and demo Cabal
-test/build gates and `poetry run python -m hostbootstrap.check_code` pass.
+It then enters the distro with `wsl -d <distro> -- ...`, stages source, builds/installs the Linux project
+binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
+container frame. `project down` uses per-distro termination; `project destroy` uses guarded
+`wsl --unregister`.
 
-Closure requires one Windows VM lifecycle run end to end through the core `deploy-VM` step kind and the
-recursive `project up` interpreter:
+Pure `wsl --import`/rootfs helpers still exist, but the current provider does not download or consume a
+cached rootfs tarball. Documentation must not present that older design as the live path.
 
-- `project up` imports/enters the Ubuntu-24.04 distro, stages the working tree into the guest, builds
-  the project binary host-native in the distro, ensures Docker in the distro, builds the project image,
-  and hands `project up` down into the next frame.
-- `project down` terminates the distro through the `wsl --terminate` / `wsl --shutdown` builder,
-  preserving the distro and its vhdx for a later `project up`.
-- `project destroy` unregisters the guard-prefixed distro through the `wsl --unregister` builder.
+## Platform reconciliation
 
-The VM-provider axis is tracked in the development plan
-([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)); the Windows substrate detection it
-depends on is [phase 2](../../DEVELOPMENT_PLAN/phase-2-host-tools-and-config.md).
+`ensure wsl2` handles WSL/VMP feature and platform readiness. A required Windows reboot is reported to
+the operator; the binary does not reboot the host. Readiness is not yet an unforgeable universal
+capability—see [readiness](../architecture/readiness.md).
 
-## See Also
+The thin Python bootstrap happens before this provider exists. It requires winget and Windows
+PowerShell, but downloads the pinned GHCup executable directly with `Invoke-WebRequest`; winget does not
+install the Haskell toolchain. See
+[Python/Haskell boundary](../architecture/python_haskell_boundary.md).
 
-- [composition_methodology](../architecture/composition_methodology.md) — canonical home of the chain /
-  `[Step]` / recursive-interpreter model this provider plugs into.
-- [lima](lima.md) — the Apple Silicon VM provider that interprets the same `deploy-VM` step kind.
-- [incus](incus.md) — the native Linux VM provider that interprets the same `deploy-VM` step kind.
-- [ensure reconcilers](ensure_reconcilers.md) — the reconciler contract `ensure wsl2` follows.
-- [composition_patterns](composition_patterns.md) — pattern #7, the headless host build the Windows
-  CUDA capability instantiates (distinct from this VM provider).
-- [demo runbook](../operations/demo_runbook.md) — the demo lifecycle that exercises the VM steps.
-- [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) — the development plan for the
-  VM-provider axis.
+## Resource wall and global effect
+
+WSL2 has no per-distro CPU or memory limit. The provider merges managed `[general]`/`[wsl2]` sections
+into the user's global `%UserProfile%\.wslconfig`. Initial creation follows that write with
+`wsl --shutdown` before install. On an existing distro, current reconcile merges the file again but runs
+shutdown only when the distro is stopped; a running distro is deliberately left live, so changed
+CPU/memory values may not take effect during that invocation. The target must return
+`Unchanged | Migrated | Refused` from an observation of the effective wall rather than calling a file
+rewrite an applied cordon.
+
+Target planning derives a pure exact `ProviderWallSpec ... wallSpecId`, `EffectiveBudget`, and proved
+`BudgetPartition` before touching this shared state. A journaled same-spec reservation plus exclusive
+platform lock/CAS authorizes the initial shared-wall call. The `ProviderWallReservation ... reservationId
+fence` retains that lock across the call; only authoritative applied/unchanged observation consumes it and
+jointly mints the live `ProviderWallAuthority ... wallSpecId wallEpoch fence` plus epoch-indexed
+`WslGlobalWallLease`. The post-observation lease is not circularly required before it exists. An unknown
+result exposes recovery/reprobe state, not later mutation authority. Subsequent reconciliation or
+restoration requires the live authority, lease, and exact partition projection, with the epoch/fence
+revalidated at the call.
+
+The provider later restores a saved original when one existed. If the original file was absent and a run
+crashes after its first write, current backup-exists inference has no durable absence marker: retry can
+save the generated file as the “original” and teardown then restores generated content instead of
+absence. Sprint 11.10's target records present bytes or absent state in an identity-bound receipt before
+mutation and restores only through that receipt. Shutdown affects the shared WSL utility VM and stops
+every distro, so it is a global side effect rather than a project-local wall.
+
+The managed body includes processors, memory, swap equal to the memory amount, and idle-timeout settings.
+Storage is the per-distro `--vhd-size` cap supplied only when the selected install route registers a new
+distro. The current existing-distro path neither observes nor resizes its VHDX, so that cap is not an
+effective-wall reconciliation. Windows capacity preflight includes system-drive free space.
+
+## Durable share
+
+WSL drvfs already exposes the Windows project directory below `/mnt/<drive>/...`; no attach command is
+needed. The provider waits for that path and reconciles the stable Docker-visible alias
+`/var/tmp/hostbootstrap-demo-data`, which is then carried through kind and the pod.
+
+The direct alias implementation has a separate first-run bug; WSL and all other lanes still lack the
+required destroy/up/readback proof. See [durable state](../architecture/durable_state.md).
+
+## Lifecycle caveat
+
+Current teardown is a root cleanup plus project provider hook, not recursive dispatch through the WSL
+child before termination/unregister. WSL unregister removes the distro VHDX, but host-shared `.data`
+should remain outside it; that outcome is not yet live-gated.
+
+## Validation
+
+Historical Windows runs are evidence, not present-tense closure. The current code has changed since those
+runs and the demo profile/durable-readback defects remain open. Closure requires a current Windows run
+covering platform reconcile, install/no-op, project up, daemon placement, host durable write,
+destroy/up/readback, recursive teardown, and restoration of `.wslconfig`.
+
+Phase status belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+## Related
+
+- [Incus](incus.md), [Lima](lima.md) — peer provider implementations.
+- [durable state](../architecture/durable_state.md) — drvfs carry and stable alias.
+- [applied cordon](applied_cordon.md) — the global WSL2 CPU/memory wall.
+- [lifecycle state model](../architecture/lifecycle_state_model.md) — target capabilities and ownership.

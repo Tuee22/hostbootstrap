@@ -63,19 +63,23 @@ and
 [`basecontainer-daemon-deps.cabal`](../../core/warm-deps/daemon/basecontainer-daemon-deps.cabal)):
 
 * Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
-* Built with `--enable-tests --enable-benchmarks --enable-shared`, so the
-  vanilla, profiling, **and** dynamic (`dyn`) ways are all in the store.
+* Built with `--enable-tests --enable-benchmarks --enable-shared` to match downstream solver/build
+  configuration. The warmed libraries have vanilla and dynamic (`dyn`) ways. Those flags do not build
+  third-party packages' test/benchmark components, and profiling is not enabled.
 * Compiled at **`-O2`** (`optimization: 2` in `warm-store.config`, imported by
   [`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project)).
 * Pinned to the versions in the in-image freezes (`core.freeze` and, for the
   daemon-family deps, `daemon.freeze`).
 
 The store is warmed by `cabal build all -j${CABAL_BUILD_JOBS}`; the package-level fan-out is **not**
-left unbounded. The base build sizes `-j` (and a matching `docker --memory/--cpus` cap) from measured
-host RAM/CPU so the `-O2` + dynamic-way compile of the heavy numeric subtree
-(`criterion`/`statistics`/`math-functions`) stays within budget rather than OOM-racing into a GHC
-SIGSEGV. Parallelism only affects build wall-clock, not store contents, so the cache-hit contract
-below is unchanged. See [base_image.md](base_image.md#host-sized-warm-store-build-budget).
+left unbounded. On **Linux**, the base command measures host RAM/CPU, sizes `-j`, and supplies matching
+Docker `--memory`, `--memory-swap`, and `--cpu-period`/`--cpu-quota` caps so the `-O2` + dynamic-way
+compile of the heavy numeric subtree (`criterion`/`statistics`/`math-functions`) stays within that build
+budget rather than OOM-racing into a GHC SIGSEGV. On macOS and Windows the command currently supplies no
+explicit Docker CPU/memory caps and leaves `CABAL_BUILD_JOBS` unset, so the Dockerfile's conservative
+`-j1` default applies; that path is not host-sized. Parallelism only affects build wall-clock, not store
+contents, so the cache-hit contract below is unchanged. See
+[base_image.md](base_image.md#host-sized-warm-store-build-budget).
 
 `fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
 (see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
@@ -168,9 +172,9 @@ Why this works:
   `COPY core/warm-deps/` step never carries them; the in-image
   `cabal freeze` step produces them. Every `basecontainer-<flavor>-<arch>` tag
   carries one specific set of freezes, frozen at the moment the base was built.
-* The binary is built **host-native** on every substrate, where the freezes are read
-  through the project's `import:` line(s) resolved against the host toolchain. When the
-  binary later builds the project container `FROM` the base image, the same fragments at
+* The binary is built **host-native** using a host project file that does **not** import these absolute
+  in-image paths. When the binary later builds the project container `FROM` the base image, a distinct
+  container project file imports the fragments at
   `/opt/basecontainer/haskell-deps/core.freeze` (and `daemon.freeze` for a daemon app)
   are present in the image at the point Cabal reads `cabal.project` and the absolute
   paths resolve. The host-native build does **not** reach `/opt/cache/cabal` (that warm
@@ -179,10 +183,9 @@ Why this works:
   commits no freeze of its own. See
   [build_and_run_model.md](../architecture/build_and_run_model.md) for the host-native
   build model and its store.
-* When `hostbootstrap base build-and-push` ships a new base tag with a
-  refreshed warm store, the derived project's next container build
-  automatically picks up the new freezes. Nothing in the derived project
-  needs to change.
+* When `hostbootstrap base build-and-push` ships a new base tag with a refreshed warm store, the
+  derived builder must explicitly pull it, resolve its digest, and build from that digest. A cached
+  same-named local tag is not an acceptable sync mechanism.
 * If a derived project's own `*.cabal` constrains a package to a version
   incompatible with an imported freeze, Cabal errors out clearly with "could not
   satisfy" — the right behaviour. The project then either bumps its own
@@ -246,24 +249,32 @@ Adding a new dep is a one-PR loop:
    canonical publish workflow in [build_release.md](build_release.md):
 
    ```sh
-   hostbootstrap base build-and-push --arch amd64
-   hostbootstrap base build-and-push --arch arm64
+   poetry run hostbootstrap base build-and-push --arch amd64
+   poetry run hostbootstrap base build-and-push --arch arm64
    ```
+
+   Run each command on a native host/Docker engine of the matching architecture. The current CLI uses
+   the requested `--arch` in the tag but does not validate that it matches the builder; Phase 6 Sprint
+   6.7 owns that fail-closed check. Do not run both lines on one architecture or rely on emulation.
 
 The layered freezes are the **SSoT for "what versions ship with each base tag"**.
 Treat them as a public API.
 
 ## How to verify your project hits the cache
 
-Inside a project container (after `hostbootstrap build`), run:
+Inside the derived image's project build environment, after its project sources and
+`container.cabal.project` are present, run:
 
 ```sh
 cabal build --dry-run --enable-tests --enable-benchmarks all
 ```
 
-The build plan should show **only the project's own** library, executable,
-test-suite, and benchmark targets in "Compiling …" status. If any third-party
-package appears in the plan with `(requires build)`, the warm store missed it.
+The Python `hostbootstrap build` command does not create this container; it only materializes the
+host-native project binary. The project-supplied build-image action owns the derived build environment.
+
+The build plan should show the project's own targets and source-built `hostbootstrap-core` in
+"Compiling …" status. Its dependency closure and other third-party packages should be cache hits. If a
+third-party dependency appears with `(requires build)`, the warm store missed it.
 
 Most common causes, in order of likelihood:
 

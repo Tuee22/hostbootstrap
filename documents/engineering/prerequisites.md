@@ -9,18 +9,21 @@
 
 ## TL;DR
 
-- The Python bootstrapper asserts a **minimal, fail-fast** set of host minimums — only what must hold
-  before the project binary can be built. **These minimums are the only hard fail-fast surface in the
-  whole system.**
-- Everything beyond those minimums and the pre-binary Haskell build toolchain (Docker, Colima, CUDA,
-  Homebrew packages, incus, WSL2, CUDA-on-Windows) is **installed by Haskell `ensure` reconcilers** when
-  the binary runs (install-and-verify), so the binary is **never blocked by an absent-but-installable
-  dependency**. Hardware/firmware capabilities that cannot be safely installed — notably the Linux or
-  Windows NVIDIA display driver — remain explicit preconditions. See
+- The Python bootstrapper asserts a **minimal, fail-fast** set of host minimums before the project
+  binary can be built. Other binary-owned reconcilers and lifecycle gates also fail fast; this page owns
+  only the pre-binary floor.
+- Dependencies beyond those minimums and the pre-binary Haskell build toolchain are owned by Haskell
+  lifecycle/reconciler actions. When a current probe reports absence and a supported platform install
+  plan exists, the
+  reconciler installs and re-runs that probe rather than documenting a manual prerequisite. The target
+  makes that a total install-and-verify contract; current weak probes, notably Linux Incus client
+  presence, remain open. Hardware/firmware capabilities that cannot be safely installed — notably the
+  Linux or Windows NVIDIA display driver — remain explicit preconditions. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - A missing *minimum* aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
   A reconciler also fails fast for a wrong-host misuse or an irreducible hardware/firmware precondition;
-  mere absence of an installable package triggers reconciliation instead.
+  mere absence of a package with a supported install plan on that substrate triggers reconciliation
+  instead.
 - Bootstrapper freshness is not a host minimum. Normal commands do not check whether the pipx-installed
   wrapper is at the latest commit; self-update is explicit and documented in [self_update.md](self_update.md).
 
@@ -28,7 +31,8 @@
 
 The Python layer runs *before any project binary exists*, so it can only depend on the host shell
 and a handful of system tools. Its job is to assert the host is bootstrappable, ensure the host build
-toolchain, build the project binary host-native into `./.build/<executable>`, and exec it. The split is
+toolchain, build the project binary host-native into `./.build/<executable>`, and invoke it. Handoff
+replaces the Python process with `exec` on POSIX and runs a child subprocess on Windows. The split is
 between what the wrapper asserts and what the binary owns: the wrapper asserts only the **pre-binary
 build floor**, which is identical for `hostbootstrap build`, `hostbootstrap doctor`, and `hostbootstrap
 run` on every substrate. Runtime host preconditions (a usable `/dev/kvm`, the `linux-gpu` NVIDIA
@@ -43,6 +47,7 @@ The Python bootstrapper asserts, fail-fast:
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
   perform.
+- **curl.** Required for the pinned, SHA-256-verified GHCup bootstrap download.
 Hardware virtualization is **not** a Python minimum. A usable `/dev/kvm` is a runtime precondition the
 binary self-heals in `ensure incus` (loading the `kvm` module if the node is absent, granting the invoking
 user `rw` via `setfacl` if it is present-but-unwritable, and failing fast only when firmware virtualization
@@ -61,11 +66,9 @@ volume-injection smoke — `docker run --rm -v
 `nvidia` runtime is insufficient. The direct demo chain runs `ensure docker` and `ensure cuda` before it
 builds the CUDA-flavored project image and hands it off with `--gpus=all`.
 
-The Linux GPU install planner and no-op classifier are covered by the current 364-test core baseline,
-and the direct chain/base/handoff selection by the 87-test demo baseline. Phase 3.7 closed on 2026-07-15
-after a named Ubuntu 24.04 WSL2 `linux-gpu` guest on an RTX 3090 Windows machine installed and verified the
-eight-step plan, then immediately exited 0 with `ensure cuda: present (no-op)`. This was WSL2, not native
-Linux. Phase 5.5 remains `Active` pending pristine and warm native-Linux-GPU lifecycle validation.
+The Linux GPU install planner and no-op classifier have unit coverage. Historical WSL2 evidence is not a
+native-Linux lifecycle gate. Current status and exact dated test evidence belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Apple Silicon Minimums
 
@@ -79,7 +82,7 @@ These three are the bedrock the Apple bootstrap path needs before it can ensure 
 Homebrew is the channel through which the bootstrapper installs the host GHC/Cabal toolchain
 (`ghcup`) needed to build the binary host-native, so Homebrew's own presence must be a hard
 precondition rather than something reconciled. (The Docker provider, `ensure colima`, runs later —
-the execed binary owns it, not the pre-binary bootstrapper.)
+the invoked binary owns it, not the pre-binary bootstrapper.)
 
 ## Windows Minimums
 
@@ -99,29 +102,33 @@ precondition for the headless host-build CUDA path (`ensure cudawin`, compositio
 tooling is not a Python prerequisite. This is distinct from the in-container `linux-gpu` toolkit
 reconciled by `ensure cuda`.
 
-WSL2 is **not** a Python pre-binary minimum. The VM provider (`ensure wsl2`) enables WSL2 / Virtual
-Machine Platform as needed, registers the `Ubuntu-24.04` distro, classifies any reboot-required
-state, and then the in-distro Linux frame applies its own Linux minimums. The host CUDA capability
-(`ensure cudawin`) also runs later, owned by the execed binary, not the pre-binary bootstrapper.
-The pre-binary Windows toolchain bootstrap and `ensure cudawin` path are validated on a real Windows
-GPU host, and the real WSL2 provider lifecycle closed the Phase-11 Windows pristine gate (`test run all`
-`6/6`).
+WSL2 is **not** a Python pre-binary minimum. `ensure wsl2` prepares the Windows platform: it installs or
+enables WSL2 / Virtual Machine Platform as needed, sets WSL version 2, checks virtualization and
+hypervisor readiness, and classifies a reboot-required state. It deliberately uses
+`wsl --install --no-distribution`; the project-owned `deploy-VM` step later registers that project's
+named `Ubuntu-24.04` distro, applies its VHDX cap, and creates the actual VM frame. The in-distro Linux
+frame then applies its own Linux minimums. The host CUDA capability (`ensure cudawin`) also runs later,
+owned by the invoked binary, not the pre-binary bootstrapper.
+The Windows GHCup download is versioned but the Python path does not verify a checksum or signature before
+execution. That provenance gap, and current Windows lifecycle status, are documented in
+[Python/Haskell boundary](../architecture/python_haskell_boundary.md) and the development plan.
 
-## Everything Else Is Ensured, Not Required
+## Post-Binary Reconciliation And Platform Limits
 
-The following are **not** Python prerequisites; the `ensure` suite installs and verifies their
-installable parts when the binary runs, so the binary is never blocked by a merely absent package.
-Reconcilers still fail fast on a wrong host or on an irreducible driver/firmware precondition:
+The following are not additional Python checks. The Haskell side owns their post-binary probe/install or
+delegation path. A supported absent package is installed and re-probed; absence on a substrate without
+an install plan is refused or delegated to that substrate's provider. The current probe may still be too
+weak to establish the capability its label promises:
 
 | Concern | Reconciler | Applies on |
 |---|---|---|
-| Docker reachability | `ensure docker` | all substrates |
-| Per-project Colima VM | `ensure colima` | Apple silicon |
+| Docker reachability | `ensure docker` | applicability accepts all substrates; installation is Linux-only, Apple delegates to Colima, and Windows delegates to WSL2/provider setup |
+| Default Colima runtime profile (currently unsized) | `ensure colima` | Apple silicon |
 | Lima pristine demo VM provider | `ensure lima` | Apple silicon |
 | Incus host-provider | `ensure incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
 | NVIDIA container toolkit + Docker runtime/CDI/volume injection (NVIDIA kernel driver is a precondition) | `ensure cuda` | `linux-gpu` |
-| Homebrew packages | `ensure homebrew` | Apple silicon |
-| WSL2 pristine VM provider | `ensure wsl2` | Windows (`windows-cpu` / `windows-gpu`) |
+| Homebrew presence | `ensure homebrew` | Apple silicon; verification-only because Homebrew is already a pre-binary minimum |
+| WSL2 platform and hypervisor readiness (the later `deploy-VM` step creates the distro) | `ensure wsl2` | Windows (`windows-cpu` / `windows-gpu`) |
 | Headless host-build CUDA (NVIDIA driver precondition; CUDA Toolkit + MSVC via winget) | `ensure cudawin` | `windows-gpu` |
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
@@ -137,10 +144,9 @@ See [self_update.md](self_update.md).
 ## Typed Checks In hostbootstrap-core
 
 The fail-fast minimums above are asserted live by the thin bootstrapper's pure-Python `prereqs.py`;
-`HostBootstrap.HostPrereqs` is a **forward-looking mirror** of them as typed checks, dispatched by the
-detected substrate (`HostBootstrap.Substrate`), whose current check set is broader than the live
-`prereqs.py` (on Linux it additionally gates `/dev/kvm` read-write and Docker reachability — runtime
-preconditions the live wrapper now leaves to the binary's `ensure` logic). `checkHostMinimums` runs the
+`HostBootstrap.HostPrereqs` mirrors the substrate-dispatched typed minimums without reasserting Docker,
+KVM, or NVIDIA runtime state; those transitions belong to their `ensure` reconcilers.
+`checkHostMinimums` runs the
 labelled checks in order and stops at the first failure, returning a
 one-line `PrereqError`. Each check resolves its external tools through the closed `HostTool` enumeration
 to absolute paths (`HostBootstrap.HostTool` / `HostBootstrap.HostConfig`) — no `$PATH`-resolved bare
@@ -156,13 +162,25 @@ irreducible host floor the pre-binary work depends on. The consolidated host min
 > brew install colima
 > ```
 >
-> Manually installing the Docker provider is unnecessary and drifts from the budget-sized,
-> per-project VM `ensure colima` provisions. The reconciler owns Colima's lifecycle and sizing.
+> Manually installing or starting the Docker provider bypasses the project lifecycle's dependency ordering
+> and can leave its observed state different from the state `project up` expects.
 >
 > **RIGHT**
 >
-> Let the project binary run `ensure colima`, which provisions a per-project VM sized to the
-> `resources` budget in [`<project>.dhall`](schema.md).
+> Let the project binary's lifecycle invoke the Colima reconciler. The current reconciler executes
+> `brew install colima` followed by an unsized `colima start`, and its no-op probe is `colima status` on
+> the default profile.
+> A budget-sized, per-project Colima profile is a target; the existing sizing argument builder is not yet
+> wired into this reconciler.
+
+## Current Status
+
+The pre-binary minimum and binary-owned reconciliation split above describes the current boundary.
+Remaining gaps—such as weak provider probes and the unsized default Colima profile—have exact owners and
+closure criteria in the development plan. The Linux `curl` floor and GHCup download integrity are
+closed. This
+page defines what belongs on each side of the boundary; it does not independently declare those phases
+closed.
 
 ## See also
 

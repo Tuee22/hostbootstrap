@@ -175,8 +175,10 @@ The web pod has two linked listeners sharing one process-local hub: public HTTP 
 NodePort 30080 cannot upgrade daemon registration, and the private
 listener rejects browser `Origin` headers. Local-only binding is network placement, not authentication.
 Because the hub is process-local, the demo rejects `haReplicas /= 1`; a production HA design would require
-authenticated ingress and shared routing state. Both web and daemon Deployments use `Recreate`, so a
-configuration/image rollout cannot overlap two process-local peers.
+authenticated ingress and shared routing state. The accelerator daemon is a `Deployment` with
+`Recreate`. The web workload is a `StatefulSet` with `RollingUpdate`; with the current enforced single
+replica it does not overlap two web pods in the ordinary rollout, but that non-overlap follows from the
+replica invariant, not a `Recreate` strategy.
 
 ## Linux GPU Direct Cluster
 
@@ -200,15 +202,15 @@ positive allocation returns before any Helm or `kubectl` mutation; otherwise bri
 plugin pods and refuses to proceed until a node advertises positive allocatable `nvidia.com/gpu`. The CUDA
 daemon Deployment requests `nvidia.com/gpu: 1`.
 
-The Phase 15 context primitive is also implemented: `deriveLinuxGpuContainerContext`
-represents the host-backed project container while the normal VM-backed container context still requires a
-VM ancestor. Phase 16's direct-chain selection calls this path in the live demo shape; the remaining Linux
-GPU gate is a real `nvkind` run with the CUDA daemon pod and worker.
+The current context primitive `deriveLinuxGpuContainerContext` represents the host-backed project
+container while the normal VM-backed container context still requires a VM ancestor. Direct-chain
+selection calls this path in the demo shape. The development plan owns live `nvkind`/CUDA daemon closure.
 
 ## Tests
 
-This feature is not closed by unit tests alone. Static and browser specifications are implemented; the
-remaining closure gates are live substrate integration runs.
+Unit tests alone cannot validate the hardware/runtime boundary. The acceptance contract combines static
+and browser specifications with live substrate integration runs; current gate state belongs in the
+development plan.
 
 Static tests:
 
@@ -249,23 +251,14 @@ Implemented browser e2e specifications:
 
 ## Current Status
 
-The implementation is statically green at 364 core tests and 87 demo tests under `-Werror` (the demo
-workspace also runs the embedded 364-test core suite). It includes
+The implementation includes
 config-selected `service run` with real `Web`/`Accelerator` Dhall payloads; separate linked listeners;
 dynamic rollout-hashed ConfigMaps; persistent workers; strict Float32 semantics; checked CUDA failures;
 direct Linux GPU `nvkind`; in-cluster Linux CPU/GPU daemon manifests; and serialized host-daemon lifecycle
 with absolute PID identity, symmetric PID/owner witnesses, graceful shutdown, force fallback, ambiguity
 preservation, and a bounded 30-minute pristine-install/build/connect readiness gate.
-
-Historical Apple Metal and Windows CudaWin host-tool smokes passed on 2026-07-10. Phase 3's separate
-`ensure cuda` gate closed on 2026-07-15 in a named Ubuntu 24.04 WSL2 `linux-gpu` guest on the RTX 3090
-Windows machine: the first run installed and verified its eight-step plan, and the immediate second run
-exited 0 with `ensure cuda: present (no-op)`. That WSL2 result is not a native Linux lifecycle run. Phases
-5, 13, 15, 16, and 18 remain `Active`. Phase 5 specifically still requires a native Linux CPU
-Incus/ClusterIP/C++ lane at `8/8` and a native Linux GPU direct-nvkind/CUDA/browser lane at `8/8`; WSL2
-does not satisfy either native gate. Apple host-daemon lifecycle, the durable Windows host-daemon lane,
-and the remaining per-substrate browser/harness runs stay in their owning phases. No live `8/8` result is
-recorded yet.
+Exact static-gate defects, test totals, live substrate evidence, and closure owners belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## See Also
 

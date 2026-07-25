@@ -34,9 +34,11 @@ its own segment.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container →
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
    Its chain is a **single** ordered `[Step]` — deploy-VM (ensure the VM provider — Lima on Apple Silicon,
-   Incus on Linux, WSL2 on Windows) → deploy-VM (launch the budget-sized VM, cordon #1) →
+   Incus on Linux, WSL2 on Windows) → deploy-VM (launch/start the provider VM; sizing is
+   creation-time for Lima/Incus and utility-VM-global for WSL CPU/memory) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
-   VM) → context-init in the VM → deploy-kind → deploy-registry → push-image → deploy-chart → expose-port —
+   VM) → context-init announcing frame anchor in the VM → deploy-kind → deploy-minio → deploy-registry → push-image →
+   deploy-chart → expose-port → accelerator-daemon placement —
    that stands up a live, persistent stack ending at a web service. See
    [single representation](#single-representation-the-chain-is-the-representation).
 3. **Host → managed cloud cluster** — build the container, then a container-frame step uses a cloud CLI
@@ -71,17 +73,19 @@ stays a pure function of root parameters.
 
 ## The Chain And Its Recursive Interpreter
 
-The chain is the single representation of the project; `project up` is its recursive (fractal)
-interpreter. The canonical home for this doctrine is
+The chain is the current single forward ordering and `project up` is its recursive (fractal)
+interpreter. Current frame transport and teardown remain separate inputs; the target opaque plan derives
+all three views together. The canonical home for this doctrine is
 [composition_methodology § The Self-Reference Lift](../architecture/composition_methodology.md#the-recursive-project-up-interpreter);
 the cookbook summary:
 
-- **`chain :: cfg -> [Step]`.** The whole project topology is one flat, ordered list of steps,
-  computed purely from the root parameters. `--dry-run` renders exactly this value.
-- **Fractal descent.** Each frame boundary is the same move: *provision the frame → build/install the
+- **`chain :: cfg -> [Step]`.** The current forward source is one flat list computed from root
+  parameters. `--dry-run` renders source order, but public constructors do not enforce a non-empty,
+  contiguous frame sequence: `A/B/A` is grouped by first frame appearance and executes as `A/A/B`.
+- **Fractal descent.** Each `project up` frame boundary is the same move: *provision the frame → build/install the
   pb in it → hand off `pb project up`*. The interpreter runs the current frame's steps, then re-invokes
-  the binary in the next frame, which interprets its own segment of the same chain. Restartable from any
-  frame; idempotent (reconcile-to-running).
+  the binary in the next frame, which interprets its own segment of the same chain. Reconcilers attempt
+  convergence, but typed idempotent outcomes are not yet universal.
 - **The Python bootstrapper is the metal-frame instance** of that exact pattern — provision the metal
   frame, build/install the pb, hand off — with two caveats the cookbook reuses: the *build* step is
   parent-orchestrated (the child pb does not exist yet), and the container frame *skips* the build
@@ -89,7 +93,8 @@ the cookbook summary:
   as `kubectl`/`helm` leaves.
 - **`.dhall` is parameters + context + witness, never the shape.** Each pb reads the sibling
   `<project>.dhall`, verifies it occupies the frame the `.dhall` describes, and fails fast on a wrong
-  handoff before any side effect (see [dhall_topology](dhall_topology.md)).
+  handoff before the current frame's chain effects. Outer-frame provider/preparation effects may already
+  have occurred (see [dhall_topology](dhall_topology.md)).
 
 ## Step Kinds
 
@@ -99,8 +104,14 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 
 | Origin | Step kinds (examples) |
 |---|---|
-| Core (host-management) | `deploy-vm`, `ensure-<tool>`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port` |
-| Project (workload) | `deploy-registry`, `push-image`, … contributed by the consumer |
+| Core (host-management) | `deploy-vm`, optional `ensure-<tool>` row, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port`, `post-handoff-<name>` |
+| Project (workload) | `deploy-minio`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
+
+The current demo does not use `ensureStep`; it calls `runEnsure` inside composite
+provider/build/accelerator actions. Its `context-init` action is also a no-op announcer: VM config
+delivery is inside the composite bootstrap, container projection/delivery is in
+`psFrameContext`/handoff, and service projections are in deployment actions. The target plan gives each
+effect an explicit operation identity and prevents those labels from drifting from the work.
 
 The canonical taxonomy of step semantics — converge / context-lift / one-shot action / control-loop /
 run-to-completion, plus each kind's plan/apply, retry behaviour, and L0/L1/L2 layer — lives in
@@ -110,25 +121,31 @@ those kinds across the topologies above. Which layer contributes which kind is
 
 ## Single Representation: The Chain Is The Representation
 
-One operation has one representation; the chain `[Step]` **is** that representation. A project's deploy
-is the single ordered `[Step]` its `chain` function returns, and `project up` is the one interpreter
-that walks it. The canonical home is
+One operation must have one representation. Current forward ordering is the `[Step]` returned by
+`chain`, and `project up` is its interpreter, but independently supplied `psFrameContext` and
+`psTeardown` mean the complete lifecycle does not yet meet that rule. The target opaque
+`ProjectPlan scope specDigest planId configId cfg`
+accepts one non-empty validated step sequence, derives topology, and derives child-first reverse work
+from the receipts acquired during forward interpretation. The canonical home is
 [composition_methodology § Single Representation](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)
 (and [development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)); the
 summary for shape 2:
 
 - The shape-2 chain stands up a persistent stack as one descent: `project up` interprets it across the
   composed frame stack — the metal frame provisions the VM and rebuilds the binary + project image in
-  it, the in-VM frame mints the project-container child config and hands off, and the in-container frame
-  runs deploy-kind → deploy-registry → push-image → deploy-chart → expose-port. The chain ends at a live
-  web service.
+  it, the in-VM frame reaches an announcing `context-init` anchor and hands off the
+  `psFrameContext`-derived project-container config, and the in-container frame
+  runs deploy-kind → deploy-minio → deploy-registry → push-image → deploy-chart → expose-port and places
+  the accelerator daemon. The chain ends at a live web service.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
   surface, frame-agnostic — it runs its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
   with no second bring-up path inside it. `test run all` drives the real `project up`.
-- The harness, per distinct test config, writes a test `<project>.dhall`, runs `project up` (the Test
-  profile, under `.test_data/`), asserts the live stack in-frame, and tears it down with `project destroy`
-  — guaranteed even if a body fails. It reuses the same chain `project up` stands up, so there is no
-  separate per-case bring-up. There is one representation of the deploy, and the chain is it.
+- The harness, per distinct test config, writes a `<project>.dhall`, runs `project up`, asserts the live
+  stack in-frame, and invokes `project destroy` even if a body fails. The demo currently resolves that
+  plan as Production/`.data`; target `Harness projectId runId` isolation is open. It reuses the same chain `project up`
+  stands up, so there is no
+  separate per-case bring-up. Thus the harness does not add another forward graph, even though the
+  current lifecycle still has the independent frame/teardown seams described above.
 
 ## Business-Logic Composition Shapes
 
@@ -152,13 +169,17 @@ streams) — so L0 hosts it without modification.
 
 Reused across shapes and step kinds:
 
-- **Budget cordon at every boundary** via the one canonical parser — a sized VM, the kind-node
-  `docker update` cap, `docker run` caps (see [applied_cordon](applied_cordon.md) and
-  [resource_budgeting](resource_budgeting.md)).
-- **Teardown discipline** — teardown recurses *in* (the frame is still up) then stops/deletes on the
-  ascent (the VM stopped last); best-effort and idempotent, tolerating a partial stack; never-delete-
-  `.data`, name-prefix delete-guards, and resource-class lifecycle ownership (per-run / long-lived /
-  operational); see [cluster_lifecycle](cluster_lifecycle.md).
+- **Budget propagation at every boundary (target)** via one pure provider-exact wall spec/effective
+  budget, a proved pre-effect partition, exact per-frame slices, and journaled same-spec
+  reservation→observed-live-authority transition. Current VM creation and kind/nvkind node paths have partial caps, but direct Colima
+  and the outer direct-Linux-GPU build/container effects are not uniformly capped, existing provider
+  walls are not uniformly reconciled, and child service configs do not receive the computed slice (see
+  [applied_cordon](applied_cordon.md) and [resource_budgeting](resource_budgeting.md)).
+- **Teardown discipline (target)** — descend while each child is reachable, then stop/delete on ascent;
+  require verified ownership receipts, preserve durable data, aggregate independent failures, and return
+  explicit idempotent outcomes. Current commands perform current-frame cleanup plus a hook instead; see
+  [cluster_lifecycle](cluster_lifecycle.md) and
+  [lifecycle state model](../architecture/lifecycle_state_model.md).
 - **Plan→Apply** — `project up --dry-run` renders `chain cfg` (the planned step sequence) before
   the mutating apply.
 - **Substrate multiplexing** — the same pure chain parameterized over `(model × substrate)` under one
@@ -189,10 +210,12 @@ reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `cluste
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
 The `chain :: cfg -> [Step]` value, the recursive `project up` interpreter, the core Step
-algebra, the workload-contributed step kinds, and fractal teardown via `project down`/`project destroy`
-compose end-to-end: a single `project up` on Incus/Linux stands up the live persistent stack — a
+algebra, and workload-contributed step kinds compose the current forward path end-to-end: a single
+`project up` on Incus/Linux stands up the live persistent stack — a
 cordoned kind cluster, the in-cluster registry, the project image pushed to that registry, and
-the web chart pod serving `localhost:30080` — and `project down`/`project destroy` tear it down. The
+the web chart pod serving `localhost:30080`. Current `project down`/`project destroy` perform owning
+current-frame cluster cleanup plus a project hook; they do not recursively traverse the chain and must
+not be described as fractal teardown. The
 demo's status is tracked in
 [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
 development plan.

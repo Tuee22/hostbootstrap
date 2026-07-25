@@ -5,7 +5,7 @@
 **Referenced by**: [../README.md](../README.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md)
 
 > **Purpose**: List what every project that adopts hostbootstrap must keep out of version control,
-> including the always-present `./.build/` host binary and the never-deleted `.data/` state.
+> including generated `./.build/` host artifacts and intended durable `.data/` state.
 
 Every project that adopts hostbootstrap must keep these out of git:
 
@@ -36,20 +36,17 @@ Every project that adopts hostbootstrap must keep these out of git:
   resets the full build state, deps included — see
   [build_and_run_model.md](../architecture/build_and_run_model.md)), so the
   existing `.build/` ignore already covers the store; no separate entry is needed.
-* `.data/` — the production profile's durable state directory, resolved as
-  `<owning frame's source root>/.data`. It is **not** a host mirror: nothing
-  bind-mounts it, and on a lifted frame it names a path inside the guest.
-  Cluster teardown never lists it for removal; the never-delete-`.data`
-  invariant is owned by `hostbootstrap-core`'s cluster-lifecycle semantics
-  (see [cluster_lifecycle.md](cluster_lifecycle.md), and
-  [../architecture/durable_state.md](../architecture/durable_state.md) for what
-  that invariant does and does not guarantee). No production code path creates
-  the directory; the ignore entry is a guardrail so a project that does
-  materialize one never commits it.
-* `.test_data/` — the test harness's durable test root, written by `test run`
-  in place of `.data/` so the suite never touches production state. The harness
-  creates it per run and deletes only the `.test_data` it created (see
-  [cluster_lifecycle.md](cluster_lifecycle.md) and [testing.md](testing.md)).
+* `.data/` — the production profile's durable host directory. The demo creates
+  `<project-root>/.data`, carries it through provider shares and
+  `/var/tmp/hostbootstrap-demo-data`, and mounts it through kind/nvkind into the
+  pod. Cluster teardown omits it from its removal set, although full
+  destroy/up/readback is not yet validated (see
+  [../architecture/durable_state.md](../architecture/durable_state.md)).
+* `.test_data/` — the intended test-profile durable root and the location managed
+  by generic self-created-data helpers. The demo's live test planner currently
+  selects Production/`.data`, so this ignore entry is a guardrail and target
+  location, not proof that `test run` avoids production state (see
+  [testing.md](testing.md)).
 
 The repo's [`.gitignore`](../../.gitignore) covers all of the above for
 hostbootstrap itself; downstream projects mirror the same pattern.

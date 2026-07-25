@@ -1,4 +1,4 @@
-# Phase 12: Layered Warm Store
+# Phase 12: Layered warm store
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -10,7 +10,11 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Blocked
+**Blocked by**: Sprint 6.7
+
+**Reopened 2026-07-24.** Sprint 12.4 owns the missing host/container Cabal-project split and mutable,
+unverified warm-store inputs. Earlier freeze-partition validation remains historical evidence.
 
 The warm-store freeze is **layered and in-image-generated**. The warm-store package is split into two
 layer manifests under `core/warm-deps/` — `basecontainer-core-deps.cabal` (base + the
@@ -35,6 +39,14 @@ container running the exact in-image freeze step. The freezes are never committe
 The published `basecontainer-<flavor>-<arch>` tag's full warm-store compile (every package built at
 `-O2`) is produced by the operator's `base build-and-push` — the same real-build standard Phases 5/10/11
 follow (see [development_plan_standards.md § V](development_plan_standards.md)).
+
+## Remaining Work
+
+Sprint 12.4 is Blocked by Sprint 6.7. After the corrected native publish/pull/digest gate exists, split
+the reusable host-native and container Cabal projects, eliminate container-only freeze imports from host
+builds, pin mutable warm-store inputs, and make the documented library ways/cache reuse observable. Its
+closure rebuilds, republishes, pulls, and validates the changed warm-store image through that gate. The
+preceding paragraphs describe the earlier layered-freeze work, not closure of this sprint.
 
 ## Phase Objective
 
@@ -120,7 +132,8 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 - `purescript-bridge` added to the **`core.freeze`** manifest (it is a shared web-build dependency an
   L0-direct web consumer like the demo needs, not part of the daemon closure; `core.freeze`'s scope is
   therefore base + `hostbootstrap-core` closure + the shared web-build extras) so a derived project's
-  `web bridge` step hits the warm store.
+  project-image build can run its `purescript-bridge` type-generation stage against the warm store. The
+  removed `web bridge` command is not a current runtime surface.
 
 #### Validation
 
@@ -132,6 +145,48 @@ Warm the Haskell library the demo's web build uses to generate PureScript types.
 #### Remaining Work
 
 None. `purescript-bridge` is in the `core.freeze` manifest.
+
+### Sprint 12.4: Host/container project split and reproducible warm store [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprint 6.7
+**Implementation**: `demo/cabal.project`, `demo/docker/container.cabal.project`,
+`core/warm-deps/cabal.project`, `core/warm-deps/core.project`, `core/warm-deps/daemon.project`,
+`core/warm-deps/core/basecontainer-core-deps.cabal`,
+`core/warm-deps/daemon/basecontainer-daemon-deps.cabal`, `docker/basecontainer.Dockerfile`
+**Docs to update**: `documents/engineering/warm_store.md`,
+`documents/engineering/base_image.md`, `documents/architecture/build_and_run_model.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the documented Cabal project layout work both host-native and in the Linux project container, while
+making every warm-store input reproducible and every optimization claim observable.
+
+#### Deliverables
+
+- Define separate host-native and container Cabal project files: only the container project imports
+  `/opt/basecontainer/.../core.freeze` and optional `daemon.freeze`; the host project contains no
+  container-only absolute path.
+- Update the generic consumer template to match the proven demo split and test both solver contexts.
+- Pin or integrity-lock every network-resolved warm-store tool/input, including `nvkind`, installer
+  scripts, pip/Poetry/npm tools, and Rust components; no `latest` or unversioned install counts as pinned.
+- Mechanically verify that the documented vanilla/dynamic shared-library ways match the generated store;
+  profiling remains explicitly off unless a future input enables and validates it. Verify each layer's
+  consumer actually reuses its intended artifacts.
+
+#### Validation
+
+- Clean host-native and pulled-base container builds solve independently from their respective project
+  files, including core-only and daemon-layer consumers.
+- A reproducibility test records resolved versions/digests and fails on mutable or missing integrity
+  metadata.
+- A dry-run/build-plan comparison proves cache reuse and the exact library ways present.
+
+#### Remaining Work
+
+Land the project-file split in the reusable template, pin the mutable warm-store inputs, reconcile build
+ways, rebuild/publish/pull the affected base through Phase 6, and validate both solver contexts.
 
 ## Documentation Requirements
 

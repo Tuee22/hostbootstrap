@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
+**Referenced by**: [documents index](../README.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
 
 > **Purpose**: Explain why a long agent-driven run (the ~25–50 min demo gate) gets killed on Windows
 > under a Claude Code / agentic-CLI session, and give the Windows-only procedure that makes it survive.

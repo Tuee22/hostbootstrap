@@ -4,7 +4,6 @@
 module HostToolSpec (tests) where
 
 import Control.Exception (try)
-import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.HostConfig (
     HostConfig (..),
@@ -13,11 +12,8 @@ import HostBootstrap.HostConfig (
     resolveMaybe,
  )
 import HostBootstrap.HostPrereqs (
-    KvmStatus (..),
     isUbuntu2404,
-    kvmStatusToPrereq,
     parseOsRelease,
-    renderPrereqError,
  )
 import HostBootstrap.HostTool
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
@@ -33,7 +29,6 @@ tests =
         , testGroup "HostTool enumeration" enumCases
         , testGroup "resolution" resolutionCases
         , testGroup "HostPrereqs os-release" osReleaseCases
-        , testGroup "HostPrereqs kvm" kvmStatusCases
         ]
 
 absExeCases :: [TestTree]
@@ -86,6 +81,7 @@ enumCases =
                 , Df
                 , Kill
                 , Ps
+                , Tar
                 ]
     ]
 
@@ -244,18 +240,6 @@ osReleaseCases =
         isUbuntu2404 "ID=ubuntu\nVERSION_ID=\"22.04\"\n" @?= False
     , testCase "debian rejected" $
         isUbuntu2404 "ID=debian\nVERSION_ID=\"12\"\n" @?= False
-    ]
-
-kvmStatusCases :: [TestTree]
-kvmStatusCases =
-    [ testCase "usable device is a passing check" $
-        kvmStatusToPrereq KvmOk @?= Right ()
-    , testCase "absent device points at firmware / kvm module" $
-        assertBool "mentions /dev/kvm not found" $
-            either (isInfixOf "not found" . renderPrereqError) (const False) (kvmStatusToPrereq KvmAbsent)
-    , testCase "unwritable device points at the rw remediation" $
-        assertBool "mentions not read/write" $
-            either (isInfixOf "not read/write" . renderPrereqError) (const False) (kvmStatusToPrereq KvmUnwritable)
     ]
 
 mustAbs :: FilePath -> AbsExe

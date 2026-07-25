@@ -1,4 +1,4 @@
-# Phase 13: hostbootstrap-demo Worked App
+# Phase 13: hostbootstrap-demo worked app
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -45,8 +45,8 @@ Harbor / `kind load registry:2` surfaces moved to Removed Surfaces on this closu
 § U, § X; [phase-15](phase-15-binary-context-config.md) Sprint 15.7): the demo replaced the build-then-copy
 VM config (`writeAndCopyVMConfig` writing `demo/.build/hostbootstrap-demo.vm.dhall` + `copyFileToDemoVM`) and
 the build-then-mount container config (`mintContainerConfig` + the `demoDeployImage` config bind-mount of
-`hostbootstrap-demo.runtime-container.dhall`) with a projection **streamed in-place**: the parent renders the
-narrowed child projection and pipes it over the lift's `stdin` channel, and the descending binary writes its
+`hostbootstrap-demo.runtime-container.dhall`) with a projection **streamed in-place**: the parent renders a
+context-adjusted full child config and pipes it over the lift's `stdin` channel, and the descending binary writes its
 own sibling `<project>.dhall` before dispatch. No host-side `.vm.dhall`, no `.runtime-container.dhall`, no
 config bind-mount (the docker-socket and `/run/hostbootstrap` witness mounts are retained). **Closed
 2026-07-02**: `streamVMConfig`, `containerConfigPayload` + `demoDeployImage payload`, and `contextInitAnnounce`
@@ -55,7 +55,7 @@ in-place markers firing and no `.vm.dhall`/`.runtime-container.dhall`/config bin
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 **Reopened (2026-06-19) and closed (2026-06-20)** for the unified-harness / fixed-command-surface /
-resource-SSoT correction: the demo's test surface drives the real `project up` (not a second bring-up
+budget-doubling correction: the demo's test surface drives the real `project up` (not a second bring-up
 mirror), the budget-doubling VM sizing collapsed to budget = VM wall / cluster = slice, and the `web serve`
 / `web bridge` verbs moved to config-selected `service run` (`Web`) + the build-image step. **The closing gate is met,
 real-run-validated end-to-end on a 16 GiB Apple-Silicon host (2026-06-20):** a full `project up` stands up
@@ -90,13 +90,15 @@ to the current implementation.
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
 extension streams: the substrate-selected lift chain (`demoChainFor`), schema-registry concat (`demoArtifacts`), Dhall
 vocabulary use, the service-handler registry (`demoServices`), and the stack-driven `demoTestSuite`. Its
-`ProjectSpec` supplies `demoChain` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
+`ProjectSpec` supplies `demoChainFor substrate` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
 `demoServices`, and the non-empty `demoTestSuite` — no project verbs (the surface is fixed, § P).
 
 Historical note: this phase was previously reopened for the **"the chain is the project"** migration (§ Y,
 § T). That migration is now closed: the hand-written `demoDeployChain` and its small interpreter in
 `demo/src/HostBootstrapDemo/Chain.hs`, together with the demo's `vm`/`deploy`/`incus`/`harbor`/`web`/`role`
 noun verbs, became `demoChain :: ProjectConfig -> [Step]` interpreted by the core `project` lifecycle.
+That was the intermediate historical signature; substrate-aware direct Linux-GPU support later replaced
+it with the current `demoChainFor :: Substrate -> ProjectConfig -> [Step]`.
 
 The former demo deploy shape followed the single-representation doctrine (§ W). `demo deploy` was one
 explicit lift sequence whose only lifted compute step was `test all` inside the project container in the
@@ -126,7 +128,7 @@ The demo covers these current supported surfaces through the fixed command tree:
 - `context` exposes generated schema/config artifacts, while `check-code` owns the project quality gate.
 
 The Apple Silicon path uses Lima (not an Incus VM), and the runtime context is topology-strict: a direct
-host/container fallback cannot run `test all` against the wrong Docker daemon, because a
+host/container fallback cannot run `test run all` against the wrong Docker daemon, because a
 VM-project-container config requires a VM-orchestrator ancestor and runtime witnesses (the Dockerfile bakes
 image-build authority only; the lifted runtime container receives the narrowed parent-generated config
 in-place over the handoff's `stdin`, with no config bind-mount). The Lima fold, the topology-aware context enforcement, and the
@@ -163,6 +165,10 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 
 ## Remaining Work
 
+**Production-plan and provenance work — open (Sprint 13.18).** Thread one typed production
+plan/`TestComponent`, consume pulled digest-qualified bases, and reconcile MinIO/registry metadata and
+persistence assertions.
+
 **Accelerator daemon demo — implementation complete; honest live gates open.**
 
 - **Landed (static):** the real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
@@ -183,33 +189,29 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
   CPU/GPU daemon Deployments apply and rollout-wait before connecting to the distinct accelerator
   `ClusterIP`, with a one-GPU request on the GPU lane. Apple/Windows use the host-native project-binary
   build/run path with strict process ownership and teardown.
-- **Landed (static):** harness safety is fail-closed: `SafetyRefusal`, exclusive config ownership, guarded
-  cleanup, a direct-cluster probe, and teardown verification prevent the accelerator gate from taking over
-  or deleting operator state.
+- **Historical partial safety work:** `SafetyRefusal`, config/path guards, a direct-cluster probe, and
+  teardown verification landed, but they are not exclusive identity-bearing ownership. Sprint 5.7
+  supplies backend receipts; Sprint 10.9 opens the opaque harness profile over Sprint 15.9's root
+  authority.
 
-Current validation (2026-07-15): the `-Werror` core gate passes 364 tests and the demo gate passes 87 tests
-plus the embedded 364-core suite. Remaining accelerator work is only the full live substrate execution
-required by § C: run the implemented four-case/two-variant matrix on the host-daemon and native Linux CPU/GPU lanes,
-including the browser Add assertion. The native Linux and Apple hardware gates are unavailable in the
-current environment, and no current live `8/8` result is recorded; the dated `3/3` and `6/6` results below
-remain historical evidence for the pre-accelerator matrices.
+The dated 2026-07-15 static counts remain sprint evidence. The Windows GPU host-daemon lane later produced
+an accepted `8/8` run; Apple Silicon and native Linux CPU/GPU lanes remain open. Sprint 13.18 also owns
+Production-plan/TestComponent, base-digest, and registry/MinIO implementation repairs, so phase remaining
+work is not live-only.
 
-**Durable root across the demo chain's remaining boundaries — OPEN.** The demo carries no host-durable
-project state. `.data` is frame-relative — it resolves against the *owning* frame's source root, which on
-the demo's nested chain is the project container — and staging is one-way host → guest, so nothing written
-inside the stack has a path back to the developer's machine. Wiring a durable root through the demo means
-carrying it across each boundary the chain crosses: **VM → project container** (a `Mount` on the container
-launch), **project container → kind node** (`extraMounts` in `demo/kind.yaml`, which today declares only
-`extraPortMappings`), and **kind node → pod** (a host-backed volume in `demo/chart`). This consumes
-[phase-11](phase-11-incus-host-provider.md) Sprint 11.8 (the host-side share) and **Sprint 11.9** (the
-guest-side durable alias as pure, readiness-gated provider data — the demo's current alias is the defective
-`set -eu` step that collapsed the Windows/WSL2 gate to `ExitFailure 1` (0/8), which the demo rewires onto
-the core `AliasState` primitive), plus
+**Durable root end-to-end proof — OPEN.** The demo now creates host project-root `.data` and carries it
+through provider share/alias, container, kind node, and pod. The remaining gate is the dedicated
+write→destroy→up→read-back proof. The landed carry crosses **VM → project container** (a `Mount` on the
+container launch), **project container → kind node** (`extraMounts` alongside port mappings), and **kind
+node → pod** (a host-backed chart volume). This consumes
+[phase-11](phase-11-incus-host-provider.md) Sprints 11.8/11.9 for the host share and initial VM alias;
+Sprint 11.10 still owns direct-host totality/exclusive ownership, plus
 [phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 (the durable-root contract) and the
 demo's adoption of the type-level config newtypes (phase-9 Sprint 9.9). It is gated by the same real run
 (§ C) those sprints share: write state through the running stack, run
 `project destroy`, run `project up`, and read it back. Until that gate passes, no demo document may
-describe host-durable `.data` as available — see
+claim the end-to-end persistence proof has passed. Documents must still describe the implemented host-root
+and carry mechanism honestly — see
 [durable_state](../documents/architecture/durable_state.md).
 
 **In-cluster-registry switch + reliability hardening — CLOSED (real-run, § C, 2026-07-05).** The Harbor →
@@ -227,16 +229,21 @@ closed the gate:
   `waitRegistryRollout` (poll-to-Ready with backoff: 6 × up-to-60 s + 5 s backoff, so an unauthenticated
   `registry:2` pull under Docker Hub load is tolerated), and the registry Deployment carries a
   `readinessProbe` on `GET /v2/` (`:5000`, `failureThreshold: 60`) so the NodePort Service gets no endpoints
-  — hence `push-image` cannot race — until the registry actually serves.
+  until the registry actually serves. `push-image` is therefore not scheduled before an initial serving
+  observation and also performs its own poll/retry; this does not claim the external service cannot
+  become unavailable after observation.
 - **`pushWithRetry` — landed.** It now retries **only** the known transient markers
   (`isTransientPushError`: digest/blob-upload races, connection resets, 5xx), and a non-transient failure
   dies immediately with full diagnostics instead of burning the retry budget. `push-image` first polls
   `GET /v2/` on the NodePort (`waitWebReachable`) before pushing.
-- **Demo-side resource/isolation — landed (co-owned).** Budget-scaled `clusterSliceOfBudget` +
-  swap-headroom kind-node cordon (with [Phase 9](phase-9-applied-cordon-and-one-parser.md)); the harness is
-  taken off a silent Production-profile collision by the mutual-exclusion + actually-firing in-VM
-  `productionClusterRunning` probe (with [Phase 10](phase-10-standardized-test-harness.md)); `runVmUp`
-  reconcile re-applies the WSL2 cordon (with [Phase 11](phase-11-incus-host-provider.md)).
+- **Demo-side resource checks — historical intermediate; isolation remains open.** Budget-scaled
+  `clusterSliceOfBudget` plus swap-headroom kind-node cordon landed with
+  [Phase 9](phase-9-applied-cordon-and-one-parser.md), and the in-VM
+  `productionClusterRunning` probe now actually fires. That probe is cooperative check-then-act, not
+  mutual exclusion, and the demo still resolves its live `containerPlan` with the `Production` profile;
+  Phase 10.9 owns the project-wide mode lease and Harness-only profile. `runVmUp` reconcile re-merges the
+  WSL2 config and applies it only on the stopped-distro path with
+  [Phase 11](phase-11-incus-host-provider.md); a running utility VM can retain an old live ceiling.
 
 - **Staging robustness — landed (real-run finding).** An early Windows/WSL2 closure attempt (2026-07-05)
   reached the in-distro `pipx install` and failed `Directory '/root/hostbootstrap' is not installable`
@@ -262,7 +269,7 @@ The retired Harbor surfaces and the removed `kind load registry:2` pre-load are 
 
 The contributed chain stream interpreted by `project up` is built and real-run-validated (2026-06-18);
 the current implementation routes through `demoChainFor` so `linux-gpu` can use the direct host-container
-path while other substrates keep the VM-backed chain. The unified-harness / resource-SSoT / fixed-surface correction
+path while other substrates keep the VM-backed chain. The unified-harness / budget-doubling / fixed-surface correction
 (development_plan_standards § W, § O, § P, § AA) **landed in code (2026-06-19), code-check-validated**
 (`cabal build all --ghc-options=-Werror` green; fourmolu/hlint clean on the demo `app`/`src`; the Python
 gate green; verified on the real binary that the surface is fixed and `project up --dry-run` renders the
@@ -273,11 +280,12 @@ gate green; verified on the real binary that the surface is fixed and `project u
   `demoTestSuite` (the stack-driven `TestSuite`, [phase-10](phase-10-standardized-test-harness.md)) drives
   the real `project up` / `project destroy` via the binary self-reference and asserts against the live
   stack.
-- **Resource SSoT fixed (no doubling).** `vmSizingWithHeadroom` is **removed**; `runVmUp` sizes the VM to
-  the declared budget (the VM wall), and `deployKindAction` cordons the production cluster to a **slice**
-  (`clusterSliceOfBudget`, strictly smaller in every dimension) within that wall. The one ceiling is used
-  once (§ O); moved to `Removed Surfaces` in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **Historical budget doubling removed; full resource authority remains open.**
+  `vmSizingWithHeadroom` is **removed**; creation of a new VM uses the raw context envelope and
+  `deployKindAction` computes a smaller local cluster slice. Current config still has independently
+  editable top-level `resources` and `context.resourceEnvelope`, the slice does not reach service leaves,
+  existing provider walls are not uniformly reconciled, and direct Colima/Linux-GPU outer effects remain
+  uncapped. Sprints 9.10/19.8 own the one-budget repair.
 - **Web role moved to `service`.** `web serve` → config-selected `service run` (the `Web` handler in
   `demoServices`, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
   step (`runVmBootstrap` runs `writeBridge` before the image build); the chart pod's entrypoint is
@@ -314,13 +322,14 @@ on `arm64` (`harbor-core` = `ghcr.io/octohelm/harbor/harbor-core:v2.14.0`, the d
 this took the metal-frame validation below plus three real-run fixes (the two bugs noted at the end and the
 dual-arch Harbor override):
 
-- VM provisioned at **exactly the budget** (6 CPU / 10 GiB / 80 GiB) — the resource SSoT fix confirmed
-  (the old 2×-budget sizing would have asked for a 20 GiB VM that does not fit a 16 GiB host).
+- A new VM was provisioned at **exactly the then-selected raw context envelope**
+  (6 CPU / 10 GiB / 80 GiB), confirming removal of the old 2× sizing calculation. This run did not prove
+  a unique config budget authority, reconciliation of an existing VM, or caps on every topology effect.
 - build #2 (host-native in the VM) of the **refactored** binary — fixed surface (self-proved with `context
   schema`), `service` command, removed verbs — succeeded; build #3 (image FROM the published `arm64` base,
   credential-forwarded pull) succeeded, with the in-image `check-code` (fourmolu / hlint / `cabal -Werror`)
   **passing** and the host-generated PureScript bridge + `spago` / `esbuild` web build succeeding;
-  `context-init` minted the project-container child config; **`deploy-kind` brought up the cordoned cluster**
+  the then-current `context-init` path minted the project-container child config; **`deploy-kind` brought up the cordoned cluster**
   (the cluster **slice** within the VM wall — the node reported `MemoryPressure False`, so the slice sizing
   is sound).
 - **`deploy-harbor` first failed on an upstream platform gap (now fixed in the chain):** every
@@ -360,18 +369,22 @@ the demo orchestrates a pristine managed Linux VM and runs the genuine first-run
 inside the pristine VM, the host-native binary build (by `hostbootstrap run`) and the binary-driven
 project-container build.
 
-The demo is also the worked proof that **hostbootstrap owns the lifecycle of every resource** and that
-the **only fail-fast dependencies are the Python wrapper's host minimums**. The full a→f owned lifecycle
+The demo is also the worked exercise of the resources hostbootstrap intends to own. The Python wrapper's
+host minimums are the intentionally non-installing pre-binary gate; later reconcilers install dependencies
+that are merely absent when a supported plan exists, while retaining wrong-host, non-installable,
+conflict, safety, and verification failures. The full a→f lifecycle
 (see [demo_runbook.md](../documents/operations/demo_runbook.md)): (a) the metal binary reconciles the VM
 provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows); (b) `ghcup` is installed and the binary is built **on the VM**; (c) the binary
 installs Docker and builds the project container; (d) the project container spins up the kind cluster and
 deploys the webservice; (e) the project image's base-provided Playwright runtime runs e2e against it from
-a container on the VM; (f) hostbootstrap spins everything back down, releasing every resource it created —
-`project destroy` deletes the provisioned VM **and its disk**, so nothing written inside the guest outlives
-teardown. Nothing in
-(a)–(f) is a host prerequisite beyond the
-Python minimums — every dependency is install-and-verify (the `ensure` suite, § L), so the binary is
-never blocked by an absent dependency.
+a container on the VM; (f) on the dated successful path, `project destroy` stops/removes the provider and
+deletes the provisioned VM **and its disk**, while the demo's `.data` lives at the host project root and
+is carried into the guest/container/Kind/pod path outside that disk. This is happy-path evidence, not a
+claim that every created resource is released: current teardown is not derived as a recursive inverse,
+not every resource carries an identity-bearing ownership receipt, and interruption can leave work for
+recovery. The dedicated write→destroy→up→read-back proof remains open. Dependencies in (a)–(f) with
+supported install plans are driven through the `ensure` suite rather than documented as manual host
+prerequisites.
 
 ## Sprints
 
@@ -380,6 +393,10 @@ never blocked by an absent dependency.
 **Status**: Done
 **Implementation**: `demo/hostbootstrap-demo.cabal`, `demo/cabal.project`, `demo/app/Main.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `system-components.md`
+
+**Historical scope.** The appended `demoCommands`/demo-verb surface described below was later removed.
+The retained consumer now supplies `ProjectSpec` extension values under the fixed command tree; only the
+dated skeleton milestone, not those verbs, is recorded here.
 
 #### Objective
 
@@ -405,6 +422,9 @@ None.
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`incus ensure` / `vm up` / `vm down` drive the real incus host-provider surface)
 **Docs to update**: `documents/operations/demo_runbook.md`
+
+**Historical scope.** The noun verbs below were dissolved into `project up|down|destroy` chain actions.
+They are not current commands; the provider IO and sizing behavior are the retained implementation.
 
 #### Objective
 
@@ -437,19 +457,21 @@ demo's noun-first project verbs on native Linux. Apple Silicon Lima support is t
 None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pipx install hostbootstrap` →
 `hostbootstrap run` — is Sprint 13.3.)
 
-### Sprint 13.3: Pristine-host bootstrap inside the VM [Done]
+### Sprint 13.3: Historical pristine-host bootstrap inside the VM [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`vm pristine-bootstrap`), `demo/docker/Dockerfile` + `demo/docker/container.cabal.project` (build #3)
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (historical `vm pristine-bootstrap` path),
+`demo/docker/Dockerfile`, `demo/docker/container.cabal.project` (build #3)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Run the genuine first-run flow inside the from-zero VM — the headline demonstration.
+Historical objective: run the genuine first-run flow inside the from-zero VM — the headline
+demonstration.
 
 #### Deliverables
 
-- `demo vm pristine-bootstrap`: `apt install pipx` -> `pipx install` the local hostbootstrap wrapper
+- Historical deliverable: `demo vm pristine-bootstrap`: `apt install pipx` -> `pipx install` the local hostbootstrap wrapper
   (pushed into the VM) -> `hostbootstrap run`, which ensures the host toolchain prerequisites, builds the
   demo binary **host-native** (**build #2**), and execs it. The execed binary then ensures Docker
   (rebooting the VM if needed) and builds the demo container (**build #3**, the in-container `check-code`
@@ -457,7 +479,7 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Validation
 
-- **Build #2 live-validated (post-reorg, post-refactor code).** `sudo demo vm up` launched a
+- **Historical validation — build #2 live-validated (post-reorg, post-refactor code).** `sudo demo vm up` launched a
   budget-cordoned (cordon #1) pristine `ubuntu/24.04` VM with network egress; `sudo demo vm
   pristine-bootstrap` ran `apt install pipx` → ghcup + GHC 9.12.4 → `pipx install --force
   /root/hostbootstrap` → `hostbootstrap run`, doing a **cold, warm-store-less host-native build** of the
@@ -469,9 +491,11 @@ Run the genuine first-run flow inside the from-zero VM — the headline demonstr
 
 #### Remaining Work
 
-None. The pristine path (`pipx install --force /root/hostbootstrap`) is live-validated end to end on a
-real host: `vm up` (cordon #1) -> cold in-VM build -> `config schema` -> guarded `vm down`. On Linux,
-the first-run prerequisites are ensured by the demo verbs and the bootstrapper:
+None in the historical scope. The former pristine path (`pipx install --force /root/hostbootstrap`) was
+live-validated end to end on a real host: `vm up` (cordon #1) -> cold in-VM build -> `config schema` ->
+guarded `vm down`. Those appended verbs and `config schema` spelling were later removed; the retained
+work now runs through the fixed command tree and project plan. On Linux, the first-run prerequisites were
+ensured by the demo verbs and the bootstrapper:
 `qemu-system-x86`/`ovmf`, the `incusbr0`<->Docker forwarding rule, pinned GHC 9.12.4, and
 `zlib1g-dev`; Apple Silicon now uses Lima for the demo's pristine VM path (Sprint 13.14).
 
@@ -483,17 +507,20 @@ the first-run prerequisites are ensured by the demo verbs and the bootstrapper:
 
 #### Objective
 
+Historical objective and delivery record: Harbor and the demo `harbor` verbs below were later removed. The current
+replacement is the `registry:2`/MinIO path expressed as project steps under the fixed lifecycle surface.
+
 Bring up kind (cordon #2) and Harbor inside the VM, then push the arch-explicit image tag to the in-VM
 registry.
 
 #### Deliverables
 
-- Inside the VM: core `cluster up` (**cordon #2**: applied `docker update` kind-node cap) + `demo harbor
+- Historical deliverable: inside the VM, core `cluster up` (**cordon #2**: applied `docker update` kind-node cap) + `demo harbor
   install` + `demo harbor push` of the arch-explicit image tag.
 
 #### Validation
 
-- **Cordon #2 + the kind lifecycle are live-validated.** Driven by the demo harness inside the VM, core
+- **Historical validation — cordon #2 + the kind lifecycle are live-validated.** Driven by the demo harness inside the VM, core
   `clusterUp` created isolated per-case kind clusters, each carrying the budget-derived cap (observed:
   `docker update --cpus 2 --memory 2147483648 --memory-swap 2147483648 <name>-control-plane`), and
   `clusterDelete` tore them down preserving each case's `.test_data/<case>` path (the test profile's data
@@ -503,11 +530,10 @@ registry.
 
 #### Remaining Work
 
-None. `demo harbor install` (cluster up + cordon #2 + `helm upgrade --install harbor`) and `demo harbor
-push` (`docker tag` + `push`) are real verbs; the registry **push/pull mechanism is live-validated**
-(pushed an image to a registry at the Harbor NodePort and pulled it back). Deploying the full 8-pod
-Harbor Helm chart and pushing the multi-GB project image at scale is an operator/demo operation, not open
-phase work (see the Phase Status operator-scale note).
+None for the historical landing. At the time, `demo harbor install` and `demo harbor push` exercised
+the registry push/pull mechanism. Those verbs and Harbor implementation are removed; current registry
+behavior lives in the `registry:2`/MinIO plan steps, with current evidence and remaining gates owned by
+the later active sprints.
 
 ### Sprint 13.5: The webservice, SPA, and idiomatic Dockerfile [Done]
 
@@ -516,6 +542,9 @@ phase work (see the Phase Status operator-scale note).
 **Docs to update**: `documents/engineering/derived_dockerfile.md`, `documents/languages/purescript.md`
 
 #### Objective
+
+Historical delivery record: the standalone `web bridge`/`web serve` spellings below were later removed.
+`writeBridge` now belongs to the build-image step and the web handler is selected by `service run`.
 
 Build the webservice, the `purescript-bridge`-fed Halogen SPA, and the idiomatic `docker/Dockerfile`
 that is the reference shape derived projects copy.
@@ -548,10 +577,16 @@ the L0-direct demo reaches the core source). Validated by a real `docker build` 
 ### Sprint 13.6: Harness cluster lifecycle + Playwright (in-cluster, via NodePort) [Done]
 
 **Status**: Done
-**Implementation**: the harness `Seams` (per-case kind cluster up + guaranteed teardown) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`); `demo/playwright/` (config + e2e specs across chromium, firefox, webkit)
+**Implementation**: the historical harness `Seams` (per-case kind cluster up + `finally`-backed
+in-process teardown attempt) in `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`);
+`demo/playwright/` (config + e2e specs across chromium, firefox, webkit)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/languages/playwright.md`
 
 #### Objective
+
+Historical delivery record: this per-case-cluster harness shape was superseded by reuse of the real
+project lifecycle. The current demo still selects the Production plan; active harness/plan work owns the
+separate `Harness demoProjectId runId` scope.
 
 Drive isolated per-case clusters through the standardized harness (each torn down on completion), deploy the
 webservice **into** the per-case kind cluster via `demo/chart`, and run the Playwright e2e suite from the
@@ -560,8 +595,9 @@ already-built project image on the kind network against the in-cluster service v
 #### Deliverables
 
 - `demoSeams`: each case's `seamSetup` brings up an isolated per-case kind cluster and `seamTeardown`
-  **tears it down** (`clusterDelete`, preserving `.test_data/<case>`, guarded to the test-name prefix), guaranteed by
-  `runMatrix`'s `finally`. The webservice is deployed into the per-case kind cluster via `demo/chart` (the
+  attempts to tear it down (`clusterDelete`, preserving `.test_data/<case>`, guarded to the test-name
+  prefix) through `runMatrix`'s `finally` on ordinary return or a caught in-process exception. The
+  webservice is deployed into the per-case kind cluster via `demo/chart` (the
   pod runs `web serve`); the Playwright runner is the same `hostbootstrap-demo:local` project image on the
   kind network, using the base image's global Playwright install and browser cache (chromium, firefox, webkit) against the in-cluster
   service via its **NodePort** (the e2e target is the kind cluster).
@@ -573,8 +609,9 @@ already-built project image on the kind network against the in-cluster service v
 - **Harness cluster lifecycle + cleanup done (live).** `hostbootstrap-demo test all` (rebuilt in-VM) ran all three
   cases; each did `cluster up` (cordon #2 applied) → body → `cluster delete` (`.test_data/<case>` preserved), and
   after the run `kind get clusters` reported **"No kind clusters found"** — the harness leaves no leftover
-  clusters (`test report: 3/3 passed`). The unit-tested teardown-runs-on-failure guarantee (`HarnessSpec`)
-  backs the always-cleans-up property. The per-case bodies are **real assertions**. **`demo test e2e-tabs`
+  clusters in that dated run (`test report: 3/3 passed`). `HarnessSpec` proves the teardown handler runs
+  after a caught body failure; it does not prove cleanup after a hard kill or exclusive ownership. The
+  per-case bodies are **real assertions**. **`demo test e2e-tabs`
   is live-validated end to end on a real host:** `cluster up` (chart deployed) → `kind load` the project
   image → NodePort readiness → the project image runs `playwright test` from `/workspace/demo/playwright`
   against the in-cluster service via its NodePort, all specs green on every engine (9 runs: 3 specs × chromium/firefox/webkit; tabs render, the Budget tab shows
@@ -622,35 +659,38 @@ the target context.
 
 #### Deliverables
 
-- `demo` composes its chain (metal -> VM -> container) on `liftSubcommand`.
-- Build #3 (the project-container build) is available in the VM before the lifted `test all` step.
-- The harness remains the single cluster/deploy/e2e representation.
+- Historical delivered shape: `demo` composed metal -> VM -> container on `liftSubcommand`, made build #3
+  available in the VM, and lifted the then-current `test all` workflow.
+- Current retained result: recursive project-plan handoffs reuse the self-reference lift; the harness is
+  not the deployment representation.
 
 #### Validation
 
 - `cabal build` (demo) succeeds; build #3 (the project container) builds `FROM` the base with the
   in-Dockerfile `check-code` gate.
-- `demo deploy --dry-run` folds the lifted compute step to
+- Historical 2026-06 validation: `demo deploy --dry-run` folded the lifted compute step to
   the selected VM provider followed by `docker run --rm <image> test all`.
 - The integrated in-VM run exercises the harness inside the project container in the VM, so kind runs on
   the VM's Docker.
 
 #### Remaining Work
 
-The self-reference lift (`HostBootstrap.Lift`) the demo composes its chain on stays valid and is reused by
-the migrated chain. What this sprint's contract changes under the new model: the demo's chain is no longer
-a hand-composed `liftSubcommand` fold wired behind the `demo deploy` noun verb — it becomes a
+None. The self-reference lift stays valid and is reused by the migrated chain. The demo's plan is no longer
+a hand-composed `liftSubcommand` fold wired behind the removed `demo deploy` noun verb; it is a
 `chain :: cfg -> [Step]` value the core `project` interpreter folds onto `liftSubcommand` at each
-frame transition (provision the frame → build/install the pb → hand off `pb project up`, § Y). Migrate the
-metal → VM → container composition from the demo's bespoke chain assembly to core step kinds so the lift
-fold is performed by the interpreter, not by demo orchestration code. The interpreter is **new work owned
-by phase-16**; this sprint owns rebasing the demo's lift composition onto the contributed `[Step]` chain.
+frame transition (§ Y).
 
 ### Sprint 13.9: Real per-case seams [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (`demoSeams`)
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/engineering/testing.md`
+
+**Historical scope.** This entire objective/delivery/validation block records the original per-case
+closure. The assertion bodies are retained, but the `cluster up`, `web serve`, `kind load`/Harbor, and
+old `demo test` spellings below are not current commands or registry flow. Current execution uses the
+fixed `test run`/project-plan surface and registry/MinIO; typed cases and final demo wiring remain open.
+See the [deletion ledger](legacy-tracking-for-deletion.md).
 
 #### Objective
 
@@ -695,16 +735,20 @@ None. The per-case seams (`assertClusterLive` / `assertWebBundle` / `assertE2E`,
 are live-validated: `pristine-bootstrap` and `e2e-tabs` on the host, `web-build` in-container; the e2e
 runner is context-agnostic because it uses the project image.
 
-### Sprint 13.10: F1 — `demo deploy --dry-run` (pure chain + interpreter) [Done]
+### Sprint 13.10: Historical demo-local deploy interpreter [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`
+**Implementation**: no retained implementation; the removed demo-local interpreter is recorded in
+`legacy-tracking-for-deletion.md`, and its current replacement is
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs` plus
+`demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/engineering/composition_patterns.md`
 
 #### Objective
 
-Reify the demo deploy/lift chain as a pure data value run by a small interpreter; `demo deploy [--dry-run]`
-prints the planned operation/argv sequence without effect, while apply runs it via `liftSubcommand`.
+Historical initial objective: reify the demo deploy/lift chain as a pure value behind
+`demo deploy [--dry-run]`. This surface was later replaced by the core lifecycle plan and fixed command
+tree.
 
 #### Deliverables
 
@@ -718,20 +762,17 @@ prints the planned operation/argv sequence without effect, while apply runs it v
 
 #### Remaining Work
 
-This sprint reified the demo deploy chain as a pure data value with a **demo-local** interpreter
-(`HostBootstrapDemo.Chain`) behind the `demo deploy [--dry-run]` noun verb. The new model moves that
-representation up into the core: the chain becomes a `chain :: cfg -> [Step]` value over **core**
-step kinds, and the interpreter that renders `--dry-run` and runs apply is the core `project` lifecycle
-command (`project up --dry-run` renders the same chain apply executes, § Y/§ W), not a demo-local
-`renderPlan`. Migrate the demo's pure chain value off the bespoke `Chain.hs` interpreter onto the core
-`Step` interpreter and retire `demo deploy` as a noun verb in favor of `project up`/`project down`/`project destroy`.
-The core interpreter and the `project --dry-run` rendering are **new work owned by phase-16**; the
-pure-function-of-the-chain-value property is preserved through the migration.
+None. The demo-local interpreter and `demo deploy` verb are removed. The current
+`project up --dry-run`/apply paths consume the same `chain cfg` forward list alongside separate
+frame-context and teardown callbacks. Phase 16.6 owns replacing those views with topology, forward
+execution, and reverse teardown projections of one typed plan.
 
-### Sprint 13.11: F2 — `demo role serve`/`submit` (role over toy bus + object store) [Done]
+### Sprint 13.11: Historical F2 — `demo role serve`/`submit` (role over toy bus + object store) [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Role.hs`
+**Implementation**: no retained demo implementation; the removed role surface is recorded in
+`legacy-tracking-for-deletion.md`. The definition-only core successor currently lives at
+`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs` and is owned by Phase 14 Sprint 14.6.
 **Docs to update**: `documents/engineering/composition_patterns.md`, `documents/architecture/run_models.md`
 
 #### Objective
@@ -755,23 +796,21 @@ existing `fitsBudget` engine — the in-tree worked instance of the business-log
 
 None.
 
-### Sprint 13.12: Collapse the two cluster-deploy representations into one lift sequence [Done]
+### Sprint 13.12: Historical single-lift-sequence collapse [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Chain.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/composition_methodology.md`
 
 #### Objective
 
-Adopt the single-representation doctrine (§ W) in the demo: the test workflow is a **lifted operation**,
-not a parallel representation. The demo deploy chain is the single canonical lift sequence whose
-**only** lifted compute step is `test all` lifted into the project container in the VM, folding to
-the selected VM provider followed by `docker run --rm <image> test all` — so the harness runs `clusterUp` "locally" on the
-VM's Docker and the kind cluster lives **in the VM**, reached with no second "bring up a cluster" path.
-The harness (`HostBootstrap.Harness`) is the **one** representation and is **unchanged** — it is the
-context-agnostic lift target (no `LiftContext` inside it, per § U).
+Historical objective: collapse the then-duplicated deployment paths into one lift sequence whose compute
+leaf was `test all`. That 2026-06 framing proved VM placement, but was later superseded: the project-owned
+lifecycle plan is now the deployment representation, and the harness drives that plan per variant rather
+than representing deployment itself.
 
-The single canonical demo chain (`demo deploy`):
+Historical demo chain (`demo deploy`, removed):
 
 ```text
 vm ensure               local                                   -- reconciler on metal
@@ -783,17 +822,15 @@ vm down                 local                                   -- guarded teard
 
 #### Deliverables
 
-- The demo deploy chain in `Chain.hs` is the single canonical sequence above; the **only** lifted compute
-  step is `test all` in `inContainer img (inVM vm localContext)`.
-- Cluster bring-up, service deploy, and e2e execution are the harness's responsibility inside the lifted
-  `test all` workflow.
+- Historical delivered shape: the demo-local `Chain.hs` sequence lifted `test all` into the VM container.
 - `runVmBootstrap` (in `Commands.hs`) also builds **#3** (the project image) **in the VM**, so the lifted
   `test all` finds the image on the VM's Docker — no separate metal-side image path.
-- The harness remains the context-agnostic lift target (the one representation, § W).
+- Current replacement: the project lifecycle plan describes bring-up; the harness remains
+  context-agnostic and consumes that lifecycle without becoming a second plan.
 
 #### Validation
 
-- `demo deploy --dry-run` prints the single canonical sequence (the only lifted compute step is `test all`
+- Historical 2026-06 validation: `demo deploy --dry-run` printed the sequence (the lifted compute step was `test all`
   under `inContainer (inVM ...)`, folding through the selected VM provider and then `docker run --rm
   hostbootstrap-demo:local test all`).
 - **Live (real host).** A staged run brought build #2 **and build #3** up in the VM (image on the VM's
@@ -805,24 +842,16 @@ vm down                 local                                   -- guarded teard
 
 #### Remaining Work
 
-The single-representation collapse this sprint achieved (one canonical lift sequence whose only lifted
-compute step is `test all`, harness unchanged as the one lift target) **stays the invariant** under the
-new model — the single-representation doctrine (§ W) is unchanged. What changes is the **carrier** of that
-single representation: the canonical sequence is no longer a hand-written `Chain.hs` value behind
-`demo deploy`, it is the `chain :: cfg -> [Step]` value the core `project` interpreter runs. Migrate
-the canonical sequence (`vm ensure` → `vm up` → `vm pristine-bootstrap` → lifted `test all` → `vm down`)
-to core step kinds (deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, the
-lifted-`test`/run-leaf step, deploy-VM-down) plus the demo's contributed steps, so the one representation
-is the interpreted `[Step]` chain. `runVmBootstrap`'s build-#3-in-the-VM behavior is preserved as the
-build-pb/build-image steps in the chain. The core `Step` interpreter is **new work owned by phase-16**;
-this sprint owns re-expressing the collapsed sequence as the contributed chain value over those step
-kinds without reintroducing a second representation.
+None. The historical collapse removed its duplicate of the time. The current carrier is the project
+lifecycle plan interpreted by `project up`; the harness drives it per variant. Phase 16.6 owns eliminating
+the remaining disagreement risk among independently supplied forward/topology/reverse callbacks.
 
 ### Sprint 13.13: Migrate demo runtime configs [Done]
 
 **Status**: Done
 **Implementation**: `demo/hostbootstrap-demo.cabal`, `demo/docker/Dockerfile`,
-`demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`
+`demo/src/HostBootstrapDemo/Commands.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
 **Docs to update**: `documents/operations/demo_runbook.md`,
 `documents/engineering/derived_project_standards.md`, `documents/engineering/derived_dockerfile.md`,
 `legacy-tracking-for-deletion.md`
@@ -835,14 +864,17 @@ distinction lives inside the file content rather than the filename.
 
 #### Deliverables
 
-- Host default config generated by `hostbootstrap-demo project init` as
+- Historical delivered scope, now superseded in its transport details by Sprint 13.15: host default
+  config generated by `hostbootstrap-demo project init` as
   `demo/.build/hostbootstrap-demo.dhall`, with Dockerfile path and budget in the project-local config.
 - VM-local config projected before the in-VM bootstrap/binary exec.
 - Image-build config baked by the Dockerfile at `/usr/local/bin/hostbootstrap-demo.dhall` through
-  `hostbootstrap-demo project init --role image-build-container`; runtime VM-project-container configs are
-  parent-generated and mounted over that path for lifted workflows.
-- Service/daemon config generated or mounted during cluster bring-up for any `web serve` or role-daemon
-  pod; the chart mounts a service-role `hostbootstrap-demo.dhall`.
+  `hostbootstrap-demo project init --role image-build-container`. The current Sprint 13.15 replacement
+  streams the parent-generated VM-project-container config in place over stdin to the sibling path before
+  exec; it does not mount the runtime file over the baked path.
+- Service/daemon config is currently generated into a ConfigMap during cluster bring-up and mounted
+  beside the binary; the pod dispatches the fixed `service run` surface, not the removed `web serve`
+  command.
 
 #### Validation
 
@@ -850,7 +882,8 @@ distinction lives inside the file content rather than the filename.
 - Demo dry-run output shows the same single lift sequence through the project-local config gate.
 - Real-run validation repeats the lightweight demo path enough to prove host, VM, container, and
   service contexts are each using their own sibling `hostbootstrap-demo.dhall`.
-- Current validation: `cabal build all` from `demo/` passes; `helm template hostbootstrap-demo demo/chart`
+- Historical sprint-closure validation (date not recorded): `cabal build all` from `demo/` passed;
+  `helm template hostbootstrap-demo demo/chart`
   renders the service config mount; `cabal run hostbootstrap-demo -- project init --role host-orchestrator
   --source-root /home/matt/hostbootstrap/demo --dockerfile docker/Dockerfile --cpu 6 --memory 10GiB
   --storage 80GiB --ha-replicas 1 --force` creates the host config; and `cabal run hostbootstrap-demo --
@@ -858,13 +891,24 @@ distinction lives inside the file content rather than the filename.
 
 #### Remaining Work
 
-None.
+None in this historical config-location sprint. Sprint 13.15 superseded its runtime delivery mechanism
+with in-place streaming and the fixed service surface.
 
 ### Sprint 13.14: Apple Lima VM path and topology-strict runtime configs [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `demo/docker/Dockerfile`
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lima.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `demo/docker/Dockerfile`
 **Docs to update**: `README.md`, `documents/architecture/binary_context_config.md`, `documents/architecture/composition_methodology.md`, `documents/operations/demo_runbook.md`, `documents/engineering/lima.md`, `documents/engineering/schema.md`, `documents/engineering/dhall_topology.md`, `legacy-tracking-for-deletion.md`
+
+**Historical scope.** This is the original sprint-closure record. The Lima provider selection and
+topology-strict runtime checks are retained; references below to removed commands and a config bind-mount
+describe the superseded delivery. Current child config is authenticated and streamed in place under the
+fixed command tree target. See the [deletion ledger](legacy-tracking-for-deletion.md).
 
 #### Objective
 
@@ -915,8 +959,8 @@ validation (superseded by the fixed command surface and in-place config delivery
 None. The full real Apple Silicon Lima lifecycle is validated end to end (2026-06-16): `deploy` ran
 `vm ensure` → `vm up` (the 6 CPU / 10 GiB / 80 GiB Lima VM — cordon #1, sized
 `--cpus 6 --memory 10 --disk 80`) → `vm pristine-bootstrap` (build #2 host-native in the VM, base
-`basecontainer-cpu-arm64` pulled (authenticated via the forwarded host Docker Hub credential — never in
-Dhall, never persisted, never in `argv`), build #3 the `hostbootstrap-demo:local` project image with the
+`basecontainer-cpu-arm64` pulled (authenticated via the forwarded host Docker Hub credential — excluded
+from Dhall, durable project/image state, and `argv`), build #3 the `hostbootstrap-demo:local` project image with the
 in-Dockerfile `check-code` gate of `fourmolu`/`hlint`/`cabal -Werror`) → `context create container` (the
 VM-local runtime config) → the single lifted compute step
 `limactl shell hostbootstrap-demo-vm -- docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v …runtime-container.dhall:/usr/local/bin/hostbootstrap-demo.dhall:ro -v /run/hostbootstrap:ro --network=host -e HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2 -e HOSTBOOTSTRAP_REGISTRY_AUTH hostbootstrap-demo:local test all`,
@@ -945,7 +989,7 @@ child config file and no config bind-mount is produced.
 
 #### Deliverables
 
-- The VM-config rewrite (`streamVMConfig`): render the narrowed VM projection and stream it into the VM,
+- The VM-config rewrite (`streamVMConfig`): render the context-adjusted full VM config and stream it into the VM,
   written to the VM's sibling `<project>.dhall`; remove `demo/.build/hostbootstrap-demo.vm.dhall` and the
   config `copyFileToDemoVM` (`stageFileEffects`, used by `stageSource`, is retained).
 - The container-config rewrite: stream the projection on the container handoff's `stdin` with an entrypoint
@@ -1079,19 +1123,115 @@ Implementation and static validation are complete:
   plus connection-owned readiness prevents overlapping/unconnected peers. Apple/Windows run the project
   daemon from a host-native build with symmetric pid/owner and absolute executable/argv identity, shutdown,
   and a bounded pristine-install/build/connect readiness gate.
-- The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. Harness ownership,
-  direct-cluster detection, `SafetyRefusal`, and verified teardown are fail-closed.
+- The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. The later
+  post-ensure direct-cluster/VM checks and `SafetyRefusal` are fail-closed, but the initial cooperative
+  precondition currently maps an unavailable provider/Docker probe tool to “not running”; it may mutate
+  setup before the later refusal and is not resource-authoritative. Sprint 10.9 owns that fail-closed
+  reservation/receipt replacement and verified teardown.
 
-The current static gate is 364 core + 87 demo tests. Remaining work is only real-run closure (§ C): execute
-the current four-case/two-variant harness on the host-daemon and native Linux CPU/GPU placements, including
-the browser assertion. The native Linux and Apple gates are unavailable in the current environment; no
-live `8/8` has replaced the historical pre-accelerator `6/6` result.
+The accelerator implementation has dated static evidence, but current work is not limited to live closure:
+Sprint 13.18 also owns the typed Production plan/TestComponent, pulled digest-qualified base, and
+registry/MinIO metadata/provenance repair. Native Apple/Linux accelerator gates remain open separately.
+
+### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 5.7, 6.7, 10.9, 12.4, 13.19, 14.6, 15.9, 16.6, 17.4, and 20.5
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/src/HostBootstrapDemo/Config.hs`, `demo/app/Main.hs`, `demo/docker/Dockerfile`,
+`demo/kind*.yaml`, `demo/nvkind-in-cluster.yaml`
+**Docs to update**: `documents/operations/demo_runbook.md`,
+`documents/engineering/testing.md`, `documents/engineering/build_release.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the worked demo exercise a typed production plan without hard-coded harness variants or stale
+registry/object-store metadata, and consume the published base by immutable identity.
+
+#### Deliverables
+
+- Define one scope-polymorphic demo plan **definition/builder**, then instantiate it separately as
+  `ProjectPlan (Production demoProjectId) specDigest planId configId DemoConfig` for `project up` and
+  `ProjectPlan (Harness demoProjectId runId) specDigest planId configId DemoConfig` for the threaded
+  `TestComponent`. The two
+  instances share plan shape, not indexed values or journals. The test component receives only opaque
+  `HarnessAuthority demoProjectId runId` and cannot construct or consume the Production instance.
+- Pull and resolve the selected published base before each derived-image build, pass a digest-qualified
+  base reference into the Docker build, and verify substrate flavor/architecture selection.
+- Reconcile the current MinIO-backed registry path across step names, manifests, case metadata, and
+  assertions; remove stale Harbor/appended-verb metadata rather than preserving it as compatibility text.
+- Make durable-registry assertions prove the MinIO/PVC state actually claimed, with explicit ownership
+  and cleanup behavior.
+- Derive a non-empty complete workload resource set—including web, MinIO, registry, accelerator, and
+  replica counts—from the same scoped plan values that render Kubernetes requests/limits. Reject an
+  over-budget plan before its first mutation permit so the visible budget verdict and applied manifests
+  cannot diverge.
+- Default registry/web/MinIO host mappings to loopback unless the scoped plan carries explicit
+  authenticated exposure authority. Replace anonymous/source-hard-coded registry/MinIO access with
+  project/run-scoped secret capabilities delivered only to the matching workload identities.
+- Consume Phase 19 typed case/config values and Phase 20 config-driven variant generation; this sprint
+  owns demo wiring, not those generic types.
+
+#### Validation
+
+- Golden/structural tests prove the production chain and test component share one step plan and contain no
+  stale Harbor identifiers.
+- Derived-image tests prove pull-before-build, digest use, and correct CPU/CUDA/native architecture
+  selection.
+- Structural and negative tests prove the complete workload set drives both the budget gate and
+  manifests, over-budget plans mint no prepared-operation authorization, unauthenticated mappings do not bind
+  non-loopback, and Production/Harness secret capabilities cannot cross scopes.
+- The demo matrix validates MinIO readiness, registry metadata/provenance, persistence, browser behavior,
+  and cleanup on at least one accepted representative native lane. That integration result does not
+  close the separately owned Apple/Linux accelerator real-run lanes.
+
+#### Remaining Work
+
+Blocked on the named type, ownership, lifecycle, command, base, service, config-driven-demo, and static
+test prerequisites. After they close, introduce and thread the production plan/test component, enforce
+published-base pull/digest consumption, reconcile MinIO/registry metadata, and rerun the demo gates.
+Sprint 13.17 and the accelerator lanes in Sprints 15.8, 16.5, and 18.5 remain independently Active; this
+sprint's representative-lane integration does not close them by proxy.
+
+### Sprint 13.19: Threaded static demo test component [Planned]
+
+**Status**: Planned
+**Implementation**: `demo/hostbootstrap-demo.cabal`,
+`demo/test/Spec.hs`
+**Docs to update**: `README.md`, `documents/engineering/testing.md`,
+`documents/operations/demo_runbook.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Restore the canonical static demo gate by giving `hostbootstrap-demo-test` the threaded RTS contract its
+Warp server tests require.
+
+#### Deliverables
+
+- Apply the same threaded runtime requirement used by the demo executable to the test component without
+  weakening or skipping the Warp tests.
+- Keep `cabal test all` as the one static demo workspace command; do not replace the failing component
+  with a narrower ad hoc invocation.
+- Remove the known-failure limitation only after the canonical command passes.
+
+#### Validation
+
+- From `demo/`, `cabal test all --ghc-options=-Werror` passes with the Warp server tests enabled.
+- A negative build/test fixture or Cabal assertion prevents removal of the threaded option while those
+  tests depend on the GHC timer manager.
+
+#### Remaining Work
+
+Update the test-component Cabal stanza, run the canonical static suite, and record the dated result in
+this sprint.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/durable_state.md` - what `.data` is, the removal-set guarantee's exact scope,
-  frame relativity, and why the demo's chain has no host-durable project state today.
+  the implemented host-root/provider-share/container/Kind/pod carry, and the still-open
+  write→destroy→up→read-back and ownership proof.
 
 **Engineering docs to create/update:**
 - `documents/engineering/derived_dockerfile.md` - the idiomatic derived Dockerfile (in-Dockerfile
@@ -1099,8 +1239,9 @@ live `8/8` has replaced the historical pre-accelerator `6/6` result.
 - `documents/engineering/accelerator_daemon.md` - substrate-specific daemon/JIT worker contract and tests.
 
 **Operations docs to create/update:**
-- `documents/operations/demo_runbook.md` - lift-based flow, real per-case seams, `deploy --dry-run` /
-  `role` verbs, the 3-builds explanation, and the four `hostbootstrap-demo.dhall` runtime configs.
+- `documents/operations/demo_runbook.md` - current `project`/`test`/`service`/`context` flow, generated
+  per-frame configs, the 3-builds explanation, durable carry, and explicit open gates; removed `deploy`,
+  `role`, and other appended verbs appear only as dated history or in the deletion ledger.
 
 **Cross-references to add:**
 - `documents/engineering/in_cluster_registry.md`, `documents/languages/purescript.md`,

@@ -14,7 +14,8 @@ nested VM providers, and the ``linux-gpu`` NVIDIA container runtime — are now 
 by the binary's ``ensure`` logic (``ensure incus``'s KVM self-heal and
 ``ensure cuda``), per ``documents/architecture/python_haskell_boundary.md``.
 
-* **Linux** — Ubuntu 24.04 + passwordless sudo.
+* **Linux** — Ubuntu 24.04 + passwordless sudo + ``curl`` for the pinned GHCup
+  bootstrap download.
 * **Apple silicon** — passwordless sudo + Xcode Command Line Tools + Homebrew.
 * **Windows** — winget (a required precondition, used by ``ensure cudawin``; the
   GHC/Cabal toolchain is PowerShell-bootstrapped, not winget-installed) and Windows
@@ -114,6 +115,11 @@ def _check_homebrew() -> None:
         raise PrereqError("Homebrew is required on apple-silicon. Install from https://brew.sh.")
 
 
+def _check_curl() -> None:
+    if not _have("curl"):
+        raise PrereqError("curl is required to download the pinned GHCup bootstrap binary")
+
+
 def _check_winget() -> None:
     if not _have("winget"):
         raise PrereqError(
@@ -151,6 +157,8 @@ async def _run_linux(substrate: Substrate) -> DoctorResult:
     messages.append("Ubuntu 24.04: OK")
     _check_passwordless_sudo()
     messages.append("passwordless sudo: OK")
+    _check_curl()
+    messages.append("curl: OK")
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 

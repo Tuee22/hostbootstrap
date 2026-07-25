@@ -1,16 +1,22 @@
-# Phase 21: Documentation/Code Consistency Reconciliation
+# Phase 21: Documentation/code consistency reconciliation
 
 **Status**: Authoritative source
 **Supersedes**: `../REMEDIATION_PLAN.md`
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
-> **Purpose**: Record the repo-wide reconciliation that made code comments, governed docs, and phase
-> narrative agree with the current five-command surface, generic project model, Dhall schema source of
-> truth, and cluster teardown semantics.
+> **Purpose**: Record the completed historical reconciliation sprints and own the final governed sweep
+> that will make code comments, governed docs, and phase narrative agree after the currently reopened
+> implementation defects close.
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Blocked
+**Blocked by**: Sprints 2.5, 5.5–5.8, 6.7, 8.7, 9.4, 9.10, 10.9–10.10, 11.10, 12.4,
+13.17–13.19, 14.6, 15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.6–19.8, and 20.5
+
+**Reopened 2026-07-24.** Sprint 21.4 owns the new repo-wide reconciliation after the confirmed code/docs
+defects close in their implementation phases. The 2026-07-23 closure below is retained only as historical
+evidence for Sprint 21.3.
 
 **Reopened 2026-07-19, CLOSED `Done` 2026-07-23.** The `.data` durability doctrine sweep (Sprint 21.3) plus
 the 2026-07-21 readiness/legible-failure/type-level-config-validity reconciliation are complete: the grep
@@ -20,13 +26,12 @@ new doctrine has canonical homes ([readiness](../documents/architecture/readines
 reconciled to the realized decode-ring/bring-up-ring shape, and `DocValidatorSpec` + the `-Werror` build pass.
 The underlying code closed on a live Windows/WSL2 `test run all` **`8/8`** (2026-07-23, phases 9/10/11).
 
-**Reopened 2026-07-19 — the `.data` durability doctrine.** This phase's charter is making code comments,
-governed docs, and phase narrative agree with implemented behavior, and a false **mechanism** claim
-survived its sweep: governed docs asserted that `.data` was host state, was bind-mounted while a cluster
-ran, and survived `project destroy`. None of that is implemented. Sprint 21.2's sweep aligned the
-*teardown* wording correctly but did not test the durability claim riding alongside it, so the phase's
-closure was not earned in its own scope. Sprint 21.3 owns the reconciliation; the corrected doctrine is
-[durable_state](../documents/architecture/durable_state.md).
+**Historical 2026-07-19 reopening — the then-current `.data` doctrine.** At that point, governed docs
+asserted host-state/bind-mount durability that had not been implemented, so Sprint 21.3 narrowed the
+contract to the removal-set guarantee. Subsequent Phase 5.6 and Phase 11.8/11.9 work implemented a host
+project-root share/guest alias and carried it through container, Kind, and pod. Current prose must state
+that mechanism while keeping the write→destroy→up→read-back proof and exclusive ownership open; the
+canonical contract is [durable_state](../documents/architecture/durable_state.md).
 
 The reconciliation is a forward-only documentation and small-code-correction phase. It removes the stale
 standalone `ensure <tool>` command from the surfaced core tree, keeps the `ensure` reconcilers as library
@@ -43,7 +48,10 @@ surfaces are recorded in
 
 ## Remaining Work
 
-**CLOSED (Sprint 21.3, 2026-07-23).** The `.data` doctrine sweep across `README.md`, `documents/`, and
+**Current:** Sprint 21.4 is Blocked on the named owning implementation phases. After they land, it must
+reconcile the governed docs, source comments/help, status authority, and mechanical drift checks.
+
+**Historical closure (Sprint 21.3, 2026-07-23).** The `.data` doctrine sweep across `README.md`, `documents/`, and
 `DEVELOPMENT_PLAN/`, the `.data`-adjacent `§ O` → `§ Y` citation repoint, and the 2026-07-21
 readiness/legible-failure/type-level-config-validity reconciliation are complete: `DocValidatorSpec` is green
 through `cabal test`, the `-Werror` build passes, and the grep floor holds (no `host \`.data\`` phrasing and
@@ -95,8 +103,9 @@ parallel canonical home.
 
 #### Deliverables
 
-- All generic chain-signature prose uses `chain :: cfg -> [Step]`; demo-only prose uses
-  `demoChain :: ProjectConfig -> [Step]`.
+- All generic chain-signature prose uses `chain :: cfg -> [Step]`; current demo-only prose uses
+  `demoChainFor :: Substrate -> ProjectConfig -> [Step]`. The former `demoChain` name appears only in
+  explicitly historical migration prose.
 - Command-surface prose uses the five user-facing verbs and says `ensure` is a library, not a command.
 - Cluster lifecycle prose distinguishes provider-VM stop from kind-cluster delete-on-down.
 - The legacy ledger lists deleted surfaces accurately and retains current fixtures accurately.
@@ -119,8 +128,9 @@ None.
 
 #### Objective
 
-Make every governed statement about `.data` match implemented behavior, and give the contract one
-canonical home so the four provider docs stop restating it and drifting apart independently. Extend the same
+Make every governed statement about `.data` match the behavior implemented at the sprint's 2026-07-23
+closure, and give the contract one canonical home so provider docs stop restating it and drifting apart.
+Extend the same
 reconciliation (2026-07-21) to the readiness-gated-lifecycle, legible-failure, and type-level-config-validity
 doctrine (§ CC, § DD): every governed statement matches implemented behavior, with the new doctrine given
 canonical homes.
@@ -129,38 +139,89 @@ canonical homes.
 
 - `documents/architecture/durable_state.md` is the canonical home; provider and lifecycle docs defer to
   it rather than restating the contract.
-- No governed document claims `.data` is host state, is bind-mounted, or survives `project destroy` of a
-  provisioned frame. The strongest offender was the assertion that `.data` "is bind-mounted while a
-  cluster is running" — a mechanism claim with no implementation anywhere in the tree.
-- The **true** property is stated precisely and kept: cluster teardown never enumerates the plan's data
-  path for removal, and leaves an existing directory untouched.
-- Wording is scoped to lifted/provisioned frames, so the direct-host `nvkind` lane — where `.data` really
-  is a host path that outlives `destroy` — is not contradicted.
+- Historical closure baseline: no governed document claimed a host share that did not yet exist; the
+  guaranteed property was that cluster teardown never enumerated the plan's data path for removal.
+- Current follow-on contract: the demo creates `.data` at the host project root and carries it through
+  the provider share/guest alias, project-container mount, Kind node, and pod. Documents may claim that
+  implemented transport, but not the still-unrun destroy/up readback proof or exclusive ownership.
 - `.data`-adjacent `§ O` citations repoint to `§ Y`; the ~20 budget/cordoning `§ O` citations are left
   alone.
-- Haddock and the two `progDesc` strings that shipped the old host-durability phrasing in the binary's
-  own `--help` are corrected.
-- **(2026-07-21 extension)** The readiness/legible-failure doctrine has a canonical home
-  (`documents/architecture/readiness.md`, standards § CC) and the durable-share primitive is de-staled in
-  `durable_state.md` (standards § DD); provider, harness, cordon, and Dhall-generation docs defer to them.
-- No governed document claims a bring-up failure is legible, the `Budget/fitsWithin` assert is attached at
-  render, or the durable alias/primitive is delivered — each is corrected to its honest reopened state. The
-  `ExitFailure 1` collapse, the never-attached § O `fitsWithin`, and the ad-hoc `set -eu` alias are recorded
-  in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- Historical intent required correcting Haddock and the two `progDesc` strings that shipped the old
+  host-durability phrasing. The current source still says `down` removes no filesystem path, `.data`
+  lives inside a frame that destroy deletes, and destroy removes “everything” provisioned; those exact
+  source/help defects are now open under Sprint 21.4 rather than reported as complete.
+- **(2026-07-21 extension)** The readiness/legible-failure doctrine gained a canonical home
+  (`documents/architecture/readiness.md`, standards § CC), while `durable_state.md` remained the durability
+  authority (standards § DD).
+- Historical claims about legible failure, an attached render-time `Budget/fitsWithin` assertion, and the
+  then-undelivered alias were corrected. Later landed alias/share transport must now be documented as
+  implemented, while its readback validation remains open. The old `ExitFailure 1`, never-attached assert,
+  and ad-hoc alias are recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 #### Validation
 
 - `DocValidatorSpec` through `cabal test` — metadata blocks, link resolution, the `architecture/` TL;DR
   requirement, naming, and taxonomy for the new page.
-- A grep floor: no `host \`.data\`` phrasing and no `.data`-adjacent `§ O` citation outside
+- Historical 2026-07-23 grep floor: no then-false `host \`.data\`` phrasing and no `.data`-adjacent `§ O` citation outside
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 - `cabal build all --ghc-options=-Werror` from `core/` for the comment/`progDesc` edits.
 
 #### Remaining Work
 
-None (closed 2026-07-23). The doctrine sweep, the `§ O` compile-ring reconciliation, and the readiness /
-legible-failure / config-validity homes are in place; `DocValidatorSpec` and the `-Werror` build pass, and
-the grep floor holds.
+None in the 2026-07-23 sprint scope. Its doctrine sweep, decode-ring reconciliation, and readiness /
+legible-failure / config-validity homes landed. Sprint 21.4 owns the later sweep that must describe the
+now-implemented host-share/carry mechanism without claiming the still-open readback proof.
+
+### Sprint 21.4: Current code/documentation reconciliation [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 2.5, 5.5–5.8, 6.7, 8.7, 9.4, 9.10, 10.9–10.10, 11.10, 12.4,
+13.17–13.19, 14.6, 15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.6–19.8, and 20.5
+**Implementation**: governed documentation, source comments/help text, mechanical documentation checks
+**Docs to update**: `README.md`, `AGENTS.md`, `documents/`, `DEVELOPMENT_PLAN/`
+
+#### Objective
+
+Reconcile every governed current-state claim after the implementation sprints above, without editing
+documentation ahead of the code or preserving duplicate status/count authorities.
+
+#### Deliverables
+
+- Sweep the HostTool, provider/lift, readiness/capability, lifecycle, harness, test-config, base-release,
+  warm-store, and demo contracts after their owning phases land.
+- Reconcile source comments and user-visible help that still assert superseded guarantees, including
+  `Command.hs` test-selector/root-gate and down/destroy/durability text,
+  `Readiness.Internal`/`Readiness` constructor-sealing text, `Harness` production-isolation/path/RunModel
+  and definition-only-seam text, `HostPrereqs` temporary-Python text, the demo's
+  mutually-exclusive-run claim, Python's cross-platform handoff description, and CLI Poetry-only
+  exposure text. Include `Cluster.Cordon`'s Incus-only Linux/storage/reserve/capacity claims,
+  `Web.Api`'s unwired/static `fitsBudget` claim, and `HostBootstrapDemo.Config`'s false single-default-
+  source heading. Reconcile `Config.Schema`'s unconditional `project init` missing-config hint,
+  `Command`'s decoder-reflection wording and conflation of the project-config schema with the static
+  in-scope artifact union, and the demo Web/accelerator handlers' sibling-config reload contract after
+  Sprints 17.4/18.6 land.
+- Remove stale freeze-only `LABEL`/`ENTRYPOINT`, public/internal witness, definition-only provider,
+  hard-coded variant, bare-host-command, appended-verb, Harbor, and obsolete MinIO/metadata claims.
+- Keep `DEVELOPMENT_PLAN/README.md` as the only cross-phase status table and keep exact test counts only as
+  dated sprint validation evidence.
+- Add mechanical drift checks for forbidden obsolete surfaces and for the required publish → pull →
+  digest-qualified derived-build sequence.
+
+#### Validation
+
+- `DocValidatorSpec` and link/metadata validation pass across all governed Markdown.
+- Targeted grep floors find no obsolete current-state phrases outside
+  `legacy-tracking-for-deletion.md`, including `SUITE`/“test suite” selector help, “remove no filesystem
+  path,” frame-local `.data`, test-only `Readiness.Internal`, mechanically guaranteed
+  never-touch-production, and RunModel-never-in-Dhall claims.
+- The README phase table and every phase-local status agree, with no second current-count/status roll-up
+  in `00-overview.md` or `system-components.md`.
+
+#### Remaining Work
+
+Blocked on the named owning implementation sprints. After they close, perform the governed current-state
+sweep and close the mechanical drift gates. The earlier Sprint 21.1–21.3 reconciliation is historical and
+cannot establish consistency for defects discovered afterward.
 
 ## Documentation Requirements
 
@@ -168,8 +229,8 @@ the grep floor holds.
 - `documents/architecture/hostbootstrap_core_library.md` - fixed command surface and generic entrypoint.
 - `documents/architecture/composition_methodology.md` - current teardown semantics and generic chain.
 - `documents/architecture/durable_state.md` - **(new)** the canonical home of the never-delete-`.data`
-  invariant: the removal-set guarantee, frame-relativity, one-way host→guest transfer, and the open work
-  to make host-durable state real.
+  invariant: the removal-set guarantee, the implemented host-root/provider-share/container/Kind/pod carry,
+  and the open write→destroy→up→read-back and ownership work.
 
 **Engineering docs to create/update:**
 - `documents/engineering/ensure_reconcilers.md` - library/chain-step reconciler contract.

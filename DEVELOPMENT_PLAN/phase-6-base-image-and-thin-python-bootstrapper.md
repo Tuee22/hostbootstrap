@@ -1,4 +1,4 @@
-# Phase 6: Base Image and Python CLI Surface
+# Phase 6: Base image and Python CLI surface
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -6,39 +6,47 @@
 
 > **Purpose**: Warm `hostbootstrap-core`'s dependencies into the base image (no `hostbootstrap`
 > binary is baked), and expose the thin Python CLI surface that consumes Phase 2's pre-binary
-> build-toolchain bootstrap to build the binary host-native and exec it.
+> build-toolchain bootstrap to build the binary host-native and invoke it.
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
+
+**Reopened 2026-07-24.** Sprint 6.7 owns the incomplete publish gate, mutable/local base consumption,
+native-architecture validation, importability-only maintainer-command gate, and Python native-build
+idempotence/selection defects. Earlier closure claims apply only to Sprints 6.1–6.6.
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native**. The project container the binary builds later is
 accelerated by the warm Cabal store. The Python CLI exposes `doctor` / `build` / `run` / `update` /
 `base`, and consumes Phase 2's thin pre-binary boundary (§ M, § N): derive the project from the single
 Cabal file, assert host minimums, ensure the host build toolchain, build the binary host-native on every
-substrate, and exec it (the binary owns config init — see the forward-pointer below). Docker, the
+substrate, and invoke it — POSIX process replacement with `exec`, Windows child subprocess (the binary
+owns config init — see the forward-pointer below). Docker, the
 project-container build, VM sizing, cordoning, and Dhall read/write are project-binary responsibilities.
 The `core.freeze` / `daemon.freeze` layering is owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
 
-Forward-pointer: the bootstrapper's post-build `config init --if-missing` auto-init is dropped under the
-generic project model — Python builds the host-native binary and execs it without triggering config
-creation, and the binary fails fast when no sibling `<project>.dhall` exists. That removal is owned by
-[phase-19-generic-project-model.md](phase-19-generic-project-model.md) (Sprint 19.5) and tracked in
+**Landed Phase 19 correction:** the bootstrapper's post-build `config init --if-missing` auto-init was
+dropped under the generic project model — Python builds and invokes the host-native binary without
+triggering config creation, and the binary fails fast when no sibling `<project>.dhall` exists. The
+removal landed in [phase-19-generic-project-model.md](phase-19-generic-project-model.md) (Sprint 19.5) and is tracked in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 Sprint 6.5 adds the explicit `hostbootstrap update` command that reinstalls the pipx-managed Python
 bootstrapper from the canonical VCS source. That command is not automatic and does not become a
 latest-version gate for `doctor`, `build`, `run`, or `base`.
 
-Windows does not reopen this phase. The Windows host floor, winget-driven Haskell toolchain bootstrap, and
-native `hostbootstrap.exe` build validation are owned by Phase 2 so they precede all Haskell-gated work.
+The initial Windows native bootstrap used PowerShell to retrieve GHCup; Phase 2.5 now owns pinning and
+integrity verification. Native `hostbootstrap.exe` build validation precedes later Haskell-gated work.
 WSL2 is not pre-binary work; it is owned by Phase 11's provider reconciler.
 
 ## Remaining Work
 
-None.
+Sprint 6.7 is Planned: enforce native-architecture validation, the complete pre-publish quality gate,
+publish→pull→digest-qualified consumption, deterministic project selection/name equality, and idempotent
+Cabal-index/binary-copy behavior. It also replaces the current dependency-import heuristic for
+maintainer commands with verified repository-development provenance.
 
 ## Phase Objective
 
@@ -48,7 +56,8 @@ could not be copied out to every host; every project builds its own binary host-
 Python CLI surface consumes Phase 2's pre-binary bootstrap (see
 [development_plan_standards.md § M, N](development_plan_standards.md)): derive the project name from the
 Cabal file, assert the fail-fast host minimums, ensure the host toolchain prerequisites to **build** the
-binary, build the project binary host-native, and exec it. Ensuring Docker, building the project
+binary, build the project binary host-native, and invoke it using the platform-specific handoff above.
+Ensuring Docker, building the project
 container, initializing/editing Dhall config, provider setup, and cordoning are left to the project
 binary, once it is running.
 
@@ -111,8 +120,9 @@ Reduce the Python CLI to the thin bootstrapper and base-image operator surface.
 - The CLI exposes `doctor`, `build`, `run`, and `base`.
 - `run` and `build` drive the host-native binary build path.
 - `base` drives the operator-directed base-image build/publish path; on Linux it measures host CPU/RAM
-  (`hostbootstrap/resources.py`), refuses below a floor, and applies docker `--memory`/`--cpus` caps plus a
-  host-sized `cabal -j` to the base-image build container (a build-phase limit, not a project cordon — § O).
+  (`hostbootstrap/resources.py`), refuses below a floor, and applies Docker `--memory` plus
+  `--cpu-period`/`--cpu-quota` caps and a host-sized `cabal -j` to the base-image build container (a
+  build-phase limit, not a project cordon — § O).
 - `prereqs.py` carries only the residual fail-fast host minimum checks; the Linux minimums are Ubuntu 24.04
   + passwordless sudo (one floor for `build`/`doctor`/`run`). `/dev/kvm` and the `linux-gpu` NVIDIA
   container runtime are runtime preconditions the binary owns (`ensure incus` / `ensure cuda`), not
@@ -139,16 +149,19 @@ None. The thin-pre-binary-boundary convergence is Sprint 6.3.
 
 #### Objective
 
-Reduce `bootstrap.py` to the pre-binary path so the Python layer does only what must run before any
-project binary exists (§ M, § N): assert minimums → ensure the host build toolchain → build the binary
-**host-native on every substrate** → trigger config initialization → exec it.
+**Historical Sprint 6.3 landing (superseded by Sprint 6.4 and Phase 19 Sprint 19.5):** reduce
+`bootstrap.py` to the pre-binary path: assert minimums → ensure the host build toolchain → build the
+binary **host-native on every substrate** → trigger config initialization → invoke it. The post-build
+config-init step is not current behavior; Python now builds and invokes only, and config creation
+requires explicit `project init` or the typed test-harness generator. The later Windows branch uses a
+child subprocess; POSIX uses process-replacing `exec`.
 
 #### Deliverables
 
 - `toolchain_ensure_steps` ensures the host build toolchain substrate-branched (Homebrew → `ghcup`
   → GHC/Cabal on Apple; `ghcup` → GHC/Cabal on Linux), **probing each tool first and installing only
   when absent** so the already-provisioned common path is silent and offline; the binary is built
-  host-native on **every** substrate (`native_build_command`), then execed.
+  host-native on **every** substrate (`native_build_command`), then invoked.
 - `run` does not ensure Docker, build the project container, size a VM, apply a cordon, or evaluate
   Dhall; those operations belong to the project binary.
 
@@ -161,7 +174,8 @@ project binary exists (§ M, § N): assert minimums → ensure the host build to
 
 #### Remaining Work
 
-None.
+None. The historical auto-init step named in this sprint was removed; it is not part of the retained
+Python boundary.
 
 ### Sprint 6.4: Remove Python Dhall ownership [Done]
 
@@ -174,15 +188,16 @@ None.
 
 #### Objective
 
-Make Python a pure pre-binary bridge: derive the project name from the Cabal file, build the host-native
-binary, and exec it — all without Python itself decoding, writing, or triggering Dhall initialization (the
-binary owns that surface).
+Make Python a pure pre-binary bridge: discover the single Cabal file and executable stanza, build the
+host-native executable, and invoke it — all without Python itself decoding, writing, or triggering Dhall
+initialization (the binary owns that surface). POSIX uses `exec`; Windows runs a child and propagates its
+exit code.
 
 #### Deliverables
 
-- Cabal-file project-name derivation, including a fail-fast diagnostic when zero or multiple Cabal files
-  make the project name ambiguous.
-- Python derives the project name from the Cabal file and has no Dhall decoder.
+- Cabal-file and executable-stanza discovery, including fail-fast diagnostics for zero or multiple
+  candidates. The current two names are not yet required to agree; Sprint 6.7 owns one validated identity.
+- Python has no Dhall decoder.
 - Initial config creation is a project-binary command (`<project> project init`); Python does not trigger
   it. Normal missing-config errors are emitted by the project binary.
 
@@ -190,13 +205,14 @@ binary owns that surface).
 
 - Python tests cover Cabal-name discovery and ambiguity failures.
 - Python tests prove `hostbootstrap run` invokes no `dhall-to-json` and writes no Dhall artifact.
-- Existing bootstrap command-builder tests still prove host-native build and exec argv behavior.
+- Existing bootstrap command-builder tests still prove host-native build and handoff-argv behavior
+  (`exec_argv` is the retained builder name).
 
 #### Remaining Work
 
 None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetry run python -m
 hostbootstrap.test_all -q` passes with 113 tests. The tests cover Cabal-file project discovery,
-zero/multiple-Cabal diagnostics, host-native build/exec argv, and the absence of Python-written Dhall
+zero/multiple-Cabal diagnostics, host-native build/handoff argv, and the absence of Python-written Dhall
 artifacts.
 
 ### Sprint 6.5: Explicit pipx self-update [Done]
@@ -264,12 +280,14 @@ host-floor/toolchain bootstrap that makes the native `.exe` build possible.
 - `prereqs.py` treats **winget** as the Windows pre-binary package-manager root. The wrapper itself reaches
   a fresh Windows host through a one-time pipx-via-winget install (winget installs Python + pipx, pipx
   installs `hostbootstrap`), the only step that must precede any project binary.
-- `toolchain_ensure_steps` consumes Phase 2's **Windows branch** (winget-rooted GHCup → GHC/Cabal),
+- `toolchain_ensure_steps` consumes Phase 2's initial **Windows branch** (PowerShell-retrieved GHCup →
+  GHC/Cabal),
   probing each tool first and installing only when absent, alongside the existing Apple (Homebrew →
   `ghcup` → GHC/Cabal) and Linux (`ghcup` → GHC/Cabal) branches. MSVC belongs to the binary-owned
   `ensure cudawin` reconciler, where nvcc needs a host C++ compiler.
-- `native_build_command` / `binary_path` / `exec_argv` build and exec the native **`hostbootstrap.exe`**
-  host-native on Windows exactly as the Apple arm64 peer builds and execs `./.build/<binary>` — no
+- `native_build_command` / `binary_path` / `exec_argv` build the native **`hostbootstrap.exe`** and
+  construct its handoff argv. Windows runs it as a child subprocess and returns its exit code; the Apple
+  arm64 peer replaces Python with `./.build/<binary>` through POSIX `exec`. Both are host-native — no
   copy-out, no container build (§ N). On native Windows GHC `System.Info.os` is `mingw32`, the substrate
   the core's conditionalized POSIX-only `unix` dependency targets.
 - WSL2 is intentionally absent from the Python pre-binary gate. The binary's WSL2 host provider is owned
@@ -287,6 +305,56 @@ host-floor/toolchain bootstrap that makes the native `.exe` build possible.
 None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetry run python -m
 hostbootstrap.test_all` passes. Live Windows toolchain/bootstrap validation is Phase 2; WSL2 real-run
 validation is Phase 11.
+
+### Sprint 6.7: Reproducible base publication and thin-build correction [Planned]
+
+**Status**: Planned
+**Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`,
+`hostbootstrap/bootstrap.py`, `hostbootstrap/cli.py`, `docker/basecontainer.Dockerfile`
+**Docs to update**: `documents/engineering/base_image.md`,
+`documents/engineering/build_release.md`, `documents/architecture/python_haskell_boundary.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make base build/publish enforce the documented source-of-truth boundary and make the Python native-build
+path idempotent without hidden network or copy work.
+
+#### Deliverables
+
+- Reject a requested base architecture that does not match the native Docker engine/host architecture;
+  no implicit buildx/emulation path is accepted.
+- Replace `_maintainer_cli_enabled`'s dependency-import heuristic with an opaque
+  `MaintainerCommandAuthority` minted only after validating the active interpreter and canonical
+  repository/Poetry development context. Parser construction consumes that authority; injecting
+  ruff/black/mypy/pytest into a consumer pipx environment cannot expose `base`, `check-code`, or
+  `test-all`.
+- Run the complete Python and Haskell quality gates before publish, then record the published digest,
+  pull the tag, and validate a derived build against the digest-qualified immutable reference.
+- Remove the documented local-unpublished-base validation path; local base builds may be inspected, but
+  consumer validation follows publish → pull.
+- Require explicit Cabal-file selection when discovery is ambiguous and derive one validated
+  `ProjectBuildSpec` identity used for package, executable, `.build` artifact, and sibling config; reject
+  every stem/package/executable mismatch before build rather than retaining unconstrained names.
+- Make `cabal update` conditional on a missing/stale package index, provide an explicit `--offline` path
+  that performs no network update and fails clearly when cached inputs are insufficient, and avoid copying
+  an unchanged native binary on every run.
+
+#### Validation
+
+- Unit tests cover architecture mismatch, publish/pull/digest ordering, gate failure before push,
+  maintainer-command rejection outside verified repository provenance (including a pipx-like environment
+  with every dev module importable), multiple Cabal files, every identity mismatch, offline
+  success/failure, fresh-index no-op, and unchanged-binary no-op.
+- A native `base build-and-push` gate records the digest and a clean derived-image pull/build using it.
+- Canonical Python checks plus `cabal build all --ghc-options=-Werror` and `cabal test all` pass.
+
+#### Remaining Work
+
+Implement the native-architecture and maintainer-context preflights, full pre-publish gate,
+immutable-reference handoff, project selection contract, and idempotent index/copy behavior; then
+reconcile the governed release and boundary docs. Earlier Sprints 6.1–6.6 remain historical evidence,
+not proof of these obligations.
 
 ## Documentation Requirements
 

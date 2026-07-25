@@ -1,4 +1,4 @@
-# Phase 18: Service Runtime Command
+# Phase 18: Service runtime command
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -14,10 +14,11 @@
 **Status**: Active
 
 `service` is **new core scope** — there had never been a `service` command; the demo's long-running web
-workload previously ran through the load-bearing `web serve` verb. The generic command now reaches every
-project role through the fixed surface (development_plan_standards § AA), not a per-project verb.
+workload previously ran through the load-bearing `web serve` verb. The fixed command can dispatch a
+project-supplied registry key; current core does not prove that arbitrary selector output corresponds to
+a service ADT value or capability (development_plan_standards § AA).
 
-The current implementation is built and statically validated (364 core tests and 87 demo tests):
+The implementation is built and has dated static validation evidence:
 
 - `HostBootstrap.Service` ships the possibly empty `ServiceRegistry` of internal handler keys and actions.
   `HostBootstrap.CLI` threads it through `ProjectSpec` with `withServices`, rejects duplicate keys, and
@@ -25,7 +26,11 @@ The current implementation is built and statically validated (364 core tests and
 - `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` tree. There is
   no `service down` and no positional variant argument: `service run` gates as
   `Context.ServiceCommand`, asks the effective project config for its selected variant, and dispatches that
-  internal key through the registry.
+  internal key through the registry. The selector is an arbitrary function; the required capability list
+  is empty, and core can dispatch a config type with no service field. Both demo handlers then reload the
+  sibling config: the Web reload alone asks `validateContext` for `[DurableStore]`, while the accelerator
+  reload again asks for no capability, so capability checks and config identity differ by handler and
+  read.
 - The demo owns the real Dhall service model:
   `ServiceType = < Web : WebServiceConfig | Accelerator : AcceleratorServiceConfig >`, stored as the
   mandatory `service : Optional ServiceType` project-config field. `Web` carries distinct public and
@@ -57,6 +62,12 @@ is not a live validation claim for the current four-lane accelerator gate.
 configuration, two-listener web boundary, and persistent real-worker supervision are implemented and
 covered by static/local tests. The cross-substrate live gates below remain open, so the phase stays Active.
 
+**Reopened 2026-07-24 for validated service selection and immutable dispatch.** `service schema` is
+encoder-declared, not decoder-reflected. `service run` selects from one config decode, but the demo
+handlers reload the sibling file; selector/config/registry agreement is convention rather than a typed
+relation; service projection invents fallback values; and a missing service config incorrectly points to
+root `project init`. Blocked Sprint 18.6 owns the repair with Sprints 14.6, 15.9, 17.4, and 19.8.
+
 ## Remaining Work
 
 **Accelerator daemon live-runtime closure — open.** Static and local validation, including the browser
@@ -65,17 +76,31 @@ workflow specification and guarded real-worker cases, is implemented. Completion
 - real socket integration through the in-cluster `ClusterIP` and host-daemon local-only `NodePort` paths;
 - the browser Add workflow against those live deployments, proving the result and metadata came from the
   selected JIT-built worker rather than from the web process; and
-- the four required substrate/placement lanes: Apple Silicon host daemon, Linux CPU in-cluster daemon,
-  Linux GPU direct nvkind/in-cluster daemon, and Windows GPU host daemon. On each lane the harness runs
-  four cases across two message variants, so the required result is `8/8`; no current live `8/8` result
-  is claimed here.
+- the three still-open native substrate/placement lanes: Apple Silicon host daemon, Linux CPU
+  in-cluster daemon, and Linux GPU direct nvkind/in-cluster daemon. On each lane the harness runs four
+  cases across two message variants, so the required result is `8/8`.
+
+The Windows GPU host-daemon lane is closed by the dated 2026-07-23 Windows/WSL2 `8/8` run, which exercised
+the host worker, CBOR WebSocket path, browser result, and backend/artifact metadata. Windows is not part of
+this phase's remaining work.
+
+**Validated service dispatch — blocked (Sprint 18.6).** Replace arbitrary string selection and
+double-read handlers with a config/frame/registry-indexed existential `SelectedService` package, exact
+service authority, one immutable config-derived role payload, and command-specific missing-config
+recovery guidance. The handler receives only
+`RoleParams specDigest configId secretDigest fields service` from an opaque config-bound request bundle
+through a closed
+`ServiceProgram`, not the full config or raw `IO`; the selected service also proves that the program's
+exact effect row is authorized.
 
 ## Phase Objective
 
 Provide a generic, fixed `service` command on the core tree so every project binary runs its long-running
-roles uniformly: `service init` / `service schema` / `service run`. The effective project config selects a
-project-owned service ADT value; a project-supplied projection maps it to an internal handler key. The
-command is gated to a service/daemon frame, and deployment config is delivered by a dynamically rendered
+roles uniformly: `service init` / `service schema` / `service run`. The target jointly derives an opaque
+selected-service package from one child-locally verified mounted role wire/request (projected from one
+parent validated config), compatible
+leaf frame, exact runtime authority, and finalized project-owned typed registry. Only the matching
+role-specific parameter payload reaches the handler. Deployment config is delivered by a dynamically rendered
 ConfigMap that overrides the image's baked container `<project>.dhall`. There is no `service down`: the
 leaf process may run in a Kubernetes pod or as a host daemon, and its enclosing controller or project
 lifecycle owns teardown (§ Y).
@@ -100,21 +125,23 @@ project binary inherits it.
 #### Deliverables
 
 - `service init` writes a service-configured `<project>.dhall` from passed parameters (forwarded from a
-  parent where applicable, § X); `service schema` prints the service config schema (reflected from the
-  decoder, § Q); `service run` runs the role selected by the effective config. No `service down`.
+  parent where applicable, § X); `service schema` prints the `ToDhall` encoder-declared project config
+  schema; `service run` invokes the registry key returned by the current selector. No `service down`.
 - `service run` is a **leaf-frame runtime command, never an orchestrator**: it assumes it is already placed
   in its frame (a k8s pod or host daemon) and runs the role; it brings up no VM or cluster.
 
 #### Validation
 
-- The core CLI spec asserts `service` is present on every binary, `service run` fails fast when the config
-  is not service-configured, and there is no `service down` subcommand.
+- The core CLI spec asserts `service` is present on every binary, selector/lookup failures return
+  non-zero, and there is no `service down` subcommand. It does not prove every `cfg` has a service ADT or
+  that a constant selector is related to config.
 
 #### Remaining Work
 
 None. `serviceCommandGroup` surfaces `service init|schema|run` (no `service down`); `service run` gates as
-`Context.ServiceCommand` and is a leaf-frame command, never an orchestrator. `CLISpec` covers the
-leaf-frame refusal and `service schema`. The 2026-06-19 demo run is historical live evidence for the
+  `Context.ServiceCommand` and applies a leaf primary-kind check. `CLISpec` covers that refusal and
+  encoder-declared `service schema`; it does not establish service-field/capability/selector relations.
+  The 2026-06-19 demo run is historical live evidence for the
 pre-selector web form of the command ([phase-13](phase-13-hostbootstrap-demo.md)); current live matrix
 closure is tracked by Sprint 18.5.
 
@@ -131,10 +158,10 @@ variant selected by its effective config.
 
 #### Deliverables
 
-- A project contributes a possibly empty internal handler **registry** through `withServices` and a
-  config-specific selector through `withServiceConfig` / `psServiceVariant`. The selector validates the
-  project-owned Dhall ADT and maps the selected constructor to a registry key; the registry itself is not
-  the Dhall ADT.
+- A project contributes a possibly empty internal handler **registry** through `withServices` and an
+  arbitrary config-to-string selector through `withServiceConfig` / `psServiceVariant`. The demo selector
+  validates its own Dhall ADT by convention; core does not enforce that relation. The registry itself is
+  not the Dhall ADT.
 - The demo's real model is
   `ServiceType = < Web : WebServiceConfig | Accelerator : AcceleratorServiceConfig >`. The Web payload
   carries `publicPort` and `acceleratorPort`; the Accelerator payload carries `requestTimeoutSeconds`.
@@ -151,9 +178,10 @@ variant selected by its effective config.
 
 #### Remaining Work
 
-None. The distinct registry and config-selector seams, the real payload-bearing demo ADT, duplicate-key
-rejection, placement validation, and config-selected dispatch are built and covered by the current static
-suite. Sprint 18.5 owns live validation of both constructors and placements.
+None in the historical registry/selector landing. The distinct registry and arbitrary selector seams,
+the real payload-bearing demo ADT, duplicate-key rejection, demo placement validation, and string-key
+dispatch are built. Sprint 18.5 owns live placement evidence; Sprint 18.6 owns making the relation
+unforgeable.
 
 ### Sprint 18.3: Leaf-frame gating and ConfigMap-delivered config [Done]
 
@@ -167,9 +195,9 @@ Gate `service run` to a service-role frame and deliver its config the binary-con
 
 #### Deliverables
 
-- `service run` fails fast unless the effective `<project>.dhall` declares a **service role** and contains
-  a valid service value for that placement (§ X). A single config may declare project *and* service roles;
-  `service run` checks the service capability and uses the configured selector.
+- The demo `service run` path fails fast when its selector rejects the effective config or registry lookup,
+  and core checks a `ClusterService`/`Daemon` primary kind. Core does not require a service field or
+  service-specific capability; Sprint 18.6 owns that exact relation.
 - `project up`'s `deploy-chart` step deploys the pod whose entrypoint is `service run`; the pod's config
   arrives as a **dynamically rendered ConfigMap overriding the image's baked container
   `<project>.dhall`** (§ X). The deployer hashes the exact mounted bytes into the pod template annotation.
@@ -183,7 +211,8 @@ Gate `service run` to a service-role frame and deliver its config the binary-con
 
 #### Remaining Work
 
-None for implementation. `service run` refuses a non-service-role config; the deployer renders the actual
+None for the historical demo delivery implementation. `service run` refuses a non-leaf primary kind and
+the demo selector rejects its invalid placements; the deployer renders the current full-record
 parent-derived service config and ConfigMap, applies it, and passes Helm only the current frame,
 config-byte hash, and placement. The chart args are `service run` with no positional variant. The
 2026-06-19 web run remains historical evidence for mounted-config behavior; current live closure belongs
@@ -262,8 +291,8 @@ worker session.
 
 #### Remaining Work
 
-The implementation and current static/local contract are complete and green (364 core tests, 87 demo
-tests). The effective config selects `Accelerator`; the existing `Context.ServiceCommand` gate rejects
+The implementation has dated static/local validation evidence. The effective config selects
+`Accelerator`; the existing `Context.ServiceCommand` gate rejects
 project-lifecycle authority; the dynamic manifest supplies the placement-specific connection target and
 timeout; and deterministic CBOR codecs preserve request IDs, metadata, and failures. The web process owns
 a single-flight hub on its private listener but never computes the sum itself. Public and private ports are
@@ -283,15 +312,257 @@ the CUDA worker on the RTX 3090 with `nvcc -ccbin <msvc>` and returned `Right 3.
 reported 46 demo tests). That proves the native worker path used in that run; it is not a live daemon
 socket, lifecycle, or browser-matrix result.
 
-The phase remains Active for real socket and browser closure across the in-cluster `ClusterIP` and
-host-daemon local-only `NodePort` routes, including the durable Windows GPU run, native Apple Silicon
-host-daemon lane, and Linux CPU/GPU in-cluster lanes. No new live `8/8` result is claimed.
+The phase remains Active only for native Apple Silicon host-daemon and Linux CPU/GPU in-cluster real
+socket/browser closure. The Windows GPU host-daemon lane closed on the dated 2026-07-23 `8/8` run; that
+result does not stand in for any of the three remaining native lanes.
+
+### Sprint 18.6: Typed selected-service package and immutable handler input [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 14.6, 15.9, 17.4, and 19.8
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Fields.hs` (introduced by Sprint 19.8),
+`demo/hostbootstrap-demo.cabal`,
+`demo/app/Main.hs`,
+`demo/src/HostBootstrapDemo/Config.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/src/HostBootstrapDemo/Web/Server.hs`,
+`demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`,
+`core/hostbootstrap-core/test/CLISpec.hs`,
+`core/hostbootstrap-core/test/ServiceSpec.hs` (new),
+`demo/test/ConfigSpec.hs`,
+`demo/test/WebServerSpec.hs`,
+`demo/test/AcceleratorSpec.hs`,
+`core/hostbootstrap-core/test/Spec.hs`
+**Docs to update**: `documents/architecture/generic_project_model.md`,
+`documents/architecture/hostbootstrap_core_library.md`,
+`documents/engineering/config_generation.md`, `documents/engineering/schema.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make service selection a validated relation among one immutable verified role-wire snapshot, exact leaf placement,
+runtime authority, and the finalized typed handler registry. A caller cannot separate or mismatch a
+service identity, its role-specific parameters, and its handler, or execute a package under different
+config bytes.
+
+#### Deliverables
+
+- Consume Phase 19.8's removal of raw `psServiceVariant :: cfg -> Either String String` from the finalized
+  specification. Phase 19.8 jointly finalizes the hidden
+  field schema, `specDigest`, full `ProjectCodec`, role-wire
+  `RoleCodec scope specDigest fields`, and typed registry. The parent
+  can render only `RuntimeRoleWire fields service`; it cannot serialize a request or parameters. At
+  runtime, `withVerifiedRuntimeRoleWire` consumes the
+  rollout-revision/workload-instance/spec/binary/config/secret/service/effect-bound
+  `VerifiedRuntimeRoleActivation`, matching finalized runtime spec, internally verified scope-specific
+  secret bundle, and actual mounted bytes, then
+  produces `ValidatedServiceRequest specDigest configId secretDigest fields service` with a fresh
+  child-local `configId`. Production wires contain pointers; Harness wires contain only typed secret
+  handles and use a separate run-scoped private bundle. The Kubernetes Secret/private OS channel is the
+  sole secret-bearing runtime payload; no cleartext fixture enters the non-secret ConfigMap, pod
+  template, signed activation manifest, envelope view, log, or diagnostic. The request and its
+  `RoleParams specDigest configId secretDigest fields service` are one opaque, inseparable bundle.
+  Phase 19.8's schema builder assigns every field a closed `VisibleTo consumers` set covering framework
+  validation, typed plan frames, Harness assembly, and `Service service`; only the exact role projection
+  can cross the boundary and only the selected-service filter can construct handler parameters.
+- Make admission and old-instance recovery explicit typed gates. `verifyRolePlanDraft` validates the
+  non-empty role draft and signed `rolePlanDigest` before durable mutation.
+  `withRoleLifecycleAdmission` is the only protected producer of
+  `RoleLifecycleAdmission ... planId configId ... invocationId admissionKey admissionVersion`; it
+  atomically reserves the first journal version and mints the rank-2 `planId`/`invocationId`.
+  `admissionKey` is stable for the verified activation/request/draft and has only Reserved→Consumed
+  phases. A lost reservation acknowledgment yields `RoleLifecycleAdmissionUnknown`; the same opener or
+  `resumeRoleLifecycleAdmissionUnknown` rehydrates the stored identities, and concurrent tokens have one
+  plan-construction CAS winner. Commit-before-cursor-delivery yields `RolePlanOpenUnknown`, whose sole
+  resume gate rehydrates that exact consumed plan/invocation/cursor. The live instance's own Reserved or
+  Consumed row is never predecessor recovery.
+  `withRuntimeRolePlan` must linearly consume that exact admission and `VerifiedRolePlanDraft`, is fixed
+  to its `planId`, and has no raw-draft validation failure after reservation.
+
+  Before admitting a new instance, enumerate the complete predecessor set for a stable
+  `RolePlacementKey`. Its `VerifiedOldRoleInstanceManifest` retains each member's full old
+  plan/spec/binary/config/secret/role-plan/effect-ceiling, local
+  plan/config/revision/instance/invocation/journal/resource lineage; never index old recovery by the new
+  rollout's digests. A non-empty set yields only `RoleLifecycleRecoveryRequired`.
+  `recoverRoleLifecycle` performs an exact-set fold, rejects missing/duplicate/extra/substituted members,
+  and returns either full-new-lineage unknown state or one `SettledRoleLifecycleRecovery` containing
+  same-new-lineage `RecoveredRoleInstanceSet` plus `RoleRecoveryClearance`.
+  `resumeRoleLifecycleRecoveryUnknown` is the unknown's sole consumer and re-probes the same key into
+  another exhaustive advance; neither branch can pair with another service/plan/config/effect lineage.
+  Each member requires authoritative `VerifiedRoleInstanceNonLive`, revalidated
+  by the final CAS. Non-exclusive live overlap remains legal and excluded from recovery; only
+  authoritatively non-live incomplete/unclean members are settled. A live exclusive predecessor yields
+  Busy/Conflict or liveness Unknown without recovery authority. An exclusive successor requires
+  `ServiceLeaseTransferBarrier ... predecessorFenceSet newFence transferVersion` covering every old
+  prepared/in-flight attempt through backend fencing or retained-lock settlement; no-exclusive
+  predecessors require `VerifiedNoServiceLeaseTransfer` for the whole set.
+  `resumeRoleLifecycleAdmission` consumes that settled package, atomically closes all recovered
+  invocations, and reserves the new admission. Kill/lost-ack resumes the same stable key and can never
+  expose a new plan, cursor, or lease early.
+- Construct one internal existential
+  `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
+  fields`
+  containing the matching
+  `ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
+  service effects`,
+  request/parameters, and closed `ServiceProgram`. Its constructor/projections do not let callers
+  substitute one member independently. The package is never handed to an arbitrary callback: sole
+  `selectAndRunService` jointly consumes the exact request, role plan/`RolePlanDigestBinding`, current
+  Serve cursor/context, identity-indexed `ReadyServiceHandles`, retained receipt/lease package, inseparable
+  activation/projection package, compatible `VerifiedServicePlacement`, and finalized runtime spec. It
+  looks up the exact typed handler/effect row, proves that row through `EffectAuthorization`, requires an
+  opaque `DurablePlacementAuthority` for `DurableStore`, and atomically transfers a private
+  `ServiceCommandAuthority scope specDigest planId configId secretDigest frame revision instanceId
+  ServePhase service effects` into the package before interpreting it under core-owned masking. A separable/raw
+  `RuntimeActivationAuthority`, decoded context placement label, and generic lifecycle
+  `CommandAuthority` are not service dispatch authority. An explicitly empty registry produces a typed
+  selection failure and the same Drain transition.
+- `ServiceProgram` is a closed capability-indexed program with no public `IO`/`MonadIO`, arbitrary
+  filesystem, or config-read constructor. Core interprets only the finalized service's authorized
+  network/durable-store/process effect row; a project adds an effect through the typed interpreter seam,
+  never by embedding raw `IO`. The row is not mutation authority: each mutating
+  store/process/backend constructor first becomes an opaque
+  `SealedServiceEffectCall ... effect ... targetId operationKey callDigest` carrying the exact target and
+  arguments; adapters accept no separate raw request. Private prepare consumes that call, the exact
+  `ServiceEffectReady` session, and whole retained package. Success yields
+  `PreparedServiceEffect ... targetId operationKey callDigest fence attempt journalVersion` carrying the
+  call/package. Known prepare rejection yields only
+  `ServiceEffectPrepareFailed effect targetId operationKey callDigest fence attempt`; uncertain journal
+  commit yields only `ServiceEffectPrepareUnknown ...`. Both private failure branches return the successor
+  session and whole retained package directly to Serve→Drain/recovery, and neither state can normally
+  prepare.
+  The backend consumes the prepared value and returns
+  `ServiceEffectAdvance ... targetId operationKey callDigest ... fromJournalVersion nextJournalVersion
+  nextEffectState`. Its private eliminator exposes `ServiceEffectOutcome nextEffectState` only with the sole successor service-journal
+  session under the unchanged effect row/phase and the reconstituted whole retained receipt/lease
+  package. Observed outcomes yield `ServiceEffectReady`; unknown yields
+  `ServiceEffectUnknown effect targetId operationKey callDigest fence attempt`, which no normal prepare
+  accepts until same-key/fence reprobe produces an observed resolution or indexed
+  `VerifiedSameKeyRetry ... configId secretDigest ... service effects phase effect invocationId sessionId
+  targetId operationKey callDigest fence previousAttempt nextAttempt unknownJournalVersion
+  retryJournalVersion`. Private `resumeVerifiedSameKeyRetry` consumes that exact Unknown session, full
+  proof, and package and feeds the Ready successor plus reconstructed sealed call only back into the same
+  interpreter. Another target/call, config, secret bundle, row, phase, invocation, session, or journal
+  version cannot cross-pair; there is no caller-selectable Unknown→Ready conversion. This includes
+  crash-after-call-before-ack. The prepared
+  value can be minted only from the exact prior session and live
+  `ServiceGenerationLease ... fence` inseparably retained with receipts; the no-exclusive-effects branch
+  exists only when the signed placement ceiling prohibits every exclusive/mutating effect and therefore
+  cannot authorize mutation. Registry selection must prove its exact row is within that same ceiling.
+- Pass only the packaged `RoleParams specDigest configId secretDigest fields service` to the handler. Remove sibling-file reloads
+  from Web/accelerator handlers; file replacement after dispatch cannot change parameters, role, or
+  authority within that invocation, and the full `ValidatedConfig ... cfg` never crosses the
+  child-wire or handler boundary.
+- Give service/daemon leaves role-specific parameter types projected without fallback literals.
+  Configured Web ports and accelerator timeout originate in the sole project assembler; host
+  Dockerfile/VM/deploy fields and the other role's optional payload cannot reach the selected handler.
+- Require the precise service/runtime-activation authority and complete placement witness set, not an
+  empty capability requirement plus a string selector. Derive required durable-store/network/process
+  capabilities from the authorized `effects` row and verified placement, so a handler cannot request or
+  execute an effect absent from its `ServiceSelection` proof. Network/process Serve operations can use
+  only handles acquired and successfully probed by Sprint 14.6; no handler-visible late bind/spawn can
+  race readiness. The accelerator's restartable worker uses a stable ready supervisor handle. Its one
+  allowed restart is a core-owned journal-prepared transition whose successor child must pass readiness
+  before another request is routed.
+- Make execution a mandatory lifecycle advance. Selection rejection, handler completion or typed
+  failure, catchable controller shutdown, and caught interruption all return only
+  `RoleAdvance ... ServePhase DrainPhase ServiceDispatchResult`; its
+  private eliminator yields the result together with the sole Drain cursor and retained resource/lease
+  package. Drain consumes both, attempts every independent release even after one fails, and returns
+  `RoleAdvance ... DrainPhase ExitPhase DrainResult` whose eliminator yields the aggregate outcome with
+  the sole Exit cursor. The masked core-owned run-to-Exit operation is the only public runner; no bare
+  `Either`, phase eliminator, or arbitrary callback can capture/drop receipts. Uncatchable process death
+  is handled by the typed exact-set predecessor-manifest recovery transition over durable lifecycle
+  admission/receipt/lease/journal state.
+  Rolling non-exclusive revisions/instances may overlap; cross-instance replay fails, and the retained
+  fenced `ServiceGenerationLease` prevents old exclusive/mutating operations after transfer. The
+  successor lease is published only when `ServiceLeaseTransferBarrier` proves an atomic backend fence
+  or retained-lock barrier has settled or authoritatively fenced every prepared/in-flight old attempt
+  from every predecessor manifest member; a backend with neither primitive is `Unsupported`.
+- Make missing-config diagnostics command-specific. `service run` points to the owning
+  parent/controller projection, or to `service init` together with the authorized manifest/identity
+  installer; it never implies that descriptive bytes alone grant activation. Project lifecycle points to
+  `project init`; no generic hint recommends an initializer that still cannot satisfy the requested gate.
+
+#### Validation
+
+- Compile-fail fixtures reject a wrong service-parameter/handler pairing, parameters minted under
+  another `configId`, an independently chosen field row, a payload containing a field whose `VisibleTo`
+  set omits that service, a handler program whose effect row differs from its `ServiceSelection`, and raw
+  handler invocation without the core-owned selection/run gate. Construction tests cover structured
+  selection outcomes
+  for absent requests, registry mismatch, wrong config ID, non-leaf frames, stale activation
+  revisions/instance IDs, any non-Serve cursor, activation package without matching placement, effect rows outside the admitted
+  placement, `DurableStore` without `DurablePlacementAuthority`, a consumed service invocation, and
+  missing service capability. A duplicate invocation/CAS test proves one command identity starts at most
+  one handler. Admission tests prove raw draft mismatch refuses before any durable reservation, only
+  `withRoleLifecycleAdmission` produces the one-use admission, and `withRuntimeRolePlan` cannot run
+  without consuming it or reuse it to mint a second `planId`/cursor. Selection failure before program
+  start still yields the unique Drain cursor/receipt-and-lease package.
+- Crash-recovery tests enumerate multiple heterogeneous old rollout records and reject missing,
+  duplicate, extra, new-lineage-relabelled, or liveness-stale manifest members. A live non-exclusive
+  predecessor remains outside recovery and may overlap; a live exclusive predecessor yields no recovery
+  authority. Kill injection across exact-set recovery, fence/lock transfer, old Exit closure, new
+  admission reservation, and acknowledgment resumes one stable key through
+  `resumeRoleLifecycleRecoveryUnknown`. Cross-service/plan/config/effect substitution of an unknown or
+  settled recovery package fails. The exclusive branch cannot mint
+  `RoleRecoveryClearance` without a `ServiceLeaseTransferBarrier` covering every predecessor; the
+  no-exclusive branch requires the complete-set proof. No new plan/cursor/lease exists before
+  `resumeRoleLifecycleAdmission`.
+- Service-journal race/fault tests reject a prepared effect from another invocation/session or prior
+  journal version, effect row, phase, target, or call digest; prove an adapter receives the sealed request
+  only inside its prepared value and can consume each value once; and
+  expose every terminal outcome only with the fresh successor session plus the whole retained
+  receipt/lease package. No eliminator exposes a bare lease. Compile-fail tests prove normal prepare
+  accepts only `ServiceEffectReady`. Faults before prepared-value return yield indexed
+  `ServiceEffectPrepareFailed`/`ServiceEffectPrepareUnknown` with the sole session/package and reach
+  Drain/recovery without retry or resource loss. Kill-after-call-before-ack produces a target/call-indexed
+  `ServiceEffectUnknown`; only exact full-lineage same-key/fence reprobe can resolve it or mint a
+  `VerifiedSameKeyRetry`, and only the private joint resume eliminator accepts that proof with the
+  matching Unknown session/package.
+  Success-, failure-, shutdown-, interruption-, and empty-registry paths prove each yields Drain, which attempts all
+  releases while aggregating failures, and no result can be observed without the successor cursor.
+  Demo codec properties prove each decoded
+  Web/Accelerator value yields its corresponding typed request and parameters; core does not claim to
+  inspect an arbitrary function for semantic relatedness because that function is removed.
+- API tests prove `ServiceProgram` exposes no raw `IO`/`MonadIO`/config-read escape hatch. A
+  replacement-race test swaps the mounted role wire between child-local validation and handler
+  execution; the selected handler observes only the role parameters packaged under the verified local
+  config ID/digest, and neither handler program nor interpreter opens the config path or receives the
+  full project config. Replace/rebind-between-readiness-and-Serve tests prove only the probed managed
+  handles are usable. Restart-after-effect-call-before-ack tests prove stable-key/fence reprobe prevents
+  blind duplication. Supervisor-restart tests prove the child replacement is journal-prepared and cannot
+  route work until the successor child has a new readiness proof.
+- Role-projection tests prove every configured port/timeout is preserved and no fallback source exists.
+  The mounted wire contains exactly mandatory `FrameworkValidation` fields plus fields tagged for the
+  selected `Service service`; `RoleParams` contains only the latter. Plan/build/deploy-only fields inhabit
+  neither. Golden tests prove both filters independently. These tests also audit the demo's semantic
+  consumer tags; core's generic guarantee is relative to the declared tags. Production/Harness fixtures
+  prove no inline secret appears in role ConfigMaps, pod templates, signed activation manifests, logs, or
+  `LocalContextView`; only the Kubernetes Secret/private OS channel contains fixture bytes;
+  missing/extra/duplicate Harness secret entries and cross-run/cross-spec bundles refuse.
+- CLI tests distinguish the current full-`cfg` encoder-declared `service schema` from the target
+  `RoleCodec`-derived role-wire schema registry, and prove an empty registry's structured result plus
+  command-specific missing-config guidance.
+
+#### Remaining Work
+
+Blocked until Phase 14.6 supplies the phase-indexed role lifecycle, Phase 15.9 supplies immutable
+validated role-wire/runtime authority, Phase 17.4 supplies command-specific parser/guidance semantics,
+and Phase 19.8 finalizes the service registry/projection relation. Then migrate the handlers and rerun
+the service/daemon matrix.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/run_models.md` - the `HostDaemon`/service run-model reached via `service run`, the
-  project-owned `ServiceType` ADT, config selector, and distinct service-handler registry.
+  current arbitrary selector/handler registry and their target replacement by a codec-produced opaque
+  request, finalized typed registry, and effect-authorized `SelectedService`.
 - `documents/architecture/binary_context_config.md` - the service-role context and dynamically generated
   ConfigMap-overrides-baked-`<project>.dhall` delivery.
 

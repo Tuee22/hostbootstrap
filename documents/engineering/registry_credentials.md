@@ -4,9 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [../architecture/composition_methodology.md](../architecture/composition_methodology.md), [../architecture/binary_context_config.md](../architecture/binary_context_config.md), [../operations/demo_runbook.md](../operations/demo_runbook.md)
 
-> **Purpose**: Define how the host's Docker Hub credentials are forwarded down the self-reference lift to
-> authenticate nested image pulls, modelled so that leaking the credential is unrepresentable, and never
-> placed in Dhall, a persisted file, or a process listing.
+> **Purpose**: Define how the host's Docker Hub credentials are forwarded down the self-reference lift,
+> state the exact limits of the current risk-reducing transport, and define the capability-bound target.
 
 ## TL;DR
 
@@ -14,16 +13,19 @@
   `kind`/`docker run`) hits Docker Hub's **unauthenticated** rate limit. The fix is to forward the host's
   existing Docker Hub login down the [self-reference lift](../architecture/composition_methodology.md) so
   the nested pull authenticates.
-- The credential is an **effect-only, non-serialisable capability** modelled by `HostBootstrap.Registry`.
+- The credential is intended as an **effect-only capability** modelled by `HostBootstrap.Registry`.
   `RegistryAuth` is opaque (its constructor is not exported), its `Show` is redacted, and it has **no
-  `FromDhall`/`ToDhall` instance** — so it **cannot** appear in a `<project>.dhall`, a log line, or a
-  generated config artifact. Leaking it is unrepresentable by construction.
-- It is **discovered only on the host** (from the host's own `~/.docker/config.json`), carries **only the
-  Docker Hub auth entries** (never the host's other registry credentials), and is **never written into
-  `HostConfig`, the binary context, or any generated file**.
-- It is forwarded only over **ephemeral channels**, never `argv`: piped on `stdin` into a transient
-  `DOCKER_CONFIG` that is removed when the command exits, or carried into a container by an environment
-  variable the in-container binary consumes once into a transient `DOCKER_CONFIG` and never persists.
+  `FromDhall`/`ToDhall` instance**. This reduces accidental config/`Show` leakage, but
+  `registryConfigPayload :: RegistryAuth -> Text` is public, so arbitrary caller code can still log,
+  serialize, or persist the bytes.
+- Discovery is currently called on the outer host. Projection uses a **substring** key test
+  (`"docker.io" isInfixOf key`), not a canonical Docker Hub registry parser, so the implementation does
+  not prove that every forwarded entry is Docker Hub-only.
+- Current forwarding avoids putting the value directly in the constructed command `argv`, but it does
+  use process memory, pipes, a container environment variable, shell environment, and a temporary
+  `DOCKER_CONFIG` file. Environment values can be observable through same-privilege process/container
+  inspection, and ordinary trap/bracket cleanup is not guaranteed after `SIGKILL`, host crash, or abrupt
+  VM termination.
 - When the host is not logged in, discovery yields `Nothing` and every pull runs anonymously — a
   pristine host needs no Docker Hub login.
 
@@ -33,49 +35,56 @@ The binary-context contract (see [binary_context_config](../architecture/binary_
 every project binary at every level reads a sibling `<project>.dhall` describing the whole composition
 topology. Credentials must **never** be part of that picture: a `<project>.dhall` is generated, streamed
 between contexts, and read for inspection (`context show`), so a credential placed in it would be streamed
-into the VM and the cluster and would survive on disk. The type system enforces the boundary:
-`RegistryAuth` has no Dhall codec, so it is not expressible in the schema, the context, or any
-`ConfigArtifact`. The credential is a *runtime effect*, resolved at the moment of a pull, not *state*.
+into the VM and the cluster and would survive on disk. The library's ordinary generated-config path
+respects this boundary because `RegistryAuth` has no Dhall codec. That is not a whole-program proof: its
+public `Text` accessor can be fed to a user-defined codec, logger, file write, or environment operation.
+Treat “not in Dhall/durable state” as required policy and tested library behavior, not a state Haskell
+currently makes impossible.
 
 ## The model (`HostBootstrap.Registry`)
 
 | Surface | Contract |
 |---|---|
-| `RegistryAuth` | Opaque newtype; constructor unexported; `Show` prints `RegistryAuth <redacted>`; no Dhall/JSON-serialising instance the schema can reach. Carries the minimal Docker-Hub-only `config.json`. |
-| `discoverHostRegistryAuth :: IO (Maybe RegistryAuth)` | Reads `$DOCKER_CONFIG/config.json` (or `~/.docker/config.json`) — the host is where the credential lives. Projects out only the `docker.io` auth entries. `Nothing` on any failure or no Docker Hub login. |
-| `dockerAuthStdinWrapper :: String -> String` | Pure: wraps an in-context shell command so it reads the payload from `stdin` into a throwaway `DOCKER_CONFIG` (`mktemp -d`), runs the command, and removes the directory on exit (`trap`). The secret is **not** in the returned string. |
-| `withForwardedRegistryAuth :: IO a -> IO a` | The in-container side: consumes the forwarded environment variable once into a transient `DOCKER_CONFIG`, points the process at it for the duration (via `bracket`), drops the raw variable, and scrubs the directory afterwards. A no-op when the variable is absent. |
-| `liftSubcommandWithAuth` (`HostBootstrap.Lift`) | The lift seam: forwards the credential into a container-reached-through-a-VM frame by piping the payload on `stdin` and adding `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the **name** only) to the `docker run`. With `Nothing` it is exactly `liftSubcommand` (anonymous). |
+| `RegistryAuth` | Constructor-hidden newtype; `Show` is redacted and no Dhall/JSON instance is supplied. The public `registryConfigPayload` exposes its raw `Text`, so this is an accidental-leak guard rather than non-extractable authority. |
+| `discoverHostRegistryAuth :: IO (Maybe RegistryAuth)` | Reads `$DOCKER_CONFIG/config.json` (or `~/.docker/config.json`). Filters auth keys by a `docker.io` substring and inline credential presence; this may overmatch non-Hub hostnames. `Nothing` on read/parse/no-match failure. |
+| `dockerAuthStdinWrapper :: String -> String` | Wraps a shell command so it reads `stdin` into `mktemp -d/config.json` and registers an exit trap. The returned command string embeds no secret, but the file can survive an untrappable kill/crash. |
+| `withForwardedRegistryAuth :: IO a -> IO a` | Consumes the forwarded environment value into a temporary `DOCKER_CONFIG`, unsets the variable in the current process, and removes the directory on normal/exceptional `bracket` exit. Same-privilege/container inspection before consumption and uncatchable termination remain outside that guarantee. |
+| `liftSubcommandWithAuth` (`HostBootstrap.Lift`) | Pipes the payload to the VM shell and uses `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only) on `docker run`. The value is absent from constructed `argv`, but exists in the shell/container environment and may be visible through process or Docker inspection. |
 
 ## How forwarding crosses each boundary
 
-The host binary discovers the credential (the only place it is read). It then reaches a nested pull over
-one of two ephemeral channels, chosen by the boundary — never `argv`, never a persisted file, never Dhall:
+The current demo calls discovery on the outer host. It then reaches a nested pull over one of two
+transient channels. The library does not place the value directly in constructed `argv`, Dhall, or an
+image layer; “no durable state” depends on cleanup completing:
 
 - **VM, raw `docker build`/`docker pull`** (the demo's build #3 base-image pull in `pristine-bootstrap`):
   the host pipes the minimal `config.json` on `stdin` to a command wrapped by `dockerAuthStdinWrapper`.
   The in-VM shell writes it to a `mktemp` `DOCKER_CONFIG`, runs the build, and the `trap` removes it on
-  exit. The credential touches the VM only in that transient directory and is gone when the build returns.
+  ordinary shell exit. `SIGKILL`, VM loss, or a host crash can leave the directory behind.
 - **Container, the persistent stack's in-container pulls**: the project container the chain hands
   `project up` into (`demoDeployImage`) carries `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the **name** only) on
-  its `docker run`, so Docker forwards the value into the container's environment without it ever
-  appearing in `argv` or a process listing. The in-container binary's `withForwardedRegistryAuth`
+  its `docker run`, so Docker forwards the value into the container's environment without putting the
+  value in the constructed `argv`. That environment may be visible through `/proc`/same-privilege or
+  Docker inspection until consumption. The in-container binary's `withForwardedRegistryAuth`
   consumes it once at startup into a transient `DOCKER_CONFIG`, so the `deploy-kind` step's `kind` node-
-  image pull and the in-container `docker run` probes authenticate, then scrubs it. The core lift seam
+  image pull and the in-container `docker run` probes authenticate, then attempts normal/exceptional
+  cleanup through `bracket`. The core lift seam
   `liftSubcommandWithAuth` supports the same shape for a container reached directly through a VM: it
   pipes the payload on `stdin` to the VM shell, which imports it with
   `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and `exec`s a `docker run -e HOSTBOOTSTRAP_REGISTRY_AUTH`.
 
-This is the "every project binary at every level has global knowledge" idiom: the host binary knows it is
+This is the current forwarding idiom: the host binary knows it is
 the outermost frame and holds the credential; each nested binary knows it may receive a forwarded
-credential and consumes it locally for the duration of its pulls. The credential is never stored at any
-level.
+credential and consumes it locally for the duration of its pulls. The intended policy is not to retain
+it as project state; the current type/API and kill behavior do not prove that property universally.
 
 ## Where the inline token comes from (per-host login)
 
-Discovery reads an **inline** token only: `dockerHubAuthFromConfig` keeps the `config.json`
-`auths."https://index.docker.io/v1/"` entry **verbatim** — both the `auth` (base64 `username:token`) and
-any `identitytoken` field — and forwards it. It deliberately does **not** resolve credential stores
+Discovery reads an **inline** token only. For the ordinary Hub key,
+`auths."https://index.docker.io/v1/"`, `dockerHubAuthFromConfig` keeps the matching entry verbatim —
+both the `auth` (base64 `username:token`) and any `identitytoken` field — and forwards it. The current
+filter accepts any key containing `docker.io`, so canonical-key validation remains target work. It
+deliberately does **not** resolve credential stores
 (`credsStore`/`credHelpers`) — no `docker-credential-*` helper is ever invoked. So the credential must
 live inline in `config.json`, which is exactly what a plain `docker login` writes **when no credential
 helper is configured**:
@@ -93,30 +102,49 @@ helper is configured**:
   plaintext Docker Hub `auths` entry (a PAT), which `discoverHostRegistryAuth` reads in preference to
   `~/.docker/config.json`. See the [demo runbook](../operations/demo_runbook.md) per-substrate notes.
 
-## What is explicitly forbidden
+## Required Policy And Current Limits
 
 - A credential field, env-reference, or path in any `<project>.dhall`, `ConfigArtifact`, or `HostConfig`.
-- Writing the credential to a persisted file in the VM or a container image layer, or mounting the host
+- Writing the credential to a durable project file in the VM or a container image layer, or mounting the host
   Docker config into a VM or container.
-- Putting the credential value in `argv` (it would show in `ps`/process listings) — it travels on `stdin`
-  or, into a container, as a forwarded environment **name** whose value Docker supplies out of band.
+- Putting the credential value directly in constructed `argv`. Current transport uses `stdin` and a
+  forwarded environment name, but the resulting environment value is not “out of band” from OS/container
+  inspection.
 - A hard dependency on being logged in: with no host login, pulls run anonymously.
 
 > **Scope note.** This doctrine governs the **host Docker Hub credential** forwarded
 > down the lift. It does **not** govern an in-cluster application secret — e.g. the
 > `hostbootstrap-demo` `minio-credentials` Kubernetes Secret (the MinIO root / S3
 > credentials the `registry:2` s3 driver authenticates with). A k8s Secret is an
-> in-cluster runtime resource, never serialized into a `<project>.dhall`, `HostConfig`,
-> or `argv`, so it breaks none of the rules above. See
+> in-cluster runtime resource rather than a `<project>.dhall` field. The demo currently
+> hardcodes both values in `demo/src/HostBootstrapDemo/Commands.hs` and renders them into
+> a manifest; Kubernetes Secret encoding does not make those source constants secret. See
 > [in_cluster_registry.md](in_cluster_registry.md).
+
+## Target Capability Boundary
+
+The target does not expose credential bytes as `Text`. Discovery validates an exact canonical registry
+identity and returns an opaque, scope/registry/credential-id-indexed capability. A plan-authorized pull
+operation consumes that capability through one broker-owned transport and returns only a redacted
+outcome; configuration, logging, and artifact APIs cannot accept it. A replayed, wrong-plan,
+wrong-registry, or expired grant is rejected.
+
+OS transport still has an honesty boundary. A supported strong mode must use a substrate mechanism whose
+same-privilege visibility and crash cleanup can be stated precisely (for example, an inherited
+descriptor/anonymous pipe owned by the child operation). If the substrate cannot meet the requested
+confidentiality or cleanup guarantee, planning returns `Unsupported`; documentation must not upgrade
+best-effort temporary-file/environment handling into “never exposed” or “always scrubbed.”
 
 ## Validation
 
-- `RegistrySpec` (run through the canonical code-check) covers the Docker-Hub-only projection (the host's
-  other registry credentials are dropped), the redacted `Show`, the `Nothing` anonymous-fallback paths,
-  and that the `stdin` wrapper embeds no secret.
-- The demo (`project up`, interpreting the demo's `demoChain`) exercises forwarding end to end: the
+- `RegistrySpec` covers the current substring projection fixtures (including dropping the tested
+  unrelated registry key), redacted `Show`, `Nothing` fallback paths, and that the generated stdin
+  wrapper text embeds no fixture secret. It does not prove canonical registry matching, same-privilege
+  environment secrecy, or cleanup after uncatchable termination.
+- The demo (`project up`, interpreting `demoChainFor` for the detected substrate) exercises forwarding
+  end to end: the
   metal frame's build #3 pulls the base image authenticated, and the container frame's `deploy-kind`
   step pulls the kind node image authenticated (with the in-container `docker run` probes likewise),
-  all without the credential appearing in Dhall, a persisted file, or `argv`. See
+  using the current risk-reducing transport. A successful run shows no intended Dhall/image/argv write;
+  it is not a proof against inspection or interrupted cleanup. See
   [demo_runbook](../operations/demo_runbook.md).

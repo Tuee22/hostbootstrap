@@ -7,12 +7,12 @@
 > **Purpose**: Document the in-cluster OCI registry a downstream project stands up to push its own
 > arch-explicit image, and make clear that hostbootstrap core never pushes project images.
 
-The hostbootstrap core **does not push your project image.** It builds the project
-container `FROM` the base tag (the code-check gate) and materializes the project
-binary, then stops. Whether and how the project container reaches a registry is the
-**downstream project's** job, not the core's. This page is convention, not
-enforcement: the core has no push command for project images and no registry
-configuration of its own.
+The hostbootstrap core **does not build or push your project image.** The thin Python bootstrapper
+materializes the host-native project binary. Once that binary is running, a project-supplied build-image
+chain action may build a project container `FROM` the base tag and run its code-check gate; core only
+interprets the contributed action. Whether and how the resulting image reaches a registry is the
+**downstream project's** job. This page is convention, not enforcement: core has no project-image push
+command and no registry configuration of its own.
 
 A project that wants its container in a registry contributes its own chain steps
 that push it as part of the project's deploy. The `hostbootstrap-demo` consumer
@@ -25,9 +25,10 @@ The demo's in-cluster registry is the **single-binary CNCF `distribution`
 (`registry:2`) OCI registry** — one Deployment plus a NodePort Service, not a
 multi-pod stack. `registry:2` publishes a **multi-arch manifest**, so the same
 upstream image runs natively on `amd64` and `arm64` kind nodes with no
-per-component image override and no emulation. It runs **anonymous over HTTP**: a
-`localhost` NodePort is insecure-by-default in Docker, so a push needs no `docker
-login` and no TLS.
+per-component image override and no emulation. It runs **anonymous over HTTP**. The client uses
+`localhost:30500`, but the kind `extraPortMappings` listener is currently `0.0.0.0`, not loopback-only.
+Reachability beyond the VM/host depends on provider networking and firewall policy; there is no registry
+authentication or TLS boundary.
 
 The `hostbootstrap-demo` consumer (`demo/`) drives this end-to-end. Its
 `deploy-registry` and `push-image` steps belong to the container frame of
@@ -57,15 +58,24 @@ contributed `deploy-minio` chain step (`deployMinioAction`), ordered **before**
 `deploy-registry`: a `minio/minio` Deployment + a `minio-data` PVC (bound to kind's
 default `local-path` StorageClass) + a `minio-credentials` Secret, followed by
 `mc mb --ignore-existing` to create the `registry` bucket. The bucket-init runs from
-the container frame reusing the base image's `mc` client over a loopback NodePort
-(30900) — the same idiom `push-image` uses for the registry. The registry's storage
+the container frame reusing the base image's `mc` client at `localhost:30900`. That NodePort is also
+bound to `0.0.0.0`; the localhost client address does not make it a loopback-only listener. The registry's storage
 stanza is supplied by a mounted `registry-config` ConfigMap declaring only the `s3`
 driver pointing at `minio.default.svc:9000`; the two S3 credentials are layered in by
-env from the Secret. (Env-only S3 config does not work: stock `registry:2` ships a
+env from the Secret. Those Secret values are currently hardcoded source constants
+(`hostbootstrap` / `hostbootstrap-demo-secret`) in
+`demo/src/HostBootstrapDemo/Commands.hs`; Kubernetes Secret encoding is not secret generation or
+at-rest encryption. This is suitable only for the worked local demo. (Env-only S3 config does not work:
+stock `registry:2` ships a
 default `config.yml` with a `filesystem` driver, so `REGISTRY_STORAGE_S3_*` env alone
 yields two drivers and the registry refuses to start — hence the ConfigMap replaces
 the whole config file.) The `deploy-minio` step is ordered first because the s3
 driver requires the bucket to pre-exist.
+
+The target derives a per-run credential from scoped secret authority and binds it to the exact plan.
+Public anonymous registry mode remains an explicit development-only policy. A requested strong
+loopback-only mode must be rejected as unsupported unless the substrate can prove the listener binding
+and namespace; a client spelling of `localhost` is not that proof.
 
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.

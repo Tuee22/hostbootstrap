@@ -4,29 +4,48 @@
 **Supersedes**: N/A
 **Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md)
 
-> **Purpose**: Describe how the one declared resource budget becomes an enforced ceiling — one canonical quantity parser, three rings of defense (compile, bring-up, runtime), and a per-substrate storage cordon.
+> **Purpose**: Describe the applied resource controls, including the current bare-Linux storage gap,
+> and the target in which every declared dimension is an enforced ceiling.
 
 ## TL;DR
 
-- The host-level `<project>.dhall` `resources` budget is a hard ceiling, not advice. One declared number
-  is read once per invocation and interpreted identically everywhere.
+- The host-level `<project>.dhall` `resources` value is intended to be a hard ceiling. Current
+  CPU/memory application is partial: VM limits are creation-time, direct Linux GPU outer effects and
+  direct Colima are uncapped, and bare-Linux storage is only preflighted.
 - One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon`, decodes every quantity; one
-  arg-builder family emits the complete argv for every substrate.
-- The ceiling is held by three rings of defense in depth: the compile ring (a Dhall `assert`), the
-  bring-up ring (the pure `verifyBudget` / `fitsBudget` preflight), and the runtime ring (the applied
-  VM and kind-node caps).
+  builder family produces each provider's sizing representation (argv where applicable and the
+  `.wslconfig` body for WSL2).
+- The top-level demo decode ring uses typed `Quantity`, resource-floor, replica, port, and timeout
+  refinements, but constructors remain public and lifecycle consumes a separate raw context envelope.
+  The current capacity ring checks host/cluster capacity and the runtime ring applies selected
+  VM/kind-node CPU/memory caps. The target workload ring checks a plan-derived non-empty concurrent pod
+  set, but lifecycle bring-up does not yet call `fitsBudget`.
+- Target admission uses a pure provider-capability proof to create one provider-exact `ProviderWallSpec`
+  and equal `EffectiveBudget`, then constructs a `BudgetPartition` proving every positive slice plus
+  explicit overhead stays within it. Only afterward may a journaled same-spec reservation authorize the
+  initial create/apply adapter, which mints live wall authority after authoritative observation; later
+  builders require that authority. WSL's CPU/memory wall is an exclusively
+  owned shared utility-VM resource; incompatible concurrent declarations are conflicts, not per-distro
+  walls.
 - Multi-node clusters consume the cluster envelope once. Lifecycle splits it across the declared node
   list and caps every node; the explicit `nvkind` topology is one control-plane plus one GPU worker.
-- Storage is cordoned per substrate and carries no `docker update` flag, so it is omitted from the
-  kind-node argv while remaining in `verifyBudget`.
+- Storage carries no `docker update` flag. Provider VM disks receive creation-time sizing, but existing
+  walls are not uniformly observed or reconciled; bare Linux has no implemented
+  quota/garbage-collection wall.
 
 ## One Canonical Quantity Parser
 
-`parseQuantity` is the single quantity grammar in `HostBootstrap.Cluster.Cordon`. It accepts binary
+`parseQuantity` is the shared quantity grammar in `HostBootstrap.Cluster.Cordon`. It accepts binary
 suffixes (`Ki`, `Mi`, `Gi`, `Ti`, each optionally followed by `B`) and decimal suffixes (`K`, `M`,
-`G`, `T`); a bare number is bytes. It decodes the bare `"8Gi"` form correctly. Because every argument
-builder calls `parseQuantity`, the one declared budget number is interpreted identically at every
-spinup and in every generated config.
+`G`, `T`); a bare number is bytes. It decodes the `"8Gi"` form correctly, but also accepts zero and
+sub-provider-minimum values. Preflight uses the parsed byte count while Lima/Colima/Incus/WSL builders
+round memory/storage up to whole GiB, so fractional or decimal-SI values do not currently have one exact
+meaning at every layer. Phase 9.10 admits an exact, positive, provider-valid quantity only when the
+selected backend can represent it without upward rounding; the admitted `EffectiveBudget` equals the
+validated declaration and is the sole numeric input to capacity checks and partitions. A builder also
+requires authority from the post-partition journal: the initial create/apply adapter consumes the
+same-`wallSpecId` reservation and mints `ProviderWallAuthority` only after observation, while later
+builders consume that live authority. The pure effective value alone is not mutation authority.
 
 The Python bootstrapper builds no sizing argv. `colimaSizingArgs project resources` emits the complete
 `colima start --profile <project> --cpu N --memory <GiB> --disk <GiB>` argv. Haskell owns the complete
@@ -36,63 +55,60 @@ and [resource budgeting](resource_budgeting.md) for the budget field itself.
 
 ### Why One Parser
 
-One canonical `parseQuantity` decodes every quantity, and one arg-builder family (`colimaSizingArgs`,
-`limaSizingArgs`, `kindNodeCordonArgsFor`, `incusSizingArgs`, `wsl2SizingArgs`) emits the complete sizing
-for every substrate (an argv for the VM/node providers; the `.wslconfig` `[wsl2]` body for WSL2).
+One canonical `parseQuantity` decodes every quantity, and one builder family (`colimaSizingArgs`,
+`limaSizingArgs`, `kindNodeCordonArgsFor`, `incusSizingArgs`, `wsl2SizingArgs`) emits provider-specific
+sizing components (argv for the VM/node providers and the global `.wslconfig` `[wsl2]` body for WSL2).
+The selected WSL install argv separately carries the registration-time per-distro `--vhd-size` value.
 `HostBootstrap.Cluster.Lifecycle.clusterNodeCordonArgs` composes the node builder over the concrete node
 list after splitting the one cluster envelope.
-The Python bootstrapper builds no sizing argv. Because every interpreter is the same parser, the VM
-sizing and the Haskell-verified budget agree, and the one declared number is the one enforced ceiling.
+The Python bootstrapper builds no sizing argv. The shared parser keeps current Haskell sizing and
+preflight interpretations aligned; it does not fill the missing compile assertion or bare-Linux storage
+wall.
 
-### Target: Type-Level Config Validity
+### Decode-Time Scalar Validity
 
-The parser and rings described here are today's *runtime* discipline: `parseQuantity` decodes a `Text`
-quantity and a bad unit or a below-floor budget is caught at bring-up. The **target** contract is
-stronger — configuration invalidity is type-level (unrepresentable), not a runtime `die`. `memory` /
-`storage` become a typed `Quantity` newtype whose bad unit is rejected at Dhall decode rather than
-mid-bring-up by the text→bytes `parseQuantity`; the lifecycle resource floor becomes a smart-constructor
-invariant so a below-floor `Resources` cannot be constructed at all; and `haReplicas`, service ports, and
-timeouts become bounded newtypes rather than unbounded `Natural` validated at runtime. The compile ring
-completes the picture: its `Budget/fitsWithin` assertion is attached to **every** generated config, so an
-over-budget config fails to type-check. The newtype-smart-constructor precedent is `AbsExe` (see
-[hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md)). Today these checks all run
-at runtime; making config validity type-level is reopened as phase-9 Sprint 9.9 (see
-[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)).
+The demo's top-level config decodes `memory`/`storage` through a transparent `Quantity` newtype backed by
+`parseQuantity`; its `Resources` decoder enforces the CPU floor; and `HaReplicas`, service ports, and
+timeouts use bounded decode-time newtypes. Those constructors and `Num`/`IsString` paths remain public,
+and the separately decoded `Context.ResourceEnvelope` is raw `Natural`/`Text`/`Text`. Thus these are
+decode-boundary checks, not proof that invalid applied resource states are unrepresentable. Cross-field
+port distinctness remains runtime validation because one field newtype cannot express it.
 
-## The Three Rings
+A generated project config carries Kubernetes quantities as `Text` and contains no resolved pod set.
+Consequently a Dhall `Budget/fitsWithin` assertion has neither numeric operands nor workloads to compare
+and is deliberately **not** a target. `Core.dhall` retains the generic function and its evaluation tests;
+the real project pod-set fit belongs before lifecycle effects, where `fitsBudget` has both parsed
+quantities and the resolved pods. Today that wiring is absent: the demo API calls `fitsBudget` only over
+`demoPods`, a static list containing the web example, and the web StatefulSet has no matching
+CPU/memory requests or limits.
 
-The single ceiling is held by three independent rings, so no one mechanism is the only line of
-defense.
+## Current Checks
 
 | Ring | Mechanism | Where |
 |------|-----------|-------|
-| Compile | A Dhall-time `assert : C.fitsWithin budget pods === True` (from `Core.dhall`) | Generated deploy config |
-| Bring-up | The pure `verifyBudget` and `fitsBudget` preflight | `clusterCreate`, before any spinup |
-| Runtime | The applied VM / kind-node caps | The live substrate |
+| Decode (partial) | Top-level demo quantity/resource/replica/port/timeout refinements; raw applied envelope remains | Dhall extraction |
+| Capacity | The pure `verifyBudget` preflight | `clusterCreate`, before cluster creation but after outer provider/container work |
+| Workload (target) | `fitsBudget` over the exact plan's non-empty concurrent set | Before the first mutating plan operation; not wired today |
+| Runtime | Applied VM / kind-node CPU and memory caps | The live substrate; storage incomplete on bare Linux |
 
-### Compile Ring
+### Capacity And Target Workload Rings
 
-The generated deploy config carries a Dhall-time `assert : C.fitsWithin budget pods === True` (from
-`Core.dhall`). An over-budget config fails to type-check, so a config that does not fit its own budget
-never renders. See [dhall generation](../architecture/dhall_generation.md).
-
-### Bring-up Ring
-
-Two pure functions gate bring-up before any substrate is touched:
+Two pure functions exist, but only the capacity function is wired into lifecycle bring-up:
 
 - `preflightBudget resources hostCapacity` is the pure preflight: it derives the budget
   (`budgetFromResources`) and then runs `verifyBudget` (budget versus resolved host capacity),
   failing fast with a one-line diagnostic naming the first dimension that exceeds capacity.
-- `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` proves the concurrent pod
-  set fits the budget.
+- `fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()` can prove a supplied pod
+  set fits the budget. Current lifecycle code does not call it, and its list type permits an empty or
+  incomplete set. The target accepts a topology-derived `NonEmpty` workload set tied to the exact plan.
 
 `resolveHostCapacity cfg` resolves host capacity **per substrate** through the pure
 `capacityReadPlan substrate` source mapping:
 
 | Substrate | CPU source | Memory source | Storage source |
 |-----------|-----------|---------------|----------------|
-| `apple-silicon` | `sysctl hw.ncpu` | `sysctl hw.memsize` (**total**) | generous |
-| `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` | `/proc/meminfo` `MemAvailable` | generous |
+| `apple-silicon` | `sysctl hw.ncpu` | `sysctl hw.memsize` (**total**) | `df -P -k /` available bytes |
+| `linux-cpu` / `linux-gpu` | `/proc/cpuinfo` | `/proc/meminfo` `MemAvailable` | `df -P -k /` available bytes |
 | `windows-cpu` / `windows-gpu` | CIM `Win32_ComputerSystem.NumberOfLogicalProcessors` | CIM `Win32_ComputerSystem.TotalPhysicalMemory` (**total**) | system-drive free space |
 
 Two substrates read **total** physical memory (Apple `hw.memsize`, Windows `TotalPhysicalMemory`) rather
@@ -100,17 +116,18 @@ than momentary free/available memory: total is a stable property of the machine,
 fact about whether the host *can* host a budget-sized VM, not a volatile point-in-time reading. This
 matters most on Windows/WSL2, where there is no per-distro hard memory cap (see the runtime ring): a
 host whose *total* RAM cannot fit the budget fails fast at this ring rather than passing on transient
-post-reboot free RAM and dying inside the build. **This ring now checks `budget + ~4 GiB host-OS reserve ≤ total`**
+post-reboot free RAM and dying inside the build. **This ring checks `budget + 4 GiB host-OS reserve ≤ total`**
 via the metal host preflight (`preflightHostBudget` / `verifyHostBudget`), so a budget that fits under total
-RAM but leaves the host short (e.g. 10 GiB on 16 GiB) fails fast at this ring rather than passing. The in-VM
+RAM but leaves the host short (e.g. 13 GiB on 16 GiB) fails fast at this ring rather than passing. The in-VM
 cluster-slice preflight (`preflightBudget` / `verifyBudget`) is reserve-free — the slice is already the
-reserved subset, so there is no double-count. This host-headroom split is real-run-validated 2026-07-05 by the
-Windows/WSL2 `test run all` (`6/6`). Linux keeps `MemAvailable` (its applied incus cordon is
-a hard per-VM wall, so the preflight need only be advisory). Storage is reported generously on Apple and
-Linux (their applied VM cordons own the real wall) but read as real system-drive free space on Windows,
-so WSL2 does not begin a large VHDX-backed build on a disk that cannot satisfy the declared storage
-budget. The IO surface in `clusterCreate` resolves capacity and runs `preflightBudget` as a fail-fast
-preflight; the pure source mapping and live Apple `sysctl` read are unit-tested. See
+reserved subset, so there is no double-count. Linux uses `MemAvailable` as a fail-closed preflight, not an
+advisory value. The CPU lane may later create an Incus VM; the direct GPU lane has no outer VM wall.
+Storage is read as real free space on all substrates: `df -P -k /` on Apple/Linux and the system drive on
+Windows. This is a capacity check,
+not proof of a runtime quota. The IO surface in `clusterCreate` resolves capacity and runs
+`preflightBudget` before creating the cluster. Provider reconciliation, VM launch/container handoff, and
+other outer-frame effects may already have occurred, so this is not a global “before any substrate”
+gate. The pure source mapping and live Apple `sysctl` read are unit-tested. See
 [cluster lifecycle](cluster_lifecycle.md).
 
 ### Runtime Ring
@@ -124,16 +141,23 @@ the node count with integer floors, and refuses the plan if any dimension is sma
 Flooring guarantees the combined node shares never exceed the declared slice; giving both nvkind nodes
 the full slice would double-count it.
 
+That node-level split does not prove the parent-to-cluster slice is valid. The current demo-local
+`clusterSliceOfBudget` can use its minimum floors to return a slice equal to or larger than a below-floor
+parent envelope; the normal root floor masks that path, while the raw child envelope remains separately
+constructible. The target exposes only slices eliminated from `BudgetPartition`, whose constructor proves
+positivity, provider/node minima, and
+`sum concurrent slices + explicit provider overhead <= EffectiveBudget`.
+
 For each concrete name, `kindNodeCordonArgsFor` emits
 `docker update --cpus N --memory <bytes> --memory-swap <bytes> <node>`. `applyLinuxCordon` runs every argv
 fail-closed after kind/nvkind create (and kubeconfig export) and before workload deployment.
-`--memory-swap == --memory`, so no node can swap past its share. Storage is included in the split and
-positive-share gate but omitted from `docker update`, which has no storage flag. The resolved
-`ClusterPlan` profile supplies the names, so the harness's Test cluster is split and capped by the same
-path as Production.
+`--memory-swap == 2 × --memory`, so the node has swap headroom equal to its RAM limit. Storage is
+included in the split and positive-share gate but omitted from `docker update`, which has no storage
+flag. The cluster library can apply this path to either profile, but the demo harness currently
+hardcodes the Production profile.
 
-On Apple, a Lima VM sized by `limaSizingArgs` is the cordon — the substrate lift sizes the Lima VM to
-the budget, so the VM boundary, not a host-side kind-node cap, is the first cordon. The parallel
+On Apple, the pristine path uses `limaSizingArgs` when creating a Lima VM; an already-existing VM is
+started without comparing or updating its sizing. The parallel
 `colimaSizingArgs` builder emits a profiled `colima start` argv for direct Docker workflows but is not
 yet wired: the Colima reconciler currently starts an unsized `colima start`, so no code path sizes a Colima VM
 from the budget today.
@@ -141,16 +165,24 @@ from the budget today.
 On Windows, the WSL2 wall is **honest about what WSL2 can enforce**. Unlike incus `limits.memory` and
 Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the *global*, per-user
 `%UserProfile%\.wslconfig` `[wsl2]` block that sizes the single shared utility VM hosting every distro.
-So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all from the one
+So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all derived from
 `parseQuantity`; `swap` is sized to the memory budget for OOM headroom), and the WSL2 launch is a
 *list* of effects: write `.wslconfig` (backing up any existing file), `wsl --shutdown` to apply it, then
 register the distro. The body also carries `[wsl2] vmIdleTimeout=-1` plus `[general] instanceIdleTimeout=-1` —
 the latter keeps the distro *instance* (not just the shared utility VM) alive after `project up` returns, so
 the in-VM kind cluster does not idle-stop; `mergeWslConfig` manages both sections. Because the file is global,
-teardown restores the backed-up `.wslconfig`. This is a
+teardown restores the backed-up `.wslconfig` when an original file produced that backup. If the original
+was absent and the first run crashes after writing, no absence receipt exists; retry can back up the
+generated file as if it were the original, so teardown restores generated content rather than absence.
+An existing distro also skips registration/VHDX resize, and a running distro can avoid the shutdown that
+would apply a changed global ceiling. This is a
 weaker guarantee than a hard per-VM cap and the launch is a two-step write-then-shutdown rather than a
 single sized argv — the unified `spLaunch` effect list (one pure lift per substrate) models exactly that
-difference. See [wsl2](wsl2.md) for the provider detail.
+difference. Current code also has no platform-authoritative exclusive owner for this global wall, so
+concurrent projects can race the file. The target acquires an exclusive, crash-recoverable global-state
+lease/CAS before mutation, records original-present bytes or original-absent in the matching receipt, and
+returns structured `Conflict` for a foreign or incompatible concurrent declaration. See
+[wsl2](wsl2.md) for the provider detail.
 
 ## Per-Substrate Storage Cordon
 
@@ -161,35 +193,28 @@ Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |
 |-----------|----------------|
-| Apple | Lima or Colima `--disk` (the VM's sized disk) |
-| incus VM | `root,size` on the incus instance |
-| WSL2 VM | The distro's VHDX, capped per-distro at install via `wsl --install --vhd-size` (from the one `parseQuantity`). Memory/CPU are **not** per-distro on WSL2 — they are the global `.wslconfig` `[wsl2]` utility-VM ceiling (see the runtime ring), not a `wsl --memory`/`--cpu` flag |
-| Bare Linux | A quota'd hostPath plus image garbage collection |
+| Apple | Lima `--disk` only on initial VM creation; the Colima builder exists but its sized profile is not wired |
+| incus VM | `root,size` on initial instance launch; existing sizing is not reconciled |
+| WSL2 VM | The distro's VHDX, capped only at registration through `wsl --install --vhd-size`; existing VHDX sizing is not reconciled. Memory/CPU are global `.wslconfig` settings, not per-distro flags |
+| Bare Linux | **Not implemented**: no hostPath quota or image-garbage-collection cap |
 
-On Linux, `incusSizingArgs resources` emits the `limits.cpu`, `limits.memory`, and `root,size` config
-arguments the VM-up step applies to the incus instance, so the incus VM wall cordons storage at the VM
-boundary.
+On Linux CPU, `incusSizingArgs resources` emits `limits.cpu`, `limits.memory`, and `root,size` arguments
+for initial instance launch. Direct Linux GPU has no Incus boundary. Neither path provides a bare-host
+storage quota, and existing Incus sizing is not reconciled.
 
 ## Current Status
 
-The per-substrate `resolveHostCapacity` described in the bring-up ring reads CPU and memory from the
-substrate-specific sources. The one canonical parser, all three rings, and the per-substrate storage
-cordon are implemented and validated on Apple/Lima and Linux/Incus. The Windows/WSL2 honest cordon — the
-total-memory preflight predicate and the applied global `.wslconfig` ceiling written and shut down at
-launch — is implemented, unit-tested, and real-run-closed by
-[phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) (Sprint 11.7): a full `project up` →
-`test run all` (`6/6`) → `project destroy` Windows lifecycle, closed 2026-07-01. The development plan
-for the pure parser/builder surface and the capacity predicate is
-[phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md).
-
-The later explicit nvkind control-plane/worker topology and all-node envelope split are unit-validated
-in the current static baseline (364 core tests and 87 demo tests). That evidence does not replace the
-Phase-5 real-host gate: Phase 5.5 remains Active until the native Linux CPU Incus/ClusterIP/C++ and native
-Linux GPU direct-nvkind/CUDA/browser lanes each report `8/8` and prove the caps on live node containers.
+Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
+initial-create behavior for Lima/Incus/WSL2; bare Linux has no runtime storage cordon, Colima is unsized,
+and direct Linux GPU outer effects are uncapped. Existing resource sizing is not uniformly compared or
+reconciled. WSL2's global `.wslconfig` mechanism has historical runtime evidence only for its ordinary
+cordon mechanics, not exclusive global ownership, absent-original crash recovery, immutable budget
+identity, current durability, or test-profile closure. Native-lane status and exact dated test evidence
+belong in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## See Also
 
-- [resource budgeting](resource_budgeting.md) — the budget field and the verify-spare step.
+- [resource budgeting](resource_budgeting.md) — the budget field and capacity preflight.
 - [cluster lifecycle](cluster_lifecycle.md) — where the runtime ring is applied.
 - [schema](schema.md) — the project-local `resources` record.
 - [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md) — the development plan for

@@ -6,6 +6,13 @@
 
 > **Purpose**: Document the CUDA-flavored base image and how its CUDA toolchain is selected.
 
+## Current Status
+
+The CUDA base and Linux/Windows toolchain paths below exist, but dynamic base selection is not an
+immutable pin and live lane closure varies by substrate. The development plan owns hardware evidence
+and gate status; this page owns the stable division between in-container Linux CUDA and host-native
+Windows CUDA.
+
 This page documents what the cuda-flavored base image ships. The sections below — the dynamically
 resolved `nvidia/cuda:*-cudnn-devel-ubuntu24.04` base, `ldconfig`, CUDA drift, and arm64 — all describe
 the **in-container, `linux-gpu` CUDA path**: the GPU toolchain baked into the base image and reached at
@@ -88,11 +95,9 @@ process through the dedicated in-cluster accelerator Service; no accelerator Nod
 this lane.
 
 The planners, probes, topology choice, plugin gate, GPU request, CUDA base selection, and `--gpus=all`
-handoff are covered by the current static baseline (364 core tests and 87 demo tests). Phase 3.7 closed on
-2026-07-15 in a named Ubuntu 24.04 WSL2 guest classified `linux-gpu` on an RTX 3090 Windows machine: the
-first run installed and verified the eight-step runtime plan, and the immediate second run exited 0 with
-`ensure cuda: present (no-op)`. This was a WSL2 guest, not native Linux. Phase 5.5 remains `Active` until
-the native Linux GPU direct-nvkind/CUDA/browser lane reports `8/8`.
+handoff have static coverage. Historical WSL2 evidence does not close the native Linux GPU lane; current
+gate status and exact totals belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Windows Host-Build CUDA (headless)
 
@@ -122,8 +127,8 @@ The two paths contrast explicitly:
 This Windows host-runtime path is implemented through `ensure cudawin` plus the accelerator daemon. The
 Windows VM frame it sits beside (Docker, kind, and the in-cluster workload) is the
 [wsl2](../engineering/wsl2.md) host provider, the Windows peer of the Lima and Incus VM providers; the
-headless host build is deliberately *outside* that VM. The full Windows/WSL2 lifecycle closed in phase 11:
-the Windows lifecycle runs end to end through `test run all` (`6/6`) and `project destroy`.
+headless host build is deliberately *outside* that VM. Historical and current lane evidence remains in
+the development plan.
 
 ## Accelerator Daemon CUDA Lane
 
@@ -139,5 +144,5 @@ The accelerator daemon design uses CUDA in two places:
   local-only NodePort.
 
 The browser e2e specification asserts backend metadata and Float32 results returned by the daemon, so an
-in-process fallback cannot satisfy the CUDA lane. Live lane execution remains an open phase gate. See
+in-process fallback cannot satisfy the CUDA lane. See
 [accelerator_daemon](../engineering/accelerator_daemon.md).

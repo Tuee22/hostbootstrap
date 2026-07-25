@@ -1,4 +1,4 @@
-# Phase 14: Composable-Operation Algebra and Composition Methodology
+# Phase 14: Composition methodology
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -11,38 +11,46 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Blocked
+**Blocked by**: Sprints 9.10, 15.9, and 19.7–19.8
 
-**Reopened (2026-06-19) and closed (2026-06-20):** the single-representation doctrine is corrected — in both
-code and the canonical doc — so the standardized test harness **reuses the chain** (drives `project up`)
-rather than re-expressing bring-up as a separate seam path. `composition_methodology.md` carries the recast:
-the chain `[Step]` value is THE single representation, `project up` is its recursive/fractal interpreter,
-the Python bootstrapper is the metal-frame instance, the harness-drives-`project up` vs separate-seam-path
-WRONG/RIGHT block, and the multi-role-config note — with a `## Current Status` recording the validated build
-(full `project up` + `test run all 3/3` on both Incus/Linux and a 16 GiB Apple-Silicon host). The behaviour
-is enforced in code (the stack-driven `TestSuite`, [phase-10](phase-10-standardized-test-harness.md)) and
-real-run-validated ([phase-13](phase-13-hostbootstrap-demo.md)). See `## Remaining Work`.
+**Reopened 2026-07-24.** The methodology documents remain valid, but the L0 `RoleLifecycle` skeleton has
+no production consumer after the demo `Role` module and appended role verbs were removed. Sprint 14.6
+owns integration into the fixed `service run` path with phase-indexed state; a definition-only public
+callback engine cannot remain as a second lifecycle representation.
+
+**Earlier reopening (2026-06-19) and closure (2026-06-20):** the methodology removed a parallel harness bring-up
+graph: the standardized test harness **reuses the chain** (drives `project up`) rather than expressing
+deployment through a second seam path. `composition_methodology.md` records `project up` as the
+recursive/fractal interpreter, the Python bootstrapper as the metal-frame instance, and the
+harness-drives-`project up` rule. The dated `3/3` runs are historical evidence for that narrower result.
+The later audit found that `psChain`, `psFrameContext`, and `psTeardown` are still independent lifecycle
+views; Phase 16.6, not this completed methodology phase, owns their replacement with one opaque plan.
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
 principles, and the L0 role-lifecycle skeleton on which L1 builds concrete business-logic primitives
 (roles, topologies, policies). The operation *interface* is the documented taxonomy, not a Haskell
-typeclass; reconcilers stay `HostConfig -> IO ()` and do not carry a threaded lift context.
+typeclass. Current reconcilers commonly have the historical `HostConfig -> IO ()` shape; Phase 9.10
+replaces result-free mutation with typed transition descriptors and `ReconcileResult`, while this phase
+owns the role-lifecycle consumer/integration.
 
-The single-representation doctrine is part of the methodology: one operation has one representation. The
-methodology is **recast** around the **"chain is the project"** model: a project's deploy is its **lift
-chain** — a pure `chain :: cfg -> [Step]` value that *is* the project's identity (§ W) — and that
-`[Step]` chain is the single representation. `composition_methodology.md` (the canonical home) and
-`composition_patterns.md` present `project up` as the recursive/fractal interpreter of that chain and the
-Python bootstrapper as the metal-frame instance of the fractal bootstrap, with an honest `## Current Status`
-separating the built primitives from the real-run-gated apply. The interpreter primitive
+The single-representation doctrine is part of the methodology: one operation has one representation.
+Today `chain :: cfg -> [Step]` is the one **forward ordering** and the harness adds no second deployment
+graph; it is not yet the complete lifecycle representation because frame topology and teardown are
+separate callbacks. `composition_methodology.md` (the canonical home) and `composition_patterns.md`
+present `project up` as the recursive/fractal interpreter of the chain, the target opaque plan, and the
+Python bootstrapper as the metal-frame instance of the fractal bootstrap. The interpreter primitive
 (`HostBootstrap.Chain`) and the `project` command exist and are unit-tested (phase-16); their effectful
 end-to-end provisioning is real-run-gated and owned by phase-16.
 
-The topology-aware composition path is validated by the full real demo lifecycle: Dhall expresses the
-complete topology, current frame, and runtime witnesses needed for a binary to fail fast outside its legal
-execution context, and the worked demo lifts the whole `test all` workflow as the single representation
-into the project container in the managed Lima VM (`3/3 passed`, including Playwright e2e; see Sprint 14.4).
+The topology-aware composition path has dated real-demo evidence: Dhall expressed the topology, current
+frame, and runtime witnesses needed for a binary to fail fast outside its legal execution context.
+Sprint 14.4 records the 2026-06-16 run that lifted the then-current `test all` workflow into a Lima VM.
+That historical command shape is not the current single-representation doctrine: today the project-owned
+`[Step]` value is the sole forward-order input, `project up` interprets it, and the harness reuses that
+command per variant. Frame context and teardown remain independent callbacks; Sprints 19.8 and 16.6 own
+the one validated lifecycle representation.
 
 Forward-pointer: the **composition pattern #7** re-anchor — from a build-only VM to the **headless host
 build** (build on the bare host, stage the artifact into the cluster, never run the workload in a build VM),
@@ -52,26 +60,9 @@ whose first worked instance is the Windows `ensure cudawin` CUDA host build — 
 
 ## Remaining Work
 
-Recast the single-representation doctrine (§ W) so the standardized test harness **reuses the chain** — it
-drives the real `project up` with a test-written config — instead of being a context-agnostic engine that
-brings up an isolated per-case environment "locally". The harness is not a second representation lifted
-alongside the chain; it *is* the chain, driven under a test config.
-
-**Landed in code (2026-06-19):** the doctrine is now enforced in code, not only documented — the
-stack-driven `HostBootstrap.Harness.TestSuite` makes the harness drive the real `project up` / `project
-destroy` ([phase-10](phase-10-standardized-test-harness.md)), and the demo's second bring-up path
-(`demoSeams`) is deleted. There is no longer a separate seam bring-up beside the chain.
-
-**Delivered (2026-06-20), DocValidator-validated:** the single-representation section of
-`composition_methodology.md` is recast — the harness driving `project up` is the RIGHT pattern and a
-separate seam bring-up beside the chain is the WRONG one (an explicit WRONG/RIGHT block), one
-`<project>.dhall` may declare multiple roles, and context relationships are pure compositional lifts. The
-behavioural recast is enforced by the harness recast ([phase-10](phase-10-standardized-test-harness.md)) and
-exercised by the demo's run ([phase-13](phase-13-hostbootstrap-demo.md)); the `project up` interpreter the
-harness drives is owned by [phase-16](phase-16-project-lifecycle-command.md). No remaining work.
-
-The sprints that built still-valid substrate (the role-lifecycle skeleton, the arbitrary-topology frame
-graph, and credential forwarding across the lift) remain `Done`.
+Sprint 14.6 integrates the definition-only role skeleton into the fixed service runtime with the same
+plan/phase authority model. The harness/chain methodology itself remains complete; open ownership,
+profile-isolation, and recursive-teardown defects remain owned by Phases 9, 10, 13, and 16.
 
 ## Phase Objective
 
@@ -115,57 +106,43 @@ and the Python bootstrapper as the metal-frame instance.
 
 #### Remaining Work
 
-The methodology docs describe the lift as the foundational context-crossing primitive, but they do **not**
-yet present it as the recursive `project up` chain interpreter. The chain-is-the-project recast is the
-open work:
-
-- Recast `composition_methodology.md` (the **canonical home** of the model) so the self-reference lift is
-  presented as the recursive `project up` interpreter of the pure `chain :: cfg -> [Step]` value;
-  state chain-is-the-project; document fractal bootstrap (each frame transition = provision -> build pb ->
-  hand off `pb project up`, with the Python bootstrapper as the metal-frame instance, § M); and frame the
-  single-representation doctrine (§ W) as the `[Step]` chain being THE representation.
-- Update `composition_patterns.md` to carry the chain/Step pattern + recursive interpreter as the
-  canonical cookbook; align `authoring_project_binaries.md` so a consumer authors its `chain :: cfg
-  -> [Step]` (plus step actions, test suite, artifacts, Dhall vocabulary) rather than noun verbs.
-- Add a `## Current Status` to the recast docs. That status now reports both the built lift primitive
-  (`HostBootstrap.Lift`) and the implemented `project` lifecycle command / `[Step]`-chain interpreter;
-  phase 16 closed the interpreter after this docs recast.
-- DocValidator must continue to pass (metadata block, TL;DR on the architecture doc, resolving relative
-  links, taxonomy). This is a docs-only recast; the interpreter build is phase-16.
+None. The chain-is-the-project recast, recursive `project up` framing, fractal-bootstrap explanation,
+authoring guidance, and status separation all landed. Phase 16 owns the interpreter and its still-open
+single-plan/recursive-teardown repair.
 
 ### Sprint 14.2: The role-lifecycle skeleton [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`, `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`, `demo/src/HostBootstrapDemo/Role.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`, `documents/architecture/run_models.md`
 
 #### Objective
 
-Land the L0 role-lifecycle skeleton (Load → Prereq → Acquire → Ready → Serve → Drain → Exit) with callback
-injection — the `HostDaemon` run-model's substrate on which L1 builds concrete roles. The operation
-*interface* is the documented taxonomy (a conceptual unification), **not** a Haskell typeclass:
-reconcilers stay `HostConfig -> IO ()` (no threaded context), per the composition methodology.
+Land the initial L0 role-lifecycle skeleton (Load → Prereq → Acquire → Ready → Serve → Drain → Exit) with
+callback injection—the historical substrate on which L1 could build concrete roles. The operation
+*interface* is the documented taxonomy (a conceptual unification), **not** a Haskell typeclass. This
+sprint records the initial skeleton, not the later typed reconciliation target.
 
 #### Deliverables
 
 - `HostBootstrap.RoleLifecycle`: the `RolePhase` enum + the pure `rolePhases` ordering, the `RoleSpec`
   record (acquire/serve/drain callbacks), and `runRole` (drives the lifecycle, draining via `finally`).
-- A real consumer: the demo's F2 role (`HostBootstrapDemo.Role`) drives `roleServe` through `runRole`, so
-  the skeleton is exercised, not dead code. The concrete bus/store/role primitives (declared topologies,
-  batching/scheduler policy, the lifecycle reconciler, the WAN-egress hydrator) remain **L1
-  (`daemon-substrate`)** work, out of scope.
+- Historical consumer evidence: the then-present demo F2 role drove `roleServe` through `runRole`. That
+  demo module and its appended verbs were later removed; the current repository has no non-test
+  `runRole` consumer. Sprint 14.6 owns the resulting definition-only surface.
 
 #### Validation
 
 - `RoleLifecycleSpec` asserts the phase ordering and that `runRole` acquires→serves→drains (and drains
-  even when serving throws). The demo's `role serve`/`submit` round-trips through `runRole`. `cabal test`
-  passes (134 tests).
+  even when serving throws). The removed demo round-trip is historical evidence, not a current command
+  or consumer.
 
 #### Remaining Work
 
-None.
+None in the initial skeleton scope. Sprint 14.6 owns current integration and type refinement.
 
-### Sprint 14.3: Single-representation doctrine — the test workflow is a lifted operation [Done]
+### Sprint 14.3: Single-representation doctrine [Done]
 
 **Status**: Done
 **Implementation**: `documents/architecture/composition_methodology.md`, `DEVELOPMENT_PLAN/development_plan_standards.md` (§ W, § Y, § Z)
@@ -174,25 +151,17 @@ None.
 #### Objective
 
 Capture the **single-representation doctrine** as the methodology's worked refinement of the operation
-algebra: an operation has exactly **one** representation. The standardized test harness
-(`HostBootstrap.Harness`: `runMatrix` + `Seams`) **is** that one representation for the cluster-deploy
-workflow — the context-agnostic test engine that brings up an isolated per-case environment, runs the
-case body, and tears it down, invoking its reconcilers (e.g. `clusterUp`) as `HostConfig -> IO ()`
-"locally", unaware of any enclosing context. The harness is therefore a **lift target**, not a lift-aware
-component (no `LiftContext` inside it — per the self-reference-lift rule, § U), and that is correct. A
-consumer composes its deploy as a **single** explicit lift sequence (§ U) whose final compute step
-**lifts the whole test workflow** into the project container in the VM — folding to
-the selected VM provider followed by `docker run --rm <image> test all` — so the harness runs `clusterUp`
-"locally" on the VM's Docker and the kind cluster lives **in the VM**. Re-expressing cluster bring-up / registry / web-serve
-/ e2e as a **separate** chain of lifted ops alongside the harness is a **redundant representation** (it
-duplicates the harness and double-creates clusters); there is one representation, and the harness is it.
+algebra. The sprint's first 2026-06 framing treated the lifted harness workflow as the deployment
+representation. The completed recast superseded that framing: the project-owned `[Step]` value is the
+forward ordering, `project up` is its interpreter, and the context-agnostic harness drives that same
+ordering per variant. It must not carry a second bring-up graph. Complete lifecycle unification is later
+Phase 16.6 work.
 
 #### Deliverables
 
-- The doctrine is documented in `documents/architecture/composition_methodology.md` (the harness as the
-  one representation, lifted; no parallel deploy chain) and stated as a contract in § W of the
-  development-plan standards, cross-referencing § T (the harness/extension-stream) and § U (the self-reference
-  lift).
+- The doctrine is documented in `documents/architecture/composition_methodology.md` with one forward
+  `[Step]` ordering and no parallel harness deployment graph; it also names the later opaque-plan target.
+  The contract lives in § W of the development-plan standards, cross-referencing § T and § U.
 
 #### Validation
 
@@ -201,23 +170,10 @@ duplicates the harness and double-creates clusters); there is one representation
 
 #### Remaining Work
 
-The single-representation doctrine is documented, but it is framed around the deploy as a hand-written
-single lift sequence whose only lifted compute step is `test all` (`inContainer img (inVM vm
-localContext)`). The chain-is-the-project recast changes that contract:
-
-- Restate the single representation as the pure `chain :: cfg -> [Step]` value (§ W, § Y): `project
-  up` is its recursive interpreter and `--dry-run` renders the same value apply executes. There is no
-  second hand-written orchestration path beside the chain — the deploy sequence the demo carries today is
-  superseded by the `[Step]` chain the core interprets.
-- Decouple the test surface from deploy (§ Z): `project up` brings up a **persistent** stack; `test run
-  all` is a **separate**, root-gated operation that validates that running stack. The standardized harness
-  remains the one lift-target engine; document that `test run all` (not a lifted deploy chain) is how the
-  live `project up` stack is validated. Re-expressing deploy bring-up as a parallel chain of lifted ops
-  alongside the chain would be a redundant representation.
-- Update `composition_methodology.md` and `composition_patterns.md` accordingly, with a `## Current
-  Status` separating the built lift/harness from the target `project up` chain interpreter and the
-  decoupled `test run all` surface (phase-16/phase-17). Do **not** claim `project`/`test run` is
-  implemented. DocValidator must continue to pass.
+None. The completed correction makes the project-owned `[Step]` plan the representation and makes the
+harness consume that lifecycle rather than define a second deployment path. Phase 16.6 owns the remaining
+implementation defect that forward execution, frame selection, and reverse teardown are still supplied by
+separate callbacks that can disagree.
 
 ### Sprint 14.4: Context-aware arbitrary topology [Done]
 
@@ -245,8 +201,9 @@ without making illegal states representable.
 
 - Documentation validator passes on the updated architecture docs.
 - Core tests cover provider-backed lift folds.
-- The full Apple Silicon Lima demo lifecycle validates the single-representation lift in a real VM:
-  `test all` is lifted as one project-container workflow and reports `3/3 passed`, including e2e.
+- Historical 2026-06-16 evidence: the then-current Apple Silicon Lima demo lifted `test all` as one
+  project-container workflow and reported `3/3 passed`, including e2e. This proves topology placement, not
+  the superseded claim that the harness is the deployment representation.
 
 Historical phase-close validation (superseded by the fixed command surface): the frame/witness topology
 shape is implemented in Phase 15; `cabal test all` from
@@ -256,23 +213,28 @@ the preceding VM-local step materializes the runtime config.
 
 #### Remaining Work
 
-None. The full real Apple Silicon Lima demo lifecycle validates the single-representation lift in a real
-VM (2026-06-16): the only lifted compute step is `test all`, folded to
+None. Historical topology evidence from the Apple Silicon Lima demo (2026-06-16) lifted `test all`, folded to
 `limactl shell hostbootstrap-demo-vm -- docker run --rm … hostbootstrap-demo:local test all`, with the
 per-case kind clusters coming up on the VM's Docker and `test report: 3/3 passed` including the `e2e-tabs`
-Playwright case (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`).
+Playwright case (`DEMO_DEPLOY_EXIT=0`, guarded `vm down`). That command shape is retained only as dated
+evidence; current deployment is the project-owned `[Step]` lifecycle plan.
 
 ### Sprint 14.5: Credential forwarding across the lift [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Registry.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lift.hs` (`liftSubcommandWithAuth`), `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`runToolWithStdin`), `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Chain.hs`, `demo/app/Main.hs`, `core/hostbootstrap-core/test/RegistrySpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Registry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lift.hs` (`liftSubcommandWithAuth`),
+`core/hostbootstrap-core/src/HostBootstrap/Ensure.hs` (`runToolWithStdin`),
+`demo/src/HostBootstrapDemo/Commands.hs`, `demo/app/Main.hs`,
+`core/hostbootstrap-core/test/RegistrySpec.hs`
 **Docs to update**: `documents/engineering/registry_credentials.md`, `documents/architecture/composition_methodology.md`, `documents/architecture/binary_context_config.md`, `documents/operations/demo_runbook.md`
 
 #### Objective
 
 Generalize the lift so a project binary forwards the host's Docker Hub login into nested contexts to
 authenticate image pulls (avoiding the unauthenticated rate limit), modelled so the credential is never
-represented in Dhall, never persisted in the VM/cluster, and never placed in `argv`.
+represented in Dhall, retained as durable project/image state, or placed in `argv`. Raw bytes necessarily
+cross bounded stdin, process-environment, memory, and temporary-file effects.
 
 #### Deliverables
 
@@ -283,9 +245,9 @@ represented in Dhall, never persisted in the VM/cluster, and never placed in `ar
 - `liftSubcommandWithAuth` (`HostBootstrap.Lift`) forwards the credential into a container-through-a-VM
   frame over `stdin` plus `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only); `runToolWithStdin` is the
   stdin-capable tool runner.
-- The demo wires it: build #3's base pull is authenticated, the lifted `test all` forwards into the
-  container so its `kind`/e2e pulls authenticate, and the in-container binary consumes the forwarded
-  credential once into an ephemeral `DOCKER_CONFIG`. Anonymous fallback when the host is not logged in.
+- The demo wires it through recursive lift handoffs: nested base, kind, and e2e pulls authenticate, and
+  the in-container binary consumes the forwarded credential once into an ephemeral `DOCKER_CONFIG`.
+  Anonymous fallback applies when the host is not logged in.
 
 #### Validation
 
@@ -295,26 +257,136 @@ secret; `cabal build all` from `demo/` passes; `fourmolu --mode check` on the de
 The authenticated full Apple Silicon Lima lifecycle (2026-06-16) pulled the base image and the
 in-container `kind`/e2e images with **no** unauthenticated rate-limit error and reported
 `test report: 3/3 passed`, including the multi-browser `e2e-tabs` (9 Playwright runs: 3 specs ×
-chromium/firefox/webkit). The credential never appeared in Dhall, a persisted file, or `argv`.
+chromium/firefox/webkit). The credential did not appear in Dhall, durable project/image state, or `argv`;
+the transport's temporary `DOCKER_CONFIG` remained a bracketed effect rather than a persistent artifact.
 
 #### Remaining Work
 
 None.
+
+### Sprint 14.6: One phase-indexed role lifecycle consumer [Blocked]
+
+**Status**: Blocked
+**Blocked by**: Sprints 9.10, 15.9, and 19.7–19.8
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/RoleLifecycleSpec.hs`,
+`core/hostbootstrap-core/test/Spec.hs`
+**Docs to update**: `documents/architecture/composition_methodology.md`,
+`documents/architecture/run_models.md`, `documents/architecture/hostbootstrap_core_library.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the role lifecycle the single phase-indexed engine used by the fixed `service run` path instead of a
+definition-only public callback skeleton.
+
+#### Deliverables
+
+- Replace the public result-free callback bag with an opaque
+  `RolePlan scope specDigest planId configId secretDigest frame revision instanceId` and
+  `RoleCursor scope planId frame instanceId phase`. `Load` remains only the historical Sprint 14.2 enum
+  label: target activation/config/secret/role-plan verification and one-use lifecycle admission occur
+  before cursor construction, and the sole initial cursor is Prereq. The core-owned engine privately
+  drives Prereq → Acquire → Ready → Serve → Drain → Exit; no phase eliminator or live resource escapes to
+  project code.
+- Make `HostBootstrap.Service`/`service run` the production consumer. It must enter through
+  the inseparable `VerifiedRuntimeRoleActivation` produced from a pinned project key, independently
+  measured workload/OS/binary identity, and the broker-signed manifest. The manifest binds an immutable
+  rollout revision/controller template before a workload exists; platform verification pairs it with a
+  concrete instance ID (pod UID plus restart count or protected OS invocation nonce). Kubernetes installs
+  immutable digest-addressed ConfigMap, Secret, and signed-manifest objects through one pod-template
+  revision; the Secret is the sole secret-bearing object. A host daemon atomically switches one revision
+  directory/pointer and mints a fresh invocation nonce on start. Startup verifies the actual wire and
+  activation-bound private-channel bytes. Sprint 15.9 owns signing/key/provider-install authority; this sprint consumes that package and
+  verifies the actual mounted
+  role-wire bytes/private bundle through the matching finalized runtime spec into a fresh
+  `VerifiedConfigWire scope configDigest configId` and scope-correct
+  `ValidatedServiceRequest specDigest configId secretDigest fields service`, retains acquired receipts
+  through drain, verifies the manifest's signed narrowed role-plan projection, validates its
+  `rolePlanDigest`, and jointly mints
+  `RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId` plus
+  `VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`
+  while rebinding a
+  fresh local generative `planId`. The narrowed child never claims it can hash the full lifecycle plan.
+  Before Prereq/acquisition it atomically reserves the instance's one-use durable lifecycle admission, so
+  a reusable activation/request cannot bind or spawn twice. Report structured acquire/serve/drain
+  failures without skipping independent cleanup. This sprint
+  supplies the exact workload-instance-indexed role plan/cursor/request/placement foundation. Phase
+  18.6's sole `selectAndRunService` gate consumes it with the finalized registry, revalidates that exact
+  instance identity and
+  effect row, and privately mints/transfers the effect-indexed one-use service command authority;
+  activation authority alone cannot run the handler or authorize an effect.
+- Make failure branches carry their only legal successor. Pre-acquisition prerequisite failure reaches
+  Exit only with `VerifiedNoRoleResources`. Full acquisition yields Ready plus the complete retained
+  receipt/managed-handle set; failure after any acquisition yields only Drain plus every owned/unknown
+  receipt. The readiness probe consumes the exact managed handles and yields identity-indexed ready
+  handles plus Serve on success, or Drain plus retained receipts on timeout/terminal failure. Serve can
+  use only those acquired-and-probed handles—there is no handler-visible later bind/spawn escape hatch. A
+  restartable worker is represented by a stable supervisor handle; only a journal-prepared core
+  transition may replace its child, and the successor must pass readiness before reuse. The retained
+  resource package's lease requirement is derived conservatively from the signed placement's
+  `permittedEffects` ceiling before Acquire, never selected by a caller. It inseparably contains every
+  receipt/unknown and either proof that the ceiling prohibits every exclusive/mutating effect or the
+  matching live `ServiceGenerationLease`. Phase 18's registry selection must prove its exact row is within
+  that same ceiling, so mutation cannot appear on the no-lease branch; only the live lease can mint
+  a prepared mutating effect, and Drain retains it until dependent cleanup settles. Serve
+  completion, typed failure, or catchable controller shutdown and every partial-acquire/readiness failure
+  therefore converge under masking on one drain interpreter, which attempts all independent releases,
+  reprobes unknowns, aggregates failures, and alone yields Exit. Uncatchable process death is recovered
+  from durable receipts by the controller/OS teardown path; it is not mislabeled an in-process drain.
+- Remove any public constructor or compatibility path that can build an unrelated phase sequence, and
+  remove the module entirely if the fixed service engine subsumes it under another canonical name.
+- Keep Phase 9.10 as the owner of shared `ReconcileResult`; this sprint consumes that algebra rather than
+  retaining `HostConfig -> IO ()` mutation callbacks.
+
+#### Validation
+
+- A source/API test proves `runRole` (or its replacement) has a non-test production consumer in
+  `HostBootstrap.Service`, exposes only a terminal Exit report to project code, and requires no deleted
+  demo module/path.
+- Compile-fail tests reject serve-before-ready, drain without retained receipts, wrong config/plan/frame or
+  revision/instance authority, direct construction of phase cursors, and any callback that captures live
+  cursors/receipts/leases outside the core-owned runner.
+- Fault-injection tests fail after every acquisition and readiness outcome. Each branch exposes only its
+  typed successor, preserves all owned/unknown receipts for Drain, and cannot mint Ready/Serve from
+  partial acquisition. A replace/rebind between probe and Serve cannot substitute a different
+  listener/connection/worker handle. Catchable shutdown enters Drain exactly once; crash recovery
+  rehydrates receipts and either cleans them up or reports an explicit unknown.
+- Restart/race tests prove R1/I1 values cannot run in an R2/I2 workload and fail after exact I1
+  terminates. A rolling overlap may keep non-exclusive R1/I1 live until controller shutdown. An
+  exclusive/mutating lease transfer publishes R2/I2 only after the backend atomically enforces its fence,
+  or after a retained-lock barrier settles or authoritatively fences every R1/I1 prepared/in-flight
+  attempt; a backend with neither primitive is `Unsupported`. Every later R1/I1 prepare then refuses
+  before the backend call. Pod recreation and a container restart in one pod UID produce distinct
+  instance IDs.
+- Runtime tests prove drain runs after serve failure, only owned receipts are released, and every
+  independent cleanup failure is reported.
+
+#### Remaining Work
+
+Blocked until Sprints 9.10, 15.9, and 19.7–19.8 land the shared reconcile, signed rollout-revision plus
+measured-instance activation authority, scoped codec, and finalized plan contracts. Then integrate the
+role phase machine into `service run`,
+hide/remove the definition-only surface, and migrate the unit tests to the opaque phase API.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/composition_methodology.md` - the operation algebra, the self-reference lift,
   and the deploy ≡ business-logic unification, including the single-representation doctrine — the
-  standardized test harness is the one representation, lifted into the VM-container, with no parallel
-  deploy chain alongside it (cross-references standards § W, § T, § U).
+  project-owned `[Step]` lifecycle plan is the representation, and the harness drives it without a
+  parallel deployment graph (cross-references standards § W, § T, § U).
 
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the shape cookbook (created).
 - `documents/engineering/authoring_project_binaries.md` - the authoring how-to (created).
 - `documents/engineering/registry_credentials.md` - forwarding the host Docker Hub login down the lift to
-  authenticate nested pulls, modelled (`HostBootstrap.Registry`) so the credential is never in Dhall,
-  never persisted, and never in `argv` (created).
+  authenticate nested pulls, modelled (`HostBootstrap.Registry`) so the credential is excluded from
+  Dhall, durable project/image state, and `argv`, with bounded transient stdin/environment/file effects
+  documented honestly (created).
 
 **Cross-references to add:**
 - `documents/README.md` indexes the three new docs; `system-components.md` carries the

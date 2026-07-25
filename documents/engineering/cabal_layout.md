@@ -14,7 +14,8 @@
 - `core/cabal.project` — the self-contained Cabal workspace for the core, the peer of the
   root-level Poetry project — pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match the warm store
   baked into the base image (see [warm_store](warm_store.md)). The `demo/` consumer carries its own
-  `demo/cabal.project`; the repository root holds no Cabal project file.
+  host-native `demo/cabal.project` and container-only `demo/docker/container.cabal.project`; the
+  repository root holds no Cabal project file.
 - The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
   (the bare binary, built like any project binary — not baked into the base image), and one
   `test-suite`.
@@ -34,6 +35,11 @@ optimization: 2
 The pin and optimisation level match `core/warm-deps/cabal.project`, which warms the shared
 dependency set into the frozen Cabal store. Pinning both means a derived project that builds
 `hostbootstrap-core` reuses the pre-built dependency unfoldings instead of recompiling them.
+
+The absolute `/opt/basecontainer/haskell-deps/core.freeze` import is valid only inside the base-derived
+container. The demo Dockerfile replaces `demo/cabal.project` with
+`demo/docker/container.cabal.project` before building. Host-native builds use `demo/cabal.project`,
+which references local core source and has no in-image absolute import.
 
 ## Package Stanzas
 

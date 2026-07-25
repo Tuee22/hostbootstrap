@@ -57,6 +57,8 @@ module HostBootstrapDemo.Commands (
     demoDeployImage,
     directClusterPresence,
     directClusterTeardownArgs,
+    gatherLocalAliasFacts,
+    repoRootOfProjectRoot,
     demoServices,
     demoTestSuite,
     demoVM,
@@ -67,7 +69,7 @@ module HostBootstrapDemo.Commands (
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, evaluate, finally, mask, onException, throwIO, try)
+import Control.Exception (IOException, SomeException, evaluate, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import Data.Char (isDigit, isSpace, toLower)
@@ -110,7 +112,7 @@ import qualified HostBootstrap.Ensure.Lima as EnsureLima
 import qualified HostBootstrap.Ensure.Wsl2 as EnsureWsl2
 import HostBootstrap.Harness (Case (..), CaseResult (..), LifecycleFailure (..), SafetyRefusal (..), TestSuite (..), lifecycleFailureMarker, safetyRefusalMarker, testSafetyPreconditions)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Sudo), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Sudo, Tar), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
@@ -198,7 +200,7 @@ import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv,
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (hFlush, hGetContents, hPutStr, stderr, stdout)
-import System.IO.Error (tryIOError)
+import System.IO.Error (isDoesNotExistError, tryIOError)
 import System.Info (os)
 import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), StdStream (CreatePipe, Inherit, NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
@@ -1863,6 +1865,7 @@ demoAssert (CaseEnv cfg frame expectedMessage) c = case caseId c of
     "web-build" -> assertReachable cfg frame "http://localhost:30080/app.js" "the esbuild SPA bundle"
     "e2e-tabs" -> assertE2EInVM cfg frame expectedMessage
     "registry-persistence" -> assertRegistrySurvivesRestart cfg frame
+    "durable-readback" -> assertDurableReadback cfg frame
     other -> pure (Fail ("unknown demo case: " ++ other))
 
 {- | Reachability assertion: poll the endpoint from @frame@ (the VM frame, where
@@ -1980,6 +1983,33 @@ assertRegistrySurvivesRestart cfg frame = do
                 if after
                     then Pass
                     else Fail "registry-persistence: the pushed image was LOST after a registry pod restart (storage is not durable)"
+
+{- | Prove the host-owned durable root survives the destructive provider path:
+write through the running web service, destroy every derived frame, rebuild the
+stack, then read the marker through the newly created web pod.
+-}
+assertDurableReadback :: HostConfig -> LiftContext -> IO CaseResult
+assertDurableReadback cfg frame = do
+    let markerUrl = "http://localhost:30080/api/durable/marker"
+        request method = liftLeaf cfg frame (RawCmd ["curl", "-fsS", "-X", method, markerUrl])
+    written <- request "POST"
+    case written of
+        Right (ExitSuccess, _, _) -> do
+            self <- getExecutablePath
+            runSelfOrDie self ["project", "destroy"]
+            withHarnessMutationGuard (runSelfOrDie self ["project", "up"])
+            readBack <- request "GET"
+            pure $ case readBack of
+                Right (ExitSuccess, out, _)
+                    | "hostbootstrap-destroy-up-v1" `isInfixOf` out -> Pass
+                Right (ExitFailure n, _, err) ->
+                    Fail ("durable-readback: GET failed after recreate (exit " ++ show n ++ "): " ++ err)
+                Right (ExitSuccess, out, _) ->
+                    Fail ("durable-readback: unexpected marker after recreate: " ++ out)
+                Left err -> Fail ("durable-readback: GET failed after recreate: " ++ err)
+        Right (ExitFailure n, _, err) ->
+            pure (Fail ("durable-readback: POST failed (exit " ++ show n ++ "): " ++ err))
+        Left err -> pure (Fail ("durable-readback: POST failed: " ++ err))
 
 {- | Run the binary's own subcommand (the self-reference, § U), streaming its
 output and surfacing a **legible** failure (development_plan_standards § CC,
@@ -2276,7 +2306,12 @@ mintLocalDurableAlias _mounted durableTarget = do
 -- | Gather the alias facts on the direct host lane via 'System.Directory' (§ DD).
 gatherLocalAliasFacts :: FilePath -> IO AliasFacts
 gatherLocalAliasFacts path = do
-    isSym <- pathIsSymbolicLink path
+    symlinkProbe <- try (pathIsSymbolicLink path) :: IO (Either IOException Bool)
+    isSym <- case symlinkProbe of
+        Right value -> pure value
+        Left err
+            | isDoesNotExistError err -> pure False
+            | otherwise -> throwIO err
     linkTarget <- if isSym then Just <$> getSymbolicLinkTarget path else pure Nothing
     dirEx <- doesDirectoryExist path
     fileEx <- doesFileExist path
@@ -2887,7 +2922,10 @@ runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Cont
     runEnsure EnsureCuda.reconciler
     cfg <- resolveHostConfig
     let bridgeDir = T.unpack (Context.sourceRoot ctx) </> "web" </> "src" </> "Generated"
-        repoRoot = takeDirectory (T.unpack (Context.sourceRoot ctx))
+        -- The binary runs with cwd at the project root. The Docker build context
+        -- is the repository root because the Dockerfile copies both demo/ and
+        -- core/; Context.sourceRoot may legitimately be ".".
+        repoRoot = repoRootOfProjectRoot root
         repoRootCfg = parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
     putStrLn ("build-image: generating the PureScript bridge into " ++ bridgeDir)
     createDirectoryIfMissing True bridgeDir
@@ -2955,7 +2993,7 @@ with cwd = the project home (the Python launcher execs it with @cwd=project_root
 so the repo root is that parent. Pure.
 -}
 repoRootOfProjectRoot :: FilePath -> FilePath
-repoRootOfProjectRoot projectRoot = projectRoot ++ "/.."
+repoRootOfProjectRoot = takeDirectory
 
 {- | Stage the project working tree into the VM at @/root/hostbootstrap@ — the
 source @pipx install@ and the in-VM @hostbootstrap build@ build from. The host
@@ -2972,9 +3010,10 @@ stageSource _vmReady cfg provider = do
     let repoRoot = repoRootOfProjectRoot cwd
         tarball = repoRoot ++ "/.hostbootstrap-src.tgz"
     putStrLn ("pristine-bootstrap: staging the project source into " ++ spVmId provider ++ ":" ++ vmRepoRoot)
-    (tc, _, terr) <-
-        readProcessWithExitCode
-            "tar"
+    tarResult <-
+        runTool
+            cfg
+            Tar
             [ "czf"
             , tarball
             , "--exclude=.git"
@@ -2998,7 +3037,7 @@ stageSource _vmReady cfg provider = do
             , repoRoot
             , "."
             ]
-            ""
+    (tc, _, terr) <- either (die . ("pristine-bootstrap: source tar failed: " ++)) pure tarResult
     -- @tar@ exits 1 on benign warnings such as "file changed as we read it" (an
     -- active source tree races the read); the archive is still written. Treat
     -- exit 1 with a produced tarball as a non-fatal warning, and only a fatal exit

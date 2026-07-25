@@ -14,6 +14,7 @@ import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), localContext)
 import HostBootstrap.Service (serviceVariantNames)
 import HostBootstrap.Step (Step (..), chainFrames, frameId, postHandoffStepsForFrame, stepKindName)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
+import HostBootstrap.Substrate.Provider (AliasFacts (..))
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
@@ -26,12 +27,14 @@ import HostBootstrapDemo.Commands (
     demoTestFrameContext,
     directClusterPresence,
     directClusterTeardownArgs,
+    gatherLocalAliasFacts,
     hostAcceleratorDaemonPowerShellScript,
     hostAcceleratorDaemonProcess,
     hostAcceleratorSubstrate,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
     readHostAcceleratorDaemonPid,
+    repoRootOfProjectRoot,
     renderServiceConfigForContext,
     serviceConfigMapManifest,
     validateAcceleratorReplicaCount,
@@ -200,6 +203,16 @@ tests =
             assertBool "teardown bypasses the demo entrypoint" ("/usr/local/bin/kind" `elem` directClusterTeardownArgs)
             assertBool "teardown deletes the managed name" $
                 ["delete", "cluster", "--name", "hostbootstrap-demo"] `isSuffixOf` directClusterTeardownArgs
+        , testCase "an absent direct durable alias is a total AliasAbsent probe" $ do
+            tmp <- getTemporaryDirectory
+            (missing, handle) <- openTempFile tmp "hostbootstrap-missing-durable-alias"
+            hClose handle
+            removeFile missing
+            facts <- gatherLocalAliasFacts missing
+            facts @?= AliasFacts Nothing False
+        , testCase "the direct Docker build context is the repository root" $
+            repoRootOfProjectRoot ("/workspace" </> "hostbootstrap" </> "demo")
+                @?= "/workspace/hostbootstrap"
         , testCase "accelerator daemon manifest requests a GPU only in the CUDA lane" $ do
             let cpuManifest = acceleratorDaemonManifest False "daemon-3" "config" 8081
                 gpuManifest = acceleratorDaemonManifest True "daemon-3" "config" 8081

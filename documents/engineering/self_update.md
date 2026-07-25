@@ -54,10 +54,9 @@ The `--pip-args` value is glued onto the flag with `=`. pipx parses its CLI with
 refuses to consume a following token that looks like an option (a leading `-`) as that flag's value, so
 the split `--pip-args --force-reinstall` form fails with "expected one argument".
 
-Some downstream install instructions — and the `cli.py` module docstring — describe the initial
-downstream install as `pip install git+…`. That does not contradict the pipx doctrine here: because
-`hostbootstrap update` runs `pipx install --force`, a pip-installed host is re-homed into pipx by the
-first `update`. pipx remains the canonical end-user mechanism.
+The README, downstream install guidance, and the `cli.py` module docstring all use pipx for the initial
+install. A plain `pip install` is not a supported bootstrap path and must not be described as one;
+`hostbootstrap update` operates on the pipx-managed application.
 
 The command may expose explicit operator options:
 
@@ -73,17 +72,19 @@ to the default branch.
 
 ## No Hidden Freshness Gate
 
-Being behind the default branch is not a host minimum. The only hard fail-fast Python surface is the
-irreducible pre-binary host floor documented in [prerequisites](prerequisites.md). Normal commands stay
-usable offline after installation and do not turn GitHub reachability into a prerequisite:
+Being behind the default branch is not a host minimum. Normal commands do not perform a hidden
+**freshness** check or turn GitHub reachability into a version gate:
 
 - `hostbootstrap doctor` checks local host minimums only.
-- `hostbootstrap build` and `hostbootstrap run` build/exec the project binary without a latest-version
-  check.
-- `hostbootstrap base build` and `hostbootstrap base build-and-push` (dev-only maintainer commands,
-  exposed only in a Poetry development install — see
-  [../languages/python.md](../languages/python.md#maintainer-commands-are-dev-only)) perform their
-  local self-check and Docker operations, but do not self-update the wrapper.
+- `hostbootstrap build` and `hostbootstrap run` build and invoke the project binary without a latest-version
+  check. They are not generally offline: the current bootstrap runs `cabal update` and may download
+  toolchains/dependencies.
+- `hostbootstrap base build` and `hostbootstrap base build-and-push` are maintainer commands. The current
+  implementation exposes them whenever the development modules are importable; the supported execution
+  context is the repository Poetry environment. An ordinary pipx install omits those modules, but the
+  importability gate does not yet prove installation provenance. Phase 6 Sprint 6.7 replaces it with a
+  fail-closed maintainer-context gate. The commands perform their local self-check and Docker operations,
+  but do not self-update the wrapper.
 
 ## Validation
 

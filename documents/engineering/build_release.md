@@ -1,105 +1,111 @@
-# Build & release
+# Build and Release
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [in_cluster_registry.md](in_cluster_registry.md), [warm_store.md](warm_store.md)
+**Supersedes**: the workflow that allowed derived projects to consume a same-named local base tag
+**Referenced by**: [documents index](../README.md), [base image](base_image.md), [warm store](warm_store.md), [derived Dockerfile](derived_dockerfile.md)
 
-> **Purpose**: Describe how the four base tags are built and published (host-native `docker build`,
-> no buildx, cold publish) and how a downstream project can build the base locally.
+> **Purpose**: Define the current base publish command and the target immutable consumption contract.
 
-`docker build` only — **no buildx, no emulation**. A build can only ever
-produce the host-native arch. Multi-platform manifest lists are forbidden by
-design (see [base_image.md](base_image.md)).
+## TL;DR
 
-## Building & publishing
+- Maintainers build and publish single-architecture base tags with `hostbootstrap base
+  build-and-push`.
+- Derived builds must consume the published registry artifact, never a same-named local image.
+- The target resolves the mutable discovery tag to a verified digest and runs the complete
+  Python/Haskell preflight before any Docker or registry mutation.
 
-`base` is a **maintainer command**: it is registered only in this repo's Poetry development install
-(it needs the dev toolchain), so run it from the repo root via `poetry run` — the pipx-installed
-consumer CLI does not expose it. See
-[../languages/python.md](../languages/python.md#maintainer-commands-are-dev-only).
+## Current Status
 
-By default, one command builds and pushes both the CPU and CUDA tags for one
-arch, **concurrently**:
+The current command builds and pushes mutable tags and runs only the Python code-check before Docker.
+Derived demo builds still accept a tag without forced pull/digest binding. The development plan owns the
+full Haskell preflight, immutable consumer handoff, integrity checks, and publication evidence.
+
+## Current maintainer command
+
+From the repository Poetry environment:
 
 ```sh
 poetry run hostbootstrap base build-and-push --arch amd64
 ```
 
-The CLI:
+Run that command on a native amd64 host/Docker engine; an arm64 publication must run as a separate
+`--arch arm64` invocation on a native arm64 peer. The current CLI accepts a mismatched requested
+architecture while still using plain `docker build`, so the operator must enforce the match until Phase
+6 Sprint 6.7 adds the fail-closed preflight.
 
-1. Detects the host substrate (or uses the explicit `--arch`).
-2. On Linux, measures host CPU/RAM and **refuses below a floor** — the supported build machine is
-   16 GB RAM / 8 CPUs, so the floor is 8 CPUs / 14 GiB total / 8 GiB available — then sizes a
-   per-build resource budget (see
-   [base_image.md](base_image.md#host-sized-warm-store-build-budget)).
-3. Resolves every dynamic value (versions, URLs, the CUDA base image) per flavor.
-4. For each flavor, invokes `docker build --build-arg … --memory/--cpus … --pull --no-cache`
-   against `docker/basecontainer.Dockerfile`, then `docker push`es
-   `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>`.
+The command resolves dynamic build arguments, runs the Python `ruff`/`black`/`mypy` self-check, cold-builds
+the selected CPU/CUDA tag(s) with plain single-architecture `docker build`, and pushes each tag. Two
+flavors build concurrently unless `--sequential` or `--flavor` narrows the work. Buildx, emulation, and
+multi-architecture manifest lists are outside this workflow.
 
-The two flavors' builds are independent (different base image, distinct tag,
-separate layer cache), so they run concurrently and each build's streamed output
-is line-prefixed `[cpu]` / `[cuda]`. This is **host-level parallelism of two
-plain single-arch `docker build`s** — not a buildx multi-platform manifest, which
-remains forbidden. Concurrency roughly halves the wall-clock; the measured host
-budget is **split** between the two concurrent builds (each gets half the
-memory/CPU cap) so peak usage stays bounded, while `--sequential` gives each
-build the whole host (higher per-build `-j`, lower disk pressure). Concurrency is
-automatically moot with `--flavor`, which builds a single tag:
+## Missing Haskell preflight
 
-```sh
-hostbootstrap base build-and-push --arch amd64 --sequential
+The current preflight calls only `python -m hostbootstrap.check_code`. It does **not** run the Haskell
+formatter/linter/build/test gate over `hostbootstrap-core` before Docker or registry mutation. The base
+Dockerfile merely smoke-tests the installed formatter/linter against warm-store sample modules; that is
+not a source-tree Haskell preflight.
+
+The publish target must run, before any build or push:
+
+```text
+Python code check
+Python tests
+Haskell canonical code check/build
+Haskell tests (including documentation validation)
 ```
 
-Pass `--flavor cpu` or `--flavor cuda` to publish only one flavor:
+Any failure stops before Docker build. Publishing must not infer success from an in-image sample smoke.
 
-```sh
-hostbootstrap base build-and-push --flavor cpu --arch amd64
+## Published base is the only derived input
+
+`base build` may be used to inspect a base image itself, but a downstream/derived project must never build
+against that local tag. A same-named local image hides registry drift and defeats reproducibility.
+
+The old workflow “build the base locally, then let a derived build resolve the local tag” is prohibited.
+After changing a base input, rebuild and publish the affected tag, then make consumers pull that
+published copy.
+
+## Immutable pull and digest target
+
+The human-facing tag remains a discovery pointer, not a build identity. A derived build must:
+
+1. authenticate if needed and explicitly pull the published tag;
+2. resolve the repository digest returned by the registry;
+3. use `repository@sha256:<digest>` as `BASE_IMAGE`;
+4. record the digest and resolved tool-input manifest in build output/provenance;
+5. reject a tag-only or local-only base.
+
+Pseudocode:
+
+```text
+pull docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64
+resolve -> docker.io/tuee22/hostbootstrap@sha256:...
+docker build --build-arg BASE_IMAGE=docker.io/tuee22/hostbootstrap@sha256:...
 ```
 
-The publish path is **always cold** (`--no-cache --pull`): the registry copy
-matches a clean rebuild from source, with no layer-cache carryover from a
-stale local image.
+The current demo builder passes a mutable tag and omits `--pull`, so this target is open.
 
-For local validation without pushing:
+## Publish atomicity and evidence
 
-```sh
-hostbootstrap base build --flavor cpu --arch amd64
-```
+Current `build-and-push` pushes each mutable tag as soon as its build completes. There is no multi-tag
+transaction, signed provenance record, or post-push digest handoff to consumers. The target publication
+record includes:
 
-WRONG:
+- source revision supplied by the human release process;
+- architecture/flavor;
+- Dockerfile and warm-store input fingerprint;
+- fully resolved base/tool manifest and checksums;
+- pushed repository digest;
+- preflight results.
 
-```sh
-docker push docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64
-```
+No claim of immutability should be based on the mutable tag alone.
 
-Standalone push is not supported by the hostbootstrap workflow. Publishing always goes through the cold
-`build-and-push` path so the registry copy matches the just-built local layers.
+## Validation
 
-RIGHT:
+- A test seeds a conflicting local tag and proves the derived builder still selects the registry digest.
+- A tag republish changes the resolved digest and the consumer records the new value.
+- A failed Haskell gate proves Docker build/push were not invoked.
+- Download/base digest mismatch fails before executing or installing the artifact.
 
-```sh
-hostbootstrap base build-and-push --arch amd64
-```
-
-The CLI never re-pushes the large base image when a downstream project pushes
-its custom image (see [in_cluster_registry.md](in_cluster_registry.md)).
-
-## Building the base for downstream projects
-
-A downstream project builds against the published
-`docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` base. To validate
-against a local checkout instead, `hostbootstrap base build` cold-rebuilds the
-base from that checkout's `docker/basecontainer.Dockerfile` and leaves it tagged
-with the identical name in the local Docker daemon. A downstream project image
-build then resolves the local tag in place of pulling the published base.
-
-The `run` command accepts a single `--project-root` option, which points at the
-project root containing exactly one `.cabal` file. It builds the project binary
-idempotently and execs it.
-
-## Loss of provenance
-
-Plain `docker build` does not emit the SBOM/attestation manifests buildx
-produces. This is an accepted trade-off: a build is single-arch and host-native,
-so the cross-arch manifest tooling that carries those attestations is not used.
+Release status and which tags require publication belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).

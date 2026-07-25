@@ -4,14 +4,19 @@
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md), [../languages/haskell.md](../languages/haskell.md)
 
-> **Purpose**: State the rule that every image build, base or derived, gates on the project's
-> canonical code-check, so an image with style or lint violations cannot be produced.
+> **Purpose**: State the target rule that every image build, base or derived, gates on the project's
+> canonical code-check, and distinguish that doctrine from the base image's incomplete current preflight.
 
-Code quality is a **build-time guardrail**, not a test-time check. Every image
-this repo produces — the base image, and every derived project image — must
-fail its build if the project's canonical code-check fails. An image with style
-or lint violations is not buildable in the first place; it does not exist
-long enough to be tested.
+## TL;DR
+
+- The target is one fail-fast canonical code-check before any base or derived image can be produced.
+- Derived images invoke the project binary's project-owned `check-code` body.
+- The base image does not yet satisfy the full target: its host preflight checks Python and its
+  Dockerfile smoke checks installed Haskell tools/sample sources, but repository Haskell source and
+  tests are not part of that preflight.
+
+Code quality is a **build-time guardrail**, distinct from behavioral tests. Under the finished doctrine,
+every image this repo produces fails its build if the applicable canonical code-check fails.
 
 ## The rule
 
@@ -23,17 +28,16 @@ This applies in two places:
 
 | Image | Where the check runs | Command |
 |---|---|---|
-| Base | Host pre-flight + Dockerfile smoke | `fourmolu --mode check` + `hlint`, run directly |
+| Base | Host preflight + Dockerfile smoke | **Current:** Python `ruff`/`black`/`mypy` only, then an in-image Haskell-tool smoke. **Target:** add the full Haskell source gate before Docker. |
 | Derived | Dockerfile RUN step | `<project> check-code` — the inherited core verb whose body is project-defined |
 
 ## Base image
 
-The base image enforces its own self-check in two layers:
+The base image currently has two checks, but they do not amount to the claimed full source gate:
 
-* **Host pre-flight.** Building a base tag runs the canonical code-check over
-  `hostbootstrap-core` (the Haskell library) and the thin Python bootstrapper
-  **before** `docker build` runs. If anything fails the build exits with a
-  one-line message for local reproduction and Docker is never invoked.
+* **Host pre-flight.** Building a base tag currently runs only
+  `python -m hostbootstrap.check_code` (`ruff`, `black`, `mypy`) before `docker build`. It does not run
+  the Haskell formatter/linter/build/test gate.
 * **In-Dockerfile smoke.** After the warm Cabal store is built (the base bakes
   **no** `hostbootstrap` binary — see [base_image.md](base_image.md)), a single
   `RUN` step verifies that `fourmolu` and `hlint` actually start (catching install
@@ -42,9 +46,9 @@ The base image enforces its own self-check in two layers:
   [`core/warm-deps/daemon/app/`](../../core/warm-deps/daemon/app/)
   (catching sample drift).
 
-The split is deliberate: the full `hostbootstrap` source tree is **not** copied
-into the base image, so dev tooling does not ship to every downstream. The host
-pre-flight keeps source clean without polluting the image.
+The in-Dockerfile smoke cannot substitute for testing the repository's Haskell sources. The target
+preflight runs Python checks/tests and the canonical Haskell check/tests (including documentation
+validation) before Docker or push. See [build and release](build_release.md).
 
 ## Derived images
 
@@ -74,9 +78,16 @@ equivalents) — they verify the runtime, not the source. Container images expos
 the project binary through a tini-wrapped `ENTRYPOINT`, so the binary receives
 project arguments rather than a raw container command.
 
-A derived project's container image is the canonical artifact. If that
-artifact exists, the source it was built from passes code-check by
-construction. There is no separate "did the lint pass?" question to ask later.
+For a conforming derived project, the container image is the canonical artifact: if it exists, the
+project-defined source gate passed during its build. This implication does not yet extend to the
+repository Haskell sources merely because a base image exists.
+
+## Current Status
+
+Derived project Dockerfiles carry the project-binary `check-code` gate. The base build currently runs
+the narrower Python host preflight and the in-image Haskell-tool/sample smoke described above. The
+development plan owns the missing full Haskell repository gate; implementation state and evidence are
+kept there rather than duplicated here.
 
 ## WRONG vs RIGHT
 

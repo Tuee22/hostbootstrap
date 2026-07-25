@@ -60,6 +60,9 @@ executable hostbootstrap-demo
 test-suite hostbootstrap-demo-test
   import: warnings
   type: exitcode-stdio-1.0
+  -- WebServerSpec starts Warp/WebSocket servers and therefore needs the same
+  -- threaded timer manager as the executable.
+  ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
   hs-source-dirs: test, src
   main-is: Spec.hs
   other-modules:

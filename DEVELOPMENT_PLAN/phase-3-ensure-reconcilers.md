@@ -1,12 +1,12 @@
-# Phase 3: Ensure Reconcilers
+# Phase 3: Ensure reconcilers
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-2-host-tools-and-config.md](phase-2-host-tools-and-config.md), [phase-4-skeletal-dhall-and-command-tree.md](phase-4-skeletal-dhall-and-command-tree.md)
 
-> **Purpose**: Land each host dependency as an idempotent `ensure` reconciler with a
-> host-applicability predicate and a reconcile action, exposed as library primitives and `ensure-*`
-> chain steps that fail fast on the wrong host.
+> **Purpose**: Land the probe-first `ensure` reconciler abstraction, substrate applicability, install
+> plans, and `ensure-*` chain-step surface; stronger total capability probes and typed idempotent outcomes
+> are owned by later active lifecycle/provider phases.
 
 ## Phase Status
 
@@ -23,6 +23,11 @@ unit-tested without invoking the package manager. They are composed into project
 chains as `ensure-*` steps; wrong-host applicability still fails fast before side effects. `ensure incus` is owned by
 [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md) (see
 [development_plan_standards.md § L](development_plan_standards.md)).
+
+“Install-and-verify” here names the shared install-and-reprobe control flow. The semantic no-op is only as
+strong as the specific probe: Linux Incus currently checks client presence and no provider reconciler
+checks egress. Phase 11.10 owns those provider probes, while Phase 9.10 owns the structured
+managed/foreign reconcile result. This phase remains Done for the abstraction/install-plan surface.
 
 The Windows reopening is closed. The reconciler set is `docker` / `colima` / `apple-metal` / `cuda` /
 `cudawin` / `homebrew` / `ghc` / `lima` / `incus` / `wsl2` — adding the Windows CUDA host-build reconciler
@@ -96,9 +101,9 @@ reconciliation it consumes.
 
 ## Phase Objective
 
-Implement the substrate-and-ensure-reconciler contract (see
-[development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is an
-idempotent value carrying a host-applicability predicate and a reconcile action. Projects compose the
+Implement the initial substrate-and-ensure-reconciler surface (see
+[development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is a
+probe-first value carrying a host-applicability predicate and a reconcile action. Projects compose the
 concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-apple-metal`, `ensure-lima`,
 `ensure-cuda`, `ensure-cudawin`, `ensure-homebrew`, `ensure-ghc`, `ensure-wsl2`, and `ensure-incus` chain
 steps (`ensure-cudawin` and `ensure-wsl2` are the reopened Windows additions — `ensure-cudawin` owned here,
@@ -188,9 +193,10 @@ None.
 
 #### Objective
 
-Give each reconcile action a real, substrate-branched **install** so it brings the host to the desired
-state when the dependency is absent and is a verified no-op when it is present (install-and-verify, not
-check-only; see [development_plan_standards.md § L](development_plan_standards.md)).
+Give each reconcile action a real, substrate-branched **install** so the shared driver runs a
+probe-first install-and-reprobe loop rather than remaining check-only. The semantic strength of the no-op
+is the strength of each reconciler's probe; later provider work owns presence-only probe gaps (see
+[development_plan_standards.md § L](development_plan_standards.md)).
 
 #### Reconciler Contract
 
@@ -354,7 +360,7 @@ Swift/Metal and Windows GPU CUDA.
 - `EnsureSpec` covers the Apple Metal SDK/probe builders and the CudaWin clang/vswhere/nvcc smoke builders.
 - `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` on Windows GPU on
   2026-07-10; that phase-close snapshot reported 331 tests. The 2026-07-11 cumulative snapshot reported
-  345 tests; the current 2026-07-15 phase-close static gate reports 359 tests.
+  345 tests; the 2026-07-15 phase-close static snapshot reported 359 tests.
 - Real integration gates prove `ensure-apple-metal` builds the Swift/Metal worker on Apple Silicon and the
   hardened `ensure-cudawin` builds the CUDA worker on Windows GPU. The Apple Silicon gate closed
   2026-07-10 on an M1 Max host (`ensure apple-metal: present (no-op)`). The Windows GPU gate closed the

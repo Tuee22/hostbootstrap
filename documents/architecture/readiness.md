@@ -1,176 +1,210 @@
 # Readiness Witnesses and Legible Failure
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [harness_workflow](harness_workflow.md), [cluster_lifecycle](../engineering/cluster_lifecycle.md), [wsl2](../engineering/wsl2.md), [incus](../engineering/incus.md), [durable_state](durable_state.md), [development plan](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md)
+**Supersedes**: the claim that the current `Ready` constructor is sealed and every mutation is gated
+**Referenced by**: [documents index](../README.md), [lifecycle state model](lifecycle_state_model.md), [durable state](durable_state.md), [cluster lifecycle](../engineering/cluster_lifecycle.md)
 
-> **Purpose**: Define the one readiness discipline `hostbootstrap-core` provides — the sealed phantom
-> `Ready` witness minted only by a retrying `Probe`, the rule that every frame-mutating lifecycle step is
-> gated by such a witness, the trivial-guest-command contract that survives the Windows quoting path, and
-> the legible-failure contract that keeps a bring-up failure from collapsing to a message-less
-> `ExitFailure 1`.
+> **Purpose**: Record what the readiness layer enforces today and define the opaque-capability and
+> total-probe contract it must reach.
 
 ## TL;DR
 
-- A lifecycle step proves a dependency is ready with a **sealed, phantom-tagged `Ready tag` witness**
-  (`HostBootstrap.Readiness`). The constructor is hidden; a witness is minted **only** by `awaitReady`,
-  which polls a `Probe` to success. A frame-mutating step takes the witness it depends on as an argument,
-  so "act before ready" is a **type error**, not a comment.
-- A `Probe` is **retrying and total**: `ProbeResult = ProbeReady a | NotReady | Failed String`. A transient
-  condition is `NotReady` (retried within a bounded `PollPolicy`); a deterministic error is `Failed msg`
-  (stops immediately, carrying its message). The two are never conflated into a bare exit code.
-- **Every mutating in-frame step is gated.** A one-shot in-guest step with no witness and no retry is a
-  defect: it races the readiness it assumes and hides why it failed.
-- **Guest probes stay trivial.** On Windows a probe crosses PowerShell's native-argument quoting on the way
-  to `wsl -d <distro> -- bash -lc <cmd>`, so a probe is a single simple command — never a compound
-  `set -eu` script with nested `"$(… "…")"` quoting. Retry and branching live in Haskell.
-- **Failure is legible.** A bring-up failure surfaces a structured `LifecycleFailure` carrying its cause
-  across the subprocess and harness boundary; the report card renders that cause (`displayException`), never
-  a bare `ExitFailure 1`.
-
-## The `Ready` Witness
-
-`HostBootstrap.Readiness` exposes a witness type whose constructor is **sealed** — it lives in
-`HostBootstrap.Readiness.Internal` and is not re-exported, so production code sees `Ready` as an opaque type
-with no visible constructor:
-
-```haskell
-data Ready tag          -- constructor MkReady hidden in .Internal; not forgeable in production
-awaitReady :: PollPolicy -> String -> Probe a -> HostConfig -> IO (Either PollError (Ready tag))
-```
-
-The `tag` is a phantom (an empty marker type such as `DockerDaemon`, `RegistryServing`, or
-`DurableShareMounted`); the witness carries no value. Its only role is to **order effects at the type
-level**: a step that mutates a frame takes the witness for the dependency it needs as its first argument and
-ignores it at the value level, so the compiler refuses a call that has not first obtained the witness.
-
-```haskell
-buildProjectImage :: Ready DockerDaemon  -> HostConfig -> SubstrateProvider -> … -> IO ()
-pushImageBlob     :: Ready RegistryServing -> HostConfig -> String -> IO ()
-```
-
-Because the only production source of a `Ready tag` is `awaitReady`, and `awaitReady` yields one only after
-its `Probe` returned `ProbeReady`, "push before the registry serves `/v2/`" or "mint the durable alias
-before the share is mounted" are **type errors**, not conventions a reviewer must catch.
-
-## Probes: Retrying and Total
-
-A probe reads the host config and returns a total verdict:
-
-```haskell
-type Probe a       = HostConfig -> IO (ProbeResult a)
-data ProbeResult a = ProbeReady a | NotReady | Failed String
-data PollPolicy    = PollPolicy { ppAttempts :: Int, ppDelay :: Micros }
-```
-
-- `ProbeReady a` — the dependency answered; `awaitReady` mints the witness (discarding the payload).
-- `NotReady` — a **transient** condition (a mount not yet visible, a socket not yet listening, a rollout
-  still progressing). The bounded `PollPolicy` retries after a delay; exhausting the budget is a
-  `PollTimeout`.
-- `Failed msg` — a **deterministic** error that will not clear (a collision, an unauthenticated refusal).
-  Polling stops immediately and surfaces `msg`; the remaining budget is not burned.
-
-The per-attempt decision (`pollStep`) is a pure, unit-tested function; the only effectful seam is the thin
-`pollUntilReadyWith` loop. Named policies (`dockerPoll`, `networkPoll`, `reachPoll`, `rolloutPoll`,
-`vmBootPoll`, …) pin each budget to the loop it governs; failures render through `PollError` /
-`renderPollError` so the reason is a one-line message, not an exit code.
-
-The distinction between `NotReady` and `Failed` is the heart of the discipline: a transient
-mount-not-yet-visible **retries**, while a genuine alias collision **stops with its message**. A single
-`set -eu` shell test that exits non-zero conflates the two and is exactly what this framework replaces.
-
-## Gating Every Mutating Step
-
-The rule is uniform: **a step that changes a frame's state consumes a `Ready` witness for each dependency
-it assumes.** Read-only waiters mint witnesses; mutating steps consume them. The provider bring-up chain is
-a type-enforced total order — the VM answers, then the network is up, then the durable share is mounted,
-then the alias is minted (§ DD of the [development plan standards](../../DEVELOPMENT_PLAN/development_plan_standards.md)) —
-each step taking the prior witness and producing the next.
-
-- **WRONG**
-  ```haskell
-  -- ungated, one-shot; races the mount and hides the failure
-  prepareAlias :: HostConfig -> SubstrateProvider -> HostPathShare -> IO ()
-  prepareAlias cfg p share = runInGuest cfg p
-      "set -eu; test -d \"$t\"; test -w \"$t\"; \
-      \if [ -L \"$a\" ]; then test \"$(readlink \"$a\")\" = \"$t\"; else ln -s \"$t\" \"$a\"; fi"
-  ```
-  This is wrong because it takes no witness (nothing proves the share is mounted before it writes), it never
-  retries a transient not-yet-mounted drvfs, and it collapses every outcome — collision *or* a not-yet-ready
-  mount — into one non-zero exit that the harness renders as `ExitFailure 1`.
-
-- **RIGHT**
-  ```haskell
-  mounted <- awaitDurableShareMounted netReady cfg p share   -- Ready DurableShareMounted, retried
-  mintDurableAlias mounted cfg p share                       -- requires the witness; a collision is Failed msg
-  ```
-  A trivial probe (`test -d`, `test -w`) retries the transient window and mints the witness; the alias step
-  cannot run without it, and a real collision surfaces as a message, not an exit code.
-
-## Trivial Guest Probes
-
-A guest probe crosses the host→guest command path unchanged only if it stays simple. On Windows the
-invocation is `powershell … & wsl -d <distro> -- bash -lc <script>`, and PowerShell re-quotes each native
-argument; a compound script with embedded `"$(readlink "$a")"` and `>&2` does not survive that rewrite
-intact. So:
-
-- a probe is **one** simple command — `docker info >/dev/null 2>&1`, `getent hosts <mirror>`, `test -d <p>`,
-  `readlink <p>` — with at most single-level quoting and no nested command substitution;
-- **retry** is the Haskell `awaitReady` loop, not an inline shell `for`/`while`;
-- **branching** (absent / linked-correctly / collision) is a pure Haskell classifier over the probe's
-  captured output (for the durable alias, the `AliasState` classifier of § DD), not shell `if/elif/else`.
-
-This is the same reason the in-VM docker-readiness poll is a Haskell loop around a bare
-`docker info >/dev/null 2>&1` rather than an inline shell retry.
-
-## Legible Failure
-
-A bring-up failure must state *why*. The failure modes to avoid:
-
-- `System.Exit.die` prints its message to stderr and throws a **message-less** `ExitFailure 1 :: ExitCode`.
-  When the harness catches that and renders `show err`, the result is the literal `"ExitFailure 1"` — the
-  cause is gone.
-- A runner that folds a child's captured output into a `die` string loses it again across the subprocess
-  boundary, and a `set -eu` probe that fails silently carries no output at all.
-
-The contract:
-
-- **Structured exception.** Lifecycle failures are a typed `LifecycleFailure` carrying the cause, the peer
-  of the harness `SafetyRefusal` round-trip (see [harness_workflow](harness_workflow.md)). It crosses the
-  self-reference subprocess boundary and the harness catch, and the report card renders it with
-  `displayException`, so a failed variant reads its reason, not `ExitFailure 1`.
-- **Stream-then-die.** A runner that captures a child's output **streams it (line-buffered, flushed) and
-  then dies with the exit context**, rather than folding it into a stderr the recursive handoff and harness
-  teardown unwind. This is the shape the in-VM image-build reporter and the `check-code` runner already use;
-  it becomes the default for every capturing runner.
+Readiness polling exists, but its constructor is publicly importable, some mutations are ungated, and a
+witness is not tied to one resource instance. The target hides constructors, indexes handles and
+capabilities by the same generative identity, and represents every expected observation or failure as a
+typed result.
 
 ## Current Status
 
-The poll/witness framework is implemented: `HostBootstrap.Readiness` ships the sealed `Ready`, `awaitReady`,
-`Probe`/`ProbeResult`, `PollPolicy`, the named policies, and the pure `pollStep`, and several steps already
-gate on it (`Ready DockerDaemon` for the project-image build, `Ready RegistryServing`/`Ready MinioReady` for
-the push/bucket steps, `Ready VMReady` for the VM-answer wait).
+The implementation provides `Probe`, `ProbeResult`, named polling policies, `awaitReady`, and a phantom
+`Ready tag`. Several paths use them, including VM, Docker, registry, MinIO, and durable-share waits.
 
-The **universal** gating discipline, the trivial-guest-probe contract for the durable-share/alias step, the
-`AliasState` primitive (§ DD), and the `LifecycleFailure`/stream-then-die legible-failure contract **landed
-and are validated `Done` (2026-07-23)**. The durable-share alias is now the pure, readiness-gated `AliasState`
-primitive; the previously-ungated in-guest steps (`stageSource`/`streamVMConfig`/the install steps) take a
-`Ready VMReady` witness; and a bring-up failure surfaces a legible `LifecycleFailure` rendered via
-`displayException`. Closed on a live Windows/WSL2 `test run all` reporting **`8/8 passed`** — the alias links
-cleanly (`vm up: linked durable alias …`) where it once collapsed `0/8`, and an intermediate `6/8` run's
-failures each **named their cause** rather than `ExitFailure 1`. The owning sprints
-([phase-9 Sprint 9.8](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md),
-[phase-10 Sprint 10.8](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md),
-[phase-11 Sprint 11.9](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)) are `Done`; superseded surfaces
-are in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+That is useful infrastructure, but the stronger architectural claims are not true today:
 
-## See Also
+- `HostBootstrap.Readiness.Internal` exports `MkReady` and is listed as an exposed Cabal module.
+  Downstream production code can therefore import it and forge `Ready tag`.
+- Hiding only `MkReady` would not close the forge path. `Probe` is currently a public function alias,
+  `ProbeReady` is public, and the result `Ready tag` leaves `tag` independent of the supplied probe. A
+  caller can therefore provide an always-ready probe and choose whatever phantom tag it wants.
+- `Micros(..)` and `PollPolicy(..)` expose raw constructors, seconds/attempt counts use ordinary `Int`,
+  and the retry helper accepts an unvalidated attempt count. Zero/negative attempts and delay or total
+  duration overflow are representable even though the named policies intend bounded polling.
+- Gating is not universal. Some waits return `IO ()`, and mutating cluster, chart, NVIDIA, provider,
+  staging, and teardown operations do not all consume the readiness they assume.
+- A `Ready` value is phantom and does not carry a resource identity. Even honestly minted witnesses can
+  be passed to an operation on a different instance of the same tag.
+- Probe composition is not uniformly total. The direct-host alias classifier performs
+  `pathIsSymbolicLink` before checking existence, so the clean `AliasAbsent` state raises an exception
+  instead of producing a verdict.
+- Several error paths still collapse subprocess context into `die`/`ExitFailure`; structured
+  `LifecycleFailure` is not a universal boundary contract.
 
-- [harness_workflow](harness_workflow.md) — the test engine whose report card renders `LifecycleFailure`.
-- [durable_state](durable_state.md) — the durable-share primitive whose mount/alias steps this gating orders.
-- [cluster_lifecycle](../engineering/cluster_lifecycle.md) — cluster bring-up steps gated by node/CNI
-  readiness.
-- [wsl2](../engineering/wsl2.md), [incus](../engineering/incus.md) — the per-substrate `classify*Readiness`
-  verdicts that defer to this discipline.
-- [development plan standards § CC/§ DD](../../DEVELOPMENT_PLAN/development_plan_standards.md) — the doctrine
-  sections this document is the canonical home for.
+No current test establishes that illegal ordering is unrepresentable. Historical live-run counts and
+phase status are intentionally not repeated here; see
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+## Target contract
+
+The canonical target algebra and validation gates live in
+[lifecycle_state_model](lifecycle_state_model.md). For readiness specifically:
+
+```haskell
+data ResourceHandle scope planId id resource ownership phase
+data ResourceAtFrame scope planId frame id resource
+data Ready scope planId id resource dependency -- constructor private to the defining package
+data Probe resource dependency   -- constructor private to the defining package
+data PollPolicy                   -- constructor private to the defining package
+data PositiveAttempts             -- constructor private to the defining package
+data BoundedPollDelay             -- constructor private to the defining package
+
+positiveAttempts :: Natural -> Either PollPolicyError PositiveAttempts
+boundedPollDelay :: Natural -> Either PollPolicyError BoundedPollDelay
+pollPolicy
+  :: PositiveAttempts
+  -> BoundedPollDelay
+  -> Either PollPolicyError PollPolicy
+
+data ProbeResult a
+  = ProbeAbsent
+  | ProbeObserved a
+  | ProbeNotReady RetryReason
+  | ProbeUnsupported UnsupportedReason
+  | ProbeConflict ConflictReason
+  | ProbeFailed FailureContext
+
+awaitReady
+  :: PollPolicy
+  -> Probe resource dependency
+  -> ResourceHandle scope planId id resource Managed phase
+  -> IO (Either PollError (Ready scope planId id resource dependency))
+
+data ReconcileMutation
+  scope planId frame authorityEpoch verb phase operation operationKey
+  targetId target dependencyId dependencyResource dependency to
+data PhaseMutation
+  scope planId frame authorityEpoch verb phase operation operationKey
+  targetId target dependencyId dependencyResource dependency from to
+data OperationDependencySnapshot
+  scope planId frame id resource operation operationKey dependencySnapshotId
+data OperationPreconditionSet
+  scope planDigest planId frame id resource generation operation operationKey
+  preconditionSetId backendCallDigest
+data PreparedPreconditions
+  scope planDigest planId frame id resource generation operation operationKey
+  preconditionSetId backendCallDigest attemptId journalVersion
+data PreparedOperation
+  scope planDigest planId frame brokerGeneration sessionId authorityEpoch verb phase
+  id resource generation operation operationKey
+  preconditionSetId backendCallDigest attemptId fenceEpoch journalVersion
+data OperationAdvance
+  scope planDigest planId brokerGeneration activeRevisionVersion
+  previousJournalVersion result
+
+withOperationAdvance
+  :: OperationAdvance ... previousJournalVersion result
+  -> (forall nextJournalVersion.
+        result
+        -> ProjectOperationState scope planId nextJournalVersion OpenProject
+        -> RevisionPermitAuthority ... nextJournalVersion
+        -> a)
+  -> a
+```
+
+The full non-elided signatures and their sole producers live in
+[Lifecycle state model](lifecycle_state_model.md#opaque-capabilities). This document
+deliberately does not maintain a second copy of the operation-prepare algebra.
+
+- The constructor module is an `other-module`, never an exposed module.
+- Expected absence, a slow mount, and a stopped service are values. They do not escape through partial
+  filesystem calls or a compound shell script.
+- `ProbeNotReady` is bounded and retryable. Unsupported operation, structured conflict, and terminal
+  failure remain distinct and retain operation, resource, and cause.
+- `PollPolicy` is opaque. Its smart constructors require a positive attempt count and non-negative,
+  bounded delay, compute the total duration with overflow-safe arithmetic, and reject every value outside
+  the documented maximum before polling begins.
+- `Probe resource dependency` fixes the evidence kind a successful observation can mint; a caller cannot
+  choose an arbitrary result phantom or provide its own successful verdict. Probes are produced only by
+  plan/backend modules after binding the concrete dependency relation. Only a managed dependency can enter authorizing `awaitReady`;
+  probing an unmanaged/foreign dependency yields a non-authorizing observation instead.
+- Every mutation declares its exact readiness requirements through a named transition or opaque
+  reconcile/phase descriptor minted by `ProjectPlan scope specDigest planId configId cfg`, constructed only with
+  `ValidatedConfig scope specDigest configId (cfg scope)`. The descriptor binds the exact command/phase/frame,
+  target placement/identity/type, and dependency identity/type; a generic caller cannot pair unrelated
+  resources, use a parent-frame authority for a child resource, or supply a config from another scope.
+  The plan first produces an opaque `OperationDependencySnapshot` by internally traversing the
+  descriptor's complete ordered edge set, looking up each managed dependency in the exact rehydrated
+  resource set, and running the plan-owned probes. The caller cannot pass a retained witness, choose a
+  member, or omit an edge. The rank-2 joint producer then consumes that snapshot, target/bindings,
+  verified journal record, and backend call definition to create `OperationPreconditionSet` and
+  `VerifiedBackendCall` under fresh shared `preconditionSetId`/`backendCallDigest` indices. Neither proof
+  is a prerequisite for constructing the other; the plan-unique operation key already binds both back to
+  the earlier descriptor. Its zero-dependency branch is private.
+- Prepare consumes that closed set, reruns all probes and target/dependency identity checks, and obtains
+  any authoritative conditional backend versions immediately before its journal compare-and-swap. Only
+  success jointly yields matching `PreparedOperation` and `PreparedPreconditions` at the same
+  operation/call-digest/attempt/journal indices. The actual backend effect requires both plus the matching
+  descriptor, operation binding, or teardown step; it accepts no separately retained `Ready`, handle, or
+  prerequisite bundle. Possession of `CommandAuthority`, a witness, a descriptor, either half of the
+  pair, or a pair for another target/edge set/version cannot call it. Terminal observation returns
+  `OperationAdvance` on both success and typed failure; its eliminator yields the result only with the
+  sole fresh Open-project state/revision-permit pair.
+- A capability is tied to lifecycle scope, generative plan identity, and the identity/frame it proves,
+  not merely to a phantom class of resources. Production and harness values—and two separate Production
+  plans—cannot type-check together.
+- The opaque readiness capability retains backend generation, resource phase, and observation version,
+  but is only a precondition-set input. Operation prepare revalidates those facts immediately before any
+  prepared operation/effect and returns fresh evidence; replacement is a conflict and same-identity loss of
+  readiness requires reprobe. A backend unable to condition the effect on the prepared version returns
+  `Unsupported`; a post-prepare mismatch becomes a typed unknown/failure for total recovery. Retaining an
+  old Haskell value cannot bypass either gate.
+
+## Probe discipline
+
+Guest probes should remain simple because the Windows path crosses PowerShell, `wsl`, and `bash -lc`.
+One probe performs one observation, such as `test -e`, `readlink`, `docker info`, or `kubectl get`.
+Branching and retry live in Haskell.
+
+Filesystem classifiers must establish existence before asking questions that are partial on absence:
+
+```text
+not present       -> AliasAbsent
+symlink to target -> AliasLinkedCorrectly
+symlink elsewhere -> AliasLinkedElsewhere observedTarget
+other node        -> AliasOccupied nodeKind
+IO failure        -> ProbeFailed operation/path/cause
+```
+
+The direct and VM-shell lanes must return the same domain values even though their observation
+mechanisms differ.
+
+## Legible failure
+
+A lifecycle error must retain:
+
+- the operation and resource identity;
+- whether the condition was transient, terminal, a conflict, or a timeout;
+- captured child exit status and bounded output where applicable;
+- the frame in which it occurred.
+
+The self-reference handoff and test report card must render that structured cause. A bare
+`ExitFailure 1` is an information-loss defect.
+
+## Validation
+
+Readiness is complete only when:
+
+1. an external-package compile test cannot import `MkReady`, construct a `Probe`, or choose the
+   successful probe's result tag;
+2. zero/negative attempts, delay/total-duration overflow, and over-limit policies fail construction;
+3. all mutating lifecycle APIs require the jointly produced, exact target/operation/precondition-set/
+   call-digest/attempt/journal-indexed `PreparedOperation` and `PreparedPreconditions` and return the
+   successor journal state/permit pair on success or typed failure;
+4. probe tables cover absence and unexpected IO errors without throwing;
+5. wrong-resource, caller-selected-dependency, missing/wrong edge, stale retained `Ready`, wrong
+   precondition-set/call digest/observation version, stale authority epoch, and cross-scope witnesses are
+   rejected before a permit; dependency replacement between observation and prepare yields either a
+   fresh prepared pair or no effect path;
+6. live Windows and native-Linux gates report the original cause across handoff and teardown.
+
+See [lifecycle_state_model](lifecycle_state_model.md) for the full ownership, reconciliation, and
+recursive-teardown gates.

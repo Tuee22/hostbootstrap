@@ -32,8 +32,14 @@ Downstream projects that maintain their own host-level `.venv` (e.g. ML
 inference Python adapters) must **never** add the Python bootstrapper to that
 venv. Install it with `pipx` so it lives in its own host-side app environment and
 exposes only the `hostbootstrap` command on `PATH`. Once the project binary is
-built and exec'd, the bootstrapper's job is done; it has no place inside a
+built and handed off, the bootstrapper's job is done; it has no place inside a
 project's runtime environment.
+
+The bootstrap build itself is not offline today: it refreshes the Cabal index, and missing toolchains
+trigger downloads. Linux uses a `curl | sh` GHCup fallback and Windows downloads GHCup with PowerShell
+without an independent digest check. See
+[Python/Haskell boundary](../architecture/python_haskell_boundary.md) for the current behavior and
+provenance target.
 
 ## hostbootstrap itself
 
@@ -60,19 +66,22 @@ The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
 - Coverage: `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`
   (configured with `fail_under = 100`).
 
-### Maintainer commands are dev-only
+### Maintainer command capability gate
 
 `base`, `check-code`, and `test-all` are **maintainer** commands: the CLI registers them only when the
-dev toolchain (ruff/black/mypy/pytest) is importable — i.e. in this repo's Poetry `.venv`, never in the
-pipx-installed consumer CLI. The gate is `cli._maintainer_cli_enabled()`; in the global CLI these names
-resolve to a plain `No such command` and are absent from `--help`. The Poetry venv additionally exposes
+dev toolchain (ruff/black/mypy/pytest) is importable. The gate is
+`cli._maintainer_cli_enabled()`; an ordinary pipx environment lacks those modules, so the names are
+absent from `--help` and resolve to `No such command`. Importability is not proof of Poetry/repository
+provenance, however: injecting all four modules into a pipx environment also satisfies the current gate.
+The supported maintainer context is this repository's Poetry `.venv`; Phase 6 Sprint 6.7 owns a
+fail-closed provenance check that makes other contexts unrepresentable. The Poetry environment exposes
 two convenience subcommands that wrap the module runners:
 
 - `poetry run hostbootstrap check-code` — same gate as `python -m hostbootstrap.check_code`.
 - `poetry run hostbootstrap test-all [pytest args...]` — same runner as `python -m hostbootstrap.test_all`
   (forwards args to pytest; still goes through the `HOSTBOOTSTRAP_TEST_ALL` sentinel).
 
-Because `base` only runs inside the dev venv, its pre-build self-check runs `check_code` directly in the
+In the supported repository Poetry environment, `base` runs its pre-build self-check directly in the
 current interpreter (`sys.executable -m hostbootstrap.check_code`) rather than shelling out to
 `poetry run` — see [../engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md).
 

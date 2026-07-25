@@ -1,4 +1,4 @@
-# Phase 2: Host Floor, Tools, and Config
+# Phase 2: Host floor, tools, and config
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -13,14 +13,20 @@
 
 **Status**: Done
 
+**Reopened 2026-07-24 and closed 2026-07-25.** Sprint 2.5 corrected the confirmed
+host-tool-boundary and pre-binary prerequisite defects.
+
 The pre-binary Python host floor and build-toolchain bootstrap, `HostBootstrap.HostTool`,
-`HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and `HostBootstrap.Substrate` are implemented and
-unit-tested. Phase 2 owns the cross-language bootstrap dependency that makes the phase order coherent:
-on a fresh host, `hostbootstrap build` first asserts only the irreducible pre-binary floor and ensures the
-host Haskell build toolchain and Cabal package index, so `cabal build all` / `cabal test` can validate the
-Haskell library without depending on a later phase. Host-tool resolution then goes through the closed `HostTool` enumeration to
-absolute paths (the `AbsExe` newtype makes a bare command name unrepresentable), and substrate detection
-has a pure classification core.
+`HostBootstrap.HostConfig`, `HostBootstrap.HostPrereqs`, and `HostBootstrap.Substrate` exist and are
+unit-tested and form the completed boundary. Production host-process call sites use resolved executables;
+the source regression scan rejects bare literal process targets. The Haskell `HostPrereqs` mirror no
+longer includes Docker/KVM/NVIDIA runtime checks assigned to `ensure docker` / `ensure incus` /
+`ensure cuda`. Phase 2 owns the cross-language
+bootstrap dependency that makes the phase order coherent: on a fresh host, `hostbootstrap build` first
+asserts only the irreducible pre-binary floor and ensures the host Haskell build toolchain and Cabal
+package index, so `cabal build all` / `cabal test` can validate the Haskell library without depending on a
+later phase. The target host-tool contract is a closed `HostTool` enumeration resolved to absolute
+`AbsExe` values; substrate detection already has a pure classification core.
 
 The Windows reopening is closed: native Windows GHC sees
 `System.Info.os == "mingw32"`, so `HostBootstrap.Substrate` gains `windows-cpu` / `windows-gpu`
@@ -35,7 +41,9 @@ reconcilers after the binary is running.
 
 ## Remaining Work
 
-None. The accelerator host tools are implemented as closed `HostTool` constructors and covered by
+None.
+
+The accelerator host tools are implemented as closed `HostTool` constructors and covered by
 `HostToolSpec`: Apple Silicon has `Swiftc`, `Xcrun`, and `SystemProfiler`; Windows GPU has `Clang`,
 `MsvcCl`, and `Vswhere` alongside the existing `Nvcc`/`NvidiaSmi`. Discovery remains absolute-path-only,
 Windows has deterministic fallbacks for `nvcc`, LLVM clang, MSVC `cl.exe`, and `vswhere.exe`, and missing
@@ -87,8 +95,9 @@ expose the host Haskell build toolchain, refresh Cabal's package index, and buil
 - `hostbootstrap build` / `hostbootstrap run` assert only the irreducible pre-binary floor: Apple
   Silicon has Xcode CLT + Homebrew, Linux has the OS/sudo floor, and Windows has `winget` as the
   package-manager root. WSL2 is not a pre-binary gate.
-- `toolchain_ensure_steps` ensures the Haskell build toolchain before `cabal` is needed: Homebrew ->
-  GHCup/GHC/Cabal on Apple, GHCup/GHC/Cabal on Linux, and winget-rooted GHCup/GHC/Cabal on Windows.
+- `toolchain_ensure_steps` ensures the Haskell build toolchain before `cabal` is needed: Homebrew →
+  GHCup/GHC/Cabal on Apple, GHCup/GHC/Cabal on Linux, and the initial PowerShell-retrieved
+  GHCup/GHC/Cabal path on Windows. Sprint 2.5 owns download pinning/integrity.
 - `_build_native` refreshes the Cabal package index (`cabal update`) before the first host-native build
   so a fresh host is not blocked by a missing Hackage package list.
 - The built binary owns all post-binary host management: Docker, CUDA, WSL2/Incus/Lima providers,
@@ -123,8 +132,10 @@ Land `HostBootstrap.HostTool` (the closed `HostTool` enumeration and absolute-pa
 
 #### Deliverables
 
-- `HostBootstrap.HostTool` with a closed `HostTool` sum type and a resolver that returns absolute
-  paths from typed configuration; no `proc "<bare-name>"` `$PATH` lookups.
+- `HostBootstrap.HostTool` with a closed `HostTool` sum type and a resolver that returns absolute paths
+  from typed configuration. This Sprint 2.1 landing made bare names unrepresentable at migrated call
+  sites; it did not prove that every later production host-process launch uses the resolver. Sprint 2.5
+  owns that repository-wide closure.
 - `HostBootstrap.HostConfig` carrying the typed host configuration the resolver and reconcilers read.
 
 #### Module Surface
@@ -162,8 +173,11 @@ Land `HostBootstrap.HostPrereqs` (the typed host-minimum checks) and `HostBootst
 
 - `HostBootstrap.Substrate` detecting `apple-silicon` / `linux-cpu` / `linux-gpu` plus the
   Docker-style arch (`amd64` / `arm64`), pure where the Python original is pure.
-- `HostBootstrap.HostPrereqs` carrying the fail-fast host minimums (passwordless sudo, Ubuntu 24.04
-  for Linux, Xcode CLT + Homebrew for Apple, Docker reachability, NVIDIA runtime for `linux-gpu`).
+- **Historical Sprint 2.2 landing:** `HostBootstrap.HostPrereqs` ported the fail-fast host checks then in
+  scope, including Docker reachability and the `linux-gpu` NVIDIA runtime. Those runtime checks (and the
+  Linux KVM check subsequently added to the same module) are not the current pre-binary boundary:
+  `ensure docker`, `ensure incus`, and `ensure cuda` own them. Sprint 2.5 removes that obsolete duplication
+  from the host-minimum mirror.
 
 #### Validation
 
@@ -244,6 +258,53 @@ logic without bare `$PATH` calls.
 #### Remaining Work
 
 None. Reconciler integration smoke builds are owned by Phase 3 Sprint 3.6.
+
+### Sprint 2.5: Close the host-tool and pre-binary boundary [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`, all Haskell host-process call sites,
+`hostbootstrap/prereqs.py`, `hostbootstrap/bootstrap.py`
+**Docs to update**: `documents/architecture/python_haskell_boundary.md`,
+`documents/architecture/hostbootstrap_core_library.md`, `documents/engineering/prerequisites.md`,
+`legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the closed `HostTool` boundary true at every host-process call site and make the Python host floor
+match the commands the bootstrapper actually executes.
+
+#### Deliverables
+
+- Inventory every host-side process launch and route it through an absolute `AbsExe` resolved from the
+  closed `HostTool` enumeration; nested guest commands remain explicitly scoped exceptions.
+- Remove bare host invocations and add a mechanical regression test that distinguishes host commands from
+  guest payload commands.
+- Reconcile the Linux pre-binary floor with the bootstrap path's real use of `curl`, and make the Windows
+  GHCup installation path and its prerequisite authority explicit instead of describing an unrealized
+  winget-owned flow.
+- Align `HostBootstrap.HostPrereqs` with that floor: remove its duplicate Docker reachability, Linux KVM,
+  and NVIDIA-runtime gates; the binary-owned `ensure docker` / `ensure incus` / `ensure cuda` transitions
+  remain their single authorities.
+- Pin and integrity-verify every bootstrap download (including GHCup) before execution; a live
+  `get-ghcup`/`ghcup.exe` URL without version and digest provenance is not an accepted toolchain source.
+- Preserve deterministic missing-tool diagnostics and add constructors only for tools that production
+  code invokes.
+
+#### Validation
+
+- A source scan plus unit tests prove no production host call resolves a bare command through `PATH`.
+- Python prerequisite/bootstrap tests cover fresh Ubuntu, Apple, and Windows command sequences, including
+  the missing-`curl` and missing-GHCup cases, digest mismatch, and successful verified download; Haskell
+  prerequisite tests prove the mirror no longer reasserts Docker/KVM/NVIDIA runtime state.
+- `cabal test all --ghc-options=-Werror` from `core/` and the canonical Python check/test gates pass.
+
+#### Remaining Work
+
+None. Closed 2026-07-25: the canonical Python check passed; the Python suite passed with 184 tests; and
+`cabal test all --ghc-options=-Werror` passed from `core/` with 377 tests. The demo sources also compiled
+with `-Werror`; its independent WebSocket runtime tests remain outside this sprint and currently require
+a threaded RTS link.
 
 ## Documentation Requirements
 

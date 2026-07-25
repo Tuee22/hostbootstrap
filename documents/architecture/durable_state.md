@@ -1,173 +1,175 @@
 # Durable State
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [readiness.md](readiness.md), [../engineering/cluster_lifecycle.md](../engineering/cluster_lifecycle.md), [../engineering/wsl2.md](../engineering/wsl2.md), [../engineering/lima.md](../engineering/lima.md), [../engineering/incus.md](../engineering/incus.md), [../engineering/gitignore_guardrails.md](../engineering/gitignore_guardrails.md), [../README.md](../README.md), [../../DEVELOPMENT_PLAN/development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)
+**Supersedes**: the claim that no production code creates `.data` or that durable carry is only planned
+**Referenced by**: [readiness](readiness.md), [cluster lifecycle](../engineering/cluster_lifecycle.md), [WSL2](../engineering/wsl2.md), [Lima](../engineering/lima.md), [Incus](../engineering/incus.md), [documents index](../README.md)
 
-> **Purpose**: Canonical home for what `.data` is, what the never-delete-`.data` invariant does and
-> does not guarantee, and where durable state actually lives on each substrate.
+> **Purpose**: Explain the demo's host durable root, the stable Docker-visible
+> `/var/tmp/hostbootstrap-demo-data` alias, what is implemented, and what still lacks a destroy/up/readback
+> proof.
 
 ## TL;DR
 
-- **The one guarantee:** cluster teardown never places the plan's data path in its removal set. An
-  existing `.data` directory is left on disk. This is real and unit-tested on disk.
-- **That is the whole of it.** It is *not* host mirroring, *not* a promise the path exists, and *not*
-  survival of frame deletion.
-- `.data` is **frame-relative**: it resolves against the *owning frame's* source root. On a lifted
-  topology that names a **guest** path, which `project destroy` deletes along with the guest.
-- **No code creates `.data`.** Contrast `.test_data`, which the harness genuinely creates.
-- **Host-durable project state is not yet validated on any substrate.** The per-substrate host-path share
-  primitive — a host-side share reconcile plus a guest-side alias and mount-readiness — is the mechanism
-  (§ DD); its host-side half is landed and the rest is reopened work, not a delivered guarantee. See
-  [Current Status](#current-status).
-
-## The one guarantee
-
-Teardown partitions the plan's paths into a removal set and a preserve set
-(`HostBootstrap.Cluster.Lifecycle`):
-
-- `teardown Down` returns an **empty** removal set — `down` removes no filesystem path at all.
-- `teardown Delete` returns **only** the derived paths; the data path is never among them.
-
-`clusterTeardown` hands only the removal set to `removeAll`, so the data path is excluded by
-construction. Both `project down` and `project destroy` therefore leave an existing `.data` directory
-exactly where it was.
-
-## What the invariant does not say
-
-**It does not say `.data` is a host path.** The path is computed as `<source root>/.data`, where the
-source root belongs to the frame that owns the cluster lifecycle step. In a nested chain
-(host → VM → project container → cluster) that frame is the **project container**, so the path names a
-location inside the container — not on the developer's machine.
-
-**It does not say `.data` survives `project destroy`.** `destroy` deletes the provisioned frame *and
-its disk*: `incus delete --force`, `limactl delete --force`, and on Windows `wsl --unregister`, which
-removes the distro's vhdx. A guest-side `.data` goes with it. The invariant governs the cluster
-teardown's removal set; it has no authority over frame deletion.
-
-**It does not say anything creates `.data`.** No production code path materializes the directory. The
-guarantee is vacuously satisfied when the path never existed. Compare `.test_data`, which the
-standardized harness does create — the codebase materializes durable roots when it intends to.
-
-## Frame relativity
-
-This is the concept most easily lost. The same identifier means different things at different frames:
-
-| Frame | Source root | `.data` resolves to |
-|-------|-------------|---------------------|
-| host orchestrator | the project root on the machine | a real host path |
-| VM orchestrator | the staged tree inside the guest | a guest path |
-| project container | `/workspace/<project>` | a container path |
-
-Which frame owns the cluster step is a property of the **project's chain wiring**, not of
-`hostbootstrap-core`. A project that binds its cluster step to the host frame gets a genuinely
-host-rooted `.data`; a project that binds it inside a container does not. Neither is more correct —
-but only the first is host-durable, and the chain is what decides.
-
-## Host↔guest transfer per substrate
-
-Every substrate stages **one way**, host → guest. No provider exposes a reverse transfer, and no
-shared filesystem is configured for the project tree.
-
-| Substrate | Host → guest | Guest → host | Shared filesystem |
-|-----------|--------------|--------------|-------------------|
-| WSL2 | tar staged and extracted into the distro's ext4 vhdx | none | drvfs exposes host drives at `/mnt/<letter>`, used only to *read* the staging archive in place |
-| Incus | `incus file push` | none | no disk device is attached |
-| Lima | `limactl copy` | none | no project mount is configured |
-
-Consequently a write made inside a guest — including to `.data` — has no path back to the host.
-
-## The direct-host lane
-
-One topology is different and must not be swept into a blanket negative. The Linux GPU direct
-`nvkind` lane provisions **no VM and no project container**; the cluster step runs on the metal host.
-There `.data` genuinely *is* a host path and genuinely *does* outlive `project destroy`, because there
-is no frame to delete. See [../engineering/cluster_lifecycle.md](../engineering/cluster_lifecycle.md).
-
-## What actually persists today
-
-| Thing | Where it lives | Survives pod restart | Survives `project destroy` |
-|-------|----------------|----------------------|----------------------------|
-| the demo's MinIO PVC | kind's default `local-path` provisioner, inside the kind node container | yes | no |
-| `.test_data` | the **root** frame — genuinely host-side, created by the harness | n/a | created and removed by the harness per run |
-| `.data` | wherever the owning frame's source root points | n/a | only on the direct-host lane |
-
-The demo's registry-persistence case demonstrates the first row and only that row: it deletes the
-registry pod, waits for rollout, and re-reads through the NodePort. It inspects no filesystem and no
-host path.
-
-## The Host-Path Share Primitive
-
-A host directory reaches a guest through one per-substrate share primitive on `SubstrateProvider` /
-`HostPathShare`, modeled as pure data and interpreted generically
-([development plan standards § DD](../../DEVELOPMENT_PLAN/development_plan_standards.md)). It has three parts:
-
-- **Host-side reconcile** (`ShareReconcile`, an optional field shaped like the cordon-reconcile). Incus
-  attaches a disk device after create; Lima declares the mount at instance create; WSL2 needs none, because
-  drvfs already exposes the drive and `windowsPathToWslMount` already rewrites the path. This half is landed
-  on `SubstrateProvider` (`spShare`).
-- **Guest-side alias reconcile.** The stable Docker-visible path (`/var/tmp/<project>-data`) is a symlink
-  to the share, modeled as a pure `AliasState`
-  (`AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere | AliasOccupied`) with a total classifier and
-  a create/remove planner. The **same** classifier serves the VM-shell lane (trivial guest probes) and the
-  direct Linux-GPU lane (`System.Directory`), so the alias state machine is written once, not per lane.
-- **Mount-readiness.** The guest share is proven present and writable — a retrying `Ready` witness
-  ([readiness](readiness.md)) — before the alias is minted, so the alias step cannot race the mount and a
-  genuine collision surfaces as a message rather than a bare `ExitFailure 1`.
+The demo currently carries host `<project-root>/.data` through its provider, a stable
+`/var/tmp/hostbootstrap-demo-data` Docker-visible alias, kind/nvkind, and the workload. That mechanism is
+implemented, but a partial direct-host probe, Production-profile demo tests, nonrecursive teardown, and
+the missing live destroy/up/readback gate mean end-to-end durability is not yet validated.
 
 ## Current Status
 
-**Implemented:** the removal-set guarantee described above, on every substrate; and the **host-side** half
-of the share primitive (`spShare` / `HostPathShare` / `ShareReconcile` on `SubstrateProvider`).
+The current demo does create and carry durable state:
 
-**Reopened — not yet validated:** host-durable project state. The **guest-side alias reconcile** and
-**mount-readiness** above currently exist only as a defective demo-local `set -eu` shell step that raced and
-collapsed (as a bare `ExitFailure 1`) on the Windows/WSL2 lifecycle gate; recasting them as the pure
-`AliasState` primitive gated by a `Ready` witness is the reopened work. The durable root must then be
-carried across the remaining boundaries, created on `up`, and gated by a real capability.
+```text
+host project root/.data
+        │ provider share (drvfs, Incus disk device, or Lima mount)
+        ▼
+Linux environment's substrate-specific mounted path
+        │ symlink
+        ▼
+/var/tmp/hostbootstrap-demo-data
+        │ Docker/kind extraMount
+        ▼
+/var/lib/hostbootstrap-demo-data
+        │ pod hostPath
+        ▼
+/var/lib/hostbootstrap-demo-data/web
+```
 
-The shape of the remaining work, tracked as open sprints in
-[../../DEVELOPMENT_PLAN/phase-5-cluster-lifecycle-and-resource-cordoning.md](../../DEVELOPMENT_PLAN/phase-5-cluster-lifecycle-and-resource-cordoning.md)
-and
-[../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md):
+`/var/tmp/hostbootstrap-demo-data` is not the canonical store. It is the stable Linux path presented to
+the Docker daemon regardless of whether the underlying host directory arrived through WSL drvfs, an
+Incus disk device, a Lima mount, or the direct Linux host. Kind and nvkind configuration can therefore
+use one `hostPath` on every lane. The web pod mounts the final `/web` directory from the kind node.
 
-- the guest-side alias reconcile (pure `AliasState`) and mount-readiness recast as one primitive across the
-  VM-shell and direct Linux-GPU lanes, readiness-gated and legible on failure (phase-11 Sprint 11.9); the
-  host-side share reconcile it builds on is already landed;
-- the durable root carried across the remaining boundaries a nested chain crosses — VM to project
-  container, container to kind node, kind node to pod;
-- a create-on-`up` path for the durable root;
-- `DurableStore` promoted from a declared-but-unread context capability to one a command actually
-  requires.
+The canonical host directory is `<project-root>/.data`. Provider setup creates it, carries it into the
+VM/container topology, waits for the share, and reconciles the stable alias. The direct Linux GPU lane
+uses the same alias name on the host that runs Docker.
 
-Until a real run writes state, runs `project destroy`, runs `project up`, and reads it back, no
-governed document may describe host-durable `.data` as available. See
-[../../DEVELOPMENT_PLAN/development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)
-§ J.
+## What is implemented
 
-## Validation
+- `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
+- WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
+- Provider and direct-host paths create the host durable root and attempt to establish
+  `/var/tmp/hostbootstrap-demo-data`.
+- Project-container, kind/nvkind, and pod configurations carry the directory to the web workload.
+- Cluster teardown excludes its configured data path from its filesystem removal set.
 
-The removal-set guarantee is proven by the `hostbootstrap-core` test suite, which runs through the
-canonical code-check:
+These facts supersede the older description that `.data` was only frame-relative guest state and that no
+code created it.
 
-- `LifecycleSpec` asserts the pure teardown partition for both the production and test profiles — the
-  data path is absent from every removal set and present in every preserve set.
-- `LifecycleSpec` also proves it **on disk**: it creates a real `.data` directory and real derived
-  directories in a temporary root, then runs the real drivers. After `clusterDown` **both** the data
-  path and the derived paths still exist — `down`'s removal set is empty, so it removes nothing. After
-  `clusterDelete` the data path still exists while the derived paths are gone.
+## Open defects
 
-No test asserts host visibility of `.data`, because no implementation provides it. When the work in
-[Current Status](#current-status) lands, its gate is a real run across a destroy/up cycle, not a unit
-test — a pure argv or partition test cannot establish that a host path observes guest writes.
+The carry is not yet a delivered durability guarantee:
+
+- The direct-host alias observation is partial: it calls `pathIsSymbolicLink` before proving the alias
+  exists. A clean first run throws instead of classifying `AliasAbsent`, so direct Linux GPU bring-up can
+  fail before creating the link.
+- VM-shell and direct observations do not yet share one total, typed probe result at the IO boundary.
+- `/var/tmp/hostbootstrap-demo-data` is an ordinary shared pathname. Current create/check/remove logic
+  cannot exclude a same-privilege process replacing it between operations, so it is not an
+  identity-authoritative ownership backend and cannot honestly mint a strong cleanup receipt.
+- `DurableStore` is not uniform mutation authority. Initial core `service run` dispatch and the
+  accelerator handler require no capability; only the Web handler's later sibling-config reload asks
+  `validateContext` for `[DurableStore]`. That check consumes an editable decoded label after selection,
+  so it neither binds one config snapshot nor proves durable placement.
+- The demo test harness currently resolves `containerPlan` with the `Production` profile. It creates and
+  mounts `.data`; the nominal `.test_data` lifecycle is not what the live demo cluster uses.
+- No live gate writes through the pod path, runs `project destroy`, runs `project up`, and reads the same
+  bytes back from both host and pod.
+- Teardown is not a recursive child-to-parent interpretation. A provider VM can be stopped or removed by
+  the project hook without first running the lifecycle verb in each child frame.
+
+Until the destroy/up/readback gate passes, documentation must describe the mechanism as **durable carry
+implemented, end-to-end persistence unvalidated**.
+
+## Alias state target
+
+The target classifier is total:
+
+```haskell
+data AliasState
+  = AliasAbsent
+  | AliasLinkedCorrectly
+  | AliasLinkedElsewhere FilePath
+  | AliasOccupied NodeKind
+```
+
+The plan's dependency-snapshot transition internally traverses the alias descriptor's exact
+`PlannedEdge scope planId aliasId DurableAlias shareId DurableShare DurableShareMounted`, looks up the
+managed mounted-share handle, and runs the plan-owned probe. The caller cannot supply or omit the edge or
+substitute a retained `Ready`. The plan seals that fresh observation into the alias operation's closed
+`OperationPreconditionSet`; prepare reruns the probe and identity/version checks and jointly returns the
+only `PreparedOperation`/`PreparedPreconditions` pair the alias backend adapter accepts.
+It returns `ReconcileResult scope planId aliasId DurableAlias Observed to`. The public entry accepts only an
+unclassified handle in the `Observed` phase. It creates only `AliasAbsent`, returns
+`ManagedResult Unchanged` only for a correctly linked alias with a verified receipt, and reports the
+observed target/node on conflicts. A correctly linked foreign alias returns `ForeignResult` with an
+`Unmanaged` handle, not mutation/deletion authority. Destructive cleanup requires the managed handle and
+matching opaque ownership receipt; it never removes an alias merely because its pathname matches. IO
+failure is `ProbeFailed`/`Failure` in the probe/reconcile error sum, not an alias state.
+Strong alias reconciliation is available only when the substrate supplies a protected namespace plus an
+identity-bound conditional mutation/delete (or an equivalent kernel/provider primitive). Otherwise it
+returns `Unsupported`; an explicitly named cooperative pathname guard may aid diagnostics but cannot
+mint the strong receipt. Sprints 9.10 and 11.10 own the shared algebra and Incus/filesystem integration.
+
+The broader capability and ownership contract is defined in
+[lifecycle_state_model](lifecycle_state_model.md).
+
+The service-runtime target derives durable-store use from the selected closed program's effect row and
+packages it only with a matching `ServiceSelection` proof and opaque durable-placement authority. A
+late handler-specific config reload cannot mint or widen that authority.
+
+## Production and test profiles
+
+The current library enum can describe:
+
+| Profile | Durable root | Cluster identity |
+|---|---|---|
+| Production | `.data` | fixed project production name |
+| `TestCase caseId` | `.test_data/<caseId>` | `<project>-test-<caseId>` |
+
+The cluster library can represent both, and generic harness ownership helpers manage `.test_data`.
+However, the demo's live bring-up currently hardcodes `Production`, so tests exercise the first row.
+This is an open safety defect. A passing unit test over a fabricated Test plan does not prove the demo
+uses it.
+
+The target is the opaque, scope-indexed `LifecycleProfile` in
+[lifecycle_state_model](lifecycle_state_model.md): the production gate can mint only Production
+authority, and the harness can mint only `Harness projectId runId`. `withProjectPlan` consumes that profile and
+scope-matching config; `containerPlan` is only a projection of the resulting plan and derives the data
+root and cluster identity together. A test config then cannot silently request Production.
+
+## Teardown guarantee
+
+The narrow, current guarantee is that cluster teardown does not include the plan's data path in its
+filesystem removal set. That guarantee does not by itself prove:
+
+- that the path is the host path;
+- that every enclosing frame preserves the share;
+- that a destroy/up cycle reattaches it correctly; or
+- that the test harness avoids production state.
+
+Those claims require the live validation gates below.
+
+## Validation gates
+
+1. A clean-host alias test reaches `AliasAbsent`, creates the link, and reruns to
+   `ManagedResult Unchanged` with the same verified receipt.
+2. Wrong-link, occupied-node, permission, and unexpected IO failures are reported without partial
+   filesystem exceptions.
+3. Every supported native substrate writes a unique value through the pod-mounted `/web` path, destroys
+   the stack, recreates it, and reads the value from both host and pod.
+4. `test run all` proves its cluster name is test-scoped and that neither `.data` nor the production
+   cluster is observed or mutated.
+5. Recursive teardown visits the child cluster/container before stopping or deleting its provider frame.
+
+Validation status and scheduling belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Related
 
-- [../engineering/cluster_lifecycle.md](../engineering/cluster_lifecycle.md) — kind/Helm bring-up and
-  teardown as chain steps; the invariant's engineering home.
-- [composition_methodology.md](composition_methodology.md) — the chain-is-the-project model that
-  decides which frame owns the cluster step.
-- [../engineering/gitignore_guardrails.md](../engineering/gitignore_guardrails.md) — why `.data/` and
-  `.test_data/` stay out of version control.
-- [readiness.md](readiness.md) — the `Ready`-witness discipline that gates the share's mount and alias
-  steps, and the legible-failure contract that keeps a share failure from collapsing to `ExitFailure 1`.
+- [lifecycle state model](lifecycle_state_model.md) — typed transitions, opaque readiness and ownership,
+  total probes, and recursive teardown.
+- [cluster lifecycle](../engineering/cluster_lifecycle.md) — current kind/Helm operations.
+- [harness workflow](harness_workflow.md) — current test-profile and DSL mismatch.
+- [gitignore guardrails](../engineering/gitignore_guardrails.md) — keeping `.data/` and `.test_data/`
+  outside version control.

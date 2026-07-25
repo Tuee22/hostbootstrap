@@ -17,16 +17,11 @@ module HostBootstrap.HostPrereqs (
     checkHostMinimums,
     parseOsRelease,
     isUbuntu2404,
-    KvmStatus (..),
-    kvmDeviceStatus,
-    kvmStatusToPrereq,
-    checkKvmDevice,
 )
 where
 
 import Control.Exception (SomeException)
 import Control.Exception.Safe (try)
-import Data.List (isInfixOf)
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
 import HostBootstrap.HostTool (
     AbsExe,
@@ -40,8 +35,6 @@ import HostBootstrap.Substrate (
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 #ifndef mingw32_HOST_OS
-import System.Directory (doesPathExist)
-import System.Posix.Files (fileAccess)
 import System.Posix.User (getEffectiveUserID)
 #endif
 import System.Process (readProcessWithExitCode)
@@ -64,18 +57,15 @@ checkHostMinimums cfg =
             , ("Xcode Command Line Tools", checkXcodeClt cfg)
             , ("passwordless sudo", checkPasswordlessSudo cfg)
             , ("Homebrew", checkHomebrew cfg)
-            , ("Docker daemon reachable", checkDockerReachable cfg)
             ]
         LinuxCpu -> linuxChecks
-        LinuxGpu -> linuxChecks ++ [("NVIDIA container runtime", checkNvidiaRuntime cfg)]
+        LinuxGpu -> linuxChecks
         WindowsCpu -> windowsChecks
         WindowsGpu -> windowsChecks
   where
     linuxChecks =
         [ ("Ubuntu 24.04", checkUbuntu2404)
         , ("passwordless sudo", checkPasswordlessSudo cfg)
-        , ("/dev/kvm read-write", checkKvmDevice)
-        , ("Docker daemon reachable", checkDockerReachable cfg)
         ]
     windowsChecks =
         [ ("Windows host floor", pure (Right ()))
@@ -135,20 +125,6 @@ checkPasswordlessSudo cfg = do
           Left err -> Left err
 #endif
 
-checkDockerReachable :: HostConfig -> IO (Either PrereqError ())
-checkDockerReachable cfg = case resolveMaybe cfg Docker of
-    Nothing -> pure (Left (PrereqError "docker CLI not found; install Docker and retry"))
-    Just docker -> do
-        result <- runTool docker ["info"]
-        pure $ case result of
-            Right (ExitSuccess, _, _) -> Right ()
-            Right _ ->
-                Left
-                    ( PrereqError
-                        "docker daemon is not reachable. Start Docker Desktop, Colima, or dockerd and retry."
-                    )
-            Left err -> Left err
-
 checkUbuntu2404 :: IO (Either PrereqError ())
 checkUbuntu2404 = do
     let osRelease = "/etc/os-release"
@@ -183,76 +159,6 @@ checkHomebrew cfg =
     pure $ case resolveMaybe cfg Brew of
         Just _ -> Right ()
         Nothing -> Left (PrereqError "Homebrew is required on apple-silicon. Install from https://brew.sh.")
-
-checkNvidiaRuntime :: HostConfig -> IO (Either PrereqError ())
-checkNvidiaRuntime cfg = case resolveMaybe cfg NvidiaSmi of
-    Nothing -> pure (Left (PrereqError "nvidia-smi not found; install the NVIDIA driver"))
-    Just _ -> case resolveMaybe cfg Docker of
-        Nothing -> pure (Right ())
-        Just docker -> do
-            result <- runTool docker ["info", "--format", "{{json .Runtimes}}"]
-            pure $ case result of
-                Right (_, out, _)
-                    | "nvidia" `isInfixOf` out -> Right ()
-                Right _ ->
-                    Left
-                        ( PrereqError
-                            "NVIDIA container toolkit is not registered with Docker. Install nvidia-container-toolkit and re-configure dockerd."
-                        )
-                Left err -> Left err
-
--- ---------------------------------------------------------------------------
--- /dev/kvm (nested-VM provider gate)
--- ---------------------------------------------------------------------------
-
--- | The Linux hardware-virtualization device node the nested VM providers open.
-#ifndef mingw32_HOST_OS
-kvmDevicePath :: FilePath
-kvmDevicePath = "/dev/kvm"
-#endif
-
-{- | Whether @/dev/kvm@ is absent, present-but-unwritable, or usable by the
-invoking user. The read/write probe uses @access(2)@ semantics (the real
-uid/gid), so it reflects the invoking user rather than root.
--}
-data KvmStatus = KvmOk | KvmAbsent | KvmUnwritable
-    deriving (Eq, Show)
-
-{- | Probe @/dev/kvm@. Windows never boots the Linux nested-VM providers, so this
-reports 'KvmAbsent' there and is never reached (the Windows minimums omit it).
--}
-kvmDeviceStatus :: IO KvmStatus
-#ifdef mingw32_HOST_OS
-kvmDeviceStatus = pure KvmAbsent
-#else
-kvmDeviceStatus = do
-  present <- doesPathExist kvmDevicePath
-  if not present
-    then pure KvmAbsent
-    else do
-      readWrite <- fileAccess kvmDevicePath True True False
-      pure (if readWrite then KvmOk else KvmUnwritable)
-#endif
-
-{- | Map a 'KvmStatus' to the fail-fast host-minimum result. Pure, so the message
-mapping is unit-tested without a real device node.
--}
-kvmStatusToPrereq :: KvmStatus -> Either PrereqError ()
-kvmStatusToPrereq KvmOk = Right ()
-kvmStatusToPrereq KvmAbsent =
-    Left
-        ( PrereqError
-            "/dev/kvm not found; the nested VM providers require hardware virtualization (Intel VT-x / AMD-V) enabled in firmware with the kvm kernel module loaded."
-        )
-kvmStatusToPrereq KvmUnwritable =
-    Left
-        ( PrereqError
-            "/dev/kvm is present but not read/write for this user; add your user to the 'kvm' group (or grant rw on /dev/kvm) and re-run."
-        )
-
--- | Fail-fast check that @/dev/kvm@ is usable by the invoking user.
-checkKvmDevice :: IO (Either PrereqError ())
-checkKvmDevice = kvmStatusToPrereq <$> kvmDeviceStatus
 
 -- ---------------------------------------------------------------------------
 -- /etc/os-release parsing (pure)
