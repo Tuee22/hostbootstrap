@@ -153,7 +153,6 @@ import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, Wi
 import HostBootstrap.Substrate.Provider (
     AliasAction (..),
     AliasFacts (..),
-    AliasRemoval (..),
     ExistsProbe (..),
     HostEffect (..),
     HostPathShare (..),
@@ -165,7 +164,6 @@ import HostBootstrap.Substrate.Provider (
     classifyAlias,
     membersOf,
     planAliasEnsure,
-    planAliasRemove,
     selectSubstrateProvider,
     shareReconcileEffects,
     stageFileEffects,
@@ -195,7 +193,7 @@ import HostBootstrapDemo.Web.Api (demoWebPod)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWeb)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getSymbolicLinkTarget, makeAbsolute, pathIsSymbolicLink, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getSymbolicLinkTarget, makeAbsolute, pathIsSymbolicLink, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, (</>))
@@ -404,10 +402,12 @@ demoFrameContext :: Substrate -> ProjectConfig -> StepFrame -> LiftContext
 demoFrameContext sub cfg next
     | frameId next == frameId demoVMFrame = demoVMFrameContext sub
     | frameId next == frameId demoContainerFrame =
-        inContainer (demoDeployImage containerRuntimeFrameId False (containerConfigPayload cfg)) localContext
+        inContainer (demoDeployImage (projectRoot cfg) containerRuntimeFrameId False (containerConfigPayload cfg)) localContext
     | frameId next == frameId demoDirectContainerFrame =
-        inContainer (demoDeployImage directContainerRuntimeFrameId True (directContainerConfigPayload cfg)) localContext
+        inContainer (demoDeployImage (projectRoot cfg) directContainerRuntimeFrameId True (directContainerConfigPayload cfg)) localContext
     | otherwise = localContext
+  where
+    projectRoot = T.unpack . Context.sourceRoot . context
 
 {- | The narrowed project-container projection rendered to Dhall text (pure): the
 child config the VM→container handoff streams in-place on its @stdin@ (§ X). It
@@ -1162,7 +1162,11 @@ acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort =
             , "            initialDelaySeconds: 1"
             , "            periodSeconds: 2"
             ]
+            ++ gpuRuntimeClass
             ++ gpuResources
+    gpuRuntimeClass
+        | gpuDaemon = "      runtimeClassName: nvidia\n"
+        | otherwise = ""
     gpuResources
         | gpuDaemon =
             unlines
@@ -2269,40 +2273,6 @@ captureInVMStdout cfg provider script =
                 Right (ExitFailure n, _, err) -> Left ("exit " ++ show n ++ ": " ++ err)
                 Left err -> Left err
 
-{- | Prove the direct-lane host durable root is a writable directory and mint the
-'Ready DurableShareMounted' witness 'mintLocalDurableAlias' requires. The root was
-created by @ensureDurableDataPath@, so this is a fast local check; it still goes
-through 'awaitReady' so the witness discipline is uniform across both lanes (§ CC).
--}
-awaitLocalDurableShareMounted :: HostConfig -> FilePath -> IO (Ready DurableShareMounted)
-awaitLocalDurableShareMounted cfg dir =
-    either
-        (\e -> throwIO (LifecycleFailure ("direct durable share not ready at " ++ dir ++ ": " ++ renderPollError e)))
-        pure
-        =<< awaitReady (networkPoll `withAttempts` 3) ("direct durable share " ++ dir) probe cfg
-  where
-    probe _ = do
-        ok <- doesDirectoryExist dir
-        pure (if ok then ProbeReady () else NotReady)
-
-{- | Direct Linux GPU alias — the guest-lane 'mintDurableAlias' peer over the SAME
-'classifyAlias' / 'planAliasEnsure' state machine, but reading facts through
-'System.Directory'. Requires the 'Ready DurableShareMounted' witness. A collision
-is a legible 'LifecycleFailure', never a bare exit code.
--}
-mintLocalDurableAlias :: Ready DurableShareMounted -> FilePath -> IO ()
-mintLocalDurableAlias _mounted durableTarget = do
-    facts <- gatherLocalAliasFacts durableDockerHostPath
-    case planAliasEnsure durableDockerHostPath durableTarget (classifyAlias durableTarget facts) of
-        Left msg -> throwIO (LifecycleFailure msg)
-        Right AliasLeaveLinked ->
-            putStrLn ("direct durable alias " ++ durableDockerHostPath ++ " already links to " ++ durableTarget)
-        Right AliasCreateLink -> do
-            createDirectoryLink durableTarget durableDockerHostPath
-            accessible <- doesDirectoryExist durableDockerHostPath
-            unless accessible (throwIO (LifecycleFailure ("durable alias is not an accessible directory: " ++ durableDockerHostPath)))
-            putStrLn ("direct durable alias " ++ durableDockerHostPath ++ " -> " ++ durableTarget)
-
 -- | Gather the alias facts on the direct host lane via 'System.Directory' (§ DD).
 gatherLocalAliasFacts :: FilePath -> IO AliasFacts
 gatherLocalAliasFacts path = do
@@ -2316,19 +2286,6 @@ gatherLocalAliasFacts path = do
     dirEx <- doesDirectoryExist path
     fileEx <- doesFileExist path
     pure (AliasFacts linkTarget (isSym || dirEx || fileEx))
-
-{- | Remove the direct lane's derived alias on @project destroy@, folded onto the
-same 'classifyAlias' / 'planAliasRemove' state machine: unlink only the exact link
-this project owns, keep an absent/foreign-occupant path (with a reason), and refuse
-a retargeted link — the host @.data@ target is never removed (§ Y).
--}
-removeLocalDurableAliasIfOwned :: FilePath -> IO ()
-removeLocalDurableAliasIfOwned durableTarget = do
-    facts <- gatherLocalAliasFacts durableDockerHostPath
-    case planAliasRemove durableDockerHostPath durableTarget (classifyAlias durableTarget facts) of
-        Left msg -> throwIO (LifecycleFailure msg)
-        Right (AliasKeep reason) -> putStrLn ("project destroy: " ++ reason)
-        Right AliasUnlink -> removeFile durableDockerHostPath
 
 {- | Run a list of pure host effects, dying on the first failure (the launch /
 staging path). 'WriteHostFile' backs up any existing file once (the global
@@ -2909,10 +2866,8 @@ runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Cont
     preflightDemoLifecycleHost initialCfg (resourcesFromContext ctx)
     runEnsure EnsureDocker.reconciler
     cfgAfterDocker <- resolveHostConfig
-    root <- makeAbsolute =<< getCurrentDirectory
-    hostDurableRoot <- ensureDurableDataPath root
-    mounted <- awaitLocalDurableShareMounted cfgAfterDocker hostDurableRoot
-    mintLocalDurableAlias mounted hostDurableRoot
+    let root = T.unpack (Context.sourceRoot ctx)
+    _hostDurableRoot <- ensureDurableDataPath root
     let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
     harnessRun <- lookupEnv harnessMutationGuardEnv
     when (harnessRun == Just "1") $ do
@@ -3131,7 +3086,6 @@ demoTeardown projectCfg destroyVM = do
                 runOrDie cfg Docker directClusterTeardownArgs
             remaining <- directClusterExists cfg directPlan
             when remaining (die "project teardown: direct nvkind node containers remain after deletion")
-            when destroyVM (removeLocalDurableAliasIfOwned (root </> ".data"))
         | otherwise = do
             provider <- demoProvider cfg
             let name = spVmId provider
@@ -3202,13 +3156,13 @@ forwards the Docker Hub credential by /name/ only
 pulls authenticate; with no host login the variable is unset and pulls stay
 anonymous (see "HostBootstrap.Registry").
 -}
-demoDeployImage :: String -> Bool -> T.Text -> ContainerLift
-demoDeployImage currentFrameId directLinuxGpu payload =
+demoDeployImage :: FilePath -> String -> Bool -> T.Text -> ContainerLift
+demoDeployImage canonicalRoot currentFrameId directLinuxGpu payload =
     ContainerLift
         { clImage = "hostbootstrap-demo:local"
         , clMounts =
             [ Mount "/var/run/docker.sock" "/var/run/docker.sock" False
-            , Mount (T.pack durableDockerHostPath) (T.pack (containerSourceRoot ++ "/.data")) False
+            , Mount (T.pack durableHostPath) (T.pack (containerSourceRoot ++ "/.data")) False
             ]
                 ++ [Mount "/run/hostbootstrap" "/run/hostbootstrap" True | not directLinuxGpu]
         , clExtraArgs =
@@ -3236,3 +3190,7 @@ demoDeployImage currentFrameId directLinuxGpu payload =
                     payload
                 )
         }
+  where
+    durableHostPath
+        | directLinuxGpu = canonicalRoot </> ".data"
+        | otherwise = durableDockerHostPath

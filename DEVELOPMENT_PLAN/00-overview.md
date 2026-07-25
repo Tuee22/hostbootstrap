@@ -181,7 +181,7 @@ that the README phase table is the only cross-phase status roll-up.
 Sprint `Blocked by` metadata is the execution authority. Phase ownership above explains where contracts
 live; it does not make every cross-phase reference a start dependency. The strict landing order is:
 
-1. Sprint 9.4's remaining explicit-`Unsupported` correction and Sprints 2.5, 5.6, 6.7, 8.7, 10.10,
+1. Sprint 9.4's remaining explicit-`Unsupported` correction and Sprints 2.5, 5.6.1, 6.7, 8.7, 10.10,
    13.19, and 19.6 are independent roots of the dependency graph.
 2. Sprint 6.7 enables Sprint 12.4. This is intentionally one-way: after the publish gate is corrected,
    Sprint 12.4 changes warm-store inputs and closes by rebuilding, republishing, pulling, and validating
@@ -189,9 +189,10 @@ live; it does not make every cross-phase reference a start dependency. The stric
 3. Sprints 8.7 and 19.6 enable Sprint 19.7; Sprints 19.6–19.7 enable Sprint 19.8. Sprints 19.7–19.8
    then enable Sprint 9.10, whose opaque capabilities must be minted only from the scoped codec and
    finalized plan.
-4. Sprint 9.10 enables Sprints 5.8 and 11.10. Sprints 9.10 and 11.10 together enable Sprint 5.7's
+4. Sprint 5.6.1 enables Sprint 5.6's direct-host durability gate. Sprint 9.10 enables Sprints 5.8 and
+   11.10. Sprints 9.10 and 11.10 together enable Sprint 5.7's
    all-provider storage/ownership gate.
-5. After Sprints 5.6–5.7, 9.10, and 19.7–19.8 close, Sprint 15.9 supplies the independent root/command
+5. After Sprints 5.6.1–5.7, 9.10, and 19.7–19.8 close, Sprint 15.9 supplies the independent root/command
    authority. Sprint 10.9 consumes it with the mode/lease state to implement fresh and bound-recovery
    profile openers; Sprint 16.6 then consumes both in the recursive interpreter. They remain one
    coordinated integration tranche, but the explicit 15.9 → 10.9 → 16.6 order prevents a circular

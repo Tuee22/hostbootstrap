@@ -172,9 +172,11 @@ pushes the image, deploys the web and accelerator services, and verifies exposur
 the registry, web, and MinIO host mappings are not all loopback-only, and MinIO defaults are
 source-hardcoded; the target security repair is plan-owned.
 
-The stable `/var/tmp/hostbootstrap-demo-data` pathname is the guest/container-visible alias for the
-project's host-backed durable root. It is not the canonical store: Production data originates at
-`<project-root>/.data`, while the target harness uses `.test_data/<runId>`. See
+The stable `/var/tmp/hostbootstrap-demo-data` pathname is a provider-guest projection of the project's
+host-backed durable root, not a portable direct-host path or the canonical store. The target resolves
+descriptive `sourceRoot` once into opaque canonical-root authority: direct-host Docker binds the actual
+absolute `<project-root>/.data`, while WSL2, Incus, and Lima may reconcile their own typed guest alias.
+That direct-host repair is reopened as Sprint 5.6.1; the target harness uses `.test_data/<runId>`. See
 [durable state](documents/architecture/durable_state.md).
 
 From `demo/`, the normal consumer flow is:

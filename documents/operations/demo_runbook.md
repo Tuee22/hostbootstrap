@@ -31,7 +31,8 @@ evidence belong only in [the development-plan index](../../DEVELOPMENT_PLAN/READ
 Open operator-significant defects are:
 
 - readiness capabilities are publicly forgeable and mutation gating is incomplete;
-- the direct-host durable-alias probe throws on a clean absent path;
+- the direct-host lane still substitutes a guest-oriented alias for the canonical host path, and Docker
+  rejects that symlink bind;
 - derived image builds may reuse a stale local mutable base tag because the builder omits `--pull`;
 - the supported `demo/` static entry `cabal test all` currently fails because
   `hostbootstrap-demo-test` lacks `-threaded`, which Warp's timer manager requires;
@@ -117,14 +118,15 @@ The current data path is:
 ```text
 <project-root>/.data
   -> provider-specific share/mount
-  -> /var/tmp/hostbootstrap-demo-data
+  -> provider guest /var/tmp/hostbootstrap-demo-data
   -> kind/nvkind node /var/lib/hostbootstrap-demo-data
   -> pod /var/lib/hostbootstrap-demo-data/web
 ```
 
-`/var/tmp/hostbootstrap-demo-data` is a stable Docker-visible alias, not the canonical store. It hides
-whether the underlying host directory arrived through WSL drvfs, an Incus disk device, a Lima mount, or
-the direct Linux host, allowing one kind `hostPath` across lanes.
+`/var/tmp/hostbootstrap-demo-data` is a provider-guest Docker-visible projection, not the canonical
+store. WSL2, Incus, and Lima use it after carrying the canonical host root into their guest. Direct
+Linux must instead bind the canonical absolute host `.data` path; current code still selects the alias,
+and Sprint 5.6.1 is open because Docker rejected that symlink as a host bind.
 
 Cluster teardown omits the configured data path from its removal set. That narrow fact does not prove
 end-to-end durability; see [durable state](../architecture/durable_state.md).

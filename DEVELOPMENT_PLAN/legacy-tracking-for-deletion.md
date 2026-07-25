@@ -10,6 +10,22 @@
 
 ## Pending
 
+- **Direct-host durable compatibility alias and repeated raw root reconstruction**
+  (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+  `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
+  `demo/src/HostBootstrapDemo/Commands.hs`) — direct Linux currently creates/observes
+  `/var/tmp/hostbootstrap-demo-data` and passes it to Docker because pure frame planning receives only
+  descriptive relative `sourceRoot = "."`. The same raw-path surface permits consumers to derive roots
+  from `cwd`, executable/config location, concatenation, or a guest alias, so substrate policies can
+  drift and Docker rejects the direct-host symlink bind. Replacement: root-config admission resolves and
+  canonicalizes once against the stable config-owned project-home anchor, yields opaque
+  `CanonicalProjectRoot scope rootId`, and lets `ProjectPlan` derive distinct typed host, guest,
+  container, kind-node, and pod projections. Direct-host Docker consumes only the canonical absolute
+  host `.data`; provider aliases remain guest-local reconciled projections. Delete direct-host
+  `mintLocalDurableAlias`/`removeLocalDurableAliasIfOwned` and equivalent alias-fact bypasses, plus raw
+  adapter inputs that allow path-kind substitution. Owning sprints: 5.6.1 (root authority/projections),
+  11.10 (provider guest alias consolidation and direct bypass deletion), 15.9 (root/config binding), and
+  16.6 (recursive plan consumption).
 - **Independent Dhall encoder/decoder schema claims and partially ungated hand-written `Core.dhall`**
   (`core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`,
@@ -390,12 +406,6 @@
   readiness path whose result is not the capability consumed by `deploy-VM`. Replacement: fold the
   capability checks/remediation into the one core provider transition and delete the demo-local bypass.
   Owning phase: Phase 11 Sprint 11.10.
-- **Partial direct-host durable-alias probe** (`demo/src/HostBootstrapDemo/Commands.hs`,
-  `mintLocalDurableAlias`) — the direct Linux-GPU path calls
-  `pathIsSymbolicLink` before it has classified a missing path, so a clean first run can throw instead of
-  returning `AliasAbsent`. Replacement: one total cross-lane `AliasState` observation followed by
-  ownership-aware reconciliation gated by the exact mounted-share readiness capability. Owning phases:
-  Phase 11 Sprint 11.10 and Phase 9 Sprint 9.10.
 - **Unused `wslImportArgs` and cached-rootfs doctrine**
   (`core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
   `core/hostbootstrap-core/test/Wsl2Spec.hs`) — the exported/tested `wsl --import` builder and
@@ -807,8 +817,8 @@ a plan update creates a new current owner for it.
   `System.Directory` branches in `prepareLocalDurableAlias` / `removeLocalDurableAliasIfOwned`) — removed
   by `HostBootstrap.Substrate.Provider.AliasState`, `classifyAlias`, `planAliasEnsure`, and
   `planAliasRemove`; VM and direct lanes now feed facts into the same classifier/planners. Phase 11
-  Sprint 11.10 still owns total, exclusively owned direct-host reconciliation, not another alias state
-  machine. Owning phase: Phase 11 Sprint 11.9.
+  The later direct-host removal is tracked separately under Pending; this removed item records only the
+  historical deduplication. Owning phase: Phase 11 Sprint 11.9.
 - **The stderr-folding `die` / message-less `ExitFailure 1` lifecycle collapse** (`runOrDieStdin` folding
   captured output into `System.Exit.die`, `runSelfOrDie` rethrowing a plain exit failure, and
   `runSuiteSelection` rendering the resulting `ExitCode`) — removed by structured `LifecycleFailure`,

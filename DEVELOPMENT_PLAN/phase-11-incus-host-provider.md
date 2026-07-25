@@ -95,7 +95,8 @@ ceiling applied.
 
 **Current:** Sprint 11.10 is Blocked by Sprint 9.10's opaque readiness/reconcile/receipt algebra. It then
 owns the single Provider/Lift route, removal of definition-only `HostTarget`/`wslImportArgs` surfaces,
-direct-host alias integration, and exclusive ownership of WSL global state.
+provider-guest alias consolidation, deletion of the direct-host compatibility alias, and exclusive
+ownership of WSL global state.
 
 **Historical closure (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
 (`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
@@ -676,7 +677,7 @@ the alias linking cleanly on both variants
 failed `0/8` before. None remains in this narrowed VM-lane scope; Sprint 11.10 owns direct-host totality,
 one Provider/Lift path, and exclusive alias ownership; Phase 9 Sprint 9.10 owns generative readiness.
 
-### Sprint 11.10: One provider/lift path and direct durable alias [Blocked]
+### Sprint 11.10: One provider/lift path and guest durable projections [Blocked]
 
 **Status**: Blocked
 **Blocked by**: Sprint 9.10
@@ -692,8 +693,8 @@ one Provider/Lift path, and exclusive alias ownership; Phase 9 Sprint 9.10 owns 
 #### Objective
 
 Remove parallel/definition-only provider abstractions, replace provider presence checks with the
-capability/egress observations their dependent steps require, and ensure every durable-share alias,
-including the direct-host lane, uses one total provider primitive.
+capability/egress observations their dependent steps require, and make provider guest aliases one typed
+projection primitive without treating them as direct-host path authority.
 
 #### Deliverables
 
@@ -706,13 +707,14 @@ including the direct-host lane, uses one total provider primitive.
   probe, and make each provider transition observe required egress before minting readiness for an
   image-pull or guest-bootstrap step. Package presence alone cannot produce `Ready Provider`; delete the
   demo-local `ensureIncusProvider` compensation once core owns that transition.
-- Route both VM-guest and direct-host durable alias creation through the same `AliasState` classifier,
+- Route every VM/provider-guest durable alias through the same `AliasState` classifier,
   receipt-preserving `ReconcileResult` (`ManagedResult` with a `Managed` handle/receipt and
   `Changed Created|Repaired|Adopted` or `Unchanged`, versus `ForeignResult` with only an `Unmanaged`
   handle), exact mounted-share readiness witness, and a protected namespace plus identity-bound
-  conditional filesystem operation. Same-filesystem placement or exclusive create/rename alone is not
+  conditional filesystem operation. The direct-host lane instead consumes Sprint 5.6.1's canonical
+  absolute host path and creates no compatibility alias. Same-filesystem placement or exclusive create/rename alone is not
   authoritative against same-privilege replacement; unsupported backends mint no receipt. There is no
-  demo-local direct alias bypass.
+  demo-local alias bypass, and no guest alias can enter the host-bind adapter.
 - Model WSL global `.wslconfig` mutation and restoration through a platform-authoritative lock/CAS and
   receipt that distinguishes original-present bytes from original-absent before the first write. Retry
   consumes that durable origin rather than inferring ownership from `.bak` existence; teardown restores
@@ -726,8 +728,8 @@ including the direct-host lane, uses one total provider primitive.
 - Provider probe tables cover missing client, client-present/daemon-absent, permission denied,
   daemon-unreachable, VM-incapable, no-egress, and ready; only the last branch mints the capability
   consumed by the dependent step.
-- Alias state-machine tests cover absent, correct, elsewhere, occupied, foreign-owned, and retry states on
-  VM and direct paths.
+- Alias state-machine tests cover absent, correct, elsewhere, occupied, foreign-owned, and retry states
+  for each provider guest path; direct-host tests prove the canonical host path bypasses alias mutation.
 - Live WSL2, Lima, Incus, and direct-Linux gates prove provision/reconcile/restore behavior without
   claiming one provider validates another.
 
@@ -735,7 +737,8 @@ including the direct-host lane, uses one total provider primitive.
 
 Blocked until Sprint 9.10 lands the opaque readiness/reconcile/receipt algebra. Then consolidate the
 provider abstractions, remove definition-only exports, strengthen capability/egress probes, wire the
-direct alias through the shared typed primitive, and rerun each native provider gate. The Windows `8/8`
+guest aliases through the shared typed primitive, delete the direct-host compatibility alias, and rerun
+each native provider gate. The Windows `8/8`
 snapshot validates the historical WSL lane only; it does not close direct Linux, Lima, Incus, egress, or
 ownership-conflict behavior.
 

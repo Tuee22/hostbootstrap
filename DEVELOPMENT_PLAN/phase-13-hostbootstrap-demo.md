@@ -1194,6 +1194,12 @@ published-base pull/digest consumption, reconcile MinIO/registry metadata, and r
 Sprint 13.17 and the accelerator lanes in Sprints 15.8, 16.5, and 18.5 remain independently Active; this
 sprint's representative-lane integration does not close them by proxy.
 
+Dated native Linux GPU evidence (2026-07-25): the direct lane accepted the canonical absolute host
+`.data` bind, created and cordoned the nvkind nodes, advertised `nvidia.com/gpu`, and brought MinIO plus
+the in-cluster registry Ready. The subsequent `docker push` uploaded every project-image layer but failed
+when the registry finalized the manifest (`error from registry: unknown error`) in both variants. This is
+the current concrete registry/MinIO repair input; it is not accepted matrix or durability evidence.
+
 ### Sprint 13.19: Threaded static demo test component [Planned]
 
 **Status**: Planned

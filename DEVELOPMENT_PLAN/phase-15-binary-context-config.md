@@ -618,7 +618,7 @@ static-test work remains.
 ### Sprint 15.9: Opaque capability and context authority [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.6–5.7, 9.10, and 19.7–19.8
+**Blocked by**: Sprints 5.6.1–5.7, 9.10, and 19.7–19.8
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
@@ -697,6 +697,9 @@ data or by replaying a prior handoff.
   boundary. A file replacement
   after validation affects neither the current plan nor packaged handler parameters; a later invocation
   receives a new `configId` and must reauthorize.
+- Consume Sprint 5.6.1's `CanonicalProjectRoot scope rootId` from root-config admission when opening the
+  plan. Command authorization may compare the config/root binding but cannot reinterpret `sourceRoot`,
+  consult `cwd`, or mint root authority from a host, guest, container, or alias pathname.
 - Separate descriptive context fields from opaque local authority and narrow both across child
   projections without forwarding parent-only privileges. Parent and narrowed child bytes have distinct
   config identities; an opaque projection binding preserves scope/plan revision and child digest rather
@@ -892,7 +895,8 @@ data or by replaying a prior handoff.
 
 #### Remaining Work
 
-Blocked until Sprints 5.6–5.7, 9.10, and 19.7–19.8 land the durable-state proof, ownership/result types,
+Blocked until Sprints 5.6.1–5.7, 9.10, and 19.7–19.8 land canonical root authority, the durable-state
+proof, ownership/result types,
 scoped codec, and finalized plan. Then refactor context/capability construction around the Phase 9 opaque
 tokens, replace the current class-membership-only project-up gate and raw `addRole`, replace the shell writer with the framed
 broker/challenge/grant `BoundRunLease`/`HandoffToken` transport plus the versioned session/fence prepare

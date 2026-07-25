@@ -45,18 +45,18 @@ defer status to this table.
 | 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done | — |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done | — |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done | — |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprints 5.5–5.6 active; 5.7–5.8 wait on lifecycle/provider foundations |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprint 5.5 active; 5.6.1 config admission/direct bind landed but opaque plan integration remains, blocking 5.6; 5.7–5.8 wait on lifecycle/provider foundations |
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Active | Sprint 6.7: native publish/digest, maintainer-context, and thin-build repair |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done | — |
 | 8 | [Dhall generation and extension contract](phase-8-dhall-generation-and-extension.md) | Active | Sprint 8.7: validated codec/schema witness |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active | Sprint 9.4 active; 9.10 waits on Sprints 19.7–19.8 |
 | 10 | [Standardized test harness and run-models](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 ready; 10.9 waits on Sprints 5.7, 9.10, 15.9, and 19.6–19.8 |
-| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Blocked | Sprint 11.10: waiting on Sprint 9.10 |
+| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Blocked | Sprint 11.10 guest projections/direct-alias deletion: waiting on Sprint 9.10 |
 | 12 | [Layered warm store](phase-12-layered-warm-store.md) | Blocked | Sprint 12.4: waiting on Sprint 6.7 |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprints 13.17 active and 13.19 ready; 13.18 waits on the integration chain |
 | 14 | [Composition methodology](phase-14-composition-methodology.md) | Blocked | Sprint 14.6: waiting on Sprints 9.10, 15.9, and 19.7–19.8 |
-| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active | Sprint 15.8 active; 15.9 waits on durability/type foundations |
-| 16 | [Project lifecycle command](phase-16-project-lifecycle-command.md) | Active | Sprint 16.5 active; 16.6 waits on Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8 |
+| 15 | [Binary context config and command gating](phase-15-binary-context-config.md) | Active | Sprint 15.8 active; 15.9 waits on Sprints 5.6.1–5.7 and type foundations |
+| 16 | [Project lifecycle command](phase-16-project-lifecycle-command.md) | Active | Sprint 16.5 active; 16.6 waits on Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8 |
 | 17 | [Chain-driven test and context introspection](phase-17-chain-driven-test-and-context-introspection.md) | Blocked | Sprint 17.4: waiting on Sprints 10.9, 15.9, 19.6, and 19.8 |
 | 18 | [Service runtime command](phase-18-service-runtime-command.md) | Active | Sprint 18.5 native live lanes; Sprint 18.6 validated selection/snapshot blocked by 14.6, 15.9, 17.4, and 19.8 |
 | 19 | [Generic project model](phase-19-generic-project-model.md) | Active | Sprint 19.6 ready; 19.7–19.8 wait on codec/typed-identity foundations |

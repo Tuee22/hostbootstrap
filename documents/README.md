@@ -63,8 +63,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
   the implemented compiled-case/resource-override split, the unenforced root-gate claim, the current
   Production-profile test defect, and the sealed harness-authority target.
 - [architecture/durable_state.md](architecture/durable_state.md) — the **canonical home of the
-  host `.data` carry**: provider shares, the stable `/var/tmp/hostbootstrap-demo-data` Docker-visible
-  alias, the current partial direct-host probe, and the still-open destroy/up/readback proof.
+  durable-state contract**: one canonical host-root authority, typed substrate projections,
+  provider-local guest aliases, the current direct-host alias defect, and the still-open
+  destroy/up/readback proof.
 - [architecture/readiness.md](architecture/readiness.md) — current retrying probes and the open defects
   that readiness can be forged through both the exposed constructor and caller-selected probes/tags,
   polling policies admit invalid values, witnesses are not resource-indexed, and mutation gating is not

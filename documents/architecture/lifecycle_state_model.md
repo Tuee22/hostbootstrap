@@ -49,7 +49,8 @@ The repository has useful pieces of this model, but it does not yet enforce the 
   ordering is therefore partly a calling convention rather than a type-level constraint.
 - Provider probes are not uniformly total. In particular, the direct-host durable-alias probe calls
   `pathIsSymbolicLink` before establishing that the path exists, so the intended `AliasAbsent` result
-  throws on a clean first run.
+  throws on a clean first run. The target deletes this direct-host alias path; only provider guests
+  reconcile aliases, while direct adapters consume canonical host-root projections.
 - Most reconcilers return `IO ()`. They do not report whether they created, adopted, repaired, or merely
   observed a resource, and teardown therefore cannot be driven solely by proof of ownership.
 - `project down` and `project destroy` inspect the current frame and then call a project teardown hook.
@@ -2403,8 +2404,12 @@ lease, and the later
 verb/frame/phase-specific command gate consumes the same invocation plus the validated plan/context.
 Lifecycle transitions therefore do not have to mint the authority needed to begin lifecycle validation.
 
-`withProjectPlan` consumes a fresh profile, the scope-matching config, and a validated plan draft; the
-source root is a validated config field rather than a separate authority input. Bound Production
+`withProjectPlan` consumes a fresh profile, the scope-matching config, the matching opaque
+`CanonicalProjectRoot scope rootId`, and a validated plan draft. `sourceRoot` remains a descriptive
+config field: root-config admission resolves it once against the stable project-home/config-ownership
+anchor, verifies and canonicalizes it, and binds the result to `rootId`. Neither `withProjectPlan` nor a
+frame interpreter may reinterpret `"."`, consult `cwd`, or reconstruct host authority from a guest
+alias. Bound Production
 recovery instead consumes only the exact
 `RecoveredProductionLifecycleProfile` through `withRecoveredProductionProjectPlan` or a recovered
 migration-plan builder.

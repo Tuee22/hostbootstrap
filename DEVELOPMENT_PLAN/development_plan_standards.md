@@ -683,6 +683,24 @@ and the in-frame assertions are built from).
 
 ### X. Binary Context Configuration And Command Gating
 
+`sourceRoot` is descriptive configuration, never host-path authority. Root-config admission resolves it
+exactly once against the stable project-home anchor owned by the selected root config (never the
+caller's current working directory), verifies that it denotes the intended project tree, and
+canonicalizes it before any plan is opened. That effectful bracket yields an opaque
+`CanonicalProjectRoot scope rootId`; callers cannot construct one from `Text`/`FilePath`,
+`getCurrentDirectory`, the executable's sibling `.build` directory, or a later re-read of config.
+`withProjectPlan` consumes that authority and derives every project-relative resource, including the
+Production `.data` or Harness `.test_data/<runId>` root, under the same `rootId`.
+
+One durable resource therefore has one identity and may have several **typed projections**, not one
+portable pathname string. Direct-host Docker mounts consume only a verified canonical host path derived
+from `CanonicalProjectRoot`. Provider-backed lanes may additionally reconcile a provider-local guest
+alias, but that alias is a `GuestPath provider frame` projection and never replaces, authenticates, or
+reconstructs the host root. Container, kind-node, pod, and guest paths remain distinct types until the
+adapter that owns the boundary renders them. A pure frame planner consumes these projections from the
+plan; it does not perform IO, reinterpret `"."`, concatenate an untrusted source root, or choose a
+host/guest path by convention.
+
 Every project binary must know where it is in the global composition chain through a sibling runtime
 config file:
 
@@ -1500,19 +1518,20 @@ effect lists, § U). It has three parts, and the substrates differ only in which
 - a **host-side reconcile** (`ShareReconcile`, the optional field shaped like the cordon-reconcile of § O) —
   Incus attaches a disk device post-create; Lima declares the mount at instance create; WSL2 needs none
   (drvfs already exposes the drive and the path rewrite already exists);
-- a **guest-side alias reconcile** — the stable Docker-visible path is a symlink to the share, modeled as a
-  pure `AliasState` (`AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere | AliasOccupied`) with a
-  total classifier and a create/remove planner. The **same** classifier serves the VM-shell lane (trivial
-  guest probes) and the direct Linux-GPU lane (`System.Directory`), so the state machine is written **once**,
-  not re-implemented per lane;
+- a **guest-side alias reconcile** — where a provider guest is present, its stable Docker-visible path is
+  a symlink to the share, modeled as a pure `AliasState`
+  (`AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere | AliasOccupied`) with a total classifier
+  and a create/remove planner. The same classifier serves every provider guest. Direct Linux has no
+  guest boundary and supplies the canonical host projection directly, so it must not create or consume
+  this alias;
 - a **mount-readiness** probe (§ CC) — the guest share is proven present and writable before the alias is
   scheduled, and the alias transition revalidates the same share identity immediately before mutation.
   The capability prevents logical out-of-order use; it does not pretend an external actor cannot unmount
   the share between unrelated system calls.
 
 The target makes every step of the share readiness-/identity-gated (§ CC) and legible. The current VM
-call graph threads an initial forgeable witness, while direct-host totality and opaque resource identity
-remain open. The primitive is what makes a durable root host-backed rather than frame-local; until a real
+call graph threads an initial forgeable witness, while canonical direct-host root authority and opaque
+resource identity remain open. The primitive is what makes a durable root host-backed rather than frame-local; until a real
 destroy→up→read run validates it end to end, no governed document describes host-durable `.data` as
 validated (§ C, § J). The canonical home is
 [durable_state](../documents/architecture/durable_state.md).

@@ -57,6 +57,11 @@ import qualified Dhall
 import HostBootstrap.Config.Class (ProjectCfg (..))
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.ProjectRoot (
+    ProjectRootError (..),
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
 import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric (showHex)
 import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, doesPathExist, removeDirectory, removeFile, renameFile)
@@ -319,10 +324,18 @@ loadSiblingProjectConfig projectName cls caps = do
             case validateProjectConfigForProject projectName cfg of
                 Left err -> failProjectConfig path err
                 Right validCfg -> do
+                    rooted <-
+                        withCanonicalProjectRoot
+                            path
+                            (T.unpack (Context.sourceRoot (cfgContext validCfg)))
+                            (\root -> pure (cfgWithContext ((cfgContext validCfg){Context.sourceRoot = T.pack (canonicalProjectRootPath root)}) validCfg))
+                    rootedCfg <- case rooted of
+                        Left rootErr -> failProjectConfig path (renderProjectRootError rootErr)
+                        Right value -> pure value
                     validated <-
                         Context.validateRuntimeContext
                             (Context.contextRequirement projectName cls caps)
-                            (cfgContext validCfg)
+                            (cfgContext rootedCfg)
                     case validated of
                         Left err -> do
                             hPutStrLn stderr (Context.contextErrorMessage err)
@@ -332,12 +345,17 @@ loadSiblingProjectConfig projectName cls caps = do
                                 TIO.hPutStrLn
                                     stderr
                                     (renderProjectConfigSnapshotLog path (projectConfigSnapshotHashBytes rawBytes) cfgCtx)
-                            pure (validCfg, cfgCtx)
+                            pure (rootedCfg, cfgCtx)
   where
     firstLine = takeWhile (/= '\n')
     failProjectConfig _ detail = do
         hPutStrLn stderr ("project config: " ++ detail)
         exitWith (ExitFailure 1)
+
+    renderProjectRootError (ProjectRootMissing root) =
+        "sourceRoot does not name an existing directory: " ++ root
+    renderProjectRootError (ProjectRootResolutionFailed root detail) =
+        "failed to canonicalize sourceRoot " ++ root ++ ": " ++ firstLine detail
 
     shouldLogSnapshot commandClass cfgCtx =
         commandClass `elem` [Context.DaemonCommand, Context.ServiceCommand]

@@ -308,13 +308,13 @@ withProjectConfig :: String -> IO () -> IO ()
 withProjectConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
     path <- Schema.siblingProjectConfigPath projectName
-    let cfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+    let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
     (Schema.writeProjectConfigFile path cfg >> action) `finally` removeFile path
 
 withMultiRoleHostServiceConfig :: String -> IO () -> IO ()
 withMultiRoleHostServiceConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
-        baseCfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+        baseCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
         cfg = baseCfg{Fixture.context = Context.addRole ClusterService (Fixture.context baseCfg)}
     path <- Schema.siblingProjectConfigPath projectName
     (Schema.writeProjectConfigFile path cfg >> action) `finally` removeFile path
@@ -323,8 +323,8 @@ withServiceProjectConfig :: String -> IO () -> IO ()
 withServiceProjectConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
         witnessName = "HOSTBOOTSTRAP_CURRENT_FRAME"
-        parentCfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
-        cfg = parentCfg{Fixture.context = Context.deriveHostDaemonContext (Fixture.context parentCfg) "/workspace/demo"}
+        parentCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+        cfg = parentCfg{Fixture.context = Context.deriveHostDaemonContext (Fixture.context parentCfg) "."}
         frame = T.unpack (Context.currentFrame (Fixture.context cfg))
     path <- Schema.siblingProjectConfigPath projectName
     previous <- lookupEnv witnessName

@@ -20,6 +20,9 @@
   15.9 closes that construction/widening gap.
 - The `.dhall` describes parameters and context, never the lift chain shape — the chain is code. The model
   lives in [composition_methodology](composition_methodology.md); this doc defers to it.
+- `sourceRoot` is descriptive input. Root admission resolves it once against the config-owned project
+  home and yields opaque canonical-root authority; downstream frames consume typed host/guest/container
+  projections and never reinterpret the text or current working directory.
 - `context` is a **read-only** introspection/visualization command, but its inputs differ by subcommand:
   `inspect` decodes the sibling `.dhall`, `show [FILE]` decodes the selected/default file, and
   `path`/`schema`/`render` use only static binary-owned information. Child context delivery is internal
@@ -77,7 +80,7 @@ representation living in config.
 
 | Field family | Purpose |
 |---|---|
-| Project identity | project name, binary name, and source root |
+| Project identity | project name, binary name, and descriptive source root; canonical host-root authority is resolved separately at root admission |
 | Execution topology | a list of provider-backed frames, their parent links, and the current frame id |
 | Context kind | host orchestrator, VM orchestrator, VM project container, image-build container, cluster service, daemon, one-shot job, or test harness |
 | Role name(s) | the roles this config requests/declares — a single `<project>.dhall` may declare **more than one** (e.g. project *and* service); the current gate checks descriptive classes/capabilities and the target gate consumes separate opaque authority |

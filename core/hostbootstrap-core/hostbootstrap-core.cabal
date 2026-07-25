@@ -53,6 +53,7 @@ library
       HostBootstrap.Registry
       HostBootstrap.RoleLifecycle
       HostBootstrap.Context
+      HostBootstrap.ProjectRoot
       HostBootstrap.Config.Class
       HostBootstrap.Config.Schema
       HostBootstrap.Config.Vocab

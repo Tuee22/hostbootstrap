@@ -88,9 +88,11 @@ The cluster teardown partition excludes the plan's data path from its filesystem
 - `Down` removes no planned filesystem path;
 - `Delete` removes derived paths but not the data path.
 
-This is a narrow and unit-tested guarantee. The current demo now creates and carries the host `.data`
-root through a provider share, the stable `/var/tmp/hostbootstrap-demo-data` alias, kind/nvkind, and the
-web pod. Whether those bytes survive the entire destroy/up cycle is still unvalidated. See
+This is a narrow and unit-tested guarantee. The target derives `.data` from one opaque canonical project
+root and carries typed projections through provider guest, Docker, kind/nvkind, and pod boundaries.
+Provider guests may reconcile `/var/tmp/hostbootstrap-demo-data`; direct Linux must bind the canonical
+absolute host path and currently does not. Whether those bytes survive the entire destroy/up cycle is
+still unvalidated. See
 [durable state](../architecture/durable_state.md).
 
 The status renderer's current wording is `(not removed by cluster teardown)`. It describes membership in

@@ -442,9 +442,10 @@ recorded yet, so the
 historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
 work remains in this sprint.
 
-### Sprint 5.6: Host-durable project state [Active]
+### Sprint 5.6: Host-durable project state [Blocked]
 
-**Status**: Active
+**Status**: Blocked
+**Blocked by**: Sprint 5.6.1
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/kind.yaml`, `demo/chart/`
 **Docs to update**: `documents/architecture/durable_state.md`, `documents/architecture/readiness.md`, `documents/engineering/cluster_lifecycle.md`
 
@@ -493,6 +494,70 @@ validated (§ J).
 That result is the handoff prerequisite for Phase 15.9 to promote the descriptive `DurableStore` label
 into opaque mutation authority. This sprint does not own that later command-gate change and can close
 when the durability proof itself passes.
+
+### Sprint 5.6.1: Canonical project-root authority and durable projections [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`
+**Docs to update**: `documents/architecture/durable_state.md`,
+`documents/architecture/binary_context_config.md`,
+`documents/architecture/lifecycle_state_model.md`,
+`documents/engineering/cluster_lifecycle.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Resolve descriptive `sourceRoot` once into opaque canonical root authority and derive every
+substrate-specific durable path from that same identity, so direct-host execution never substitutes a
+guest compatibility alias for the actual host directory.
+
+#### Deliverables
+
+- Root-config admission resolves a relative `sourceRoot` against the stable project-home/config-ownership
+  anchor, not `cwd` or the executable's sibling `.build` directory, verifies the project tree, and
+  canonicalizes it once inside a rank-2 `CanonicalProjectRoot scope rootId` bracket.
+- `ProjectPlan` consumes that authority and derives scope-correct Production `.data` or Harness
+  `.test_data/<runId>` plus typed host, provider-guest, container, kind-node, and pod projections. No
+  downstream planner re-reads config, calls `getCurrentDirectory`, or reconstructs the root from text.
+- The direct-host Docker adapter binds the canonical absolute host durable path. Provider lanes may use
+  a protected guest alias as a provider-local projection only; that alias is never host-root authority.
+- Raw host/guest/container path interchange and the direct-host alias compatibility path are entered in
+  the deletion ledger with owning consumers.
+
+#### Validation
+
+- Unit/property tests prove identical config bytes resolve independently of process `cwd`, while a
+  missing, wrong, escaping, replaced, or wrong-kind root fails before plan construction.
+- Compile-fail/API tests prove raw `FilePath`, guest aliases, container paths, and a root from another
+  `scope`/`rootId` cannot enter the host-bind adapter or plan.
+- Pure-plan golden tests show all substrate projections derive from one root identity and that direct
+  Linux uses the canonical host `.data` path while WSL2, Incus, and Lima use only their own guest
+  projections.
+- The Sprint 5.6 native direct-Linux durable-readback gate reaches Docker with an absolute nonsymlink
+  host bind before Sprint 5.6 resumes its write→destroy→up→readback validation.
+
+#### Remaining Work
+
+Config admission now resolves `sourceRoot` against the config-owned project anchor and carries its
+canonical absolute value in the validated context. The constructor for `CanonicalProjectRoot rootId` is
+private and its rank-2 bracket derives the durable path. The direct Linux GPU handoff binds that
+canonical `<project>/.data` directory; only VM-backed provider lanes retain
+`/var/tmp/hostbootstrap-demo-data` as a guest-local projection. Core and demo validation passed on
+2026-07-25 with 377 and 100 tests respectively under `-Werror`.
+
+The native Linux GPU rerun reached Docker with the absolute nonsymlink bind, created nvkind, cordoned
+both nodes, and proved `nvidia.com/gpu` allocatable after the device-plugin and CUDA workload were moved
+onto nvkind's `nvidia` runtime class. It then failed later while finalizing the pushed image manifest:
+all layers uploaded to `localhost:30500/library/hostbootstrap-demo`, but the registry returned
+`unknown error`. That registry/MinIO failure blocks the command-level durable-readback case and is
+tracked with the demo registry/provenance work in Sprint 13.18.
+
+This sprint remains Active until the canonical root is consumed by the scoped `ProjectPlan` rather than
+materialized back into the descriptive `BinaryContext`, and compile-fail coverage proves raw paths and
+cross-scope roots cannot enter host adapters.
 
 ### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Blocked]
 

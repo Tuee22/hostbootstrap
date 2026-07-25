@@ -345,7 +345,7 @@ tests =
         , testCase "normal CLI commands run when the sibling project config authorizes them" $ do
             let projectName = "demo-cli-context"
             path <- Schema.siblingProjectConfigPath projectName
-            let cfg = Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator
+            let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
             ( do
                     Schema.writeProjectConfigFile path cfg
                     result <-

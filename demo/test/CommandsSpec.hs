@@ -179,15 +179,16 @@ tests =
             demoBaseImageFor (Substrate WindowsGpu Amd64)
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
         , testCase "direct project-container handoff passes the GPU and normal handoff does not" $ do
-            let directLift = demoDeployImage "vm-project-container-1" True "cfg"
-                ordinaryLift = demoDeployImage "vm-project-container-2" False "cfg"
+            let directLift = demoDeployImage "/workspace/demo" "vm-project-container-1" True "cfg"
+                ordinaryLift = demoDeployImage "/workspace/demo" "vm-project-container-2" False "cfg"
                 directArgs = clExtraArgs directLift
                 ordinaryArgs = clExtraArgs ordinaryLift
-                durableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
+                durableMount = Mount "/workspace/demo/.data" "/workspace/demo/.data" False
+                guestDurableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
             assertBool "direct handoff has --gpus=all" ("--gpus=all" `elem` directArgs)
             assertBool "ordinary handoff has no GPU flag" ("--gpus=all" `notElem` ordinaryArgs)
             assertBool "direct handoff carries the host durable root" (durableMount `elem` clMounts directLift)
-            assertBool "VM-backed handoff carries the provider-shared durable root" (durableMount `elem` clMounts ordinaryLift)
+            assertBool "VM-backed handoff carries the provider-shared durable root" (guestDurableMount `elem` clMounts ordinaryLift)
         , testCase "Linux GPU assertions stay local instead of entering Incus" $
             demoTestFrameContext (Substrate LinuxGpu Amd64) @?= localContext
         , testCase "direct-cluster safety checks every planned node and fails closed" $ do
@@ -219,6 +220,8 @@ tests =
                 customPortManifest = acceleratorDaemonManifest False "daemon-3" "config" 9091
             assertBool "CPU pod has no GPU request" (not ("nvidia.com/gpu" `isInfixOf` cpuManifest))
             assertBool "GPU pod requests one GPU" ("nvidia.com/gpu: 1" `isInfixOf` gpuManifest)
+            assertBool "GPU pod selects the nvkind NVIDIA runtime" ("runtimeClassName: nvidia" `isInfixOf` gpuManifest)
+            assertBool "CPU pod stays on the default runtime" (not ("runtimeClassName: nvidia" `isInfixOf` cpuManifest))
             assertBool "daemon dials the dedicated ClusterIP service" ("hostbootstrap-demo-accelerator:8081" `isInfixOf` gpuManifest)
             assertBool "daemon dials a configured accelerator port" ("hostbootstrap-demo-accelerator:9091" `isInfixOf` customPortManifest)
             assertBool "daemon config changes roll its subPath-mounted pod" ("hostbootstrap.io/config-hash" `isInfixOf` gpuManifest)

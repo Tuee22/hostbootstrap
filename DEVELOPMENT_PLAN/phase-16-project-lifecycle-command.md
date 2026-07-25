@@ -542,7 +542,7 @@ run also predates and cannot close Sprint 16.6's typed plan/journal teardown con
 ### Sprint 16.6: Ownership-preserving recursive teardown [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8
+**Blocked by**: Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
@@ -582,6 +582,9 @@ without reconstructing ownership or deleting foreign state.
   typed lifecycle plan that derives topology, forward execution, and reverse teardown from the same
   structure, including the child config projection/handoff action, so a no-op `context-init` label cannot
   disagree with independently delivered config.
+- Carry the plan-bound canonical root identity through recursive interpretation and render only the
+  adapter-owned typed projection at each boundary. No child frame reconstructs a host root from
+  `sourceRoot`, `cwd`, a guest alias, or a serialized absolute path.
 - Before the first effect, atomically persist/fsync a protected, versioned, non-secret
   `StablePlanSnapshot` containing canonical frame/resource graph, operation keys, cleanup adapter
   parameters/policies, and plan/config/code/schema/interpreter digests. Every one-use command/handoff
@@ -858,7 +861,8 @@ without reconstructing ownership or deleting foreign state.
 
 #### Remaining Work
 
-Blocked until Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8 land the ownership/result algebra, profile
+Blocked until Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8 land canonical root projection, the
+ownership/result algebra, profile
 opener, independent root/command authority, scoped codec, and finalized plan. Then replace best-effort
 root-only reconstruction with the scope-retaining typed
 acquisition journal, authenticated one-time handoff consumption, and recursive unwind; integrate the

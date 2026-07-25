@@ -192,6 +192,8 @@ nvidiaDevicePluginCases =
                 , "--namespace"
                 , "nvidia"
                 , "--create-namespace"
+                , "--set"
+                , "runtimeClassName=nvidia"
                 , "--wait"
                 , "--timeout"
                 , "3m"

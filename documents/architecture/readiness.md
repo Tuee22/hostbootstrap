@@ -35,7 +35,9 @@ That is useful infrastructure, but the stronger architectural claims are not tru
   be passed to an operation on a different instance of the same tag.
 - Probe composition is not uniformly total. The direct-host alias classifier performs
   `pathIsSymbolicLink` before checking existence, so the clean `AliasAbsent` state raises an exception
-  instead of producing a verdict.
+  instead of producing a verdict. The target removes direct-host alias reconciliation entirely:
+  canonical root admission supplies the direct host path, while the total alias classifier remains only
+  for provider-guest projections.
 - Several error paths still collapse subprocess context into `die`/`ExitFailure`; structured
   `LifecycleFailure` is not a universal boundary contract.
 
