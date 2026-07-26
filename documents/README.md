@@ -12,9 +12,9 @@
 material lives here. Conventions are defined in
 [documentation_standards.md](documentation_standards.md).
 
-The model is **the lift chain is the project**. A project binary (`pb`)'s identity is its
-`chain :: cfg -> [Step]` value; `project up` is a recursive interpreter that runs the current
-frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
+The model is **the validated lift plan is the project**. A project binary (`pb`) finalizes ordered
+additive step fragments into one opaque `StepPlan`; `project up` is a recursive interpreter that runs
+the current frame's steps then hands `pb project up` to the next frame. The canonical home of this model is
 [architecture/composition_methodology.md](architecture/composition_methodology.md); every other doc
 defers to it rather than re-deriving it. The command surface is summarized in
 [Command Surface](#command-surface).
@@ -22,11 +22,11 @@ defers to it rather than re-deriving it. The command surface is summarized in
 ## Architecture
 
 - [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md) — the
-  `hostbootstrap-core` Haskell library: module surface, the `Step` algebra a project extends with its
-  chain, the invalid shapes its current public constructors still permit, and the
+  `hostbootstrap-core` Haskell library: module surface, the opaque `Step`/`StepPlan` algebra a project
+  extends, its validation boundary, and the
   `project`/`test`/`service`/`context`/`check-code` command tree project binaries build on.
 - [architecture/composition_methodology.md](architecture/composition_methodology.md) — the **canonical
-  home of the composition model**: the current `[Step]` forward ordering, `project up` as the
+  home of the composition model**: the current opaque `StepPlan` forward ordering, `project up` as the
   recursive/fractal interpreter of the self-reference lift across `Local | InVM | InContainer`, and the
   target opaque plan deriving forward order, topology, and reverse receipt-driven traversal together,
   fractal bootstrap (the Python bootstrapper is the metal-frame instance of provision → build-pb →
@@ -34,12 +34,12 @@ defers to it rather than re-deriving it. The command surface is summarized in
   logic).
 - [architecture/generic_project_model.md](architecture/generic_project_model.md) — the implemented
   generic project model (§ BB, phase 19): `hostbootstrap-core` owns no hardcoded defaults and is
-  parameterized over a project's own config type (`ProjectSpec cfg tcfg`). Current `psInit`, `psTestInit`,
-  and `psTestConfig` are independent callbacks; the demo shares `demoInitWithMessage` between `demoInit`
-  and `demoTestConfig` by convention. The target `psAssemble` makes one scope-aware assembly path
-  structural. The harness generates the run's `<project>.dhall` from a thin `<project>.test.dhall`
-  override; a pure `SecretRef` vocabulary supports secrets-strict configs, while excluding its
-  representable `TestPlaintext` constructor from production remains project code-check policy.
+  parameterized over a project's scope-indexed config family
+  (`ProjectSpec projectId cfg tcfg`). One restricted `psAssemble` is the structural default source for
+  Production init and per-variant Harness generation; `psTestInit` separately builds `tcfg`. The harness
+  generates the run's `<project>.dhall` from a thin `<project>.test.dhall` override. `SecretRef scope`
+  supports secrets-strict configs, requires exact Harness config authority for plaintext, and exposes
+  no plaintext alternative in the Production schema.
 - [architecture/binary_context_config.md](architecture/binary_context_config.md) — the "know your
   place" binary-context contract: a sibling `<project>.dhall` is parameters + context + witness, the
   read-only `context` command introspects and visualizes the frame, the current descriptive mismatch
@@ -55,7 +55,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [architecture/dhall_generation.md](architecture/dhall_generation.md) — `.dhall` as parameters +
   context + witness, the current child projections produced by composite bootstrap/frame-context
   actions (the demo's named `context-init` action is only an announcer), the generated Dhall
-  vocabulary, the three-vocabulary layering, and the encoder-declared schema surface.
+  vocabulary, the three-vocabulary layering, and the validated-codec schema surface.
 - [architecture/run_models.md](architecture/run_models.md) — the four execution-shape names
   (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`), the currently unwired selector and exported Dhall
   vocabulary, and the target removal of that parallel representation in favor of the concrete chain.
@@ -64,12 +64,12 @@ defers to it rather than re-deriving it. The command surface is summarized in
   Production-profile test defect, and the sealed harness-authority target.
 - [architecture/durable_state.md](architecture/durable_state.md) — the **canonical home of the
   durable-state contract**: one canonical host-root authority, typed substrate projections,
-  provider-local guest aliases, the current direct-host alias defect, and the still-open
+  provider-local guest aliases, direct-host canonical-path bypass, and the still-open strong
+  provider-alias ownership and
   destroy/up/readback proof.
 - [architecture/readiness.md](architecture/readiness.md) — current retrying probes and the open defects
-  that readiness can be forged through both the exposed constructor and caller-selected probes/tags,
-  polling policies admit invalid values, witnesses are not resource-indexed, and mutation gating is not
-  universal; plus the opaque-capability/total-observation target.
+  after opaque, resource-indexed witnesses and validated polling landed: live adapters still need the
+  plan-owned prepared-operation pair and authoritative conditional backends.
 - [architecture/lifecycle_state_model.md](architecture/lifecycle_state_model.md) — the canonical target
   for ownership-/phase-indexed handles, opaque resource capabilities, total observations, explicit
   idempotent reconcile outcomes, one-use session/fence permits, project-mode exclusion, exhaustive
@@ -95,16 +95,16 @@ defers to it rather than re-deriving it. The command surface is summarized in
   and the current/target ownership of child `.dhall` projection and delivery; schema/render
   introspection folds under the read-only `context` command.
 - [engineering/composition_patterns.md](engineering/composition_patterns.md) — a cookbook of composition
-  shapes (the `[Step]` chain and its recursive interpreter, context topologies, operation kinds,
-  business-logic shapes) consumers compose their chain from.
+  shapes (the step plan and its recursive interpreter, context topologies, operation kinds,
+  business-logic shapes) consumers compose their plan from.
 - [engineering/accelerator_daemon.md](engineering/accelerator_daemon.md) — the active demo
   generalization where the project binary also runs as a substrate-specific accelerator daemon, JIT-builds
   a real Swift/Metal, CUDA, or C++ worker, exchanges CBOR over WebSocket with the web service, and is
   validated by integration and browser e2e tests; the runtime and real-worker integration are implemented,
   while the required live substrate matrix remains open.
 - [engineering/authoring_project_binaries.md](engineering/authoring_project_binaries.md) — the
-  step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing its
-  `chain :: cfg -> [Step]` plus step actions, test suite, Dhall vocabulary, and budget.
+  step-by-step guide to authoring a project binary on `hostbootstrap-core`: contributing additive
+  step fragments plus actions, test suite, Dhall vocabulary, and budget.
 - [engineering/ensure_reconcilers.md](engineering/ensure_reconcilers.md) — the `ensure` reconciler
   contract; reconcilers are library primitives. Core exposes `ensureStep`, while the current demo calls
   `runEnsure` from larger provider/build actions rather than registering independent `ensure-*` rows.
@@ -115,7 +115,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
   one canonical parser, the implemented typed scalar/capacity boundaries, the target topology-derived
   pod-set fit, and the open bare-Linux storage wall.
 - [engineering/incus.md](engineering/incus.md) — the active `SubstrateProvider`/`LiftLayer` Incus path,
-  VM/share/exec lifecycle, sizing behavior, and the stale uncalled `HostTarget` compatibility surface.
+  VM/share/exec lifecycle, total daemon/permission/VM-capability/egress observation, and sizing limits.
 - [engineering/lima.md](engineering/lima.md) — the Lima VM provider used by the worked demo on Apple
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of
@@ -129,7 +129,8 @@ defers to it rather than re-deriving it. The command surface is summarized in
 - [engineering/cluster_lifecycle.md](engineering/cluster_lifecycle.md) — kind/Helm bring-up and teardown
   as chain steps under `project up`/`project down`/`project destroy`; `project down` deletes kind clusters
   while preserving durable state.
-- [engineering/base_image.md](engineering/base_image.md) — the base image contents.
+- [engineering/base_image.md](engineering/base_image.md) — rolling base selection, contents, native
+  architecture, and publication boundary.
 - [engineering/build_release.md](engineering/build_release.md) — base-image build and publish
   semantics.
 - [engineering/prerequisites.md](engineering/prerequisites.md) — the Python fail-fast host minimums.
@@ -149,9 +150,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
   project container: the in-Dockerfile `check-code` gate, the `purescript-bridge` → `spago` →
   `esbuild` web build, and the build-stage ordering.
 - [engineering/cabal_layout.md](engineering/cabal_layout.md) — the `hostbootstrap-core` Cabal
-  package layout, the GHC pin, and the dependency surface.
-- [engineering/warm_store.md](engineering/warm_store.md) — the warm Cabal store contents and
-  cache-hit contract.
+  package layout, supported compiler selection, and dependency surface.
+- [engineering/warm_store.md](engineering/warm_store.md) — the opportunistic Cabal store and
+  one-project consumer contract.
 - [engineering/code_check_doctrine.md](engineering/code_check_doctrine.md) — the target canonical
   code-check gate for every image, plus the base image's narrower current preflight.
 - [engineering/linking_and_optimization.md](engineering/linking_and_optimization.md) — static
@@ -170,7 +171,7 @@ defers to it rather than re-deriving it. The command surface is summarized in
 
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
 and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command.
-`project up` recursively interprets the project's `chain :: cfg -> [Step]`: it runs the current frame and
+`project up` recursively interprets the project's opaque validated `StepPlan`: it runs the current frame and
 hands `pb project up` to the next. Current `project down`/`destroy` do **not** mirror that recursive
 dispatch; they clean the current frame's cluster where applicable and invoke a project hook, which may
 stop or remove a provider. Child-to-parent lifecycle interpretation remains a target. Durable host

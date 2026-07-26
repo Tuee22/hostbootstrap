@@ -10,16 +10,21 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened 2026-07-24.** Sprint 9.10 supersedes the earlier Done assessment: the readiness constructor is
-public through an exposed `Internal` module, probes do not yet model all outcomes, and lifecycle/reconcile
-authority is not phase-indexed or structured. The resource side is also incomplete: `fitsBudget` is not
-wired into bring-up; top-level `resources` and raw `context.resourceEnvelope` are duplicate authorities;
-child projection copies the full envelope; `clusterSliceOfBudget` can equal or exceed a below-floor
-parent envelope; provider quantities round up; existing VM/VHDX walls are not uniformly reconciled; WSL
-global state has no exclusive owner; and direct Linux GPU outer effects remain uncapped. The 2026-07-23
-run remains historical evidence only.
+**Closed 2026-07-25.** Sprint 9.10 delivers this phase's type-and-pure-validation foundation. Readiness
+constructors are private; probes are total and tied to closed planned-resource families; lifecycle plans,
+resources, edges, reconcile/adoption outcomes, phase handles, operation pairs, and journal transitions
+are opaque and plan-indexed. The demo has one project-owned budget with private scalar constructors.
+Exact provider admission, workload-fit evidence, constructive partitions, and the journal-before-call
+wall algebra reject inexact/invalid values and mint no authority on uncertain acquisition; WSL live wall
+authority carries its lease inseparably.
+
+This closure did not itself claim live provider integration. Sprint 5.8 now consumes the algebra for
+direct Colima acquisition; Sprints 5.7 and 11.10 own the remaining provider wall/CAS and conditional
+cleanup integration, Sprint 13.18 owns the complete workload projection, and
+Sprints 10.9, 15.9, and 16.6 own the prepared-operation interpreter/recovery consumers. The 2026-07-23
+run remains historical behavior evidence, not proof of those downstream contracts.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — readiness framework and type-level config validity.** Two
 gaps in this phase's scope surfaced from the Windows/WSL2 durable-share failure. (1) The
@@ -50,10 +55,13 @@ user's file rather than merging and omits swap from the storage budget; and disk
 with `--memory-swap` = 2× the RAM cap, the swap-headroom fix), the metal host-headroom preflight passed, and
 the `.wslconfig` was merged (other sections preserved) then restored on teardown.
 
-Current CPU/memory walls are partial and mostly creation-time; a universal storage ceiling is not true
-because bare Linux lacks quota/image-GC enforcement (Sprint 9.4 with Phase 5.7). The shared
-`parseQuantity` feeds the argument builders, but preflight uses exact parsed bytes while provider
-builders round memory/storage up to whole GiB. `clusterCreate` runs the reserve-free `verifyBudget`
+At that historical closure CPU/memory walls were partial and mostly creation-time; a universal storage
+ceiling was not true because bare Linux lacks quota/image-GC enforcement. Sprint 9.4 reports that
+limitation through an explicit typed
+`StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable` policy result; Phase 5.7 owns any real
+enforcement primitive. The shared `parseQuantity` feeds the argument builders. Sprint 9.10 now preserves
+exact whole-byte parsing and rejects provider quantities that cannot be represented without whole-GiB
+rounding. `clusterCreate` runs the reserve-free `verifyBudget`
 capacity preflight, then applies the Linux kind/nvkind-node cordon after cluster create and before
 workload deployment, fail-closed, to every node named by `ClusterPlan`. The pure `fitsBudget` helper is
 unit-tested but no bring-up call supplies the real concurrent pod set. Initial Lima/Incus/WSL provider
@@ -96,14 +104,12 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 
 ## Remaining Work
 
-**Current:** Sprint 9.4 remains Active for an explicit bare-Linux unsupported storage result and a real
-quota/image-GC enforcement decision. Sprint 9.10 is Blocked by Sprints 19.7–19.8 for the scope-indexed
-codec and finalized plan/spec that must be its sole capability/resource-envelope source. It owns opaque
-readiness/capability construction, total typed probes, ownership-/phase-indexed lifecycle state,
-`ReconcileResult`/structured conflicts, one pure provider-exact wall spec/effective budget, a
-constructive pre-effect `BudgetPartition`, journaled same-spec live wall authority, complete plan
-workload/effect checks, exclusive WSL global-wall ownership, and existing-wall reconciliation. The dated
-Sprint 9.8/9.9 text below is historical partial evidence and does not close these contracts.
+**Current:** None in Phase 9 scope. Sprint 9.4 closed with an explicit typed bare-Linux unsupported
+storage result; the real quota/image-GC enforcement decision remains Phase 5.7 work. Sprint 9.10 consumes
+the completed 19.7–19.8 codec/plan authority and closes opaque readiness, phase/reconcile state, exact
+budget admission/partition, and pure provider-wall preparation. The live provider, complete workload,
+and interpreter integrations remain in the dependent phases named in the Phase Status and are not Phase
+9 remaining work. The dated Sprint 9.8/9.9 text below is historical partial evidence.
 
 **Historical 2026-07-21 reopening — initial readiness and type-level scalar validity.** Sprint 9.8 added
 the initial forgeable phantom witness and selected step gates; Sprint 9.9 added typed `Quantity`, a
@@ -249,9 +255,9 @@ overstated the latter's lifecycle wiring; Sprint 9.10 owns the missing plan-deri
 None for the historical capacity/helper landing. Sprint 9.10 owns the missing command wiring and
 non-empty plan-indexed workload set.
 
-### Sprint 9.4: Per-substrate storage cordon policy [Active]
+### Sprint 9.4: Per-substrate storage cordon policy [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`, `core/hostbootstrap-core/test/IncusSpec.hs`
 **Docs to update**: `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`
 
@@ -271,13 +277,16 @@ outcome where it does not.
 
 - `CordonSpec` asserts Colima/Incus sizing, the absence of a Docker storage flag, and the typed bare-Linux
   unsupported result. The Phase 5 real run proves any later bare-Linux enforcement.
+- 2026-07-25: the focused cordon/provider/lifecycle selection ran 15 tests, then
+  `cabal test all --ghc-options=-Werror` passed all 379 core tests, including the documentation
+  validator.
 
 #### Remaining Work
 
-Add the explicit bare-Linux unsupported policy/result. That honest typed result closes this sprint even
-when no enforcement backend exists. Any later bare-Linux quota implementation and its real-run evidence
-belong to Phase 5 Sprint 5.7 and do not retroactively block this policy sprint; the Incus interpreter
-remains owned by Phase 11.
+None. `storageCordonPolicy BareLinuxStorage` returns
+`StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable`; any later bare-Linux quota
+implementation and its real-run evidence belong to Phase 5 Sprint 5.7 and do not retroactively block
+this policy sprint. The Incus interpreter remains owned by Phase 11.
 
 ### Sprint 9.5: Substrate-aware capacity resolution [Done]
 
@@ -351,9 +360,9 @@ Extend the one canonical quantity parser to **Windows**: resolve host capacity o
 
 #### Validation
 
-- The historical tests covered a bare `"8Gi"` fixture and the Windows capacity source. Current Sprint
-  9.7 tests assert the corrected body and the separate VHDX install argument using normalized,
-  ceiling-rounded effective quantities rather than byte-for-byte input text.
+- The historical tests covered a bare `"8Gi"` fixture and the Windows capacity source. Sprint 9.10
+  later replaced upward-rounded provider inputs with exact whole-GiB admission; current tests assert the
+  corrected body and separate VHDX install argument and reject inexact ceilings.
 
 #### Remaining Work
 
@@ -457,9 +466,9 @@ follow-on work in Sprint 9.10.
 ungated in-guest mutating steps are now witness-gated: `stageSource` / `streamVMConfig` and the
 `runVmBootstrap` install/build steps take a `Ready VMReady` argument (minted by `substrateWait` at the frame
 start, threaded through the `guestStep` runner), and the VM durable-share alias is gated by
-`Ready DurableShareMounted` (phase-11 Sprint 11.9). This makes an **omitted** witness a type error and
-documents the intended call shape; because `MkReady` remains publicly forgeable and unbound to a resource
-instance, it does not yet make out-of-order execution a type error. Sprint 9.10 owns that stronger claim.
+`Ready DurableShareMounted` (phase-11 Sprint 11.9). At that time this made an **omitted** witness a type
+error but did not prevent forging or cross-resource use. Sprint 9.10 subsequently removed the
+constructor/module and replaced this historical phantom witness with plan/resource-indexed authority.
 The trivial-guest-probe contract is honoured (single simple commands: `test -L`/`readlink`/`test -e`,
 `test -d && test -w` — no compound `set -eu`, no nested `"$(…)"`). Static gate green:
 `cabal test all --ghc-options=-Werror` **core 382 + demo 98** (the demo runs the embedded core suite).
@@ -478,8 +487,9 @@ constructor opacity, generative resource identity, total outcomes, and universal
 
 Move selected scalar/resource failures from bring-up into `<project>.dhall`/`<project>.test.dhall`
 decoding. The historical sprint did not make all invalid construction unrepresentable: constructors and
-numeric/string instances remain public, and lifecycle consumes a separate raw context envelope. The
-pod-set `fitsWithin` check remains a target bring-up check because generated config has neither a numeric
+numeric/string instances remained public, and lifecycle consumed a separate raw context envelope.
+Sprint 9.10 subsequently removed those bypasses and the duplicate. The pod-set `fitsWithin` check remains
+a target bring-up check because generated config has neither a numeric
 quantity representation nor a pod set to attach that assertion to.
 
 #### Deliverables
@@ -487,8 +497,9 @@ quantity representation nor a pod set to attach that assertion to.
 - A transparent `Quantity` newtype whose `FromDhall` validates recognized syntax at decode. Its public
   constructor/`IsString` path and acceptance of bare-byte, zero, and below-provider-minimum values are
   retained defects.
-- A validating `Resources` decoder for the top-level demo record. `Resources(..)` and numeric-wrapper
-  constructors remain public, and `context.resourceEnvelope` bypasses this decoder.
+- A validating `Resources` decoder for the top-level demo record. At this historical landing,
+  `Resources(..)` and numeric-wrapper constructors remained public, and `context.resourceEnvelope`
+  bypassed this decoder; Sprint 9.10 later removed both paths.
 - Decode-validating newtypes for `haReplicas` (demo: exactly `1`), service ports (1..65535), and timeout
   (1..30). Public constructors remain, and cross-field port distinctness still has a rejecting validation
   branch.
@@ -517,8 +528,9 @@ quantity representation nor a pod set to attach that assertion to.
 validating-`FromDhall` layer for selected failures: a typed `Quantity` (syntax-validated via the shared
 `parseQuantity`), bounded `HaReplicas` (exactly `1`) / `Port` (1..65535) / `TimeoutSeconds` (1..30), and a
 resource-floor `Resources` (cpu ≥ 1). All encode **transparently** (a newtype's `ToDhall` renders its
-underlying `Text`/`Natural`), so the reflected schema and goldens are unchanged; `IsString`/`Num` keep
-internal literals and `fromIntegral` working. `example.dhall`'s `haReplicas` is corrected to `1`. Static gate
+underlying `Text`/`Natural`), so the reflected schema and goldens were unchanged; at that time
+`IsString`/`Num` kept internal literals and `fromIntegral` working. Sprint 9.10 later removed those public
+bypasses. `example.dhall`'s `haReplicas` is corrected to `1`. Static gate
 green: `cabal test all --ghc-options=-Werror` **core 382 + demo 98** (9 new `ConfigSpec` decode-rejection
 cases). This did not seal constructors, validate the separate applied envelope, enforce provider
 minimums, or wire `fitsBudget`; Sprint 9.10 owns those repairs. **Real-run evidence (§ C, 2026-07-23):**
@@ -527,17 +539,22 @@ reported **`8/8 passed`** — the generated configs (including the accelerator d
 decode-validating `Port`/`TimeoutSeconds` and `Quantity` fields) drove both variants. None remains in the
 historical narrowed decode-fixture scope; Sprint 9.10 owns the public/applied-state gaps.
 
-### Sprint 9.10: Opaque readiness and phase-indexed reconciliation types [Blocked]
+### Sprint 9.10: Opaque readiness and phase-indexed reconciliation types [Done]
 
-**Status**: Blocked
-**Blocked by**: Sprints 19.7–19.8
+**Status**: Done
+**Blocked by**: None (Sprints 19.7–19.8 are complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Readiness/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`,
-`demo/src/HostBootstrapDemo/Commands.hs`
+`demo/src/HostBootstrapDemo/Commands.hs`,
+`core/hostbootstrap-core/test/ReadinessSpec.hs`,
+`core/hostbootstrap-core/test/ReconcileSpec.hs`,
+`core/hostbootstrap-core/test/Cluster/BudgetSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/`
 **Docs to update**: `documents/architecture/readiness.md`,
 `documents/architecture/lifecycle_state_model.md`,
 `documents/engineering/applied_cordon.md`, `documents/engineering/resource_budgeting.md`,
@@ -548,6 +565,15 @@ historical narrowed decode-fixture scope; Sprint 9.10 owns the public/applied-st
 Make readiness/resource observation total, seal capability construction, and express legal lifecycle
 ordering and one-budget enforcement in types shared by the cordon, provider, harness, and recursive
 interpreter.
+
+#### Scope Disposition
+
+This sprint owns the reusable type algebra, pure validation, constructor opacity, and negative compile
+boundary. The deliverables below describe the complete cross-phase contract. Their pure/API clauses are
+delivered here; clauses that require live provider effects, protected-store CAS, complete workload
+enumeration, recursive interpretation, or cross-process recovery were assigned to Sprints 5.7–5.8,
+11.10, 13.18, 10.9, 15.9, and 16.6. They remain acceptance criteria for those owners and are not
+silently claimed by this Phase 9 closure. Sprint 5.8 has since completed its direct-Colima subset.
 
 #### Deliverables
 
@@ -722,6 +748,11 @@ interpreter.
 
 #### Validation
 
+Phase 9 validation covers the public construction boundary, total pure transition algebras, exact
+budget/partition arithmetic, and compile-time wrong-plan/resource exclusion. Live provider
+race/process-kill clauses below are downstream acceptance gates for the owning provider/interpreter
+sprints identified in Scope Disposition.
+
 - Compile-time/runtime negative fixtures prove callers cannot construct readiness/capability tokens,
   provide an always-ready probe, invoke transitions out of order, choose a probe's result dependency,
   call a backend effect without the exact target/operation/precondition-set/call-digest-indexed prepared
@@ -778,10 +809,14 @@ interpreter.
 
 #### Remaining Work
 
-Blocked until Sprints 19.7–19.8 land the scoped codec and finalized plan/spec that mint these values.
-Then define and migrate the lifecycle types, remove the exposed constructor/module, and update all
-consumers in Phases 5, 10, 11, 15, and 16. The 2026-07-23 `8/8` result remains dated behavior evidence
-but cannot close this new public-type-contract defect.
+None in Sprint 9.10 scope. The scoped codec and finalized plan/spec are in place; the lifecycle types are
+defined, `HostBootstrap.Readiness.Internal` is removed, and focused public-boundary tests pass. Provider
+and interpreter consumers remain explicitly assigned to Sprints 5.7, 11.10, 13.18, 10.9, 15.9, and
+16.6; Sprint 5.8 has completed the direct-Colima adapter subset. The 2026-07-23 `8/8` result remains
+dated behavior evidence and is not reused as proof of those downstream integrations. Static closure evidence (2026-07-25): `cabal build all
+--ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` passed from both Cabal workspaces
+(442 core tests and 106 demo tests; the demo workspace also reran the embedded 442-test core suite).
+`DocValidatorSpec` and `git diff --check` passed.
 
 ## Documentation Requirements
 
@@ -792,14 +827,14 @@ but cannot close this new public-type-contract defect.
   plan-derived `fitsBudget` pod-set check; no generated `Budget/fitsWithin` assertion is claimed.
 
 **Engineering docs to create/update:**
-- `documents/engineering/applied_cordon.md` - current duplicate/raw inputs and partial walls versus the
-  one-budget target; the three rings (decode / bring-up / runtime); exact provider-effective quantities;
+- `documents/engineering/applied_cordon.md` - the sole project budget and partial live walls versus the
+  complete runtime target; the three rings (decode / bring-up / runtime); exact provider-effective quantities;
   per-substrate storage; WSL2 global-file/VHDX recovery; and opaque validated resource construction.
-- `documents/engineering/schema.md` - current partial scalar validation and the target in which
-  field/provider validity is unrepresentable after decode (opaque `Quantity`, bounded
+- `documents/engineering/schema.md` - current private scalar validation and the later live authority in which
+  field/provider validity remains enforced after decode (opaque `Quantity`, bounded
   `haReplicas`/ports/timeout, one resource-floor constructor; Sprints 9.9/9.10).
-- `documents/engineering/resource_budgeting.md` - current partial/creation-time enforcement versus the
-  budget-as-ceiling target, pointing applied detail at `applied_cordon.md`; complete plan effects,
+- `documents/engineering/resource_budgeting.md` - current exact pure admission plus partial/creation-time
+  live enforcement versus the budget-as-ceiling target, pointing applied detail at `applied_cordon.md`; complete plan effects,
   existing-wall reconciliation, and the Windows/WSL2 global-wall constraints.
 
 **Cross-references to add:**

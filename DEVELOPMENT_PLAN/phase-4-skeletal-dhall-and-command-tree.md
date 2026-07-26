@@ -12,10 +12,11 @@
 **Status**: Done
 
 `HostBootstrap.Config.Schema` now provides generic sibling-config IO and validation over a project's
-`ProjectCfg cfg`; it does not own a concrete `ProjectConfig`. The former universal project/resource/deploy/
+`ProjectCfg projectId cfg`; it does not own a concrete `ProjectConfig`. The former universal project/resource/deploy/
 test records moved to `demo/src/HostBootstrapDemo/Config.hs` as that consumer's concrete `cfg`/`tcfg`.
 `HostBootstrap.Command` composes the core command tree, and `runHostBootstrapCLI` attaches project behavior
-through `ProjectSpec cfg tcfg` without adding verbs (demonstrated by the worked `demo/` consumer). The
+through `ProjectSpec projectId cfg tcfg` without adding verbs (demonstrated by the worked `demo/`
+consumer). The
 binary-generated-schema surfaces live in [Phase 8](phase-8-dhall-generation-and-extension.md); the command
 gate and its command-specific config inputs live in
 [Phase 15](phase-15-binary-context-config.md).
@@ -55,7 +56,9 @@ follow-ons do not reopen this phase's delivered fixed command tree.
 
 [Phase 19](phase-19-generic-project-model.md) built **forward** on this surface (the generic project
 model, § BB): it generalized the config type to a project-defined `cfg` under `ProjectSpec cfg tcfg` and
-moved defaults to a project-owned `psInit`. The superseded core-owned sub-surfaces
+initially moved defaults to a project-owned `psInit`; Sprint 19.7 subsequently scope-indexed the
+boundary as `ProjectSpec projectId cfg tcfg` and replaced that callback with `psAssemble`. The
+superseded core-owned sub-surfaces
 (`defaultResources`/`defaultDeployConfig`/`defaultProjectConfig` and the fixed universal type) are recorded
 in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase
 is not reopened.**
@@ -65,9 +68,9 @@ the Python post-build trigger removed), `cluster` -> `project up|down|destroy`, 
 internal `project up` child-projection/delivery work. That work is currently separate from the announcing
 `context-init` row; Sprint 16.6 owns their unification in one plan operation. The former
 `config show|schema|render|path` routes are distributed across read-only `context` and static
-`service schema` according to the matrix above. A project's primary `ProjectSpec` contribution is its
-`chain :: cfg -> [Step]` value (threaded via `withChain`).
-The recursive interpreter and `[Step]` algebra that this tree surfaces are owned by
+`service schema` according to the matrix above. A project contributes additive steps through
+`ProjectSpecBuilder`; finalization yields the opaque `StepPlan`.
+The recursive interpreter and step algebra that this tree surfaces are owned by
 [Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
 The command-input and authority refinements remain explicitly owned by blocked Sprints 17.4 and 15.9,
@@ -84,7 +87,7 @@ chain is the project" model the removed `config` surfaces are distributed across
 `service schema`, and the read-only `context` subcommands rather than making the entire `context` group
 config-free. The fixed tree surfaces the `project init|up|down|destroy`, `test init|run`,
 `service init|schema|run`, `context`, and `check-code` core verbs, and a project's primary contribution is
-its **lift chain** value (`chain :: cfg -> [Step]`), not noun verbs.
+its validated lift plan, not noun verbs.
 
 ## Sprints
 
@@ -137,13 +140,13 @@ None.
 #### Objective
 
 Land `HostBootstrap.Command` — the core optparse command tree — and confirm `runHostBootstrapCLI progName
-projectSpec` extends it with currently partial, name-validated project extension points (the project's lift chain, inherited
+projectSpec` extends it with project extension points (the project's lift plan, inherited
 test hook, service handlers, inherited `check-code` hook, and project config artifacts). The current tree
 surfaces `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, read-only `context`,
-and `check-code`; a project's primary contribution is its `chain :: cfg -> [Step]` value rather than noun
-verbs (§ P, § Y). The `ensure` reconcilers are library primitives composed as `ensure-*` chain steps.
-Topology, non-empty relations, replacement loss, and typed step-identity validation remain Sprint 19.8
-work; this Done sprint does not claim them.
+and `check-code`; a project's primary contribution is its opaque validated `StepPlan` rather than noun
+verbs (§ P, § Y). The `ensure` reconcilers are library primitives composed as `ensure-*` plan steps.
+Sprint 19.8 subsequently added topology, non-empty, replacement-loss, and typed identity validation
+without reopening this Done command-tree sprint.
 
 #### Command Surface
 
@@ -171,8 +174,8 @@ None. The surfaced core tree is `project init|up|down|destroy`, `test init|run`,
 `service init|schema|run`, the read-only `context` command (absorbing `show` / `schema` / `render` /
 `path` with the config inputs in the phase-level matrix), and `check-code`. `config init` is migrated to
 the config-free `project init` writer (the Python post-build trigger was removed), and a
-project's primary `ProjectSpec` contribution is its `chain :: cfg -> [Step]` value (threaded via
-`withChain` / `withFrameContext`). The recursive `project up` interpreter and the `[Step]` algebra this tree
+project's primary `ProjectSpec` contribution is its opaque validated `StepPlan`, assembled through
+checked builder operations. The recursive `project up` interpreter and the step algebra this tree
 surfaces are owned by [Phase 16](phase-16-project-lifecycle-command.md); the removed flat verbs are recorded
 in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed Surfaces`.
 
@@ -185,16 +188,16 @@ in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Removed S
 
 #### Objective
 
-Keep the committed example fixture aligned with the project config decoder and the encoder-declared
+Keep the committed example fixture aligned with the project config decoder and the validated-codec
 schema emitted by the binary.
 
 #### Deliverables
 
-- `service schema` describes the encoder-declared project-local record shape for the project's `cfg`;
-  `context schema` describes the registered static `ConfigArtifact` union. Sprint 8.7 owns proof that
-  the separate decoder expects the same normalized expression.
+- `service schema` describes the validated-codec project-local record shape for the project's `cfg`;
+  `context schema` describes the registered static `ConfigArtifact` union. Closed Sprint 8.7 proves the
+  decoder and encoder claim the same normalized expression.
 - `SchemaSpec` round-trips rendered defaults and the canonical fixture through the Haskell decoder.
-- Generated schema output includes the encoder-declared project-local config surface.
+- Generated schema output includes the validated-codec project-local config surface.
 
 #### Validation
 

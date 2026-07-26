@@ -1,27 +1,14 @@
 # syntax=docker/dockerfile:1.7
 #
-# Logic-free base image for hostbootstrap.
-#
-# Every dynamic value (versions, download URLs, architecture strings, the CUDA
-# base image) is an ARG resolved on the host by the hostbootstrap Python CLI
-# and passed via `docker build --build-arg`. The Dockerfile only consumes ARGs;
-# it does not branch on architecture, version, or flavor.
+# Rolling, native-architecture hostbootstrap base. Current compatible upstream
+# versions/URLs are resolved by hostbootstrap/base_image.py for each build.
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG IMAGE_FLAVOR
 ARG TARGETARCH
-ARG TOOL_ARCH
-ARG NODE_ARCH
-ARG GHCUP_ARCH
-ARG AWS_ARCH
-ARG PULUMI_ARCH
 ARG LLVM_MAJOR
-ARG GHC_VERSION
-ARG CABAL_VERSION
-ARG FOURMOLU_VERSION
-ARG HLINT_VERSION
 ARG HASKELL_STYLE_TOOLS_DIR
 ARG GO_VERSION
 ARG GO_DOWNLOAD_URL
@@ -30,32 +17,23 @@ ARG NODE_DOWNLOAD_URL
 ARG PURESCRIPT_VERSION
 ARG PURESCRIPT_DOWNLOAD_URL
 ARG KIND_VERSION
+ARG KIND_DOWNLOAD_URL
 ARG KUBECTL_VERSION
+ARG KUBECTL_DOWNLOAD_URL
 ARG HELM_VERSION
+ARG HELM_DOWNLOAD_URL
 ARG PULUMI_VERSION
 ARG PULUMI_DOWNLOAD_URL
-ARG KIND_DOWNLOAD_URL
-ARG KUBECTL_DOWNLOAD_URL
-ARG HELM_DOWNLOAD_URL
+ARG GHCUP_DOWNLOAD_URL
 ARG MC_DOWNLOAD_URL
 ARG AWS_DOWNLOAD_URL
-ARG GHCUP_DOWNLOAD_URL
-ARG RUST_TOOLCHAIN=1.95.0
-
-# Warm-store build sizing, resolved on the host from measured RAM/CPU
-# (hostbootstrap.resources). CABAL_BUILD_JOBS caps the package-level fan-out of
-# `cabal build all` so concurrent -O2 GHC compiles stay within the build's
-# memory budget; the conservative default of 1 keeps a plain `docker build`
-# (no build-arg) safe. GHC_RTS_OPTS is an optional per-GHC RTS knob (e.g. a
-# heap cap), empty by default.
 ARG CABAL_BUILD_JOBS=1
 ARG GHC_RTS_OPTS=
 
 ENV DEBIAN_FRONTEND=noninteractive
-# Default RUN shell only (POSIX /bin/sh): no bash, no pipes, no shell branching.
-# The one allowed exception is the documented CUDA ldconfig check at the end.
 
 RUN set -eux; \
+    rm -f /etc/apt/sources.list.d/cuda-*.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -108,12 +86,11 @@ RUN set -eux; \
         unzip \
         wget \
         xz-utils \
-        zlib1g-dev \
-    ; \
+        zlib1g-dev; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    mkdir -p /workspace /opt/build /opt/cache /opt/cache/go /opt/cache/go/bin /opt/cache/go/build /opt/cache/go/mod /usr/local/lib; \
+    mkdir -p /workspace /opt/build /opt/cache /opt/cache/go/bin /opt/cache/go/build /opt/cache/go/mod /usr/local/lib; \
     ln -s "/usr/lib/llvm-${LLVM_MAJOR}" /opt/llvm; \
     test -f /opt/llvm/lib/libbolt_rt_instr.a; \
     ln -sf /opt/llvm/lib/libbolt_rt_instr.a /usr/local/lib/libbolt_rt_instr.a
@@ -143,7 +120,7 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     HASKELL_STYLE_TOOLS_DIR=${HASKELL_STYLE_TOOLS_DIR} \
     CC=clang-${LLVM_MAJOR} \
     CXX=clang++-${LLVM_MAJOR} \
-    RUSTUP_TOOLCHAIN=${RUST_TOOLCHAIN} \
+    RUSTUP_TOOLCHAIN=stable \
     CARGO_HTTP_TIMEOUT=120 \
     CARGO_NET_RETRY=5 \
     LANG=C.UTF-8 \
@@ -157,14 +134,18 @@ RUN set -eux; \
     rm -rf /opt/go; \
     tar -xzf "${tmpdir}/go.tar.gz" -C /opt; \
     rm -rf "${tmpdir}"; \
-    /opt/go/bin/go version
+    /opt/go/bin/go version | grep -F "go${GO_VERSION}"
 
 RUN set -eux; \
-    CGO_ENABLED=1 /opt/go/bin/go install github.com/NVIDIA/nvkind/cmd/nvkind@latest; \
-    install -m 0755 /opt/cache/go/bin/nvkind /usr/local/bin/nvkind
+    CGO_ENABLED=1 /opt/go/bin/go install "github.com/NVIDIA/nvkind/cmd/nvkind@latest"; \
+    install -m 0755 /opt/cache/go/bin/nvkind /usr/local/bin/nvkind; \
+    /usr/local/bin/nvkind --help >/dev/null
 
-RUN export PIP_BREAK_SYSTEM_PACKAGES=1 \
-    && python -m pip install --ignore-installed --upgrade pip setuptools wheel poetry
+RUN set -eux; \
+    export PIP_BREAK_SYSTEM_PACKAGES=1; \
+    python -m pip install --ignore-installed --upgrade pip setuptools wheel poetry; \
+    python -m pip --version; \
+    poetry --version
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
@@ -176,118 +157,100 @@ RUN set -eux; \
       'exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"' \
       > /usr/local/bin/npm; \
     chmod 0755 /usr/local/bin/npm; \
-    rm -rf "${tmpdir}"
+    rm -rf "${tmpdir}"; \
+    node --version | grep -Fx "${NODE_VERSION}"; \
+    NPM_CONFIG_PREFIX=/usr/local npm install -g npm; \
+    npm --version
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
     curl -fsSL "${PURESCRIPT_DOWNLOAD_URL}" -o "${tmpdir}/purescript.tar.gz"; \
     tar -xzf "${tmpdir}/purescript.tar.gz" -C "${tmpdir}"; \
     install -m 0755 "${tmpdir}/purescript/purs" /usr/local/bin/purs; \
-    rm -rf "${tmpdir}"
-
-RUN npm install -g \
-        @playwright/test \
-        esbuild \
-        playwright \
-        purs-tidy \
-        spago \
-        typescript \
-    && playwright install --with-deps chromium firefox webkit \
-    && rm -rf /root/.npm
+    rm -rf "${tmpdir}"; \
+    purs --version | grep -Fx "${PURESCRIPT_VERSION#v}"
 
 RUN set -eux; \
-    curl -fsSL "${GHCUP_DOWNLOAD_URL}" -o /usr/local/bin/ghcup; \
-    chmod 0755 /usr/local/bin/ghcup; \
+    npm install -g @playwright/test esbuild playwright purs-tidy spago typescript; \
+    playwright install --with-deps chromium firefox webkit; \
+    rm -rf /root/.npm
+
+RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
+    curl -fsSL "${GHCUP_DOWNLOAD_URL}" -o "${tmpdir}/ghcup"; \
+    install -m 0755 "${tmpdir}/ghcup" /usr/local/bin/ghcup; \
     curl -fsSL "${KIND_DOWNLOAD_URL}" -o "${tmpdir}/kind"; \
     install -m 0755 "${tmpdir}/kind" /usr/local/bin/kind; \
+    kind version | grep -F "${KIND_VERSION}"; \
     curl -fsSL "${KUBECTL_DOWNLOAD_URL}" -o "${tmpdir}/kubectl"; \
     install -m 0755 "${tmpdir}/kubectl" /usr/local/bin/kubectl; \
+    kubectl version --client | grep -F "${KUBECTL_VERSION}"; \
     curl -fsSL "${HELM_DOWNLOAD_URL}" -o "${tmpdir}/helm.tgz"; \
     tar -xzf "${tmpdir}/helm.tgz" -C "${tmpdir}"; \
-    install -m 0755 "${tmpdir}/linux-${TOOL_ARCH}/helm" /usr/local/bin/helm; \
+    install -m 0755 "${tmpdir}/linux-${TARGETARCH}/helm" /usr/local/bin/helm; \
+    helm version --short | grep -F "${HELM_VERSION}"; \
     curl -fsSL "${MC_DOWNLOAD_URL}" -o "${tmpdir}/mc"; \
     install -m 0755 "${tmpdir}/mc" /usr/local/bin/mc; \
+    mc --version; \
     curl -fsSL "${AWS_DOWNLOAD_URL}" -o "${tmpdir}/awscliv2.zip"; \
     unzip -q "${tmpdir}/awscliv2.zip" -d "${tmpdir}"; \
     "${tmpdir}/aws/install" --install-dir /opt/aws-cli --bin-dir /usr/local/bin; \
+    aws --version; \
     curl -fsSL "${PULUMI_DOWNLOAD_URL}" -o "${tmpdir}/pulumi.tgz"; \
     tar -xzf "${tmpdir}/pulumi.tgz" -C /opt; \
-    test -x /opt/pulumi/pulumi; \
+    pulumi version | grep -Fx "${PULUMI_VERSION}"; \
     rm -rf "${tmpdir}"
 
-RUN ghcup install ghc "${GHC_VERSION}" \
-    && ghcup set ghc "${GHC_VERSION}" \
-    && ghcup install cabal "${CABAL_VERSION}" \
-    && ghcup set cabal "${CABAL_VERSION}"
+RUN set -eux; \
+    ghcup install ghc recommended; \
+    ghcup set ghc recommended; \
+    ghcup install cabal recommended; \
+    ghcup set cabal recommended; \
+    ghc --numeric-version; \
+    cabal --numeric-version
 
-RUN mkdir -p "${HASKELL_STYLE_TOOLS_DIR}" \
-    && cabal update \
-    && cabal install \
+RUN set -eux; \
+    mkdir -p "${HASKELL_STYLE_TOOLS_DIR}"; \
+    cabal update; \
+    cabal install \
         --ignore-project \
         --installdir "${HASKELL_STYLE_TOOLS_DIR}" \
         --install-method=copy \
         --overwrite-policy=always \
-        "fourmolu-${FOURMOLU_VERSION}" \
-        "hlint-${HLINT_VERSION}" \
-    && ln -sf "${HASKELL_STYLE_TOOLS_DIR}/fourmolu" /usr/local/bin/fourmolu \
-    && ln -sf "${HASKELL_STYLE_TOOLS_DIR}/hlint" /usr/local/bin/hlint
+        fourmolu \
+        hlint; \
+    ln -sf "${HASKELL_STYLE_TOOLS_DIR}/fourmolu" /usr/local/bin/fourmolu; \
+    ln -sf "${HASKELL_STYLE_TOOLS_DIR}/hlint" /usr/local/bin/hlint
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "${tmpdir}/rustup-init.sh"; \
-    sh "${tmpdir}/rustup-init.sh" -y --profile minimal --default-toolchain "${RUSTUP_TOOLCHAIN}"; \
+    curl -fsSL https://sh.rustup.rs -o "${tmpdir}/rustup-init.sh"; \
+    sh "${tmpdir}/rustup-init.sh" -y --profile minimal --default-toolchain stable; \
     rm -rf "${tmpdir}"; \
-    rustup component add --toolchain "${RUSTUP_TOOLCHAIN}" llvm-tools-preview rustfmt
+    rustup component add llvm-tools-preview rustfmt; \
+    rustc --version; \
+    rustfmt --version
 
 COPY core/warm-deps/ /opt/basecontainer/haskell-deps/
 
-# Warm-store contract: see documents/engineering/warm_store.md. The flags
-# below MUST match the canonical project cabal.project so downstream Cabal
-# store keys line up; otherwise derived projects silently rebuild.
-#
-# `cabal build all` warms the single shared store from both layer packages
-# (basecontainer-core-deps + basecontainer-daemon-deps). The version-pin freezes
-# are then projected per library layer (warm_store.md): `cabal freeze` against
-# core.project pins base + the hostbootstrap-core closure + the shared web-build
-# extras into core.freeze; against daemon.project it pins the daemon-family deps
-# into daemon.freeze. All three project files import warm-store.config (same
-# compiler/flags/builddir) so the two freezes are projections of one store.
-# A derived project `import:`s the fragment(s) for its layer; an L0-direct
-# consumer imports only core.freeze and is never coupled to the daemon closure.
-# The freezes are generated here, never committed (.gitignore / .dockerignore).
-# GHCRTS (scoped to this RUN, not persisted into the image) carries the optional
-# per-GHC RTS knob to every compile, dependencies included; empty by default.
-# -j${CABAL_BUILD_JOBS} bounds the package-level fan-out to the host-sized budget.
-RUN export GHCRTS="${GHC_RTS_OPTS}" \
-    && cd /opt/basecontainer/haskell-deps \
-    && cabal update \
-    && cabal build all --only-dependencies -j${CABAL_BUILD_JOBS} \
-         --enable-tests --enable-benchmarks --enable-shared \
-    && cabal build all -j${CABAL_BUILD_JOBS} \
-         --enable-tests --enable-benchmarks --enable-shared \
-    && cabal freeze --project-file=core.project \
-         --enable-tests --enable-benchmarks --enable-shared \
-    && cabal freeze --project-file=daemon.project \
-         --enable-tests --enable-benchmarks --enable-shared \
-    && mv core.project.freeze core.freeze \
-    && mv daemon.project.freeze daemon.freeze
+# Populate one best-effort store. Consumers use their normal cabal.project and
+# may resolve/download/compile any missing or incompatible dependency.
+RUN set -eux; \
+    export GHCRTS="${GHC_RTS_OPTS}"; \
+    cd /opt/basecontainer/haskell-deps; \
+    cabal update; \
+    cabal build all --only-dependencies -j${CABAL_BUILD_JOBS}; \
+    cabal build all -j${CABAL_BUILD_JOBS}
 
-# Code-check guardrail: see documents/engineering/code_check_doctrine.md.
-# Smoke-tests the pinned fourmolu/hlint binaries against the warm-store
-# sample source; the base build fails here if the tools are broken or the
-# sample drifts out of format.
-RUN fourmolu --version \
-    && hlint --version \
-    && cd /opt/basecontainer/haskell-deps \
-    && fourmolu --mode check core/app daemon/app \
-    && hlint core/app daemon/app
+RUN set -eux; \
+    fourmolu --version; \
+    hlint --version; \
+    cd /opt/basecontainer/haskell-deps; \
+    fourmolu --mode check core/app daemon/app; \
+    hlint core/app daemon/app
 
-# The single, documented exception to the "no if/case" rule. One Dockerfile
-# serves both the `cpu` (ubuntu) and `cuda` (nvidia/cuda) base images via
-# BASE_IMAGE, so /usr/local/cuda exists only on the cuda base. This is a
-# build-time *filesystem* check — it needs no GPU, driver, or container runtime —
-# so the cuda image still builds correctly on a host with no CUDA hardware.
+# One Dockerfile serves CPU and CUDA parents. This filesystem-only check is the
+# documented conditional exception and requires no host GPU.
 RUN set -eux; \
     if [ -d /usr/local/cuda/lib64 ]; then \
       printf '/usr/local/cuda/lib64\n' > /etc/ld.so.conf.d/cuda.conf; \

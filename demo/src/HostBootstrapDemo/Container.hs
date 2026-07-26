@@ -25,13 +25,13 @@ import HostBootstrapDemo.Config (ProjectConfig (..))
 import System.Exit (ExitCode)
 
 -- | The local image tag a project's container build produces: @\<project\>:local@.
-projectImageTag :: ProjectConfig -> String
+projectImageTag :: ProjectConfig scope -> String
 projectImageTag cfg = T.unpack (Context.project (context cfg)) ++ ":local"
 
 {- | The @docker build@ argv: build the project's Dockerfile @FROM@ the given base
 image, tagged @\<project\>:local@, from the build context @.@. Pure.
 -}
-dockerBuildArgs :: ProjectConfig -> String -> [String]
+dockerBuildArgs :: ProjectConfig scope -> String -> [String]
 dockerBuildArgs cfg baseImage =
     [ "build"
     , "-f"
@@ -46,7 +46,7 @@ dockerBuildArgs cfg baseImage =
 -- | Run the project-container build through the resolved Docker tool.
 buildProjectContainer ::
     HostConfig ->
-    ProjectConfig ->
+    ProjectConfig scope ->
     -- | the base image to build @FROM@
     String ->
     IO (Either String (ExitCode, String, String))

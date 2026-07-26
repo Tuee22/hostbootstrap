@@ -30,9 +30,8 @@ documentation proposal and is removed by Phase 21.4.
 Make `hostbootstrap-core` a consumable library. Each consumer ships one optparse-applicative binary
 that calls `runHostBootstrapCLI "<project>" projectSpec` to enter the fixed core command tree rather than
 re-implementing or appending verbs (see [development_plan_standards.md § P](development_plan_standards.md)).
-The `ProjectSpec` supplies the project's extension streams — the lift chain (`withChain`), the
-service-handler registry plus config selector (`withServices` / `withServiceConfig`; config-selected
-`service run`), a non-empty test suite, the project
+The opaque finalized `ProjectSpec` supplies the project's extension streams — additive plan fragments,
+the typed service registry/role codecs, a non-empty test suite, the project
 `check-code` action, and the project config-artifact delta; it adds no new verbs. The consumer's binary is built **host-native** into
 `./.build/`; the project **container** it later builds `FROM` the `hostbootstrap` base image gates on the
 project `check-code`.
@@ -64,8 +63,8 @@ consumers attach their behavior without adding subcommands.
 #### Validation
 
 - `hostbootstrap-demo --help` shows the fixed core verbs (`context` / `project` / `test` / `service` /
-  `check-code`) and **no** appended verbs — the demo extends the core through its chain (`withChain`), its
-  service registry and config-selected `service run`, its test suite, and its `check-code` action, not new verbs — the
+  `check-code`) and **no** appended verbs — the demo extends core through its validated plan, typed
+  service registry/role selection, test suite, and `check-code` action, not new verbs — the
   consumer extension contract, verified on the worked `demo/` binary.
 - The consumer container building `FROM` the base image and passing its `check-code` gate is
   consumer-side work, exercised in each consumer repository.

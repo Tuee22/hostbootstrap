@@ -9,8 +9,8 @@
 
 This page documents what the base image ships for Haskell.
 
-The base image ships a **single GHC** — 9.12.4 — with Cabal 3.16.1.0 and a
-warm Cabal store. The plan retires the previous dual-GHC arrangement
+The base image ships a **single current GHC** selected by GHCup's `recommended` tag, the corresponding
+current recommended Cabal, and a warm Cabal store. The plan retires the previous dual-GHC arrangement
 (formatter-only GHC plus project GHC) because `fourmolu`/`hlint`'s
 `ghc-lib-parser` targets 9.12, so one compiler now serves both formatting and
 project builds.
@@ -19,10 +19,9 @@ project builds.
 
 [`core/warm-deps/`](../../core/warm-deps/) declares the shared
 dependency set. The base image builds it with
-`--enable-tests --enable-benchmarks --enable-shared` at `-O2`, pinned via the layered
-`core.freeze` / `daemon.freeze`, so
-downstream projects following the warm-store cache-hit contract skip the
-entire third-party build closure. See
+`--enable-tests --enable-benchmarks --enable-shared` at `-O2`. Downstream projects use their ordinary
+host-compatible project unchanged; matching store artifacts are reused and misses resolve/compile
+normally. See
 [engineering/warm_store.md](../engineering/warm_store.md) for the contract and
 the dep-addition workflow.
 
@@ -31,11 +30,11 @@ the dep-addition workflow.
 Both are prebuilt into the base image at
 `/opt/hostbootstrap/haskell-style/bin/`:
 
-* `fourmolu-0.19.0.1`
-* `hlint-3.10`
+* current compatible `fourmolu`
+* current compatible `hlint`
 
 `/usr/local/bin/fourmolu` and `/usr/local/bin/hlint` are symlinks to that
-pinned directory. They are **container-only**: never installed, built, or run
+directory. They are **container-only**: never installed, built, or run
 on the host.
 
 The base image smoke-tests both binaries during its own build (see
@@ -56,8 +55,8 @@ editor workspace. See the cradle table in
 All downstream projects standardise on GHC 9.12 as part of adopting
 hostbootstrap. See
 [engineering/derived_project_standards.md](../engineering/derived_project_standards.md)
-for the full rule set every derived project follows, including the canonical
-`cabal.project` template and the linking/optimisation policy in
+for the full rule set every derived project follows, including the single-project rule and the
+linking/optimisation policy in
 [engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md).
 
 ## Native Windows Build

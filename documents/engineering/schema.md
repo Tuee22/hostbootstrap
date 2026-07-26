@@ -13,9 +13,10 @@
   `./.build/hostbootstrap-demo.dhall` beside `./.build/hostbootstrap-demo`.
 - The Python bootstrapper currently derives a Cabal-file stem and a single executable-stanza name
   independently, builds `exe:<executable>` into `./.build/<executable>`, and never reads or writes Dhall.
-- The project binary owns encoder-declared schema text, default rendering, decoding/validation,
-  downstream projection, and help text for the local config. Encoder/decoder type agreement is tested
-  for covered values but is not enforced by one current codec witness.
+- The project binary owns scope-correct validated-codec schema text, assembly, rendering, decoding/validation,
+  downstream projection, and help text for the local config. An opaque `CodecWitness` rejects unequal
+  normalized encoder/decoder type expressions before decode or mutation; representative round trips
+  separately test semantics.
 - Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
   limited to help and explicit config inspection/initialization commands, including static
   `context render`.
@@ -25,9 +26,9 @@
 ## Current Status
 
 The Python bootstrapper does not read or write Dhall. The Haskell schema has a project-local config shape,
-`project init` can generate role-specific defaults, current pure projection helpers derive
-context-adjusted full child records, and normal command gating reads the descriptive context embedded in
-the sibling `<project>.dhall`.
+`project init` can generate role-specific defaults through the project-owned restricted assembler,
+current pure projection helpers derive context-adjusted full child records, and normal command gating
+reads the descriptive context embedded in the sibling `<project>.dhall`.
 See
 [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
 [phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
@@ -42,22 +43,27 @@ authority/capabilities.
 
 Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) the config type
-is project-defined, not the fixed `ProjectConfig`. Every field is mandatory and a missing field fails the
-strict decode. Core owns no defaults; current root/harness initialization defaults come from the
-project-owned `psInit`, while demo service projection still has separate fallbacks. Secret-bearing fields use
-the pure `SecretRef = <Vault|TransitKey|Prompt|TestPlaintext>` vocabulary (see [secrets.md](secrets.md))
-so raw `Text` cannot occupy a secret-ref field and core never resolves a secret. The
-`TestPlaintext` branch remains representable and must currently be excluded from production by the
-consumer's code-check policy.
+is project-defined as `cfg :: Type -> Type`, not the fixed `ProjectConfig`. Every field is mandatory and
+a missing field fails the strict decode. Core owns no defaults; root and per-variant Harness defaults
+come from the single restricted `psAssemble`, while demo service projection preserves its explicit
+assembled ports/timeouts and invents no fallbacks. Secret-bearing fields use scope-indexed
+`SecretRef scope` (see [secrets.md](secrets.md)), so
+raw `Text` cannot occupy a secret-ref field and core never resolves a secret. Production and Harness use
+separate untrusted wire schemas; Production has no `TestPlaintext` branch, while Harness plaintext
+requires exact run config authority during mapped-codec admission.
 See the [generic_project_model.md](../architecture/generic_project_model.md) design and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
-The development plan owns typed test case/variant identity; it does not restore a core config type.
+Test configuration is likewise project-defined. Core now owns only opaque validated `CaseId`,
+`VariantId`, `VariantDraft`, and `TestMatrix` shapes plus the `TestCfg` projection contract. The demo's
+current `<project>.test.dhall` decodes exactly `{ testResources : Resources }`; `all` is a typed parser
+selector and is never stored schema data. This typed foundation does not restore a core config type, and
+Phase 20 still owns moving the demo's concrete two-message mapping into its test config.
 
 This is why root/harness initialization defaults must be project-owned: a naive one-size `4/8/20`
 default (only the sample value of core's `budget` render artifact, not a core-shipped config default)
 cannot bootstrap the demo (its `deploy-VM` gate requires `6/10/80`,
-`demoFullLifecycleResources`), so the demo's `psInit` returns its real budget rather than inheriting any
-core default. The separate service-projection fallbacks are a defect, not a second sanctioned default
+`demoFullLifecycleResources`), so the demo's `psAssemble` returns its real budget rather than inheriting
+any core default. Service-role parameters are mandatory project fields rather than a second default
 source. See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
 
@@ -83,24 +89,22 @@ what role it has.
 
 ## Project And Executable Identity
 
-Three names currently exist at different boundaries:
+One spelling is validated at four build/runtime boundaries:
 
-| Name | Current source | Current use |
+| Name | Validated source | Use |
 |---|---|---|
-| Cabal-file stem | the single top-level `*.cabal` filename | stored as Python's `ProjectBuildSpec.project`; it does not select the executable |
-| executable | the single `executable <name>` stanza | `cabal build exe:<name>`, `cabal list-bin exe:<name>`, and `./.build/<name>` |
-| CLI program/project name | the `String` passed to `runHostBootstrapCLI` | sibling `<name>.dhall` lookup and the expected `project`/`binary` context fields |
+| Cabal-file stem | selected top-level `*.cabal` filename | Python discovery identity |
+| Cabal package | top-level `name:` field | must equal the filename stem |
+| executable | the sole `executable <name>` stanza | must equal the package; selects `exe:<name>` and `./.build/<name>` |
+| CLI program/project name | declared `runHostBootstrapCLI` name plus actual invoked executable | must agree before dispatch; selects sibling config and expected context identity |
 
-Python rejects zero or multiple top-level Cabal files and zero or multiple executable stanzas. It does
-**not** currently require the Cabal-file stem, executable stanza, and Haskell CLI program name to match.
-The demo chooses `hostbootstrap-demo` for all three, so the defect is latent there rather than absent.
+Python rejects zero/ambiguous Cabal selection, invalid explicit selection, missing/duplicate package or
+executable declarations, and every stem/package/executable mismatch. Haskell rejects a declared CLI name
+that differs from the invoked executable (after normalizing a Windows `.exe`) before command dispatch.
 
-The target has one opaque `ProjectIdentity`. Discovery succeeds only when the Cabal-file stem and sole
-executable stanza agree; the Haskell entrypoint derives and validates the same identity from the running
-executable instead of accepting an unrelated free `String`. Build target, `./.build/` destination,
-sibling config filename, context identity, resource prefix, and ownership records are projections from
-that value. APIs do not accept those names independently, so a binary/config/resource identity mismatch
-cannot be assembled. Phase 6 owns that cross-language boundary repair.
+This closes the cross-language build/config spelling boundary. The later target makes project identity
+an opaque plan-indexed value projected into context, resource prefixes, and ownership records rather than
+retaining independent strings inside lifecycle APIs.
 
 ## Config Shape
 
@@ -110,24 +114,28 @@ has two conceptual sections:
 | Section | Owner | Purpose |
 |---|---|---|
 | Project settings | project binary | user-editable inputs such as Dockerfile path, resource budget, deploy knobs, replicas, ports, feature flags, and any project-extended field (the demo's `message`) |
-| Runtime context | `hostbootstrap-core` / project binary | declared identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, resource envelope, and child-context rules; opaque authority remains a target |
+| Runtime context | `hostbootstrap-core` / project binary | declared identity, parent chain, topology frames, current frame, runtime witnesses, context kind, role name, capabilities, allowed command classes, and child-context rules; opaque authority remains a target |
 
 The record decode is strict about field presence: every field in the project's config type is mandatory,
 so a missing field fails the `FromDhall` decode. That does not make semantic validation total. The demo
-also keeps independent top-level `resources` and raw `context.resourceEnvelope`, and service projection
-currently supplies hard-coded port/timeout fallbacks outside `psInit`. The target has one project-owned
-assembler/default source and one validated budget authority; no projection invents missing values. See
+now has one project-owned `resources` value; `BinaryContext` carries no independently editable budget
+copy, and full child-config projection preserves the already-refined project value. One project-owned
+assembler is the structural default source, and finalized service-role projection invents no missing
+values. Plan-indexed provider admission and partitioning are implemented as a pure foundation; live
+provider adapters still must adopt that authority. See
 [config_generation.md](config_generation.md) and the
 [generic_project_model.md](../architecture/generic_project_model.md) design). The on-disk config a normal
 command reads is therefore a complete value, not a sparse override.
 
 The demo decoder checks field **presence** and selected top-level scalar refinements:
 `memory`/`storage` decode through a typed `Quantity`, `haReplicas`, service ports, and timeouts use bounded
-newtypes, and `Resources` enforces its CPU floor. Their `ToDhall` instances remain transparent, so the
-reflected Dhall schema still shows the underlying `Text`/`Natural` fields while invalid values are
-rejected during decode. Constructors remain public, zero/bare-byte/provider-invalid quantities and the
-raw applied envelope remain possible, and cross-field relations/lifecycle authority are separate checks.
-The type-level profile/capability/resource repairs remain open. See
+newtypes, and `Resources` enforces its CPU floor. Their constructors are private, public smart
+constructors are total, and no `Num`/`IsString` bypass remains. Their `ToDhall` instances remain
+transparent, so the reflected Dhall schema still shows the underlying `Text`/`Natural` fields while
+invalid values are rejected during decode. Quantity grammar, project-resource validity, and
+provider-exact admission are distinct checks: the last rejects a valid byte quantity when the selected
+provider cannot represent it exactly. Cross-field relations and live lifecycle authority remain
+separate checks. See
 [development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md) and
 [applied_cordon.md](applied_cordon.md).
 
@@ -222,7 +230,6 @@ in  { dockerfile = "docker/Dockerfile"
         , CommandClass.HostOrchestratorCommand
         , CommandClass.ProjectCommand
         ]
-      , resourceEnvelope = { cpu = 6, memory = "10GiB", storage = "80GiB" }
       , childContextKinds =
         [ ContextKind.VMOrchestrator
         , ContextKind.ClusterService
@@ -237,9 +244,8 @@ in  { dockerfile = "docker/Dockerfile"
 
 The exact generated value is owned by the binary. Use `<project> project init` for a valid default,
 `<project> context schema` for the in-scope artifact union, and `<project> service schema` for the
-current `ToDhall` encoder's declared type. The matching `FromDhall` decoder is separate; the target
-validated codec refuses unequal normalized type expressions. Do not hand-maintain a parallel schema in
-project docs.
+project codec's admitted type. Both rendering and decoding consume that same `CodecWitness`; do not
+hand-maintain a parallel schema in project docs.
 
 In the target, one finalized `specDigest` binds every codec. `context schema|render` exposes separately
 named Production/Harness full-config artifact families; `service schema` exposes separately named
@@ -270,7 +276,7 @@ The project binary provides an ungated initialization command, for example:
 
 The generated file is a valid default; `project init --help` names the editable options (`--dockerfile`,
 `--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`), `context schema` prints the in-scope
-artifact union, and `service schema` prints the project's `ToDhall` encoder-declared config type. Normal
+artifact union, and `service schema` prints the project's validated-codec config type. Normal
 commands do not silently create a missing config. The current shared loader always recommends
 `<project> project init`; that is valid root-lifecycle recovery but is wrong for a missing service-leaf
 config, because the resulting host-orchestrator config still fails the `service run` gate. The target
@@ -312,10 +318,10 @@ local `configId`, and only then constructs
 `ValidatedServiceRequest specDigest configId secretDigest fields service` with matching
 `RoleParams specDigest configId secretDigest fields service` for a closed `ServiceProgram`. The hidden field row assigns each
 field a closed `VisibleTo consumers` set, so framework/control fields can validate the wire while
-plan-only fields never cross and never enter the handler payload. Current code
-does not meet that contract. `project up` constructs its chain/frame projection from the first decode,
-then many demo steps reload the sibling file; `service run` selects from the first decode, then both demo
-handlers reload it. A replacement can therefore mix two configs in one invocation.
+plan-only fields never cross and never enter the handler payload. Current `service run` meets that
+snapshot/role boundary: it canonically verifies one sibling value and closes the selected handler over
+typed role fields plus a safe framework view. General `project up` lifecycle actions do not yet all
+consume one plan-owned validated snapshot, so that wider guarantee remains target work.
 
 Allowed writes are explicit and narrow: `project init` (re-run with `--force` to overwrite),
 user-requested config-edit commands, and parent commands generating child configs. The canonical example of a parent generating a

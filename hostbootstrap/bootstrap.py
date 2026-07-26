@@ -29,7 +29,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -49,6 +51,10 @@ _BUILD_DIR: str = ".build"
 
 # The host-native cabal package store, kept repo-local under ./.build/.
 _STORE_DIR: str = f"{_BUILD_DIR}/cabal-store"
+
+# A week-old package index is stale enough to refresh on an online build while
+# keeping ordinary warm invocations independent of the network.
+_CABAL_INDEX_MAX_AGE_SECONDS: int = 7 * 24 * 60 * 60
 
 _WINDOWS_TOOLCHAIN_PATHS: tuple[Path, ...] = (
     Path("C:/ghcup/bin"),
@@ -79,27 +85,78 @@ class ProjectDiscoveryError(RuntimeError):
 
 @dataclass(frozen=True)
 class ProjectBuildSpec:
-    """The only project facts Python needs before the binary exists."""
+    """One validated project identity plus its selected Cabal file."""
 
-    project: str
-    executable: str
+    identity: str
     cabal_file: Path
 
+    @property
+    def project(self) -> str:
+        return self.identity
 
-def discover_project(project_root: Path) -> ProjectBuildSpec:
-    """Derive the project and executable names from the single Cabal file."""
+    @property
+    def executable(self) -> str:
+        return self.identity
+
+
+def discover_project(
+    project_root: Path, *, selected_cabal_file: Path | None = None
+) -> ProjectBuildSpec:
+    """Select one Cabal file and validate its stem/package/executable identity."""
     cabal_files = sorted(path for path in project_root.glob("*.cabal") if path.is_file())
-    if not cabal_files:
+    if selected_cabal_file is not None:
+        candidate = (
+            selected_cabal_file
+            if selected_cabal_file.is_absolute()
+            else project_root / selected_cabal_file
+        ).resolve()
+        root = project_root.resolve()
+        if candidate.parent != root or candidate.suffix != ".cabal" or not candidate.is_file():
+            raise ProjectDiscoveryError(
+                f"selected Cabal file must be an existing .cabal file directly under {root}: "
+                f"{selected_cabal_file}"
+            )
+        cabal_file = candidate
+    elif not cabal_files:
         raise ProjectDiscoveryError(f"no .cabal file found in {project_root}")
-    if len(cabal_files) > 1:
+    elif len(cabal_files) > 1:
         names = ", ".join(path.name for path in cabal_files)
-        raise ProjectDiscoveryError(f"multiple .cabal files found in {project_root}: {names}")
-    cabal_file = cabal_files[0]
-    return ProjectBuildSpec(
-        project=cabal_file.stem,
-        executable=_discover_executable(cabal_file),
-        cabal_file=cabal_file,
-    )
+        raise ProjectDiscoveryError(
+            f"multiple .cabal files found in {project_root}: {names}; "
+            "select one explicitly with --cabal-file"
+        )
+    else:
+        cabal_file = cabal_files[0]
+
+    package = _discover_package_name(cabal_file)
+    executable = _discover_executable(cabal_file)
+    stem = cabal_file.stem
+    if len({stem, package, executable}) != 1:
+        raise ProjectDiscoveryError(
+            "project identity mismatch before build: "
+            f"Cabal file stem={stem!r}, package name={package!r}, "
+            f"executable={executable!r}; all three must agree"
+        )
+    return ProjectBuildSpec(identity=package, cabal_file=cabal_file)
+
+
+def _discover_package_name(cabal_file: Path) -> str:
+    """Return the single top-level package ``name`` field."""
+    names: list[str] = []
+    for raw_line in cabal_file.read_text(encoding="utf-8").splitlines():
+        if raw_line[:1].isspace():
+            continue
+        line = raw_line.strip()
+        if not line or line.startswith("--"):
+            continue
+        field, separator, value = line.partition(":")
+        if separator and field.strip().lower() == "name" and value.strip():
+            names.append(value.strip())
+    if not names:
+        raise ProjectDiscoveryError(f"no package name field found in {cabal_file}")
+    if len(names) > 1:
+        raise ProjectDiscoveryError(f"multiple package name fields found in {cabal_file}")
+    return names[0]
 
 
 def _discover_executable(cabal_file: Path) -> str:
@@ -172,22 +229,49 @@ def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
     )
 
 
-def native_build_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
+def native_build_command(
+    spec: ProjectBuildSpec, project_root: Path, *, offline: bool = False
+) -> tuple[str, ...]:
     """Build the project binary host-native, in place."""
     cabal = _WINDOWS_CABAL if os.name == "nt" else _CABAL
-    return (
+    command: tuple[str, ...] = (
         cabal,
         "--store-dir",
         str(project_root / _STORE_DIR),
         "build",
-        f"exe:{spec.executable}",
     )
+    if offline:
+        command += ("--offline",)
+    return (*command, f"exe:{spec.executable}")
 
 
 def cabal_update_command() -> tuple[str, ...]:
-    """Refresh Cabal's package index before the first host-native build."""
+    """Refresh Cabal's package index when its local state requires it."""
     cabal = _WINDOWS_CABAL if os.name == "nt" else _CABAL
     return (cabal, "update")
+
+
+class CabalIndexState(StrEnum):
+    MISSING = "missing"
+    FRESH = "fresh"
+    STALE = "stale"
+
+
+def cabal_index_path() -> Path:
+    """The standard secure Hackage index used by Cabal."""
+    configured = os.environ.get("CABAL_DIR")
+    cabal_dir = Path(configured) if configured else Path.home() / ".cabal"
+    return cabal_dir / "packages" / "hackage.haskell.org" / "01-index.tar"
+
+
+def cabal_index_state(index: Path, *, now: float | None = None) -> CabalIndexState:
+    if not index.is_file():
+        return CabalIndexState.MISSING
+    current_time = time.time() if now is None else now
+    age = max(0.0, current_time - index.stat().st_mtime)
+    if age > _CABAL_INDEX_MAX_AGE_SECONDS:
+        return CabalIndexState.STALE
+    return CabalIndexState.FRESH
 
 
 def native_listbin_command(spec: ProjectBuildSpec, project_root: Path) -> tuple[str, ...]:
@@ -264,11 +348,16 @@ async def _already_present(probe: tuple[str, ...]) -> bool:
     return False
 
 
-async def _ensure_toolchain(sub: Substrate) -> None:
+async def _ensure_toolchain(sub: Substrate, *, offline: bool = False) -> None:
     """Ensure the host build toolchain."""
     for step in toolchain_ensure_steps(sub):
         if await _already_present(step.probe):
             continue
+        if offline:
+            missing = " ".join(step.probe)
+            raise RuntimeError(
+                f"offline build requires the host build tool to be preinstalled: {missing}"
+            )
         if not step.install:
             await _install_verified_ghcup(sub)
             continue
@@ -311,28 +400,64 @@ async def _install_verified_ghcup(sub: Substrate) -> None:
         shutil.copy2(downloaded, destination)
 
 
-async def _build_native(spec: ProjectBuildSpec, *, project_root: Path) -> None:
-    """Build the binary host-native and copy it to ``./.build/<executable>``."""
+def _files_identical(left: Path, right: Path) -> bool:
+    if not left.is_file() or not right.is_file():
+        return False
+    if left.stat().st_size != right.stat().st_size:
+        return False
+    return hashlib.sha256(left.read_bytes()).digest() == hashlib.sha256(right.read_bytes()).digest()
+
+
+def _copy_if_changed(source: Path, destination: Path) -> bool:
+    """Copy *source* only when the stable artifact bytes changed."""
+    if _files_identical(source, destination):
+        return False
+    shutil.copy2(source, destination)
+    return True
+
+
+async def _build_native(
+    spec: ProjectBuildSpec, *, project_root: Path, offline: bool = False
+) -> None:
+    """Build host-native, refreshing only a stale index and copying only changed bytes."""
     binary_path(spec, project_root).parent.mkdir(parents=True, exist_ok=True)
-    await process.run_checked(cabal_update_command(), cwd=project_root, env=_toolchain_env())
-    await process.run_checked(
-        native_build_command(spec, project_root), cwd=project_root, env=_toolchain_env()
-    )
+    index_state = cabal_index_state(cabal_index_path())
+    if offline and index_state is CabalIndexState.MISSING:
+        raise RuntimeError(
+            "offline build requires a cached Cabal package index; "
+            "run an online build once before retrying with --offline"
+        )
+    if not offline and index_state is not CabalIndexState.FRESH:
+        await process.run_checked(cabal_update_command(), cwd=project_root, env=_toolchain_env())
+    try:
+        await process.run_checked(
+            native_build_command(spec, project_root, offline=offline),
+            cwd=project_root,
+            env=_toolchain_env(),
+        )
+    except process.CommandError as exc:
+        if offline:
+            raise RuntimeError(
+                "offline Cabal build could not resolve all inputs from the cached index/store"
+            ) from exc
+        raise
     located = await process.run_checked(
         native_listbin_command(spec, project_root),
         cwd=project_root,
         quiet=True,
         env=_toolchain_env(),
     )
-    shutil.copy2(Path(located.stdout.strip()), binary_path(spec, project_root))
+    _copy_if_changed(Path(located.stdout.strip()), binary_path(spec, project_root))
 
 
-async def build_binary(spec: ProjectBuildSpec, *, project_root: Path) -> Path:
+async def build_binary(
+    spec: ProjectBuildSpec, *, project_root: Path, offline: bool = False
+) -> Path:
     """Run the pre-binary bootstrap (development_plan_standards.md §§ M, N) and build the binary host-native."""
     sub = substrate.detect()
     await _assert_minimums(sub)
-    await _ensure_toolchain(sub)
-    await _build_native(spec, project_root=project_root)
+    await _ensure_toolchain(sub, offline=offline)
+    await _build_native(spec, project_root=project_root, offline=offline)
     return binary_path(spec, project_root)
 
 
@@ -341,12 +466,13 @@ async def bootstrap(
     *,
     project_root: Path,
     args: tuple[str, ...] = (),
+    offline: bool = False,
 ) -> None:
     """Build the project binary host-native, then ``exec`` it with ``args``."""
     sub = substrate.detect()
     await _assert_minimums(sub)
-    await _ensure_toolchain(sub)
-    await _build_native(spec, project_root=project_root)
+    await _ensure_toolchain(sub, offline=offline)
+    await _build_native(spec, project_root=project_root, offline=offline)
     argv = exec_argv(spec, project_root, args)
     _exec_project_binary(argv, project_root)
 

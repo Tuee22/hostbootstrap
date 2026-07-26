@@ -32,16 +32,18 @@ let Mount = { source : Text, target : Text, readOnly : Bool }
 
 let Substrate = < AppleSilicon | LinuxCpu | LinuxGpu >
 
-let RunModel = < OneShot | HostNative | HostDaemon | Cluster >
-
 let ClusterProfile = < Production | Test : Text >
 
--- A typed pointer to a secret's *source* — never the secret material itself.
--- `Vault` names a KV path + field; `TransitKey` a Vault Transit key name;
--- `Prompt` a label the caller resolves interactively; `TestPlaintext` an
--- inline literal used only in test configs. This is a pure shape — the core
--- carries no Vault dependency.
-let SecretRef =
+-- Production has pointers only. The Harness wire is deliberately distinct:
+-- inline fixture material is untrusted until matching run authority converts
+-- it into a harness-scoped Haskell value.
+let ProductionSecretRef =
+      < Vault : { mount : Text, path : Text, field : Text }
+      | TransitKey : Text
+      | Prompt : Text
+      >
+
+let HarnessSecretRef =
       < Vault : { mount : Text, path : Text, field : Text }
       | TransitKey : Text
       | Prompt : Text
@@ -124,9 +126,9 @@ in  { Resources
     , KindNode
     , Mount
     , Substrate
-    , RunModel
     , ClusterProfile
-    , SecretRef
+    , ProductionSecretRef
+    , HarnessSecretRef
     , Weight
     , lessThanEqual
     , divFloor

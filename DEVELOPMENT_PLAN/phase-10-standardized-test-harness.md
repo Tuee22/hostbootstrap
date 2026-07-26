@@ -1,4 +1,4 @@
-# Phase 10: Standardized test harness and run-models
+# Phase 10: Standardized test harness and execution shapes
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -15,8 +15,9 @@
 
 **Reopened 2026-07-24.** Sprints 10.9–10.10 supersede the earlier Done assessment because path/cooperative locks
 do not provide exclusive identity-bearing ownership and the complete concurrency/failure matrix is not
-validated, while `RunModel`/`RunModelKey`/`selectRunModel` and `Core.dhall`'s `RunModel` union form an
-unconsumed parallel model beside the chain. Historical run counts below do not close those gaps.
+validated, while a detached Haskell selector and Dhall union formed an unconsumed parallel model beside
+the chain. Sprint 10.10 removed that parallel surface on 2026-07-25; Sprint 10.9 remains blocked.
+Historical run counts below do not close the ownership/concurrency gap.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — legible lifecycle failure.** The harness owned the report
 card, and it collapsed a bring-up failure to a message-less `ExitFailure 1`: `runSuiteSelection` rendered
@@ -42,19 +43,11 @@ aborts the remaining variants); the demo harness drives the **Production** profi
 assert → `project destroy`), the metal-cluster/managed-VM refusal gated the run, and both variants tore
 down cleanly in that run.
 
-The earlier `runMatrix :: Seams env -> [Case] -> IO Report` engine supplied a per-case naming convention
-(`testCaseProfile` / `.test_data`) and `finally`-based cleanup. Those path prefixes are not exclusive
-ownership, and the demo's compiled suite still resolves a Production plan; Sprint 10.9 replaces both with
-opaque `Harness projectId runId` authority and receipts. Historical `guardTestDelete`/teardown tests remain useful
-negative evidence but do not make current never-touch-production mechanical.
-`sliceBudget` divides the budget across divisible cases by weight (`splitByWeight`, floor) while
-indivisible (GPU) cases each get the full budget at concurrency 1. The code still defines and tests
-`RunModel`, `RunModelKey`, and `selectRunModel`, and `Core.dhall` still exports a duplicate `RunModel`
-union, but no production path consumes either representation to drive `project up`. Sprint 10.10 removes
-them rather than pretending they select execution. The L0 `OneShot` helpers include the pure
-`oneShotRunArgs` argv and executable `oneShotSeams` IO seam, but `oneShotSeams` is definition-only: no
-production or test caller wires it into `project up`. Sprint 10.10 removes it unless a real consumer is
-introduced. `runMatrix` isolates a
+The earlier `runMatrix :: Seams env -> [Case] -> IO Report` engine supplied definition-only per-case
+profile/prefix and budget/one-shot helpers alongside its live `finally`-based loop. Repository search
+found no lifecycle-plan consumer for those helpers, so Sprint 10.10 removed them with the detached
+execution selector and Dhall union. The retained harness drives only the real project lifecycle plan,
+owns its report and self-created-data bracket, and isolates a
 throwing `seamSetup` to its own case by recording a `Fail` rather than crashing the matrix. The pure cores
 and setup-isolation behavior are implemented and unit-tested. Historical
 parser prose described a root-only suite selector and existing-config-gated `test init`; Phase 17.4 owns
@@ -67,9 +60,8 @@ configuration** the engine writes a test-specific `<project>.dhall`, runs `proje
 **own chain**, runs that config's case assertions in the frame appropriate to each (reusing the
 self-reference lift, § U), and tears the stack down with `project destroy`. There is **one `project up` per
 distinct test config**, and the engine owns **no second cluster-bring-up path** — it reuses the core pure
-functional logic (the case matrix and delete-guard) and the chain production uses. The public
-`sliceBudget` helper is definition/test-only and is not called by this engine. The engine recast to drive
-the real `project up` landed in code and is
+functional logic (the case matrix and self-created-data guard) and the chain production uses. The engine
+recast to drive the real `project up` landed in code and is
 real-run-validated; the last completed pre-accelerator `test run all` reported `6/6 passed` (phase-20's
 second message variant brought the earlier single-variant `3/3` matrix to `6/6`; the dated 2026-06-20
 `3/3` validation below stands). Those are dated matrix snapshots, not current ownership/concurrency
@@ -77,14 +69,16 @@ closure.
 
 ## Remaining Work
 
-**Current:** Sprint 10.9 is Blocked by Sprints 5.7, 9.10, 15.9, and 19.6–19.8, then owns
+**Current:** Sprint 10.9 is Blocked by Sprints 5.7, 9.10, 15.9, and 19.7–19.8, then owns
 resource-authoritative reservations/ownership, per-variant failure isolation, structured cleanup
 outcomes, and authenticated cross-process harness-authority handoff. The dated
 closure record below does not cover concurrent acquisition, identity-bearing teardown, or authority
 rehydration in the self-invoked `project up`.
 
-**Current:** Sprint 10.10 is Planned to remove the unconsumed `RunModel` selector/type and Dhall union, then
-make the project lifecycle plan the only execution representation.
+**Completed 2026-07-25:** Sprint 10.10 removed the detached selector/type, Dhall union/codec, and all
+audited definition/test-only helpers with no plan consumer. The structural regression test, exact Dhall
+vocabulary inventory, pinned formatter/linter on every changed Haskell file, full **379-test** core
+`-Werror` suite, and demo workspace `-Werror` suite all pass.
 
 **Historical reopening 2026-07-05 — harness reliability. Code landed, code-check-validated, and
 real-run-closed (§ C) 2026-07-05:**
@@ -114,8 +108,8 @@ turn). **None remaining.**
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on the harness (the generic project
 model, § BB): it *generates* the run's `<project>.dhall` from the `<project>.test.dhall` override via the
-project-owned, independent `psTestConfig` callback. The demo calls a helper also used by `psInit` by
-convention; core does not enforce that reuse. The harness deletes only bytes that still match the generated
+Harness request of the project-owned scope-aware restricted `psAssemble`; core enforces one structural
+project-config assembly path. The harness deletes only bytes that still match the generated
 payload under the current cooperative sidecar guard; changed bytes remain in the reported locked
 quarantine. That byte match is neither a resource-authoritative reservation nor a verified
 identity-bearing ownership receipt (Sprint 10.9). The
@@ -126,9 +120,8 @@ forward through phase 19 and was not reopened for it; it is reopened 2026-07-21 
 
 The split command surface (`test init` / `test run <case-id>|all`) and the live harness engine
 (`TestSuite`/`runMatrix`, the data-preserving `teardown` partition, and `seamSetup`-in-`try` isolation)
-are built and unit-tested. `sliceBudget`, `guardTestDelete`, `testCaseProfile`, `defaultSeams`, and
-`oneShotSeams` are definition/test-only compatibility helpers, not consumed production cores; Sprint
-10.10 removes them unless a real plan-owned call path is introduced.
+are built and unit-tested. Sprint 10.10 removed the former definition/test-only compatibility helpers
+after the repository audit found no real plan-owned call path.
 
 **Engine recast landed in code (2026-06-19), code-check-validated** (`cabal test all` green, 224 tests):
 the standardized harness no longer carries a second bring-up path. `HostBootstrap.Harness.TestSuite` is
@@ -159,16 +152,18 @@ created is removed, a found one is preserved — mirroring never-delete-`.data`)
 pure cores (the `TestCase` profile rooting at `.test_data`, the data-preserving `teardown` partition,
 `guardTestDelete`) unit-tested, that dated self-created-data guard slice was complete.
 
-**Richer `<project>.test.dhall` landed (2026-06-20), code-check-validated:** `<project>.test.dhall` is now a reflected record
-`{ testSuites : List Text, testResources : { cpu, memory, storage } }` (`HostBootstrap.Config.Schema.TestConfig`,
+**Historical richer `<project>.test.dhall` landing (2026-06-20), code-check-validated:** `<project>.test.dhall` was a reflected record
+`{ testSuites : List Text, testResources : { cpu, memory, storage } }` (`HostBootstrapDemo.Config.TestConfig`,
 `defaultTestConfig` / `renderTestConfig` / `decodeTestConfigFile`), carrying per-test **resource overrides**
 alongside the selectable suites. `test init` writes it (seeded from the project config's resources, with
-an encoder-declared schema); `test run` decodes it and reports the test-config resources before running.
-`SchemaSpec` covers the render→decode round trip, while Phase 8 Sprint 8.7 owns construction-time
-encoder/decoder type-expression equality. A consumer edits `testResources` to run its tests at a different budget
+an admitted schema); `test run` decodes it and reports the test-config resources before running.
+`SchemaSpec` covers the render→decode round trip, while closed Phase 8 Sprint 8.7 supplies
+construction-time encoder/decoder type-expression equality. A consumer edits `testResources` to run its tests at a different budget
 than production; the demo runs at its declared budget (its test resources equal its config's, since its full
 lifecycle needs the full budget). Secrets are intentionally not carried as plaintext in `<project>.test.dhall` (the
 credential-forwarding doctrine keeps secrets out of Dhall, § U).
+Sprint 19.6 later removed the dead `testSuites` field; the current demo test config contains only
+`testResources`, while typed case/variant selection lives in the validated Haskell `TestMatrix`.
 
 The `project up` interpreter the engine drives is owned by
 [phase-16](phase-16-project-lifecycle-command.md); the test surface that invokes the engine is
@@ -177,11 +172,10 @@ co-owned with [phase-17](phase-17-chain-driven-test-and-context-introspection.md
 ## Phase Objective
 
 Provide the reusable test workflow and execution-shape taxonomy (see
-[development_plan_standards.md § S, T](development_plan_standards.md)). Isolation, the delete-guard, the
-profile/path derivation, and report aggregation live once in L0; the app supplies the matrix.
-`sliceBudget` is currently only a pure definition/test seam and does not schedule or constrain the
-runtime matrix. Phase 10.9 makes never-touch-production mechanical and derives any effective per-run
-budget from the actual plan; Phase 10.10 removes the unused parallel run-model representation.
+[development_plan_standards.md § S, T](development_plan_standards.md)). The live matrix loop,
+self-created-data guard, and report aggregation live once in L0; the app supplies the matrix. Phase
+10.9 makes never-touch-production mechanical and derives any effective per-run budget from the actual
+plan. Sprint 10.10 removed the unused parallel execution representation.
 
 ## Sprints
 
@@ -483,7 +477,7 @@ named their cause legibly. **None remaining.**
 ### Sprint 10.9: Exclusive test ownership and failure isolation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.7, 9.10, 15.9, and 19.6–19.8
+**Blocked by**: Sprints 5.7, 9.10, 15.9, and 19.7–19.8
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
@@ -745,8 +739,8 @@ cleanup cannot delete foreign or concurrently replaced state.
 
 #### Remaining Work
 
-Blocked until Sprints 5.7, 9.10, 15.9, and 19.6–19.8 land the provider/storage receipt primitives, opaque
-state/result algebra, independent root authority, typed matrix, scoped assembler/codec, and finalized plan. This sprint owns the
+Blocked until Sprints 5.7, 9.10, 15.9, and 19.7–19.8 land the provider/storage receipt primitives, opaque
+state/result algebra, independent root authority, scoped assembler/codec, and finalized plan. This sprint owns the
 fresh and bound-recovery lifecycle mode/profile openers rather than depending on Phase 5 to construct
 them. Then replace
 cooperative/path-based ownership with resource-authoritative reservations and verified receipts,
@@ -755,9 +749,9 @@ authority-rehydration handoff, thread the structured results through the report 
 concurrency/failure matrix. Historical `6/6` and `8/8` runs did not exercise these ownership or handoff
 races and do not close the sprint.
 
-### Sprint 10.10: Remove the parallel run-model representation [Planned]
+### Sprint 10.10: Remove the parallel run-model representation [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/dhall/Core.dhall`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
@@ -795,19 +789,24 @@ instead of claiming either selects `project up`.
 - A structural single-representation test rejects adding an unconsumed execution selector beside the
   lifecycle plan.
 
+**Passed 2026-07-25.** Repository search found none of the removed definitions or audited helper names
+in core/demo source. `HarnessSpec`'s structural check and `DhallGenSpec`'s exact exported-type inventory
+pass. Pinned Fourmolu and HLint are clean on every changed Haskell file; `cabal test all
+--test-show-details=direct --ghc-options=-Werror` passes all **379 core tests**, and the demo workspace
+passes both its project suite and the embedded 379-test core suite under `-Werror`.
+
 #### Remaining Work
 
-Remove the dead Haskell and Dhall surfaces, prune or wire independently useful one-shot primitives, update
-the governed run-model narrative, and run the full static gate. Phase 16.6 separately unifies the currently
-independent forward/topology/reverse lifecycle callbacks.
+None. Phase 16.6 separately unifies the currently independent forward/topology/reverse lifecycle
+callbacks.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/run_models.md` - behavioral execution shapes expressed by the lifecycle plan;
-  no parallel selector or Dhall `RunModel` field.
-- `documents/architecture/harness_workflow.md` - the per-case loop, the seam-split (L0 driver vs cluster
-  seams vs app matrix), budget-slicing, and the report card rendering a legible `LifecycleFailure` instead of
+  no parallel selector or Dhall execution field.
+- `documents/architecture/harness_workflow.md` - the per-case loop, the seam-split (L0 driver vs app
+  matrix), and the report card rendering a legible `LifecycleFailure` instead of
   `ExitFailure 1` (Sprint 10.8).
 - `documents/architecture/readiness.md` - **(new)** the legible-failure contract (`LifecycleFailure`,
   stream-then-die) shared with the readiness discipline.

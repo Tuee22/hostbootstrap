@@ -11,8 +11,8 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 2.5, 5.5–5.8, 6.7, 8.7, 9.4, 9.10, 10.9–10.10, 11.10, 12.4,
-13.17–13.19, 14.6, 15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.6–19.8, and 20.5
+**Blocked by**: Sprints 5.5–5.8, 9.10, 10.9, 11.10, 13.17–13.18, 13.20, 14.6,
+15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.7–19.8, and 20.5
 
 **Reopened 2026-07-24.** Sprint 21.4 owns the new repo-wide reconciliation after the confirmed code/docs
 defects close in their implementation phases. The 2026-07-23 closure below is retained only as historical
@@ -35,13 +35,15 @@ canonical contract is [durable_state](../documents/architecture/durable_state.md
 
 The reconciliation is a forward-only documentation and small-code-correction phase. It removes the stale
 standalone `ensure <tool>` command from the surfaced core tree, keeps the `ensure` reconcilers as library
-primitives composed into `ensure-*` chain steps, standardizes the generic chain signature as
-`chain :: cfg -> [Step]`, deletes the stale `Type.dhall` fixture, retains and guards `example.dhall`, and
+primitives composed into `ensure-*` plan steps, historically standardized the generic chain signature,
+and now records Sprint 19.8's opaque validated `StepPlan`; it deletes the stale `Type.dhall` fixture,
+retains and guards `example.dhall`, and
 aligns `project down` wording with the implemented kind behavior: provider VMs stop and kind clusters are
 deleted, with teardown never enumerating the plan's data path for removal.
 
-Sprints 21.1 and 21.2 remain `Done` — their deliverables (the five-verb surface, `chain :: cfg -> [Step]`,
-the `Type.dhall` deletion, the guarded `example.dhall`) all hold independently. This reopening adds work;
+Sprints 21.1 and 21.2 remain `Done` — their deliverables (the five-verb surface, the then-current
+single-chain model later strengthened to `StepPlan`, the `Type.dhall` deletion, and the guarded
+`example.dhall`) all hold independently. This reopening adds work;
 it reverses none. The owning phase docs carry forward-pointers or current state wording, and obsolete
 surfaces are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
@@ -103,9 +105,10 @@ parallel canonical home.
 
 #### Deliverables
 
-- All generic chain-signature prose uses `chain :: cfg -> [Step]`; current demo-only prose uses
-  `demoChainFor :: Substrate -> ProjectConfig -> [Step]`. The former `demoChain` name appears only in
-  explicitly historical migration prose.
+- All current generic forward-plan prose uses opaque validated `StepPlan`; the demo's
+  `demoChainFor :: Substrate -> ProjectConfig scope -> [Step]` appears only as the pure fragment passed
+  through `addSteps` and finalization. Former raw-chain APIs appear only in explicitly historical
+  migration prose.
 - Command-surface prose uses the five user-facing verbs and says `ensure` is a library, not a command.
 - Cluster lifecycle prose distinguishes provider-VM stop from kind-cluster delete-on-down.
 - The legacy ledger lists deleted surfaces accurately and retains current fixtures accurately.
@@ -175,8 +178,8 @@ now-implemented host-share/carry mechanism without claiming the still-open readb
 ### Sprint 21.4: Current code/documentation reconciliation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 2.5, 5.5–5.8, 6.7, 8.7, 9.4, 9.10, 10.9–10.10, 11.10, 12.4,
-13.17–13.19, 14.6, 15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.6–19.8, and 20.5
+**Blocked by**: Sprints 5.5–5.8, 9.10, 10.9, 11.10, 13.17–13.18, 13.20, 14.6,
+15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.7–19.8, and 20.5
 **Implementation**: governed documentation, source comments/help text, mechanical documentation checks
 **Docs to update**: `README.md`, `AGENTS.md`, `documents/`, `DEVELOPMENT_PLAN/`
 
@@ -191,21 +194,21 @@ documentation ahead of the code or preserving duplicate status/count authorities
   warm-store, and demo contracts after their owning phases land.
 - Reconcile source comments and user-visible help that still assert superseded guarantees, including
   `Command.hs` test-selector/root-gate and down/destroy/durability text,
-  `Readiness.Internal`/`Readiness` constructor-sealing text, `Harness` production-isolation/path/RunModel
-  and definition-only-seam text, `HostPrereqs` temporary-Python text, the demo's
+  `Readiness.Internal`/`Readiness` constructor-sealing text, `Harness` production-isolation/path text,
+  `HostPrereqs` temporary-Python text, the demo's
   mutually-exclusive-run claim, Python's cross-platform handoff description, and CLI Poetry-only
   exposure text. Include `Cluster.Cordon`'s Incus-only Linux/storage/reserve/capacity claims,
   `Web.Api`'s unwired/static `fitsBudget` claim, and `HostBootstrapDemo.Config`'s false single-default-
   source heading. Reconcile `Config.Schema`'s unconditional `project init` missing-config hint,
   `Command`'s decoder-reflection wording and conflation of the project-config schema with the static
-  in-scope artifact union, and the demo Web/accelerator handlers' sibling-config reload contract after
-  Sprints 17.4/18.6 land.
+  in-scope artifact union, and the remaining raw service-handler `IO` contract after Sprint 18.6 lands;
+  Sprint 19.8 has already removed the demo Web/accelerator sibling-config reload.
 - Remove stale freeze-only `LABEL`/`ENTRYPOINT`, public/internal witness, definition-only provider,
   hard-coded variant, bare-host-command, appended-verb, Harbor, and obsolete MinIO/metadata claims.
 - Keep `DEVELOPMENT_PLAN/README.md` as the only cross-phase status table and keep exact test counts only as
   dated sprint validation evidence.
-- Add mechanical drift checks for forbidden obsolete surfaces and for the required publish → pull →
-  digest-qualified derived-build sequence.
+- Add mechanical drift checks for forbidden obsolete surfaces and for the required rolling
+  publish → pull → real-consumer compatibility-smoke sequence.
 
 #### Validation
 
@@ -213,7 +216,7 @@ documentation ahead of the code or preserving duplicate status/count authorities
 - Targeted grep floors find no obsolete current-state phrases outside
   `legacy-tracking-for-deletion.md`, including `SUITE`/“test suite” selector help, “remove no filesystem
   path,” frame-local `.data`, test-only `Readiness.Internal`, mechanically guaranteed
-  never-touch-production, and RunModel-never-in-Dhall claims.
+  never-touch-production, and stale execution-selector claims.
 - The README phase table and every phase-local status agree, with no second current-count/status roll-up
   in `00-overview.md` or `system-components.md`.
 

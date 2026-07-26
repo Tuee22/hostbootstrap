@@ -1,343 +1,123 @@
 # Warm store
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [linking_and_optimization.md](linking_and_optimization.md), [../languages/haskell.md](../languages/haskell.md)
+**Supersedes**: the layered `core.freeze` / `daemon.freeze` consumer contract
+**Referenced by**: [base_image.md](base_image.md),
+[derived_project_standards.md](derived_project_standards.md),
+[linking_and_optimization.md](linking_and_optimization.md),
+[../languages/haskell.md](../languages/haskell.md)
 
-> **Purpose**: Define the warm Cabal store contents — including `hostbootstrap-core`'s dependency
-> closure — the cache-hit contract derived projects rely on, and the dep-addition workflow.
+> **Purpose**: Define the base image's best-effort Cabal cache, the one-project consumer rule, and the
+> dependency-addition workflow.
 
-The base image ships a **pre-built Cabal store** at `/opt/cache/cabal/`. Every
-package listed in the two layer manifests under
-[`core/warm-deps/`](../../core/warm-deps/) —
-`basecontainer-core-deps.cabal` (core + web) and `basecontainer-daemon-deps.cabal`
-(daemon-family) — is compiled at base-image build time, in the configurations
-downstream projects actually use.
+## Contract
 
-The warm Cabal store (the prebuilt packages) is **shared**, but the version-pin
-**freezes** it produces are **layered by library level** — the base build's in-image
-`cabal freeze` is projected into two fragments under `/opt/basecontainer/haskell-deps/`:
+The base image contains a pre-built Cabal store at `/opt/cache/cabal/`. It is a performance cache only:
 
-* **`core.freeze`** pins base + the `hostbootstrap-core` closure + the shared
-  web-build extras (including `purescript-bridge`, the demo's web bridge). It is
-  imported by `mcts` and `daemon-substrate` — and by any L0-direct consumer such
-  as the demo.
-* **`daemon.freeze`** pins the daemon-family deps a non-daemon consumer does not
-  need (Redis / Postgres / proto / secure-websocket-client — e.g. `hedis`,
-  `postgresql-simple`, `proto-lens*`, `wuss`). It is imported **only** by the
-  daemon apps. The web-server stack (`warp` / `wai*` / `network` / `http-types` /
-  `websockets`) is in `core.freeze` — those are the shared web-build extras an
-  L0-direct web consumer such as the demo needs; `http-client*` is in `core.freeze`
-  too, pulled into the core closure by `dhall` (remote imports).
+- consumers do not import base-owned freezes or project fragments;
+- the store does not prescribe package versions;
+- matching artifacts may be reused;
+- cache misses may update the package index, download dependencies, and compile them;
+- offline builds and complete cache hits are not acceptance requirements.
 
-Each project's `cabal.project` imports only the fragment(s) for its layer: an
-L0-direct consumer imports `core.freeze`; a daemon app imports `core.freeze`
-**and** `daemon.freeze`. A non-daemon consumer (e.g. `mcts`) is therefore **not** coupled
-to the daemon dependency closure.
+Every consumer uses one ordinary host-compatible `cabal.project` both host-native and in its derived
+container. A Dockerfile copies the project source and runs Cabal; it does not replace `cabal.project`
+with a container-only variant.
 
-The base build projects the shared store into the two layered fragments in-image:
-`cabal freeze --project-file=core.project` pins the core + web closure into
-`core.freeze`, and `--project-file=daemon.project` pins the daemon-family closure
-into `daemon.freeze`. All three project files import `warm-store.config`, so both
-freezes are projections of one store; the base build then moves
-`core.project.freeze`/`daemon.project.freeze` to `core.freeze`/`daemon.freeze`.
-The shared web-server packages (`warp` / `wai*` / `network`) live in `core.freeze`.
-The operator's `base build-and-push` produces the published
-`basecontainer-<flavor>-<arch>` tag's full warm-store compile.
+## Population inputs
 
-The `core.freeze` closure **includes `hostbootstrap-core`'s own transitive dependencies** (notably
-`optparse-applicative` and the Dhall and process libraries the core uses), so a project binary that
-extends `hostbootstrap-core` via `runHostBootstrapCLI progName projectSpec` hits the warm store for the
-core's dependencies, not only its own. The `hostbootstrap-core` dependency set is part of `core.freeze`
-and is treated like any other warm-store dependency for cache-hit purposes.
+[`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project) is the only warm-store Cabal project.
+It builds two organizational manifest packages into one store:
 
-This page is the contract between the warm store and derived projects: follow
-it and `cabal build` skips the dependency closure; deviate and Cabal silently
-rebuilds packages that look pre-built but have a different store key.
+- `core/basecontainer-core-deps.cabal` covers the `hostbootstrap-core` closure and shared web-build
+  dependencies such as `purescript-bridge`, `warp`, `wai`, and `network`;
+- `daemon/basecontainer-daemon-deps.cabal` covers additional daemon-family dependencies such as Redis,
+  PostgreSQL, protobuf, and secure WebSocket clients.
 
-## What the warm store ships
+These groups make the manifest maintainable. They are not consumer layers and do not produce separate
+solver fragments. The build-only executables exist solely to make Cabal compile the listed dependency
+sets.
 
-For every package in the two layer manifests
-([`basecontainer-core-deps.cabal`](../../core/warm-deps/core/basecontainer-core-deps.cabal)
-and
-[`basecontainer-daemon-deps.cabal`](../../core/warm-deps/daemon/basecontainer-daemon-deps.cabal)):
+`warm-store.config` aligns commonly useful compilation ways: tests, benchmarks, shared libraries, and
+optimization level 2. Matching these settings improves cache reuse, but no consumer is required to keep
+them merely to satisfy the base.
 
-* Compiled under **GHC 9.12.4** with Cabal 3.16.1.0.
-* Built with `--enable-tests --enable-benchmarks --enable-shared` to match downstream solver/build
-  configuration. The warmed libraries have vanilla and dynamic (`dyn`) ways. Those flags do not build
-  third-party packages' test/benchmark components, and profiling is not enabled.
-* Compiled at **`-O2`** (`optimization: 2` in `warm-store.config`, imported by
-  [`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project)).
-* Pinned to the versions in the in-image freezes (`core.freeze` and, for the
-  daemon-family deps, `daemon.freeze`).
+## Consumer project
 
-The store is warmed by `cabal build all -j${CABAL_BUILD_JOBS}`; the package-level fan-out is **not**
-left unbounded. On **Linux**, the base command measures host RAM/CPU, sizes `-j`, and supplies matching
-Docker `--memory`, `--memory-swap`, and `--cpu-period`/`--cpu-quota` caps so the `-O2` + dynamic-way
-compile of the heavy numeric subtree (`criterion`/`statistics`/`math-functions`) stays within that build
-budget rather than OOM-racing into a GHC SIGSEGV. On macOS and Windows the command currently supplies no
-explicit Docker CPU/memory caps and leaves `CABAL_BUILD_JOBS` unset, so the Dockerfile's conservative
-`-j1` default applies; that path is not host-sized. Parallelism only affects build wall-clock, not store
-contents, so the cache-hit contract below is unchanged. See
-[base_image.md](base_image.md#host-sized-warm-store-build-budget).
-
-`fourmolu 0.19.0.1` and `hlint 3.10` are also baked in
-(see [base_image.md](base_image.md) and [code_check_doctrine.md](code_check_doctrine.md)).
-
-## The cache-hit contract
-
-A derived project's `cabal build` reuses the warm store **iff** all of the
-following hold:
-
-1. **Same compiler.** `with-compiler: ghc-9.12.4` in the project's
-   `cabal.project`. A different GHC produces a different store key for every
-   package.
-2. **Flag subset.** The project's enabled-flag set is a subset of
-   `tests + benchmarks + shared`. Enabling something the warm store didn't enable
-   (an exotic Cabal flag, a custom `cpp-options`, …) silently triggers a rebuild
-   for that package and everything that depends on it.
-3. **Same optimisation level.** Project uses `optimization: 2`. Asking for `-O1`
-   or `-O0` does not "downgrade" — Cabal treats it as a different configuration
-   and rebuilds.
-4. **Same resolved versions.** The project's dependency resolver picks the same
-   versions as those pinned in the imported freeze(s) — `core.freeze` for every
-   layer, plus `daemon.freeze` for a daemon app. Tight upper bounds in a
-   project's `*.cabal` that disagree with a freeze cause cabal to rebuild the
-   conflicting package against the project's preferred version.
-
-If any condition is violated for a given package, **only that package and its
-transitive consumers in the project's build** are rebuilt — the warm store is
-not corrupted, it just stops being used for that subtree.
-
-## Recommended project `cabal.project`
-
-The minimal compliant template for a derived L0-direct project (e.g. `mcts` or
-the demo) imports `core.freeze`:
+The demo's single project illustrates the supported form:
 
 ```cabal
-packages: .
-
-with-compiler: ghc-9.12.4
-
-import: /opt/basecontainer/haskell-deps/core.freeze
-
-tests: True
-benchmarks: True
-shared: True
+packages:
+  hostbootstrap-demo.cabal
+  ../core/hostbootstrap-core/hostbootstrap-core.cabal
 
 optimization: 2
 ```
 
-A daemon app adds the second fragment alongside `core.freeze`:
+The same file is valid on the host and in `/workspace/demo` because both package paths exist in those
+layouts. It contains no `/opt/basecontainer` path, no base freeze import, and no rolling-base version
+pin. A consumer remains free to add its own ordinary Cabal constraints for product reasons; those
+constraints belong to the consumer, not the warm-store API.
+
+## Cache behavior
+
+Cabal store keys include compiler, package version, flags, optimization, and build way. Reuse occurs only
+when the consumer's selected plan matches an inherited artifact. A different current solver result,
+consumer flag, or compiler is a normal miss, not an error in the base-image contract.
+
+`cabal build --dry-run` may be used to observe likely reuse. Its output is diagnostic only. A third-party
+package marked for build is allowed, and an online derived build must be able to resolve and compile it.
+Source quality and successful real-consumer build are the acceptance gates.
+
+The host-native Python bootstrap uses its repository-local store under `.build/cabal-store/`; the base
+cache exists only inside the Linux image. That difference does not require different project files.
+
+## Adding or updating cached dependencies
+
+1. Add the dependency alphabetically to the most descriptive manifest package.
+2. Validate the single warm-store project and the normal consumer project.
+3. With operator authorization, rebuild and publish the affected rolling native tags.
+4. Pull the published tag and run the real demo compatibility smoke.
+
+There is no freeze generation or commit step. A rebuild may select newer compatible transitive
+dependencies than the prior publication.
+
+## Wrong and right
+
+Wrong:
 
 ```cabal
-import: /opt/basecontainer/haskell-deps/core.freeze
-import: /opt/basecontainer/haskell-deps/daemon.freeze
+import: /opt/basecontainer/haskell-deps/some-freeze
 ```
 
-The `import:` line(s) are the cache-hit guarantee — see
-[Required: import the freeze fragments](#required-import-the-freeze-fragments) below.
-The rest matches the warm-store flag set verbatim. Adding `allow-newer:` or
-source-repository-package stanzas is fine as long as the resolver still
-lands on versions compatible with the imported freeze(s); if it cannot, Cabal
-fails with a clear error.
+Wrong:
 
-## Required: import the freeze fragments
-
-The warm store and the derived project **must use the same freeze pins** or the
-resolver will pick different versions of transitive dependencies (microlens,
-statistics, vty-unix, …) and Cabal will rebuild every package whose store key
-differs.
-
-Derived projects MUST NOT commit any freeze of their own. Instead, the project's
-`cabal.project` **imports** the fragment(s) for its layer from the base image:
-
-```cabal
-# every layer:
-import: /opt/basecontainer/haskell-deps/core.freeze
-# daemon apps additionally:
-import: /opt/basecontainer/haskell-deps/daemon.freeze
+```dockerfile
+RUN cp docker/special-container-project cabal.project
+RUN cabal build --offline all
 ```
 
-Those `import:` lines are the whole sync mechanism. No copy step, no
-"remember to refresh when the base updates," no two-repo drift.
+Right:
 
-Why this works:
-
-* The base image bakes the freeze fragments under
-  `/opt/basecontainer/haskell-deps/` by running `cabal freeze` **in-image**
-  during the base build, against the warm-store project there. The freezes are
-  not committed files copied in — `cabal.project.freeze`, `core.freeze`, and
-  `daemon.freeze` are all in `.gitignore` and `.dockerignore`, so the
-  `COPY core/warm-deps/` step never carries them; the in-image
-  `cabal freeze` step produces them. Every `basecontainer-<flavor>-<arch>` tag
-  carries one specific set of freezes, frozen at the moment the base was built.
-* The binary is built **host-native** using a host project file that does **not** import these absolute
-  in-image paths. When the binary later builds the project container `FROM` the base image, a distinct
-  container project file imports the fragments at
-  `/opt/basecontainer/haskell-deps/core.freeze` (and `daemon.freeze` for a daemon app)
-  are present in the image at the point Cabal reads `cabal.project` and the absolute
-  paths resolve. The host-native build does **not** reach `/opt/cache/cabal` (that warm
-  store exists only inside the image); it builds into its own repo-local store at
-  `.build/cabal-store/` and so compiles the closure on the host — either way the project
-  commits no freeze of its own. See
-  [build_and_run_model.md](../architecture/build_and_run_model.md) for the host-native
-  build model and its store.
-* When `hostbootstrap base build-and-push` ships a new base tag with a refreshed warm store, the
-  derived builder must explicitly pull it, resolve its digest, and build from that digest. A cached
-  same-named local tag is not an acceptable sync mechanism.
-* If a derived project's own `*.cabal` constrains a package to a version
-  incompatible with an imported freeze, Cabal errors out clearly with "could not
-  satisfy" — the right behaviour. The project then either bumps its own
-  bound, or the warm-store manifest is updated and a new base tag cut. The
-  conflict is loud, not silent.
-
-> **WRONG**
->
-> Project `cabal.project`:
->
-> ```cabal
-> packages: .
-> with-compiler: ghc-9.12.4
-> tests: True
-> benchmarks: True
-> shared: True
-> optimization: 2
-> ```
->
-> Project repo also contains a committed `core.freeze`, copied once
-> from the base image and now drifting.
->
-> The freeze in the project lags behind the base image's. Cabal resolves
-> against the project's stale freeze, store keys diverge from the warm
-> store, every third-party package rebuilds.
->
-> **RIGHT**
->
-> Project `cabal.project` (L0-direct consumer):
->
-> ```cabal
-> packages: .
-> with-compiler: ghc-9.12.4
-> import: /opt/basecontainer/haskell-deps/core.freeze
-> tests: True
-> benchmarks: True
-> shared: True
-> optimization: 2
-> ```
->
-> No freeze committed in the project repo. The import resolves at
-> build time to whatever freeze the current base image ships. Cache hits
-> are automatic. (A daemon app additionally imports `daemon.freeze`.)
-
-## How to add a dep to the warm store
-
-Adding a new dep is a one-PR loop:
-
-1. **Edit the manifest.** Add the package alphabetically to `build-depends:` in
-   the layer manifest for its level: a daemon-family dep goes in
-   [`basecontainer-daemon-deps.cabal`](../../core/warm-deps/daemon/basecontainer-daemon-deps.cabal)
-   (the `daemon.freeze` layer); a base / core / shared web-build dep goes in
-   [`basecontainer-core-deps.cabal`](../../core/warm-deps/core/basecontainer-core-deps.cabal)
-   (the `core.freeze` layer).
-2. **Rebuild and push every base tag.** The freezes are **never committed** —
-   `cabal.project.freeze`, `core.freeze`, and `daemon.freeze` are all in
-   `.gitignore` and `.dockerignore`. There is no "commit the freeze" step. The
-   `cabal freeze` step the base build runs in-image against the warm-store
-   project regenerates the freezes during the rebuild, so the new dep's pinned
-   versions land in the layered freezes baked into each fresh base tag. Use the
-   canonical publish workflow in [build_release.md](build_release.md):
-
-   ```sh
-   poetry run hostbootstrap base build-and-push --arch amd64
-   poetry run hostbootstrap base build-and-push --arch arm64
-   ```
-
-   Run each command on a native host/Docker engine of the matching architecture. The current CLI uses
-   the requested `--arch` in the tag but does not validate that it matches the builder; Phase 6 Sprint
-   6.7 owns that fail-closed check. Do not run both lines on one architecture or rely on emulation.
-
-The layered freezes are the **SSoT for "what versions ship with each base tag"**.
-Treat them as a public API.
-
-## How to verify your project hits the cache
-
-Inside the derived image's project build environment, after its project sources and
-`container.cabal.project` are present, run:
-
-```sh
-cabal build --dry-run --enable-tests --enable-benchmarks all
+```dockerfile
+COPY demo /workspace/demo
+WORKDIR /workspace/demo
+RUN cabal build all
 ```
 
-The Python `hostbootstrap build` command does not create this container; it only materializes the
-host-native project binary. The project-supplied build-image action owns the derived build environment.
+The right form lets Cabal reuse matching inherited artifacts and recover gracefully when the cache
+misses.
 
-The build plan should show the project's own targets and source-built `hostbootstrap-core` in
-"Compiling …" status. Its dependency closure and other third-party packages should be cache hits. If a
-third-party dependency appears with `(requires build)`, the warm store missed it.
+## Validation
 
-Most common causes, in order of likelihood:
-
-1. The project's `cabal.project` does not match the canonical template (a flag
-   missing, `optimization` not set to `2`, or the wrong freeze fragment imported
-   — an L0-direct project imports `core.freeze`; a daemon app imports both
-   `core.freeze` and `daemon.freeze`).
-2. The project's `*.cabal` has an upper bound that conflicts with a freeze.
-3. The package is genuinely not in the warm store — open a PR adding it to the
-   appropriate layer manifest under
-   [`core/warm-deps/`](../../core/warm-deps/) (core + web →
-   `basecontainer-core-deps.cabal`; daemon-family → `basecontainer-daemon-deps.cabal`).
-
-## WRONG vs RIGHT
-
-> **WRONG**
->
-> Project `cabal.project`:
->
-> ```cabal
-> packages: .
-> with-compiler: ghc-9.12.4
-> ```
->
-> Project `docker/Dockerfile`:
->
-> ```dockerfile
-> RUN cabal build --enable-tests --enable-benchmarks all
-> ```
->
-> The Dockerfile enables tests/benchmarks but the `cabal.project` does not, so
-> Cabal store keys for the deps include `tests=True` while the warm store does
-> not. Every test-using package rebuilds.
->
-> **RIGHT**
->
-> Project `cabal.project`:
->
-> ```cabal
-> packages: .
-> with-compiler: ghc-9.12.4
-> tests: True
-> benchmarks: True
-> shared: True
-> optimization: 2
-> ```
->
-> Project `docker/Dockerfile`:
->
-> ```dockerfile
-> RUN cabal build all
-> ```
->
-> Flags live in one place; the Dockerfile invocation does not need to repeat
-> them; warm-store cache keys match. `cabal build --dry-run` shows only the
-> project's own targets.
+Focused tests enforce one consumer project, absence of project swapping/base freeze imports, and absence
+of forced offline solving. The normal Python and fast core/demo Haskell gates validate source and solver
+compatibility. A registry publication/live compatibility smoke remains an explicit operator workflow,
+not a synthetic offline proof.
 
 ## See also
 
-* [base_image.md](base_image.md) — what else ships in the base
-* [languages/haskell.md](../languages/haskell.md) — Haskell-specific overview
-* [code_check_doctrine.md](code_check_doctrine.md) — build-time code-check
-* [linking_and_optimization.md](linking_and_optimization.md) — why `-O2` and
-  `shared`
-* [derived_project_standards.md](derived_project_standards.md) — the
-  derived-project rule set
+- [Base image](base_image.md)
+- [Build and release](build_release.md)
+- [Cabal layout](cabal_layout.md)
+- [Derived Dockerfile](derived_dockerfile.md)

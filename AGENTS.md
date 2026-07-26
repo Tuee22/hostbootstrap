@@ -119,15 +119,16 @@ this applies. Full mechanism and root cause:
 
 ## Base image: rebuild → republish → pull
 
-The published `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the **source of
-truth** every derived project (including `demo/`) builds `FROM`. When you change
-`docker/basecontainer.Dockerfile` or the warm-store inputs under `core/warm-deps/` (the layer
-manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection), the published base
+The published rolling `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the
+**source of truth** every derived project (including `demo/`) builds `FROM`. When you change
+`docker/basecontainer.Dockerfile` or the warm-store inputs under `core/warm-deps/`, the published base
 no longer matches the repo. You MUST then **rebuild and republish** the affected base tag and have
-consumers **pull** the republished tag.
+consumers **pull** the republished tag. A rebuild intentionally discovers current compatible upstream
+versions; it is not required to replay a committed input lock.
 
-- Do **not** work around a stale published base by pointing a consumer at a freeze name the published
-  base does not yet ship (for example, editing a derived project's `container.cabal.project` import).
+- Consumers use the same host-compatible `cabal.project` inside and outside containers. Do not add
+  `/opt/basecontainer/...` freeze imports or a container-only project; the inherited Cabal store is only
+  an opportunistic cache and misses may resolve and build normally.
 - Do **not** build the base locally and build derived projects against the un-republished local image —
   that hides the drift between the repo and Docker Hub.
 - The canonical command is `hostbootstrap base build-and-push --flavor <f> --arch <a>` (plain

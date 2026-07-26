@@ -1,29 +1,25 @@
 cabal-version: 3.12
 name: basecontainer-core-deps
 version: 0.1.0.0
-synopsis: Core+web layer of the basecontainer warm Cabal store
+synopsis: Core and web group for the basecontainer warm Cabal store
 category: Development
 description:
-  The `core.freeze` layer of the warm Cabal store: base + the
-  `hostbootstrap-core` dependency closure + the shared web-build extras
+  Cache-population inputs for the `hostbootstrap-core` dependency closure and
+  shared web-build extras
   (`purescript-bridge` for the demo's web bridge, and the web-server stack —
   `warp` / `wai*` / `network` / `http-types` / `websockets` — an L0-direct web
   consumer such as the demo needs). Listing these as one tiny executable's
-  build-depends lets the base build prebuild the shared Cabal store and project
-  `core.project` into `core.freeze`.
+  build-depends lets the base build populate one shared Cabal store.
   .
-  Imported by every layer: `mcts` and `daemon-substrate` (and any L0-direct
-  consumer like the demo) import only `core.freeze`; a daemon app imports
-  `core.freeze` AND `daemon.freeze`. The daemon-only deps live in the sibling
-  `basecontainer-daemon-deps.cabal` (`daemon.freeze`). Both freezes are
-  generated in-image by `cabal freeze` and never committed (.gitignore /
-  .dockerignore exclude `core.freeze` / `daemon.freeze`).
+  Consumers do not import this package or a generated freeze. The daemon-family
+  cache-population inputs live in the sibling `basecontainer-daemon-deps.cabal`.
+  Matching inherited artifacts are reused opportunistically.
   See documents/engineering/warm_store.md.
 license: MIT
 author: basecontainer contributors
 maintainer: basecontainer contributors
 build-type: Simple
-tested-with: GHC ==9.12.4
+tested-with: GHC >=9.6 && <9.14
 
 executable basecontainer-core-deps
   main-is: Main.hs

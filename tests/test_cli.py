@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -16,8 +17,7 @@ LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
 
 def _project() -> bootstrap.ProjectBuildSpec:
     return bootstrap.ProjectBuildSpec(
-        project="proj",
-        executable="proj",
+        identity="proj",
         cabal_file=Path("/proj/proj.cabal"),
     )
 
@@ -180,17 +180,19 @@ def test_default_project_root_is_current_directory() -> None:
 def test_run_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project = _project()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_load_project", lambda _path: project)
+    monkeypatch.setattr(cli, "_load_project", lambda _path, **_kwargs: project)
 
     async def _fake_bootstrap(
         spec: bootstrap.ProjectBuildSpec,
         *,
         project_root: Path,
         args: tuple[str, ...],
+        offline: bool,
     ) -> None:
         captured["spec"] = spec
         captured["root"] = project_root
         captured["args"] = args
+        captured["offline"] = offline
 
     monkeypatch.setattr(cli.bootstrap, "bootstrap", _fake_bootstrap)
 
@@ -202,6 +204,7 @@ def test_run_forwards_trailing_args(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert captured["spec"] is project
     assert captured["root"] == tmp_path.resolve()
     assert captured["args"] == ("play", "--seed", "7")
+    assert captured["offline"] is False
 
 
 def test_run_missing_cabal_fails_cleanly(tmp_path: Path) -> None:
@@ -215,15 +218,17 @@ def test_build_invokes_build_binary_and_echoes_path(
 ) -> None:
     project = _project()
     captured: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_load_project", lambda _path: project)
+    monkeypatch.setattr(cli, "_load_project", lambda _path, **_kwargs: project)
 
     async def _fake_build_binary(
         spec: bootstrap.ProjectBuildSpec,
         *,
         project_root: Path,
+        offline: bool,
     ) -> Path:
         captured["spec"] = spec
         captured["root"] = project_root
+        captured["offline"] = offline
         return project_root / ".build" / "proj"
 
     monkeypatch.setattr(cli.bootstrap, "build_binary", _fake_build_binary)
@@ -232,6 +237,7 @@ def test_build_invokes_build_binary_and_echoes_path(
     assert result.exit_code == 0, result.output
     assert captured["spec"] is project
     assert captured["root"] == tmp_path.resolve()
+    assert captured["offline"] is False
     assert f"built {tmp_path.resolve() / '.build' / 'proj'}" in result.output
 
 
@@ -241,6 +247,53 @@ def test_build_multiple_cabal_files_fails_cleanly(tmp_path: Path) -> None:
     result = CliRunner().invoke(cli.main, ["build", "--project-root", str(tmp_path)])
     assert result.exit_code != 0
     assert "multiple .cabal files" in result.output
+
+
+def test_build_threads_explicit_cabal_selection_and_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _project()
+    captured: dict[str, object] = {}
+
+    def _load(root: Path, *, selected_cabal_file: Path | None) -> bootstrap.ProjectBuildSpec:
+        captured["root"] = root
+        captured["selection"] = selected_cabal_file
+        return project
+
+    async def _build(
+        spec: bootstrap.ProjectBuildSpec,
+        *,
+        project_root: Path,
+        offline: bool,
+    ) -> Path:
+        captured["spec"] = spec
+        captured["build_root"] = project_root
+        captured["offline"] = offline
+        return project_root / ".build" / "proj"
+
+    monkeypatch.setattr(cli, "_load_project", _load)
+    monkeypatch.setattr(cli.bootstrap, "build_binary", _build)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "build",
+            "--project-root",
+            str(tmp_path),
+            "--cabal-file",
+            "proj.cabal",
+            "--offline",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "root": tmp_path.resolve(),
+        "selection": Path("proj.cabal"),
+        "spec": project,
+        "build_root": tmp_path.resolve(),
+        "offline": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -297,10 +350,10 @@ def test_doctor_command_wraps_prereq_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_load_and_detect_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     project = _project()
-    monkeypatch.setattr(cli.bootstrap, "discover_project", lambda _path: project)
+    monkeypatch.setattr(cli.bootstrap, "discover_project", lambda _path, **_kwargs: project)
     assert cli._load_project(Path("/proj")) is project
 
-    def _bad_project(_path: Path) -> bootstrap.ProjectBuildSpec:
+    def _bad_project(_path: Path, **_kwargs: object) -> bootstrap.ProjectBuildSpec:
         raise cli.bootstrap.ProjectDiscoveryError("bad project")
 
     monkeypatch.setattr(cli.bootstrap, "discover_project", _bad_project)
@@ -387,7 +440,28 @@ def _patch_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
+    authority = cli.MaintainerCommandAuthority(Path.cwd().resolve(), cli._MAINTAINER_TOKEN)
+    monkeypatch.setattr(cli, "_require_maintainer_authority", lambda: authority)
+    monkeypatch.setattr(cli, "_run_quality_gates_or_abort", lambda _context, _authority: None)
+
+    async def _native(_requested: str, _host: str) -> None:
+        return None
+
+    async def _pull(_tag: str, **_kwargs: object) -> object:
+        return process.CommandResult(args=("docker", "pull"), returncode=0, stdout="", stderr="")
+
+    async def _digest(tag: str) -> str:
+        repository = tag.split(":", 1)[0]
+        return f"{repository}@sha256:{'a' * 64}"
+
+    monkeypatch.setattr(cli, "_validate_native_architecture", _native)
+    monkeypatch.setattr(cli.docker_ops, "pull", _pull)
+    monkeypatch.setattr(cli.docker_ops, "image_digest_reference", _digest)
+    monkeypatch.setattr(
+        cli.base_image,
+        "compatibility_smoke_spec",
+        lambda *_args, **_kwargs: _stub_build_spec()[0],
+    )
     # Keep base-build tests hermetic: don't probe real host resources.
     monkeypatch.setattr(cli, "_resolve_build_budget", lambda _targets, *, sequential: None)
 
@@ -517,11 +591,14 @@ def test_resolve_build_budget_splits_for_concurrent_flavors(
 
 
 def test_base_build_threads_budget_into_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_run_self_check_or_abort", lambda _context: None)
-    res = cli.resources.HostResources(
-        cpu_count=8, mem_total_bytes=32 * 1024**3, mem_available_bytes=24 * 1024**3
+    _stub_self_check_passing(monkeypatch)
+    budget = cli.resources.BuildBudget(
+        docker_cpus="4",
+        docker_memory="8192m",
+        docker_memory_swap="8192m",
+        cabal_jobs=4,
     )
-    monkeypatch.setattr(cli.resources, "detect_host_resources", lambda: res)
+    monkeypatch.setattr(cli, "_resolve_build_budget", lambda _targets, *, sequential: budget)
     captured: list[object] = []
 
     def _capture(*_a: object, **kwargs: object) -> tuple[docker_ops.BuildSpec, object]:
@@ -533,7 +610,7 @@ def test_base_build_threads_budget_into_build_spec(monkeypatch: pytest.MonkeyPat
 
     result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu", "--arch", "amd64"])
     assert result.exit_code == 0, result.output
-    assert captured and all(isinstance(budget, cli.resources.BuildBudget) for budget in captured)
+    assert captured == [budget]
 
 
 def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -595,6 +672,7 @@ def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured == [(cli.Flavor.CPU, "arm64")]
     assert pushed == []
     assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
+    assert "inspection only" in result.output
 
 
 async def _ok_build(*_a: object, **_kw: object) -> object:
@@ -616,11 +694,11 @@ def test_base_build_and_push_concurrent_labels_each_stream(monkeypatch: pytest.M
     assert result.exit_code == 0, result.output
     # cpu is padded to cuda's width so the labels align.
     assert (
-        "[cpu ] built and pushed docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
+        f"[cpu ] published and validated docker.io/tuee22/hostbootstrap@sha256:{'a' * 64}"
         in result.output
     )
     assert (
-        "[cuda] built and pushed docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"
+        f"[cuda] published and validated docker.io/tuee22/hostbootstrap@sha256:{'a' * 64}"
         in result.output
     )
 
@@ -668,11 +746,11 @@ def test_base_build_both_flavors_concurrent_no_push(monkeypatch: pytest.MonkeyPa
     assert "[cuda] built docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64" in result.output
 
 
-def test_self_check_runs_check_code_in_context(
+def test_quality_gates_run_all_python_core_and_demo_commands(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "pyproject.toml").touch()
     captured: list[tuple[list[str], Path]] = []
+    authority = cli.MaintainerCommandAuthority(tmp_path.resolve(), cli._MAINTAINER_TOKEN)
 
     class _CompletedOK:
         returncode = 0
@@ -683,39 +761,137 @@ def test_self_check_runs_check_code_in_context(
         return _CompletedOK()
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
-    cli._run_self_check_or_abort(tmp_path)
-    # Runs in the current (dev) interpreter, not `poetry run`, since base is dev-only.
+    cli._run_quality_gates_or_abort(tmp_path, authority)
+
     assert captured == [
-        (
-            [cli.sys.executable, "-m", "hostbootstrap.check_code"],
-            tmp_path,
-        )
+        (list(gate.command), gate.cwd) for gate in cli._quality_gates(tmp_path.resolve())
     ]
 
 
-def test_self_check_nonzero_raises_click_exception(
+def test_quality_gate_nonzero_raises_before_docker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "pyproject.toml").touch()
+    authority = cli.MaintainerCommandAuthority(tmp_path.resolve(), cli._MAINTAINER_TOKEN)
+    calls = 0
 
     class _Completed:
         returncode = 7
 
     def _fake_run(*_a: object, **_kw: object) -> object:
+        nonlocal calls
+        calls += 1
         return _Completed()
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
-    with pytest.raises(cli.click.ClickException, match="self-check failed"):
-        cli._run_self_check_or_abort(tmp_path)
+    with pytest.raises(cli.click.ClickException, match="Python code check failed"):
+        cli._run_quality_gates_or_abort(tmp_path, authority)
+    assert calls == 1
 
 
-def test_self_check_rejects_non_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_quality_gates_reject_non_authorized_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    authority = cli.MaintainerCommandAuthority(
+        tmp_path.resolve() / "canonical", cli._MAINTAINER_TOKEN
+    )
+
     def _fake_run(*_a: object, **_kw: object) -> object:
-        raise AssertionError("subprocess.run must not be reached without pyproject.toml")
+        raise AssertionError("subprocess.run must not be reached for another checkout")
 
     monkeypatch.setattr(cli.subprocess, "run", _fake_run)
-    with pytest.raises(cli.click.ClickException, match="not a hostbootstrap repo root"):
-        cli._run_self_check_or_abort(tmp_path)
+    with pytest.raises(cli.click.ClickException, match="not the canonical checkout"):
+        cli._run_quality_gates_or_abort(tmp_path, authority)
+
+
+def test_native_architecture_requires_request_host_and_engine_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _arm64() -> str:
+        return "arm64"
+
+    monkeypatch.setattr(cli.docker_ops, "engine_arch", _arm64)
+    asyncio.run(cli._validate_native_architecture("arm64", "arm64"))
+    with pytest.raises(cli.click.ClickException, match="must be native"):
+        asyncio.run(cli._validate_native_architecture("amd64", "arm64"))
+
+
+def test_build_then_publish_orders_pull_and_real_consumer_smoke(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    digest = f"docker.io/tuee22/hostbootstrap@sha256:{'b' * 64}"
+    base_spec = _stub_build_spec()[0]
+    smoke_spec = docker_ops.BuildSpec(
+        dockerfile=tmp_path / "demo/docker/Dockerfile",
+        context=tmp_path,
+        tags=("compatibility",),
+        build_args={"BASE_IMAGE": digest},
+    )
+    order: list[str] = []
+
+    async def _build(spec: docker_ops.BuildSpec, *, prefix: str = "") -> object:
+        _ = prefix
+        order.append("base-build" if spec is base_spec else "derived-build")
+        return process.CommandResult(args=("docker", "build"), returncode=0, stdout="", stderr="")
+
+    async def _push(value: str, *, prefix: str = "") -> object:
+        _ = prefix
+        assert value == tag
+        order.append("push")
+        return process.CommandResult(args=("docker", "push"), returncode=0, stdout="", stderr="")
+
+    async def _pull(value: str, *, prefix: str = "") -> object:
+        _ = prefix
+        assert value == tag
+        order.append("pull")
+        return process.CommandResult(args=("docker", "pull"), returncode=0, stdout="", stderr="")
+
+    async def _digest(value: str) -> str:
+        assert value == tag
+        order.append("digest")
+        return digest
+
+    def _validation(
+        flavor: cli.Flavor,
+        arch: str,
+        *,
+        context: Path,
+        pulled_reference: str,
+    ) -> docker_ops.BuildSpec:
+        assert (flavor, arch, context, pulled_reference) == (
+            cli.Flavor.CPU,
+            "arm64",
+            tmp_path,
+            digest,
+        )
+        order.append("compatibility-spec")
+        return smoke_spec
+
+    monkeypatch.setattr(cli.docker_ops, "build", _build)
+    monkeypatch.setattr(cli.docker_ops, "push", _push)
+    monkeypatch.setattr(cli.docker_ops, "pull", _pull)
+    monkeypatch.setattr(cli.docker_ops, "image_digest_reference", _digest)
+    monkeypatch.setattr(cli.base_image, "compatibility_smoke_spec", _validation)
+
+    result = asyncio.run(
+        cli._build_then_publish(
+            base_spec,
+            tag,
+            cli.Flavor.CPU,
+            "arm64",
+            tmp_path,
+        )
+    )
+
+    assert result == digest
+    assert order == [
+        "base-build",
+        "push",
+        "pull",
+        "digest",
+        "compatibility-spec",
+        "derived-build",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -723,15 +899,40 @@ def test_self_check_rejects_non_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_p
 # ---------------------------------------------------------------------------
 
 
-def test_maintainer_cli_enabled_reflects_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_maintainer_authority_is_opaque_and_bound_to_repo_poetry_venv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = cli._maintainer_command_authority()
+    assert authority is not None
+    assert authority.repository_root == Path.cwd().resolve()
+    with pytest.raises(TypeError, match="minted only"):
+        cli.MaintainerCommandAuthority(Path.cwd(), object())
+
+    pipx_prefix = Path("/tmp/pipx/venvs/hostbootstrap")
+    monkeypatch.setattr(cli.sys, "prefix", str(pipx_prefix))
+    monkeypatch.setattr(cli.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(cli.sys, "executable", str(pipx_prefix / "bin/python"))
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda _name: object())
-    assert cli._maintainer_cli_enabled() is True
-
-    def _missing_pytest(name: str) -> object | None:
-        return None if name == "pytest" else object()
-
-    monkeypatch.setattr(cli.importlib.util, "find_spec", _missing_pytest)
+    assert cli._maintainer_command_authority() is None
     assert cli._maintainer_cli_enabled() is False
+
+
+def test_maintainer_authority_rejects_unreadable_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unreadable(_text: str) -> object:
+        raise OSError("checkout disappeared")
+
+    monkeypatch.setattr(cli.tomllib, "loads", _unreadable)
+    assert cli._maintainer_command_authority() is None
+
+
+def test_require_maintainer_authority_fails_without_checkout_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_maintainer_command_authority", lambda: None)
+    with pytest.raises(cli.click.ClickException, match="in-project Poetry"):
+        cli._require_maintainer_authority()
 
 
 def test_maintainer_commands_hidden_in_global_cli(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -751,6 +952,8 @@ def test_maintainer_commands_hidden_in_global_cli(monkeypatch: pytest.MonkeyPatc
 
 
 def test_check_code_command_propagates_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    authority = cli.MaintainerCommandAuthority(Path.cwd().resolve(), cli._MAINTAINER_TOKEN)
+    monkeypatch.setattr(cli, "_maintainer_command_authority", lambda: authority)
     monkeypatch.setattr(cli.check_code, "main", lambda: 0)
     assert CliRunner().invoke(cli.main, ["check-code"]).exit_code == 0
 
@@ -759,6 +962,8 @@ def test_check_code_command_propagates_exit_code(monkeypatch: pytest.MonkeyPatch
 
 
 def test_test_all_command_forwards_args_and_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    authority = cli.MaintainerCommandAuthority(Path.cwd().resolve(), cli._MAINTAINER_TOKEN)
+    monkeypatch.setattr(cli, "_maintainer_command_authority", lambda: authority)
     captured: dict[str, list[str]] = {}
 
     def _run(args: list[str]) -> int:

@@ -37,8 +37,9 @@ wait. Nvkind adds the NVIDIA runtime smoke, a control-plane/GPU-worker topology,
 cordons, and a device-plugin/allocatable-GPU gate.
 
 This does not yet satisfy universal typed readiness. `waitNodesReady` and several related waits return
-`IO ()`, and downstream mutations do not all consume an opaque `Ready ClusterApi`/GPU capability.
-`Ready` is also publicly forgeable today. See
+`IO ()`, and downstream mutations do not all consume the opaque plan/resource-indexed readiness and
+prepared-operation foundation. Those constructors are now private; the open work is live interpreter
+integration, not witness sealing. See
 [readiness](../architecture/readiness.md) and
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
@@ -93,11 +94,11 @@ The cluster teardown partition excludes the plan's data path from its filesystem
 - `Down` removes no planned filesystem path;
 - `Delete` removes derived paths but not the data path.
 
-This is a narrow and unit-tested guarantee. The target derives `.data` from one opaque canonical project
-root and carries typed projections through provider guest, Docker, kind/nvkind, and pod boundaries.
-Provider guests may reconcile `/var/tmp/hostbootstrap-demo-data`; direct Linux must bind the canonical
-absolute host path and currently does not. Whether those bytes survive the entire destroy/up cycle is
-still unvalidated. See
+This is a narrow and unit-tested guarantee. Root admission now derives direct-host `.data` from one
+opaque canonical project root, and the Docker handoff consumes a same-root typed host projection.
+Provider guests reconcile `/var/tmp/hostbootstrap-demo-data`; the final plan still has to carry typed
+guest, container, kind/nvkind, and pod projections. Whether those bytes survive the entire destroy/up
+cycle is still unvalidated. See
 [durable state](../architecture/durable_state.md).
 
 The status renderer's current wording is `(not removed by cluster teardown)`. It describes membership in

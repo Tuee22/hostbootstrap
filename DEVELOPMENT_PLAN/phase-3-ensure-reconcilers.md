@@ -104,11 +104,14 @@ reconciliation it consumes.
 Implement the initial substrate-and-ensure-reconciler surface (see
 [development_plan_standards.md § L](development_plan_standards.md)). Each host dependency is a
 probe-first value carrying a host-applicability predicate and a reconcile action. Projects compose the
-concrete reconcilers as `ensure-docker`, `ensure-colima`, `ensure-apple-metal`, `ensure-lima`,
+current context-free reconcilers as `ensure-docker`, `ensure-apple-metal`, `ensure-lima`,
 `ensure-cuda`, `ensure-cudawin`, `ensure-homebrew`, `ensure-ghc`, `ensure-wsl2`, and `ensure-incus` chain
 steps (`ensure-cudawin` and `ensure-wsl2` are the reopened Windows additions — `ensure-cudawin` owned here,
 `ensure-wsl2` by [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md)). A reconciler invoked
 on a host its predicate rejects fails fast with a one-line diagnostic and a non-zero exit.
+Sprint 5.8 later removed this phase's config-free `ensure-colima` row: direct Colima now requires a
+plan-bound project profile and prepared exact budget wall, so it is a provider adapter rather than an
+`allReconcilers` member.
 
 ## Sprints
 
@@ -165,7 +168,7 @@ Land the concrete reconcilers as library values.
 | Reconciler step | Module | Applicable hosts |
 |------------|--------|------------------|
 | `ensure-docker` | `HostBootstrap.Ensure.Docker` | all substrates |
-| `ensure-colima` | `HostBootstrap.Ensure.Colima` | `apple-silicon` |
+| `ensure-colima` (historical; removed by Sprint 5.8) | `HostBootstrap.Ensure.Colima` | `apple-silicon` |
 | `ensure-cuda` | `HostBootstrap.Ensure.Cuda` | `linux-gpu` |
 | `ensure-homebrew` | `HostBootstrap.Ensure.Homebrew` | `apple-silicon` |
 | `ensure-ghc` | `HostBootstrap.Ensure.Ghc` | `apple-silicon` |
@@ -211,7 +214,8 @@ is the strength of each reconciler's probe; later provider work owns presence-on
 #### Deliverables
 
 - The phase-3 reconcile actions route through `installAndVerify` with their probe and pure
-  `installSteps` planner; `homebrew` (toolchain root) and Apple `docker` (deferred to `ensure colima`)
+  `installSteps` planner; `homebrew` (toolchain root) and Apple `docker` (then deferred to the
+  config-free `ensure colima` route that Sprint 5.8 later removed)
   return `Left` with a fail-fast instruction by design. Linux `ensure docker` also reconciles invoking
   user membership in the `docker` group, applies an immediate socket ACL when needed, and verifies
   future-session socket access.

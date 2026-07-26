@@ -110,6 +110,10 @@ def push_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "push", tag)
 
 
+def pull_command(reference: str) -> tuple[str, ...]:
+    return (_DOCKER, "pull", reference)
+
+
 def tag_command(source: str, target: str) -> tuple[str, ...]:
     return (_DOCKER, "tag", source, target)
 
@@ -120,6 +124,63 @@ def image_exists_command(tag: str) -> tuple[str, ...]:
 
 def image_entrypoint_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "image", "inspect", "--format", "{{json .Config.Entrypoint}}", tag)
+
+
+def engine_arch_command() -> tuple[str, ...]:
+    return (_DOCKER, "info", "--format", "{{.Architecture}}")
+
+
+def image_repo_digests_command(tag: str) -> tuple[str, ...]:
+    return (_DOCKER, "image", "inspect", "--format", "{{json .RepoDigests}}", tag)
+
+
+def normalize_architecture(value: str) -> str:
+    normalized = value.strip().lower()
+    aliases = {
+        "amd64": "amd64",
+        "x86_64": "amd64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise RuntimeError(f"unsupported Docker architecture: {value.strip()!r}") from exc
+
+
+def parse_digest_reference(rendered: str, *, tag: str) -> str:
+    try:
+        raw: object = json.loads(rendered.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"could not parse Docker RepoDigests for {tag!r}") from exc
+    if not isinstance(raw, list):
+        raise RuntimeError(f"unexpected Docker RepoDigests for {tag!r}")
+
+    last_slash = tag.rfind("/")
+    last_colon = tag.rfind(":")
+    repository = tag[:last_colon] if last_colon > last_slash else tag
+
+    def docker_repository_name(value: str) -> str:
+        for prefix in ("docker.io/", "index.docker.io/"):
+            if value.startswith(prefix):
+                return value.removeprefix(prefix)
+        return value
+
+    expected_repository = docker_repository_name(repository)
+    matches = [
+        value
+        for value in raw
+        if isinstance(value, str)
+        and "@sha256:" in value
+        and docker_repository_name(value.split("@", 1)[0]) == expected_repository
+        and len(value.split("@sha256:", 1)[1]) == 64
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one pulled repository digest for {tag!r}, got {matches!r}"
+        )
+    digest = matches[0].split("@", 1)[1]
+    return f"{repository}@{digest}"
 
 
 def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
@@ -154,6 +215,20 @@ async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
 
 async def push(tag: str, *, prefix: str = "") -> process.CommandResult:
     return await process.run_checked(push_command(tag), prefix=prefix)
+
+
+async def pull(reference: str, *, prefix: str = "") -> process.CommandResult:
+    return await process.run_checked(pull_command(reference), prefix=prefix)
+
+
+async def engine_arch() -> str:
+    result = await process.run_checked(engine_arch_command(), quiet=True)
+    return normalize_architecture(result.stdout)
+
+
+async def image_digest_reference(tag: str) -> str:
+    result = await process.run_checked(image_repo_digests_command(tag), quiet=True)
+    return parse_digest_reference(result.stdout, tag=tag)
 
 
 async def image_exists(tag: str) -> bool:

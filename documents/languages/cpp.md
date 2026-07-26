@@ -10,7 +10,7 @@ This page documents what the base image ships for C/C++/LLVM.
 
 The base image ships the standard Ubuntu C/C++ toolchain (`build-essential`,
 `gcc`, `g++`, `binutils`, `gdb`, `cmake`, `ninja-build`, `pkg-config`) plus
-the **latest available LLVM family** on Ubuntu 24.04 — currently LLVM 19.
+the LLVM 19 family from the timestamped Ubuntu 24.04 snapshot.
 
 LLVM is symlinked at `/opt/llvm` for stable paths:
 

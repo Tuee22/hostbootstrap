@@ -21,7 +21,9 @@ import asyncio
 import importlib.util
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -46,9 +48,11 @@ from .substrate import Substrate
 _DEFAULT_PROJECT_ROOT: Final[Path] = Path(".")
 
 
-def _load_project(project_root: Path) -> bootstrap.ProjectBuildSpec:
+def _load_project(
+    project_root: Path, *, selected_cabal_file: Path | None = None
+) -> bootstrap.ProjectBuildSpec:
     try:
-        return bootstrap.discover_project(project_root)
+        return bootstrap.discover_project(project_root, selected_cabal_file=selected_cabal_file)
     except bootstrap.ProjectDiscoveryError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -170,17 +174,58 @@ class _FriendlyGroup(click.Group):
 
 _MAINTAINER_TOOLCHAIN: Final[tuple[str, ...]] = ("ruff", "black", "mypy", "pytest")
 _MAINTAINER_COMMANDS: Final[frozenset[str]] = frozenset({"base", "check-code", "test-all"})
+_MAINTAINER_TOKEN: Final[object] = object()
+
+
+@dataclass(frozen=True, init=False)
+class MaintainerCommandAuthority:
+    """Opaque proof that parser construction runs in this checkout's Poetry venv."""
+
+    repository_root: Path
+
+    def __init__(self, repository_root: Path, token: object) -> None:
+        if token is not _MAINTAINER_TOKEN:
+            raise TypeError("MaintainerCommandAuthority is minted only by repository validation")
+        object.__setattr__(self, "repository_root", repository_root)
+
+
+def _maintainer_command_authority() -> MaintainerCommandAuthority | None:
+    """Validate source checkout, in-project Poetry interpreter, and dev group."""
+    repository_root = Path(__file__).resolve().parent.parent
+    expected_venv = (repository_root / ".venv").resolve()
+    try:
+        prefix = Path(sys.prefix).resolve()
+        executable = Path(sys.executable).absolute()
+        pyproject = tomllib.loads((repository_root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    poetry = pyproject.get("tool", {}).get("poetry", {})
+    valid = (
+        isinstance(poetry, dict)
+        and poetry.get("name") == "hostbootstrap"
+        and (repository_root / ".git").exists()
+        and (repository_root / "poetry.lock").is_file()
+        and prefix == expected_venv
+        and sys.prefix != sys.base_prefix
+        and executable.is_relative_to(prefix)
+        and all(importlib.util.find_spec(name) is not None for name in _MAINTAINER_TOOLCHAIN)
+    )
+    if not valid:
+        return None
+    return MaintainerCommandAuthority(repository_root, _MAINTAINER_TOKEN)
 
 
 def _maintainer_cli_enabled() -> bool:
-    """True only in a dev (Poetry) install carrying the maintainer toolchain.
+    return _maintainer_command_authority() is not None
 
-    ``base`` / ``check-code`` / ``test-all`` need ruff/black/mypy/pytest — dev-only
-    dependencies absent from the pipx-installed CLI's own venv — so the global CLI
-    never advertises commands it cannot run. The dev group is atomic, so the whole
-    toolchain must be importable.
-    """
-    return all(importlib.util.find_spec(name) is not None for name in _MAINTAINER_TOOLCHAIN)
+
+def _require_maintainer_authority() -> MaintainerCommandAuthority:
+    authority = _maintainer_command_authority()
+    if authority is None:
+        raise click.ClickException(
+            "maintainer commands require this repository's in-project Poetry development environment"
+        )
+    return authority
 
 
 class _MainGroup(_FriendlyGroup):
@@ -211,6 +256,21 @@ _PROJECT_ROOT_OPTION = click.option(
     help="Project root containing exactly one .cabal file",
 )
 
+_CABAL_FILE_OPTION = click.option(
+    "--cabal-file",
+    "selected_cabal_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Cabal file to select explicitly when the project root contains more than one.",
+)
+
+_OFFLINE_OPTION = click.option(
+    "--offline",
+    is_flag=True,
+    default=False,
+    help="Use only the cached Cabal index/store; perform no package-index update.",
+)
+
 
 @click.group(cls=_MainGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="hostbootstrap")
@@ -236,26 +296,36 @@ def doctor() -> None:
 
 @main.command()
 @_PROJECT_ROOT_OPTION
-def build(project_root: Path) -> None:
+@_CABAL_FILE_OPTION
+@_OFFLINE_OPTION
+def build(project_root: Path, selected_cabal_file: Path | None, offline: bool) -> None:
     """Build the project binary host-native into ``./.build/`` (no exec)."""
     root = project_root.resolve()
-    project = _load_project(root)
-    binary = asyncio.run(bootstrap.build_binary(project, project_root=root))
+    project = _load_project(root, selected_cabal_file=selected_cabal_file)
+    binary = asyncio.run(bootstrap.build_binary(project, project_root=root, offline=offline))
     click.echo(f"built {binary}")
 
 
 @main.command(context_settings={"allow_interspersed_args": False})
 @_PROJECT_ROOT_OPTION
+@_CABAL_FILE_OPTION
+@_OFFLINE_OPTION
 @click.argument("args", nargs=-1)
-def run(project_root: Path, args: tuple[str, ...]) -> None:
+def run(
+    project_root: Path,
+    selected_cabal_file: Path | None,
+    offline: bool,
+    args: tuple[str, ...],
+) -> None:
     """Build idempotently, then exec the project binary with ``args``."""
     root = project_root.resolve()
-    project = _load_project(root)
+    project = _load_project(root, selected_cabal_file=selected_cabal_file)
     asyncio.run(
         bootstrap.bootstrap(
             project,
             project_root=root,
             args=args,
+            offline=offline,
         )
     )
 
@@ -318,34 +388,96 @@ def _arch_default() -> str:
     return substrate.detect().arch
 
 
-async def _build_then_push(build_spec: docker_ops.BuildSpec, tag: str, *, prefix: str = "") -> None:
+async def _build_then_publish(
+    build_spec: docker_ops.BuildSpec,
+    tag: str,
+    flavor: Flavor,
+    arch: str,
+    context: Path,
+    *,
+    prefix: str = "",
+) -> str:
+    """Build/push/pull a rolling tag, then run the real consumer smoke."""
     await docker_ops.build(build_spec, prefix=prefix)
     await docker_ops.push(tag, prefix=prefix)
-
-
-def _run_self_check_or_abort(context: Path) -> None:
-    """Run hostbootstrap's own ruff/black/mypy gate before building the base.
-
-    The base image build flow MUST NOT publish source with style or type errors.
-    ``base`` is a dev-only command (see ``_maintainer_cli_enabled``), so it always
-    runs inside the Poetry development venv where ruff/black/mypy live; we invoke
-    ``check_code`` in that same interpreter (``sys.executable``) against the repo at
-    ``context``. See documents/engineering/code_check_doctrine.md.
-    """
-    if not (context / "pyproject.toml").is_file():
-        raise click.ClickException(
-            f"{context} is not a hostbootstrap repo root (no pyproject.toml); "
-            "run from the repo root or pass --context."
-        )
-    completed = subprocess.run(
-        [sys.executable, "-m", "hostbootstrap.check_code"],
-        cwd=context,
-        check=False,
+    await docker_ops.pull(tag, prefix=prefix)
+    digest_reference = await docker_ops.image_digest_reference(tag)
+    validation = base_image.compatibility_smoke_spec(
+        flavor,
+        arch,
+        context=context,
+        pulled_reference=digest_reference,
     )
-    if completed.returncode != 0:
+    await docker_ops.build(validation, prefix=prefix)
+    return digest_reference
+
+
+@dataclass(frozen=True)
+class _QualityGate:
+    label: str
+    command: tuple[str, ...]
+    cwd: Path
+
+
+def _quality_gates(context: Path) -> tuple[_QualityGate, ...]:
+    return (
+        _QualityGate(
+            "Python code check",
+            (sys.executable, "-m", "hostbootstrap.check_code"),
+            context,
+        ),
+        _QualityGate(
+            "Python tests",
+            (sys.executable, "-m", "hostbootstrap.test_all"),
+            context,
+        ),
+        _QualityGate(
+            "core Haskell build",
+            ("cabal", "build", "all", "--ghc-options=-Werror"),
+            context / "core",
+        ),
+        _QualityGate(
+            "core Haskell tests",
+            ("cabal", "test", "all", "--ghc-options=-Werror"),
+            context / "core",
+        ),
+        _QualityGate(
+            "demo Haskell build",
+            ("cabal", "build", "all", "--ghc-options=-Werror"),
+            context / "demo",
+        ),
+        _QualityGate(
+            "demo Haskell tests",
+            ("cabal", "test", "all", "--ghc-options=-Werror"),
+            context / "demo",
+        ),
+    )
+
+
+def _run_quality_gates_or_abort(context: Path, authority: MaintainerCommandAuthority) -> None:
+    """Complete every repository source gate before the first Docker build."""
+    resolved = context.resolve()
+    if resolved != authority.repository_root:
         raise click.ClickException(
-            f"self-check failed (exit {completed.returncode}); fix the ruff/black/mypy "
-            "issues reported above and re-run."
+            f"{resolved} is not the canonical checkout for this maintainer interpreter "
+            f"({authority.repository_root})"
+        )
+    for gate in _quality_gates(resolved):
+        completed = subprocess.run(list(gate.command), cwd=gate.cwd, check=False)
+        if completed.returncode != 0:
+            raise click.ClickException(
+                f"{gate.label} failed (exit {completed.returncode}); "
+                "no base image was built or pushed."
+            )
+
+
+async def _validate_native_architecture(requested_arch: str, host_arch: str) -> None:
+    engine_arch = await docker_ops.engine_arch()
+    if requested_arch != host_arch or requested_arch != engine_arch:
+        raise click.ClickException(
+            "base architecture must be native: "
+            f"requested={requested_arch}, host={host_arch}, Docker engine={engine_arch}; "
+            "buildx/emulation and cross-architecture tag publication are not supported"
         )
 
 
@@ -382,7 +514,7 @@ def _base_work(
     context: Path,
     *,
     budget: resources.BuildBudget | None,
-) -> list[tuple[docker_ops.BuildSpec, str, str]]:
+) -> list[tuple[docker_ops.BuildSpec, str, Flavor]]:
     """Resolve the (build spec, tag, label) targets for one arch.
 
     The label is the flavor name (``cpu`` / ``cuda``) used to prefix that build's
@@ -390,7 +522,7 @@ def _base_work(
     single target (so concurrency is moot). *budget*, when set, applies the
     docker memory/cpu caps and host-sized cabal ``-j`` to every target.
     """
-    work: list[tuple[docker_ops.BuildSpec, str, str]] = []
+    work: list[tuple[docker_ops.BuildSpec, str, Flavor]] = []
     for flavor_enum in _base_targets(flavor):
         build_spec, _ = base_image.build_spec_for(
             flavor_enum,
@@ -401,17 +533,19 @@ def _base_work(
             budget=budget,
         )
         tag = base_image.base_image_ref(flavor_enum, target_arch)
-        work.append((build_spec, tag, flavor_enum.value))
+        work.append((build_spec, tag, flavor_enum))
     return work
 
 
 async def _run_base_targets(
-    work: Sequence[tuple[docker_ops.BuildSpec, str, str]],
+    work: Sequence[tuple[docker_ops.BuildSpec, str, Flavor]],
     *,
-    push: bool,
+    publish: bool,
     sequential: bool,
+    context: Path,
+    arch: str,
 ) -> None:
-    """Build (and optionally push) each target.
+    """Build locally or complete the publish→pull→digest→derived-build transaction.
 
     Concurrent by default — the cpu/cuda base builds are fully independent — with
     each build's streamed output line-prefixed ``[<label>]`` so the interleaved
@@ -420,23 +554,32 @@ async def _run_base_targets(
     case both builds run to completion, then the first failure (if any) is
     re-raised so the friendly Docker-error translation still applies.
     """
-    width = max((len(label) for _spec, _tag, label in work), default=0)
+    width = max((len(flavor.value) for _spec, _tag, flavor in work), default=0)
 
-    async def _one(build_spec: docker_ops.BuildSpec, tag: str, label: str) -> None:
+    async def _one(build_spec: docker_ops.BuildSpec, tag: str, flavor: Flavor) -> None:
+        label = flavor.value
         prefix = f"[{label.ljust(width)}] "
-        if push:
-            await _build_then_push(build_spec, tag, prefix=prefix)
+        if publish:
+            digest = await _build_then_publish(
+                build_spec,
+                tag,
+                flavor,
+                arch,
+                context,
+                prefix=prefix,
+            )
+            click.echo(f"{prefix}published and validated {digest}")
         else:
             await docker_ops.build(build_spec, prefix=prefix)
-        click.echo(f"{prefix}built{' and pushed' if push else ''} {tag}")
+            click.echo(f"{prefix}built {tag} for base-image inspection only")
 
     if sequential or len(work) <= 1:
-        for build_spec, tag, label in work:
-            await _one(build_spec, tag, label)
+        for build_spec, tag, flavor in work:
+            await _one(build_spec, tag, flavor)
         return
 
     outcomes = await asyncio.gather(
-        *(_one(build_spec, tag, label) for build_spec, tag, label in work),
+        *(_one(build_spec, tag, flavor) for build_spec, tag, flavor in work),
         return_exceptions=True,
     )
     for outcome in outcomes:
@@ -485,17 +628,29 @@ _BASE_SEQUENTIAL_OPTION = click.option(
 def base_build(flavor: str | None, arch: str | None, context: Path, sequential: bool) -> None:
     """Cold-rebuild base image(s) locally (``--no-cache --pull``); no push.
 
-    For local validation: rebuilds the base image from scratch and leaves it
-    tagged in the local Docker daemon, so a downstream project image build
-    resolves the local tag instead of pulling a published base. With no
+    For base-image inspection only: rebuilds from scratch and leaves the tag in
+    the local Docker daemon. Derived projects must not consume it; compatibility
+    validation follows ``build-and-push`` → pull → real-demo smoke. With no
     ``--flavor`` the cpu and cuda builds run concurrently (output line-prefixed
     ``[cpu]`` / ``[cuda]``); pass ``--sequential`` to build one at a time.
     """
-    _run_self_check_or_abort(context)
-    target_arch = arch or _arch_default()
+    authority = _require_maintainer_authority()
+    resolved_context = context.resolve()
+    host_arch = _arch_default()
+    target_arch = arch or host_arch
+    asyncio.run(_validate_native_architecture(target_arch, host_arch))
+    _run_quality_gates_or_abort(resolved_context, authority)
     budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)
-    work = _base_work(flavor, target_arch, context, budget=budget)
-    asyncio.run(_run_base_targets(work, push=False, sequential=sequential))
+    work = _base_work(flavor, target_arch, resolved_context, budget=budget)
+    asyncio.run(
+        _run_base_targets(
+            work,
+            publish=False,
+            sequential=sequential,
+            context=resolved_context,
+            arch=target_arch,
+        )
+    )
 
 
 @base.command("build-and-push")
@@ -508,17 +663,29 @@ def base_build_and_push(
 ) -> None:
     """Cold-rebuild base image(s) (``--no-cache --pull``) and push them.
 
-    The publish path is always cold so the registry copy matches a clean
-    rebuild from source — no silent layer-cache carryover. With no ``--flavor``
+    The publish path is always cold and intentionally discovers current
+    compatible upstream inputs. With no ``--flavor``
     the cpu and cuda builds run concurrently (output line-prefixed ``[cpu]`` /
     ``[cuda]``); pass ``--sequential`` to build one at a time (lower peak
     resource use).
     """
-    _run_self_check_or_abort(context)
-    target_arch = arch or _arch_default()
+    authority = _require_maintainer_authority()
+    resolved_context = context.resolve()
+    host_arch = _arch_default()
+    target_arch = arch or host_arch
+    asyncio.run(_validate_native_architecture(target_arch, host_arch))
+    _run_quality_gates_or_abort(resolved_context, authority)
     budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)
-    work = _base_work(flavor, target_arch, context, budget=budget)
-    asyncio.run(_run_base_targets(work, push=True, sequential=sequential))
+    work = _base_work(flavor, target_arch, resolved_context, budget=budget)
+    asyncio.run(
+        _run_base_targets(
+            work,
+            publish=True,
+            sequential=sequential,
+            context=resolved_context,
+            arch=target_arch,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +696,7 @@ def base_build_and_push(
 @main.command("check-code")
 def check_code_command() -> None:
     """Run the Python code-check gate (ruff → black → mypy). Dev-only."""
+    _require_maintainer_authority()
     raise SystemExit(check_code.main())
 
 
@@ -539,6 +707,7 @@ def check_code_command() -> None:
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
 def test_all_command(pytest_args: tuple[str, ...]) -> None:
     """Run the full pytest suite via the supported runner; forwards args to pytest. Dev-only."""
+    _require_maintainer_authority()
     raise SystemExit(test_all.run(list(pytest_args)))
 
 

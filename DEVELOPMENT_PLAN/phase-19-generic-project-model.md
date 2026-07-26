@@ -13,21 +13,21 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened 2026-07-24.** The typed test-case/variant contract and the production-versus-harness secret
-scope are not implemented. Earlier validation proves the generic config boundary and the unscoped
-`SecretRef` seam only. The public `ProjectSpec`/`Step` construction and replacement combinators also
-still admit contradictory or silently erased extension state, and `ProjectCfg` still requires a raw
-`cfgWithContext` compatibility updater that has no production caller.
+**Closed 2026-07-25.** The typed test-case/variant foundation, scope-indexed
+production-versus-harness secret boundary, and opaque validated project/step construction are
+implemented by Sprints 19.6–19.8.
 
-Phase 19 **generalizes** the config surfaces that phases 4, 8, 10, 15, and 17 delivered. Its earlier
-generic `cfg`/`tcfg` parameterization, project-owned init builder, harness-generated run config, and
-no-auto-init Python boundary remain implemented. Sprints 19.6–19.8 keep this phase open because
-case/variant identity is still stringly, `testSuites` is dead configuration, and the current unscoped
-`SecretRef` lets `TestPlaintext` inhabit a production config unless consumer code-check policy rejects
-it; public project/step values can also be empty, reordered, shadow core identities, or replace prior
-chain/context/teardown/service contributions.
+Phase 19 **generalizes** the config surfaces that phases 4, 8, 10, 15, and 17 delivered. The extension
+boundary is now `ProjectSpec projectId cfg tcfg` with `cfg :: Type -> Type`; production command streams
+consume only `cfg (Production projectId)`, and one restricted `psAssemble` builds either Production or
+the exact generative Harness scope. `SecretRef scope`, mapped `ProjectCodec` wire admission, and separate
+Production/Harness Dhall schemas make harness plaintext unrepresentable and undecodable in Production.
+`ProjectSpec`, `Step`, and `StepPlan` are opaque; additive builder fragments preserve order, checked
+single-assignment slots reject replacement, and typed core/project step identities cannot shadow one
+another. The finalized full codec, typed service registry, and structural role codecs share one
+canonical `specDigest`.
 The specific sub-surfaces this phase
 supersedes — core default values, the fixed universal config type, the `test`-reuses-existing-config flow,
 and the Python `config init --if-missing` trigger — are recorded in
@@ -39,21 +39,12 @@ clean + its own suite 13 passed) and **real-run-validated 2026-06-23** — from 
 wrote `<project>.test.dhall` with no pre-existing project config, then `test run all` *generated* the run's
 `<project>.dhall` via `psTestConfig`, drove the real `project up` on Incus/linux-cpu, reported `3/3
 passed` (pristine-bootstrap / web-build / e2e-tabs), and tore down with `project destroy` (VM deleted,
-generated config removed). That evidence does not validate the open typed-identity or secret-scope
-contracts.
+generated config removed). This records the API used by that historical run; Sprint 19.7 later replaced
+the callback with scope-indexed `psAssemble` and separately validated the secret-scope contract.
 
 ## Remaining Work
 
-Sprint 19.6 is Planned and ready. Sprints 19.7–19.8 are Blocked on the named foundations:
-
-- introduce validated `CaseId`/`VariantId` types and the generic project-owned test-config projection,
-  remove `TestConfig.testSuites`, and reject invalid/duplicate/unknown identities before mutation; and
-- replace the unscoped `SecretRef`/consumer-policy boundary with scope-indexed `SecretRef scope` and
-  project-owned `ProjectConfig scope`, where `TestPlaintext` exists only at harness scope and cannot be
-  decoded, constructed, or passed to production commands; remove the raw `cfgWithContext` method in
-  favor of scope-correct codec verification and a read-only context projection; and
-- replace public record/list construction and replacement combinators with an opaque validated project
-  and step specification that preserves order and cannot shadow or erase prior contributions.
+None. Sprints 19.6–19.8 are Done.
 
 Phase 20 owns the demo mapping and Phase 10 owns harness execution/isolation.
 
@@ -86,42 +77,35 @@ harness are the genuinely universal substrate; the config *type* and its default
 
 ## Target Contract
 
-The baseline generic-model statement and current unscoped-secret limitation are
-[development_plan_standards.md § BB](development_plan_standards.md). The planned scope-indexed refinement
-is specified here in Sprint 19.7. In brief:
+The baseline generic-model statement is
+[development_plan_standards.md § BB](development_plan_standards.md). The scope-indexed refinement is
+implemented by Sprint 19.7. In brief:
 
 - **No core defaults.** `hostbootstrap-core` ships pure shapes + the lift algebra + the harness and owns
-  no default config values. Current `psInit`, `psTestInit`, and `psTestConfig` are independent callbacks;
-  the demo shares `demoInitWithMessage` between `demoInit` and `demoTestConfig` by convention, while its
-  service projection still contains fallback ports/timeouts. Sprint 19.8 makes the scope-aware assembler
-  the sole default-bearing structural path.
+  no default config values. `psAssemble` is the sole default-bearing project-config path; `psTestInit`
+  remains the separate thin test-config initializer. Service role projection preserves explicit
+  assembled values and invents no fallbacks.
 - **Explicit, fail-fast configs.** Every `<project>.dhall` / `<project>.test.dhall` field is mandatory; a missing
   field fails the strict Dhall decode before any side effect (no `//`-merge, no `fromMaybe` in decode).
-- **Generic over the config type.** The implemented extension contract is `ProjectSpec cfg tcfg`. Core
-  currently reads descriptive context through `cfgContext`; the required `cfgWithContext` compatibility
-  method has no production caller and grants no authority. Core may carry an explicit command-specific
-  projection when a fixed command needs project-owned data. The current example is
-  `psServiceVariant :: cfg -> Either String String`, installed by `withServiceConfig`; it can return an
-  arbitrary key and does not prove a relation among config, placement, and registry. Sprint 19.8 replaces
-  it with a project-owned `RoleCodec` jointly finalized with the full config codec/hidden field schema.
+- **Generic over the config family.** The implemented extension contract is
+  `ProjectSpec projectId cfg tcfg`, where `cfg :: Type -> Type`. Core reads descriptive context through
+  `cfgContext`; the raw `cfgWithContext` method is removed. Service dispatch uses a project-owned
+  `RoleCodec` jointly finalized with the full config codec and typed registry.
   A parent projects a role-specific descriptive wire; child-local verification produces the opaque
-  `ValidatedServiceRequest specDigest configId secretDigest fields service` under a fresh local identity
-  and verified secret-bundle digest. Finalization/dispatch
-  produces an existential
+  `ValidatedServiceRequest specDigest configId secretDigest fields service` under a fresh local
+  identity. The downstream Sprint 18.6 finalization/dispatch target produces an existential
   `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-  fields` internal to the core-owned masked run-to-Exit operation. Core imposes no universal field
-  names or value types: the project schema assigns every field a closed `VisibleTo consumers` set, and a
-  closed filter constructs only
-  `RoleParams specDigest configId secretDigest fields service` for `Service service`, and the handler is a closed
-  `ServiceProgram` rather than raw `IO`. Framework-only context/request metadata and frame-specific
-  plan inputs therefore need not be mislabeled as handler data.
-  Sprint 19.7 generalizes
-  that seam over a project-owned config family `cfg :: Type -> Type`, so production commands consume
+  fields` internal to the core-owned masked run-to-Exit operation. The current handler is closed over
+  `RoleParams specDigest configId secretDigest fields service` plus safe framework context, but still
+  returns raw `IO`; Sprint 18.6 replaces that last escape hatch with `ServiceProgram`. Core imposes no
+  universal field names or value types, and framework-only context/request metadata and
+  frame-specific plan inputs do not inhabit handler fields.
+  Production commands consume
   `cfg (Production projectId)` and a run consumes only `cfg (Harness projectId runId)`. `ProjectConfig` / `Resources` /
   `DeployConfig` remain the *demo's* concrete types, not core-owned records.
-- **One scope-aware assembler, reused (DRY).** Current `psInit :: InitArgs -> cfg`, `psTestInit`, and
-  `psTestConfig` are independent callbacks; the target replaces them with the single default-bearing
-  `psAssemble :: AssemblyRequest scope tcfg -> ConfigAssembly scope (cfg scope)`. Independently verified
+- **One scope-aware assembler, reused (DRY).** The single default-bearing path is
+  `psAssemble :: AssemblyRequest projectId tcfg variant scope -> ConfigAssembly scope (cfg scope)`.
+  Independently verified
   Production inputs and
   harness-authorized run identity/draft/overrides are disjoint constructors of that one closed request;
   no second `InitArgs` or scope input can disagree. A pure `psTestMatrix`
@@ -141,10 +125,9 @@ is specified here in Sprint 19.7. In brief:
   the opaque Harness profile/plan derives `.test_data/<runId>`. Neither selection nor a caller-supplied
   durable-directory path is an independent `tcfg` field.
 - **The harness generates and owns the run's config.** `test run` reads `<project>.test.dhall`, refuses if a sibling
-  `.build/<project>.dhall` exists or a production cluster is running, and currently builds labeled
-  variants through `psTestConfig :: tcfg -> IO [(Text, cfg)]`. The target is
-  `psTestMatrix :: tcfg -> Either TestConfigError (TestMatrix VariantDraft)`, followed within each
-  distinct variant's fresh rank-2 harness continuation by
+  `.build/<project>.dhall` exists or a production cluster is running. `TestCfg.projectTestMatrix`
+  validates the executable case registry and pure typed drafts into one total `TestMatrix`, and
+  each selected draft is assembled within its fresh rank-2 harness continuation through
   `psAssemble (HarnessAssembly authority draft)`, producing only
   `cfg (Harness projectId runId)`. `CaseId` and
   `VariantId` are stable reporting identities; generative `runId` is the ownership identity. The builder
@@ -164,10 +147,8 @@ is specified here in Sprint 19.7. In brief:
   are all attempted and aggregated. A true pre-effect `SafetyRefusal` owns nothing; any later
   conflict/failure rolls back every separately journaled preparation this run owns instead of using a
   refusal label to skip cleanup.
-- **Scope-indexed secrets and project config.** The implemented Sprint 19.4
-  `SecretRef = < Vault | TransitKey | Prompt | TestPlaintext >` is unscoped, so excluding
-  `TestPlaintext` from production is currently consumer/code-check policy. Sprint 19.7 replaces it with
-  `SecretRef scope` and a project-owned `ProjectConfig scope`:
+- **Scope-indexed secrets and project config.** Sprint 19.7 replaced Sprint 19.4's historical unscoped
+  union with `SecretRef scope` and a project-owned `ProjectConfig scope`:
   `SecretRef (Production projectId)` has only
   `Vault`/`TransitKey`/`Prompt`, while `TestPlaintext` requires opaque
   `HarnessConfigAuthority projectId runId` and constructs only
@@ -227,7 +208,8 @@ authority and explicit project-provided projections, never through a fixed core 
 
 - `ProjectSpec cfg tcfg` with config/test codecs and contextual lift accessors;
   `runHostBootstrapCLI` generic. Fixed commands may add narrow projections over `cfg` without adding a
-  universal field: Phase 18's `psServiceVariant` / `withServiceConfig` is the current example.
+  universal field: Phase 18's then-current `psServiceVariant` / `withServiceConfig` was the historical
+  example, later removed by Sprint 19.8.
 - The resource budget / VM cordon documented as a provider concern carried by a project's `cfg`, not a
   universal field (§ O amended by § BB).
 - A project's own config fields live on its `cfg` (the demo's `message` is added on the demo's `cfg` in
@@ -247,10 +229,10 @@ Code complete and validated (2026-06-23): `ProjectSpec cfg tcfg` is parameterize
 (`HostBootstrapDemo.Config` / `.Container`), so core owns no config type. The `message` field lands on the
 demo's own cfg in [phase-20](phase-20-config-driven-demo-worked-example.md). Verified by core `cabal build
 -Werror` + `cabal test all` (232) and demo `cabal build -Werror` + its own suite (13). Real-run-validated
-2026-06-23 (test run all 3/3 from a generated config). A later Phase 18 extension now carries
-`psServiceVariant` through `ProjectSpec` and installs the demo-specific implementation with
-`withServiceConfig`; that narrow projection preserves this phase's generic-config contract and does not
-reopen it.
+2026-06-23 (test run all 3/3 from a generated config). A later Phase 18 extension carried
+`psServiceVariant` through `ProjectSpec` and installed the demo-specific implementation with
+`withServiceConfig`; Sprint 19.8 subsequently removed that stringly projection without reopening this
+historical sprint.
 
 ### Sprint 19.3: DRY init + harness-generated config + sibling-path precondition [Done]
 
@@ -376,9 +358,9 @@ binary with no config-init step (the `project_init_command` trigger is deleted),
 fails fast when no sibling `<project>.dhall` exists. `poetry run python -m hostbootstrap.check_code` is
 clean (ruff / black / mypy) and `test_all` reports 166 passed.
 
-### Sprint 19.6: Typed test variants and case identity [Planned]
+### Sprint 19.6: Typed test variants and case identity [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`
@@ -406,7 +388,8 @@ and generated config variants have stable, validated identities.
   sequential ownership for distinct variants.
 - Remove the dead `TestConfig.testSuites :: [Text]` shape and any parallel hard-coded suite list; `all` is
   a parser selector over registered typed case IDs, not stored config data.
-- Keep `ProjectSpec cfg tcfg` generic: Phase 19 owns the types/contracts, Phase 20 owns the demo's
+- Keep the project spec generic: Sprint 19.6 introduced `ProjectSpec cfg tcfg`; Sprint 19.7 subsequently
+  refined it to `ProjectSpec projectId cfg tcfg` with `cfg :: Type -> Type`. Phase 20 owns the demo's
   config-driven variant mapping, and Phase 10 owns execution/isolation.
 
 #### Validation
@@ -425,21 +408,30 @@ and generated config variants have stable, validated identities.
 
 #### Remaining Work
 
-Design the typed IDs and pure matrix/draft projection, migrate selector/schema plumbing, remove the dead
-field, and hand the concrete mapping to Phase 20. Runtime harness ownership and scope-indexed config
-integration remain blocked Sprints 10.9 and 19.7, not closure criteria for this ready foundation. The
-earlier generic `cfg`/`tcfg` work remains valid but did not deliver this typed test contract.
+None. Landed 2026-07-25: opaque validated `CaseId`/`VariantId`, pure `VariantDraft`, and the sole
+`mkTestMatrix` constructor now enforce total non-empty case/variant registries and relation invariants;
+the typed command-boundary selector projects that matrix, `TestCfg` owns the generic `tcfg` projection,
+and the project spec assembles one config from one validated draft. Sprint 19.7 subsequently made that
+boundary `ProjectSpec projectId cfg tcfg` with one scope-aware `psAssemble`. The dead `testSuites` field and
+parallel case-id list are removed from demo and fixture schemas. Matrix/source regressions cover empty,
+duplicate, missing, unknown, ambiguous-pair, orphan, sharing, multi-variant, stable-selection, draft
+purity, and removed string-plumbing cases. Canonical validation passed all 382 core tests and all 101
+demo tests under `cabal test all --test-show-details=direct --ghc-options=-Werror` from `demo/`.
+Runtime harness ownership remains owned by Sprint 10.9; scope-indexed config landed in Sprint 19.7.
+Phase 20 owns
+moving the demo's concrete two-message mapping into decoded config.
 
-### Sprint 19.7: Scope-indexed production and harness secrets [Blocked]
+### Sprint 19.7: Scope-indexed production and harness secrets [Done]
 
-**Status**: Blocked
-**Blocked by**: Sprints 8.7 and 19.6
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/Fixture.hs`,
+`core/hostbootstrap-core/test/SchemaSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/*.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`,
 `demo/test/ConfigSpec.hs`
 **Docs to update**: `documents/architecture/generic_project_model.md`,
@@ -460,8 +452,7 @@ project config while retaining an explicit harness-only plaintext seam for test 
 - Require secrets-strict projects to define `ProjectConfig scope` (or an equivalent project-owned
   `cfg :: Type -> Type`) whose `cfg scope` secret fields carry the same scope index. Thread that config family through the
   generic `ProjectSpec` boundary without adding a core-owned config record or project-specific fields.
-- Remove `cfgWithContext` from the generic boundary. It is currently required by `ProjectCfg` but has no
-  production caller; child config construction/promotion must instead pass through
+- Remove `cfgWithContext` from the generic boundary. Child config construction/promotion passes through
   `ProjectCodec scope specDigest cfg`, verified wire identity, and
   `ValidatedConfig scope specDigest configId (cfg scope)`, so no public raw context record update
   can substitute for the authenticated transition.
@@ -483,22 +474,15 @@ project config while retaining an explicit harness-only plaintext seam for test 
   distinct frame config identity for its distinct narrowed bytes.
 - Reflect separate Dhall schemas/codecs so a production schema has no `TestPlaintext` alternative and
   rejects it before command mutation. The harness schema decodes to untrusted `HarnessConfigWire`, not
-  directly to a generative scoped config. A `HandoffGrant ... ConfigHandoff configDigest verb phase`
-  plus exact-byte verification through the scope-correct opaque
-  `ProjectCodec (Harness projectId runId) specDigest cfg` jointly yields
-  `VerifiedConfigWire (Harness projectId runId) configDigest configId`,
-  `VerifiedHandoff ... ConfigHandoff configId verb phase`, child-local
-  `HarnessConfigAuthority projectId runId`, and
-  `ValidatedConfig (Harness projectId runId) specDigest configId
-  (cfg (Harness projectId runId))` inside one
-  rank-2 continuation. Those values enter `withChildProjectPlan` with the closed verb and
-  `NonEmpty (PlanDraft (Harness projectId runId) specDigest
-  (cfg (Harness projectId runId)))`; only that rank-2 gate yields the fresh child plan/binding and exact
-  `ChildPlanAuthority` later
-  consumed by `authorizeChildProject`. The child does not need the root's non-serializable authority
-  first. Raw wire
-  cannot be promoted merely because the caller has run authority; pointer-only harness configs still
-  acquire the Harness index. Core still never resolves secret material.
+  directly to a generative scoped config. `ProjectCfg projectId cfg` installs a mapped
+  `ProjectCodec`: the Production mapper admits only `ProductionConfigWire`; the Harness mapper closes
+  over exact `HarnessConfigAuthority projectId runId` before admitting `HarnessConfigWire`.
+  `withAssembledHarnessConfig` canonical-renders, hashes, strict re-decodes, and mints root-local
+  `VerifiedConfigWire` plus `ValidatedConfig` under fresh rank-2 identities. The later one-time child
+  `ConfigHandoff`, child-local verification, and `withChildProjectPlan` transition remain owned by
+  Sprints 15.9, 10.9, and 16.6; Sprint 19.7 deliberately does not invent a forgeable transport shortcut.
+  Pointer-only harness configs still acquire the Harness index. Core still never resolves secret
+  material.
 - Remove consumer code-check policy as the enforcement boundary. A consumer may retain a textual scan as
   defense in depth, but correctness cannot depend on it, and no exported constructor/coercion may widen a
   harness config into production.
@@ -510,26 +494,32 @@ project config while retaining an explicit harness-only plaintext seam for test 
   `ProjectConfig (Harness projectId runId)` cannot be passed to a production command, another installed
   project, or a different harness run, and child projection cannot change scope.
 - Dhall tests prove production decode rejects a `TestPlaintext` alternative before side effects. Harness
-  tests round-trip the untrusted wire form, then prove only a matching config-handoff grant and matching
-  bytes plus the scope-correct codec can jointly mint the generic verified wire/handoff and validated
-  config, and only `withChildProjectPlan` can mint the corresponding child authority/plan/binding; raw
-  wire, wrong project/run/config identity/hash, a recovery-kind handoff, direct `FromDhall` to scoped
-  config, and pointer-only scope confusion are rejected.
+  tests prove only matching `HarnessConfigAuthority` plus the scope-correct mapped codec can admit
+  plaintext and mint root-local verified wire/config identities; direct `FromDhall` to a scoped
+  secrets-strict config is absent. Cross-process grant/hash/recovery-kind and child-plan rejection cases
+  remain with the downstream handoff/plan owners named above.
 - Generic fixtures cover a secrets-strict indexed config and a secret-free config, proving core still
   owns neither project fields nor defaults.
 - Anti-drift tests cover both reflected schemas; the Haskell quality gate passes.
 
 #### Remaining Work
 
-Blocked until Sprints 8.7 and 19.6 land the validated lower codec and typed variant projection. Then
-design the scope kind and indexed codecs, generalize `ProjectCfg`/`ProjectSpec` over `cfg scope`, migrate
-fixtures/consumers, and add negative construction/decode tests. The current unscoped `SecretRef` remains
-supported behavior only until this sprint lands; it is not the target production-safety contract.
+None. Landed 2026-07-25: `SecretRef scope` hides all constructors; matching
+`HarnessConfigAuthority projectId runId` is required for `TestPlaintext`, and Production/Harness wire
+schemas are separate. `ProjectCfg projectId cfg` installs scope-correct mapped codecs, so a
+secrets-strict `cfg scope` has no direct Dhall decoder. `ProjectSpec projectId cfg tcfg` exposes one
+restricted `psAssemble`; Production command streams accept only `cfg (Production projectId)`, while
+each variant assembles under a fresh rank-2 Harness authority. `cfgWithContext`, `psInit`, and
+`psTestConfig` are removed. Secret-free demo/fixture families and a secrets-strict fixture validate both
+generic cases. Runtime tests cover Production rejection, matching Harness admission, canonical
+verification, declared-only assembly reads, and API drift; four compile-fail fixtures prove Production,
+cross-run, config-scope, and authority-constructor rejection. The core and demo `-Werror` builds and
+fast suites pass. One-time cross-process handoff and child plan authority remain explicit downstream
+work, not an unimplemented part of this closed scope-construction sprint.
 
-### Sprint 19.8: Opaque validated project and step specification [Blocked]
+### Sprint 19.8: Opaque validated project and step specification [Done]
 
-**Status**: Blocked
-**Blocked by**: Sprints 19.6–19.7
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
@@ -658,20 +648,29 @@ policies cannot represent an invalid combination.
 
 #### Remaining Work
 
-Blocked until Sprints 19.6–19.7 land typed case/variant identities and the scope-aware assembler/config
-identity that the finalized registry must retain. Then design the opaque builder and typed identifiers,
-migrate current record updates and raw `Step`
-construction, make all command projections consume the finalized value, and add the negative/property
-fixtures. Existing `ProjectSpec` validation covers only a small subset and remains the current behavior
-until this sprint lands.
+None. Landed 2026-07-25: opaque `ProjectSpecBuilder`/`ProjectSpec`, `Step`, `StepKind`, and `StepPlan`
+bind all command dispatch to finalized values. Additive fragments preserve order; context/teardown are
+checked single-assignment slots; typed core/project identities are disjoint; and plan validation rejects
+empty/duplicate/conflicting/non-contiguous/post-handoff-invalid sequences before effects. Each step
+retains its reverse policy, operation key, and exact dependency prefix.
+
+The full project codec, structural role codecs, and typed service registry are jointly finalized under
+one canonical `specDigest`. `service run` canonically verifies one sibling snapshot, structurally selects
+one role, and closes the handler action over only typed role fields plus `LocalContextView`; demo
+Web/Accelerator projections preserve explicit parameters without fallback or config reload. Production
+and Harness full/role schema families, including an empty registry, are distinct. Seven compile-fail
+fixtures plus generated frame-order, merge, schema, digest, and role-wire tests cover the public
+boundary. The core build and 397-test suite and demo 104-test suite pass under `-Werror`. Raw service
+handler `IO`, one-use runtime selection, effect authorization, and lifecycle-derived context/teardown
+remain explicitly owned by downstream Sprints 18.6 and 16.6 rather than this closed construction sprint.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/generic_project_model.md` — the canonical generic-project-model design contract
-- `documents/architecture/hostbootstrap_core_library.md` — `ProjectSpec cfg tcfg`, contextual lift
-  authority, the current arbitrary service-selector projection, and its target replacement by the
-  codec-produced request/finalized typed registry/`SelectedService` relation
+- `documents/architecture/hostbootstrap_core_library.md` — opaque `ProjectSpec projectId cfg tcfg`,
+  contextual lift authority, the current codec-produced request/finalized typed registry boundary, and
+  the downstream `SelectedService` relation
 - `documents/architecture/harness_workflow.md` — the harness-generates-then-cleans-up the run's config flow
 - `documents/architecture/python_haskell_boundary.md` — the ordinary Python project path builds and
   invokes only (POSIX `exec`; Windows child subprocess); the binary owns config init (no auto-init
@@ -680,13 +679,14 @@ until this sprint lands.
 - `documents/architecture/build_and_run_model.md` — config is absent post-build until `project init` / harness generation
 
 **Engineering docs to create/update:**
-- `documents/engineering/secrets.md` — current unscoped `SecretRef`, the scope-indexed target, and the
+- `documents/engineering/secrets.md` — implemented scope-indexed `SecretRef` and the
   harness-only `test-secrets.dhall` composition seam
 - `documents/engineering/schema.md` — config type is project-defined and explicit (no core defaults; strict decode)
-- `documents/engineering/config_generation.md` — current independent callbacks, the demo-only shared
-  helper, target `psAssemble`, and config absence until explicit user/harness creation
+- `documents/engineering/config_generation.md` — the single restricted `psAssemble`, `psTestInit`, and
+  config absence until explicit user/harness creation
 - `documents/engineering/testing.md` — `test run` generates the run's `<project>.dhall` from `<project>.test.dhall`
-- `documents/engineering/authoring_project_binaries.md` — the `psInit` / `psTestInit` / `psTestConfig` seams
+- `documents/engineering/authoring_project_binaries.md` — the scope-indexed `psAssemble` / `psTestInit`
+  seams
 - `documents/engineering/resource_budgeting.md` — the budget is a provider concern carried by a project's `cfg`
 
 **Cross-references to add:**

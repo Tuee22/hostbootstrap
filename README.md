@@ -24,17 +24,18 @@ Every consumer ships one project binary over a fixed command tree. Projects cont
 steps, test cases, generated artifacts, and service handlers through `ProjectSpec`; they do not add
 verbs.
 
-The implemented forward representation is `chain :: cfg -> [Step]`. `project up` interprets that chain
-recursively: when it reaches another frame, the parent provisions the frame, builds or installs the
+The implemented forward representation is an opaque validated `StepPlan`. `project up` interprets that
+plan recursively: when it reaches another frame, the parent provisions the frame, builds or installs the
 project binary there, projects a narrower sibling `<project>.dhall`, and invokes the child's own
 `project up`. The Python bootstrapper is the outer, metal-frame instance of that same
 provision → build-pb → handoff pattern.
 
-The current public `ProjectSpec`/`Step` surface is not yet the final safety boundary. Raw constructors
-and replacing setters can admit an empty or reordered plan, core/project name shadowing, and independently
-supplied context/teardown behavior that disagrees with forward execution. The target is one opaque,
-validated `ProjectPlan scope specDigest planId configId cfg` whose resource graph, frame placement, forward
-operations, child handoffs, operation keys, and reverse policies are derived together. See
+`ProjectSpec`, `Step`, and `StepPlan` are opaque. Builder finalization rejects empty/duplicate,
+non-contiguous, shadowed, or replacement-lossy contributions and preserves the exact accepted forward
+order; every step carries a reverse policy, operation key, and validated dependency prefix. Frame-context
+and teardown are still separate checked single-assignment contributions. The downstream target is one
+opaque `ProjectPlan scope specDigest planId configId cfg` whose resource graph, frame placement, forward
+operations, child handoffs, and reverse traversal are derived together. See
 [composition methodology](documents/architecture/composition_methodology.md) and the canonical
 [lifecycle state model](documents/architecture/lifecycle_state_model.md).
 
@@ -74,11 +75,13 @@ Two explicit distribution/maintainer surfaces sit outside that project-runtime b
 publishes base images when an operator requests it. Neither surface becomes a child lifecycle step or
 gives Python ownership of project config, providers, images, clusters, services, or teardown.
 
-The base image contains the container-build toolchain and a warm Cabal store; it does not contain the
-host-native project binary. Published
+The rolling base image contains the container-build toolchain and an opportunistic Cabal store; it does
+not contain the host-native project binary. Builds discover current compatible upstream versions, and
+host/container consumers use one ordinary `cabal.project` with online cache misses allowed. Published
 `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the derived-build source of
 truth. Base Dockerfile or warm-store changes require rebuilding and republishing the affected tag before
-consumers pull it. See [base image](documents/engineering/base_image.md).
+consumers pull it; publication/live compatibility smoke requires explicit operator authorization. See
+[base image](documents/engineering/base_image.md).
 
 ## Configuration
 
@@ -86,21 +89,22 @@ Configuration is strict, binary-owned Dhall:
 
 - `<project>.dhall` is the project/frame runtime config next to the executable.
 - `<project>.test.dhall` is the project-defined test input written by `test init`.
-- `ConfigArtifact` values contribute generated vocabulary/schema/render artifacts.
+- Opaque `ConfigArtifact` values contribute generated vocabulary/schema/render artifacts through one
+  admitted `CodecWitness`, so schema, decode, and render share a validated encoder/decoder type.
 - child frames currently receive narrower descriptive context/capability declarations but retain the
   demo's full parameter record and resource envelope; the target uses role-specific parameter/resource
   projections plus separately verified opaque authority.
 
 The demo's config includes its own resources, deploy settings, context, and message fields.
-`hostbootstrap-core` owns no universal project config or project defaults. The current extension is
-generic over `ProjectSpec cfg tcfg`; the target makes `cfg` scope-indexed:
+`hostbootstrap-core` owns no universal project config or project defaults. The extension is generic over
+`ProjectSpec projectId cfg tcfg`, with `cfg :: Type -> Type`:
 `cfg (Production projectId)` cannot be confused with `cfg (Harness projectId runId)`.
 
-The current `SecretRef` vocabulary still contains `TestPlaintext`, so excluding it from Production is a
-consumer code-check policy. The target makes plaintext constructible only with matching
-`HarnessConfigAuthority projectId runId` during root assembly and normal parent-to-child handoff.
-Restartable-controller runtime verification instead reads the activation-bound private channel
-internally and mints no `HarnessConfigAuthority`. See
+`SecretRef scope` makes plaintext constructible only with matching
+`HarnessConfigAuthority projectId runId`, and the Production wire schema has no plaintext alternative.
+Root-local assembly and codec validation enforce this now. Normal parent-to-child handoff and
+restartable-controller runtime verification remain later lifecycle work; the runtime target reads the
+activation-bound private channel internally and mints no `HarnessConfigAuthority`. See
 [generic project model](documents/architecture/generic_project_model.md) and
 [secrets](documents/engineering/secrets.md).
 
@@ -124,8 +128,10 @@ The pipx-installed Python CLI exposes:
 | `hostbootstrap update` | Explicitly update the pipx app |
 
 The supported maintainer context is the repository Poetry environment, which additionally exposes
-`base`, `check-code`, and `test-all`. The current parser uses development-module importability as its
-gate, not verified install provenance; Phase 6 Sprint 6.7 closes that gap. Self-update is never implicit.
+`base`, `check-code`, and `test-all`. The parser verifies the canonical checkout, its in-project Poetry
+interpreter, lock/project metadata, and development tools before minting opaque maintainer authority;
+making development modules importable in a consumer pipx environment does not expose those commands.
+Self-update is never implicit.
 
 Every Haskell project binary exposes the fixed tree:
 
@@ -215,9 +221,9 @@ cabal test all
 cabal test all
 ```
 
-The demo command is the canonical static entry point, but it is currently red: the
-`hostbootstrap-demo-test` component lacks the threaded RTS option required by Warp. Sprint 13.19 owns
-that code fix; see [testing](documents/engineering/testing.md).
+The demo command is the canonical static entry point. Its test component carries the same threaded RTS
+contract as the executable because `WebServerSpec` starts Warp; a component-contract test prevents that
+option from being removed silently.
 
 Do not invoke `pytest` directly; the supported Python runner establishes the suite sentinel.
 

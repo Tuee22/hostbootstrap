@@ -68,8 +68,8 @@ steps; Phase 13.18/21.4 remove stale Harbor metadata. Sprint 16.6 reopens lifecy
 receipt-driven recursive teardown.
 
 Forward-pointer: under the generic project model, `project init` sources its defaults from the
-project-supplied `psInit` (core owns no default config values) and layers optional flag overrides over
-them. That parameterization is owned by
+project-supplied `psAssemble (ProductionAssembly args)` (core owns no default config values). That
+parameterization is owned by
 [phase-19-generic-project-model.md](phase-19-generic-project-model.md); the `project init|up|down|destroy`
 surface this phase shipped is unchanged.
 
@@ -154,12 +154,12 @@ tools**, not a CLI topology (development_plan_standards § P, § T).
 
 - The surface is exactly `project` / `test` / `service` / `context` / `check-code` for every project binary.
   The `ProjectCommand` / `projectCommand` / `psCommands` extension point is **removed** from
-  `HostBootstrap.CLI`; a project extends core only through the streams (lift chain, Dhall vocabulary,
-  schema-gen, test suite, service handlers — `withChain` / `withFrameContext` / `withTeardown` /
-  `withServices`). `runHostBootstrapCLI` no longer merges project command mods.
+  `HostBootstrap.CLI`; a project extends core only through checked builder streams (additive plan,
+  Dhall vocabulary, schema-gen, test suite, typed services, and frame-context/teardown
+  single-assignment). `runHostBootstrapCLI` no longer merges project command mods.
 - The residual demo `vm` / `incus` / `web` project verbs are **deleted** (`demoCommands` is gone); their IO
   is retained as the chain-step library functions `runVmEnsure` / `runVmUp` / `runVmBootstrap` /
-  `ensureIncusProvider` and the `web` 'ServiceHandler' / build-image bridge codegen
+  the later core-owned Incus provider transition, and the `web` 'ServiceHandler' / build-image bridge codegen
   ([legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
 - The build-time `web bridge` is **re-homed into the build-image chain step** (`runVmBootstrap` runs
   `writeBridge` before the image build; the Dockerfile no longer invokes a `web bridge` verb).
@@ -245,10 +245,11 @@ that this supersedes is migrated in Sprint 16.4.
 
 #### Objective
 
-Interpret a pure `chain :: cfg -> [Step]` value recursively across the composed frame stack, so
+Interpret the then-current pure step sequence recursively across the composed frame stack, so
 each binary owns its own segment and the command can be invoked at any declared frame (§ U, § Y).
 Convergence after a partial failure remains best-effort until Sprint 16.6 lands the durable
-identity-bound journal and recovery model.
+identity-bound journal and recovery model. Sprint 19.8 later wrapped this sequence in opaque validated
+`StepPlan` without reopening this interpreter sprint.
 
 #### Deliverables
 
@@ -367,9 +368,9 @@ drive the chain interpreter from it.
 #### Remaining Work
 
 None for the command-surface sprint. The `project init|up|down|destroy` surface ships on the core optparse tree
-(`HostBootstrap.Command.projectCommandGroup`), with the chain and the chain-frame teardown threaded through
-`ProjectSpec` (`psChain` / `psFrameContext` / `psTeardown`, attached with `withChain` / `withFrameContext` /
-`withTeardown`). `project up --dry-run` renders `chain cfg` through the context gate; the apply path
+(`HostBootstrap.Command.projectCommandGroup`), with the validated `StepPlan` and checked
+frame-context/teardown contributions retained by opaque `ProjectSpec`.
+`project up --dry-run` renders that exact plan through the context gate; the apply path
 (`runChainFromFrame`) is **real-run-validated end-to-end on Incus/Linux** — a real `project up` provisioned
 the VM, built the demo binary host-native in it (build #2, self-proved with `context schema`), and built the
 project image FROM the published base in it (build #3), exiting 0. Current `project down` attempts
@@ -431,8 +432,9 @@ workload-extension seam (§ T, § Y).
 #### Remaining Work
 
 The metal-frame migration is **done and real-run-validated**: the demo contributes
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), wired via `withChain` (and
-the chain-frame teardown via `withTeardown`) in `demo/app/Main.hs`, and a real `hostbootstrap-demo project
+`demoChainFor :: Substrate -> ProjectConfig scope -> [Step]`
+(`demo/src/HostBootstrapDemo/Commands.hs`) through `addSteps`, with context/teardown assigned once before
+`finalizeProjectSpec` in `demo/app/Main.hs`; a real `hostbootstrap-demo project
 up` on Incus/Linux ran the chain's three metal-frame steps end-to-end — ensure the VM provider → launch the
 budget VM (cordon #1) → pristine-bootstrap (build #2 host-native + build #3 project image in the VM) —
 exiting 0, with `project down` / `project destroy` stopping / deleting the VM (the cluster teardown's removal
@@ -443,10 +445,12 @@ share/alias carry and therefore is not the still-open destroy → up → read-ba
 frames** (`host-orchestrator-0` → `vm-orchestrator-1` → `vm-project-container-2`, each a real handoff). The
 container-frame migration is landing in code-check-validated increments:
 
-- **Increment 1 (Done, code-check-gated):** the demo chain now renders the full 3-frame interleaved value —
+- **Historical Increment 1 (Done, code-check-gated):** the then-current demo chain rendered the full
+  3-frame interleaved value —
   metal (`deploy-vm` ×2, `build-pb`) → `vm-orchestrator-1` (`context-init`) → `vm-project-container-2`
   (`deploy-kind`, `deploy-harbor`, `push-image`, `deploy-chart`, `deploy-role`, `expose-port`). The per-frame
-  lift-context resolver `demoFrameContext` is wired via `withFrameContext` (metal→VM folds to `incus exec`,
+  lift-context resolver `demoFrameContext` was wired through the then-current context setter
+  (metal→VM folds to `incus exec`,
   VM→container to a local `docker run`); the container-frame actions are loud `pendingContainerStep` stubs.
   Validated: `cabal build all --ghc-options=-Werror`, `project up --dry-run` renders the steps in frame
   order, fourmolu + hlint clean via the base image. The validated metal frame is untouched.
@@ -542,7 +546,7 @@ run also predates and cannot close Sprint 16.6's typed plan/journal teardown con
 ### Sprint 16.6: Ownership-preserving recursive teardown [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8
+**Blocked by**: Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
@@ -861,7 +865,7 @@ without reconstructing ownership or deleting foreign state.
 
 #### Remaining Work
 
-Blocked until Sprints 5.6.1–5.7, 9.10, 10.9, 15.9, and 19.7–19.8 land canonical root projection, the
+Blocked until Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8 land the
 ownership/result algebra, profile
 opener, independent root/command authority, scoped codec, and finalized plan. Then replace best-effort
 root-only reconstruction with the scope-retaining typed
@@ -897,8 +901,8 @@ accelerator lifecycle validation.
   `project up` / `project down` / `project destroy`, adding stop-without-delete.
 - `documents/engineering/incus.md`, `documents/engineering/lima.md` - VM lifecycle expressed as core chain
   steps (deploy-VM / down / destroy), including stop-without-delete.
-- `documents/engineering/authoring_project_binaries.md` - a consumer authors its
-  `chain :: cfg -> [Step]` (plus step actions, test suite, artifacts, Dhall vocabulary), not noun
+- `documents/engineering/authoring_project_binaries.md` - a consumer authors additive step fragments
+  finalized into `StepPlan` (plus actions, test suite, artifacts, Dhall vocabulary), not noun
   verbs.
 - `documents/engineering/dhall_topology.md` - topology frames drive the recursive chain; the pb verifies
   its frame.

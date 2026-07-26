@@ -53,7 +53,9 @@ import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import HostBootstrap.Cluster.Cordon (
-    ResourceBudget (..),
+    budgetCpu,
+    budgetMemoryBytes,
+    budgetStorageBytes,
     budgetFromResources,
     kindNodeCordonArgsFor,
     preflightBudget,
@@ -396,7 +398,7 @@ waitNodesReady cfg plan = do
     lbl = "cluster up: nodes for " ++ clusterName plan
     nodeProbe c = classify <$> runTool c Kubectl ["wait", "--for=condition=Ready", "node", "--all", "--timeout=30s"]
     classify (Right (ExitSuccess, _, _)) = ProbeReady ()
-    classify _ = NotReady
+    classify _ = NotReady "Kubernetes nodes have not reported Ready"
 
 {- | NVIDIA Docker runtime smoke used before the Linux GPU direct @nvkind@ path
 asks Kubernetes to run CUDA daemon pods.
@@ -517,7 +519,7 @@ ensureNvidiaDevicePlugin cfg plan =
     probe c = classify <$> runTool c Kubectl nvidiaAllocatableProbeArgs
     classify result
         | nvidiaAllocatableReady result = ProbeReady ()
-        | otherwise = NotReady
+        | otherwise = NotReady "nvidia.com/gpu is not yet allocatable"
 
 {- | Deploy the project's Helm chart if one is present. A project ships its chart
 at @./chart@ (relative to the directory the lifecycle runs in — the project root
@@ -607,7 +609,7 @@ applyLinuxCordon cfg plan resources
                     Right (ExitFailure n, _, e) -> die ("cordon failed (exit " ++ show n ++ "): " ++ e)
                     Left e -> die ("cordon: " ++ e)
     | otherwise =
-        putStrLn "cordon: Apple substrate — the per-project Colima VM is sized by `ensure docker`"
+        putStrLn "cordon: Apple substrate — the prepared per-project provider VM owns the outer wall"
 
 -- | Tear the cluster down. The removal set is empty, so no path is removed.
 clusterDown :: HostConfig -> ClusterPlan -> IO ()

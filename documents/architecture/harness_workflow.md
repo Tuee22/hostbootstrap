@@ -25,8 +25,9 @@ The fixed surface is:
 ```
 
 `test init` writes the executable-sibling `<project>.test.dhall` without requiring a production
-`<project>.dhall`. `test run` reads that file, asks the project for one or more labeled project-config
-variants, writes each variant's executable-sibling `<project>.dhall` behind a **cooperative** sidecar
+`<project>.dhall`. `test run` reads that file, validates the compiled cases and the project-owned typed
+variant projection into one opaque `TestMatrix`, and writes each selected variant's executable-sibling
+`<project>.dhall` behind a **cooperative** sidecar
 guard, drives the project's real bring-up/assert/teardown seams, and removes the generated config only
 when its bytes still match. The sidecar acquisition and destination write are separate operations, so a
 non-cooperating writer can still win the check-to-write race; this is not atomic exclusive creation or a
@@ -39,29 +40,24 @@ location rather than an unforgeable context capability. That mismatch is open.
 
 ## What `<project>.test.dhall` means today
 
-For the demo, the decoded type is:
+For the demo, the decoded type is now:
 
 ```haskell
-data TestConfig = TestConfig
-  { testSuites    :: [Text]
-  , testResources :: Resources
-  }
+newtype TestConfig = TestConfig { testResources :: Resources }
 ```
 
-The executable case matrix is compiled into Haskell (`demoCaseIds`/`demoCases`), and the CLI selector is
-validated against that compiled matrix. `testSuites` is generated from the same ids but does not define
-case bodies or dynamically replace the matrix. The demo config generator also ignores that field when it
-builds its two message variants; it uses only `testResources`.
+The executable `Case` registry is compiled into Haskell with opaque, validated `CaseId` values. The
+command parser turns `<case-id>|all` into a typed selector; `all` is not stored in config. `TestCfg`
+projects the decoded `tcfg` plus that executable registry into an opaque `TestMatrix`. The demo still
+declares its two message variants in Haskell until Phase 20 moves that concrete mapping into config, but
+their stable `VariantId`s and complete case-to-variant relation are validated before any mutation.
 
-Accordingly, `<project>.test.dhall` is currently a resource override plus an informational suite list.
-It is not a general DSL containing the case matrix, fixtures, secrets, arbitrary variants, or message
-values. Documentation and help should not call it those things.
+Accordingly, `<project>.test.dhall` is currently only a resource override. It is not a general DSL
+containing case bodies, fixtures, secrets, or arbitrary variants. Documentation and help should not
+call it those things.
 
-The selected target removes the redundant `[Text]` `testSuites` field. Haskell keeps the non-empty
-project-owned registry of opaque `CaseId` values and executable handlers; `<project>.test.dhall`
-contains validated `VariantId` override records plus typed references mapping those compiled cases to
-variants, never case definitions or handler bodies. Construction yields one opaque `TestMatrix` only
-after proving all of these invariants:
+Haskell keeps the non-empty project-owned registry of opaque `CaseId` values and executable handlers.
+Construction yields one opaque `TestMatrix` only after proving all of these invariants:
 
 - the Haskell case registry and config variant registry are each non-empty and contain unique IDs;
 - every registered case has a `NonEmpty VariantId` row, so `all` cannot silently skip a handler;
@@ -73,8 +69,10 @@ after proving all of these invariants:
 CLI selection projects rows from that already total matrix; it does not weaken full-registry coverage or
 turn unselected declarations into tolerated orphans. Empty rows, missing registered cases, unknown
 references, orphan variants, duplicates, and ambiguous pairs fail before mutation. Selection,
-generation, help, and reporting consume the same validated matrix, so a second unchecked string list
-cannot disagree with executable handlers.
+generation, and reporting consume the same validated matrix, so a second unchecked string list cannot
+disagree with executable handlers. A pure `VariantDraft payload` contains only its stable `VariantId`
+and typed payload; project-config generation remains a separate `ProjectSpec` callback, and the draft
+contains no run, plan, config, lease, or cleanup authority.
 
 `VariantId` is stable reporting/config identity, not lifecycle ownership. After validating the pure
 matrix/variant drafts, the target opens a fresh rank-2 `Harness projectId runId` and authoritative lease
@@ -87,7 +85,8 @@ under another config revision.
 ## Runner and ownership
 
 The reusable engine aggregates `CaseResult`s into a `Report` and supports more than one generated config
-variant. Successful bring-up puts assertions under `finally`, and a caught non-`SafetyRefusal` bring-up
+variant. Reports use stable `VariantId`s, not assertion values masquerading as labels. Successful
+bring-up puts assertions under `finally`, and a caught non-`SafetyRefusal` bring-up
 failure also runs teardown under `finally`. A caught `SafetyRefusal` takes the direct no-teardown branch
 described below; a hard kill also bypasses the handler. Durable recovery is target work. The demo
 currently generates two message variants and runs the compiled cases for each.
@@ -104,10 +103,15 @@ cluster refusal. The harness treats `SafetyRefusal` as “skip teardown,” so t
 remain. The target classifies a true pre-effect refusal separately from post-acquisition conflict/failure
 and rolls back every journaled owned preparation.
 
+Execution shape is not selected by the harness. Sprint 10.10 removed the detached selector and all
+definition/test-only one-shot, budget-slicing, prefix/profile helpers that had no lifecycle-plan
+consumer. The harness drives the real `project up` plan and retains only its live matrix loop,
+reporting, safety probes, and self-created-data bracket.
+
 ## Current production-state defect
 
-Core contains helpers for a `.test_data/<caseId>` root and a `TestCase caseId` cluster profile. The demo
-live bring-up does not currently use them:
+The harness owns a self-created-only `.test_data` bracket, but the demo live bring-up does not currently
+project that root or a harness-scoped cluster profile into its lifecycle plan:
 
 - demo case setup invokes the real `project up`;
 - demo cluster plan resolution hardcodes `Production`;
@@ -296,8 +300,8 @@ another ID. See
 
 - A command-level test proves an off-root invocation is refused before reading or writing lifecycle
   state.
-- A `<project>.test.dhall` schema test proves the documented fields are exactly the decoded fields and that suite
-  selection has one source of truth.
+- A `<project>.test.dhall` schema test proves the documented resource field is exactly the decoded field;
+  matrix tests prove typed selection has one source of truth.
 - The demo gate records the resolved profile/name/path and asserts `Harness projectId runId`, a run-scoped name, and
   `.test_data`.
 - An IO tripwire fails the run on any access below `.data` or to the production cluster identity.

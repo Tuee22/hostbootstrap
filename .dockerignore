@@ -33,13 +33,8 @@ npm-shrinkwrap.json
 yarn.lock
 pnpm-lock.yaml
 spago.lock
-# Warm-store freezes are generated in-image, never committed or sent in context.
+# Accidental local Cabal solver output is not sent in build context.
 cabal.project.freeze
-core.freeze
-daemon.freeze
-# Intermediate per-projection freezes (cabal freeze --project-file=core.project
-# writes core.project.freeze, moved to core.freeze in the base build).
-*.project.freeze
 # demo web build artifacts — regenerated in-container by spago / esbuild.
 # NOTE: demo/web/src/Generated/ (the purescript-bridge output) is intentionally
 # NOT excluded: the build-image chain step now generates it host-side before the

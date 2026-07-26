@@ -11,11 +11,9 @@
 ## TL;DR
 
 - `hostbootstrap-core` is a single Cabal package built with the base-image GHC toolchain.
-- `core/cabal.project` — the self-contained Cabal workspace for the core, the peer of the
-  root-level Poetry project — pins `with-compiler: ghc-9.12.4` and `optimization: 2` to match the warm store
-  baked into the base image (see [warm_store](warm_store.md)). The `demo/` consumer carries its own
-  host-native `demo/cabal.project` and container-only `demo/docker/container.cabal.project`; the
-  repository root holds no Cabal project file.
+- `core/cabal.project` is the self-contained Cabal workspace for the core, the peer of the root-level
+  Poetry project. The `demo/` consumer carries one `demo/cabal.project` used host-native and inside its
+  derived container; the repository root holds no Cabal project file.
 - The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
   (the bare binary, built like any project binary — not baked into the base image), and one
   `test-suite`.
@@ -25,21 +23,16 @@
 
 ## GHC Pin
 
-The GHC version is pinned in `core/cabal.project` to the base-image toolchain:
+The core workspace currently selects its supported GHC explicitly:
 
 ```cabal
 with-compiler: ghc-9.12.4
 optimization: 2
 ```
 
-The pin and optimisation level match `core/warm-deps/cabal.project`, which warms the shared
-dependency set into the frozen Cabal store. Pinning both means a derived project that builds
-`hostbootstrap-core` reuses the pre-built dependency unfoldings instead of recompiling them.
-
-The absolute `/opt/basecontainer/haskell-deps/core.freeze` import is valid only inside the base-derived
-container. The demo Dockerfile replaces `demo/cabal.project` with
-`demo/docker/container.cabal.project` before building. Host-native builds use `demo/cabal.project`,
-which references local core source and has no in-image absolute import.
+The core compiler selection is a workspace compatibility choice, not a base-input replay lock. The
+rolling base installs the current recommended compiler; compatibility is validated by source gates and a
+real consumer smoke. The demo's one project references local core source and imports no base-owned path.
 
 ## Package Stanzas
 
@@ -81,10 +74,9 @@ trees.
 `core/warm-deps/` uses a `none` cradle on purpose. Its `basecontainer-core-deps` /
 `basecontainer-daemon-deps` packages are build-only stubs (`main = pure ()`) whose `.cabal` files
 exist only to pull the entire warm dependency closure so the base image can prebuild the shared Cabal
-store (see [warm_store](warm_store.md)). They build only inside the container, and their
-`core.freeze` / `daemon.freeze` pins are generated in-image and never committed, so there is no
-host-resolvable build plan — a `cabal` cradle there would try to solve and build hundreds of packages
-on the host. The `none` cradle makes HLS skip them deliberately instead of failing slowly.
+store (see [warm_store](warm_store.md)). They are intended for the base container and would solve/build
+hundreds of packages on the host. The `none` cradle makes HLS skip them deliberately instead of failing
+slowly.
 
 A single root-level cradle is intentionally not used: a `cabal` cradle anchored at the repository
 root would run `cabal` where no project file exists and fail for every file.

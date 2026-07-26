@@ -42,6 +42,8 @@ quantityCases =
     testCase "8GiB binary (B suffix)" (parseQuantity "8GiB" @?= Right (8 * gib)),
     testCase "512Mi binary" (parseQuantity "512Mi" @?= Right (512 * mib)),
     testCase "1G decimal" (parseQuantity "1G" @?= Right 1000000000),
+    testCase "an exact fractional binary quantity is accepted" (parseQuantity "0.5Ki" @?= Right 512),
+    testCase "a fractional quantity that is not a whole byte is rejected" (isLeft (parseQuantity "0.1B") @?= True),
     testCase "bare number is bytes" (parseQuantity "1024" @?= Right 1024),
     testCase "whitespace tolerated" (parseQuantity "  4Gi " @?= Right (4 * gib)),
     testCase "unknown unit rejected" (isLeft (parseQuantity "8Qi") @?= True),
@@ -51,10 +53,16 @@ quantityCases =
 budgetCases :: [TestTree]
 budgetCases =
   [ testCase "resources -> canonical byte budget" $
-      budgetFromResources demoResources
-        @?= Right (ResourceBudget 4 (8 * gib) (20 * gib)),
+      fmap
+        (\budget -> (budgetCpu budget, budgetMemoryBytes budget, budgetStorageBytes budget))
+        (budgetFromResources demoResources)
+        @?= Right (4, 8 * gib, 20 * gib),
     testCase "gibibytes rounds up" $
-      map gibibytes [gib, gib + 1, 8 * gib] @?= [1, 2, 8]
+      map gibibytes [gib, gib + 1, 8 * gib] @?= [1, 2, 8],
+    testCase "public budget construction rejects non-positive dimensions" $ do
+      isLeft (mkResourceBudget 0 gib gib) @?= True
+      isLeft (mkResourceBudget 1 0 gib) @?= True
+      isLeft (mkResourceBudget 1 gib 0) @?= True
   ]
 
 verifyCases :: [TestTree]
@@ -82,7 +90,7 @@ verifyCases =
       verifyHostBudget budget (HostCapacity 8 (16 * gib) (100 * gib)) @?= Right ()
   ]
   where
-    budget = ResourceBudget 4 (8 * gib) (20 * gib)
+    budget = either (error . show) id (mkResourceBudget 4 (8 * gib) (20 * gib))
 
 capacitySourceCases :: [TestTree]
 capacitySourceCases =
@@ -163,13 +171,27 @@ sizingCases :: [TestTree]
 sizingCases =
   [ testCase "colima sizing emits the full profiled argv" $
       colimaSizingArgs "demo" demoResources
-        @?= Right ["start", "--profile", "demo", "--cpu", "4", "--memory", "8", "--disk", "20"],
+        @?= Right ["start", "--profile", "demo", "--runtime", "docker", "--activate=false", "--cpus", "4", "--memory", "8", "--disk", "20"],
+    testCase "provider storage policy names each represented wall" $ do
+      storageCordonPolicy ColimaVmStorage @?= StorageCordonSupported ColimaDiskFlag
+      storageCordonPolicy LimaVmStorage @?= StorageCordonSupported LimaDiskFlag
+      storageCordonPolicy IncusVmStorage @?= StorageCordonSupported IncusRootDiskLimit
+      storageCordonPolicy Wsl2DistroStorage @?= StorageCordonSupported Wsl2VhdSize,
+    testCase "bare Linux storage policy is explicitly unsupported" $
+      storageCordonPolicy BareLinuxStorage
+        @?= StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable,
     testCase "colima handles the bare 8Gi form" $
       colimaSizingArgs "demo" (ResourceEnvelope {cpu = 2, memory = "8Gi", storage = "20Gi"})
-        @?= Right ["start", "--profile", "demo", "--cpu", "2", "--memory", "8", "--disk", "20"],
+        @?= Right ["start", "--profile", "demo", "--runtime", "docker", "--activate=false", "--cpus", "2", "--memory", "8", "--disk", "20"],
     testCase "lima sizing emits VM resource flags" $
       limaSizingArgs demoResources
         @?= Right ["--cpus", "4", "--memory", "8", "--disk", "20"],
+    testCase "whole-GiB providers reject an inexact hard ceiling instead of rounding" $ do
+      let inexact = ResourceEnvelope {cpu = 4, memory = "8589934593", storage = "20GiB"}
+      isLeft (colimaSizingArgs "demo" inexact) @?= True
+      isLeft (limaSizingArgs inexact) @?= True
+      isLeft (incusSizingArgs inexact) @?= True
+      isLeft (wsl2SizingArgs inexact) @?= True,
     testCase "wsl2 sizing emits the .wslconfig [general]+[wsl2] ceiling with swap + both idle timeouts (no vhdx-size key)" $
       wsl2SizingArgs demoResources
         @?= Right ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=-1"],

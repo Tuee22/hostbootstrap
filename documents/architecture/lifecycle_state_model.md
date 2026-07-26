@@ -11,12 +11,12 @@
 
 ## TL;DR
 
-The current lifecycle APIs still permit forged readiness, partial probes, untyped ordering, accidental
-production-profile selection, and deletion decisions without complete ownership evidence. The target
-uses opaque, scope- and resource-indexed capabilities and ownership-/phase-indexed handles for in-process
-ordering, plus total observations, explicit reconcile results, verified persisted receipts, and
-resource-authoritative compare-before-mutate checks for effects the Haskell type system cannot make
-linear or race-free.
+The Phase 9 foundation now prevents forged readiness and cross-plan/resource capability mixing at its
+new API boundary. It supplies total probes, opaque planned resources and edges, exact prepared-operation
+pairs, explicit reconcile/adoption results, phase-indexed handles, and a legal journal transition graph.
+Most live interpreters have not yet adopted that boundary, so end-to-end ordering, ownership-driven
+teardown, profile selection, and resource-authoritative compare-before-mutate effects remain assigned
+to their dependent phases.
 
 ## Navigation and split decision
 
@@ -41,18 +41,28 @@ Use these sections as the index:
 
 ## Current Status
 
-The repository has useful pieces of this model, but it does not yet enforce the model end to end:
+The repository now implements the Phase 9 type-and-pure-validation foundation, but live interpreters do
+not yet enforce the complete model end to end:
 
-- `Ready tag` is not opaque to all production code. `HostBootstrap.Readiness.Internal`, which exports
-  `MkReady`, is an exposed Cabal module, so a consumer can forge a witness.
-- Several waits return `IO ()`, and several mutating steps accept no readiness capability. Readiness
-  ordering is therefore partly a calling convention rather than a type-level constraint.
-- Provider probes are not uniformly total. In particular, the direct-host durable-alias probe calls
-  `pathIsSymbolicLink` before establishing that the path exists, so the intended `AliasAbsent` result
-  throws on a clean first run. The target deletes this direct-host alias path; only provider guests
-  reconcile aliases, while direct adapters consume canonical host-root projections.
-- Most reconcilers return `IO ()`. They do not report whether they created, adopted, repaired, or merely
-  observed a resource, and teardown therefore cannot be driven solely by proof of ownership.
+- `HostBootstrap.Readiness.Internal` has been removed. Opaque
+  `Ready scope planId id resource dependency` values are produced only by closed backend probes bound to
+  exact planned resources and positive observation versions. Compatibility paths receive only
+  non-authorizing `ObservedReady`.
+- `LifecyclePlan` is derived from the finalized project codec and `StepPlan`. Opaque planned resources
+  and edges validate exact keys and dependencies; operation preparation validates the complete declared
+  dependency list and pairs an opaque `PreparedOperation` with matching `PreparedPreconditions`.
+- Reconcile outcomes distinguish created, repaired, adopted, unchanged, and foreign observations.
+  Explicit verified-origin adoption is the only way a foreign resource becomes managed. Named phase
+  transitions produce indexed handles, and the persisted journal admits only legal acquisition,
+  adoption, repair, and phase-transition edges.
+- Several waits and effects still return `IO ()` or use non-authorizing compatibility observations.
+  The downstream interpreter must own complete dependency traversal, fresh observation, journal
+  compare-and-swap, and the exact prepared adapter call.
+- The direct-host Docker handoff consumes a canonical host-root projection rather than the provider
+  compatibility alias, but guest alias reconciliation still lacks the complete target
+  identity-bound prepared operation.
+- Most live reconcilers have not yet been migrated to the new result algebra, so teardown is not yet
+  driven solely by verified ownership receipts.
 - `project down` and `project destroy` inspect the current frame and then call a project teardown hook.
   They do not recursively hand the lifecycle verb through every child frame before unwinding.
 - The demo test path generates a test config but currently resolves the cluster with the `Production`

@@ -8,10 +8,9 @@
 
 This page documents what the base image ships for Go.
 
-Go is first-class in the base image. The latest stable Go toolchain is
-installed at `/opt/go` (resolved via `https://go.dev/dl/?mode=json`). The
-image sets the conventional environment variables alongside the other
-languages':
+Go is first-class in the base image. The rolling workflow resolves the latest stable upstream release
+for the native architecture and installs it at `/opt/go`. The image sets the
+conventional environment variables alongside the other languages':
 
 ```
 GOROOT=/opt/go
@@ -30,10 +29,9 @@ gcc is still installed for projects that opt into it explicitly. There is no
 multi-stage cross-compile path for `nvkind`; it is built natively in the final
 image.
 
-```Dockerfile
-RUN CGO_ENABLED=1 /opt/go/bin/go install github.com/NVIDIA/nvkind/cmd/nvkind@latest \
- && install -m 0755 /opt/cache/go/bin/nvkind /usr/local/bin/nvkind
-```
+The layer installs the current compatible `nvkind` module release and places the native binary at
+`/usr/local/bin/nvkind`. This selection is rolling cache/tooling input, not a public source-version
+contract.
 
 A build can only ever produce the host-native arch — there is no cross-arch
 build for Go, which keeps this stage simple.

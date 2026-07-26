@@ -4,8 +4,9 @@
 -- @apt-get install docker.io@, enable the daemon, grant the invoking non-root
 -- user membership in @docker@, and apply a user ACL to the live socket so the
 -- current process can use Docker before a relogin. On Apple silicon Docker is
--- provided by the per-project Colima VM, so the planner defers to @ensure
--- colima@ rather than attempting a host-package install. The pure
+-- provided by the prepared per-project Colima provider wall, so this
+-- config-free planner refuses rather than attempting a host-package install.
+-- The pure
 -- 'installSteps' planner and target-user selector are unit-tested.
 module HostBootstrap.Ensure.Docker (reconciler, installSteps, targetDockerUser) where
 
@@ -73,12 +74,12 @@ sudoDockerInfo cfg = do
     _ -> False
 
 -- | The substrate-branched install plan. On Linux, @apt-get install docker.io@
--- and enable the daemon. On Apple silicon, Docker is the per-project Colima VM's
--- responsibility, so defer to @ensure colima@.
+-- and enable the daemon. On Apple silicon, Docker is the prepared per-project
+-- Colima provider wall's responsibility.
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps sub = case substrateName sub of
   AppleSilicon ->
-    Left "on Apple silicon Docker is provided by the per-project Colima VM; run `ensure colima` first"
+    Left "on Apple silicon Docker is provided by the prepared per-project Colima provider wall"
   LinuxCpu -> Right linuxSteps
   LinuxGpu -> Right linuxSteps
   WindowsCpu ->

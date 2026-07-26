@@ -1,9 +1,7 @@
--- | Pure WSL2 provider argv builders and readiness classification.
+-- | Pure WSL2 provider argv builders and output classification helpers.
 module HostBootstrap.Wsl2
-  ( Wsl2Readiness (..),
-    Wsl2VM (..),
+  ( Wsl2VM (..),
     bcdeditHypervisorLaunchArgs,
-    classifyWsl2Readiness,
     normalizeWslText,
     wslListDistros,
     wslDistroStates,
@@ -11,7 +9,6 @@ module HostBootstrap.Wsl2
     wslReportsNoInstalledDistributions,
     wslReportsVirtualizationDisabled,
     wslInstallArgs,
-    wslImportArgs,
     wslExecArgs,
     wslTerminateArgs,
     wslUnregisterArgs,
@@ -26,21 +23,6 @@ import System.Exit (ExitCode (..))
 
 newtype Wsl2VM = Wsl2VM {wsl2Distro :: String}
   deriving (Eq, Show)
-
-data Wsl2Readiness = Ready | NeedsReboot | Unsatisfiable
-  deriving (Eq, Show)
-
-classifyWsl2Readiness :: (ExitCode, String, String) -> Wsl2Readiness
-classifyWsl2Readiness result@(ExitSuccess, _, _)
-  | wslReportsVirtualizationDisabled result = Unsatisfiable
-  | otherwise = Ready
-classifyWsl2Readiness (ExitFailure _, out, err)
-  | "has no installed distributions" `isInfixOf` text = Ready
-  | "reboot" `isInfixOf` text || "restart" `isInfixOf` text = NeedsReboot
-  | "virtualization is not enabled" `isInfixOf` text = Unsatisfiable
-  | otherwise = Unsatisfiable
-  where
-    text = normalizeWslText (out ++ "\n" ++ err)
 
 wslReportsVirtualizationDisabled :: (ExitCode, String, String) -> Bool
 wslReportsVirtualizationDisabled (_, out, err) =
@@ -91,10 +73,6 @@ bcdeditHypervisorLaunchArgs =
 wslInstallArgs :: String -> String -> [String]
 wslInstallArgs distro vhdSize =
   ["--install", "-d", "Ubuntu-24.04", "--name", distro, "--no-launch", "--vhd-size", vhdSize]
-
-wslImportArgs :: String -> FilePath -> FilePath -> [String]
-wslImportArgs distro installDir tarball =
-  ["--import", distro, installDir, tarball, "--version", "2"]
 
 wslExecArgs :: String -> [String] -> [String]
 wslExecArgs distro inner =

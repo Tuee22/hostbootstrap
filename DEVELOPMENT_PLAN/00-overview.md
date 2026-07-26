@@ -37,8 +37,10 @@ each item below is a target contract rather than a claim about the current imple
 - tests reserve every resource they mutate through that resource's authoritative backend, rehydrate
   authority across process boundaries only through authenticated one-time handoffs, and recursively tear
   down only their verified receipts;
-- base publication is native-architecture, fully gated, pulled, and consumed by digest;
-- host and container Cabal projects are distinct and warm-store inputs are reproducible;
+- base publication is native-architecture, fully gated, rolling, and pulled before compatibility
+  smoke-testing against a real consumer;
+- host and container builds use one Cabal project and inherit the base Cabal store as an opportunistic
+  cache;
 - network endpoints and clients are scope-indexed, and redirect delivery requires a proof that the
   client can reach the backing endpoint;
 - test case/variant identity is typed and the demo matrix is generated from decoded config; and
@@ -82,8 +84,10 @@ provider.
 
 ### Phase 6 — Base image and Python CLI surface
 
-Owns native base build/publish, the full pre-publish Python/Haskell gate, architecture validation,
-publish→pull→digest handoff, deterministic project selection, and idempotent native binary build/copy.
+Owns native rolling base build/publish, current-compatible upstream discovery, the full pre-publish
+Python/Haskell gate, architecture validation, publish→pull→real-consumer compatibility smoke,
+deterministic project selection, and idempotent native binary build/copy. A recorded digest identifies a
+particular publication but is not a locked-input or consumer-pinning contract.
 
 ### Phase 7 — Consumer adoption
 
@@ -91,8 +95,9 @@ Owns downstream migration onto the reusable library and Python bootstrap contrac
 
 ### Phase 8 — Dhall generation and extension contract
 
-Owns generated schemas/artifacts and the project extension-stream shape. Sprint 8.7 replaces independent
-encoder/decoder type claims with one validated codec witness and complete `Core.dhall` type coverage.
+Owns generated schemas/artifacts and the project extension-stream shape. Closed Sprint 8.7 provides one
+validated lower-layer codec witness, opaque artifact construction, exact schema-command snapshots, and
+complete judgmental-equality ownership of every current `Core.dhall` type export.
 
 ### Phase 9 — Applied budget cordon and one canonical parser
 
@@ -100,30 +105,32 @@ Owns canonical quantity/resource types, opaque resource-instance readiness, tota
 ownership- and phase-indexed lifecycle state, `ReconcileResult`, structured
 conflict/safety/failure, and managed receipts for both changed and unchanged reconciliation.
 
-### Phase 10 — Standardized test harness and run-models
+### Phase 10 — Standardized test harness and execution shapes
 
 Owns resource-authoritative test reservations/receipts, per-variant failure isolation, structured report
 outcomes, and receipt-driven cleanup. Sprint 10.9 opens the Production/Harness lifecycle mode and profile
 over Phase 9/19's scope foundation, Phase 5's backend planning/receipt operations, and Phase 15.9's root
 authority. It exposes to a `TestComponent` no Production constructor and owns the harness run lease/
 one-time cross-process handoff protocol with Phases 15 and 16. It also removes the unconsumed
-Haskell/Dhall `RunModel` selectors so execution shape is expressed only by the lifecycle plan.
+detached Haskell/Dhall execution selectors; Sprint 10.10 is complete, so execution shape is expressed
+only by the lifecycle plan.
 
 ### Phase 11 — Incus first-class host-provider
 
 Owns one `SubstrateProvider`/`Lift` dispatch path for Incus, Lima, WSL2, and direct-host operations,
-including durable aliases and exclusive global WSL state. Definition-only `HostTarget` and WSL import
-surfaces are cleanup obligations.
+including durable aliases and exclusive global WSL state. The definition-only `HostTarget` and WSL
+import surfaces have been removed; strong provider-guest alias ownership and global WSL CAS remain open.
 
-### Phase 12 — Layered warm store
+### Phase 12 — Opportunistic warm store
 
-Owns the host/container Cabal-project split, layered freeze consumption, pinned inputs, accurate build
-ways, and observable cache reuse.
+Owns one host-compatible consumer Cabal project for host and container builds, broad best-effort
+warm-store population, aligned build ways where practical, and graceful online cache misses. It does not
+own consumer freeze imports, offline completeness, or version-lock replayability.
 
 ### Phase 13 — hostbootstrap-demo worked app
 
 Owns the demo's scope-polymorphic plan shape instantiated separately for Production and each Harness run,
-the harness-only test component, pulled digest-qualified base consumption, current registry/MinIO
+the harness-only test component, pulled rolling-base consumption, current registry/MinIO
 metadata, reachability-safe rendering and persistence proof, the threaded static test component, plus the remaining native
 accelerator demo lanes.
 
@@ -163,10 +170,10 @@ accelerator lanes; the Windows GPU host-daemon lane is dated accepted evidence, 
 
 ### Phase 19 — Generic project model
 
-Owns generic `ProjectSpec cfg tcfg`, project-owned defaults/init, validated `CaseId`/`VariantId`, and the
-typed test-config-to-variant projection. It also owns the scope-indexed `SecretRef scope` and project-owned
-`ProjectConfig scope` boundary in which `TestPlaintext` exists only for harness configuration. It does not
-own harness execution or demo-specific values.
+Owns generic `ProjectSpec projectId cfg tcfg`, the one restricted project-config assembler, validated
+`CaseId`/`VariantId`, and the typed test-config-to-variant projection. It also owns scope-indexed
+`SecretRef scope` and project-owned `cfg scope`, in which `TestPlaintext` exists only for exact Harness
+configuration. It does not own harness execution or demo-specific values.
 
 ### Phase 20 — Config-driven demo worked example
 
@@ -184,32 +191,29 @@ that the README phase table is the only cross-phase status roll-up.
 Sprint `Blocked by` metadata is the execution authority. Phase ownership above explains where contracts
 live; it does not make every cross-phase reference a start dependency. The strict landing order is:
 
-1. Sprint 9.4's remaining explicit-`Unsupported` correction and Sprints 2.5, 5.6.1, 6.7, 8.7, 10.10,
-   13.19, and 19.6 are independent roots of the dependency graph.
-2. Sprint 6.7 enables Sprint 12.4. This is intentionally one-way: after the publish gate is corrected,
-   Sprint 12.4 changes warm-store inputs and closes by rebuilding, republishing, pulling, and validating
-   through that gate.
-3. Sprints 8.7 and 19.6 enable Sprint 19.7; Sprints 19.6–19.7 enable Sprint 19.8. Sprints 19.7–19.8
-   then enable Sprint 9.10, whose opaque capabilities must be minted only from the scoped codec and
-   finalized plan.
-4. Sprint 5.6.1 enables Sprint 5.6's direct-host durability gate. Sprint 9.10 enables Sprints 5.8 and
-   11.10. Sprints 9.10 and 11.10 together enable Sprint 5.7's
+1. Sprints 2.5, 5.6.1, 5.8, 6.7, 8.7, 9.4, 9.10, 10.10, 12.4, 13.19, and 19.6–19.8 are closed.
+   Sprint 11.10 is the next phase-ordered dependency root; Sprint 14.7 is also dependency-ready.
+2. Closed Sprints 8.7 and 19.6 enabled Sprint 19.7; closed Sprint 19.7 enabled Sprint 19.8. Closed
+   Sprints 19.7–19.8 enabled Sprint 9.10, whose opaque capabilities are now minted only from the scoped
+   codec and finalized plan.
+3. Closed Sprint 5.6.1 enables Sprint 5.6's direct-host durability gate. Closed Sprint 9.10 enabled
+   closed Sprint 5.8 and enables Sprint 11.10. Sprint 11.10 then enables Sprint 5.7's
    all-provider storage/ownership gate.
-5. After Sprints 5.6.1–5.7, 9.10, and 19.7–19.8 close, Sprint 15.9 supplies the independent root/command
+4. After Sprint 5.7 and Sprints 9.10 and 19.7–19.8 close, Sprint 15.9 supplies the independent root/command
    authority. Sprint 10.9 consumes it with the mode/lease state to implement fresh and bound-recovery
    profile openers; Sprint 16.6 then consumes both in the recursive interpreter. They remain one
    coordinated integration tranche, but the explicit 15.9 → 10.9 → 16.6 order prevents a circular
    prerequisite.
-6. Sprints 14.6 and 17.4 are separate downstream branches once their own blockers close: Sprint 14.6
+5. Sprints 14.6 and 17.4 are separate downstream branches once their own blockers close: Sprint 14.6
    consumes lifecycle admission plus signed-revision/measured-instance activation authority, while
    Sprint 17.4 consumes typed cases, command authority, and structured harness outcomes. Sprint 18.6
    joins Sprints 14.6, 15.9, 17.4, and 19.8 for validated service dispatch. Sprint 20.5 then consumes
-   Sprints 10.9, 18.6, and 19.6–19.8 for typed/scoped config and harness-indexed execution.
-7. Sprints 9.10 and 19.8 enable Sprint 14.7's generic reachability/delivery algebra; Sprint 14.7
+   Sprints 10.9, 18.6, and 19.7–19.8 for scoped config and harness-indexed execution.
+6. Closed Sprints 9.10 and 19.8 enable Sprint 14.7's generic reachability/delivery algebra; Sprint 14.7
    enables Sprint 13.20's concrete demo renderer and live blob-route proof.
-8. Sprint 13.18 lands only after Sprints 5.7, 6.7, 10.9, 12.4, 13.19–13.20, 14.6, 15.9, 16.6, 17.4, and 20.5.
+7. Sprint 13.18 lands only after Sprints 5.7, 10.9, 13.20, 14.6, 15.9, 16.6, 17.4, and 20.5.
    It is the worked-demo integration gate, not a foundation for those APIs.
-9. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.
+8. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.
 
 The real-run lanes owned by Phases 5, 13, 15, 16, and 18 are independent unless a sprint's exact
 `Blocked by` line names one. A run on one provider/architecture closes only that named lane.

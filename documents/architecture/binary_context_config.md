@@ -20,9 +20,10 @@
   15.9 closes that construction/widening gap.
 - The `.dhall` describes parameters and context, never the lift chain shape — the chain is code. The model
   lives in [composition_methodology](composition_methodology.md); this doc defers to it.
-- `sourceRoot` is descriptive input. Root admission resolves it once against the config-owned project
-  home and yields opaque canonical-root authority; downstream frames consume typed host/guest/container
-  projections and never reinterpret the text or current working directory.
+- `sourceRoot` is descriptive input. Lifecycle root admission resolves it once against the config-owned
+  project home and yields opaque canonical-root authority without replacing the field in
+  `BinaryContext`. Root frame/teardown callbacks and the direct-host mount consume that authority;
+  remaining typed child-boundary projections move into the final opaque plan.
 - `context` is a **read-only** introspection/visualization command, but its inputs differ by subcommand:
   `inspect` decodes the sibling `.dhall`, `show [FILE]` decodes the selected/default file, and
   `path`/`schema`/`render` use only static binary-owned information. Child context delivery is internal
@@ -64,16 +65,16 @@ The sibling `<project>.dhall` carries three layers in one typed value:
 
 | Layer | Owner | Purpose |
 |---|---|---|
-| **Parameters** | the user (root) | the root settings the chain is a pure function of — CPU, memory, storage, HA replicas, structural flags such as "skip VM, go straight to Docker" |
+| **Parameters** | the user (root) | the root settings the plan fragments are pure functions of — CPU, memory, storage, HA replicas, structural flags such as "skip VM, go straight to Docker" |
 | **Context** | the parent lifecycle's child projection/delivery | this binary's place in the topology: identity, frames, current frame, capabilities, allowed command classes, and the current raw resource envelope; the target envelope is plan/frame-indexed |
 | **Witness** | the same child projection/delivery | locally checkable facts (`runtimeWitnesses`) that let this binary prove it really is in the declared frame |
 
-The `.dhall` never encodes the lift chain itself. The current forward ordering is
-`chain :: cfg -> [Step]`, a Haskell value. Frame context and teardown remain separate current inputs; the
+The `.dhall` never encodes the lift plan itself. The current forward ordering is an opaque validated
+Haskell `StepPlan`. Frame context and teardown remain separate checked current inputs; the
 target opaque lifecycle plan derives them from the same validated representation (see
 [composition_methodology](composition_methodology.md)).
 Structural variation (for example, skipping the VM frame to go straight to a Docker frame) is a parameter
-flag on the **root** `.dhall`, so the chain stays a pure function of root parameters rather than a second
+flag on the **root** `.dhall`, so plan construction stays a pure function of root parameters rather than a second
 representation living in config.
 
 ### Context Shape
@@ -1271,7 +1272,6 @@ in  { context =
       , runtimeWitnesses : List RuntimeWitness
       , capabilities : List Capability
       , allowedCommandClasses : List CommandClass
-      , resourceEnvelope : { cpu : Natural, memory : Text, storage : Text }
       , ...
       }
     }
@@ -1461,11 +1461,12 @@ container payload is derived through `psFrameContext` and delivered during hando
 representation can drift. The target opaque plan makes child projection, authenticated delivery, and the
 single `context-init` node one validated operation:
 
-1. Python currently discovers the Cabal-file stem and sole executable stanza separately, builds
-   `./.build/<executable>`, and invokes the requested command (POSIX process replacement with `exec`;
+1. Python validates one Cabal filename/package/executable identity, builds
+   `./.build/<identity>`, and invokes the requested command (POSIX process replacement with `exec`;
    Windows child subprocess). It writes no Dhall and does **not** initialize config; it is the metal-frame
-   instance of the fractal bootstrap. The program/config identity is supplied independently by the
-   Haskell entrypoint until the opaque identity repair lands.
+   instance of the fractal bootstrap. The Haskell entrypoint rejects a declared project/config name that
+   differs from the invoked executable before dispatch; later phases still replace descriptive string
+   identity inside lifecycle APIs with opaque plan-indexed authority.
 2. `project init` is a config-free writer. With no role/output/policy flags it is the **fresh-root
    default**: write the executable-sibling `<project>.dhall` as a host orchestrator with no parent and
    refuse an existing output. The current parser also supports `--role ROLE`, repeatable
@@ -1561,12 +1562,13 @@ implemented; complete lifecycle ownership is not.
 
 ## Config Snapshot And Daemons
 
-The core gate reads a config for initial dispatch, but current execution is not a read-once snapshot.
-`project up` derives `chain`/frame context from that first value while many demo `Step` actions reopen the
-sibling path; `service run` selects a handler from its first value while both handlers reopen the file.
-A replacement can therefore combine plan/selector A with resources or handler settings B.
+`service run` now canonically verifies one sibling snapshot, structurally selects one typed role from a
+registry finalized with that full codec, and closes the handler action over only its role fields plus a
+safe framework view. Demo service handlers do not reopen the sibling file. General lifecycle actions
+have not yet all been converted to a single plan-owned validated snapshot, so `project up` can still mix
+an initially decoded plan/context with later action-local reads.
 
-The target canonicalizes the parent config once and mints
+The complete lifecycle target canonicalizes the parent config once and mints
 `ValidatedConfig scope specDigest configId (cfg scope)` plus its digest, then injects that exact value into plan
 construction and closed operations that need it. A
 plan-owned projection renders only `RuntimeRoleWire fields service` fields authorized for the child and
@@ -1574,13 +1576,14 @@ binds those exact bytes to the deployment manifest. The child verifies the mount
 `RoleCodec scope specDigest fields`, verifies the separately delivered secret bundle, mints a fresh local
 `configId`, and only then obtains
 `ValidatedServiceRequest specDigest configId secretDigest fields service` with its
-`RoleParams specDigest configId secretDigest fields service`. The core-owned
-`selectAndRunService` packages that request with a closed `ServiceProgram` handler and matching
+`RoleParams specDigest configId secretDigest fields service`. Sprint 18.6's core-owned
+`selectAndRunService` target packages that request with a closed `ServiceProgram` handler and matching
 revision/instance/Serve/effect proof;
 the parent config identity, full config, unauthorized effect row, and config-read/raw-`IO` escape hatch
-cannot cross the service-handler boundary. Finalized plan actions likewise use the closed effect/descriptors owned by
-Sprints 9.10/16.6/19.8 rather than arbitrary config-reading callbacks. No production action can reopen
-the sibling file through the target public API. On-disk
+cannot cross the service-handler boundary. The current structural role boundary already excludes full
+config and config-read authority; raw handler `IO` remains. Finalized plan actions likewise use the
+closed effect/descriptors owned by Sprints 9.10/16.6 rather than arbitrary config-reading callbacks. No
+production action can reopen the sibling file through the target public API. On-disk
 changes affect only a later invocation with a new `configId`; daemons require a new measured
 `instanceId` or an explicit
 safely designed reconcile, and authority fields are never live-reloaded.

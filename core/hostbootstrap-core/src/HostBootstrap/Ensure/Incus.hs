@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- | The @ensure incus@ reconciler: the host-provider tool, applicable on
 -- **both** apple-silicon and linux (the first cross-substrate reconciler).
@@ -15,13 +16,18 @@ module HostBootstrap.Ensure.Incus
   ( reconciler,
     installSteps,
     appleIncusProfile,
+    IncusProviderStatus (..),
+    IncusProviderCapability,
+    classifyIncusProviderStatus,
+    withIncusProviderCapability,
+    probeIncusProviderStatus,
     targetIncusAdminUser,
     ensureKvmAccess,
   )
 where
 
-import Control.Monad (when)
-import Data.List (find)
+import Data.Char (toLower)
+import Data.List (find, isInfixOf)
 import Data.Maybe (mapMaybe)
 import HostBootstrap.Ensure
   ( InstallStep (..),
@@ -30,8 +36,8 @@ import HostBootstrap.Ensure
     runTool,
     toolPresent,
   )
-import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo))
+import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
+import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo), absExePath)
 import HostBootstrap.Substrate
   ( Substrate,
     SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu),
@@ -66,6 +72,72 @@ kvmDeviceStatus = do
 appleIncusProfile :: String
 appleIncusProfile = "incus"
 
+-- | Total provider-capability observation. Package presence is intentionally
+-- not a ready state.
+data IncusProviderStatus
+  = IncusClientMissing
+  | IncusDaemonAbsent String
+  | IncusPermissionDenied String
+  | IncusDaemonUnreachable String
+  | IncusVMIncapable String
+  | IncusNoEgress String
+  | IncusProviderReady
+  deriving (Eq, Show)
+
+-- | Opaque capability minted only from the complete ready observation.
+data IncusProviderCapability capabilityId = IncusProviderCapability
+
+withIncusProviderCapability ::
+  IncusProviderStatus ->
+  (forall capabilityId. IncusProviderCapability capabilityId -> result) ->
+  Either String result
+withIncusProviderCapability IncusProviderReady consume =
+  Right (consume IncusProviderCapability)
+withIncusProviderCapability status _ =
+  Left ("Incus provider is not usable: " ++ show status)
+
+classifyIncusProviderStatus ::
+  Bool ->
+  Either String (ExitCode, String, String) ->
+  Either String (ExitCode, String, String) ->
+  Either String (ExitCode, String, String) ->
+  IncusProviderStatus
+classifyIncusProviderStatus clientPresent daemon capability egress
+  | not clientPresent = IncusClientMissing
+  | otherwise =
+      case classifyDaemon daemon of
+        Just status -> status
+        Nothing ->
+          case failureText capability of
+            Just reason -> IncusVMIncapable reason
+            Nothing ->
+              case failureText egress of
+                Just reason -> IncusNoEgress reason
+                Nothing -> IncusProviderReady
+  where
+    classifyDaemon result =
+      case failureText result of
+        Nothing -> Nothing
+        Just reason
+          | permissionMarker reason -> Just (IncusPermissionDenied reason)
+          | absentMarker reason -> Just (IncusDaemonAbsent reason)
+          | otherwise -> Just (IncusDaemonUnreachable reason)
+    permissionMarker reason =
+      any (`isInfixOf` lower reason) ["permission denied", "not authorized", "access denied"]
+    absentMarker reason =
+      any (`isInfixOf` lower reason) ["no such file", "daemon is not running", "connection refused"]
+    lower = map toLower
+
+failureText :: Either String (ExitCode, String, String) -> Maybe String
+failureText result =
+  case result of
+    Left err -> Just err
+    Right (ExitSuccess, _, _) -> Nothing
+    Right (ExitFailure code, out, err) ->
+      Just ("exit " ++ show code ++ ": " ++ firstLine (out ++ err))
+  where
+    firstLine = takeWhile (`notElem` ("\r\n" :: String))
+
 reconciler :: Reconciler
 reconciler =
   Reconciler
@@ -81,17 +153,12 @@ reconciler =
 
 reconcileIncus :: HostConfig -> IO ()
 reconcileIncus cfg = do
-  installAndVerify "incus" satisfied installSteps cfg
-  when (isLinux (hcSubstrate cfg)) (ensureIncusAdminGroup cfg)
-
--- | Incus is satisfied when the client can reach a usable provider. On macOS
--- that means the named Colima Incus profile is running and @incus list@ can
--- reach the Colima-provided daemon. On linux the native daemon is installed and
--- initialized by the plan, so the resolved client is the satisfaction probe.
-satisfied :: HostConfig -> IO Bool
-satisfied cfg
-  | isAppleSilicon (hcSubstrate cfg) = appleSatisfied cfg
-  | otherwise = pure (toolPresent cfg Incus)
+  if isLinux (hcSubstrate cfg)
+    then reconcileLinuxIncus cfg
+    else do
+      installAndVerify "incus" appleSatisfied installSteps cfg
+      refreshed <- buildHostConfig (hcSubstrate cfg)
+      verifyUsableProvider refreshed
 
 appleSatisfied :: HostConfig -> IO Bool
 appleSatisfied cfg
@@ -108,6 +175,100 @@ appleSatisfied cfg
         Right (ExitSuccess, _, _) -> True
         _ -> False
 
+reconcileLinuxIncus :: HostConfig -> IO ()
+reconcileLinuxIncus cfg = do
+  installAndVerify "incus client" (\candidate -> pure (toolPresent candidate Incus)) installSteps cfg
+  refreshed <- buildHostConfig (hcSubstrate cfg)
+  ensureKvmAccess refreshed
+  runRequired refreshed Sudo ["apt-get", "install", "-y", "qemu-system-x86", "ovmf", "acl"]
+  ensureLinuxDaemon refreshed
+  runRequired refreshed Sudo ["systemctl", "restart", "incus"]
+  ensureIncusAdminGroup refreshed
+  ensureBridgeForwarding refreshed
+  verifyUsableProvider refreshed
+
+ensureLinuxDaemon :: HostConfig -> IO ()
+ensureLinuxDaemon cfg =
+  case resolveMaybe cfg Incus of
+    Nothing -> die "ensure incus: client disappeared before daemon initialization"
+    Just incusExe -> do
+      let listArgs = [absExePath incusExe, "list", "--format", "csv", "-c", "n"]
+      rootProbe <- runTool cfg Sudo listArgs
+      case rootProbe of
+        Right (ExitSuccess, _, _) -> pure ()
+        _ -> do
+          runRequired cfg Sudo [absExePath incusExe, "admin", "init", "--minimal"]
+          runRequired cfg Sudo listArgs
+
+verifyUsableProvider :: HostConfig -> IO ()
+verifyUsableProvider cfg = do
+  status <- probeIncusProviderStatus cfg
+  case withIncusProviderCapability status (const ()) of
+    Right () -> putStrLn "ensure incus: daemon, VM capability, and image-source egress ready"
+    Left err -> die ("ensure incus: " ++ err)
+
+probeIncusProviderStatus :: HostConfig -> IO IncusProviderStatus
+probeIncusProviderStatus cfg
+  | not (toolPresent cfg Incus) =
+      pure IncusClientMissing
+  | otherwise = do
+      daemon <- runTool cfg Incus ["list", "--format", "csv", "-c", "n"]
+      capability <-
+        if isAppleSilicon (hcSubstrate cfg)
+          then runTool cfg Colima ["status", appleIncusProfile]
+          else
+            runTool
+              cfg
+              Sudo
+              [ "sh",
+                "-c",
+                "test -x /usr/bin/qemu-system-x86_64 && "
+                  ++ "(test -f /usr/share/OVMF/OVMF_CODE.fd || "
+                  ++ "test -f /usr/share/OVMF/OVMF_CODE_4M.fd)"
+              ]
+      egress <- runTool cfg Incus ["image", "info", "images:ubuntu/24.04"]
+      pure
+        ( classifyIncusProviderStatus
+            True
+            daemon
+            capability
+            egress
+        )
+
+runRequired :: HostConfig -> HostTool -> [String] -> IO ()
+runRequired cfg tool args = do
+  result <- runTool cfg tool args
+  case result of
+    Right (ExitSuccess, _, _) -> pure ()
+    Right (ExitFailure code, _, err) ->
+      die
+        ( "ensure incus: "
+            ++ show tool
+            ++ " failed (exit "
+            ++ show code
+            ++ "): "
+            ++ err
+        )
+    Left err -> die ("ensure incus: " ++ err)
+
+ensureBridgeForwarding :: HostConfig -> IO ()
+ensureBridgeForwarding cfg =
+  mapM_ ensureRule ["-i", "-o"]
+  where
+    ensureRule direction =
+      runRequired
+        cfg
+        Sudo
+        [ "bash",
+          "-c",
+          "iptables -nL DOCKER-USER >/dev/null 2>&1 || exit 0; "
+            ++ "iptables -C DOCKER-USER "
+            ++ direction
+            ++ " incusbr0 -j ACCEPT 2>/dev/null "
+            ++ "|| iptables -I DOCKER-USER "
+            ++ direction
+            ++ " incusbr0 -j ACCEPT"
+        ]
 -- | The substrate-branched install plan. Homebrew formula installs are
 -- intentionally expressed as @brew install@ steps; Homebrew treats an already
 -- installed formula as a successful no-op, which is the idempotent path we want.
@@ -130,7 +291,7 @@ installSteps sub = case substrateName sub of
     Left ("incus is not the Windows host-provider; use the WSL2 provider on " ++ renderSubstrateName WindowsGpu)
   where
     linuxSteps =
-      [ InstallStep Sudo ["apt-get", "install", "-y", "incus"],
+      [ InstallStep Sudo ["apt-get", "install", "-y", "incus", "acl"],
         InstallStep Sudo ["incus", "admin", "init", "--minimal"]
       ]
 
@@ -145,9 +306,7 @@ ensureIncusAdminGroup cfg = do
       result <- runTool cfg Sudo ["usermod", "-aG", "incus-admin", user]
       case result of
         Right (ExitSuccess, _, _) ->
-          putStrLn $
-            "ensure incus: incus-admin group membership ensured; "
-              ++ "start a new login shell if it was newly added"
+          ensureImmediateSocketAccess cfg user
         Right (ExitFailure n, _, errOut) ->
           die
             ( "ensure incus: could not add "
@@ -158,6 +317,25 @@ ensureIncusAdminGroup cfg = do
                 ++ errOut
             )
         Left err -> die ("ensure incus: " ++ err)
+
+ensureImmediateSocketAccess :: HostConfig -> String -> IO ()
+ensureImmediateSocketAccess cfg user = do
+  result <-
+    runTool
+      cfg
+      Sudo
+      ["setfacl", "-m", "u:" ++ user ++ ":rw", "/var/lib/incus/unix.socket"]
+  case result of
+    Right (ExitSuccess, _, _) ->
+      putStrLn "ensure incus: daemon socket access verified for the current invocation"
+    Right (ExitFailure code, _, err) ->
+      die
+        ( "ensure incus: could not grant immediate daemon socket access (exit "
+            ++ show code
+            ++ "): "
+            ++ err
+        )
+    Left err -> die ("ensure incus: " ++ err)
 
 -- | Ensure the invoking user can open @/dev/kvm@, the nested-VM providers' gate.
 -- Self-healing (see @development_plan_standards.md § L@), mirroring the @setfacl@

@@ -14,20 +14,18 @@ cluster + in-cluster registry:
 
 | CLI | Source |
 |---|---|
-| `docker`, `docker compose` | apt (`docker.io`, `docker-compose-v2`) |
-| `kind` | latest GitHub release |
-| `kubectl` | `dl.k8s.io/release/stable.txt` |
-| `helm` | latest GitHub release |
-| `skopeo` | apt |
-| `mc` (MinIO client) | `dl.min.io` |
-| `aws` (v2) | `awscli.amazonaws.com` |
-| `pulumi` | latest GitHub release |
-| `nvkind` | `github.com/NVIDIA/nvkind` (built in-place; see [go.md](go.md)) |
+| `docker`, `docker compose` | current Ubuntu 24.04 packages |
+| `kind` | current upstream release |
+| `kubectl` | current upstream stable release |
+| `helm` | current upstream release |
+| `skopeo` | current Ubuntu 24.04 package |
+| `mc` (MinIO client) | current upstream release |
+| `aws` (v2) | current upstream installer |
+| `pulumi` | current upstream release |
+| `nvkind` | current compatible Go module release (built in-place; see [go.md](go.md)) |
 
-The `kind`, `kubectl`, `helm`, and `pulumi` versions are resolved on the host by
-`hostbootstrap/base_image.py` and passed as `--build-arg` to the Dockerfile;
-`docker` and `skopeo` come from apt, `mc` and `aws` from versionless upstream
-URLs, and `nvkind` is built from `@latest` in-image.
+The rolling base workflow discovers releases and architecture-specific URLs at build time over HTTPS.
+There is no committed version replay manifest.
 
 ## Demo NodePorts
 

@@ -13,9 +13,9 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 18.6, and 19.6–19.8
+**Blocked by**: Sprints 10.9, 18.6, and 19.7–19.8
 
-**Reopened 2026-07-24.** The demo variants are hard-coded, `testSuites` is dead configuration, and the
+**Reopened 2026-07-24.** The demo variants are hard-coded, and the
 historical message handler still reloads the full sibling config through raw `IO ()`. Sprint 20.5 owns
 config-driven demo consumption and the worked-example migration after Phase 18's typed service package,
 Phase 19's typed matrix/scoped assembler/opaque project spec, and Phase 10's harness-indexed execution
@@ -32,7 +32,7 @@ no later live matrix result is inferred from them. It builds on the demo (phase 
 field on the **demo's own `cfg`** (the concrete type phase 19 sprint 19.2 demoted out of core), never a
 core-owned field or a generic `extra` slot. The multi-variant test run reuses phase 19's
 harness-generated-config flow (sprint 19.3). Sprint 20.5 reopens the phase because those two variants are
-hard-coded in Haskell and the decoded `testSuites` configuration is unused.
+hard-coded in Haskell. Sprint 19.6 has since removed the dead `testSuites` configuration.
 
 This is the **worked-example** half of the generic-project-model story: phase 19 makes the library
 generic; phase 20 proves it by having the demo exercise a project-defined config field and a
@@ -42,11 +42,11 @@ symmetric alternative).
 
 ## Remaining Work
 
-Sprint 20.5 is Blocked by Sprints 10.9, 18.6, and 19.6–19.8. Once the typed matrix, scoped assembler,
+Sprint 20.5 is Blocked by Sprints 10.9, 18.6, and 19.7–19.8. Once the scoped assembler,
 typed selected-service package, finalized project-spec APIs, and harness-indexed execution boundary
 land, generate the demo variants entirely from decoded `<project>.test.dhall`, migrate Web message
-delivery to config-ID-bound filtered role parameters, remove the hard-coded message list/dead
-`testSuites` field, and prove a config-only third variant runs without a Haskell edit.
+delivery to config-ID-bound filtered role parameters, remove the hard-coded message list, and prove a
+config-only third variant runs without a Haskell edit.
 
 ## Motivation
 
@@ -92,7 +92,8 @@ SPA cannot drift from the API.
 
 #### Deliverables
 
-- `message : Text` on the demo `cfg`; the demo's `psInit` default is `"Hello, world!"` (no core default).
+- `message : Text` on the demo `cfg scope`; the demo's `psAssemble` default is `"Hello, world!"` (no
+  core default).
 - `BudgetView.message`; the SPA renders `#message`; the bridge round-trip stays byte-stable.
 
 #### Validation
@@ -155,9 +156,8 @@ are covered statically and do not create a new live claim.
 Extend the demo's harness to run **two config variants** in one `test run all`: the default
 `"Hello, world!"` deployment and a harness-generated `"Hello, Universe!"` deployment. Each variant is a
 full `project up` → assert → `project destroy`, with the entire cluster torn down and spun up between
-variants. The harness builds each variant's config functionally via the independent project-owned
-`psTestConfig` callback; the demo calls a helper also used by `psInit` by convention (phase 19). It never
-shells the CLI.
+variants. The harness builds each variant's config functionally via the Harness request of the single
+project-owned restricted `psAssemble` (phase 19). It never shells the CLI.
 
 #### Deliverables
 
@@ -207,7 +207,7 @@ validated 2026-06-23 (`test run all` 6/6).
 ### Sprint 20.5: Config-driven demo case and variant generation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 18.6, and 19.6–19.8
+**Blocked by**: Sprints 10.9, 18.6, and 19.7–19.8
 **Implementation**: `demo/src/HostBootstrapDemo/Config.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Web/Server.hs`, `demo/app/Main.hs`,
@@ -223,7 +223,7 @@ validated 2026-06-23 (`test run all` 6/6).
 #### Objective
 
 Make the worked demo consume Phase 19's typed test configuration instead of hard-coding its message
-variants/carrying an unused `testSuites` field, and consume the selected Web service's message through
+variants, and consume the selected Web service's message through
 Phase 18's filtered, config-ID-bound handler input rather than reopening the full config.
 
 #### Deliverables
@@ -234,7 +234,7 @@ Phase 18's filtered, config-ID-bound handler input rather than reopening the ful
 - Generate a pure validated `TestMatrix VariantDraft` from the decoded values. For each distinct variant,
   let the engine open a fresh `Harness projectId runId` lease and call the demo's `psAssemble`; adding or
   removing a variant in config changes the run without editing `demoTestSuite`.
-- Remove `testSuites` and the hard-coded two-message variant list, while keeping assertions parameterized
+- Remove the hard-coded two-message variant list, while keeping assertions parameterized
   by the active typed variant.
 - Thread the generated variants into Phase 13's harness-indexed `TestComponent` through the finalized
   opaque project specification; the harness engine remains owned by Phase 10.
@@ -268,8 +268,8 @@ Phase 18's filtered, config-ID-bound handler input rather than reopening the ful
 
 #### Remaining Work
 
-Blocked until Sprints 10.9, 18.6, and 19.6–19.8 land the harness-indexed execution boundary, typed
-selected-service package, typed matrix, scoped assembler, and validated project specification consumed
+Blocked until Sprints 10.9, 18.6, and 19.7–19.8 land the harness-indexed execution boundary, typed
+selected-service package, scoped assembler, and validated project specification consumed
 here. Then migrate the demo schema/generator/Web handler, delete the hard-coded/dead/raw-reload surfaces,
 and run the config-only variant-change proof. The historical two-message `6/6` run does not demonstrate
 a config-driven matrix or the target handler boundary.

@@ -13,7 +13,7 @@ module HostBootstrapDemo.Web.Server (
     app,
     appAtDurableRoot,
     acceleratorIngressApp,
-    serveWeb,
+    serveWebWithConfig,
     newAcceleratorHub,
     acceleratorDaemonConnected,
     acceleratorDispatch,
@@ -32,8 +32,6 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified HostBootstrap.Config.Schema as Schema
-import qualified HostBootstrap.Context as Context
 import HostBootstrapDemo.Accelerator.Protocol (
     AcceleratorMessage (..),
     AcceleratorResponse (..),
@@ -41,7 +39,7 @@ import HostBootstrapDemo.Accelerator.Protocol (
     decodeAcceleratorMessage,
     encodeAcceleratorMessage,
  )
-import HostBootstrapDemo.Config (ProjectConfig (message, service), ServiceType (Web), WebServiceConfig (WebServiceConfig), maxAcceleratorRequestTimeoutSeconds)
+import HostBootstrapDemo.Config (WebServiceConfig (WebServiceConfig), maxAcceleratorRequestTimeoutSeconds, portNat)
 import HostBootstrapDemo.Web.Api (
     AcceleratorAddFailure (..),
     AcceleratorAddRequest,
@@ -346,25 +344,14 @@ the public listener. Reads its own mounted
 ConfigMap delivers) and serves the config-driven @message@ from it (Sprint 20.1),
 so the served value is whatever the active config carries.
 -}
-serveWeb :: IO ()
-serveWeb = do
-    cfg <-
-        Schema.requireSiblingProjectConfig
-            (T.pack "hostbootstrap-demo")
-            Context.ServiceCommand
-            [Context.DurableStore] ::
-            IO ProjectConfig
-    WebServiceConfig publicPort' acceleratorPort' <-
-        case service cfg of
-            Just (Web params) -> pure params
-            _ -> ioError (userError "service run: Web handler requires the Web ServiceType variant")
+serveWebWithConfig :: Text -> WebServiceConfig -> IO ()
+serveWebWithConfig msg (WebServiceConfig publicPort' acceleratorPort') = do
     createDirectoryIfMissing True durableRoot
     durableRootExists <- doesDirectoryExist durableRoot
     unless durableRootExists $
         ioError (userError ("service run: durable root is not a directory: " ++ durableRoot))
-    let msg = message cfg
-        publicPort = fromIntegral publicPort'
-        acceleratorPort = fromIntegral acceleratorPort'
+    let publicPort = fromIntegral (portNat publicPort')
+        acceleratorPort = fromIntegral (portNat acceleratorPort')
     hub <- newAcceleratorHub
     putStrLn ("web serve: public HTTP on http://0.0.0.0:" ++ show publicPort ++ "; daemon ingress on ws://0.0.0.0:" ++ show acceleratorPort ++ "/api/accelerator/daemon; message=" ++ T.unpack msg)
     runLinkedListeners publicPort (app msg hub) acceleratorPort (acceleratorIngressApp hub)

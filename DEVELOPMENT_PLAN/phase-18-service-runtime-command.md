@@ -14,28 +14,26 @@
 **Status**: Active
 
 `service` is **new core scope** — there had never been a `service` command; the demo's long-running web
-workload previously ran through the load-bearing `web serve` verb. The fixed command can dispatch a
-project-supplied registry key; current core does not prove that arbitrary selector output corresponds to
-a service ADT value or capability (development_plan_standards § AA).
+workload previously ran through the load-bearing `web serve` verb. The fixed command now selects from an
+opaque typed registry jointly finalized with structural role codecs and the full config codec; runtime
+placement/effect capability remains Sprint 18.6 work (development_plan_standards § AA).
 
 The implementation is built and has dated static validation evidence:
 
-- `HostBootstrap.Service` ships the possibly empty `ServiceRegistry` of internal handler keys and actions.
-  `HostBootstrap.CLI` threads it through `ProjectSpec` with `withServices`, rejects duplicate keys, and
-  independently carries the config-specific selector with `withServiceConfig` / `psServiceVariant`.
+- `HostBootstrap.Service` ships an opaque possibly empty typed `ServiceRegistry`. Checked additive
+  builder contributions reject duplicate identities, and finalization binds the registry and role codecs
+  to the full codec's canonical `specDigest`.
 - `HostBootstrap.Command.serviceCommandGroup` surfaces the fixed `service init|schema|run` tree. There is
   no `service down` and no positional variant argument: `service run` gates as
-  `Context.ServiceCommand`, asks the effective project config for its selected variant, and dispatches that
-  internal key through the registry. The selector is an arbitrary function; the required capability list
-  is empty, and core can dispatch a config type with no service field. Both demo handlers then reload the
-  sibling config: the Web reload alone asks `validateContext` for `[DurableStore]`, while the accelerator
-  reload again asks for no capability, so capability checks and config identity differ by handler and
-  read.
+  `Context.ServiceCommand`, canonically verifies one sibling snapshot, structurally selects exactly one
+  typed definition, and closes the action over its role fields plus safe framework context. Demo handlers
+  do not reload config. The remaining handler action is raw `IO`, and plan-derived placement/effect
+  authority is not yet required.
 - The demo owns the real Dhall service model:
-  `ServiceType = < Web : WebServiceConfig | Accelerator : AcceleratorServiceConfig >`, stored as the
-  mandatory `service : Optional ServiceType` project-config field. `Web` carries distinct public and
-  accelerator ports; `Accelerator` carries its request timeout. `configuredServiceVariant` maps those
-  payload-bearing constructors to the internal registry keys and validates their placement.
+  mandatory `webServiceConfig : WebServiceConfig` and
+  `acceleratorServiceConfig : AcceleratorServiceConfig` parameter records. Leaf context structurally
+  selects Web or Accelerator; both records survive parent/child projection, so selection discards
+  neither and invents no fallback.
 - `demo/src/HostBootstrapDemo/Commands.hs` renders each parent-derived service config and its ConfigMap
   manifest at deployment time. Helm receives the current frame, exact config-byte hash, and placement;
   the hash annotation rolls the pod whenever the mounted bytes change. There is no static chart ConfigMap.
@@ -62,11 +60,12 @@ is not a live validation claim for the current four-lane accelerator gate.
 configuration, two-listener web boundary, and persistent real-worker supervision are implemented and
 covered by static/local tests. The cross-substrate live gates below remain open, so the phase stays Active.
 
-**Reopened 2026-07-24 for validated service selection and immutable dispatch.** `service schema` is
-encoder-declared, not decoder-reflected. `service run` selects from one config decode, but the demo
-handlers reload the sibling file; selector/config/registry agreement is convention rather than a typed
-relation; service projection invents fallback values; and a missing service config incorrectly points to
-root `project init`. Blocked Sprint 18.6 owns the repair with Sprints 14.6, 15.9, 17.4, and 19.8.
+**Reopened 2026-07-24 for validated service selection and immutable dispatch.** Sprints 8.7 and 19.8 now
+provide a canonically verified full-config snapshot, typed registry/role codecs under one
+`specDigest`, structural no-fallback role projection, and demo handlers that do not reopen config.
+Sprint 18.6 still owns runtime placement/effect authorization, a one-use `SelectedService` package,
+replacement of raw handler `IO` with `ServiceProgram`, and command-specific missing-config guidance. It
+remains blocked by Sprints 14.6, 15.9, and 17.4; Sprint 19.8 is closed.
 
 ## Remaining Work
 
@@ -125,7 +124,7 @@ project binary inherits it.
 #### Deliverables
 
 - `service init` writes a service-configured `<project>.dhall` from passed parameters (forwarded from a
-  parent where applicable, § X); `service schema` prints the `ToDhall` encoder-declared project config
+  parent where applicable, § X); `service schema` prints the validated-codec project config
   schema; `service run` invokes the registry key returned by the current selector. No `service down`.
 - `service run` is a **leaf-frame runtime command, never an orchestrator**: it assumes it is already placed
   in its frame (a k8s pod or host daemon) and runs the role; it brings up no VM or cluster.
@@ -140,7 +139,7 @@ project binary inherits it.
 
 None. `serviceCommandGroup` surfaces `service init|schema|run` (no `service down`); `service run` gates as
   `Context.ServiceCommand` and applies a leaf primary-kind check. `CLISpec` covers that refusal and
-  encoder-declared `service schema`; it does not establish service-field/capability/selector relations.
+  validated-codec `service schema`; it does not establish service-field/capability/selector relations.
   The 2026-06-19 demo run is historical live evidence for the
 pre-selector web form of the command ([phase-13](phase-13-hostbootstrap-demo.md)); current live matrix
 closure is tracked by Sprint 18.5.
@@ -546,7 +545,7 @@ config bytes.
   prove no inline secret appears in role ConfigMaps, pod templates, signed activation manifests, logs, or
   `LocalContextView`; only the Kubernetes Secret/private OS channel contains fixture bytes;
   missing/extra/duplicate Harness secret entries and cross-run/cross-spec bundles refuse.
-- CLI tests distinguish the current full-`cfg` encoder-declared `service schema` from the target
+- CLI tests distinguish the current full-`cfg` validated-codec `service schema` from the target
   `RoleCodec`-derived role-wire schema registry, and prove an empty registry's structured result plus
   command-specific missing-config guidance.
 

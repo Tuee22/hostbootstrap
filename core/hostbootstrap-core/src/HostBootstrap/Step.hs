@@ -1,36 +1,49 @@
-{- | The 'Step' algebra: the lift-chain stream's reuse unit (development_plan_standards § T, § Y).
+{- | The opaque validated step/plan algebra.
 
-A project's deploy is a pure @chain :: cfg -> [Step]@ value (see
-'HostBootstrap.Chain'); each 'Step' is one composable action a binary runs and
-reports inside one execution frame. @hostbootstrap-core@ ships the
-host-management step kinds ('StepKind'); a project contributes its own kinds
-through the open 'ProjectStep' seam, interleaving host and workload steps in
-one @[Step]@.
-
-A 'Step' carries a pure, renderable shape — a label, the frame it runs in, and
-its 'StepKind' — plus an effectful 'stepRun' reconcile action. @project up
---dry-run@ renders the shape via 'renderChainPlan' without running the action;
-the recursive interpreter ('HostBootstrap.Chain') runs the action when the
-binary is in the step's frame. The action stays context-agnostic
-(@HostConfig -> IO ()@) so a step is lifted purely by /which frame/ the
-interpreter runs it in (§ U).
+A project may construct steps only through the smart constructors below and may
+hand an interpreter only a validated 'StepPlan'. Core and project identities are
+different constructors, rendered labels never select behavior, every step
+carries an explicit reverse policy, and validation preserves the declared order
+or rejects the plan before effects.
 -}
 module HostBootstrap.Step (
     -- * Frames
     StepFrame (..),
 
-    -- * Kinds
-    StepKind (..),
-    stepKindName,
+    -- * Identities and policies
+    CoreStepId (..),
+    ProjectStepId,
+    projectStepId,
+    StepIdentity (..),
+    ReversePolicy (..),
+    OperationKey,
+    operationKeyText,
 
-    -- * Steps
-    Step (..),
+    -- * Opaque steps
+    Step,
+    StepKind,
+    stepLabel,
+    stepFrame,
+    stepKind,
+    stepKindName,
+    stepIdentity,
+    stepReversePolicy,
+    stepOperationKey,
+    runStep,
+    isDeployKindStep,
     renderStep,
+
+    -- * Opaque validated plans
+    StepPlan,
+    StepPlanError (..),
+    mkStepPlan,
+    stepPlanSteps,
     renderChainPlan,
     stepsForFrame,
     preHandoffStepsForFrame,
     postHandoffStepsForFrame,
     chainFrames,
+    stepDependencies,
 
     -- * Core host-management step constructors
     deployVMStep,
@@ -49,12 +62,11 @@ module HostBootstrap.Step (
 )
 where
 
+import Data.List (group, sort)
 import HostBootstrap.HostConfig (HostConfig)
 
-{- | The composed frame a step's binary runs in, identified by its topology frame
-id (the @topologyFrameId@ in the sibling @<project>.dhall@). The recursive
-interpreter groups a chain into contiguous per-frame segments in chain order;
-'frameLabel' is a human label for the dry-run render.
+{- | One execution frame. The id is semantic; the label is presentation only.
+Validation rejects two labels for the same id.
 -}
 data StepFrame = StepFrame
     { frameId :: String
@@ -62,160 +74,311 @@ data StepFrame = StepFrame
     }
     deriving (Eq, Show)
 
-{- | The kind of a step: a closed core set of host-management kinds plus the open
-'ProjectStep' seam for project-contributed kinds. Pure and renderable, so a
-chain renders without acting.
+-- | Closed identities owned by core.
+data CoreStepId
+    = DeployVMId
+    | EnsureToolId String
+    | CopySourceId
+    | BuildPbId
+    | BuildImageId
+    | ContextInitId
+    | DeployKindId
+    | DeployChartId
+    | ExposePortId
+    | PostHandoffId String
+    deriving (Eq, Ord, Show)
+
+-- | A validated project-owned identity. Its constructor is hidden.
+newtype ProjectStepId = ProjectStepId String
+    deriving (Eq, Ord, Show)
+
+-- | Validate a project identity. It need not avoid core spellings because its
+-- namespace is disjoint, but it must be a stable non-empty token.
+projectStepId :: String -> Either String ProjectStepId
+projectStepId raw
+    | null raw = Left "project step identity must not be empty"
+    | any invalid raw = Left ("project step identity is not a stable token: " ++ show raw)
+    | otherwise = Right (ProjectStepId raw)
+  where
+    invalid c = not (c == '-' || c == '_' || c == '.' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z')
+
+-- | Core and project identities cannot collide even when they render alike.
+data StepIdentity
+    = CoreStepIdentity CoreStepId
+    | ProjectStepIdentity ProjectStepId
+    deriving (Eq, Ord, Show)
+
+{- | The declared reverse behavior for a step. It is metadata for the later
+receipt-driven teardown interpreter; requiring it now prevents a mutating step
+from entering a finalized plan without an explicit reverse decision.
 -}
+data ReversePolicy
+    = PreserveOnReverse
+    | CoreManagedReverse
+    | ProjectManagedReverse
+    deriving (Eq, Ord, Show)
+
+-- | Stable namespaced operation key derived only from the typed identity.
+newtype OperationKey = OperationKey String
+    deriving (Eq, Ord, Show)
+
+operationKeyText :: OperationKey -> String
+operationKeyText (OperationKey value) = value
+
+-- | Render-only kind view. The constructor is hidden.
 data StepKind
-    = -- | provision a provider VM (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)
-      DeployVM
-    | -- | run an @ensure@ reconciler as a chain step (§ L); carries the tool name
-      EnsureTool String
-    | -- | stage the project source into the next frame
-      CopySource
-    | -- | build the project binary host-native in the target frame
-      BuildPb
-    | -- | build the project container image
-      BuildImage
-    | -- | mint the next frame's child @<project>.dhall@ before the handoff
-      ContextInit
-    | -- | bring up the kind cluster
-      DeployKind
-    | -- | install/upgrade the project Helm chart
-      DeployChart
-    | -- | expose an in-cluster service outward (NodePort)
-      ExposePort
-    | -- | run after the recursive handoff below this frame has completed; carries the hook name
-      PostHandoff String
-    | -- | the open seam: a project-contributed step kind, carrying its name
-      ProjectStep String
+    = CoreKind CoreStepId
+    | ProjectKind ProjectStepId
     deriving (Eq, Show)
 
--- | A short stable name for a step kind, used in the dry-run render.
-stepKindName :: StepKind -> String
-stepKindName k = case k of
-    DeployVM -> "deploy-vm"
-    EnsureTool tool -> "ensure-" ++ tool
-    CopySource -> "copy-source"
-    BuildPb -> "build-pb"
-    BuildImage -> "build-image"
-    ContextInit -> "context-init"
-    DeployKind -> "deploy-kind"
-    DeployChart -> "deploy-chart"
-    ExposePort -> "expose-port"
-    PostHandoff name -> "post-handoff-" ++ name
-    ProjectStep name -> name
-
-{- | One composable step: the pure renderable shape plus the effectful reconcile
-action.
--}
+-- | One opaque step.
 data Step = Step
-    { stepLabel :: String
-    , stepFrame :: StepFrame
-    , stepKind :: StepKind
-    , stepRun :: HostConfig -> IO ()
+    { internalStepLabel :: String
+    , internalStepFrame :: StepFrame
+    , internalStepKind :: StepKind
+    , internalStepReversePolicy :: ReversePolicy
+    , internalStepRun :: HostConfig -> IO ()
     }
 
--- | The one-line dry-run render of a step (pure): frame, kind, and label.
-renderStep :: Step -> String
-renderStep s =
-    "["
-        ++ frameId (stepFrame s)
-        ++ "] "
-        ++ stepKindName (stepKind s)
-        ++ " — "
-        ++ stepLabel s
+stepLabel :: Step -> String
+stepLabel = internalStepLabel
 
-{- | Render an ordered chain as its numbered plan (the @--dry-run@ output). Pure,
-so the rendered plan is exactly the value the interpreter would execute (§ W).
--}
-renderChainPlan :: [Step] -> String
-renderChainPlan steps = unlines (zipWith line [1 :: Int ..] steps)
-  where
-    line n s = show n ++ ". " ++ renderStep s
+stepFrame :: Step -> StepFrame
+stepFrame = internalStepFrame
 
-{- | The steps of a chain that run in a given frame, in chain order. The recursive
-interpreter runs exactly these "locally" when the binary is in @fid@.
--}
-stepsForFrame :: String -> [Step] -> [Step]
-stepsForFrame fid = filter ((== fid) . frameId . stepFrame)
+stepKind :: Step -> StepKind
+stepKind = internalStepKind
 
--- | Steps that run before this frame hands off into a child frame.
-preHandoffStepsForFrame :: String -> [Step] -> [Step]
-preHandoffStepsForFrame fid = filter (not . isPostHandoffStep) . stepsForFrame fid
+stepIdentity :: Step -> StepIdentity
+stepIdentity step =
+    case internalStepKind step of
+        CoreKind identity -> CoreStepIdentity identity
+        ProjectKind identity -> ProjectStepIdentity identity
 
-{- | Steps that run after this frame's recursive child handoff completes
-successfully. This lets a host-frame hook start a host-resident daemon only
-after the nested cluster/web ingress has been stood up.
--}
-postHandoffStepsForFrame :: String -> [Step] -> [Step]
-postHandoffStepsForFrame fid = filter isPostHandoffStep . stepsForFrame fid
+stepReversePolicy :: Step -> ReversePolicy
+stepReversePolicy = internalStepReversePolicy
 
-isPostHandoffStep :: Step -> Bool
-isPostHandoffStep s =
-    case stepKind s of
-        PostHandoff _ -> True
+stepOperationKey :: Step -> OperationKey
+stepOperationKey step =
+    OperationKey $
+        case stepIdentity step of
+            CoreStepIdentity identity -> "core:" ++ stepKindName (CoreKind identity)
+            ProjectStepIdentity identity -> "project:" ++ stepKindName (ProjectKind identity)
+
+runStep :: Step -> HostConfig -> IO ()
+runStep = internalStepRun
+
+isDeployKindStep :: Step -> Bool
+isDeployKindStep step =
+    case internalStepKind step of
+        CoreKind DeployKindId -> True
         _ -> False
 
-{- | The distinct frames a chain descends through, in first-appearance (descent)
-order. The interpreter runs the head frame's steps, then hands off into the
-next, and so on.
+-- | Stable presentation name; it is never used as identity.
+stepKindName :: StepKind -> String
+stepKindName kind =
+    case kind of
+        CoreKind identity ->
+            case identity of
+                DeployVMId -> "deploy-vm"
+                EnsureToolId tool -> "ensure-" ++ tool
+                CopySourceId -> "copy-source"
+                BuildPbId -> "build-pb"
+                BuildImageId -> "build-image"
+                ContextInitId -> "context-init"
+                DeployKindId -> "deploy-kind"
+                DeployChartId -> "deploy-chart"
+                ExposePortId -> "expose-port"
+                PostHandoffId name -> "post-handoff-" ++ name
+        ProjectKind (ProjectStepId name) -> name
+
+renderStep :: Step -> String
+renderStep step =
+    "["
+        ++ frameId (stepFrame step)
+        ++ "] "
+        ++ stepKindName (stepKind step)
+        ++ " — "
+        ++ stepLabel step
+
+-- | An opaque non-empty plan whose declared order and frame traversal agree.
+newtype StepPlan = StepPlan [Step]
+
+data StepPlanError
+    = EmptyStepPlan
+    | EmptyFrameId Int
+    | EmptyStepLabel Int
+    | DuplicateStepIdentities [StepIdentity]
+    | ConflictingFrameLabels String [String]
+    | NonContiguousFrameReturn String [String]
+    | PostHandoffBeforeDescentComplete Int
+    | PostHandoffForUnknownFrame Int String
+    deriving (Eq, Show)
+
+{- | Validate the exact declared sequence. Normal steps must form contiguous
+frame segments. Post-handoff hooks may appear only as a final suffix and may
+refer only to a frame already present in the descent sequence.
 -}
-chainFrames :: [Step] -> [StepFrame]
-chainFrames steps = go [] (map stepFrame steps)
+mkStepPlan :: [Step] -> Either StepPlanError StepPlan
+mkStepPlan [] = Left EmptyStepPlan
+mkStepPlan steps
+    | Just (index, _) <- firstIndexed (null . frameId . stepFrame) steps =
+        Left (EmptyFrameId index)
+    | Just (index, _) <- firstIndexed (null . stepLabel) steps =
+        Left (EmptyStepLabel index)
+    | not (null duplicateIdentities) =
+        Left (DuplicateStepIdentities duplicateIdentities)
+    | Just (fid, labels) <- conflictingLabels =
+        Left (ConflictingFrameLabels fid labels)
+    | Just index <- postBeforeNormal =
+        Left (PostHandoffBeforeDescentComplete index)
+    | Just (index, fid) <- unknownPostFrame =
+        Left (PostHandoffForUnknownFrame index fid)
+    | Just fid <- returnedFrame =
+        Left (NonContiguousFrameReturn fid normalFrameIds)
+    | otherwise = Right (StepPlan steps)
   where
-    go _ [] = []
-    go seen (f : fs)
-        | frameId f `elem` seen = go seen fs
-        | otherwise = f : go (frameId f : seen) fs
+    duplicateIdentities = duplicates (map stepIdentity steps)
+    framePairs = [(frameId frame, frameLabel frame) | frame <- map stepFrame steps]
+    conflictingLabels =
+        firstJust
+            [ let labels = unique [label | (candidate, label) <- framePairs, candidate == fid]
+               in if length labels > 1 then Just (fid, labels) else Nothing
+            | fid <- unique (map fst framePairs)
+            ]
+    (normalSteps, postSteps) = break isPostHandoffStep steps
+    postBeforeNormal =
+        case firstIndexed (not . isPostHandoffStep) postSteps of
+            Nothing -> Nothing
+            Just (offset, _) -> Just (length normalSteps + offset)
+    normalFrameIds = map (frameId . stepFrame) normalSteps
+    descentFrameIds = unique normalFrameIds
+    unknownPostFrame =
+        firstJust
+            [ if frameId (stepFrame step) `elem` descentFrameIds
+                then Nothing
+                else Just (index, frameId (stepFrame step))
+            | (index, step) <- zip [length normalSteps + 1 ..] postSteps
+            ]
+    returnedFrame = firstReturnedFrame normalFrameIds
 
--- Core host-management step constructors. Each fixes the 'StepKind' and takes the
--- label, frame, and reconcile action so a chain reads as data.
+stepPlanSteps :: StepPlan -> [Step]
+stepPlanSteps (StepPlan steps) = steps
 
--- | A @deploy-vm@ step.
+renderChainPlan :: StepPlan -> String
+renderChainPlan plan = unlines (zipWith line [1 :: Int ..] (stepPlanSteps plan))
+  where
+    line number step = show number ++ ". " ++ renderStep step
+
+stepsForFrame :: String -> StepPlan -> [Step]
+stepsForFrame fid = filter ((== fid) . frameId . stepFrame) . stepPlanSteps
+
+preHandoffStepsForFrame :: String -> StepPlan -> [Step]
+preHandoffStepsForFrame fid = filter (not . isPostHandoffStep) . stepsForFrame fid
+
+postHandoffStepsForFrame :: String -> StepPlan -> [Step]
+postHandoffStepsForFrame fid = filter isPostHandoffStep . stepsForFrame fid
+
+chainFrames :: StepPlan -> [StepFrame]
+chainFrames plan = foldl addFrame [] normalSteps
+  where
+    normalSteps = takeWhile (not . isPostHandoffStep) (stepPlanSteps plan)
+    addFrame frames step
+        | frameId (stepFrame step) `elem` map frameId frames = frames
+        | otherwise = frames ++ [stepFrame step]
+
+-- | The exact validated prefix a step depends on. Because plan identities are
+-- unique, the target is unambiguous; a step outside the plan has no dependency
+-- witness.
+stepDependencies :: StepPlan -> Step -> [StepIdentity]
+stepDependencies plan target =
+    case break ((== stepIdentity target) . stepIdentity) (stepPlanSteps plan) of
+        (before, _ : _) -> map stepIdentity before
+        (_, []) -> []
+
+isPostHandoffStep :: Step -> Bool
+isPostHandoffStep step =
+    case stepKind step of
+        CoreKind (PostHandoffId _) -> True
+        _ -> False
+
+firstIndexed :: (a -> Bool) -> [a] -> Maybe (Int, a)
+firstIndexed predicate values =
+    case filter (predicate . snd) (zip [1 ..] values) of
+        [] -> Nothing
+        found : _ -> Just found
+
+firstJust :: [Maybe a] -> Maybe a
+firstJust [] = Nothing
+firstJust (Nothing : rest) = firstJust rest
+firstJust (Just value : _) = Just value
+
+unique :: (Eq a) => [a] -> [a]
+unique = foldl add []
+  where
+    add seen value
+        | value `elem` seen = seen
+        | otherwise = seen ++ [value]
+
+duplicates :: (Ord a) => [a] -> [a]
+duplicates values = [value | value : _ : _ <- group (sort values)]
+
+firstReturnedFrame :: [String] -> Maybe String
+firstReturnedFrame [] = Nothing
+firstReturnedFrame (firstFrame : rest) = go firstFrame [] rest
+  where
+    go _ _ [] = Nothing
+    go current closed (next : remaining)
+        | next == current = go current closed remaining
+        | next `elem` closed = Just next
+        | otherwise = go next (current : closed) remaining
+
+coreStep ::
+    CoreStepId ->
+    ReversePolicy ->
+    String ->
+    StepFrame ->
+    (HostConfig -> IO ()) ->
+    Step
+coreStep identity reversePolicy label frame action =
+    Step label frame (CoreKind identity) reversePolicy action
+
 deployVMStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-deployVMStep label frame = Step label frame DeployVM
+deployVMStep = coreStep DeployVMId ProjectManagedReverse
 
--- | An @ensure-*@ step (a reconciler invoked in the chain, § L).
 ensureStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
-ensureStep tool label frame = Step label frame (EnsureTool tool)
+ensureStep tool = coreStep (EnsureToolId tool) PreserveOnReverse
 
--- | A @copy-source@ step.
 copySourceStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-copySourceStep label frame = Step label frame CopySource
+copySourceStep = coreStep CopySourceId ProjectManagedReverse
 
--- | A @build-pb@ step.
 buildPbStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-buildPbStep label frame = Step label frame BuildPb
+buildPbStep = coreStep BuildPbId ProjectManagedReverse
 
--- | A @build-image@ step.
 buildImageStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-buildImageStep label frame = Step label frame BuildImage
+buildImageStep = coreStep BuildImageId ProjectManagedReverse
 
--- | A @context-init@ step (mint the next frame's child config before handoff).
 contextInitStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-contextInitStep label frame = Step label frame ContextInit
+contextInitStep = coreStep ContextInitId ProjectManagedReverse
 
--- | A @deploy-kind@ step.
 deployKindStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-deployKindStep label frame = Step label frame DeployKind
+deployKindStep = coreStep DeployKindId CoreManagedReverse
 
--- | A @deploy-chart@ step.
 deployChartStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-deployChartStep label frame = Step label frame DeployChart
+deployChartStep = coreStep DeployChartId CoreManagedReverse
 
--- | An @expose-port@ step.
 exposePortStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
-exposePortStep label frame = Step label frame ExposePort
+exposePortStep = coreStep ExposePortId CoreManagedReverse
 
-{- | A post-handoff hook. The step belongs to its declaring frame, but the
-interpreter runs it only after the recursive child frame returns successfully.
--}
 postHandoffStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
-postHandoffStep name label frame = Step label frame (PostHandoff name)
+postHandoffStep name = coreStep (PostHandoffId name) ProjectManagedReverse
 
-{- | A project-contributed step (the open seam): the project names its own kind,
-and the step interleaves freely with the core host-management steps.
--}
-projectStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
-projectStep name label frame = Step label frame (ProjectStep name)
+projectStep ::
+    ProjectStepId ->
+    ReversePolicy ->
+    String ->
+    StepFrame ->
+    (HostConfig -> IO ()) ->
+    Step
+projectStep identity reversePolicy label frame action =
+    Step label frame (ProjectKind identity) reversePolicy action

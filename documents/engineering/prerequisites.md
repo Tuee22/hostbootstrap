@@ -16,8 +16,8 @@
   lifecycle/reconciler actions. When a current probe reports absence and a supported platform install
   plan exists, the
   reconciler installs and re-runs that probe rather than documenting a manual prerequisite. The target
-  makes that a total install-and-verify contract; current weak probes, notably Linux Incus client
-  presence, remain open. Hardware/firmware capabilities that cannot be safely installed — notably the
+  makes that a total install-and-verify contract; remaining probes that establish only presence remain
+  open. Hardware/firmware capabilities that cannot be safely installed — notably the
   Linux or Windows NVIDIA display driver — remain explicit preconditions. See
   [ensure_reconcilers.md](ensure_reconcilers.md).
 - A missing *minimum* aborts with a one-line diagnostic and a non-zero exit; it is never worked around.
@@ -81,8 +81,8 @@ The Python bootstrapper asserts, fail-fast:
 These three are the bedrock the Apple bootstrap path needs before it can ensure anything else.
 Homebrew is the channel through which the bootstrapper installs the host GHC/Cabal toolchain
 (`ghcup`) needed to build the binary host-native, so Homebrew's own presence must be a hard
-precondition rather than something reconciled. (The Docker provider, `ensure colima`, runs later —
-the invoked binary owns it, not the pre-binary bootstrapper.)
+precondition rather than something reconciled. The invoked binary, not the pre-binary bootstrapper,
+owns the later prepared per-project Colima Docker-provider wall.
 
 ## Windows Minimums
 
@@ -122,8 +122,8 @@ weak to establish the capability its label promises:
 
 | Concern | Reconciler | Applies on |
 |---|---|---|
-| Docker reachability | `ensure docker` | applicability accepts all substrates; installation is Linux-only, Apple delegates to Colima, and Windows delegates to WSL2/provider setup |
-| Default Colima runtime profile (currently unsized) | `ensure colima` | Apple silicon |
+| Docker reachability | `ensure docker` | applicability accepts all substrates; installation is Linux-only, while Apple refuses config-free setup because the prepared project Colima wall owns Docker and Windows delegates to WSL2/provider setup |
+| Exact per-project Colima Docker wall | prepared `HostBootstrap.Ensure.Colima` adapter (not a config-free reconciler) | Apple silicon |
 | Lima pristine demo VM provider | `ensure lima` | Apple silicon |
 | Incus host-provider | `ensure incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
 | NVIDIA container toolkit + Docker runtime/CDI/volume injection (NVIDIA kernel driver is a precondition) | `ensure cuda` | `linux-gpu` |
@@ -167,17 +167,17 @@ irreducible host floor the pre-binary work depends on. The consolidated host min
 >
 > **RIGHT**
 >
-> Let the project binary's lifecycle invoke the Colima reconciler. The current reconciler executes
-> `brew install colima` followed by an unsized `colima start`, and its no-op probe is `colima status` on
-> the default profile.
-> A budget-sized, per-project Colima profile is a target; the existing sizing argument builder is not yet
-> wired into this reconciler.
+> Let the project binary's lifecycle supply its validated context and admitted provider wall to the
+> prepared Colima adapter. The adapter installs Colima through Homebrew when absent, observes the named
+> project profile, refuses incompatible same-name state, starts only with exact CPU/memory/disk and
+> `--activate=false`, and routes Docker through `colima-<project>`. It never treats the mutable `default`
+> profile as project authority.
 
 ## Current Status
 
 The pre-binary minimum and binary-owned reconciliation split above describes the current boundary.
-Remaining gaps—such as weak provider probes and the unsized default Colima profile—have exact owners and
-closure criteria in the development plan. The Linux `curl` floor and GHCup download integrity are
+Remaining gaps—such as weak provider probes and recursive-plan integration of the prepared Colima
+adapter—have exact owners and closure criteria in the development plan. The Linux `curl` floor and GHCup download integrity are
 closed. This
 page defines what belongs on each side of the boundary; it does not independently declare those phases
 closed.

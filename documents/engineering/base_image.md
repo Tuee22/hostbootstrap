@@ -1,278 +1,134 @@
 # Base image
 
 **Status**: Authoritative source
-**Supersedes**: prior base-image notes without metadata
-**Referenced by**: [../README.md](../README.md), [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md), [code_check_doctrine.md](code_check_doctrine.md)
+**Supersedes**: the immutable-input and layered-freeze base-image doctrine
+**Referenced by**: [../README.md](../README.md), [warm_store.md](warm_store.md),
+[derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md),
+[code_check_doctrine.md](code_check_doctrine.md)
 
-> **Purpose**: Describe the four prebuilt base tags and the warm `hostbootstrap-core` dependency
-> closure they bake in (no `hostbootstrap` binary is baked), and the Dockerfile rules every image
-> follows.
+> **Purpose**: Define the four rolling native-architecture base tags, their tool/cache contents, and
+> the build and publication rules.
 
-## Tags
+## Tags and architecture
 
-Four single-arch, prebuilt tags carry the shared toolchain:
+Four single-architecture rolling tags carry the shared toolchain:
 
-```
+```text
 docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64
 docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64
 docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64
 docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64
 ```
 
-There are no manifest lists. The base flavor (`cpu`/`cuda`) and requested `--arch`
-(`amd64`/`arm64`) together name exactly one tag. The design requires that request to match the native
-host/Docker-engine architecture, but the current CLI does not validate the match; Phase 6 Sprint 6.7
-owns the fail-closed preflight.
+There are no manifest lists. Before any build, the CLI requires the requested architecture, detected
+host architecture, and Docker-engine architecture to match. Buildx/emulation and cross-architecture
+publication are rejected.
 
-## Republishing the base
+The maintainer `base` command selects an explicit CPU/CUDA flavor and architecture. A consuming project
+separately maps its detected substrate to one published tag. The demo uses CPU for Apple Silicon,
+Linux CPU, Windows CPU, and Windows GPU; it uses CUDA for Linux GPU. Windows accelerator workers remain
+host-native and add no base flavor.
 
-The four published tags above are the **source of truth** every derived project (and the in-repo
-`demo/`) builds `FROM`. Whenever the repo's base inputs change — `docker/basecontainer.Dockerfile`
-or the warm-store inputs under [`core/warm-deps/`](../../core/warm-deps/) (the layer
-manifests, the `*.project` files, or the `core.freeze`/`daemon.freeze` projection) — the published
-tag falls out of sync with the repo and **must be rebuilt and republished**
-(`hostbootstrap base build-and-push`; see [build_release.md](build_release.md)). Consumers then
-**pull** the republished tag; they never rebuild the base as a one-off and never build against an
-un-republished local base, which would hide the drift between the repo and the registry. A freeze a
-consumer imports (`core.freeze`, `daemon.freeze`) must exist in the **currently published** tag, not
-only in the repo — otherwise the consumer's container build cannot resolve the import.
+## Rolling input policy
 
-The current derived builder still accepts the mutable tag and does not force a pull, so a same-named
-local image can win. That is an open implementation defect. The target explicitly pulls the tag, resolves
-its repository digest, and builds `FROM repository@sha256:...`; see
-[build and release](build_release.md).
+A base rebuild intentionally discovers current/latest compatible upstream inputs. The CPU parent is the
+rolling Ubuntu 24.04 tag; CUDA resolution selects the highest compatible
+`cudnn-devel-ubuntu24.04` tag that publishes the requested native architecture. Go, Node LTS,
+PureScript, kind, kubectl, Helm, Pulumi, and similar tools are resolved from their authoritative release
+metadata at build-workflow time. GHCup selects its current recommended GHC and Cabal; Rustup selects the
+stable Rust channel; package managers install current compatible quality/build tools.
 
-## Flavor And Arch Selection
+There is no committed base-input version lock and rebuilding the same source revision need not reproduce
+an older image. HTTPS is required for direct downloads and release queries. Provider-published integrity
+metadata or installer verification should be used where practical, but it is not stored as a committed
+replay manifest.
 
-There are two separate selection surfaces:
+The rolling tag is the consumer discovery name. A registry digest can identify the exact result of one
+publication and bind a pull-to-smoke workflow, but it does not imply locked inputs, reproducible rebuilds,
+or a permanent digest-pinned consumer contract.
 
-- The Python `base` command is the **maintainer base-build** surface. Its `Flavor` enum, tag builders,
-  and `substrate_to_flavor` helper belong to that surface; `base build` /
-  `base build-and-push` build the explicitly requested `--flavor`, or both flavors when it is omitted.
-  `--arch` defaults to the detected host architecture. This Python code does not choose the base tag for
-  a consuming project's derived image.
-- The consuming project binary chooses the published tag for its own derived image. In the in-repo demo,
-  Haskell's `demoBaseImageFor` maps the detected `Substrate` and architecture to the
-  `basecontainer-<flavor>-<arch>` reference passed to the project-container build. Core intentionally has
-  no universal `Flavor` type because flavor choice is a consumer policy.
+## Republishing
 
-The current demo mapping is:
+Published tags are the source of truth for derived projects. When
+[`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile) or the cache-population inputs
+under [`core/warm-deps/`](../../core/warm-deps/) change, an operator rebuilds and republishes the affected
+native tag with `hostbootstrap base build-and-push`. Consumers pull the republished tag. A same-named
+local image must not stand in for that published copy.
 
-| detected substrate | base flavor |
-|---|---|
-| `apple-silicon` | `cpu` |
-| `linux-cpu` | `cpu` |
-| `linux-gpu` | `cuda` |
-| `windows-cpu` | `cpu` |
-| `windows-gpu` | `cpu` (the accelerator worker is host-native; see below) |
-
-| detected host | arch | resolved tag |
-|---|---|---|
-| `apple-silicon` | arm64 | `basecontainer-cpu-arm64` |
-| `linux-cpu` (amd64) | amd64 | `basecontainer-cpu-amd64` |
-| `linux-cpu` (arm64) | arm64 | `basecontainer-cpu-arm64` |
-| `linux-gpu` (amd64) | amd64 | `basecontainer-cuda-amd64` |
-| `linux-gpu` (arm64) | arm64 | `basecontainer-cuda-arm64` (built on demand) |
-| `windows-cpu` / `windows-gpu` (amd64) | amd64 | `basecontainer-cpu-amd64` |
-
-The demo's substrate is detected, never declared (see [schema.md](schema.md)).
-
-Python discovers project build metadata but does not evaluate Dhall, so Linux/arm64 support does not
-depend on a Python-provisioned Dhall binary. Its current Cabal-stem/executable identity split is unrelated
-to base flavor selection; the development plan owns that identity repair.
-
-### Windows adds no base flavor
-
-The Windows substrates (`windows-cpu` / `windows-gpu`) add **no** new base-image flavor. The current demo
-maps both to the CPU base tag for the WSL2-hosted project container. WSL2 is the host-provider VM that
-supplies that Linux guest (see [wsl2.md](wsl2.md)); it changes where the project container runs, while
-the Haskell demo policy still chooses the published tag it builds `FROM`.
-
-The host-native Windows CUDA capability is a **separate concern** and likewise not a base-image flavor:
-the accelerator daemon uses `ensure cudawin`, builds and runs its worker on bare Windows, and connects to
-the WSL2-hosted service. It does not stage the worker into the cluster. Generic build-only host staging is
-still available as composition pattern #7. See
-[composition_patterns.md](composition_patterns.md). The four published tags above remain the complete
-flavor × arch set.
+After pushing, the workflow pulls the tag and builds the real
+[`demo/docker/Dockerfile`](../../demo/docker/Dockerfile) as a compatibility smoke. It may pass the pulled
+digest to prevent a local-tag race within that one workflow. The smoke proves that the real consumer can
+build from that publication; it does not prove offline behavior, complete cache reuse, or reproducible
+inputs.
 
 ## What ships in the image
 
-* **No baked `hostbootstrap` binary** — the image bakes no `hostbootstrap` executable. A baked binary
-  is a Linux ELF and cannot run on Apple silicon, so it could not be copied out to every host.
-  Instead every project builds its own binary **host-native** on every substrate, extending the core
-  tree via `runHostBootstrapCLI progName projectSpec`; see
-  [derived_project_standards.md](derived_project_standards.md). The bare `hostbootstrap` binary
-  (`hostbootstrap-core`'s own executable, with the fixed command tree but no project-specific
-  extensions) is built the same way, not pre-baked.
-* **Warm `hostbootstrap-core` dependency closure** — `hostbootstrap-core`'s transitive dependency
-  closure is compiled into the warm Cabal store at `/opt/cache/cabal/` alongside the shared
-  warm-store deps, so a project that extends the core hits the cache for the core's dependencies
-  during the in-container project-container build. (`/opt/cache/cabal/` exists only inside the image;
-  the host-native binary build uses its own repo-local store at `.build/cabal-store/` — see
-  [build_and_run_model.md](../architecture/build_and_run_model.md) — and compiles the closure on the
-  host, cold on a freshly cleaned tree.) The warm store
-  itself is **shared**, but the version-pin freezes it produces are **layered** by library level:
-  `core.freeze` (base + the `hostbootstrap-core` closure + the shared web-build extras — including
-  `purescript-bridge` and the web-server stack `warp`/`wai*`/`network`) and `daemon.freeze` (the
-  daemon-family deps — Redis/Postgres/proto/secure-WS-client). An L0-direct consumer imports
-  `core.freeze`; a daemon app imports `core.freeze` **and** `daemon.freeze`. The base build projects
-  the shared store into the two fragments in-image — `cabal freeze --project-file=core.project` and
-  `--project-file=daemon.project`, moved to `core.freeze`/`daemon.freeze` — and they are **never
-  committed** (`.gitignore` and `.dockerignore` exclude `cabal.project.freeze`, `core.freeze`,
-  `daemon.freeze`, and the `*.project.freeze` intermediates). See [warm_store.md](warm_store.md).
-* **Haskell** — GHC 9.12.4, Cabal 3.16.1.0, pinned fourmolu `0.19.0.1` / hlint `3.10` at
-  `/opt/hostbootstrap/haskell-style/bin/` with `/usr/local/bin` symlinks, and the warm Cabal store
-  from [`core/warm-deps/`](../../core/warm-deps/).
-* **Go** — first-class toolchain installed at `/opt/go`; `GOPATH`, `GOCACHE`, `GOMODCACHE`,
-  `GOTOOLCHAIN`, and `PATH` set alongside other languages.
-* **nvkind** — currently built with
-  `CGO_ENABLED=1 go install github.com/NVIDIA/nvkind/cmd/nvkind@latest`. This is an unpinned input and a
-  reproducibility defect; the target manifest supplies an immutable module version and checksum.
-* **Node** — latest Node LTS (non-LTS/current releases are excluded because tools like Spago lag the
-  newest major), with npm, esbuild, TypeScript, Playwright (Chromium/Firefox/WebKit),
-  Spago, purs-tidy. Playwright is installed globally under the npm prefix
-  `/opt/build/node/global`; project-local specs that import `@playwright/test` without their own
-  `node_modules` run with `NODE_PATH=/opt/build/node/global/lib/node_modules`.
-* **PureScript** — latest `purs`.
-* **Python** — Ubuntu 24.04 default Python with Poetry as the only global package, plus the
-  build-essentials toolchain.
-* **Kube tooling** — Docker CLI/compose (no buildx), kind, kubectl, helm, skopeo, MinIO `mc`,
-  AWS CLI v2, Pulumi.
-* **C/C++/LLVM** — build-essential, the latest available `llvm-N` family (LLVM 19 on Ubuntu 24.04),
-  clang, clang PGO runtime, BOLT, LLD; CMake, Ninja, Make; `CC=clang-N` and `CXX=clang++-N`.
-* **Rust** — `rustup` with Rust `1.95.0`, `llvm-tools-preview`, and `rustfmt`.
-* **CUDA (cuda flavor only)** — built on top of the latest
-  `nvidia/cuda:*-cudnn-devel-ubuntu24.04` with a manifest for the target arch.
+- No baked `hostbootstrap` binary. Each project builds its executable host-native and extends the fixed
+  command tree through `runHostBootstrapCLI`.
+- A broad Cabal store at `/opt/cache/cabal/`, populated from both manifests under `core/warm-deps/`.
+  It is an opportunistic performance cache, not a freeze or version API.
+- Current recommended GHC/Cabal, current compatible Fourmolu and HLint, and the Cabal build tools.
+- Current stable Go and Rust toolchains, current Node LTS, PureScript, Spago, TypeScript, esbuild,
+  Playwright, and purs-tidy.
+- Docker/Compose, kind, kubectl, Helm, Skopeo, MinIO `mc`, AWS CLI v2, Pulumi, and nvkind.
+- LLVM/Clang/LLD/BOLT and the ordinary C/C++ build toolchain from Ubuntu 24.04.
+- CUDA/CuDNN in CUDA-flavor images through the selected NVIDIA parent.
 
-### Accelerator daemon base contract
+Exact selected versions are observable in a particular build's output and resulting image. They are not
+declared source-level API.
 
-The accelerator daemon uses the published base images directly for in-cluster Linux lanes:
+## Cabal cache contract
 
-- `linux-cpu` daemon pods run from the CPU base and build the generated C++ worker with the base-provided
-  `clang++`;
-- `linux-gpu` daemon pods run from the CUDA base and build the generated CUDA worker with the
-  base-provided `nvcc`;
-- no in-cluster daemon pod runs `ensure` to install compilers. A missing compiler in the pod is treated as
-  a stale or incorrect base image, not as something the pod remediates at runtime.
+The base builds both warm dependency manifests through
+[`core/warm-deps/cabal.project`](../../core/warm-deps/cabal.project). It generates no consumer freeze.
+Derived builds use their normal host-compatible `cabal.project` unchanged and inherit `CABAL_DIR` plus
+the store. Cabal reuses a matching artifact; otherwise it may update its index, solve, download, and
+compile normally. See [warm store](warm_store.md).
 
-The deterministic C++/CUDA source templates and build arguments are implemented in
-`HostBootstrapDemo.Accelerator`; real in-pod build/run validation remains an accelerator integration gate.
+The base still pre-builds the ways consumers commonly request (`tests`, `benchmarks`, shared libraries,
+and optimization level 2) to improve hit probability. Those settings are optimization alignment, not a
+guarantee that every future solver plan is present.
 
-Host-resident accelerator lanes are separate from the base-image contract. Apple Silicon ensures the host
-Swift/Metal build stack; Windows GPU ensures the host CUDA/MSVC/clang build stack. See
-[accelerator_daemon.md](accelerator_daemon.md).
+## Source and in-image gates
 
-See [`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile) for the exact
-instructions. Architecture/version discovery is host-side, but the resulting build is not reproducibly
-pinned: several resolvers select “latest” at invocation time; Ubuntu/CUDA bases are tags rather than
-digests; nvkind, npm, and pip installs are unpinned; and downloaded archives/binaries are not uniformly
-checked against expected digests.
+Before any registry mutation, the CLI runs the canonical Python code/coverage suite and the core and
+demo Cabal build/test gates with warnings treated as errors. In the Dockerfile, Fourmolu and HLint run
+against the warm-store sample source so a broken rolling tool selection fails the image build.
 
-## Current Status
-
-Today `compute_build_args` queries upstream release APIs for current Go, Node LTS, PureScript, kind,
-kubectl, Helm, Pulumi, and CUDA values. It then passes the resolved URLs/versions to Docker. This makes the
-Dockerfile free of version-discovery branches, but a rebuild from the same source on a later day can
-select different inputs. URL versioning and TLS do not replace content verification.
-
-### Dynamic-pinning target
-
-The target keeps host-side resolution as an explicit **update** workflow, not an implicit build step:
-
-1. a reviewed lock manifest records every base digest, package/module version, download URL, checksum,
-   and signer policy;
-2. normal builds read only that manifest and perform no “latest” queries;
-3. the Dockerfile receives exact values plus expected digests and verifies each artifact before
-   install/execution;
-4. apt/npm/pip/Go/Rust inputs are locked or represented by a documented immutable snapshot;
-5. the published image reports the lock-manifest fingerprint and resulting repository digest.
-
-The base publish preflight also currently runs only the Python code check; it does not run the repository
-Haskell gate before Docker/registry mutation. See [build and release](build_release.md).
+The accelerator daemon consumes compilers already present in the chosen image: Linux CPU uses Clang and
+Linux GPU uses NVCC. Pods do not install compilers at runtime. Apple Silicon and Windows accelerator
+lanes use separate host-native toolchains.
 
 ## Dockerfile rules
 
-The Dockerfile is deliberately constrained so a build is host-native and free of shell indirection.
-Those constraints do not make the current dynamically resolved build reproducible; the lock-and-verify
-target above is the missing reproducibility contract. These rules also apply to downstream project Dockerfiles; see
-[derived_project_standards.md](derived_project_standards.md) for the full set of conventions a
-derived project follows.
+- Use the default POSIX `/bin/sh`; do not add a Bash `SHELL` directive.
+- Avoid pipelines in `RUN` commands so failures remain direct.
+- Use plain single-architecture `docker build`; do not use buildx, emulation, or manifest lists.
+- Resolve architecture-specific URLs on the host and pass them as build arguments.
+- Keep the one documented CUDA filesystem conditional that adds `/usr/local/cuda/lib64` to `ldconfig`
+  only when the CUDA parent provides it.
 
-* **No `/bin/bash`.** The default POSIX `/bin/sh` is used; there is **no `SHELL` directive**.
-  Anything needing bash-only syntax does not belong in a layer.
-* **No pipes.** A `RUN` step never pipes one command into another — split it into discrete steps
-  (or a copied script) so each command's exit status is checked.
-* **No `docker-buildx`** and **no `--jobs=1`.** A build is single-arch and host-native; buildx exists
-  only to assemble cross-arch manifest lists, which are forbidden (see [build_release.md](build_release.md)).
+Example:
 
-> **WRONG**
->
-> ```sh
-> docker buildx build --platform linux/amd64,linux/arm64 \
->   --build-arg BASE_IMAGE=… -f docker/basecontainer.Dockerfile .
-> ```
->
-> `buildx --platform` emits a manifest list and pulls in emulation to build an arch the host cannot
-> run natively — exactly the cross-arch artifact the design rejects.
->
-> **RIGHT**
->
-> ```sh
-> poetry run hostbootstrap base build-and-push --arch amd64
-> ```
->
-> Run this example on a native amd64 host/Docker engine; run an arm64 request on a native arm64 peer.
-> The current CLI does not reject a mismatched request, so matching the host is an operator obligation
-> until Phase 6 Sprint 6.7 lands. Plain `docker build` under the hood, single-arch, host-native, with
-> host-resolved build arguments where
-> the current CLI computes them, and immediate `docker push`es for the CPU and CUDA tags so the registry
-> copies match the just-built local layers. The Dockerfile still performs additional unpinned npm/pip
-> installs, including `nvkind@latest`; those are target gaps, not host-computed locks. The CPU and CUDA
-> tags build **concurrently** by default (`--sequential`
-> opts out) — that is host-level parallelism of two independent single-arch `docker build`s, **not** a
-> buildx multi-platform manifest, which stays forbidden (see [build_release.md](build_release.md)).
+```sh
+poetry run hostbootstrap base build-and-push --flavor cpu --arch arm64
+```
 
-### Host-sized warm-store build budget
+Run it only on a native arm64 host with an arm64 Docker engine. The equivalent amd64 command runs on an
+amd64 host.
 
-The warm Cabal store is compiled at `-O2` with the vanilla **and** dynamic ways enabled — RAM-hungry,
-especially the `criterion`/`statistics`/`math-functions` numeric subtree. An **unbounded** `cabal
-build all` fans out to `-j$ncpus`, and enough concurrent `-O2` GHC processes can exhaust host memory;
-when they do, the GHC RTS dies with **SIGSEGV** rather than a clean OOM. (This is distinct from the
-`--jobs=1` rule above, which concerns the forbidden buildx orchestrator flag, not cabal's `-j`.)
+## Host-sized warm-store budget
 
-So the base build is **resource-managed, not guessed**. Before building, `hostbootstrap base
-build`/`build-and-push` measures the host (`hostbootstrap/resources.py`: CPU affinity +
-`/proc/meminfo`) and:
+The warm store is expensive to compile. On Linux the CLI measures available CPU/RAM, refuses below the
+supported floor, caps the Docker build, and passes a memory-derived `CABAL_BUILD_JOBS`. When CPU and CUDA
+build concurrently, they split the host budget; `--sequential` or `--flavor` gives one build the
+available allocation. A plain Docker invocation retains the conservative Dockerfile default of one
+Cabal job.
 
-* **refuses below a floor** — the supported build machine is **16 GB RAM / 8 CPUs**, so the floor is
-  8 CPUs / 14 GiB total / 8 GiB available (a real 16 GB box reports ~15.5 GiB total; 12 GB fails) —
-  with remediation guidance, and
-* **caps each build** — passing `docker build --memory/--memory-swap` plus
-  `--cpu-period/--cpu-quota`, and a *memory-derived*
-  `cabal build all -j<N>` (the `CABAL_BUILD_JOBS` build-arg) so the warm-store compile provably fits
-  under the memory cap instead of OOM-racing. When the CPU and CUDA tags build concurrently the host
-  budget is split between them (`--sequential` gives each the whole host).
+Resource-capped builds use the classic builder because buildx does not honor the required memory/CPU
+controls. This is build-resource management, separate from project runtime cordoning.
 
-On the 16 GB / 8 CPU reference, a single-flavor build (or `--sequential`) resolves to roughly
-`--memory ~10–12g`, a seven-CPU CFS quota (`--cpu-period 100000 --cpu-quota 700000`), and `cabal -j4` —
-memory is the binding constraint there, not the cores,
-and `-j4` is the largest fan-out that provably fits. Building both flavors concurrently splits that in
-half (`-j2` each), so on a 16 GB box prefer `--flavor`/`--sequential`.
+## Publication authority
 
-The sizing is Linux-only (off Linux, docker already runs inside a resource-bounded VM); a plain
-`docker build` with no `CABAL_BUILD_JOBS` arg keeps the conservative Dockerfile default of `-j1`.
-
-Per-build resource caps are honoured only by the **classic** builder (`docker buildx build` rejects
-`--memory`/`--cpu-*`), so a resource-capped build sets `DOCKER_BUILDKIT=0` — consistent with the
-no-buildx rule above. The classic builder has no `--cpus`, so the CPU cap is expressed as a CFS quota
-(`--cpu-period 100000 --cpu-quota <cpus×100000>`), the same decomposition `--cpus` uses.
-
-### The one CUDA exception
-
-There is exactly **one** permitted conditional in the Dockerfile: an
-`if [ -d /usr/local/cuda/lib64 ]` block that, when the directory exists, adds it to
-`/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. A single Dockerfile serves both the `cpu` and
-`cuda` bases via the `BASE_IMAGE` arg, and only the cuda base ships that directory. This is a
-**build-time filesystem check**, not version-resolution logic and not a runtime probe — it needs no
-GPU, driver, or CUDA runtime, so the cuda image still builds on a host with no CUDA hardware. See
-[`languages/cuda.md`](../languages/cuda.md).
+`base build` is a local inspection build. `base build-and-push` mutates Docker Hub and is run only with
+explicit operator authorization. See [build and release](build_release.md) for ordering and evidence.

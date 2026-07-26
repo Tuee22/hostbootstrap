@@ -12,7 +12,7 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 15.9, 19.6, and 19.8
+**Blocked by**: Sprints 10.9, 15.9, and 19.8
 
 **Reopened 2026-07-24.** Sprint 17.4 owns discrepancies between the documented and parsed init-writer,
 `test`, and `context` semantics. Earlier positive real runs do not validate the negative parser/gate or
@@ -62,13 +62,14 @@ requested role combination may mint command authority.
 
 ## Remaining Work
 
-**Current:** Sprint 17.4 is Blocked by Sprints 10.9, 15.9, 19.6, and 19.8. It then owns exact writer
+**Current:** Sprint 17.4 is Blocked by Sprints 10.9, 15.9, and 19.8. It then owns exact writer
 request/overwrite behavior, parser/gate semantics for `test init`, `test run <case-id>|all`, and
 input-specific read-only `context`.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): `<project>.test.dhall` becomes a thin override and `test run` *generates* the run's `<project>.dhall`
-from it via the project-owned `psTestConfig`, and `test init` no longer requires a pre-existing
+from it via the Harness request of the project-owned scope-aware `psAssemble`, and `test init` no longer
+requires a pre-existing
 `<project>.dhall`. The superseded `test`-reuses-existing-config flow is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. Sprint 17.4 now
 reopens this phase for the remaining parser/gate mismatch.
@@ -117,7 +118,7 @@ found (the pure `selfCreatedTestDataRemoval` is unit-tested). **Historical 2026-
 record carried `testSuites` + a `testResources` override (`TestConfig`
 in `HostBootstrap.Config.Schema`); `test init` writes it and `test run` decodes and reports the test-config
 resources before running (round-trip unit-tested, tracked in
-[phase-10](phase-10-standardized-test-harness.md)). `testSuites` is now confirmed dead configuration and is
+[phase-10](phase-10-standardized-test-harness.md)). `testSuites` was confirmed dead configuration and
 removed by Phase 19.6; path-based cleanup is replaced by Phase 10.9 ownership receipts.
 
 ## Phase Objective
@@ -164,10 +165,10 @@ configuration over the project's reusable Dhall vocabulary. Phase 19 later remov
 - A `test init` subcommand on the surfaced core command tree
   ([development_plan_standards.md § P, § Z](development_plan_standards.md)) that writes `<project>.test.dhall` next
   to the executable-sibling config path without requiring a production `<project>.dhall`.
-- A `<project>.test.dhall` schema and writer using the current encoder-declared schema, carrying
+- A `<project>.test.dhall` schema and writer using the admitted test-config codec, carrying
   test-specific configuration alongside the project's reusable Dhall vocabulary
-  ([development_plan_standards.md § Q](development_plan_standards.md)). Phase 8 Sprint 8.7 owns the
-  validated codec that rejects encoder/decoder type-expression drift by construction.
+  ([development_plan_standards.md § Q](development_plan_standards.md)). Closed Phase 8 Sprint 8.7
+  rejects encoder/decoder type-expression drift by construction.
 - The writer is the only surface that materializes `<project>.test.dhall`. The current parser exposes no
   `--force` or `--if-missing` flags and writes through the generic writer, replacing an existing test
   config; Sprint 17.4 must replace that implicit behavior with the explicit writer-specific overwrite
@@ -183,7 +184,7 @@ configuration over the project's reusable Dhall vocabulary. Phase 19 later remov
 #### Remaining Work
 
 None for the initial writer landing. Current behavior works from a clean slate and overwrites an existing
-test config without a policy flag. The typed case/variant replacement belongs to Phase 19.6, and blocked
+test config without a policy flag. The typed case/variant replacement landed in Phase 19.6, and blocked
 Sprint 17.4 owns the later opaque request and explicit overwrite-policy refinement; neither reopens this
 completed writer landing.
 
@@ -290,7 +291,7 @@ surface; Sprint 16.6 owns the target unified plan node.
 ### Sprint 17.4: Exact init/test/context command semantics [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 15.9, 19.6, and 19.8
+**Blocked by**: Sprints 10.9, 15.9, and 19.8
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
@@ -389,8 +390,8 @@ three config writers, `test run`, selectors, missing-config behavior, root-only 
 
 #### Remaining Work
 
-Blocked until Sprints 10.9, 15.9, 19.6, and 19.8 land structured harness outcomes, command authority,
-typed case identity, and the finalized common full/role envelope codec. Then introduce the opaque
+Blocked until Sprints 10.9, 15.9, and 19.8 land structured harness outcomes, command authority, and the
+finalized common full/role envelope codec. Then introduce the opaque
 writer-specific request and atomic overwrite-policy transitions, reconcile
 parser and gate behavior—including the current `SUITE`/“suite”/“root-only” help mismatch—remove stale
 command prose/aliases, consume the typed IDs, and run the full command-semantics matrix. Prior

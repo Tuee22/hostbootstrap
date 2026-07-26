@@ -1,7 +1,7 @@
 {- | The recursive/fractal chain interpreter (development_plan_standards § U, § Y).
 
-A project's deploy is the pure @chain :: cfg -> [Step]@ value (see
-'HostBootstrap.Step'); this module interprets that @[Step]@ across the composed
+A project's deploy is an opaque validated 'StepPlan' (see
+'HostBootstrap.Step'); this module interprets that plan across the composed
 frame stack. @project up@ runs the steps belonging to the /current/ frame, then
 hands off @project up@ into the next frame, where the nested binary runs the
 same interpreter over its own segment. The descent is fractal — each frame
@@ -35,12 +35,13 @@ import HostBootstrap.Lift (
     liftSubcommandWithStdin,
  )
 import HostBootstrap.Step (
-    Step (..),
+    StepPlan,
     StepFrame (..),
     chainFrames,
     postHandoffStepsForFrame,
     preHandoffStepsForFrame,
     renderChainPlan,
+    runStep,
  )
 import System.Exit (ExitCode (ExitSuccess))
 
@@ -48,16 +49,16 @@ import System.Exit (ExitCode (ExitSuccess))
 interpreter executes (§ W). Pure, so the rendered plan is exactly the value
 @runChainFromFrame@ would run.
 -}
-renderChain :: [Step] -> String
+renderChain :: StepPlan -> String
 renderChain = renderChainPlan
 
 {- | The frame the interpreter hands off to after @current@: the next distinct
 frame in descent order, or 'Nothing' at the bottom of the recursion (the
 innermost frame, or a frame the chain never enters).
 -}
-nextFrameAfter :: String -> [Step] -> Maybe StepFrame
-nextFrameAfter current steps =
-    case dropWhile ((/= current) . frameId) (chainFrames steps) of
+nextFrameAfter :: String -> StepPlan -> Maybe StepFrame
+nextFrameAfter current plan =
+    case dropWhile ((/= current) . frameId) (chainFrames plan) of
         (_ : next : _) -> Just next
         _ -> Nothing
 
@@ -88,26 +89,26 @@ runChainFromFrame ::
     SelfRef ->
     (StepFrame -> LiftContext) ->
     String ->
-    [Step] ->
+    StepPlan ->
     IO (Either String ())
-runChainFromFrame cfg self liftCtx current steps
+runChainFromFrame cfg self liftCtx current plan
     -- Fail closed if @current@ is not a frame the chain enters: otherwise
     -- 'stepsForFrame' is empty and 'nextFrameAfter' is 'Nothing', so the descent
     -- would be a silent successful no-op (a config/chain drift, e.g. a topology
     -- frame id absent from the contributed chain).
-    | current `notElem` map frameId (chainFrames steps) =
+    | current `notElem` map frameId (chainFrames plan) =
         pure
             ( Left
                 ( "project up: current frame "
                     ++ current
                     ++ " is not a frame of the chain (frames: "
-                    ++ intercalate ", " (map frameId (chainFrames steps))
+                    ++ intercalate ", " (map frameId (chainFrames plan))
                     ++ ")"
                 )
             )
     | otherwise = do
-        mapM_ (\s -> stepRun s cfg) (preHandoffStepsForFrame current steps)
-        case nextFrameAfter current steps of
+        mapM_ (\step -> runStep step cfg) (preHandoffStepsForFrame current plan)
+        case nextFrameAfter current plan of
             Nothing -> runPostHandoff >> pure (Right ())
             Just next -> do
                 -- Stream the next frame's child config in-place: for a container frame
@@ -125,4 +126,4 @@ runChainFromFrame cfg self liftCtx current steps
                     Left err -> pure (Left err)
   where
     runPostHandoff =
-        mapM_ (\s -> stepRun s cfg) (postHandoffStepsForFrame current steps)
+        mapM_ (\step -> runStep step cfg) (postHandoffStepsForFrame current plan)

@@ -10,11 +10,14 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened 2026-07-24.** Sprint 6.7 owns the incomplete publish gate, mutable/local base consumption,
-native-architecture validation, importability-only maintainer-command gate, and Python native-build
-idempotence/selection defects. Earlier closure claims apply only to Sprints 6.1–6.6.
+**Reopened 2026-07-24.** Sprint 6.7 owns the base-publication and Python native-build corrections.
+The implementation, source gates, and operator-authorized native base publication completed on
+2026-07-25. That live run proved native push → pull and consumer compatibility for the CPU/arm64 tag;
+the recorded digest identifies that publication only. Sprint 12.4 later replaced the temporary
+locked-input/offline validator with the rolling-base and real-consumer compatibility policy.
+Earlier closure claims apply only to Sprints 6.1–6.6.
 
 The base image bakes **no** `hostbootstrap` binary — a Linux ELF cannot run on Apple silicon — so every
 project builds its own binary **host-native**. The project container the binary builds later is
@@ -24,7 +27,7 @@ Cabal file, assert host minimums, ensure the host build toolchain, build the bin
 substrate, and invoke it — POSIX process replacement with `exec`, Windows child subprocess (the binary
 owns config init — see the forward-pointer below). Docker, the
 project-container build, VM sizing, cordoning, and Dhall read/write are project-binary responsibilities.
-The `core.freeze` / `daemon.freeze` layering is owned by
+The opportunistic Cabal warm-store policy is owned by
 [phase-12-layered-warm-store.md](phase-12-layered-warm-store.md) (§ V), not this phase.
 
 **Landed Phase 19 correction:** the bootstrapper's post-build `config init --if-missing` auto-init was
@@ -43,14 +46,15 @@ WSL2 is not pre-binary work; it is owned by Phase 11's provider reconciler.
 
 ## Remaining Work
 
-Sprint 6.7 is Planned: enforce native-architecture validation, the complete pre-publish quality gate,
-publish→pull→digest-qualified consumption, deterministic project selection/name equality, and idempotent
-Cabal-index/binary-copy behavior. It also replaces the current dependency-import heuristic for
-maintainer commands with verified repository-development provenance.
+None. Sprint 6.7's native-architecture validation, complete pre-publish source gate,
+push→pull→real-consumer compatibility path, deterministic project selection/name equality, conditional
+Cabal-index refresh, explicit offline behavior, unchanged-artifact no-op, and verified
+repository-development maintainer authority are implemented and validated, including the live native
+publication gate.
 
 ## Phase Objective
 
-Complete the inversion. The base image warms the `hostbootstrap-core` dependencies into the frozen
+Complete the inversion. The base image warms the `hostbootstrap-core` dependencies into an opportunistic
 Cabal store and bakes **no** `hostbootstrap` binary (a Linux ELF cannot run on Apple silicon, so it
 could not be copied out to every host; every project builds its own binary host-native instead). The
 Python CLI surface consumes Phase 2's pre-binary bootstrap (see
@@ -76,7 +80,7 @@ the wrapper itself, not any project resource, and therefore stays outside the Ha
 
 #### Objective
 
-Warm the `hostbootstrap-core` dependency closure into the frozen Cabal store, and establish that the
+Warm the `hostbootstrap-core` dependency closure into the best-effort Cabal store, and establish that the
 base image bakes **no** `hostbootstrap` binary.
 
 #### Deliverables
@@ -84,19 +88,18 @@ base image bakes **no** `hostbootstrap` binary.
 - The base image bakes no `hostbootstrap` binary: a Linux ELF cannot run on Apple silicon, so it
   could not be copied out to every host. Every project builds its own binary **host-native**; the
   project container the binary later builds (`FROM` the base) is accelerated by the warm store.
-- The warm Cabal store + the layered freezes carry `hostbootstrap-core`'s prebuilt dependencies
-  for every project's in-container project-container build (the host-native binary build uses the host
-  toolchain the bootstrapper ensures). The warm-store core manifest
+- The warm Cabal store carries a broad set of `hostbootstrap-core` dependencies for opportunistic reuse
+  by in-container project builds (the host-native binary build uses the host toolchain the bootstrapper
+  ensures). The warm-store core manifest
   (`core/warm-deps/core/basecontainer-core-deps.cabal`) lists the full
-  `hostbootstrap-core` dependency closure (the freeze layering itself is Phase 12).
-- `ormolu`/`fourmolu` and `hlint` remain pinned in the base for the quality gate.
+  `hostbootstrap-core` dependency closure; it is cache-population input, not a consumer solver API.
+- `ormolu`/`fourmolu` and `hlint` remain installed in the rolling base for the quality gate.
 
 #### Validation
 
-- The warm-store manifest covers every `hostbootstrap-core` dependency, so a derived build resolves
-  them from the warm store rather than recompiling (verifiable by pulling a published base tag and
-  running `cabal build --dry-run` for `hostbootstrap-core` inside a throwaway `FROM`-it image — no
-  from-scratch rebuild needed).
+- The warm-store manifest covers the intended `hostbootstrap-core` dependency set. A real derived build
+  may reuse matching store artifacts or resolve/download/compile a cache miss; neither a full hit nor an
+  offline build is required.
 
 #### Remaining Work
 
@@ -196,7 +199,8 @@ exit code.
 #### Deliverables
 
 - Cabal-file and executable-stanza discovery, including fail-fast diagnostics for zero or multiple
-  candidates. The current two names are not yet required to agree; Sprint 6.7 owns one validated identity.
+  candidates. At this historical landing the names were not required to agree; Sprint 6.7 later added
+  explicit selection and one validated filename/package/executable/runtime identity.
 - Python has no Dhall decoder.
 - Initial config creation is a project-binary command (`<project> project init`); Python does not trigger
   it. Normal missing-config errors are emitted by the project binary.
@@ -306,11 +310,14 @@ None. Validation: `poetry run python -m hostbootstrap.check_code` passes; `poetr
 hostbootstrap.test_all` passes. Live Windows toolchain/bootstrap validation is Phase 2; WSL2 real-run
 validation is Phase 11.
 
-### Sprint 6.7: Reproducible base publication and thin-build correction [Planned]
+### Sprint 6.7: Native rolling-base publication and thin-build correction [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`,
-`hostbootstrap/bootstrap.py`, `hostbootstrap/cli.py`, `docker/basecontainer.Dockerfile`
+`hostbootstrap/bootstrap.py`, `hostbootstrap/cli.py`, `docker/basecontainer.Dockerfile`,
+`demo/docker/Dockerfile`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
+`core/hostbootstrap-core/test/CLISpec.hs`, `tests/test_base_image.py`,
+`tests/test_bootstrap.py`, `tests/test_cli.py`, `tests/test_docker_ops.py`
 **Docs to update**: `documents/engineering/base_image.md`,
 `documents/engineering/build_release.md`, `documents/architecture/python_haskell_boundary.md`,
 `legacy-tracking-for-deletion.md`
@@ -329,8 +336,9 @@ path idempotent without hidden network or copy work.
   repository/Poetry development context. Parser construction consumes that authority; injecting
   ruff/black/mypy/pytest into a consumer pipx environment cannot expose `base`, `check-code`, or
   `test-all`.
-- Run the complete Python and Haskell quality gates before publish, then record the published digest,
-  pull the tag, and validate a derived build against the digest-qualified immutable reference.
+- Run the complete Python and Haskell quality gates before publish, then push and pull the rolling tag
+  and run the real demo Dockerfile as a compatibility smoke. A resolved digest may bind that workflow
+  invocation but is not a locked-input or consumer-pinning contract.
 - Remove the documented local-unpublished-base validation path; local base builds may be inspected, but
   consumer validation follows publish → pull.
 - Require explicit Cabal-file selection when discovery is ambiguous and derive one validated
@@ -342,19 +350,34 @@ path idempotent without hidden network or copy work.
 
 #### Validation
 
-- Unit tests cover architecture mismatch, publish/pull/digest ordering, gate failure before push,
+- Unit tests cover architecture mismatch, publish/pull/compatibility-smoke ordering, gate failure before push,
   maintainer-command rejection outside verified repository provenance (including a pipx-like environment
   with every dev module importable), multiple Cabal files, every identity mismatch, offline
   success/failure, fresh-index no-op, and unchanged-binary no-op.
-- A native `base build-and-push` gate records the digest and a clean derived-image pull/build using it.
+- A native `base build-and-push` gate records the resulting build identity and runs a clean real-demo
+  compatibility build after pulling the rolling tag.
 - Canonical Python checks plus `cabal build all --ghc-options=-Werror` and `cabal test all` pass.
+
+**Validation evidence (2026-07-25, Apple Silicon arm64):**
+
+- `poetry run python -m hostbootstrap.check_code` passed.
+- The supported coverage invocation passed **219** Python tests at **100%** statement coverage.
+- `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` passed from
+  `core/`; the core suite reported **387** passing tests.
+- The same build/test commands passed from `demo/`; the demo suite reported **100** passing tests and
+  its included core suite reported **387** passing tests.
+- `poetry run hostbootstrap base build-and-push --flavor cpu --arch arm64` passed the full
+  source-gate → native no-cache build → push → pull → real-consumer compatibility transaction.
+- Docker Hub recorded
+  `docker.io/tuee22/hostbootstrap@sha256:303193124924bdd27c1e1d3bb66dd3254f83ffdcecd3d91aa4896e61645a02a6`.
+  This is historical identification of that published build, not reproducibility evidence. The
+  synthetic offline validator used in that run was superseded by Sprint 12.4's real-demo smoke.
 
 #### Remaining Work
 
-Implement the native-architecture and maintainer-context preflights, full pre-publish gate,
-immutable-reference handoff, project selection contract, and idempotent index/copy behavior; then
-reconcile the governed release and boundary docs. Earlier Sprints 6.1–6.6 remain historical evidence,
-not proof of these obligations.
+None. The dated evidence records an operator-authorized arm64 publication. A future publication after
+the Sprint 12.4 rolling-policy implementation must run the real-demo compatibility smoke; no such
+outward-facing publication is authorized by the current work.
 
 ## Documentation Requirements
 

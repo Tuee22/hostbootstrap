@@ -10,31 +10,24 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
-**Reopened 2026-07-24.** The generator currently obtains `schemaText` from the `ToDhall` encoder's
-`declared` expression, while decoding uses a separately supplied `FromDhall` instance. Those expressions
-are not definitionally identical by construction, and the hand-written `Core.dhall` vocabulary has an
-explicit judgmental-equality test for only part of its exported type surface. Sprint 8.7 owns one
-validated codec/schema witness and complete `Core.dhall` drift coverage.
+**Completed 2026-07-25.** `HostBootstrap.Dhall.Gen` admits decoder/encoder pairs only through the
+opaque lower-layer `CodecWitness a`, which compares normalized `expected` and `declared` expressions.
+Schema, decode, render, config IO, and opaque `ConfigArtifact` construction all consume that witness.
+Writers force admission before acquiring their ownership lock, and the mismatch fixture proves
+rejection before a file, lock, decode, or test mutation appears.
 
-The binary-generated rich tiers otherwise exist: `HostBootstrap.Config.Vocab` mirrors part of the
-reusable `Core.dhall` vocabulary; `HostBootstrap.Dhall.Gen` carries the `ConfigArtifact` registry whose
-`schemaText` currently comes from `ToDhall.declared` and whose `renderText` is the `ToDhall` embedding;
-the current `context schema` command prints the in-scope static-artifact schema union, and `context
-render` materializes static registry examples. Only the helper-generated `coreArtifacts` portion
-participates in the current synthetic committed schema fixture; neither the literal command output nor a
-consumer's appended artifact delta has a command-level snapshot. The hand-written
-`Core.dhall` `fitsWithin`/`split` functions and the standalone numeric `deployConfigText` artifact are
-evaluation-tested. Runtime project configs instead carry Kubernetes quantities as `Text` and no pod set,
-so they do not and cannot carry that assertion; their pod-set check belongs at bring-up. The
-**extension-stream foundation** is complete: Dhall vocabulary, schema-gen registry, test harness, and the
-fixed CLI entrypoint are implemented, and later phases add the chain and service streams without
-reopening this substrate. `project init` generates the root project-local config, `service schema`
-prints the `ToDhall` encoder-declared project config type, `context schema` prints the separate
-static-artifact registry, and current pure projection helpers derive context-adjusted full child records
-from a parent config. The phase remains
-`Active` until Sprint 8.7 removes the schema-witness seam and closes the command-output drift gap.
+The committed hand-written `Core.dhall` type surface is exhaustively inventoried from its normalized
+type-valued exports. All nine current exports (`Resources`, `Budget`, `PodResources`, `KindNode`, `Mount`,
+`Substrate`, `ClusterProfile`, `SecretRef`, and `Weight`) have a named Haskell codec and a
+judgmental-equality gate. Hand-written
+`fitsWithin`/`split` remain separately evaluation-tested. Literal command snapshots now pin bare
+`context schema`, a representative ordered consumer registry, and the project-local config surface
+through `service schema`; the deleted synthetic fixture no longer conflates those surfaces.
+
+Validation passed with the pinned formatter, a `-Werror` core run of **390 tests**, and a demo workspace
+run of **100 demo tests plus the same 390 core tests**.
 
 **Historical naming note (phases 4/16/19).** The original Sprint 8 landing used flat `config schema` /
 `config render` / `config init` and `test all` spellings. The supported commands are now `context schema`,
@@ -46,13 +39,16 @@ post-build `config init --if-missing` trigger was removed, not renamed: Python d
 
 [Phase 19](phase-19-generic-project-model.md) built **forward** on this surface (the generic project
 model, § BB): it parameterized `ProjectSpec` as `ProjectSpec cfg tcfg` over a project's own
-config/test-config types, added the project-owned `psInit` / `psTestInit` / `psTestConfig` seams, and added a
-pure `SecretRef` vocabulary. The superseded fixed-`ProjectConfig` surface is recorded in
+config/test-config types, added the initial project-owned config seams, and added the initial
+`SecretRef` vocabulary. Sprint 19.7 subsequently replaced those seams with
+`ProjectSpec projectId cfg tcfg`, scope-indexed `SecretRef`, separate Production/Harness mapped codecs,
+and one `psAssemble`. The superseded fixed-`ProjectConfig` surface is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner.
 
-Sprint 8.7 replaces the independent encoder/decoder schema claims with a validated shared witness and
-audits every committed `Core.dhall` type. Phase 13 applies the helpers to the worked demo, and Phase 15
-wires normal command gating to the context section inside `<project>.dhall`.
+None for this phase. Phase 19 Sprint 19.7 wrapped the lower-layer witness with installed identity and
+lifecycle scope as `ProjectCodec scope specDigest cfg`; Phase 10 Sprint 10.10 removed the stale
+execution-mode vocabulary. Phase 13 applies the helpers to the worked demo, and Phase 15 owns stronger
+runtime authority.
 
 ## Phase Objective
 
@@ -60,10 +56,9 @@ Realize the binary-generated-configuration half of the Dhall model (see
 [development_plan_standards.md § P, Q](development_plan_standards.md)) and the extension contract
 contract (see [development_plan_standards.md § T](development_plan_standards.md)). The binary generates
 the default local config, generated child configs, and richer deploy/test configs from reusable
-vocabulary. Current emitted schema comes from each `ToDhall` encoder while decoding has a separate
-`FromDhall` expression; selected canonical values have stable render/decode/re-render tests, but neither
-schema equality nor universal byte stability follows from the current API. Sprint 8.7 replaces those
-independent claims with a validated codec witness and explicit semantic round-trip properties.
+vocabulary. Emitted schema, decode, and render share one admitted codec whose normalized type
+expressions match; selected canonical values retain stable render/decode/re-render tests without
+claiming a universal semantic proof.
 
 ## Sprints
 
@@ -130,7 +125,11 @@ None for the historical registry landing. Sprint 8.7 owns the validated-codec su
 ### Sprint 8.3: `context schema` [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/golden/config_schema.dhall`, `core/hostbootstrap-core/test/DhallGenSpec.hs`
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/golden/context_schema_core.txt`,
+`core/hostbootstrap-core/test/golden/context_schema_consumer.txt`,
+`core/hostbootstrap-core/test/golden/service_schema_consumer.txt`,
+`core/hostbootstrap-core/test/CLISpec.hs`
 **Docs to update**: `documents/engineering/config_generation.md`
 
 #### Objective
@@ -142,27 +141,24 @@ only for a synthetic fixture containing the helper-generated L0 registry plus
 
 #### Command Surface
 
-- `<project> context schema` — print the current encoder-declared Dhall types in the L0→L1→L2
-  concatenation of in-scope `ConfigArtifact` schemas. Once Sprint 8.7 lands, this output comes only from
-  codecs whose encoder/decoder type expressions were validated equal.
+- `<project> context schema` — print the validated-codec Dhall types in the L0→L1→L2 concatenation of
+  in-scope `ConfigArtifact` schemas.
 
 #### Deliverables
 
 - The `context schema` subcommand wired into the read-only `context` group, printing the transitive union.
-- A committed synthetic fixture that pins `schemaUnion coreArtifacts` followed by the separately
-  reflected project-config schema. That fixture is not represented as command-output coverage.
+- The historical synthetic fixture pinned `schemaUnion coreArtifacts` followed by the separately
+  reflected project-config schema; Sprint 8.7 replaced it with literal surface-specific snapshots.
 
 #### Validation
 
-- `DhallGenSpec` proves the helper-generated L0 union contains every core artifact and compares the
-  synthetic L0-plus-project-config text with `config_schema.dhall`. It does not invoke `<project>
-  context schema`, cover a project's appended registry, or prove decoder equality. Sprint 8.7 owns
-  those missing command-level and codec gates.
+- `DhallGenSpec` proves the helper-generated L0 union contains every core artifact. `CLISpec` now invokes
+  literal bare and consumer `context schema` commands in isolated subprocesses and snapshots their exact
+  output; `service schema` independently owns the project-config snapshot.
 
 #### Remaining Work
 
-None for the historical command landing. Sprint 8.7 owns the command-output drift test that the original
-snapshot wording overstated.
+None.
 
 ### Sprint 8.4: `context render` and the round-trip guarantee [Done]
 
@@ -213,17 +209,17 @@ Document and exercise the one merge idiom per stream that makes the three-level 
 
 #### Deliverables
 
-- The contract is stated for all four streams in
+- The historical contract at this sprint's closure was stated for all four streams in
   [`documents/architecture/library_hierarchy.md`](../documents/architecture/library_hierarchy.md): CLI
   tree (`runHostBootstrapCLI progName projectSpec` — a project extends the fixed core tree only through
-  the `ProjectSpec` streams (`withChain` lift chain, `withServices`, test suite), never by appending
+  the then-current `ProjectSpec` streams (lift chain, services, test suite), never by appending
   named `ProjectCommand`s),
   Dhall vocabulary (`let C = ./Core.dhall`, embed-not-redefine), schema-gen (`ConfigArtifact` registry
   concatenation through `ProjectSpec`), and test harness (`Seams` through a non-empty `TestSuite`). All
-  four streams are implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the `Core.dhall`
+  four streams were implemented in L0 — the CLI tree via `runHostBootstrapCLI`, the `Core.dhall`
   vocabulary, the `ConfigArtifact` registry concatenation, and the `Seams` record + the L0
-  `oneShotRunArgs` (Phase 10). The contract is worked end-to-end by the `hostbootstrap-demo` consumer
-  (Phase 13).
+  matrix loop. The original definition-only one-shot argv helper had no plan consumer and was removed
+  by Sprint 10.10. The contract is worked end-to-end by the `hostbootstrap-demo` consumer (Phase 13).
 
 #### Validation
 
@@ -245,7 +241,10 @@ None.
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`,
-`core/hostbootstrap-core/test/DhallGenSpec.hs`, `core/hostbootstrap-core/test/golden/config_schema.dhall`
+`core/hostbootstrap-core/test/DhallGenSpec.hs`,
+`core/hostbootstrap-core/test/golden/context_schema_core.txt`,
+`core/hostbootstrap-core/test/golden/context_schema_consumer.txt`,
+`core/hostbootstrap-core/test/golden/service_schema_consumer.txt`
 **Docs to update**: `documents/architecture/dhall_generation.md`,
 `documents/engineering/config_generation.md`, `documents/engineering/dhall_topology.md`,
 `documents/engineering/schema.md`, `system-components.md`
@@ -277,8 +276,8 @@ child `<project>.dhall` used across VM, ad-hoc container, and service/daemon bou
 
 #### Validation
 
-- The committed synthetic `config_schema.dhall` golden includes the encoder-declared project-owned
-  `cfg` schema; it is not literal output from either schema command.
+- The project-owned `cfg` schema is now the literal `service schema` snapshot; the separate bare and
+  consumer `context schema` snapshots contain only their static artifact registries.
 - `SchemaSpec` proves generated defaults decode and re-render stably and child projections preserve
   project settings plus the mapped per-kind authority. It does not prove that arbitrary added-role
   combinations cannot widen a leaf into an illegal command family; Phase 15.9 owns that negative gate.
@@ -289,9 +288,9 @@ child `<project>.dhall` used across VM, ad-hoc container, and service/daemon bou
 
 None.
 
-### Sprint 8.7: One validated Dhall codec and vocabulary witness [Planned]
+### Sprint 8.7: One validated Dhall codec and vocabulary witness [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
@@ -302,7 +301,9 @@ None.
 `core/hostbootstrap-core/test/SchemaSpec.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`,
-`core/hostbootstrap-core/test/golden/config_schema.dhall`
+`core/hostbootstrap-core/test/golden/context_schema_core.txt`,
+`core/hostbootstrap-core/test/golden/context_schema_consumer.txt`,
+`core/hostbootstrap-core/test/golden/service_schema_consumer.txt`
 **Docs to update**: `documents/architecture/dhall_generation.md`,
 `documents/engineering/config_generation.md`, `documents/engineering/schema.md`,
 `legacy-tracking-for-deletion.md`
@@ -343,8 +344,12 @@ Make schema generation and decoding consume one validated type witness, and make
 
 #### Remaining Work
 
-Implement the codec witness, migrate artifact/project config call sites, expand `Core.dhall` coverage,
-and replace the synthetic-only evidence with surface-specific command snapshots/tests.
+None. Completed 2026-07-25. `CodecWitness` is the sole lower-layer schema/decode/render input;
+`ConfigArtifact` construction is opaque; project, test, demo, and runtime loader call sites pass admitted
+codecs; every current `Core.dhall` type export is equality-owned; mismatch-before-mutation and
+representative semantic round trips pass; and exact isolated command snapshots cover bare/consumer
+`context schema` plus consumer `service schema`. Validation: pinned `fourmolu`, core **390/390**, demo
+**100/100**, and the demo workspace's embedded core **390/390**, all with `-Werror`.
 
 ## Documentation Requirements
 
@@ -352,8 +357,8 @@ and replace the synthetic-only evidence with surface-specific command snapshots/
 - `documents/architecture/library_hierarchy.md` - the three additive library levels and the extension-stream
   extension contract.
 - `documents/architecture/dhall_generation.md` - local runtime config generation, child projections, the
-  three-vocabulary model, the current encoder-`declared` schema surface, and the target validated
-  encoder/decoder codec witness versus explicit equality gates for hand-written types.
+  three-vocabulary model, the validated encoder/decoder codec witness, and explicit equality gates for
+  hand-written types.
 
 **Engineering docs to create/update:**
 - `documents/engineering/config_generation.md` - the `ConfigArtifact` registry, explicit `project init`,

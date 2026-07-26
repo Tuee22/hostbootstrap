@@ -22,29 +22,29 @@ a cleanup obligation. A target row is not an implementation claim.
 
 | Module | State | Purpose / open contract |
 |--------|-------|-------------------------|
-| `HostBootstrap.CLI` | Partial | Fixed `project` / `test` / `service` / `context` / `check-code` entrypoint; typed case/variant integration is Phase 19.6, production/harness config-scope integration is Phase 19.7, and opaque validated `ProjectSpec`/step/service-selection construction is Phase 19.8 |
+| `HostBootstrap.CLI` | Implemented construction boundary | Fixed command entrypoint; scope-indexed Production/Harness integration, opaque `ProjectSpecBuilder`/`ProjectSpec`, additive streams, checked single-assignment slots, and finalized typed service registry are implemented. Receipt-aware lifecycle authority remains in its owning phases |
 | `HostBootstrap.Command` | Partial | Parser/dispatch and command gates; exact `test`/`context` grammar plus command-specific missing-config recovery are Phase 17.4, and validated service dispatch is Phase 18.6 |
-| `HostBootstrap.HostTool` | Partial | Closed tool enumeration and `AbsExe`; remaining bare host call sites are Phase 2.5 |
+| `HostBootstrap.HostTool` | Implemented boundary | Closed tool enumeration and `AbsExe`; Sprint 2.5 closed the remaining governed bare-host call sites |
 | `HostBootstrap.HostConfig` | Implemented | Resolved host configuration |
-| `HostBootstrap.HostPrereqs` | Partial | Haskell host prerequisites; alignment with the real pre-binary Python floor is Phase 2.5 |
+| `HostBootstrap.HostPrereqs` | Implemented floor | Haskell host prerequisites aligned with the real pre-binary Python floor by closed Sprint 2.5 |
 | `HostBootstrap.Substrate` | Implemented | Apple/Linux/Windows CPU/GPU substrate classification |
-| `HostBootstrap.Ensure*` | Partial | Reconciler families exist; typed changed/unchanged/foreign/unsupported results, applied Colima ownership, and total provider capability probes remain in Sprints 5.8, 9.10, and 11.10. The existing `fitsBudget` predicate is not the sole wired admission authority |
-| `HostBootstrap.Cluster.Cordon` | Partial | Quantity/resource builders and preflight exist, but config/preflight/provider launch retain duplicate budget authority, small-input floor rounding can violate the intended contained slice, Incus/WSL launch builders do not uniformly consume the admitted wall, and existing provider walls are not fully reconciled. Sprint 9.10 owns the indexed pure `ProviderWallSpec`/`EffectiveBudget`/fit/`BudgetPartition` algebra plus journaled same-spec live wall authority; Sprint 9.4 the bare-Linux storage decision; Sprints 5.7–5.8 and 11.10 the provider walls; Sprint 13.18 the complete demo workload projection; and Sprint 19.8 the single plan/config authority. |
-| `HostBootstrap.Cluster.Lifecycle` | Partial | Cluster planning/lifecycle; Sprint 5.6.1 owns canonical project-root authority and typed durable projections, Sprint 5.7 owns receipt-aware backend storage operations, and Sprint 10.9 owns Production/Harness mode/profile opening over Sprint 15.9's command authority |
-| `HostBootstrap.Step` / `Chain` | Partial | Pure step chain; ownership-/phase-indexed interpreter state and one opaque lifecycle plan are Phases 9.10/16.6, while Phase 19.8 removes replacement setters and invalid/shadowing step identities |
-| `HostBootstrap.Readiness` | Partial | Initial phantom witness and retry loop; the witness is forgeable through exposed `HostBootstrap.Readiness.Internal`, not resource-instance-bound, and probe outcomes are incomplete. Phase 9.10 owns repair |
-| `HostBootstrap.Readiness.Internal` | Partial, exposed implementation escape hatch | The library publicly exposes `MkReady`; production `HostBootstrap.Readiness` imports it, while tests do not need the internal module. Phase 9.10 must make the constructor module-private and move tests to injected probes |
-| `HostBootstrap.Context` | Partial | Descriptive binary context and command capability checks; Sprint 5.6.1 resolves descriptive `sourceRoot` once, and opaque command authority/narrowing is Phase 15.9 |
-| `HostBootstrap.ProjectRoot` | Partial | Private rank-2 canonical-root admission and durable-path projection are implemented; Sprint 5.6.1 still integrates the root identity into the scoped `ProjectPlan` and removes descriptive raw-path adapter access |
-| `HostBootstrap.Substrate.Provider` | Partial | Provider launch/share/alias data; guest alias ownership and direct-host alias deletion are Phase 11.10 |
-| `HostBootstrap.Lift` | Implemented, pending type integration | Provider-backed nested command dispatch; becomes the sole route after Phase 11.10 |
-| `HostBootstrap.HostTarget` | Definition-only | Parallel `Local \| InVM` predecessor with no production ownership; removal/consolidation is Phase 11.10 |
-| `HostBootstrap.Incus` / `Lima` / `Wsl2` | Partial | Provider argv/probes and launch builders exist with uneven budget wiring. WSL has an unused import builder and its utility-VM wall is shared global state, not a per-distro wall; exclusive lease/CAS ownership, existing-wall reconciliation, and conflict refusal are Phase 11.10 |
-| `HostBootstrap.Harness` | Partial | Variant execution/reporting; Phase 10.9 replaces cooperative ownership and Phase 10.10 removes the unconsumed `RunModel` selector |
-| `HostBootstrap.Service` | Partial | Config-selected leaf handlers exist, but current dispatch uses an arbitrary string selector and demo handlers reload the full config; Sprint 14.6 integrates the phase-indexed role lifecycle, Sprint 15.9 supplies opaque runtime authority/one config snapshot, and Sprint 18.6 supplies a prevalidated-draft, one-use admission/plan-open gate plus exact-set non-live predecessor recovery and fenced lease-transfer barrier before the existential typed selected-service package; native accelerator real-run evidence remains open |
+| `HostBootstrap.Ensure*` | Partial | The nine config-free reconciler families remain; Colima is a separate plan-bound per-project adapter. Incus now converges and totally classifies daemon reachability, permission, VM capability, and required image-server egress, and only the ready branch mints its opaque capability. WSL global-state ownership and recursive command integration remain downstream. The existing `fitsBudget` predicate is not the sole wired admission authority |
+| `HostBootstrap.Cluster.Cordon` | Implemented pure parser/builder boundary, partial live enforcement | Exact whole-byte quantity parsing, resource builders, capacity preflight, and the typed bare-Linux `StorageCordonUnsupported` policy exist. Whole-GiB providers reject inexact hard ceilings instead of rounding upward. Direct Colima has an exact observed project-wall adapter; Incus/WSL and existing Lima walls are not fully reconciled, while conditional cleanup remains Sprint 5.7 work |
+| `HostBootstrap.Cluster.Budget` | Implemented Phase 9 foundation plus Colima adapter | Closed provider keys; plan-indexed validated/effective budget; workload fit; constructive partitions/slices; and journal-before-call wall reservation/preparation/settlement are opaque. WSL success returns its lease inseparably and uncertain acquisition returns no authority. Sprint 13.18 owns the complete demo workload projection; remaining provider phases own their live CAS/adapters |
+| `HostBootstrap.Cluster.Lifecycle` | Partial | Cluster planning/lifecycle; Sprint 5.6.1 closed canonical project-root admission and the direct-host durable projection, Sprint 5.7 owns receipt-aware backend storage operations, and Sprint 10.9 owns Production/Harness mode/profile opening over Sprint 15.9's command authority |
+| `HostBootstrap.Step` / `Chain` | Implemented forward-plan boundary, partial lifecycle | Opaque steps, disjoint typed identities, explicit reverse policy, operation keys/dependency prefixes, exact-order `StepPlan` validation, and one plan consumer are implemented; receipt-driven recursive interpretation remains Phase 16.6 |
+| `HostBootstrap.Readiness` | Implemented Phase 9 foundation, partial live integration | Opaque validated polling and total results; closed backend probes require exact planned resources and mint generative plan/resource/dependency-indexed readiness. `ObservedReady` is explicitly non-authorizing compatibility evidence. Provider/interpreter phases own migration of live effects to prepared operations |
+| `HostBootstrap.Reconcile` | Implemented Phase 9 foundation | Final-codec/step-plan lifecycle identity; opaque planned resources/edges, reconcile/adoption outcomes, prepared operation pairs, phase-indexed handles, and legal persisted journal transitions. Direct Colima acquisition is implemented; live protected-store and remaining adapter interpretation continue in Sprints 5.7, 10.9, 11.10, 15.9, and 16.6 |
+| `HostBootstrap.Context` | Partial | Descriptive binary context and command capability checks; closed Sprint 5.6.1 resolves `sourceRoot` separately without rewriting the context, and opaque command authority/narrowing is Phase 15.9 |
+| `HostBootstrap.ProjectRoot` | Implemented foundation | Private rank-2 canonical-root admission, same-root host durable projection, and the typed direct-host mount adapter are implemented; the final opaque plan and remaining boundary projections are owned by Sprints 10.9, 11.10, 16.6, and 19.8 |
+| `HostBootstrap.Substrate.Provider` | Partial | Single provider launch/share/alias data route; direct-host aliases are removed, while provider-guest aliases still lack a same-privilege-resistant conditional mutation/receipt backend |
+| `HostBootstrap.Lift` | Implemented, pending operation integration | Sole provider-backed nested command dispatch; live provider mutations still need the plan-owned prepared-operation pair |
+| `HostBootstrap.Incus` / `Lima` / `Wsl2` | Partial | Provider argv/probes and launch builders exist with uneven budget wiring. Incus has a total capability/egress classifier and the unused WSL import builder is gone. WSL's utility-VM wall remains shared global state without exclusive lease/CAS ownership, existing-wall reconciliation, or conflict refusal |
+| `HostBootstrap.Harness` | Implemented typed foundation, partial ownership | Opaque typed case/variant matrix, selection, and reporting are implemented; Phase 10.9 replaces cooperative ownership |
+| `HostBootstrap.Service` | Implemented typed codec/request boundary, partial runtime | Closed typed registry definitions bind identity/projection/role codec/handler; finalization shares one digest with the full codec, service dispatch verifies one snapshot, and handlers receive only typed role fields plus safe framework view. Sprint 18.6 replaces raw handler `IO` with one-use effect-indexed execution; Sprint 14.6 integrates the phase lifecycle; native accelerator real-run evidence remains open |
 | `HostBootstrap.RoleLifecycle` | Definition-only | Initial role phase skeleton has tests but no production consumer after the demo role removal; Sprint 14.6 integrates/hides it behind `service run`, while Sprint 18.6 makes admission Reserved→Consumed, lost plan-open acknowledgment, non-live predecessor recovery, and lease transfer typed rather than callback convention |
-| `HostBootstrap.Config.*` | Partial | Generic config classes/vocabulary/schema; typed case/variant IDs and removal of dead `testSuites` are Phase 19.6, while scope-indexed `SecretRef`/project config is Phase 19.7 |
-| `HostBootstrap.Dhall.*` | Partial | Dhall generation/hoisting exists; Sprint 8.7 adds one validated encoder/decoder schema witness and complete `Core.dhall` drift coverage |
+| `HostBootstrap.Config.*` | Implemented root/config-role boundary, partial handoff | Generic scope-indexed config classes, opaque secret refs, canonical verification, common framework view, full-vs-role/scope discriminators, `RoleCodec`, request, and role parameters are implemented. Authenticated child handoff/command authority remain Phases 15.9/16.6 |
+| `HostBootstrap.Dhall.*` | Implemented foundation | Opaque `CodecWitness` owns schema/decode/render, opaque artifacts require an admitted codec, literal schema commands are snapshotted, every current `Core.dhall` type export is equality-owned, and Phase 19's `ProjectCodec` supplies installed identity/scope/spec-digest binding |
 | `HostBootstrap.Registry` | Partial | Docker Hub credential discovery/forwarding exists, but raw-text/substring classification and environment transport remain open in Sprints 15.9/19.7; schema/artifact registration lives in `HostBootstrap.Dhall.Gen` |
 | `HostBootstrap.Network` / `HostBootstrap.RegistryPlan` | Target only | Sprint 14.7 owns scope-indexed endpoints/clients/exposures, proof-gated blob delivery, opaque finalized registry plans, and route-specific readiness; Sprint 13.20 consumes them in the demo |
 | `HostBootstrap.DocValidator` | Implemented | Mechanical documentation checks; new drift floors are Phase 21.4 |
@@ -135,8 +135,10 @@ the final reconciler state model.
 ## Project Configuration
 
 Each built project binary owns a sibling `<project>.dhall`. The current config type is project-defined
-through `ProjectSpec cfg tcfg`; core does not own universal project defaults. Context fields describe
-placement and requested roles but do not themselves mint mutation authority.
+through `ProjectSpec projectId cfg tcfg`, where `cfg` is scope-indexed; core does not own universal
+project defaults. One restricted `psAssemble` supplies Production and Harness configs, and matching
+mapped codecs admit their distinct wire schemas. Context fields describe placement and requested roles
+but do not themselves mint mutation authority.
 
 Current partial surfaces:
 
@@ -147,20 +149,20 @@ Current partial surfaces:
 - topology validation follows only the selected parent chain and executes only supplied runtime
   witnesses; it does not reject every duplicate/cycle/disconnected frame or prove that the required
   witness set is complete (Phase 15.9);
-- `project up` and demo service handlers reopen the sibling config after initial validation, so one
-  invocation can mix config versions; Phase 15.9 threads one `ValidatedConfig` into plan construction
-  and closed plan operations, while Phase 18.6 gives a service handler only the matching
+- `project up` step actions can still reopen the sibling config after initial validation, so one
+  invocation can mix config versions; service dispatch no longer does—it canonically verifies one
+  snapshot and closes the action over its request. Phase 15.9 threads one `ValidatedConfig` into plan
+  construction and closed plan operations, while Phase 18.6 gives a service handler only the matching
   `ValidatedServiceRequest specDigest configId secretDigest fields service`/
   `RoleParams specDigest configId secretDigest fields service` through a
   closed `ServiceProgram`, never the snapshot or full config;
-- `psServiceVariant` is an arbitrary string selector, service projection invents fallback
-  ports/timeouts, and service/daemon configs retain unrelated fields; an opaque request/parameter/handler
-  package, consumer-indexed field filter, effect-indexed authorization proof, and total role-specific
-  projection are Sprints 18.6/19.8;
-- `TestConfig.testSuites :: [Text]` is decoded but dead, while case/variant identity is stringly (Phase
-  19.6);
-- `SecretRef = < Vault | TransitKey | Prompt | TestPlaintext >` is unscoped, so a production project
-  config can represent `TestPlaintext`; exclusion is only consumer/code-check policy (Phase 19.7);
+- the arbitrary string selector and fallback parameters are removed; role wires contain framework
+  validation plus only selected service fields, while the full generated service/daemon config still
+  retains unrelated plan fields. Effect-indexed authorization and one-use execution remain Sprint 18.6;
+- typed `CaseId`/`VariantId` and the total `TestMatrix` relation are implemented, while the demo's
+  concrete variants remain hard-coded until Phase 20.5;
+- `SecretRef scope` is opaque; Production cannot represent `TestPlaintext`, and Harness plaintext
+  requires the matching generative run authority. Cross-process child grants remain downstream;
 - the demo variants are hard-coded rather than generated from `<project>.test.dhall` (Phase 20.5); and
 - the current production/test profile can be selected without authority-indexed construction, and the
   self-invoked child receives no authenticated one-time authority handoff. Sprint 5.7 supplies the
@@ -191,31 +193,30 @@ or another project/run.
 | Surface | State | Contract / open work |
 |---------|-------|----------------------|
 | `doctor` | Implemented | Report the irreducible pre-binary host floor |
-| `build` | Partial | Explicit Cabal-file selection; one validated package/executable/config identity; offline/index and unchanged-copy behavior are Phase 6.7 |
-| `run` | Partial | Build host-native and invoke (POSIX `exec`; Windows child subprocess); inherits the Phase 6.7 selection/idempotence work |
+| `build` | Implemented | Explicit Cabal-file selection, one validated package/executable/artifact identity, conditional index refresh, explicit offline refusal, and unchanged-copy no-op |
+| `run` | Implemented | The same idempotent host-native build followed by POSIX `exec` or a Windows child subprocess |
 | `update` | Implemented | Explicit operator-invoked pipx self-update |
-| `base build` | Partial | Native-architecture validation and reproducible input gate are Phase 6.7 |
-| `base build-and-push` | Partial | Full Python+Haskell gate, digest record, pull, and derived validation are Phase 6.7 |
-| `check-code` / `test-all` | Partial | Maintainer-only by intent; Phase 6.7 replaces dependency importability with verified repository-development authority |
+| `base build` | Implemented | Verified repository authority, native request/host/engine architecture equality, and the complete Python/core/demo source gate precede local inspection builds |
+| `base build-and-push` | Implemented | Current-compatible resolution → source gate → native build → push rolling tag → pull → real-demo compatibility smoke; a digest may identify the pulled build without locking inputs |
+| `check-code` / `test-all` | Implemented | Exposed only from the canonical checkout's in-project Poetry development interpreter through opaque maintainer authority |
 
 Python does not own project Dhall, Docker/provider ensure, project-container construction, lifecycle, or
 runtime cordons.
 
 ## Base Image and Warm Store
 
-The base image contains the Haskell toolchain, build tools, Kubernetes/container tools, and layered Cabal
-warm store. It contains no project binary and exposes no freeze-only integration `LABEL`/`ENTRYPOINT`.
-Projects integrate by Cabal dependency plus `runHostBootstrapCLI`.
+The rolling base image contains the Haskell toolchain, build tools, Kubernetes/container tools, and a
+broad best-effort Cabal warm store selected from current compatible upstream versions at build time. It
+contains no project binary and exposes no freeze-only integration `LABEL`/`ENTRYPOINT`. Projects
+integrate by Cabal dependency plus `runHostBootstrapCLI`, use the same `cabal.project` on the host and in
+a derived container, and may resolve/download/compile dependencies on a cache miss.
 
 Open contracts:
 
-- mutable base tags must become pulled, digest-qualified derived-build inputs (Phase 6.7);
-- requested architecture must match the native host/engine before build or publish (Phase 6.7);
-- maintainer parser construction must require verified repository-development provenance rather than
-  importable dev dependencies (Phase 6.7);
-- host-native and Linux-container Cabal projects must be distinct so only the container imports
-  `/opt/basecontainer/.../*.freeze` (Phase 12.4);
-- network-resolved installers/tools must be versioned or integrity-pinned (Phase 12.4); and
+- the demo's pulled rolling-base consumption remains Phase 13.18;
+- one host-compatible consumer project and opportunistic cache reuse are Phase 12.4;
+- rolling build-time discovery must select current compatible releases over TLS and retain available
+  integrity checks without becoming a committed replay lock (Phase 12.4); and
 - documented vanilla/dynamic shared-library ways must be mechanically matched to the artifacts actually
   present; profiling remains off unless explicitly enabled and validated (Phase 12.4).
 
@@ -248,7 +249,8 @@ Open demo contracts:
   registry-pod persistence;
 - thread one typed Production plan and a harness-only `TestComponent`;
 - derive every cluster/root/port identity from the opaque lifecycle profile;
-- pull and resolve the published base to a digest before derived build;
+- pull the published rolling base before a derived compatibility build; a resolved digest may identify
+  that workflow input without becoming a consumer lock;
 - reconcile stale Harbor/appended-verb metadata with the current registry/MinIO path;
 - drive typed cases/variants from decoded test config;
 - add the threaded RTS contract to the static demo test component and restore the canonical `cabal test all`

@@ -13,8 +13,8 @@
   `poetry run python -m hostbootstrap.test_all`; do not invoke `pytest` directly.
 - Run Haskell suites from their Cabal project roots with `cabal test all`. The complete Haskell
   quality gate also includes formatter, linter, and warnings-as-errors build checks.
-- The demo command is `test init` followed by `test run <case-id>|all`. Cases are compiled Haskell;
-  the current `<project>.test.dhall` contains a redundant suite-name list and resource overrides, not case bodies.
+- The demo command is `test init` followed by `test run <case-id>|all`. Cases are compiled Haskell with
+  validated `CaseId`s; the current `<project>.test.dhall` contains resource overrides, not case bodies.
 - Help calls the test surface root-only, but the parser does not enforce a binary-context root gate.
 - The demo live planner currently selects `Production` and `.data`. Do not describe the current long
   demo gate as isolated from production state.
@@ -63,9 +63,9 @@ From `demo/`, for its Cabal test suite:
 cabal test all
 ```
 
-This is the supported entry point, but the current `hostbootstrap-demo-test` component is not built with
-`-threaded`; Warp's timer manager therefore fails at runtime. Do not report the suite green merely
-because the command is canonical; the development-plan index owns the repair status and closure evidence.
+This is the supported entry point. `hostbootstrap-demo-test` is built with `-threaded -rtsopts
+"-with-rtsopts=-N"`, matching the executable because `WebServerSpec` starts Warp. The suite includes a
+Cabal-stanza assertion so removing that runtime contract fails the same canonical command.
 
 These static suites validate pure plans, argv builders, schema round trips, harness mechanics, and many
 failure branches. They cannot substitute for native provider, recursive teardown, production-isolation,
@@ -80,24 +80,21 @@ or durable readback gates.
 ```
 
 `test init` requires no production `<project>.dhall`; it writes the executable-sibling
-`<project>.test.dhall`. `test run` reads that file, asks the project for generated config variants,
+`<project>.test.dhall`. `test run` reads that file, validates the project-owned typed matrix projection,
 drives the real `project up`, runs compiled case assertions, and invokes `project destroy`.
 
 The selector names a compiled **case id**, not a dynamically defined suite. In the demo:
 
 ```haskell
-data TestConfig = TestConfig
-  { testSuites    :: [Text]
-  , testResources :: Resources
-  }
+newtype TestConfig = TestConfig { testResources :: Resources }
 ```
 
-`demoCaseIds`/`demoCases` remain the executable source of truth. `testSuites` is informational and is
-ignored when the demo creates its message variants. This duplication is an open representation defect.
-The selected target removes the unchecked `testSuites` list. Haskell owns a non-empty registry of opaque
-`CaseId` values and handlers; `<project>.test.dhall` owns validated `VariantId` overrides and typed
-case-to-variant references. Construction rejects empty, duplicate, or unknown references, and selection,
-generation, help, and reporting consume that one validated projection.
+`demoCases` is the executable source of truth. Its opaque `CaseId`s and the demo's stable `VariantId`
+drafts are validated into one total relation: both registries are non-empty and unique, every case has
+exactly one non-empty row, every reference exists, and every variant is used. Construction also rejects
+duplicate rows/pairs and unknown/orphan references. Selection, generation, and reporting consume that
+relation. The remaining Phase 20 work is to move the demo's concrete hard-coded two-message mapping into
+typed test config; the generic core no longer carries an unchecked suite-name or string-label list.
 
 ## Current Safety Defects
 
@@ -146,5 +143,5 @@ rehydration, is canonical in
 
 - [harness workflow](../architecture/harness_workflow.md) — command/DSL/profile contract.
 - [durable state](../architecture/durable_state.md) — `.data` carry and readback gap.
-- [readiness](../architecture/readiness.md) — current forgeable witness and target capabilities.
+- [readiness](../architecture/readiness.md) — delivered opaque witness foundation and remaining live-effect integration.
 - [demo runbook](../operations/demo_runbook.md) — operator-facing demo commands and cautions.

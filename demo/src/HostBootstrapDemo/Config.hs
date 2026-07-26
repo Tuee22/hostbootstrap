@@ -3,8 +3,13 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 {- | The hostbootstrap-demo's own project-config shape and its in-process
 decoder/renderer.
@@ -19,13 +24,26 @@ place defaults live — the @InitArgs@ builders ('demoInit' / 'demoTestInit' /
 'demoTestConfig') the demo's 'HostBootstrap.CLI.ProjectSpec' threads in.
 -}
 module HostBootstrapDemo.Config (
+    DemoProject,
     ProjectConfig (..),
     DeployConfig (..),
-    Resources (..),
-    Quantity (..),
-    HaReplicas (..),
-    Port (..),
-    TimeoutSeconds (..),
+    Resources,
+    cpu,
+    memory,
+    storage,
+    mkResources,
+    Quantity,
+    quantityText,
+    mkQuantity,
+    HaReplicas,
+    haReplicasNat,
+    mkHaReplicas,
+    Port,
+    portNat,
+    mkPort,
+    TimeoutSeconds,
+    timeoutSecondsNat,
+    mkTimeoutSeconds,
     TestConfig (..),
     ServiceType (..),
     WebServiceConfig (..),
@@ -34,6 +52,8 @@ module HostBootstrapDemo.Config (
     maxAcceleratorRequestTimeoutSeconds,
 
     -- * Render / decode
+    projectConfigCodec,
+    testConfigCodec,
     renderDhallText,
     renderProjectConfig,
     decodeProjectConfigText,
@@ -47,7 +67,6 @@ module HostBootstrapDemo.Config (
 
     -- * Resource conversions
     envelopeOfResources,
-    resourcesFromEnvelope,
 
     -- * Construction
     projectConfigForRole,
@@ -60,30 +79,57 @@ module HostBootstrapDemo.Config (
     demoDefaultDeployConfig,
     demoDefaultDockerfile,
     demoDefaultMessage,
-    demoCaseIds,
+    demoDefaultWebServiceConfig,
+    demoDefaultAcceleratorServiceConfig,
+    demoDefaultProjectConfig,
 
     -- * InitArgs builders (threaded into the demo's ProjectSpec)
     demoInit,
     demoTestInit,
-    demoTestConfig,
+    demoAssemble,
 )
 where
 
 import Data.Maybe (fromMaybe)
-import Data.String (IsString)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Dhall (FromDhall (autoWith), ToDhall, auto, field, inputFile, record)
+import Dhall (FromDhall (autoWith), ToDhall)
 import qualified Dhall
-import qualified Dhall.Core
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
-import Dhall.Marshal.Encode (Encoder (declared, embed))
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (parseQuantity)
-import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..))
+import HostBootstrap.Config.Class (
+    AssemblyRequest (..),
+    ConfigAssembly,
+    ProjectCfg (..),
+    TestCfg (..),
+    failConfigAssembly,
+    pureConfigAssembly,
+    withProjectCodec,
+ )
+import qualified HostBootstrap.Config.Class as Config
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
-import qualified HostBootstrap.Dhall.Hoist as Hoist
+import HostBootstrap.Dhall.Gen (
+    CodecWitness,
+    autoCodecWitness,
+    codecSchemaText,
+    decodeFile,
+    decodeText,
+    renderHoistedValue,
+    renderValue,
+    requireCodecWitness,
+ )
+import HostBootstrap.Harness (
+    CaseId,
+    TestMatrix,
+    TestMatrixError,
+    VariantId,
+    mkTestMatrix,
+    mkVariantId,
+    variantDraft,
+    variantDraftValue,
+ )
 import Numeric.Natural (Natural)
 
 {- | Refine a base 'Decoder' at DECODE time (development_plan_standards § BB/§ O):
@@ -91,7 +137,7 @@ decode the underlying value, then validate it, failing the Dhall **extract** (no
 runtime @die@) when it violates the contract — so an unworkable @<project>.dhall@ /
 @test.dhall@ is rejected at decode rather than accepted-then-failed at bring-up. The
 matching 'ToDhall' stays transparent (each newtype encodes its underlying
-@Text@/@Natural@ via @deriving newtype ToDhall@), so the reflected @context schema@
+@Text@/@Natural@ via @deriving newtype ToDhall@), so the reflected @service schema@
 and the golden are **unchanged**: these types are decode-time refinements only.
 -}
 refiningDecoder :: Decoder a -> (a -> Either String b) -> Decoder b
@@ -103,67 +149,72 @@ refiningDecoder base refine =
         , expected = expected base
         }
 
-{- | A typed Kubernetes-style resource quantity (memory / storage). Its 'FromDhall'
-validates the unit at DECODE via the one canonical 'parseQuantity', so a bad unit
-(@"lots"@, @"10Gitten"@) fails to decode rather than only at bring-up. 'IsString'
-constructs known-good internal literals; the transparent 'ToDhall' encodes the
-underlying 'Text', so the schema is unchanged. (Replaces the former @Text@
-memory/storage fields — legacy-tracking-for-deletion.md.)
+{- | A typed Kubernetes-style resource quantity (memory / storage). Its hidden
+constructor and 'mkQuantity' validate through the one canonical
+'parseQuantity', so neither decoded nor programmatically assembled config can
+carry a bad unit. The transparent 'ToDhall' encodes the underlying 'Text', so
+the schema is unchanged.
 -}
 newtype Quantity = Quantity {quantityText :: Text}
     deriving stock (Eq)
-    deriving newtype (Show, IsString, ToDhall)
+    deriving newtype (Show, ToDhall)
+
+mkQuantity :: Text -> Either String Quantity
+mkQuantity value =
+    case parseQuantity value of
+        Right _ -> Right (Quantity value)
+        Left err -> Left ("invalid resource quantity " ++ show (T.unpack value) ++ ": " ++ err)
 
 instance FromDhall Quantity where
-    autoWith n = refiningDecoder (autoWith n) validate
-      where
-        validate t = case parseQuantity t of
-            Right _ -> Right (Quantity t)
-            Left err -> Left ("invalid resource quantity " ++ show (T.unpack t) ++ ": " ++ err)
+    autoWith n = refiningDecoder (autoWith n) mkQuantity
 
 {- | @haReplicas@ bounded to the demo's single-HA invariant (**exactly 1**): the
-'FromDhall' rejects any other value at decode, so a decoded config satisfies
-@validateAcceleratorReplicaCount@ by construction. 'Num' lets internal code write the
-literal @1@; the transparent 'ToDhall' encodes the underlying 'Natural'.
+'FromDhall' and public smart constructor reject every other value. There is no
+'Num' instance: callers cannot bypass the refinement with an overloaded
+literal.
 -}
 newtype HaReplicas = HaReplicas {haReplicasNat :: Natural}
     deriving stock (Eq)
-    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+    deriving newtype (Show, Ord, ToDhall)
+
+mkHaReplicas :: Natural -> Either String HaReplicas
+mkHaReplicas replicas
+    | replicas == 1 = Right (HaReplicas replicas)
+    | otherwise = Left ("haReplicas must be exactly 1 (the demo runs a single HA replica), got " ++ show replicas)
 
 instance FromDhall HaReplicas where
-    autoWith n = refiningDecoder (autoWith n) validate
-      where
-        validate r
-            | r == (1 :: Natural) = Right (HaReplicas r)
-            | otherwise = Left ("haReplicas must be exactly 1 (the demo runs a single HA replica), got " ++ show r)
+    autoWith n = refiningDecoder (autoWith n) mkHaReplicas
 
-{- | A service port bounded to @1..65535@ at decode. 'Num'/'Integral' let internal
-literals and @fromIntegral port@ (Warp wants an 'Int') work unchanged; transparent
-'ToDhall'. Cross-field distinctness stays a 'validateServiceType' check (a single
-newtype cannot express "these two differ").
+{- | A service port bounded to @1..65535@ at every construction boundary. The
+constructor and numeric instances are intentionally unavailable. Cross-field
+distinctness stays a 'validateServiceType' check (a single newtype cannot
+express "these two differ").
 -}
 newtype Port = Port {portNat :: Natural}
     deriving stock (Eq)
-    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+    deriving newtype (Show, Ord, ToDhall)
+
+mkPort :: Natural -> Either String Port
+mkPort port
+    | port >= 1 && port <= 65535 = Right (Port port)
+    | otherwise = Left ("service port must be between 1 and 65535, got " ++ show port)
 
 instance FromDhall Port where
-    autoWith n = refiningDecoder (autoWith n) validate
-      where
-        validate p
-            | p >= 1 && p <= 65535 = Right (Port p)
-            | otherwise = Left ("service port must be between 1 and 65535, got " ++ show p)
+    autoWith n = refiningDecoder (autoWith n) mkPort
 
--- | The accelerator request timeout bounded to @1..30@ seconds at decode.
+-- | The accelerator request timeout bounded to @1..30@ seconds.
 newtype TimeoutSeconds = TimeoutSeconds {timeoutSecondsNat :: Natural}
     deriving stock (Eq)
-    deriving newtype (Show, Ord, Num, Real, Enum, Integral, ToDhall)
+    deriving newtype (Show, Ord, ToDhall)
+
+mkTimeoutSeconds :: Natural -> Either String TimeoutSeconds
+mkTimeoutSeconds timeoutSeconds
+    | timeoutSeconds >= 1 && timeoutSeconds <= maxAcceleratorRequestTimeoutSeconds =
+        Right (TimeoutSeconds timeoutSeconds)
+    | otherwise = Left ("requestTimeoutSeconds must be between 1 and 30, got " ++ show timeoutSeconds)
 
 instance FromDhall TimeoutSeconds where
-    autoWith n = refiningDecoder (autoWith n) validate
-      where
-        validate s
-            | s >= 1 && s <= maxAcceleratorRequestTimeoutSeconds = Right (TimeoutSeconds s)
-            | otherwise = Left ("requestTimeoutSeconds must be between 1 and 30, got " ++ show s)
+    autoWith n = refiningDecoder (autoWith n) mkTimeoutSeconds
 
 {- | The per-project resource budget. @memory@/@storage@ are typed 'Quantity's
 (unit-validated at decode). A custom 'FromDhall' additionally enforces the resource
@@ -178,6 +229,14 @@ data Resources = Resources
     }
     deriving stock (Eq, Show, Generic)
     deriving anyclass (ToDhall)
+
+mkResources :: Natural -> Text -> Text -> Either String Resources
+mkResources resourceCpu resourceMemory resourceStorage
+    | resourceCpu < 1 = Left "resources.cpu must be at least 1 (the lifecycle resource floor)"
+    | otherwise =
+        Resources resourceCpu
+            <$> mkQuantity resourceMemory
+            <*> mkQuantity resourceStorage
 
 instance FromDhall Resources where
     autoWith n = refiningDecoder base validate
@@ -207,12 +266,15 @@ selectable suites (the case ids plus @all@) plus the **test-config resource
 overrides** projected into the test stack's config. The file is generated by
 @test init@ and read by @test run@ (which builds the run config from it).
 -}
-data TestConfig = TestConfig
-    { testSuites :: [Text]
-    , testResources :: Resources
+newtype TestConfig = TestConfig
+    { testResources :: Resources
     }
     deriving stock (Eq, Show, Generic)
     deriving anyclass (FromDhall, ToDhall)
+
+instance TestCfg TestConfig where
+    type TestVariant TestConfig = Text
+    projectTestMatrix = demoTestMatrix
 
 {- | Parameters owned by the demo's web service variant. They are deliberately
 part of the Dhall ADT payload rather than hidden in the handler registry. The
@@ -236,9 +298,7 @@ newtype AcceleratorServiceConfig = AcceleratorServiceConfig
 maxAcceleratorRequestTimeoutSeconds :: Natural
 maxAcceleratorRequestTimeoutSeconds = 30
 
-{- | The demo's real Dhall service sum. The config carries this ADT; the core sees
-only 'configuredServiceVariant' through the generic ProjectSpec seam.
--}
+-- | The closed service family used by role-wire/schema projections.
 data ServiceType
     = Web WebServiceConfig
     | Accelerator AcceleratorServiceConfig
@@ -252,32 +312,43 @@ bootstrapper from the Cabal file. Runtime identity is part of the nested
 context and is validated against the derived project/binary name before
 normal command dispatch.
 -}
-data ProjectConfig = ProjectConfig
+-- | Type-level identity for the installed demo project.
+data DemoProject
+
+data ProjectConfig scope = ProjectConfig
     { dockerfile :: Text
     , resources :: Resources
     , context :: BinaryContext
     , deploy :: DeployConfig
     , message :: Text
-    , service :: Maybe ServiceType
+    , webServiceConfig :: WebServiceConfig
+    , acceleratorServiceConfig :: AcceleratorServiceConfig
     }
     deriving stock (Eq, Show, Generic)
     deriving anyclass (FromDhall, ToDhall)
 
 {- | The demo's 'ProjectCfg' instance: the core reaches the embedded context
-through these two methods and otherwise never touches the demo's fields.
+through one read-only projection and otherwise never touches the demo's fields.
 -}
-instance ProjectCfg ProjectConfig where
+instance ProjectCfg DemoProject ProjectConfig where
+    withProductionProjectCodec =
+        withProjectCodec
+            "HostBootstrapDemo.ProjectConfig/Production"
+            projectConfigCodec
+    withHarnessProjectCodec _ =
+        withProjectCodec
+            "HostBootstrapDemo.ProjectConfig/Harness"
+            projectConfigCodec
     cfgContext = context
-    cfgWithContext ctx cfg = cfg{context = ctx, service = serviceTypeForProjection (service cfg) ctx}
 
-configuredServiceVariant :: ProjectConfig -> Either String String
-configuredServiceVariant cfg = case (Context.contextKind (context cfg), service cfg) of
-    (Context.ClusterService, Just serviceType@(Web _)) -> validateServiceType serviceType
-    (Context.Daemon, Just serviceType@(Accelerator _)) -> validateServiceType serviceType
-    (Context.ClusterService, Just (Accelerator _)) -> Left "cluster-service config declares the Accelerator variant"
-    (Context.Daemon, Just (Web _)) -> Left "daemon config declares the Web variant"
-    (_, Just _) -> Left "service selection requires a ClusterService or Daemon leaf context"
-    (_, Nothing) -> Left "effective <project>.dhall declares no ServiceType variant"
+configuredServiceVariant :: ProjectConfig scope -> Either String String
+configuredServiceVariant cfg =
+    case Context.contextKind (context cfg) of
+        Context.ClusterService ->
+            validateServiceType (Web (webServiceConfig cfg))
+        Context.Daemon ->
+            validateServiceType (Accelerator (acceleratorServiceConfig cfg))
+        _ -> Left "service selection requires a ClusterService or Daemon leaf context"
 
 validateServiceType :: ServiceType -> Either String String
 validateServiceType (Web (WebServiceConfig public accelerator))
@@ -295,47 +366,60 @@ validateServiceType (Accelerator (AcceleratorServiceConfig timeoutSeconds))
 {- | Render a project-local config to Dhall source text, hoisting the repeated
 vocabulary unions into top-level @let@ bindings.
 -}
-renderProjectConfig :: ProjectConfig -> Text
-renderProjectConfig = Hoist.renderHoisted Context.vocabUnions
+renderProjectConfig :: ProjectConfig scope -> Text
+renderProjectConfig = renderHoistedValue projectConfigCodec Context.vocabUnions
+
+-- | The one admitted decoder/encoder pair for the project-local config.
+projectConfigCodec :: CodecWitness (ProjectConfig scope)
+projectConfigCodec =
+    requireCodecWitness "HostBootstrapDemo.ProjectConfig" autoCodecWitness
+
+-- | The one admitted decoder/encoder pair for @test.dhall@.
+testConfigCodec :: CodecWitness TestConfig
+testConfigCodec =
+    requireCodecWitness "HostBootstrapDemo.TestConfig" (autoCodecWitness @TestConfig)
+
+textCodec :: CodecWitness Text
+textCodec =
+    requireCodecWitness "Text" (autoCodecWitness @Text)
 
 -- | Render a Dhall @Text@ literal using Dhall's own encoder.
 renderDhallText :: Text -> Text
-renderDhallText value =
-    Dhall.Core.pretty (embed (Dhall.inject :: Encoder Text) value)
+renderDhallText = renderValue textCodec
 
 -- | Decode a project-local config from Dhall source text.
-decodeProjectConfigText :: Text -> IO ProjectConfig
-decodeProjectConfigText = Dhall.input auto
+decodeProjectConfigText :: Text -> IO (ProjectConfig scope)
+decodeProjectConfigText = decodeText projectConfigCodec
 
 -- | Decode a project-local config from a @<project>.dhall@ file.
-decodeProjectConfigFile :: FilePath -> IO ProjectConfig
-decodeProjectConfigFile = inputFile auto
+decodeProjectConfigFile :: FilePath -> IO (ProjectConfig scope)
+decodeProjectConfigFile = decodeFile projectConfigCodec
 
 -- | The reflected Dhall type accepted by the project-local config decoder.
 projectConfigSchemaText :: Text
-projectConfigSchemaText = Dhall.Core.pretty (declared (Dhall.inject :: Encoder ProjectConfig))
+projectConfigSchemaText = codecSchemaText projectConfigCodec
 
 -- | The reflected Dhall type the @test.dhall@ decoder accepts.
 testConfigSchemaText :: Text
-testConfigSchemaText = Dhall.Core.pretty (declared (Dhall.inject :: Encoder TestConfig))
+testConfigSchemaText = codecSchemaText testConfigCodec
 
 -- | Render a @test.dhall@ to deterministic Dhall source via its @ToDhall@ embedding.
 renderTestConfig :: TestConfig -> Text
-renderTestConfig cfg = Dhall.Core.pretty (embed (Dhall.inject :: Encoder TestConfig) cfg)
+renderTestConfig = renderValue testConfigCodec
 
 -- | Decode a @test.dhall@.
 decodeTestConfigFile :: FilePath -> IO TestConfig
-decodeTestConfigFile = inputFile auto
+decodeTestConfigFile = decodeFile testConfigCodec
 
 -- | Decode a @test.dhall@ from Dhall source text.
 decodeTestConfigText :: Text -> IO TestConfig
-decodeTestConfigText = Dhall.input auto
+decodeTestConfigText = decodeText testConfigCodec
 
 {- | The default @test.dhall@: the project's selectable suites plus the resource
 override (seeded from the project config's resources).
 -}
-defaultTestConfig :: [Text] -> Resources -> TestConfig
-defaultTestConfig suites res = TestConfig{testSuites = suites, testResources = res}
+defaultTestConfig :: Resources -> TestConfig
+defaultTestConfig res = TestConfig{testResources = res}
 
 -- | Convert user-facing resources into the runtime authority envelope.
 envelopeOfResources :: Resources -> Context.ResourceEnvelope
@@ -344,17 +428,6 @@ envelopeOfResources Resources{cpu = resourceCpu, memory = resourceMemory, storag
         { Context.cpu = resourceCpu
         , Context.memory = quantityText resourceMemory
         , Context.storage = quantityText resourceStorage
-        }
-
-{- | Convert a runtime authority envelope back into the project-level resource
-shape used by generated child configs.
--}
-resourcesFromEnvelope :: Context.ResourceEnvelope -> Resources
-resourcesFromEnvelope envelope =
-    Resources
-        { cpu = Context.cpu envelope
-        , memory = Quantity (Context.memory envelope)
-        , storage = Quantity (Context.storage envelope)
         }
 
 {- | Build a project-local config for a selected local role. The @message@ is
@@ -369,7 +442,7 @@ projectConfigForRole ::
     DeployConfig ->
     Text ->
     Context.ContextKind ->
-    ProjectConfig
+    ProjectConfig scope
 projectConfigForRole projectName binaryName root cfgDockerfile cfgResources cfgDeploy cfgMessage kind =
     ProjectConfig
         { dockerfile = cfgDockerfile
@@ -379,54 +452,44 @@ projectConfigForRole projectName binaryName root cfgDockerfile cfgResources cfgD
                 projectName
                 binaryName
                 root
-                (envelopeOfResources cfgResources)
                 kind
         , deploy = cfgDeploy
         , message = cfgMessage
-        , service = serviceTypeForContext (Context.contextForKind projectName binaryName root (envelopeOfResources cfgResources) kind)
+        , webServiceConfig = demoDefaultWebServiceConfig
+        , acceleratorServiceConfig = demoDefaultAcceleratorServiceConfig
         }
 
 {- | Wrap an already-derived context in the project-local config shape. The
 @message@ is forwarded from the parent so child frames carry the same served
 message (Sprint 20.1).
 -}
-projectConfigFromContext :: Text -> DeployConfig -> Text -> Maybe ServiceType -> Context.BinaryContext -> ProjectConfig
-projectConfigFromContext cfgDockerfile cfgDeploy cfgMessage inheritedService cfgContext' =
+projectConfigFromContext :: ProjectConfig parentScope -> Context.BinaryContext -> ProjectConfig scope
+projectConfigFromContext
     ProjectConfig
-        { dockerfile = cfgDockerfile
-        , resources = resourcesFromEnvelope (Context.resourceEnvelope cfgContext')
-        , context = cfgContext'
-        , deploy = cfgDeploy
-        , message = cfgMessage
-        , service = serviceTypeForProjection inheritedService cfgContext'
+        { dockerfile = parentDockerfile
+        , resources = parentResources
+        , deploy = parentDeploy
+        , message = parentMessage
+        , webServiceConfig = parentWebServiceConfig
+        , acceleratorServiceConfig = parentAcceleratorServiceConfig
         }
-
-serviceTypeForContext :: Context.BinaryContext -> Maybe ServiceType
-serviceTypeForContext cfgContext' = case Context.contextKind cfgContext' of
-    Context.ClusterService -> Just (Web (WebServiceConfig 8080 8081))
-    Context.Daemon -> Just (Accelerator (AcceleratorServiceConfig 30))
-    _ -> Nothing
-
-serviceTypeForProjection :: Maybe ServiceType -> Context.BinaryContext -> Maybe ServiceType
-serviceTypeForProjection inherited cfgContext' =
-    case Context.contextKind cfgContext' of
-        Context.ClusterService ->
-            case inherited of
-                Just serviceType@(Web _) -> Just serviceType
-                _ -> Just (Web (WebServiceConfig 8080 8081))
-        Context.Daemon ->
-            case inherited of
-                Just serviceType@(Accelerator _) -> Just serviceType
-                _ -> Just (Accelerator (AcceleratorServiceConfig 30))
-        Context.HostOrchestrator -> inherited
-        Context.VMOrchestrator -> inherited
-        Context.VMProjectContainer -> inherited
-        Context.TestHarness -> inherited
-        Context.ImageBuildContainer -> Nothing
-        Context.OneShotJob -> Nothing
+    cfgContext' =
+        ProjectConfig
+            { dockerfile = parentDockerfile
+            , resources = parentResources
+            , context = cfgContext'
+            , deploy = parentDeploy
+            , message = parentMessage
+            , webServiceConfig = parentWebServiceConfig
+            , acceleratorServiceConfig = parentAcceleratorServiceConfig
+            }
 
 -- | Project a parent config into a narrower child config for a boundary crossing.
-deriveProjectConfigForKind :: Context.ContextKind -> ProjectConfig -> Text -> Either String ProjectConfig
+deriveProjectConfigForKind ::
+    Context.ContextKind ->
+    ProjectConfig scope ->
+    Text ->
+    Either String (ProjectConfig scope)
 deriveProjectConfigForKind kind parent root
     | kind `notElem` Context.childContextKinds parentContext =
         Left $
@@ -453,25 +516,18 @@ deriveProjectConfigForKind kind parent root
             Context.TestHarness ->
                 projected (Context.deriveTestHarnessContext parentContext root)
   where
-    ProjectConfig
-        { dockerfile = parentDockerfile
-        , context = parentContext
-        , deploy = parentDeploy
-        , message = parentMessage
-        , service = parentService
-        } = parent
-    projected = Right . projectConfigFromContext parentDockerfile parentDeploy parentMessage parentService
+    parentContext = context parent
+    projected = Right . projectConfigFromContext parent
 
 -- | A short human-readable summary of a decoded project-local config.
-renderProjectConfigSummary :: ProjectConfig -> String
+renderProjectConfigSummary :: ProjectConfig scope -> String
 renderProjectConfigSummary
-    ProjectConfig
+    cfg@ProjectConfig
         { dockerfile = cfgDockerfile
         , resources = cfgResources
         , context = cfgContext'
         , deploy = cfgDeploy
         , message = cfgMessage
-        , service = cfgService
         } =
         T.unpack $
             T.unlines
@@ -488,7 +544,7 @@ renderProjectConfigSummary
                     <> quantityText cfgResources.storage
                 , "ha-replicas:  " <> T.pack (show cfgDeploy.haReplicas)
                 , "message:      " <> cfgMessage
-                , "service:      " <> T.pack (show cfgService)
+                , "service:      " <> T.pack (either (const "none") id (configuredServiceVariant cfg))
                 ]
 
 -- ---------------------------------------------------------------------------
@@ -503,11 +559,11 @@ demoProjectName = "hostbootstrap-demo"
 80GiB). Core ships **no** resource defaults; this is the demo's.
 -}
 demoDefaultResources :: Resources
-demoDefaultResources = Resources{cpu = 6, memory = "10GiB", storage = "80GiB"}
+demoDefaultResources = builtIn "default resources" (mkResources 6 "10GiB" "80GiB")
 
 -- | The demo's deploy defaults (one HA replica). Core ships no deploy defaults.
 demoDefaultDeployConfig :: DeployConfig
-demoDefaultDeployConfig = DeployConfig{haReplicas = 1}
+demoDefaultDeployConfig = DeployConfig{haReplicas = builtIn "default HA replicas" (mkHaReplicas 1)}
 
 -- | The demo's default Dockerfile path. Core ships no Dockerfile default.
 demoDefaultDockerfile :: Text
@@ -520,28 +576,61 @@ serves it, and the SPA renders it in the @#message@ element. Core ships none.
 demoDefaultMessage :: Text
 demoDefaultMessage = "Hello, world!"
 
+demoDefaultWebServiceConfig :: WebServiceConfig
+demoDefaultWebServiceConfig =
+    WebServiceConfig
+        (builtIn "default public port" (mkPort 8080))
+        (builtIn "default accelerator port" (mkPort 8081))
+
+demoDefaultAcceleratorServiceConfig :: AcceleratorServiceConfig
+demoDefaultAcceleratorServiceConfig =
+    AcceleratorServiceConfig
+        (builtIn "default accelerator timeout" (mkTimeoutSeconds 30))
+
+builtIn :: String -> Either String a -> a
+builtIn label =
+    either (error . (("invalid " ++ label ++ ": ") ++)) id
+
+-- | Canonical secret-free value used only for the separately named full-schema
+-- Production/Harness artifacts. Runtime config still comes from assembly.
+demoDefaultProjectConfig :: ProjectConfig scope
+demoDefaultProjectConfig =
+    projectConfigForRole
+        demoProjectName
+        demoProjectName
+        "."
+        demoDefaultDockerfile
+        demoDefaultResources
+        demoDefaultDeployConfig
+        demoDefaultMessage
+        Context.HostOrchestrator
+
 {- | The demo's @init@ builder: interpret the parsed 'InitArgs' into a concrete
 'ProjectConfig', supplying the demo's defaults for every omitted knob. This is
 the **only** default-bearing function (core ships none). Reused by @project init@
 / @service init@ and by 'demoTestConfig' (so the harness generates its run config
 through the same builder production uses).
 -}
-demoInit :: InitArgs -> ProjectConfig
+demoInit :: Config.InitArgs -> Either String (ProjectConfig scope)
 demoInit = demoInitWithMessage demoDefaultMessage
 
 {- | The message-parameterized 'demoInit': interpret the parsed 'InitArgs' with an
 explicit served @message@ (the default-bearing 'demoInit' supplies
 'demoDefaultMessage'; the harness's second variant supplies its own, Sprint 20.3).
 -}
-demoInitWithMessage :: Text -> InitArgs -> ProjectConfig
-demoInitWithMessage cfgMessage args =
-    let cfgResources =
-            Resources
-                { cpu = fromMaybe demoDefaultResources.cpu args.mCpu
-                , memory = maybe demoDefaultResources.memory Quantity args.memory
-                , storage = maybe demoDefaultResources.storage Quantity args.storage
-                }
-        cfgDeploy = DeployConfig{haReplicas = maybe demoDefaultDeployConfig.haReplicas HaReplicas args.haReplicas}
+demoInitWithMessage :: Text -> Config.InitArgs -> Either String (ProjectConfig scope)
+demoInitWithMessage cfgMessage args = do
+    cfgResources <-
+        mkResources
+            (fromMaybe demoDefaultResources.cpu args.mCpu)
+            (fromMaybe (quantityText demoDefaultResources.memory) args.memory)
+            (fromMaybe (quantityText demoDefaultResources.storage) args.storage)
+    replicas <-
+        maybe
+            (Right demoDefaultDeployConfig.haReplicas)
+            mkHaReplicas
+            args.haReplicas
+    let cfgDeploy = DeployConfig{haReplicas = replicas}
         cfgDockerfile = fromMaybe demoDefaultDockerfile args.dockerfile
         root = fromMaybe "." args.sourceRoot
         baseCfg =
@@ -555,48 +644,15 @@ demoInitWithMessage cfgMessage args =
                 cfgMessage
                 args.role
         finalContext = foldr Context.addRole baseCfg.context args.alsoRoles
-        finalService = serviceTypeForRoles args.role args.alsoRoles
-     in baseCfg{context = finalContext, service = finalService}
-
-serviceTypeForRoles :: Context.ContextKind -> [Context.ContextKind] -> Maybe ServiceType
-serviceTypeForRoles primary additional
-    | primary == Context.Daemon =
-        Just (Accelerator (AcceleratorServiceConfig 30))
-    | primary == Context.ClusterService =
-        Just (Web (WebServiceConfig 8080 8081))
-    | otherwise = firstAdditionalService additional
-  where
-    firstAdditionalService [] = Nothing
-    firstAdditionalService (serviceRole : roles)
-        | serviceRole == Context.ClusterService = Just (Web (WebServiceConfig 8080 8081))
-        | serviceRole == Context.Daemon = Just (Accelerator (AcceleratorServiceConfig 30))
-        | otherwise = firstAdditionalService roles
+    pure baseCfg{context = finalContext}
 
 {- | The demo's @test init@ builder: a 'TestConfig' seeded from the demo's default
 resources and the demo's selectable suites. Needs **no** pre-existing project
 config (the case-id list is fixed in the project; the resources are the demo's
 defaults).
 -}
-demoTestInit :: InitArgs -> TestConfig
-demoTestInit _ = defaultTestConfig demoTestSuiteIds demoDefaultResources
-
-{- | The demo's case ids — the single source of truth the harness case matrix
-('demoCases' in Commands) is also built from, so the two cannot drift.
--}
-demoCaseIds :: [Text]
-demoCaseIds =
-    [ "pristine-bootstrap"
-    , "web-build"
-    , "e2e-tabs"
-    , "registry-persistence"
-    , "durable-readback"
-    ]
-
-{- | The demo's selectable test-suite ids: the case ids plus the always-injected
-@all@ selector, derived from 'demoCaseIds'.
--}
-demoTestSuiteIds :: [Text]
-demoTestSuiteIds = demoCaseIds <> ["all"]
+demoTestInit :: Config.InitArgs -> TestConfig
+demoTestInit _ = defaultTestConfig demoDefaultResources
 
 {- | The demo's @test run@ config generator: build the run's labeled
 'ProjectConfig' variants from the 'TestConfig' (host-orchestrator configs sized to
@@ -611,26 +667,45 @@ variant uses the demo default; the second a distinct message — so a passing ru
 proves the served message really is config-driven (changing the config changes the
 served value), not hard-coded.
 -}
-demoTestConfig :: TestConfig -> IO [(Text, ProjectConfig)]
-demoTestConfig tc =
-    pure
-        [ (demoDefaultMessage, configFor demoDefaultMessage)
-        , ("Hello, Universe!", configFor "Hello, Universe!")
-        ]
+demoAssemble ::
+    forall scope.
+    AssemblyRequest DemoProject TestConfig Text scope ->
+    ConfigAssembly scope (ProjectConfig scope)
+demoAssemble request =
+    case request of
+        ProductionAssembly args ->
+            either failConfigAssembly pureConfigAssembly (demoInit args)
+        HarnessAssembly _ tc draft ->
+            either failConfigAssembly pureConfigAssembly (configFor tc (variantDraftValue draft))
   where
-    configFor msg =
+    configFor :: TestConfig -> Text -> Either String (ProjectConfig scope)
+    configFor tc msg =
         demoInitWithMessage
             msg
-            InitArgs
-                { role = Context.HostOrchestrator
-                , alsoRoles = []
-                , output = Nothing
-                , sourceRoot = Just "."
-                , mCpu = Just tc.testResources.cpu
-                , memory = Just (quantityText tc.testResources.memory)
-                , storage = Just (quantityText tc.testResources.storage)
-                , dockerfile = Just demoDefaultDockerfile
-                , haReplicas = Just (haReplicasNat demoDefaultDeployConfig.haReplicas)
-                , force = True
-                , ifMissing = False
+            Config.InitArgs
+                { Config.role = Context.HostOrchestrator
+                , Config.alsoRoles = []
+                , Config.output = Nothing
+                , Config.sourceRoot = Just "."
+                , Config.mCpu = Just tc.testResources.cpu
+                , Config.memory = Just (quantityText tc.testResources.memory)
+                , Config.storage = Just (quantityText tc.testResources.storage)
+                , Config.dockerfile = Just demoDefaultDockerfile
+                , Config.haReplicas = Just (haReplicasNat demoDefaultDeployConfig.haReplicas)
+                , Config.force = True
+                , Config.ifMissing = False
                 }
+
+demoTestMatrix :: [CaseId] -> TestConfig -> Either TestMatrixError (TestMatrix Text)
+demoTestMatrix caseIds _ =
+    mkTestMatrix
+        caseIds
+        [variantDraft defaultVariantId demoDefaultMessage, variantDraft universeVariantId "Hello, Universe!"]
+        [(cid, [defaultVariantId, universeVariantId]) | cid <- caseIds]
+  where
+    defaultVariantId = literalVariantId "hello-world"
+    universeVariantId = literalVariantId "hello-universe"
+
+literalVariantId :: Text -> VariantId
+literalVariantId value =
+    either (error . ("invalid built-in demo variant id: " ++) . show) id (mkVariantId value)

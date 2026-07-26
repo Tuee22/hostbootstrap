@@ -10,7 +10,6 @@ import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
 import HostBootstrap.Ensure (InstallStep (..), Reconciler (..), decide, runReconciler)
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
-import qualified HostBootstrap.Ensure.Colima as Colima
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
 import qualified HostBootstrap.Ensure.Docker as Docker
@@ -46,20 +45,19 @@ tests =
         , testGroup "decide" decideCases
         , testGroup "runReconciler" runCases
         , testGroup "install plans" installPlanCases
+        , testGroup "Incus provider capability probe" incusProbeCases
         , testGroup "CUDA nvkind runtime probe" cudaProbeCases
         ]
 
 applicabilityCases :: [TestTree]
 applicabilityCases =
-    [ testCase "the ten reconcilers are present (incl. accelerator and cross-substrate providers)" $
+    [ testCase "the nine context-free reconcilers are present (project Colima requires a prepared budget)" $
         map reconcilerName allReconcilers
-            @?= ["docker", "colima", "apple-metal", "cuda", "cudawin", "homebrew", "ghc", "lima", "incus", "wsl2"]
+            @?= ["docker", "apple-metal", "cuda", "cudawin", "homebrew", "ghc", "lima", "incus", "wsl2"]
     , testCase "docker applies to every substrate" $
         map (appliesTo (findR "docker")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, True, True, True, True]
     , testCase "incus applies to apple AND linux (the first cross-substrate reconciler)" $
         map (appliesTo (findR "incus")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, True, True, False, False]
-    , testCase "colima applies to apple-silicon only" $
-        map (appliesTo (findR "colima")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, False, False, False, False]
     , testCase "apple-metal applies to apple-silicon only" $
         map (appliesTo (findR "apple-metal")) [apple, cpu, gpu, winCpu, winGpu] @?= [True, False, False, False, False]
     , testCase "cuda applies to linux-gpu only" $
@@ -78,16 +76,14 @@ applicabilityCases =
 
 decideCases :: [TestTree]
 decideCases =
-    [ testCase "decide is Right on the applicable host" $
-        assertBool "colima applicable on apple" (isRight (decide (findR "colima") apple))
-    , testCase "decide is Left with a one-line diagnostic on the wrong host" $
-        case decide (findR "colima") cpu of
+    [ testCase "decide is Left with a one-line diagnostic on the wrong host" $
+        case decide (findR "homebrew") cpu of
             Left msg ->
                 assertBool ("diagnostic mentions host + requirement: " ++ msg) $
-                    "ensure colima" `isInfixOf` msg
+                    "ensure homebrew" `isInfixOf` msg
                         && "linux-cpu" `isInfixOf` msg
                         && "apple-silicon" `isInfixOf` msg
-            Right _ -> assertBool "expected Left for colima on linux-cpu" False
+            Right _ -> assertBool "expected Left for homebrew on linux-cpu" False
     , testCase "accelerator reconcilers reject the wrong host before side effects" $ do
         case decide AppleMetal.reconciler cpu of
             Left msg -> do
@@ -105,7 +101,7 @@ runCases :: [TestTree]
 runCases =
     [ testCase "wrong host: exits non-zero WITHOUT performing the action" $ do
         ref <- newIORef False
-        let r = (findR "colima"){reconcile = \_ -> writeIORef ref True}
+        let r = (findR "homebrew"){reconcile = \_ -> writeIORef ref True}
             cfg = HostConfig{hcSubstrate = cpu, hcToolPaths = Map.empty}
         result <- try (runReconciler r cfg) :: IO (Either ExitCode ())
         ran <- readIORef ref
@@ -126,11 +122,7 @@ IO driver is exercised during real bootstrap runs; these assert the plans.
 -}
 installPlanCases :: [TestTree]
 installPlanCases =
-    [ testCase "colima: brew install + start on apple, Left elsewhere" $ do
-        Colima.installSteps apple
-            @?= Right [InstallStep Brew ["install", "colima"], InstallStep Colima ["start"]]
-        assertBool "colima Left on linux-cpu" (isLeft (Colima.installSteps cpu))
-    , testCase "lima: brew install lima on apple" $
+    [ testCase "lima: brew install lima on apple" $
         Lima.installSteps apple @?= Right [InstallStep Brew ["install", "lima"]]
     , testCase "wsl2: winget WSL, platform enablement, and WSL2 default on Windows" $ do
         Wsl2.installSteps winCpu
@@ -256,7 +248,7 @@ installPlanCases =
                 ]
         let linux =
                 Right
-                    [ InstallStep Sudo ["apt-get", "install", "-y", "incus"]
+                    [ InstallStep Sudo ["apt-get", "install", "-y", "incus", "acl"]
                     , InstallStep Sudo ["incus", "admin", "init", "--minimal"]
                     ]
         EIncus.installSteps cpu @?= linux
@@ -268,6 +260,34 @@ installPlanCases =
         EIncus.targetIncusAdminUser [("SUDO_USER", "root"), ("USER", "root")] @?= Nothing
         EIncus.targetIncusAdminUser [("USER", "")] @?= Nothing
     ]
+
+incusProbeCases :: [TestTree]
+incusProbeCases =
+    [ testCase "package presence alone does not mint provider capability" $ do
+        EIncus.classifyIncusProviderStatus False ok ok ok @?= EIncus.IncusClientMissing
+        assertBool
+            "missing client cannot mint capability"
+            (isLeft (EIncus.withIncusProviderCapability EIncus.IncusClientMissing (const ())))
+    , testCase "daemon absence, permissions, and transport failure remain distinct" $ do
+        EIncus.classifyIncusProviderStatus True (failed "connect: no such file") ok ok
+            @?= EIncus.IncusDaemonAbsent "exit 1: connect: no such file"
+        EIncus.classifyIncusProviderStatus True (failed "permission denied") ok ok
+            @?= EIncus.IncusPermissionDenied "exit 1: permission denied"
+        EIncus.classifyIncusProviderStatus True (Left "transport closed") ok ok
+            @?= EIncus.IncusDaemonUnreachable "transport closed"
+    , testCase "VM capability and image-source egress are required after daemon reachability" $ do
+        EIncus.classifyIncusProviderStatus True ok (failed "qemu missing") ok
+            @?= EIncus.IncusVMIncapable "exit 1: qemu missing"
+        EIncus.classifyIncusProviderStatus True ok ok (failed "remote unreachable")
+            @?= EIncus.IncusNoEgress "exit 1: remote unreachable"
+    , testCase "only the complete ready row mints the opaque capability" $ do
+        let status = EIncus.classifyIncusProviderStatus True ok ok ok
+        status @?= EIncus.IncusProviderReady
+        EIncus.withIncusProviderCapability status (const "ready") @?= Right "ready"
+    ]
+  where
+    ok = Right (ExitSuccess, "", "")
+    failed reason = Right (ExitFailure 1, "", reason)
 
 cudaProbeCases :: [TestTree]
 cudaProbeCases =
@@ -290,6 +310,3 @@ cudaProbeCases =
         Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "", "")) @?= False
         Cuda.nvkindRuntimeProbeReady (Right (ExitFailure 1, "", "runtime misconfigured")) @?= False
     ]
-
-isRight :: Either a b -> Bool
-isRight = either (const False) (const True)

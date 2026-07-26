@@ -2,8 +2,8 @@
 #
 # The idiomatic hostbootstrap-demo project container — the reference shape every
 # derived project copies (see documents/engineering/derived_dockerfile.md). It
-# inherits the warm-store base, builds and installs the project binary (reusing
-# the warm store via the imported freeze), creates the project-local container
+# inherits the warm-store base, builds and installs the project binary
+# (opportunistically reusing matching inherited artifacts), creates the project-local container
 # config, runs the in-Dockerfile `check-code` quality gate, then builds the web
 # bundle (purescript-bridge -> spago -> esbuild). tini is PID 1.
 #
@@ -21,11 +21,8 @@ COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY demo /workspace/demo
 
 WORKDIR /workspace/demo
-# Swap in the container cabal.project (imports the warm-store freeze) so only the
-# project's own modules compile; the dependency closure is reused.
-RUN cp docker/container.cabal.project cabal.project
-
-# Build and install the project binary, reusing the base image's warm store.
+# Build with the same project used host-native. Cache misses resolve and compile
+# normally; the inherited Cabal store is a best-effort acceleration only.
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin --enable-tests --enable-benchmarks exe:hostbootstrap-demo)" /usr/local/bin/hostbootstrap-demo
 

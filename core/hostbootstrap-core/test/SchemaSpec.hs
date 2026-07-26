@@ -1,34 +1,56 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
+import Control.Monad (void)
 import qualified Data.ByteString as BS
+import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Dhall
 import Fixture (
     DeployConfig (..),
     ProjectConfig (..),
     Resources (..),
+    SecretFixtureProject,
+    SecretProjectConfig (..),
     decodeProjectConfigFile,
     decodeProjectConfigText,
     decodeTestConfigText,
     defaultProjectConfig,
     defaultTestConfig,
     deriveProjectConfigForKind,
+    projectConfigCodec,
     renderProjectConfig,
     renderTestConfig,
  )
+import HostBootstrap.Config.Class (
+    ProjectCfg (..),
+    configInput,
+    decodeProjectCodecWithSettings,
+    projectCodecSchemaText,
+    pureConfigAssembly,
+    readConfigInput,
+    renderProjectCodecValue,
+    runConfigAssembly,
+ )
 import HostBootstrap.Config.Schema (
+    validatedConfigValue,
     parseConfigRole,
     projectConfigSnapshotHash,
     removeProjectConfigFileIfOwned,
     renderProjectConfigSnapshotLog,
     validateProjectConfigForProject,
+    verifiedConfigDigest,
+    withAssembledHarnessConfig,
+    withValidatedConfig,
     writeProjectConfigFile,
     writeProjectConfigFileExclusive,
  )
+import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (
     BinaryContext (..),
     Capability (..),
@@ -36,7 +58,6 @@ import HostBootstrap.Context (
     ContextFrame (..),
     ContextKind (..),
     ProviderKind (..),
-    ResourceEnvelope (..),
     TopologyFrame (..),
     commandAllowed,
  )
@@ -44,13 +65,14 @@ import HostBootstrap.DocValidator (findRepoRoot)
 import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeDirectory, removeFile)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 validConfig :: String
 validConfig = T.unpack (renderProjectConfig expected)
 
-expected :: ProjectConfig
+expected :: ProjectConfig ()
 expected =
     ProjectConfig
         { dockerfile = "docker/demo.Dockerfile"
@@ -80,7 +102,6 @@ expected =
                     , HostOrchestratorCommand
                     , ProjectCommand
                     ]
-                , resourceEnvelope = ResourceEnvelope 4 "8GiB" "20GiB"
                 , childContextKinds = [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
                 }
         , deploy = DeployConfig{haReplicas = 1}
@@ -97,7 +118,7 @@ tests =
             decoded <- decodeProjectConfigText (renderProjectConfig expected)
             decoded @?= expected
         , testCase "rendered test.dhall decodes back to the same TestConfig" $ do
-            let tc = defaultTestConfig ["pristine-bootstrap", "all"] (Resources 6 "10GiB" "80GiB")
+            let tc = defaultTestConfig (Resources 6 "10GiB" "80GiB")
             decoded <- decodeTestConfigText (renderTestConfig tc)
             decoded @?= tc
         , testCase "rendered config hoists each vocabulary union into a single let" $ do
@@ -113,14 +134,16 @@ tests =
                 "use sites reference the hoisted binding"
                 ("ContextKind.HostOrchestrator" `T.isInfixOf` rendered)
         , testCase "a malformed config fails with a typed error" $ do
-            result <- try (decodeProjectConfigText "{ dockerfile = \"x\" }") :: IO (Either SomeException ProjectConfig)
+            result <-
+                try (decodeProjectConfigText "{ dockerfile = \"x\" }") ::
+                    IO (Either SomeException (ProjectConfig ()))
             case result of
                 Left _ -> pure ()
                 Right s -> assertFailure ("expected a decode error, got " ++ show s)
         , testCase "a wrong-typed field fails with a typed error" $ do
             result <-
                 try (decodeProjectConfigText (toText badTypeConfig)) ::
-                    IO (Either SomeException ProjectConfig)
+                    IO (Either SomeException (ProjectConfig ()))
             assertBool "expected a decode error for haReplicas : Text" (isLeft result)
         , testCase "decodes the canonical example.dhall fixture" decodeFixture
         , testCase "validates the runtime context against the Cabal-derived project name" $ do
@@ -195,10 +218,10 @@ tests =
             (path, handle) <- openTempFile tmp "hostbootstrap-owned-config.dhall"
             hClose handle
             removeFile path
-            ownership <- writeProjectConfigFileExclusive path expected
-            ordinary <- try (writeProjectConfigFile path expected) :: IO (Either SomeException ())
+            ownership <- writeProjectConfigFileExclusive projectConfigCodec path expected
+            ordinary <- try (writeProjectConfigFile projectConfigCodec path expected) :: IO (Either SomeException ())
             assertBool "ordinary config writers must honor the ownership token" (isLeft ordinary)
-            second <- try (writeProjectConfigFileExclusive path expected >> pure ()) :: IO (Either SomeException ())
+            second <- try (void (writeProjectConfigFileExclusive projectConfigCodec path expected)) :: IO (Either SomeException ())
             assertBool "exclusive creation must not overwrite an existing path" (isLeft second)
             TIO.writeFile path "replacement\n"
             removal <- removeProjectConfigFileIfOwned path ownership
@@ -215,7 +238,7 @@ tests =
             (path, handle) <- openTempFile tmp "hostbootstrap-owned-config-bytes.dhall"
             hClose handle
             removeFile path
-            ownership <- writeProjectConfigFileExclusive path expected
+            ownership <- writeProjectConfigFileExclusive projectConfigCodec path expected
             original <- BS.readFile path
             let crlf = BS.concatMap (\byte -> if byte == 10 then "\r\n" else BS.singleton byte) original
             assertBool "test replacement changes only physical line endings" (crlf /= original)
@@ -227,6 +250,149 @@ tests =
             BS.readFile quarantined >>= (@?= crlf)
             removeFile quarantined
             removeDirectory lockPath
+        , testCase "secrets-strict production codec omits and rejects TestPlaintext" $ do
+            let cfg =
+                    SecretProjectConfig
+                        (context expected)
+                        (V.promptSecret "database password") ::
+                        SecretProjectConfig
+                            (V.Production SecretFixtureProject)
+            withProductionProjectCodec
+                @SecretFixtureProject
+                @SecretProjectConfig
+                ( \codec -> do
+                    assertBool
+                        "production project schema has no plaintext alternative"
+                        (not ("TestPlaintext" `T.isInfixOf` projectCodecSchemaText codec))
+                    let rendered = renderProjectCodecValue codec cfg
+                    decoded <-
+                        decodeProjectCodecWithSettings
+                            codec
+                            Dhall.defaultInputSettings
+                            rendered
+                    decoded @?= cfg
+                    admission <-
+                        withValidatedConfig codec cfg $ \verified validated -> do
+                            assertBool
+                                "production verification carries a digest"
+                                ("fnv64:" `T.isPrefixOf` verifiedConfigDigest verified)
+                            validatedConfigValue validated @?= cfg
+                    admission @?= Right ()
+                    let injected =
+                            V.withHarnessAuthority
+                                "injected-run"
+                                ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                                    withHarnessProjectCodec
+                                        @SecretFixtureProject
+                                        @SecretProjectConfig
+                                        (V.harnessConfigAuthority authority)
+                                        ( \harnessCodec ->
+                                            renderProjectCodecValue
+                                                harnessCodec
+                                                ( SecretProjectConfig
+                                                    (context expected)
+                                                    ( V.testPlaintextSecret
+                                                        (V.harnessConfigAuthority authority)
+                                                        (V.TestSecret "fixture")
+                                                    )
+                                                )
+                                        )
+                                )
+                    result <-
+                        try
+                            ( decodeProjectCodecWithSettings
+                                codec
+                                Dhall.defaultInputSettings
+                                injected
+                            ) ::
+                            IO
+                                ( Either
+                                    SomeException
+                                    ( SecretProjectConfig
+                                        (V.Production SecretFixtureProject)
+                                    )
+                                )
+                    assertBool
+                        "production project decode rejects plaintext before use"
+                        (isLeft result)
+                )
+        , testCase "matching harness authority admits plaintext and mints verified scoped config" $
+            V.withHarnessAuthority
+                "fixture-run"
+                ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                    withHarnessProjectCodec
+                        @SecretFixtureProject
+                        @SecretProjectConfig
+                        (V.harnessConfigAuthority authority)
+                        ( \codec -> do
+                            assertBool
+                                "harness schema admits the fixture-only alternative"
+                                ("TestPlaintext" `T.isInfixOf` projectCodecSchemaText codec)
+                            let cfg =
+                                    SecretProjectConfig
+                                        (context expected)
+                                        ( V.testPlaintextSecret
+                                            (V.harnessConfigAuthority authority)
+                                            (V.TestSecret "fixture-value")
+                                        )
+                            outcome <-
+                                withAssembledHarnessConfig
+                                    []
+                                    authority
+                                    codec
+                                    (pureConfigAssembly cfg)
+                                    ( \verified validated -> do
+                                        assertBool
+                                            "verified canonical bytes carry a digest"
+                                            ("fnv64:" `T.isPrefixOf` verifiedConfigDigest verified)
+                                        let SecretProjectConfig _ admitted =
+                                                validatedConfigValue validated
+                                        pure (V.secretRefView admitted)
+                                    )
+                            outcome
+                                @?= Right
+                                    (V.SecretTestPlaintext (V.TestSecret "fixture-value"))
+                        )
+                )
+        , testCase "ConfigAssembly reads only declared text inputs" $
+            withSystemTempDirectory "hostbootstrap-config-assembly" $ \dir -> do
+                let path = dir </> "test-secrets.dhall"
+                    declared = configInput path
+                    assembly = readConfigInput declared
+                TIO.writeFile path "fixture-secret"
+                undeclared <- runConfigAssembly [] assembly
+                assertBool
+                    "undeclared read is rejected"
+                    (either (T.isInfixOf "undeclared read" . T.pack) (const False) undeclared)
+                runConfigAssembly [declared] assembly
+                    >>= (@?= Right "fixture-secret")
+        , testCase "scope API removes the raw context updater and parallel config builders" $ do
+            cwd <- getCurrentDirectory
+            mroot <- findRepoRoot cwd
+            root <- maybe (assertFailure "could not locate repo root") pure mroot
+            classSource <-
+                readFile
+                    ( root
+                        </> "core"
+                        </> "hostbootstrap-core"
+                        </> "src"
+                        </> "HostBootstrap"
+                        </> "Config"
+                        </> "Class.hs"
+                    )
+            cliSource <-
+                readFile
+                    ( root
+                        </> "core"
+                        </> "hostbootstrap-core"
+                        </> "src"
+                        </> "HostBootstrap"
+                        </> "CLI.hs"
+                    )
+            assertBool "cfgWithContext stays absent" (not ("cfgWithContext" `isInfixOf` classSource))
+            assertBool "the project spec owns one assembler" ("psAssemble ::" `isInfixOf` cliSource)
+            assertBool "the old production builder stays absent" (not ("psInit ::" `isInfixOf` cliSource))
+            assertBool "the old harness builder stays absent" (not ("psTestConfig ::" `isInfixOf` cliSource))
         ]
   where
     badTypeConfig =

@@ -4,52 +4,61 @@
 **Supersedes**: N/A
 **Referenced by**: [../architecture/generic_project_model.md](../architecture/generic_project_model.md), [schema.md](schema.md), [testing.md](testing.md), [../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)
 
-> **Purpose**: Define the pure `SecretRef` vocabulary `hostbootstrap-core` offers so a project keeps
-> secrets out of its production `<project>.dhall`, and the `test-secrets` seam through which a project
-> injects test secrets without coupling core to any secret store.
+> **Purpose**: Define the scope-indexed `SecretRef` vocabulary `hostbootstrap-core` offers so plaintext
+> cannot inhabit a production config, and the declared `test-secrets` seam through which a project
+> injects Harness-only fixtures without coupling core to any secret store.
 
 ## TL;DR
 
-- A secrets-strict production `<project>.dhall` carries **secret pointers, never raw `Text`**. Core
-  offers a pure `SecretRef` union, but its `TestPlaintext` constructor is still representable in a
-  production-shaped value; excluding that constructor is currently a project code-check policy.
+- A secrets-strict production `<project>.dhall` carries **secret pointers, never raw `Text`**.
+  `SecretRef (Production projectId)` cannot contain `TestPlaintext`, and its reflected wire schema has
+  no plaintext branch.
 - Core **never resolves** a secret — it has no Vault, prompt, or KMS dependency. Resolution is the
   project's job, performed at use time, well after the config is decoded.
-- For tests, a project supplies a **project-specific** `test-secrets.dhall` (cleartext fixtures, git-ignored)
-  and weaves it into the test-time config inside `psTestConfig`, substituting `TestPlaintext` for its
-  production `Vault` pointers. The harness knows nothing about secrets.
-- The target separates production and harness secret types so `TestPlaintext` cannot decode into or
-  inhabit a production-scoped config. Phase 19 owns that migration.
+- For tests, a project may supply a **project-specific** `test-secrets.dhall` (cleartext fixtures,
+  git-ignored), declare it in `psAssemblyInputs`, and read it through restricted `ConfigAssembly`.
+  `TestPlaintext` construction requires the exact generative
+  `HarnessConfigAuthority projectId runId`; the generic harness never resolves it.
+- Root-local scope construction, mapped codec admission, and canonical config validation are
+  implemented. One-time child handoff, child-local plan authority, and runtime secret channels remain
+  downstream lifecycle work and must not be inferred from the root-local proof.
 
 ## Current Status
 
-The pure, unscoped `SecretRef` vocabulary is implemented in `hostbootstrap-core`. The development plan
-owns typed test identity and replacement with the scoped boundary below. It is mirrored in `Core.dhall`
-and `HostBootstrap.Config.Vocab`, with round-trip and explicit type-equality coverage. The demo
-does not need secrets, but the generic project model
+The scope-indexed `SecretRef` boundary is implemented in `hostbootstrap-core`.
+`HostBootstrap.Config.Vocab` hides secret and authority constructors, exposes pointer smart
+constructors at any scope, and admits plaintext only through matching Harness authority. `Core.dhall`
+exports distinct `ProductionSecretRef` and `HarnessSecretRef` wire types; mapped `ProjectCodec`s convert
+untrusted wire into the matching project-owned `cfg scope`. The demo does not need secrets, but the
+generic project model
 ([generic_project_model.md](../architecture/generic_project_model.md)) can host a secrets-strict consumer
 such as `~/prodbox`; resolving secrets remains that consumer's responsibility.
 
-## The `SecretRef` vocabulary
+## The scope-indexed `SecretRef` vocabulary
 
 ```dhall
-SecretRef =
+ProductionSecretRef =
   < Vault : { mount : Text, path : Text, field : Text }   -- a coordinate in a secret store
   | TransitKey : Text                                       -- a named transit/KMS key
   | Prompt : Text                                           -- resolved by interactive prompt
-  | TestPlaintext : Text                                    -- intended test-only; policy-enforced today
+  >
+
+HarnessSecretRef =
+  < Vault : { mount : Text, path : Text, field : Text }
+  | TransitKey : Text
+  | Prompt : Text
+  | TestPlaintext : Text
   >
 ```
 
-A project embeds `SecretRef` in its `cfg`. A raw plaintext string does not type-check where a
-`SecretRef` is required. `TestPlaintext` is nevertheless an inline-value constructor of that same union,
-reserved for the test-secrets seam below; a production config that uses it is currently a project-level
-code-check failure, not a state the core type excludes.
+A project embeds `SecretRef scope` in its `cfg scope`. A raw plaintext string does not type-check where a
+secret reference is required. The Dhall values above are untrusted wire types, not Haskell construction
+authority: the Production wire cannot express plaintext, and a Harness wire becomes scoped only when
+the matching mapped codec closes over exact run authority.
 
-## Scoped target
+## Implemented root-local scope boundary
 
-The target removes `TestPlaintext` from the production vocabulary and indexes project config by lifecycle
-scope:
+The implemented construction and root-local validation boundary is:
 
 ```haskell
 data Production projectId
@@ -66,83 +75,16 @@ data SecretRef scope where
 
 data ProjectConfig scope
 
-data ProductionConfigWire
-data HarnessConfigWire
-data RuntimeRoleWireBytes
+data ProductionSecretRefWire
+data HarnessSecretRefWire
 data ProjectCodec scope specDigest cfg -- constructor hidden
-data RoleCodec scope specDigest fields -- constructor hidden
-data FinalizedRuntimeSpec scope specDigest fields -- constructor hidden
-data VerifiedSecretBundle
-  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
-  fields service rolePlanDigest permittedEffects -- constructor hidden
-data ValidatedServiceRequest specDigest configId secretDigest fields service -- constructor hidden
-data VerifiedRuntimeRoleActivation
-  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
-  service rolePlanDigest permittedEffects
-  -- hidden; activation, projection, and protected secret-channel locator are inseparable
 data HarnessConfigAuthority projectId runId -- constructor hidden
 data VerifiedConfigWire scope configDigest configId -- constructor hidden
-data ConfigHandoff
-data VerifiedHandoff
-  scope planDigest brokerGeneration parentFrame childFrame
-  payloadKind payloadId verb phase -- constructor hidden
 data ValidatedConfig scope specDigest configId config -- constructor hidden
 
-rootHarnessConfigAuthority
+harnessConfigAuthority
   :: HarnessAuthority projectId runId
   -> HarnessConfigAuthority projectId runId
-
-handoffHarnessConfigAuthority
-  :: VerifiedHandoff
-       (Harness projectId runId) planDigest brokerGeneration parentFrame childFrame
-       ConfigHandoff configId verb phase
-  -> HarnessConfigAuthority projectId runId
-
-withProductionConfig
-  :: InstalledProjectIdentity projectId
-  -> ProjectCodec (Production projectId) specDigest ProjectConfig
-  -> ProductionConfigWire
-  -> (forall configId.
-        ValidatedConfig
-          (Production projectId) specDigest configId (ProjectConfig (Production projectId))
-        -> a)
-  -> Either ConfigError a
-
-withVerifiedProductionWire
-  :: HandoffGrant
-       (Production projectId) planDigest brokerGeneration parentFrame childFrame
-       ConfigHandoff configDigest verb phase
-  -> ProjectCodec (Production projectId) specDigest ProjectConfig
-  -> ProductionConfigWire
-  -> (forall configId.
-        VerifiedConfigWire (Production projectId) configDigest configId
-        -> VerifiedHandoff
-             (Production projectId) planDigest brokerGeneration parentFrame childFrame
-             ConfigHandoff configId verb phase
-        -> ValidatedConfig
-             (Production projectId) specDigest configId (ProjectConfig (Production projectId))
-        -> a)
-  -> Either ConfigError a
-
-withVerifiedHarnessWire
-  :: HandoffGrant
-       (Harness projectId runId) planDigest brokerGeneration parentFrame childFrame
-       ConfigHandoff configDigest verb phase
-  -> ProjectCodec (Harness projectId runId) specDigest ProjectConfig
-  -> HarnessConfigWire
-  -> (forall configId.
-        VerifiedConfigWire (Harness projectId runId) configDigest configId
-        -> VerifiedHandoff
-             (Harness projectId runId) planDigest brokerGeneration parentFrame childFrame
-             ConfigHandoff configId verb phase
-        -> HarnessConfigAuthority projectId runId
-        -> ValidatedConfig
-             (Harness projectId runId)
-             specDigest
-             configId
-             (ProjectConfig (Harness projectId runId))
-        -> a)
-  -> Either ConfigError a
 
 withAssembledHarnessConfig
   :: HarnessAuthority projectId runId
@@ -158,6 +100,35 @@ withAssembledHarnessConfig
              (cfg (Harness projectId runId))
         -> a)
   -> Either ConfigError a
+```
+
+`ProjectCfg projectId cfg` installs a Production mapped codec and, only inside a continuation carrying
+exact `HarnessConfigAuthority`, a Harness mapped codec. `withAssembledHarnessConfig` canonical-renders,
+hashes, strictly re-decodes, and checks byte-stable re-rendering before minting fresh rank-2
+`VerifiedConfigWire` and `ValidatedConfig` identities. There is no direct `FromDhall` instance for a
+secrets-strict scoped config, no raw context updater, and no conversion from Harness to Production.
+Pointer-only Harness configs remain Harness-indexed.
+
+## Downstream child and runtime target
+
+Root-local validation does not authorize a child process. The later handoff/runtime contract adds the
+following opaque relations; these names describe target APIs owned by the lifecycle phases:
+
+```haskell
+data RuntimeRoleWireBytes
+data RoleCodec scope specDigest fields -- constructor hidden
+data FinalizedRuntimeSpec scope specDigest fields -- constructor hidden
+data VerifiedSecretBundle
+  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
+  fields service rolePlanDigest permittedEffects -- constructor hidden
+data ValidatedServiceRequest specDigest configId secretDigest fields service -- constructor hidden
+data VerifiedRuntimeRoleActivation
+  scope planDigest specDigest binaryDigest frame revision instanceId configDigest secretDigest
+  service rolePlanDigest permittedEffects -- constructor hidden
+data ConfigHandoff
+data VerifiedHandoff
+  scope planDigest brokerGeneration parentFrame childFrame
+  payloadKind payloadId verb phase -- constructor hidden
 
 withVerifiedRuntimeSecretBundle
   :: VerifiedRuntimeRoleActivation
@@ -201,33 +172,11 @@ withVerifiedHarnessRuntimeRoleWire
   -> Either ConfigError a
 ```
 
-Constructors and `HarnessAuthority` are opaque. Generative authority is never serialized, so
-`FromDhall` does **not** construct `TestPlaintext` or a scoped harness config directly. The reflected
-production wire schema contains only `Vault | TransitKey | Prompt`; `withProductionConfig` supplies only
-`ProjectConfig (Production projectId)` inside a fresh
-`ValidatedConfig (Production projectId) specDigest configId
-(ProjectConfig (Production projectId))` continuation. That
-rank-2 decoder is for an independently authorized root-local config; it does not invent a matching
-identity for a child handoff. `withVerifiedProductionWire` instead verifies the child bytes against the
-grant's exact `configDigest`, creates the fresh child `configId` inside its continuation, and returns both
-the opaque verified wire and same-`specDigest` `ValidatedConfig` under that identity.
-
-A separate untrusted `HarnessConfigWire` may contain inline fixture payloads.
-Only `withVerifiedHarnessWire` verifies the grant, run scope, and actual bytes; it mints the same generic
-`VerifiedConfigWire (Harness projectId runId) configDigest configId` used by every scope, the exact
-`VerifiedHandoff`, a child-local
-`HarnessConfigAuthority projectId runId`, and the corresponding
-`ValidatedConfig (Harness projectId runId) specDigest configId
-(ProjectConfig (Harness projectId runId))` together inside one rank-2
-continuation. The child does not need the root's non-serializable `HarnessAuthority` before it can verify
-the handoff. Root-side pure `psTestMatrix` never receives authority or secrets. After a fresh run opens,
-the restricted `psAssemble (HarnessAssembly authority draft)` constructs only that run's scoped value;
-`withAssembledHarnessConfig` then uses the same validated project codec to canonical-render, hash, and
-strictly re-decode it. The gate jointly yields the root-local verified wire identity and
-`ValidatedConfig` required by `withProjectPlan`, without requiring a child handoff and without
-authorizing an external effect. Neither authority form can mint Production. Raw wire cannot be promoted, the
-narrowed child's `configId` is not the parent's identity, and a pointer-only harness config remains
-Harness-indexed.
+The downstream constructors are also intended to remain opaque. Generative authority must never be
+serialized, and direct `FromDhall` must not construct `TestPlaintext` or a scoped Harness config. A
+future child verifies its granted bytes, mints a fresh child `configId`, and obtains child-local Harness
+config authority and `ValidatedConfig` together; it does not receive or reconstruct the root's
+`HarnessAuthority`. The narrowed child's identity is distinct from the parent's exact-byte identity.
 
 A controller restart does not replay `ConfigHandoff`. Its independently installed, signed deployment
 manifest binds project/run scope, parent-plan digest, frame, immutable rollout revision, exact
@@ -255,13 +204,13 @@ Kubernetes Secret object or private OS channel is the sole secret-bearing runtim
 payload. No cleartext fixture appears in the non-secret ConfigMap, pod template, signed activation
 manifest, `LocalContextView`, logs, or diagnostic output.
 
-Image-build config is not a third secret scope. The build-session verifier decodes a
+In the downstream target, image-build config is not a third secret scope. The build-session verifier decodes a
 `ProductionConfigWire` as `ProjectConfig (Production projectId)` and binds the installed project,
 config digest, exact `buildId`, and measured source/context digest before yielding build-only
 authority. It has no `TestPlaintext` constructor.
 
-Production commands require `ProjectConfig (Production projectId)`, while `test run` can mint only the
-matching `ProjectConfig (Harness projectId runId)`. There is no unscoped union, direct harness
+Production commands currently require `cfg (Production projectId)`, while `test run` can mint only the
+matching `cfg (Harness projectId runId)`. There is no unscoped union, direct Harness
 `FromDhall` instance, raw-wire promotion, or
 record update that can move `TestPlaintext` into production, promote a different payload with a valid
 run authority, or move one harness run into another.
@@ -295,25 +244,25 @@ standing up the real secret store. That is a **project-specific** file — for e
 }
 ```
 
-The project's `psTestConfig :: tcfg -> IO [(Text, cfg)]` (see
-[generic_project_model.md](../architecture/generic_project_model.md)) reads it and substitutes
-`TestPlaintext` for the `Vault` pointers when building the current unscoped test-time
-`<project>.dhall`:
+A project declares this path in `psAssemblyInputs`. Its typed restricted `psAssemble` (see
+[generic_project_model.md](../architecture/generic_project_model.md)) may read it only during
+`HarnessAssembly`, then use the request's matching authority to substitute `TestPlaintext` for selected
+production pointers:
 
 ```text
-current:
-test run : <project>.test.dhall + test-secrets.dhall --psTestConfig--> cfg (Vault pointers -> TestPlaintext)
+implemented root flow:
+test run : <project>.test.dhall --pure matrix validation--> NonEmpty VariantDraft
+             --open one fresh run for this distinct variant-->
+             HarnessAuthority projectId runId
+             + declared test-secrets.dhall --restricted psAssemble HarnessAssembly-->
+             cfg (Harness projectId runId)
+             --matching mapped ProjectCodec + withAssembledHarnessConfig-->
+             VerifiedConfigWire + ValidatedConfig
              --write--> <project>.dhall --project up--> assert --project destroy
              --cleanup--> delete only if the owned bytes still match; otherwise retain and report
 
-target:
-test inputs --pure matrix validation--> NonEmpty VariantDraft
-             --open one fresh run/lease for this distinct variant-->
-             HarnessAuthority projectId runId
-             --restricted psAssemble (HarnessAssembly authority draft)-->
-             ProjectConfig (Harness projectId runId)
-             --withAssembledHarnessConfig / ProjectCodec-->
-             VerifiedConfigWire + ValidatedConfig --build/bind root plan-->
+downstream target:
+root ValidatedConfig --build/bind root plan-->
              HarnessConfigWire
              --one-time ConfigHandoff grant + exact-byte verification-->
              VerifiedConfigWire + VerifiedHandoff + child HarnessConfigAuthority
@@ -322,11 +271,12 @@ test inputs --pure matrix validation--> NonEmpty VariantDraft
              --authorizeChildProject--> child
 ```
 
-Core stays secret-agnostic: it offers the `SecretRef` shape and, currently, calls `psTestConfig`;
+Core stays secret-agnostic: it offers the scope-indexed `SecretRef` shape, mapped-codec boundary, and
+restricted assembler;
 everything about
 where secrets live, how they unseal, and which fixtures stand in for them is the project's concern. This is
-why the generic `ProjectSpec cfg tcfg` (rather than a fixed `ProjectConfig`) is required — a
-secrets-strict consumer's `cfg` is a different shape. In the target, `psTestMatrix` validates a pure
+why the generic `ProjectSpec projectId cfg tcfg` (rather than a fixed `ProjectConfig`) is required — a
+secrets-strict consumer's `cfg scope` is a different shape. `psTestMatrix` validates a pure
 matrix of stable variant drafts, while restricted `psAssemble` injects each variant's test secrets only
 after the harness has opened that variant's fresh project/run-scoped authority. Its
 `ConfigAssembly` effect can perform only declared config/secret reads and has no general `IO` or
@@ -334,7 +284,7 @@ lifecycle/backend mutation capability.
 
 ## Cross-references
 
-- [../architecture/generic_project_model.md](../architecture/generic_project_model.md) — `ProjectSpec cfg
-  tcfg` and `psTestConfig`, the seam this doc plugs into.
+- [../architecture/generic_project_model.md](../architecture/generic_project_model.md) —
+  `ProjectSpec projectId cfg tcfg` and `psAssemble`, the seam this doc plugs into.
 - [testing.md](testing.md) — the standardized harness that drives the generated config.
 - [schema.md](schema.md) — the project-defined, explicit config schema `SecretRef` fields live in.

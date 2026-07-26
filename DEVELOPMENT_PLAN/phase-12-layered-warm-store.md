@@ -1,200 +1,192 @@
-# Phase 12: Layered warm store
+# Phase 12: Opportunistic Cabal warm store
 
 **Status**: Authoritative source
-**Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md), [phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md), [phase-8-dhall-generation-and-extension.md](phase-8-dhall-generation-and-extension.md)
+**Supersedes**: The layered-freeze and reproducible-base form of this phase
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[system-components.md](system-components.md),
+[phase-6-base-image-and-thin-python-bootstrapper.md](phase-6-base-image-and-thin-python-bootstrapper.md),
+[phase-13-hostbootstrap-demo.md](phase-13-hostbootstrap-demo.md)
 
-> **Purpose**: Split the warm Cabal store freeze by library layer so the non-daemon compute CLI is not
-> coupled to the daemon dependency closure, generate both freezes in-image (never committed), and add the
-> `purescript-bridge` dependency the demo's web build needs.
+> **Purpose**: Populate the rolling base image with a broad best-effort Cabal cache while keeping one
+> ordinary, host-compatible consumer project for host-native and container builds.
 
 ## Phase Status
 
-**Status**: Blocked
-**Blocked by**: Sprint 6.7
+**Status**: Done
 
-**Reopened 2026-07-24.** Sprint 12.4 owns the missing host/container Cabal-project split and mutable,
-unverified warm-store inputs. Earlier freeze-partition validation remains historical evidence.
-
-The warm-store freeze is **layered and in-image-generated**. The warm-store package is split into two
-layer manifests under `core/warm-deps/` — `basecontainer-core-deps.cabal` (base + the
-`hostbootstrap-core` closure + the shared web-build extras: `purescript-bridge` and the web-server stack
-`warp`/`wai*`/`network`/`http-types`/`websockets`) and `basecontainer-daemon-deps.cabal` (the
-daemon-family deps: Redis/Postgres/proto/secure-WS-client — `hedis`, `postgresql-simple`, `proto-lens*`,
-`wuss`). `cabal.project` builds the single shared store from both; the base build then projects it per
-layer — `cabal freeze --project-file=core.project` → `core.freeze` and `--project-file=daemon.project` →
-`daemon.freeze` (all three project files `import: warm-store.config`, so the freezes are projections of
-one store). `mcts` and any L0-direct consumer (the demo) import only `core.freeze` and are not coupled to
-the daemon closure; a daemon app imports both. The membership of the shared web-server packages
-(`warp`/`wai*`/`network`) — the question this layering had to settle — is **resolved into `core.freeze`**;
-`http-client*` is in `core.freeze` too (pulled into the core closure by `dhall`'s remote-import support).
-
-The split is **validated**: both freezes are produced with the correct partition — `core.freeze` pins no
-daemon-distinctive package (`hedis`/`postgresql-simple`/`proto-lens*`/`wuss`) while `daemon.freeze` does,
-and a `cabal build --dry-run` of `hostbootstrap-core` importing only `core.freeze` resolves with no
-daemon package in the plan — confirmed both on the host `ghc-9.12.4` toolchain and in a real `ghc-9.12.4`
-container running the exact in-image freeze step. The freezes are never committed
-(`.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`, `daemon.freeze`, and the
-`*.project.freeze` intermediates), and `purescript-bridge` is in the `core.freeze` manifest (Sprint 12.3).
-The published `basecontainer-<flavor>-<arch>` tag's full warm-store compile (every package built at
-`-O2`) is produced by the operator's `base build-and-push` — the same real-build standard Phases 5/10/11
-follow (see [development_plan_standards.md § V](development_plan_standards.md)).
+Sprint 12.4 reconciled the repository from the short-lived locked-input/layered-freeze design to the
+rolling policy on 2026-07-25. Sprints 12.1–12.3 remain historical implementation evidence; their freeze
+projection and guaranteed-hit claims are explicitly superseded.
 
 ## Remaining Work
 
-Sprint 12.4 is Blocked by Sprint 6.7. After the corrected native publish/pull/digest gate exists, split
-the reusable host-native and container Cabal projects, eliminate container-only freeze imports from host
-builds, pin mutable warm-store inputs, and make the documented library ways/cache reuse observable. Its
-closure rebuilds, republishes, pulls, and validates the changed warm-store image through that gate. The
-preceding paragraphs describe the earlier layered-freeze work, not closure of this sprint.
+None. A fresh registry publication and live real-consumer compatibility smoke remain operator evidence
+for the next authorized publish, not a completion requirement for this no-publish policy correction.
 
 ## Phase Objective
 
-Make the warm-store freeze layered and in-image-generated so cache-hit and version-pinning track the
-library layers, and add `purescript-bridge` so derived projects with a PureScript web build hit the warm
-store.
+The base build intentionally discovers current/latest compatible upstream versions. It warms a broad
+Cabal store from maintainable dependency manifests, but the store is a performance optimization only.
+Consumers use one `cabal.project` unchanged on the host and in a derived container. They do not import
+base-owned freezes or project fragments, and a missing or incompatible store artifact may be resolved,
+downloaded, and compiled normally.
+
+TLS and integrity metadata remain desirable for direct downloads where practical. They do not create a
+committed input-lock or replayability contract. Neither an offline build nor a complete cache hit is a
+phase acceptance requirement.
 
 ## Sprints
 
-### Sprint 12.1: Freeze fragmentation [Done]
+### Sprint 12.1: Broad warm-store manifests [Done, historical]
 
-**Status**: Done
-**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`, `core/warm-deps/daemon/basecontainer-daemon-deps.cabal`, `core/warm-deps/{cabal,core,daemon}.project`, `core/warm-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
-**Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/base_image.md`
+**Status**: Done, historical
+**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`,
+`core/warm-deps/daemon/basecontainer-daemon-deps.cabal`, `core/warm-deps/cabal.project`,
+`core/warm-deps/warm-store.config`, `docker/basecontainer.Dockerfile`
+**Docs to update**: `documents/engineering/warm_store.md`,
+`documents/engineering/base_image.md`
 
 #### Objective
 
-Split the single freeze into per-layer fragments.
+Collect the shared/core/web and daemon-family dependency sets into explicit build-only packages so a
+base build can populate one Cabal store.
 
 #### Deliverables
 
-- `/opt/basecontainer/haskell-deps/core.freeze` (base + `hostbootstrap-core` closure + the shared
-  web-build extras; imported by `mcts` and `daemon-substrate`) and `daemon.freeze`
-  (Redis/Postgres/proto/secure-WS-client; imported only by daemon apps). The warm-store package is two
-  layer manifests (`basecontainer-core-deps.cabal` / `basecontainer-daemon-deps.cabal`); `core.project`
-  and `daemon.project` project the shared store into the two freezes. Each project's `cabal.project`
-  imports only the fragment(s) for its layer.
+- The two manifest packages remain organizational cache-population inputs.
+- Their names do not define consumer layers, freezes, or public version contracts.
+- `cabal.project` builds both manifests into the same store with the intended compilation ways.
 
 #### Validation
 
-- **Done.** `cabal freeze --project-file=core.project` and `--project-file=daemon.project` produce the
-  two freezes; `core.freeze` pins no daemon-distinctive package (`hedis`/`postgresql-simple`/
-  `proto-lens*`/`wuss`) while `daemon.freeze` does; a `cabal build --dry-run` of `hostbootstrap-core`
-  importing only `core.freeze` resolves with **no** daemon package in the plan. Confirmed on the host
-  `ghc-9.12.4` toolchain and in a `ghc-9.12.4` container.
+Manifest syntax and dependency coverage were validated in the original sprint. Sprint 12.4 revalidates
+the retained single-project form.
 
 #### Remaining Work
 
-None. The published base tag's full warm-store compile (every package built at `-O2`) is produced by the
-operator's `base build-and-push`.
+None. The later per-layer freeze projections were removed by Sprint 12.4.
 
-### Sprint 12.2: In-image generation, never committed [Done]
+### Sprint 12.2: Consumer-layer freeze projection [Superseded]
 
-**Status**: Done
-**Implementation**: `.dockerignore`, `.gitignore`, `docker/basecontainer.Dockerfile`
-**Docs to update**: `documents/engineering/warm_store.md`, `documents/engineering/gitignore_guardrails.md`
+**Status**: Superseded by Sprint 12.4
+**Implementation**: Historical `core.project`, `daemon.project`, `core.freeze`, and `daemon.freeze`
+projection
+**Docs to update**: `legacy-tracking-for-deletion.md`
 
 #### Objective
 
-Generate both freezes in-image and stop the (incorrect) commit instruction.
+Historical objective: project separate core and daemon freeze fragments from the shared store.
 
 #### Deliverables
 
-- The freezes are produced by `cabal freeze --project-file=…` during the base build and written into the
-  image; none is committed — `.gitignore`/`.dockerignore` exclude `cabal.project.freeze`, `core.freeze`,
-  `daemon.freeze`, and the `*.project.freeze` intermediates. The dep-addition workflow rebuilds the base
-  tags instead of committing a freeze (the "commit the freeze" claim is fixed in `warm_store.md`).
+None current. Consumer freeze fragments and their project files are deletion obligations because the
+base store is not a solver API.
 
 #### Validation
 
-- **Done.** `git ls-files` shows no committed freeze. A `ghc-9.12.4` container running the exact in-image
-  step (`cabal update` + `cabal freeze --project-file=core.project` + `--project-file=daemon.project` +
-  `mv` to `core.freeze`/`daemon.freeze`) produces both freezes at the working path with the correct
-  partition. The published base tag carrying them at `/opt/basecontainer/haskell-deps/` is produced by
-  the operator's `base build-and-push`.
+Historical freeze-partition checks are not current acceptance evidence.
+
+#### Remaining Work
+
+None beyond Sprint 12.4's deletion and documentation record.
+
+### Sprint 12.3: Expand the shared web dependency set [Done, historical]
+
+**Status**: Done, historical
+**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`
+**Docs to update**: `documents/engineering/warm_store.md`
+
+#### Objective
+
+Include the real demo/core web-build dependencies in the broad warm-store population set.
+
+#### Deliverables
+
+- `purescript-bridge` and the shared web stack remain represented in the cache-population manifest.
+- Presence in the manifest is a best-effort optimization and does not guarantee a consumer cache hit.
+
+#### Validation
+
+The manifest was solver-valid at landing. Sprint 12.4 validates the retained project and fast consumer
+builds without an offline/full-hit requirement.
 
 #### Remaining Work
 
 None.
 
-### Sprint 12.3: `purescript-bridge` in the warm store [Done]
+### Sprint 12.4: Rolling inputs, one consumer project, and graceful cache misses [Done]
 
 **Status**: Done
-**Implementation**: `core/warm-deps/core/basecontainer-core-deps.cabal`
-**Docs to update**: `documents/engineering/warm_store.md`, `documents/languages/purescript.md`
+**Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/cli.py`,
+`docker/basecontainer.Dockerfile`, `core/warm-deps/cabal.project`,
+`core/warm-deps/warm-store.config`, `demo/cabal.project`, `demo/docker/Dockerfile`,
+`tests/test_base_image.py`, `tests/test_warm_store.py`, `tests/test_cli.py`
+**Docs to update**: `README.md`, `documents/README.md`,
+`documents/architecture/build_and_run_model.md`, `documents/engineering/base_image.md`,
+`documents/engineering/build_release.md`, `documents/engineering/cabal_layout.md`,
+`documents/engineering/derived_dockerfile.md`,
+`documents/engineering/derived_project_standards.md`,
+`documents/engineering/warm_store.md`, relevant language/runbook documents,
+`development_plan_standards.md`, `00-overview.md`, `README.md`, `system-components.md`,
+Phases 6/11/13/21, and `legacy-tracking-for-deletion.md`
 
 #### Objective
 
-Warm the Haskell library the demo's web build uses to generate PureScript types.
+Remove the reproducible-base and layered-freeze doctrine while preserving native architecture checks,
+source gates, the rolling published-tag pull workflow, and useful warm-store performance.
 
 #### Deliverables
 
-- `purescript-bridge` added to the **`core.freeze`** manifest (it is a shared web-build dependency an
-  L0-direct web consumer like the demo needs, not part of the daemon closure; `core.freeze`'s scope is
-  therefore base + `hostbootstrap-core` closure + the shared web-build extras) so a derived project's
-  project-image build can run its `purescript-bridge` type-generation stage against the warm store. The
-  removed `web bridge` command is not a current runtime surface.
+- `base_image.py` resolves current compatible upstream versions and URLs during each build workflow.
+  CPU builds use the rolling Ubuntu parent; CUDA builds select the latest compatible native-architecture
+  CUDA parent.
+- No committed `docker/base-inputs.json` or equivalent version replay manifest exists.
+- The Dockerfile installs current/recommended Haskell and stable Rust toolchains plus current compatible
+  package-manager tools, over TLS and with available direct-download integrity checks where practical.
+- `core/warm-deps/cabal.project` is the only warm-store project. It builds both organizational manifests
+  into one Cabal store and generates no consumer freeze.
+- `demo/cabal.project` is used unchanged for host-native and container builds. The demo Dockerfile does
+  not copy or swap a container-specific project and does not force `--offline`.
+- The synthetic offline/freeze verifier and reusable host/core-container/daemon-container templates are
+  removed.
+- After an operator-authorized publish, the workflow pulls the rolling tag and builds the real demo
+  Dockerfile as a compatibility smoke. A resolved digest may bind that build invocation but is not
+  reproducibility evidence or a consumer contract.
+- Focused tests prove dynamic resolution, one-project use, absence of freeze imports/project swapping,
+  and the fact that normal online solving remains available on cache misses.
 
 #### Validation
 
-- `purescript-bridge` is present in the `core.freeze` manifest
-  (`core/warm-deps/core/basecontainer-core-deps.cabal`) and is pinned in the generated `core.freeze`
-  (verified in the host and in-container freeze runs), so a project depending on it builds with a
-  warm-store cache hit (the full cache hit is validated by a base-image build).
+Validated 2026-07-25:
+
+- `poetry run python -m hostbootstrap.check_code`
+- `poetry run python -m coverage run -m hostbootstrap.test_all`
+- `poetry run python -m coverage report -m` at the configured 100% threshold
+- `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`
+- the same fast build/test commands from `demo/`
+- governed-document stale-doctrine search covering locks, templates, container-only projects, freeze
+  imports, reproducibility, mandatory offline builds, and guaranteed cache hits
+
+Results: Python code checks passed; 220 Python tests passed at 100% statement coverage; core built under
+`-Werror` and all 382 tests passed; demo built under `-Werror` and its 101 tests plus the embedded 382
+core tests passed. Live release metadata resolved CPU/arm64 inputs (Go 1.26.5, Node v24.18.0,
+PureScript v0.15.16, kind v0.32.0, kubectl v1.36.3, Helm v4.2.3, Pulumi v3.254.0) and selected
+`nvidia/cuda:13.3.0-cudnn-devel-ubuntu24.04` for CUDA/arm64.
+
+An actual base rebuild/publish/pull/live compatibility smoke is pending operator-facing evidence because
+this sprint was not authorized to publish. It was not substituted with a local same-named image or an
+offline synthetic proof.
 
 #### Remaining Work
 
-None. `purescript-bridge` is in the `core.freeze` manifest.
-
-### Sprint 12.4: Host/container project split and reproducible warm store [Blocked]
-
-**Status**: Blocked
-**Blocked by**: Sprint 6.7
-**Implementation**: `demo/cabal.project`, `demo/docker/container.cabal.project`,
-`core/warm-deps/cabal.project`, `core/warm-deps/core.project`, `core/warm-deps/daemon.project`,
-`core/warm-deps/core/basecontainer-core-deps.cabal`,
-`core/warm-deps/daemon/basecontainer-daemon-deps.cabal`, `docker/basecontainer.Dockerfile`
-**Docs to update**: `documents/engineering/warm_store.md`,
-`documents/engineering/base_image.md`, `documents/architecture/build_and_run_model.md`,
-`legacy-tracking-for-deletion.md`
-
-#### Objective
-
-Make the documented Cabal project layout work both host-native and in the Linux project container, while
-making every warm-store input reproducible and every optimization claim observable.
-
-#### Deliverables
-
-- Define separate host-native and container Cabal project files: only the container project imports
-  `/opt/basecontainer/.../core.freeze` and optional `daemon.freeze`; the host project contains no
-  container-only absolute path.
-- Update the generic consumer template to match the proven demo split and test both solver contexts.
-- Pin or integrity-lock every network-resolved warm-store tool/input, including `nvkind`, installer
-  scripts, pip/Poetry/npm tools, and Rust components; no `latest` or unversioned install counts as pinned.
-- Mechanically verify that the documented vanilla/dynamic shared-library ways match the generated store;
-  profiling remains explicitly off unless a future input enables and validates it. Verify each layer's
-  consumer actually reuses its intended artifacts.
-
-#### Validation
-
-- Clean host-native and pulled-base container builds solve independently from their respective project
-  files, including core-only and daemon-layer consumers.
-- A reproducibility test records resolved versions/digests and fails on mutable or missing integrity
-  metadata.
-- A dry-run/build-plan comparison proves cache reuse and the exact library ways present.
-
-#### Remaining Work
-
-Land the project-file split in the reusable template, pin the mutable warm-store inputs, reconcile build
-ways, rebuild/publish/pull the affected base through Phase 6, and validate both solver contexts.
+None.
 
 ## Documentation Requirements
 
-**Engineering docs to create/update:**
-- `documents/engineering/warm_store.md` - rewritten to the layered, in-image, never-committed freeze and
-  the `core.freeze`/`daemon.freeze` split; FIX the "commit the freeze" claim.
-- `documents/engineering/base_image.md` - the four single-arch tags and the layered warm store.
-- `documents/engineering/gitignore_guardrails.md` - the freezes are gitignored/dockerignored by design.
-
-**Cross-references to add:**
-- `system-components.md` splits the warm-store row into `core.freeze`/`daemon.freeze`.
+- Engineering and architecture documents describe rolling selection, the one-project consumer path,
+  and opportunistic cache semantics as current behavior.
+- Historical locked/freeze surfaces are named only in the cleanup ledger or explicitly marked
+  superseded history.
+- Examples never import `/opt/basecontainer/...` project/freeze files and never promise offline or
+  complete-hit behavior.
+- Publication documentation distinguishes a rolling tag and per-build digest from reproducible inputs.

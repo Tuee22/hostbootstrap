@@ -4,16 +4,14 @@
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [warm_store.md](warm_store.md), [../languages/haskell.md](../languages/haskell.md)
 
-> **Purpose**: State the target rule that every image build, base or derived, gates on the project's
-> canonical code-check, and distinguish that doctrine from the base image's incomplete current preflight.
+> **Purpose**: State the rule that every image build, base or derived, gates on the applicable canonical
+> source checks.
 
 ## TL;DR
 
-- The target is one fail-fast canonical code-check before any base or derived image can be produced.
+- The base publisher runs the Python/core/demo source gates before Docker; derived images run their
+  project binary's canonical code-check.
 - Derived images invoke the project binary's project-owned `check-code` body.
-- The base image does not yet satisfy the full target: its host preflight checks Python and its
-  Dockerfile smoke checks installed Haskell tools/sample sources, but repository Haskell source and
-  tests are not part of that preflight.
 
 Code quality is a **build-time guardrail**, distinct from behavioral tests. Under the finished doctrine,
 every image this repo produces fails its build if the applicable canonical code-check fails.
@@ -28,16 +26,15 @@ This applies in two places:
 
 | Image | Where the check runs | Command |
 |---|---|---|
-| Base | Host preflight + Dockerfile smoke | **Current:** Python `ruff`/`black`/`mypy` only, then an in-image Haskell-tool smoke. **Target:** add the full Haskell source gate before Docker. |
+| Base | Host preflight + Dockerfile smoke | Python checks/tests and core/demo Cabal build/tests with `-Werror`, then an in-image Haskell-tool smoke |
 | Derived | Dockerfile RUN step | `<project> check-code` — the inherited core verb whose body is project-defined |
 
 ## Base image
 
-The base image currently has two checks, but they do not amount to the claimed full source gate:
+The base image has two complementary checks:
 
-* **Host pre-flight.** Building a base tag currently runs only
-  `python -m hostbootstrap.check_code` (`ruff`, `black`, `mypy`) before `docker build`. It does not run
-  the Haskell formatter/linter/build/test gate.
+* **Host pre-flight.** Building a base tag runs Python checks/tests and core/demo Cabal build/tests with
+  `-Werror` before `docker build`; the Haskell tests include governed documentation validation.
 * **In-Dockerfile smoke.** After the warm Cabal store is built (the base bakes
   **no** `hostbootstrap` binary — see [base_image.md](base_image.md)), a single
   `RUN` step verifies that `fourmolu` and `hlint` actually start (catching install
@@ -46,9 +43,8 @@ The base image currently has two checks, but they do not amount to the claimed f
   [`core/warm-deps/daemon/app/`](../../core/warm-deps/daemon/app/)
   (catching sample drift).
 
-The in-Dockerfile smoke cannot substitute for testing the repository's Haskell sources. The target
-preflight runs Python checks/tests and the canonical Haskell check/tests (including documentation
-validation) before Docker or push. See [build and release](build_release.md).
+The in-Dockerfile smoke cannot substitute for testing the repository's Haskell sources; both layers are
+required. See [build and release](build_release.md).
 
 ## Derived images
 
@@ -79,15 +75,14 @@ the project binary through a tini-wrapped `ENTRYPOINT`, so the binary receives
 project arguments rather than a raw container command.
 
 For a conforming derived project, the container image is the canonical artifact: if it exists, the
-project-defined source gate passed during its build. This implication does not yet extend to the
-repository Haskell sources merely because a base image exists.
+project-defined source gate passed during its build. For a base publication, the host-side repository
+source gate precedes the Docker build.
 
 ## Current Status
 
-Derived project Dockerfiles carry the project-binary `check-code` gate. The base build currently runs
-the narrower Python host preflight and the in-image Haskell-tool/sample smoke described above. The
-development plan owns the missing full Haskell repository gate; implementation state and evidence are
-kept there rather than duplicated here.
+Derived project Dockerfiles carry the project-binary `check-code` gate. The base publisher runs the
+Python/core/demo source preflight and the Dockerfile retains the Haskell-tool/sample smoke described
+above. Live publication evidence and implementation status remain in the development plan.
 
 ## WRONG vs RIGHT
 

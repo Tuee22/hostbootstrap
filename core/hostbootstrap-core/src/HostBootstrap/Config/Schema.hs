@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The project-local @<project>.dhall@ filename logic and the **generic**
@@ -10,10 +11,10 @@ commands read a sibling project config, validate the runtime context inside
 it, and then dispatch.
 
 The core is generic over a project's config type ('ProjectCfg'): it never
-names a concrete config record. It decodes/encodes the sibling config via
-@FromDhall@/@ToDhall@ and reaches the embedded runtime context through
-'cfgContext'. A project owns its actual config shape (the @<project>.dhall@
-record) in its own module.
+names a concrete config record. It decodes/encodes the sibling config through
+the project's validated 'CodecWitness' and reaches the embedded runtime
+context through 'cfgContext'. A project owns its actual config shape (the
+@<project>.dhall@ record) in its own module.
 -}
 module HostBootstrap.Config.Schema (
     -- * Filename logic (generic)
@@ -29,9 +30,19 @@ module HostBootstrap.Config.Schema (
     -- * Generic config IO
     writeProjectConfigFile,
     writeProjectConfigFileExclusive,
+    writeScopedProjectConfigFile,
+    writeScopedProjectConfigFileExclusive,
     removeProjectConfigFileIfOwned,
     requireSiblingProjectConfig,
     withSiblingProjectConfigContext,
+    withSiblingValidatedProjectConfigContext,
+    withSiblingProjectConfigRoot,
+    VerifiedConfigWire,
+    verifiedConfigDigest,
+    ValidatedConfig,
+    validatedConfigValue,
+    withValidatedConfig,
+    withAssembledHarnessConfig,
 
     -- * Validation
     validateProjectConfigForProject,
@@ -54,19 +65,31 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
-import HostBootstrap.Config.Class (ProjectCfg (..))
+import HostBootstrap.Config.Class (
+    ConfigAssembly,
+    ConfigInput,
+    ProjectCfg (..),
+    ProjectCodec,
+    decodeProjectCodecWithSettings,
+    renderProjectCodecHoisted,
+    runConfigAssembly,
+ )
+import HostBootstrap.Config.Vocab (Harness, HarnessAuthority)
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Dhall.Gen (
+    CodecWitness,
+    renderHoistedValue,
+ )
 import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
     ProjectRootError (..),
-    canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
-import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric (showHex)
 import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, doesPathExist, removeDirectory, removeFile, renameFile)
 import System.Environment (getExecutablePath)
-import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.Exit (ExitCode (ExitFailure), die, exitWith)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
 
@@ -133,18 +156,21 @@ parseConfigRole raw =
   where
     normalise = T.replace "_" "-" . T.toLower . T.strip
 
-{- | Write any @ToDhall@ config value (a project config or a test config) as
-deterministic Dhall source via its @ToDhall@ embedding. The repeated vocabulary
-unions are hoisted into top-level @let@ bindings (shared with
+{- | Write a config value (a project config or a test config) as deterministic
+Dhall source via its validated codec. The repeated vocabulary unions are
+hoisted into top-level @let@ bindings (shared with
 'Context.renderContext' via 'Context.vocabUnions') so the generated config
 stays compact and standalone.
 -}
-writeProjectConfigFile :: (Dhall.ToDhall cfg) => FilePath -> cfg -> IO ()
-writeProjectConfigFile path cfg =
-    mask $ \restore -> do
-        lockPath <- claimConfigWriteLock path
-        restore (BS.writeFile path (renderProjectConfigBytes cfg))
-            `finally` removeDirectory lockPath
+writeProjectConfigFile :: CodecWitness cfg -> FilePath -> cfg -> IO ()
+writeProjectConfigFile codec path cfg =
+    codec `seq`
+        mask
+            ( \restore -> do
+                lockPath <- claimConfigWriteLock path
+                restore (BS.writeFile path (renderProjectConfigBytes codec cfg))
+                    `finally` removeDirectory lockPath
+            )
 
 data ProjectConfigOwnership = ProjectConfigOwnership
     { ownedPath :: FilePath
@@ -157,18 +183,55 @@ directory is the ownership token: directory creation is exclusive on every
 supported platform, so concurrent harnesses cannot both pass the absence
 check. The token remains for the bracket lifetime and is consumed by cleanup.
 -}
-writeProjectConfigFileExclusive :: (Dhall.ToDhall cfg) => FilePath -> cfg -> IO ProjectConfigOwnership
-writeProjectConfigFileExclusive path cfg =
-    mask $ \restore -> do
-        let payload = renderProjectConfigBytes cfg
-        lockPath <- claimConfigWriteLock path
-        present <- restore (doesPathExist path) `onException` removeDirectory lockPath
-        if present
-            then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
-            else do
-                restore (BS.writeFile path payload)
-                    `onException` removeExclusivePartial path lockPath
-                pure (ProjectConfigOwnership path payload lockPath)
+writeProjectConfigFileExclusive :: CodecWitness cfg -> FilePath -> cfg -> IO ProjectConfigOwnership
+writeProjectConfigFileExclusive codec path cfg =
+    codec `seq`
+        mask
+            ( \restore -> do
+                let payload = renderProjectConfigBytes codec cfg
+                lockPath <- claimConfigWriteLock path
+                present <- restore (doesPathExist path) `onException` removeDirectory lockPath
+                if present
+                    then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
+                    else do
+                        restore (BS.writeFile path payload)
+                            `onException` removeExclusivePartial path lockPath
+                        pure (ProjectConfigOwnership path payload lockPath)
+            )
+
+-- | Write a scope-indexed project config through its installed mapped codec.
+writeScopedProjectConfigFile ::
+    ProjectCodec scope specDigest cfg ->
+    FilePath ->
+    cfg scope ->
+    IO ()
+writeScopedProjectConfigFile codec path cfg =
+    mask
+        ( \restore -> do
+            lockPath <- claimConfigWriteLock path
+            restore (BS.writeFile path (renderScopedProjectConfigBytes codec cfg))
+                `finally` removeDirectory lockPath
+        )
+
+-- | Exclusively install a generated scoped project config.
+writeScopedProjectConfigFileExclusive ::
+    ProjectCodec scope specDigest cfg ->
+    FilePath ->
+    cfg scope ->
+    IO ProjectConfigOwnership
+writeScopedProjectConfigFileExclusive codec path cfg =
+    mask
+        ( \restore -> do
+            let payload = renderScopedProjectConfigBytes codec cfg
+            lockPath <- claimConfigWriteLock path
+            present <- restore (doesPathExist path) `onException` removeDirectory lockPath
+            if present
+                then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
+                else do
+                    restore (BS.writeFile path payload)
+                        `onException` removeExclusivePartial path lockPath
+                    pure (ProjectConfigOwnership path payload lockPath)
+        )
 
 claimConfigWriteLock :: FilePath -> IO FilePath
 claimConfigWriteLock path = do
@@ -239,16 +302,132 @@ removeProjectConfigFileIfOwned path ownership = do
 configOwnerPath :: FilePath -> FilePath
 configOwnerPath path = path ++ ".hostbootstrap-test-owner"
 
-renderProjectConfigFile :: (Dhall.ToDhall cfg) => cfg -> Text
-renderProjectConfigFile cfg = Hoist.renderHoisted Context.vocabUnions cfg <> "\n"
+renderProjectConfigFile :: CodecWitness cfg -> cfg -> Text
+renderProjectConfigFile codec cfg =
+    renderHoistedValue codec Context.vocabUnions cfg <> "\n"
 
-renderProjectConfigBytes :: (Dhall.ToDhall cfg) => cfg -> BS.ByteString
-renderProjectConfigBytes = TE.encodeUtf8 . renderProjectConfigFile
+renderProjectConfigBytes :: CodecWitness cfg -> cfg -> BS.ByteString
+renderProjectConfigBytes codec = TE.encodeUtf8 . renderProjectConfigFile codec
+
+renderScopedProjectConfigBytes ::
+    ProjectCodec scope specDigest cfg ->
+    cfg scope ->
+    BS.ByteString
+renderScopedProjectConfigBytes codec =
+    TE.encodeUtf8
+        . (<> "\n")
+        . renderProjectCodecHoisted codec Context.vocabUnions
+
+{- | Opaque evidence naming the canonical bytes admitted for one scope-local
+config identity. The constructor and generative identity indices are private.
+-}
+newtype VerifiedConfigWire scope configDigest configId
+    = VerifiedConfigWire Text
+
+-- | The digest of the exact canonical bytes that were verified.
+verifiedConfigDigest :: VerifiedConfigWire scope configDigest configId -> Text
+verifiedConfigDigest (VerifiedConfigWire digest) = digest
+
+{- | A config value admitted by the matching installed project codec. Its scope,
+specification identity, and fresh config identity cannot be changed by callers.
+-}
+newtype ValidatedConfig scope specDigest configId config
+    = ValidatedConfig config
+
+-- | Read the validated value without weakening any of its phantom identities.
+validatedConfigValue ::
+    ValidatedConfig scope specDigest configId config ->
+    config
+validatedConfigValue (ValidatedConfig value) = value
+
+{- | Canonically render, hash, strictly re-decode, and re-render one scoped
+config through the installed project codec. Only a byte-stable round trip enters
+the rank-2 continuation under fresh digest/config identities.
+-}
+withValidatedConfig ::
+    ProjectCodec scope specDigest cfg ->
+    cfg scope ->
+    ( forall configDigest configId.
+      VerifiedConfigWire scope configDigest configId ->
+      ValidatedConfig scope specDigest configId (cfg scope) ->
+      IO result
+    ) ->
+    IO (Either String result)
+withValidatedConfig projectCodec value use = do
+    let payload = renderScopedProjectConfigBytes projectCodec value
+        rendered = TE.decodeUtf8 payload
+        digest = projectConfigSnapshotHashBytes payload
+    decoded <-
+        trySynchronous
+            ( decodeProjectCodecWithSettings
+                projectCodec
+                Dhall.defaultInputSettings
+                rendered
+            )
+    case decoded of
+        Left err ->
+            pure
+                ( Left
+                    ( "project codec rejected its canonical rendering: "
+                        ++ takeWhile (/= '\n') (show err)
+                    )
+                )
+        Right roundTripped
+            | renderScopedProjectConfigBytes projectCodec roundTripped /= payload ->
+                pure (Left "project codec canonical render/decode/re-render changed bytes")
+            | otherwise ->
+                Right
+                    <$> mintValidatedConfig
+                        digest
+                        roundTripped
+                        use
+
+mintValidatedConfig ::
+    Text ->
+    config ->
+    ( forall configDigest configId.
+      VerifiedConfigWire scope configDigest configId ->
+      ValidatedConfig scope specDigest configId config ->
+      result
+    ) ->
+    result
+mintValidatedConfig digest value use =
+    use (VerifiedConfigWire digest) (ValidatedConfig value)
+
+{- | Interpret one restricted harness assembly and admit its result with the
+codec carrying the exact same project/run scope. The authority is consumed only
+as the matching type witness; its constructor remains private.
+-}
+withAssembledHarnessConfig ::
+    [ConfigInput] ->
+    HarnessAuthority projectId runId ->
+    ProjectCodec (Harness projectId runId) specDigest cfg ->
+    ConfigAssembly (Harness projectId runId) (cfg (Harness projectId runId)) ->
+    ( forall configDigest configId.
+      VerifiedConfigWire (Harness projectId runId) configDigest configId ->
+      ValidatedConfig
+        (Harness projectId runId)
+        specDigest
+        configId
+        (cfg (Harness projectId runId)) ->
+      IO result
+    ) ->
+    IO (Either String result)
+withAssembledHarnessConfig allowed authority codec assembly use = do
+    authority `seq` pure ()
+    assembled <- runConfigAssembly allowed assembly
+    case assembled of
+        Left err -> pure (Left err)
+        Right value -> withValidatedConfig codec value use
 
 {- | Validate that the runtime context inside the config belongs to the derived
 project/binary identity. Generic: reaches the context via 'cfgContext'.
 -}
-validateProjectConfigForProject :: (ProjectCfg cfg) => Text -> cfg -> Either String cfg
+validateProjectConfigForProject ::
+    (ProjectCfg projectId cfg) =>
+    Text ->
+    cfg configScope ->
+    Either String (cfg configScope)
 validateProjectConfigForProject expected cfg
     | Context.project ctx /= expected =
         Left $
@@ -268,36 +447,74 @@ validateProjectConfigForProject expected cfg
 
 -- | Load and validate the current executable's sibling project config.
 requireSiblingProjectConfig ::
-    (ProjectCfg cfg) =>
+    (ProjectCfg projectId cfg) =>
+    ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
     [Context.Capability] ->
-    IO cfg
-requireSiblingProjectConfig projectName cls caps =
-    fst <$> loadSiblingProjectConfig projectName cls caps
+    IO (cfg configScope)
+requireSiblingProjectConfig codec projectName cls caps =
+    withSiblingProjectConfigRoot codec projectName cls caps $ \cfg _ _ -> pure cfg
 
 {- | Run an action with a validated sibling project config and its nested
 runtime context.
 -}
 withSiblingProjectConfigContext ::
-    (ProjectCfg cfg) =>
+    (ProjectCfg projectId cfg) =>
+    ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
     [Context.Capability] ->
-    (cfg -> BinaryContext -> IO a) ->
+    (cfg configScope -> BinaryContext -> IO a) ->
     IO a
-withSiblingProjectConfigContext projectName cls caps action = do
-    (cfg, cfgCtx) <- loadSiblingProjectConfig projectName cls caps
-    action cfg cfgCtx
+withSiblingProjectConfigContext codec projectName cls caps action = do
+    withSiblingProjectConfigRoot codec projectName cls caps $ \cfg cfgCtx _ ->
+        action cfg cfgCtx
 
-loadSiblingProjectConfig ::
-    forall cfg.
-    (ProjectCfg cfg) =>
+{- | Load the sibling once, apply the normal runtime/root gate, then
+canonically render/re-decode it through the same finalized codec. The callback
+receives fresh wire/config identities and cannot let a raw config bypass
+verification.
+-}
+withSiblingValidatedProjectConfigContext ::
+    forall projectId cfg configScope specDigest result.
+    (ProjectCfg projectId cfg) =>
+    ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
     [Context.Capability] ->
-    IO (cfg, BinaryContext)
-loadSiblingProjectConfig projectName cls caps = do
+    ( forall configDigest configId.
+      VerifiedConfigWire configScope configDigest configId ->
+      ValidatedConfig
+        configScope
+        specDigest
+        configId
+        (cfg configScope) ->
+      BinaryContext ->
+      IO result
+    ) ->
+    IO result
+withSiblingValidatedProjectConfigContext codec projectName cls caps action =
+    withSiblingProjectConfigRoot codec projectName cls caps $ \cfg cfgCtx _ -> do
+        admitted <-
+            withValidatedConfig codec cfg $ \wire validated ->
+                action wire validated cfgCtx
+        either (die . ("project config verification failed: " ++)) pure admitted
+
+{- | Run an action with the validated config/context and the still-opaque
+canonical root authority minted during that same admission. Lifecycle callers
+use this seam so the root is not reconstructed from the descriptive context.
+-}
+withSiblingProjectConfigRoot ::
+    forall projectId cfg configScope specDigest a.
+    (ProjectCfg projectId cfg) =>
+    ProjectCodec configScope specDigest cfg ->
+    Text ->
+    Context.CommandClass ->
+    [Context.Capability] ->
+    (forall rootScope rootId. cfg configScope -> BinaryContext -> CanonicalProjectRoot rootScope rootId -> IO a) ->
+    IO a
+withSiblingProjectConfigRoot codec projectName cls caps action = do
     path <- siblingProjectConfigPath projectName
     exists <- doesFileExist path
     if not exists
@@ -317,7 +534,9 @@ loadSiblingProjectConfig projectName cls caps = do
                     setInputSourceName
                         path
                         (setInputRootDirectory (takeDirectory path) Dhall.defaultInputSettings)
-            decoded <- trySynchronous (Dhall.inputWithSettings inputSettings Dhall.auto raw)
+            decoded <-
+                trySynchronous
+                    (decodeProjectCodecWithSettings codec inputSettings raw)
             cfg <- case decoded of
                 Left err -> failProjectConfig path ("failed to decode " ++ path ++ ": " ++ firstLine (show err))
                 Right value -> pure value
@@ -328,24 +547,25 @@ loadSiblingProjectConfig projectName cls caps = do
                         withCanonicalProjectRoot
                             path
                             (T.unpack (Context.sourceRoot (cfgContext validCfg)))
-                            (\root -> pure (cfgWithContext ((cfgContext validCfg){Context.sourceRoot = T.pack (canonicalProjectRootPath root)}) validCfg))
-                    rootedCfg <- case rooted of
+                            ( \root -> do
+                                validated <-
+                                    Context.validateRuntimeContext
+                                        (Context.contextRequirement projectName cls caps)
+                                        (cfgContext validCfg)
+                                case validated of
+                                    Left err -> do
+                                        hPutStrLn stderr (Context.contextErrorMessage err)
+                                        exitWith (ExitFailure 1)
+                                    Right cfgCtx -> do
+                                        when (shouldLogSnapshot cls cfgCtx) $
+                                            TIO.hPutStrLn
+                                                stderr
+                                                (renderProjectConfigSnapshotLog path (projectConfigSnapshotHashBytes rawBytes) cfgCtx)
+                                        action validCfg cfgCtx root
+                            )
+                    case rooted of
                         Left rootErr -> failProjectConfig path (renderProjectRootError rootErr)
                         Right value -> pure value
-                    validated <-
-                        Context.validateRuntimeContext
-                            (Context.contextRequirement projectName cls caps)
-                            (cfgContext rootedCfg)
-                    case validated of
-                        Left err -> do
-                            hPutStrLn stderr (Context.contextErrorMessage err)
-                            exitWith (ExitFailure 1)
-                        Right cfgCtx -> do
-                            when (shouldLogSnapshot cls cfgCtx) $
-                                TIO.hPutStrLn
-                                    stderr
-                                    (renderProjectConfigSnapshotLog path (projectConfigSnapshotHashBytes rawBytes) cfgCtx)
-                            pure (rootedCfg, cfgCtx)
   where
     firstLine = takeWhile (/= '\n')
     failProjectConfig _ detail = do
@@ -354,6 +574,10 @@ loadSiblingProjectConfig projectName cls caps = do
 
     renderProjectRootError (ProjectRootMissing root) =
         "sourceRoot does not name an existing directory: " ++ root
+    renderProjectRootError (ProjectRootNotDirectory root) =
+        "sourceRoot is not a directory: " ++ root
+    renderProjectRootError (ProjectRootEscapesAnchor root anchor) =
+        "relative sourceRoot escapes its config-owned project anchor: " ++ root ++ " (anchor " ++ anchor ++ ")"
     renderProjectRootError (ProjectRootResolutionFailed root detail) =
         "failed to canonicalize sourceRoot " ++ root ++ ": " ++ firstLine detail
 
@@ -412,9 +636,4 @@ renderProjectConfigSnapshotLog path configHash cfgContext' =
         , "configPath=" <> T.pack path
         , "configHash=" <> configHash
         , "sourceRoot=" <> Context.sourceRoot cfgContext'
-        , "cpu=" <> T.pack (show (Context.cpu envelope))
-        , "memory=" <> Context.memory envelope
-        , "storage=" <> Context.storage envelope
         ]
-  where
-    envelope = Context.resourceEnvelope cfgContext'

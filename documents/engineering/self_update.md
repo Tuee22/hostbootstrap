@@ -77,14 +77,12 @@ Being behind the default branch is not a host minimum. Normal commands do not pe
 
 - `hostbootstrap doctor` checks local host minimums only.
 - `hostbootstrap build` and `hostbootstrap run` build and invoke the project binary without a latest-version
-  check. They are not generally offline: the current bootstrap runs `cabal update` and may download
-  toolchains/dependencies.
-- `hostbootstrap base build` and `hostbootstrap base build-and-push` are maintainer commands. The current
-  implementation exposes them whenever the development modules are importable; the supported execution
-  context is the repository Poetry environment. An ordinary pipx install omits those modules, but the
-  importability gate does not yet prove installation provenance. Phase 6 Sprint 6.7 replaces it with a
-  fail-closed maintainer-context gate. The commands perform their local self-check and Docker operations,
-  but do not self-update the wrapper.
+  check. Online mode may refresh a stale index or download missing toolchain/dependency inputs;
+  `--offline` requires those inputs locally and forbids that work.
+- `hostbootstrap base build` and `hostbootstrap base build-and-push` are maintainer commands exposed only
+  after validating the canonical checkout's in-project Poetry interpreter, project/lock metadata, and
+  development toolchain. Importable development modules alone do not expose them. The commands perform
+  their source gates and Docker operations, but do not self-update the wrapper.
 
 ## Validation
 

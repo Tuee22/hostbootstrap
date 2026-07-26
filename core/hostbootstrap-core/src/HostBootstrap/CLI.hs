@@ -1,5 +1,11 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 {- | The fixed @optparse-applicative@ command tree and the generic entrypoints
 project binaries use to extend it.
@@ -10,191 +16,422 @@ tree: @project@, @test@, @service@, @context@, and @check-code@. There are no
 hidden commands. @hostbootstrap-core@ is a **library of composable tools**,
 including the @ensure@ reconciler primitives a project runs as @ensure-*@ chain
 steps, not a CLI topology, so a project never adds a command. A project extends
-the core only through the parallel extension streams carried by 'ProjectSpec':
-its lift chain ('withChain'), its Dhall-vocabulary artifacts, its test suite, its
-service-handler registry ('withServices'), its @check-code@ action, and the
-project-owned config builders ('psInit' / 'psTestInit' / 'psTestConfig') — the
-**only** place config defaults live, since the core ships none.
+the core only through the checked builder streams finalized into 'ProjectSpec':
+ordered steps, schema artifacts, its test suite, a typed service registry, its
+@check-code@ action, and the project-owned restricted config assembler plus its
+distinct test-config initializer.
 
-A project binary calls 'runHostBootstrapCLI' with a 'ProjectSpec'. The entrypoint
-validates the extension points (a non-empty test suite; no duplicate test case
-ids, artifacts, or service variants; no case id shadowing the reserved
-whole-matrix selector; and no project artifact shadowing a core artifact) and
-then merges
+A project binary calls 'runHostBootstrapCLI' with an already finalized opaque
+'ProjectSpec'. Finalization validates the extension points (a non-empty test
+suite and step contribution; unique test cases, artifacts, assembly inputs,
+step identities, frames, and services; and exactly one frame-context and
+teardown projection) and then merges
 the spec into the core command tree ('HostBootstrap.Command.coreCommands'). The
 bare @hostbootstrap@ binary (built like any project binary, not baked into the
 base image) uses the separate 'runBareHostBootstrapCLI'. See
 @documents/architecture/hostbootstrap_core_library.md@.
 -}
 module HostBootstrap.CLI (
-    ProjectSpec (..),
+    ProjectSpec,
+    ProjectSpecBuilder,
+    ProjectSpecError (..),
     projectSpec,
-    withChain,
-    withFrameContext,
-    withTeardown,
-    withServices,
-    withServiceConfig,
+    addArtifacts,
+    addAssemblyInputs,
+    addSteps,
+    setFrameContext,
+    setTeardown,
+    addServices,
+    finalizeProjectSpec,
+    projectServiceVariantNames,
+    projectArtifactNames,
+    projectStepPlan,
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
 )
 where
 
-import Control.Monad (join)
-import Data.List (group, intercalate, sort)
+import Control.Monad (join, unless)
+import Data.Char (toLower)
+import Data.List (group, sort)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
 import HostBootstrap.Command (coreCommands)
-import HostBootstrap.Config.Class (InitArgs (..), ProjectCfg (..))
+import HostBootstrap.Config.Class (
+    AssemblyRequest (..),
+    ConfigAssembly,
+    ConfigInput,
+    configInputPath,
+    InitArgs (..),
+    ProjectCfg (..),
+    ProjectCodec,
+    TestCfg (..),
+    pureConfigAssembly,
+    runConfigAssembly,
+    withProjectCodec,
+ )
+import HostBootstrap.Config.Vocab (Production)
+import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Dhall.Gen (ConfigArtifact (..), coreArtifacts)
-import HostBootstrap.Harness (TestSuite, allCasesSelector, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
+import HostBootstrap.Dhall.Gen (
+    CodecWitness,
+    ConfigArtifact,
+    artifactName,
+    autoCodecWitness,
+    coreArtifacts,
+    requireCodecWitness,
+ )
+import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
 import HostBootstrap.Lift (LiftContext, localContext)
-import HostBootstrap.Service (ServiceRegistry, duplicateServiceVariants, emptyServiceRegistry)
-import HostBootstrap.Step (Step, StepFrame)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
+import HostBootstrap.Service (
+    FinalizedServiceRegistry,
+    ServiceRegistry,
+    ServiceRegistryError,
+    emptyServiceRegistry,
+    mergeServiceRegistries,
+    serviceVariantNames,
+    withFinalizedServiceRegistry,
+ )
+import HostBootstrap.Step (Step, StepFrame, StepPlan, StepPlanError (..), mkStepPlan)
 import Options.Applicative
+import System.Environment (getProgName)
 import System.Exit (die)
+import System.FilePath (dropExtension, takeExtension, takeFileName)
 import System.IO (hSetEncoding, stderr, stdout, utf8)
 
 {- | A derived project's required extension points, generic over the project's
 config type @cfg@ and the project's test-config type @tcfg@. There are no
 per-project commands: the surface is fixed (§ P). A project supplies its runtime
 test suite, code-check action, schema artifact delta, lift chain, per-frame lift
-context, chain-frame teardown, service-handler registry, and the project-owned
-config builders ('psInit' / 'psTestInit' / 'psTestConfig'). The bare core binary
-uses 'runBareHostBootstrapCLI' instead.
+context, chain-frame teardown, service-handler registry, one scope-aware
+restricted project-config assembler, and its test-config initializer. The bare
+core binary uses 'runBareHostBootstrapCLI' instead.
 -}
-data ProjectSpec cfg tcfg = ProjectSpec
+data ProjectSpec projectId cfg tcfg = ProjectSpec
     { psTestSuite :: TestSuite
     , psCheckCode :: IO ()
     , psArtifacts :: [ConfigArtifact]
-    , psServices :: ServiceRegistry
-    , psServiceVariant :: cfg -> Either String String
-    {- ^ Resolve the service variant declared by the effective project config.
-    Core remains generic over @cfg@; the project owns its Dhall ServiceType
-    ADT and projects only the selected handler key through this seam.
-    -}
-    , psChain :: cfg -> [Step]
-    , psFrameContext :: cfg -> StepFrame -> LiftContext
-    , psTeardown :: cfg -> Bool -> IO ()
+    , psTestCodec :: CodecWitness tcfg
+    , psAssemblyInputs :: [ConfigInput]
+    , psServices :: ServiceRegistry (cfg (Production projectId))
+    , psStepPlan :: cfg (Production projectId) -> Either StepPlanError StepPlan
+    , psFrameContext ::
+        forall rootScope rootId.
+        CanonicalProjectRoot rootScope rootId ->
+        cfg (Production projectId) ->
+        StepFrame ->
+        LiftContext
+    , psTeardown ::
+        forall rootScope rootId.
+        CanonicalProjectRoot rootScope rootId ->
+        cfg (Production projectId) ->
+        Bool ->
+        IO ()
     {- ^ The chain-frame teardown the @project down@ / @project destroy@
     lifecycle runs after the recursive cluster teardown: stop (@False@) or
     delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
     and idempotent; the never-delete-@.data@ invariant (§ Y) is the cluster
-    teardown's responsibility. Attach with 'withTeardown'.
-    -}
-    , psInit :: InitArgs -> cfg
-    {- ^ The **only** default-bearing function: interpret the parsed @init@
-    flags into a concrete project config, supplying the project's defaults
-    for any omitted knob. Drives @project init@ / @service init@.
+    teardown's responsibility. Assign once with 'setTeardown'.
     -}
     , psTestInit :: InitArgs -> tcfg
     {- ^ Interpret the parsed @init@ flags into the project's test config
     (@test init@) — needs no pre-existing project config.
     -}
-    , psTestConfig :: tcfg -> IO [(T.Text, cfg)]
-    {- ^ Build the run's labeled project-config variants from the test config
-    (@test run@): a **non-empty** list of @(label, cfg)@ the harness loops
-    over, generating the sibling config, driving the stack, and tearing it
-    down once per variant. The label is the variant's expected message
-    (threaded into the per-variant assertion env).
+    , psAssemble ::
+        forall scope.
+        AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
+        ConfigAssembly scope (cfg scope)
+    {- ^ The sole default-bearing project-config assembler. Its closed request
+    separates Production init from one exact generative Harness run; its
+    restricted effect permits only declared config reads.
     -}
     }
 
-{- | Build a project spec from the required streams (the test suite, code-check
-action, schema-artifact delta) plus the project-owned config builders. The
-project's lift chain (§ Y), per-frame lift-context builder, chain-frame teardown,
-and service registry default to empty/local; attach them with 'withChain' /
-'withFrameContext' / 'withTeardown' / 'withServices'.
+newtype FrameContextProjection projectId cfg = FrameContextProjection
+    { runFrameContextProjection ::
+        forall rootScope rootId.
+        CanonicalProjectRoot rootScope rootId ->
+        cfg (Production projectId) ->
+        StepFrame ->
+        LiftContext
+    }
+
+newtype TeardownProjection projectId cfg = TeardownProjection
+    { runTeardownProjection ::
+        forall rootScope rootId.
+        CanonicalProjectRoot rootScope rootId ->
+        cfg (Production projectId) ->
+        Bool ->
+        IO ()
+    }
+
+{- | Opaque unfinished project specification. It cannot be dispatched. Step and
+service contributions are additive; frame-context and teardown projections are
+single-assignment slots checked by 'finalizeProjectSpec'.
+-}
+data ProjectSpecBuilder projectId cfg tcfg = ProjectSpecBuilder
+    { pbTestSuite :: TestSuite
+    , pbCheckCode :: IO ()
+    , pbArtifacts :: [ConfigArtifact]
+    , pbTestCodec :: CodecWitness tcfg
+    , pbAssemblyInputs :: [ConfigInput]
+    , pbStepFragments :: [cfg (Production projectId) -> [Step]]
+    , pbFrameContexts :: [FrameContextProjection projectId cfg]
+    , pbTeardowns :: [TeardownProjection projectId cfg]
+    , pbServiceRegistries :: [ServiceRegistry (cfg (Production projectId))]
+    , pbTestInit :: InitArgs -> tcfg
+    , pbAssemble ::
+        forall scope.
+        AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
+        ConfigAssembly scope (cfg scope)
+    }
+
+data ProjectSpecError
+    = EmptyProjectTestSuite
+    | DuplicateProjectCaseIds [T.Text]
+    | CoreArtifactShadowing [String]
+    | DuplicateProjectArtifacts [String]
+    | DuplicateAssemblyInputs [FilePath]
+    | MissingStepPlan
+    | MissingFrameContext
+    | DuplicateFrameContextAssignments Int
+    | MissingTeardown
+    | DuplicateTeardownAssignments Int
+    | InvalidServiceRegistry ServiceRegistryError
+    deriving (Eq, Show)
+
+{- | Start an unfinished project spec from the streams that are intrinsically
+single values. It still needs steps, one frame-context projection, and one
+teardown projection before finalization.
 -}
 projectSpec ::
     TestSuite ->
     IO () ->
     [ConfigArtifact] ->
-    (InitArgs -> cfg) ->
+    CodecWitness tcfg ->
     (InitArgs -> tcfg) ->
-    (tcfg -> IO [(T.Text, cfg)]) ->
-    ProjectSpec cfg tcfg
-projectSpec suite check arts initBuilder testInit testConfig =
-    ProjectSpec
-        { psTestSuite = suite
-        , psCheckCode = check
-        , psArtifacts = arts
-        , psServices = emptyServiceRegistry
-        , psServiceVariant = const (Left "project config does not declare a service variant")
-        , psChain = const []
-        , psFrameContext = const (const localContext)
-        , psTeardown = \_ _ -> pure ()
-        , psInit = initBuilder
-        , psTestInit = testInit
-        , psTestConfig = testConfig
+    ( forall scope.
+      AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
+      ConfigAssembly scope (cfg scope)
+    ) ->
+    ProjectSpecBuilder projectId cfg tcfg
+projectSpec suite check arts testCodec testInit assemble =
+    ProjectSpecBuilder
+        { pbTestSuite = suite
+        , pbCheckCode = check
+        , pbArtifacts = arts
+        , pbTestCodec = testCodec
+        , pbAssemblyInputs = []
+        , pbStepFragments = []
+        , pbFrameContexts = []
+        , pbTeardowns = []
+        , pbServiceRegistries = []
+        , pbTestInit = testInit
+        , pbAssemble = assemble
         }
 
-{- | Attach the project's lift chain: a pure function from the root
-@<project>.dhall@ config to the ordered @[Step]@ the core @project@ lifecycle
-interprets (§ Y). The chain is the project's primary deploy contribution.
--}
-withChain :: (cfg -> [Step]) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withChain f spec = spec{psChain = f}
+-- | Add schema/artifact contributions without replacing prior layers.
+addArtifacts ::
+    [ConfigArtifact] ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+addArtifacts artifacts builder =
+    builder{pbArtifacts = pbArtifacts builder ++ artifacts}
 
-{- | Attach the per-frame lift-context builder the recursive interpreter uses to
-cross into a nested frame — the project supplies the provider VM/container
-identity for each frame (§ U).
+{- | Declare the complete read-only input allowlist available to
+'psAssemble'. Repeated calls append in declaration order.
 -}
-withFrameContext :: (cfg -> StepFrame -> LiftContext) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withFrameContext f spec = spec{psFrameContext = f}
+addAssemblyInputs ::
+    [ConfigInput] ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+addAssemblyInputs inputs builder =
+    builder{pbAssemblyInputs = pbAssemblyInputs builder ++ inputs}
 
-{- | Attach the project's chain-frame teardown: how @project down@ (stop, @False@)
-and @project destroy@ (delete, @True@) tear down the frames the chain provisioned
-(for the demo: stop/delete the VM). Runs after the core's recursive cluster
-teardown (which keeps @.data@ out of its removal set, § Y), so the outermost frame — the VM — is
-stopped or deleted last. Best-effort and idempotent: a missing frame is not an
-error, so a partial stack always tears down.
+{- | Add one ordered step fragment. Repeated calls append rather than replace.
+The combined list is validated into an opaque non-empty 'StepPlan' for each
+decoded Production config before an interpreter can consume it.
 -}
-withTeardown :: (cfg -> Bool -> IO ()) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withTeardown f spec = spec{psTeardown = f}
+addSteps ::
+    (cfg (Production projectId) -> [Step]) ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+addSteps fragment builder =
+    builder{pbStepFragments = pbStepFragments builder ++ [fragment]}
 
-{- | Append a service-handler registry (one of the extension streams, § T, § AA):
-the long-running roles a config-selected @service run@ can dispatch over. Repeated calls
-compose library layers in registration order; duplicate names are rejected by
-'validateProjectSpec'. The registry may be empty (not every project ships a
-service); the fixed @service@ surface is unchanged either way.
+{- | Assign the one per-frame lift-context projection. A second assignment is
+retained as a construction conflict and rejected by finalization.
 -}
-withServices :: ServiceRegistry -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withServices svcs spec = spec{psServices = psServices spec ++ svcs}
+setFrameContext ::
+    ( forall rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg (Production projectId) ->
+      StepFrame ->
+      LiftContext
+    ) ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+setFrameContext projection builder =
+    builder{pbFrameContexts = pbFrameContexts builder ++ [FrameContextProjection projection]}
 
-{- | Attach the projection from the project's Dhall-owned @ServiceType@ ADT to
-the matching handler key. The effective config, not a CLI argument, is the
-source of truth for @service run@ (§ AA).
+{- | Assign the one chain-frame teardown projection. A second assignment is a
+finalization error rather than silent replacement.
 -}
-withServiceConfig :: (cfg -> Either String String) -> ProjectSpec cfg tcfg -> ProjectSpec cfg tcfg
-withServiceConfig select spec = spec{psServiceVariant = select}
+setTeardown ::
+    ( forall rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg (Production projectId) ->
+      Bool ->
+      IO ()
+    ) ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+setTeardown teardown builder =
+    builder{pbTeardowns = pbTeardowns builder ++ [TeardownProjection teardown]}
+
+{- | Add a checked typed service registry. Repeated calls compose in declaration
+order; duplicate identities are rejected by finalization.
+-}
+addServices ::
+    ServiceRegistry (cfg (Production projectId)) ->
+    ProjectSpecBuilder projectId cfg tcfg ->
+    ProjectSpecBuilder projectId cfg tcfg
+addServices registry builder =
+    builder{pbServiceRegistries = pbServiceRegistries builder ++ [registry]}
+
+finalizeProjectSpec ::
+    ProjectSpecBuilder projectId cfg tcfg ->
+    Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
+finalizeProjectSpec builder = do
+    validateBase
+    frameContextProjection <- exactlyOneFrameContext
+    teardownProjection <- exactlyOneTeardown
+    services <- foldServices
+    pure
+        ProjectSpec
+            { psTestSuite = pbTestSuite builder
+            , psCheckCode = pbCheckCode builder
+            , psArtifacts = pbArtifacts builder
+            , psTestCodec = pbTestCodec builder
+            , psAssemblyInputs = pbAssemblyInputs builder
+            , psServices = services
+            , psStepPlan = \cfg ->
+                mkStepPlan (concatMap (\fragment -> fragment cfg) (pbStepFragments builder))
+            , psFrameContext = runFrameContextProjection frameContextProjection
+            , psTeardown = runTeardownProjection teardownProjection
+            , psTestInit = pbTestInit builder
+            , psAssemble = pbAssemble builder
+            }
+  where
+    validateBase
+        | testSuiteCaseCount (pbTestSuite builder) == 0 = Left EmptyProjectTestSuite
+        | not (null duplicateCases) =
+            Left (DuplicateProjectCaseIds (map caseIdText duplicateCases))
+        | not (null shadowedArtifacts) = Left (CoreArtifactShadowing shadowedArtifacts)
+        | not (null duplicateArtifacts) = Left (DuplicateProjectArtifacts duplicateArtifacts)
+        | not (null duplicateInputs) = Left (DuplicateAssemblyInputs duplicateInputs)
+        | null (pbStepFragments builder) = Left MissingStepPlan
+        | otherwise = Right ()
+    caseIds = testSuiteCaseIds (pbTestSuite builder)
+    duplicateCases = duplicates caseIds
+    artifactNames = map (T.unpack . artifactName) (pbArtifacts builder)
+    coreArtifactNames = map (T.unpack . artifactName) coreArtifacts
+    shadowedArtifacts = filter (`elem` coreArtifactNames) artifactNames
+    duplicateArtifacts = duplicates artifactNames
+    duplicateInputs = duplicates (map configInputPath (pbAssemblyInputs builder))
+    exactlyOneFrameContext =
+        case pbFrameContexts builder of
+            [] -> Left MissingFrameContext
+            [projection] -> Right projection
+            projections -> Left (DuplicateFrameContextAssignments (length projections))
+    exactlyOneTeardown =
+        case pbTeardowns builder of
+            [] -> Left MissingTeardown
+            [teardown] -> Right teardown
+            teardowns -> Left (DuplicateTeardownAssignments (length teardowns))
+    foldServices =
+        foldl merge (Right emptyServiceRegistry) (pbServiceRegistries builder)
+    merge accumulated next =
+        accumulated >>= \current ->
+            either (Left . InvalidServiceRegistry) Right (mergeServiceRegistries current next)
+
+projectServiceVariantNames :: ProjectSpec projectId cfg tcfg -> [String]
+projectServiceVariantNames = serviceVariantNames . psServices
+
+projectArtifactNames :: ProjectSpec projectId cfg tcfg -> [T.Text]
+projectArtifactNames = map artifactName . psArtifacts
+
+-- | Project one decoded Production config through the finalized plan builder.
+-- Observation cannot bypass validation: the result is still an opaque
+-- 'StepPlan'.
+projectStepPlan ::
+    ProjectSpec projectId cfg tcfg ->
+    cfg (Production projectId) ->
+    Either StepPlanError StepPlan
+projectStepPlan = psStepPlan
 
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
 -}
 runHostBootstrapCLI ::
-    (ProjectCfg cfg, FromDhall tcfg, ToDhall tcfg) =>
+    forall projectId cfg tcfg.
+    (ProjectCfg projectId cfg, TestCfg tcfg) =>
     String ->
-    ProjectSpec cfg tcfg ->
+    ProjectSpec projectId cfg tcfg ->
     IO ()
 runHostBootstrapCLI progName spec = do
+    let testCodec = psTestCodec spec
+        initBuilder args = do
+            assembled <-
+                runConfigAssembly
+                    (psAssemblyInputs spec)
+                    (psAssemble spec (ProductionAssembly args))
+            either die pure assembled
     configureUtf8Output
-    either die pure (validateProjectSpec spec)
-    runCLI
-        progName
-        (psArtifacts spec)
-        (psTestSuite spec)
-        (psCheckCode spec)
-        (psServices spec)
-        (psServiceVariant spec)
-        (psChain spec)
-        (psFrameContext spec)
-        (psTeardown spec)
-        (psInit spec)
-        (psTestInit spec)
-        (psTestConfig spec)
+    validateRuntimeProjectIdentity progName
+    withProductionProjectCodec @projectId @cfg $ \baseCodec ->
+        withFinalizedServiceRegistry
+            ProductionScope
+            baseCodec
+            (psServices spec)
+            ( \cfgCodec services ->
+                runCLI
+                    cfgCodec
+                    testCodec
+                    progName
+                    (psArtifacts spec)
+                    (psTestSuite spec)
+                    (psCheckCode spec)
+                    services
+                    (psStepPlan spec)
+                    (psFrameContext spec)
+                    (psTeardown spec)
+                    (psAssemblyInputs spec)
+                    (psAssemble spec)
+                    initBuilder
+                    (psTestInit spec)
+            )
+
+validateRuntimeProjectIdentity :: String -> IO ()
+validateRuntimeProjectIdentity declared = do
+    runtime <- runtimeProjectIdentity <$> getProgName
+    unless (runtime == declared) $
+        die
+            ( "project identity mismatch before command dispatch: declared "
+                ++ show declared
+                ++ ", runtime executable "
+                ++ show runtime
+            )
+
+runtimeProjectIdentity :: FilePath -> String
+runtimeProjectIdentity invoked =
+    let filename = takeFileName invoked
+     in if map toLower (takeExtension filename) == ".exe"
+            then dropExtension filename
+            else filename
 
 {- | The bare core binary's trivial project config: a newtype over the universal
 'Context.BinaryContext'. It carries no project fields (no resources, no
@@ -202,12 +439,21 @@ Dockerfile, no deploy), so the bare binary type-checks against the generic spec
 without inventing a project config shape. The @init@/@test@ builders below give
 it the minimal behaviour the bare surface needs.
 -}
-newtype BareConfig = BareConfig {bareContext :: Context.BinaryContext}
+data BareProject
+
+newtype BareConfig scope = BareConfig {bareContext :: Context.BinaryContext}
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
-instance ProjectCfg BareConfig where
+instance ProjectCfg BareProject BareConfig where
+    withProductionProjectCodec =
+        withProjectCodec
+            (T.pack "BareConfig/Production")
+            (requireCodecWitness "BareConfig" autoCodecWitness)
+    withHarnessProjectCodec _ =
+        withProjectCodec
+            (T.pack "BareConfig/Harness")
+            (requireCodecWitness "BareConfig" autoCodecWitness)
     cfgContext = bareContext
-    cfgWithContext ctx _ = BareConfig ctx
 
 {- | Run the bare core binary. This is the only supported path that intentionally
 has no project artifacts, an empty test matrix, and no service registry. Its
@@ -216,21 +462,40 @@ derived context) and a trivial test config (the bare binary ships no test cases)
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName = do
+    let testCodec = requireCodecWitness "bare test config" (autoCodecWitness @())
     configureUtf8Output
-    runCLI
-        progName
-        []
-        emptySuite
-        (putStrLn "check-code: bare core binary has no project checks")
-        emptyServiceRegistry
-        (const (Left "bare core config has no service variant"))
-        (const [])
-        (const (const localContext))
-        (\_ _ -> pure ())
-        bareInit
-        (const ())
-        (const (pure [(T.pack "bare", bareInit defaultBareArgs)]))
+    validateRuntimeProjectIdentity progName
+    withProductionProjectCodec @BareProject @BareConfig $ \baseCodec ->
+        withFinalizedServiceRegistry
+            ProductionScope
+            baseCodec
+            emptyServiceRegistry
+            ( \cfgCodec services ->
+                runCLI
+                    cfgCodec
+                    testCodec
+                    progName
+                    []
+                    emptySuite
+                    (putStrLn "check-code: bare core binary has no project checks")
+                    services
+                    (const (Left EmptyStepPlan))
+                    (\_ _ _ -> localContext)
+                    (\_ _ _ -> pure ())
+                    []
+                    bareAssemble
+                    (pure . bareInit)
+                    (const ())
+            )
   where
+    bareAssemble ::
+        forall scope.
+        AssemblyRequest BareProject () () scope ->
+        ConfigAssembly scope (BareConfig scope)
+    bareAssemble (ProductionAssembly args) =
+        pureConfigAssembly (bareInit args)
+    bareAssemble (HarnessAssembly _ _ _) =
+        pureConfigAssembly (bareInit defaultBareArgs)
     defaultBareArgs =
         InitArgs
             { role = Context.HostOrchestrator
@@ -245,13 +510,13 @@ runBareHostBootstrapCLI progName = do
             , force = False
             , ifMissing = False
             }
+    bareInit :: InitArgs -> BareConfig scope
     bareInit args =
         let baseCtx =
                 Context.contextForKind
                     (T.pack progName)
                     (T.pack progName)
                     (T.pack (fromMaybe "." (sourceRoot args)))
-                    Context.defaultResourceEnvelope
                     (role args)
          in BareConfig (foldr Context.addRole baseCtx (alsoRoles args))
 
@@ -261,37 +526,58 @@ configureUtf8Output = do
     hSetEncoding stderr utf8
 
 runCLI ::
-    (ProjectCfg cfg, FromDhall tcfg, ToDhall tcfg) =>
+    forall projectId cfg tcfg specDigest.
+    (ProjectCfg projectId cfg, TestCfg tcfg) =>
+    ProjectCodec (Production projectId) specDigest cfg ->
+    CodecWitness tcfg ->
     String ->
     [ConfigArtifact] ->
     TestSuite ->
     IO () ->
-    ServiceRegistry ->
-    (cfg -> Either String String) ->
-    (cfg -> [Step]) ->
-    (cfg -> StepFrame -> LiftContext) ->
-    (cfg -> Bool -> IO ()) ->
-    (InitArgs -> cfg) ->
+    FinalizedServiceRegistry
+        (Production projectId)
+        specDigest
+        (cfg (Production projectId)) ->
+    (cfg (Production projectId) -> Either StepPlanError StepPlan) ->
+    ( forall rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg (Production projectId) ->
+      StepFrame ->
+      LiftContext
+    ) ->
+    ( forall rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg (Production projectId) ->
+      Bool ->
+      IO ()
+    ) ->
+    [ConfigInput] ->
+    ( forall scope.
+      AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
+      ConfigAssembly scope (cfg scope)
+    ) ->
+    (InitArgs -> IO (cfg (Production projectId))) ->
     (InitArgs -> tcfg) ->
-    (tcfg -> IO [(T.Text, cfg)]) ->
     IO ()
-runCLI progName projectArtifacts testSuite checkCode services selectService chain frameCtx teardown initBuilder testInit testConfig =
+runCLI cfgCodec testCodec progName projectArtifacts testSuite checkCode services stepPlan frameCtx teardown assemblyInputs assemble initBuilder testInit =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands
+            cfgCodec
+            testCodec
             progName
             projectArtifacts
             testSuite
             checkCode
             services
-            selectService
-            chain
+            stepPlan
             frameCtx
             teardown
+            assemblyInputs
+            assemble
             initBuilder
             testInit
-            testConfig
     opts =
         info
             (parser <**> helper)
@@ -306,36 +592,5 @@ runCLI progName projectArtifacts testSuite checkCode services selectService chai
     parser :: Parser (IO ())
     parser = hsubparser (mconcat allCommands)
 
-validateProjectSpec :: ProjectSpec cfg tcfg -> Either String ()
-validateProjectSpec spec
-    | testSuiteCaseCount (psTestSuite spec) == 0 =
-        Left "project test suite is empty; use runBareHostBootstrapCLI only for the bare core binary"
-    | not (null duplicateCases) =
-        Left ("project test case ids are duplicated: " ++ comma duplicateCases)
-    | allCasesSelector `elem` caseIds =
-        Left
-            ( "project test case id '"
-                ++ allCasesSelector
-                ++ "' is reserved (the always-injected whole-matrix selector) and cannot name a case"
-            )
-    | not (null shadowedArtifacts) =
-        Left ("project artifacts shadow core artifacts: " ++ comma shadowedArtifacts)
-    | not (null duplicateArtifacts) =
-        Left ("project artifact names are duplicated: " ++ comma duplicateArtifacts)
-    | not (null duplicateServices) =
-        Left ("project service variants are duplicated: " ++ comma duplicateServices)
-    | otherwise = Right ()
-  where
-    caseIds = testSuiteCaseIds (psTestSuite spec)
-    duplicateCases = duplicates caseIds
-    artifactNames = map (T.unpack . artifactName) (psArtifacts spec)
-    coreArtifactNames = map (T.unpack . artifactName) coreArtifacts
-    shadowedArtifacts = filter (`elem` coreArtifactNames) artifactNames
-    duplicateArtifacts = duplicates artifactNames
-    duplicateServices = duplicateServiceVariants (psServices spec)
-
-duplicates :: [String] -> [String]
+duplicates :: (Ord a) => [a] -> [a]
 duplicates names = [name | name : _ : _ <- group (sort names)]
-
-comma :: [String] -> String
-comma = intercalate ", "

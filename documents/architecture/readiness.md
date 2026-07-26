@@ -1,48 +1,54 @@
 # Readiness Witnesses and Legible Failure
 
 **Status**: Authoritative source
-**Supersedes**: the claim that the current `Ready` constructor is sealed and every mutation is gated
+**Supersedes**: older claims that readiness was forgeable or already gated every mutation
 **Referenced by**: [documents index](../README.md), [lifecycle state model](lifecycle_state_model.md), [durable state](durable_state.md), [cluster lifecycle](../engineering/cluster_lifecycle.md)
 
-> **Purpose**: Record what the readiness layer enforces today and define the opaque-capability and
-> total-probe contract it must reach.
+> **Purpose**: Record what the readiness layer enforces today and distinguish the delivered Phase 9
+> foundation from the downstream adapter integration still required.
 
 ## TL;DR
 
-Readiness polling exists, but its constructor is publicly importable, some mutations are ungated, and a
-witness is not tied to one resource instance. The target hides constructors, indexes handles and
-capabilities by the same generative identity, and represents every expected observation or failure as a
-typed result.
+Readiness constructors are private. Polling is total and bounded, and authoritative evidence is indexed
+by a generative lifecycle plan, exact planned resource family and identity, dependency, generation,
+phase, and observation version. Existing provider effects still consume a deliberately
+non-authorizing compatibility observation in several paths; the dependent interpreter phases must
+migrate those effects to the prepared-operation boundary before readiness gates every mutation.
 
 ## Current Status
 
-The implementation provides `Probe`, `ProbeResult`, named polling policies, `awaitReady`, and a phantom
-`Ready tag`. Several paths use them, including VM, Docker, registry, MinIO, and durable-share waits.
+The Phase 9 implementation provides:
 
-That is useful infrastructure, but the stronger architectural claims are not true today:
+- opaque validated `Micros` and `PollPolicy` values, positive bounded attempt counts, overflow-safe total
+  duration validation, named policies, and total `ProbeResult`/`PollError` polling;
+- an opaque `Probe` and `Ready scope planId id resource dependency`, with no exposed
+  `HostBootstrap.Readiness.Internal` module or test constructor;
+- a closed `BackendProbeKey resource dependency` relation. Constructing a backend probe requires the
+  exact `PlannedResource` from the finalized lifecycle plan and positive generation, phase, and
+  observation versions;
+- resource families for provider, durable share, Docker, MinIO, registry, and cluster readiness;
+- tests that obtain a real planned resource, drive the polling transition, reject invalid versions, and
+  exercise compile-time opacity rather than injecting a forged witness; and
+- `ObservedReady dependency` for legacy call paths. This value is intentionally non-authorizing and is
+  not accepted by plan-indexed reconciliation or budget-wall authority.
 
-- `HostBootstrap.Readiness.Internal` exports `MkReady` and is listed as an exposed Cabal module.
-  Downstream production code can therefore import it and forge `Ready tag`.
-- Hiding only `MkReady` would not close the forge path. `Probe` is currently a public function alias,
-  `ProbeReady` is public, and the result `Ready tag` leaves `tag` independent of the supplied probe. A
-  caller can therefore provide an always-ready probe and choose whatever phantom tag it wants.
-- `Micros(..)` and `PollPolicy(..)` expose raw constructors, seconds/attempt counts use ordinary `Int`,
-  and the retry helper accepts an unvalidated attempt count. Zero/negative attempts and delay or total
-  duration overflow are representable even though the named policies intend bounded polling.
-- Gating is not universal. Some waits return `IO ()`, and mutating cluster, chart, NVIDIA, provider,
-  staging, and teardown operations do not all consume the readiness they assume.
-- A `Ready` value is phantom and does not carry a resource identity. Even honestly minted witnesses can
-  be passed to an operation on a different instance of the same tag.
-- Probe composition is not uniformly total. The direct-host alias classifier performs
-  `pathIsSymbolicLink` before checking existence, so the clean `AliasAbsent` state raises an exception
-  instead of producing a verdict. The target removes direct-host alias reconciliation entirely:
-  canonical root admission supplies the direct host path, while the total alias classifier remains only
-  for provider-guest projections.
-- Several error paths still collapse subprocess context into `die`/`ExitFailure`; structured
-  `LifecycleFailure` is not a universal boundary contract.
+The lifecycle foundation also provides opaque planned resources and edges, exact operation/dependency
+validation, matching prepared-operation/precondition pairs, phase-indexed handles, explicit adoption,
+and a legal persisted-journal transition graph. This makes forged readiness and cross-plan/resource use
+unrepresentable at the new boundary.
 
-No current test establishes that illegal ordering is unrepresentable. Historical live-run counts and
-phase status are intentionally not repeated here; see
+The repository does not yet enforce that boundary end to end:
+
+- several provider, staging, cluster, chart, NVIDIA, and teardown effects still use compatibility waits
+  or return `IO ()` rather than consuming a prepared operation;
+- dependent operations fail closed until the downstream interpreter owns complete ordered dependency
+  traversal and fresh re-observation immediately before preparation;
+- provider adapters still need their resource-authoritative conditional effects and recovery paths; and
+- structured `LifecycleFailure` is not yet the universal subprocess boundary.
+
+Those are assigned integration obligations in the dependent provider/interpreter phases, not missing
+constructor sealing in Phase 9. Historical live-run counts and phase status are intentionally not
+repeated here; see
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Target contract

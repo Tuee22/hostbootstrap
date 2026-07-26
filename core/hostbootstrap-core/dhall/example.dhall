@@ -87,7 +87,6 @@ in  { dockerfile = "docker/demo.Dockerfile"
         , CommandClass.HostOrchestratorCommand
         , CommandClass.ProjectCommand
         ]
-      , resourceEnvelope = { cpu = 4, memory = "8GiB", storage = "20GiB" }
       , childContextKinds =
         [ ContextKind.VMOrchestrator
         , ContextKind.ClusterService

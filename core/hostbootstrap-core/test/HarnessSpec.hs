@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module HarnessSpec (tests) where
@@ -6,12 +5,13 @@ module HarnessSpec (tests) where
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (find, isInfixOf)
+import Data.List (isInfixOf)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
-import HostBootstrap.Cluster.Lifecycle (ClusterProfile (TestCase))
-import qualified HostBootstrap.Config.Vocab as V
+import qualified Data.Text.IO as TIO
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
-import System.Directory (doesDirectoryExist)
+import System.Directory (doesDirectoryExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -22,64 +22,24 @@ tests =
     testGroup
         "HarnessSpec"
         [ testGroup "per-case isolation + teardown" matrixCases
+        , testGroup "typed test matrix" typedMatrixCases
         , testGroup "test-suite selection" suiteCases
-        , testGroup "guardTestDelete" guardCases
-        , testGroup "budget-slicing" sliceCases
-        , testGroup "run-model selection" runModelCases
-        , testGroup "OneShot run argv" oneShotCases
+        , testGroup "test-data ownership" ownershipCases
+        , testGroup "single execution representation" representationCases
         ]
-
-oneShotCases :: [TestTree]
-oneShotCases =
-    [ testCase "docker run --rm is budget-capped, mount-bound, and command-tailed" $
-        oneShotRunArgs
-            OneShotSpec
-                { oneShotImage = "demo:linux-cpu-amd64"
-                , oneShotCommand = ["test", "web-build"]
-                , oneShotCpus = 6
-                , oneShotMemoryBytes = 10 * 1024 * 1024 * 1024
-                , oneShotMounts = [V.Mount{V.source = "./.test_data", V.target = "/data", V.readOnly = False}]
-                , oneShotInteractive = False
-                }
-            @?= [ "run"
-                , "--rm"
-                , "--cpus"
-                , "6"
-                , "--memory"
-                , show (10 * 1024 * 1024 * 1024 :: Integer)
-                , "-v"
-                , "./.test_data:/data"
-                , "demo:linux-cpu-amd64"
-                , "test"
-                , "web-build"
-                ]
-    , testCase "interactive adds -it and a read-only mount gets :ro" $
-        oneShotRunArgs
-            OneShotSpec
-                { oneShotImage = "img"
-                , oneShotCommand = []
-                , oneShotCpus = 1
-                , oneShotMemoryBytes = 1024
-                , oneShotMounts = [V.Mount{V.source = "/host", V.target = "/in", V.readOnly = True}]
-                , oneShotInteractive = True
-                }
-            @?= ["run", "--rm", "-it", "--cpus", "1", "--memory", "1024", "-v", "/host:/in:ro", "img"]
-    ]
 
 matrixCases :: [TestTree]
 matrixCases =
-    [ testCase "testCaseProfile isolates each case" $
-        testCaseProfile (Case "case1" 1 False) @?= TestCase "case1"
-    , testCase "teardown runs for every case, even when the body fails" $ do
+    [ testCase "teardown runs for every case, even when the body fails" $ do
         tornDown <- newIORef []
         let seams =
                 Seams
-                    { seamSetup = \c -> pure (caseId c)
+                    { seamSetup = pure . T.unpack . caseIdText . caseId
                     , seamRun = \_ c ->
-                        if caseId c == "boom" then ioError (userError "kaboom") else pure Pass
+                        if caseId c == cid "boom" then ioError (userError "kaboom") else pure Pass
                     , seamTeardown = \env _ -> modifyIORef' tornDown (env :)
                     }
-        report <- runMatrix seams [Case "ok" 1 False, Case "boom" 1 False]
+        report <- runMatrix seams [fixtureCase "ok", fixtureCase "boom"]
         td <- readIORef tornDown
         assertBool "both cases torn down" ("ok" `elem` td && "boom" `elem` td)
         lookup "ok" (reportResults report) @?= Just Pass
@@ -91,31 +51,67 @@ matrixCases =
         let seams =
                 Seams
                     { seamSetup = \c ->
-                        if caseId c == "boom" then ioError (userError "setup-kaboom") else pure (caseId c)
+                        if caseId c == cid "boom" then ioError (userError "setup-kaboom") else pure (caseId c)
                     , seamRun = \_ _ -> pure Pass
                     , seamTeardown = \_ _ -> pure ()
                     }
-        report <- runMatrix seams [Case "boom" 1 False, Case "ok" 1 False]
+        report <- runMatrix seams [fixtureCase "boom", fixtureCase "ok"]
         case lookup "boom" (reportResults report) of
             Just (Fail msg) -> assertBool ("setup failure surfaced: " ++ msg) ("setup-kaboom" `isInfixOf` msg)
             other -> assertFailure ("expected boom to Fail, got " ++ show other)
         lookup "ok" (reportResults report) @?= Just Pass
     ]
 
+typedMatrixCases :: [TestTree]
+typedMatrixCases =
+    [ testCase "validated IDs reject empty, malformed, and reserved values" $ do
+        mkCaseId "" @?= Left EmptyCaseId
+        mkCaseId "all" @?= Left (ReservedCaseId "all")
+        mkCaseId "has space" @?= Left (InvalidCaseId "has space")
+        mkVariantId "" @?= Left EmptyVariantId
+        mkVariantId "has space" @?= Left (InvalidVariantId "has space")
+    , testCase "construction rejects every incomplete or ambiguous relation" $ do
+        mkTestMatrix [] [draft "v0" ()] [] @?= Left EmptyCaseRegistry
+        (mkTestMatrix [cid "a"] [] [] :: Either TestMatrixError (TestMatrix ())) @?= Left EmptyVariantRegistry
+        mkTestMatrix [cid "a", cid "a"] [draft "v0" ()] [(cid "a", [vid "v0"])] @?= Left (DuplicateCaseIds [cid "a"])
+        mkTestMatrix [cid "a"] [draft "v0" (), draft "v0" ()] [(cid "a", [vid "v0"])] @?= Left (DuplicateVariantIds [vid "v0"])
+        mkTestMatrix [cid "a", cid "b"] [draft "v0" ()] [(cid "a", [vid "v0"])] @?= Left (MissingCaseRows [cid "b"])
+        mkTestMatrix [cid "a"] [draft "v0" ()] [(cid "a", [vid "v0"]), (cid "a", [vid "v0"])] @?= Left (DuplicateCaseRows [cid "a"])
+        mkTestMatrix [cid "a"] [draft "v0" ()] [(cid "a", [vid "v0"]), (cid "b", [vid "v0"])] @?= Left (UnknownCaseRows [cid "b"])
+        mkTestMatrix [cid "a"] [draft "v0" ()] [(cid "a", [])] @?= Left (EmptyVariantRow (cid "a"))
+        mkTestMatrix [cid "a"] [draft "v0" ()] [(cid "a", [vid "missing"])] @?= Left (UnknownVariantReferences [(cid "a", vid "missing")])
+        mkTestMatrix [cid "a"] [draft "v0" ()] [(cid "a", [vid "v0", vid "v0"])] @?= Left (DuplicateVariantPairs [(cid "a", vid "v0")])
+        mkTestMatrix [cid "a"] [draft "v0" (), draft "orphan" ()] [(cid "a", [vid "v0"])] @?= Left (OrphanVariants [vid "orphan"])
+    , testCase "selection preserves sharing and distinct variants without duplication" $ do
+        matrix <-
+            either (assertFailure . show) pure $
+                mkTestMatrix
+                    [cid "a", cid "b"]
+                    [draft "shared" ("shared-value" :: T.Text), draft "extra" "extra-value"]
+                    [(cid "a", [vid "shared", vid "extra"]), (cid "b", [vid "shared"])]
+        selected <- either (assertFailure . show) pure (selectTestMatrix (selector "all") matrix)
+        map (variantDraftId . selectedVariantDraft) selected @?= [vid "shared", vid "extra"]
+        map selectedVariantCaseIds selected @?= [cid "a" :| [cid "b"], cid "a" :| []]
+        one <- either (assertFailure . show) pure (selectTestMatrix (selector "b") matrix)
+        map (variantDraftId . selectedVariantDraft) one @?= [vid "shared"]
+        map selectedVariantCaseIds one @?= [cid "b" :| []]
+        selectTestMatrix (selector "missing") matrix @?= Left (UnknownSelectedCase (cid "missing"))
+    ]
+
 suiteCases :: [TestTree]
 suiteCases =
     [ testCase "emptySuite `all` renders 0/0 passed" $ do
-        outcome <- runSuiteSelection emptySuite [oneVariant] allCasesSelector
+        outcome <- runSuiteSelection emptySuite []
         case outcome of
             Right report -> assertBool "report card shows 0/0" ("0/0 passed" `isInfixOf` reportCard report)
             Left err -> assertFailure ("expected Right, got Left " ++ err)
     , testCase "`all` runs the whole matrix (rows labeled by variant)" $ do
-        outcome <- runSuiteSelection twoCaseSuite [oneVariant] allCasesSelector
+        outcome <- runSuiteSelection twoCaseSuite [variant ["a", "b"] "v0"]
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] a", "[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
     , testCase "a named case runs only that case" $ do
-        outcome <- runSuiteSelection twoCaseSuite [oneVariant] "b"
+        outcome <- runSuiteSelection twoCaseSuite [variant ["b"] "v0"]
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
@@ -125,11 +121,11 @@ suiteCases =
             suite =
                 TestSuite
                     (pure (Right ()))
-                    (\label -> record ("up:" ++ T.unpack label) >> pure label)
-                    [Case "a" 1 False]
-                    (\label _ -> record ("assert:" ++ T.unpack label) >> pure Pass)
+                    (\ident -> record ("up:" ++ T.unpack (variantIdText ident)) >> pure ident)
+                    [fixtureCase "a"]
+                    (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
                     (record "down")
-        outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
+        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] a", "[v1] a"]
@@ -145,14 +141,14 @@ suiteCases =
                 TestSuite
                     (pure (Right ()))
                     ( \label ->
-                        if label == T.pack "v0"
+                        if label == vid "v0"
                             then record "up:v0-boom" >> ioError (userError "project up kaboom")
-                            else record ("up:" ++ T.unpack label) >> pure label
+                            else record ("up:" ++ T.unpack (variantIdText label)) >> pure label
                     )
-                    [Case "a" 1 False]
-                    (\label _ -> record ("assert:" ++ T.unpack label) >> pure Pass)
+                    [fixtureCase "a"]
+                    (\label _ -> record ("assert:" ++ T.unpack (variantIdText label)) >> pure Pass)
                     (record "down")
-        outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
+        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
             Right (Report rs) -> do
@@ -172,10 +168,10 @@ suiteCases =
                 TestSuite
                     (pure (Right ()))
                     pure
-                    [Case "a" 1 False]
+                    [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     tearDown
-        outcome <- runSuiteSelection suite [variant "v0", variant "v1"] allCasesSelector
+        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
         case outcome of
             Right (Report rs) -> do
                 case lookup "[v0] a" rs of
@@ -191,13 +187,13 @@ suiteCases =
                 TestSuite
                     (pure (Right ()))
                     (\_ -> throwIO (SafetyRefusal "pre-existing managed VM"))
-                    [Case "a" 1 False]
+                    [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (modifyIORef' teardownCalls (+ 1))
             withConfig body = do
                 modifyIORef' configEntries (+ 1)
                 body `finally` modifyIORef' configExits (+ 1)
-        outcome <- runSuiteSelection suite [ConfigVariant "v0" withConfig] allCasesSelector
+        outcome <- runSuiteSelection suite [ConfigVariant (vid "v0") (cid "a" :| []) withConfig]
         case outcome of
             Right (Report rs) ->
                 case lookup "[v0] a" rs of
@@ -217,10 +213,10 @@ suiteCases =
                 TestSuite
                     (pure (Right ()))
                     (\_ -> throwIO (LifecycleFailure cause))
-                    [Case "a" 1 False]
+                    [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
-        outcome <- runSuiteSelection suite [oneVariant] allCasesSelector
+        outcome <- runSuiteSelection suite [variant ["a"] "v0"]
         case outcome of
             Right (Report rs) ->
                 case lookup "[v0] a" rs of
@@ -230,14 +226,6 @@ suiteCases =
                         assertBool ("no leaked marker: " ++ msg) (not (lifecycleFailureMarker `isInfixOf` msg))
                     other -> assertFailure ("expected a legible lifecycle failure, got " ++ show other)
             Left err -> assertFailure ("expected Right, got Left " ++ err)
-    , testCase "an unknown case fails fast, listing the valid ids and `all`" $ do
-        outcome <- runSuiteSelection twoCaseSuite [oneVariant] "nope"
-        case outcome of
-            Left err ->
-                assertBool
-                    ("names the valid ids + all: " ++ err)
-                    ("a" `isInfixOf` err && "b" `isInfixOf` err && "all" `isInfixOf` err)
-            Right _ -> assertFailure "expected Left for an unknown case"
     ]
   where
     -- A stack-driven suite (label-aware bring-up, passing assertions) — exercises
@@ -246,20 +234,15 @@ suiteCases =
         TestSuite
             (pure (Right ()))
             pure
-            [Case "a" 1 False, Case "b" 1 False]
+            [fixtureCase "a", fixtureCase "b"]
             (\_ _ -> pure Pass)
             (pure ())
-    variant label = ConfigVariant (T.pack label) id
-    oneVariant = variant "v0"
+    variant :: [T.Text] -> T.Text -> ConfigVariant
+    variant cases label = ConfigVariant (vid label) (nonEmptyCaseIds cases) id
 
-guardCases :: [TestTree]
-guardCases =
-    [ testCase "a prefixed test cluster name is allowed" $
-        guardTestDelete "demo-test-" "demo-test-case1" @?= Right "demo-test-case1"
-    , testCase "a non-prefixed (production) name is refused" $
-        guardTestDelete "demo-test-" "demo"
-            @?= Left (NotPrefixed "demo-test-" "demo")
-    , testCase "self-created .test_data is removed; a found one is preserved" $ do
+ownershipCases :: [TestTree]
+ownershipCases =
+    [ testCase "self-created .test_data is removed; a found one is preserved" $ do
         selfCreatedTestDataRemoval False testDataRoot @?= [testDataRoot]
         selfCreatedTestDataRemoval True testDataRoot @?= []
     , testCase "self-created test data and its ownership lock are removed after an exception" $
@@ -272,35 +255,49 @@ guardCases =
             doesDirectoryExist lockPath >>= (@?= False)
     ]
 
-sliceCases :: [TestTree]
-sliceCases =
-    [ testCase "divisible cases split by weight; indivisible get the full budget" $ do
-        let budget = V.Budget 10 20 40
-            cases = [Case "a" 1 False, Case "b" 1 False, Case "gpu" 1 True]
-            sliced = sliceBudget budget cases
-        sliceFor "a" sliced @?= Just (V.Budget 5 10 20)
-        sliceFor "b" sliced @?= Just (V.Budget 5 10 20)
-        sliceFor "gpu" sliced @?= Just (V.Budget 10 20 40)
-    , testCase "concurrent divisible slices sum within budget (floor never overcommits)" $ do
-        let budget = V.Budget 7 7 7
-            cases = [Case "a" 1 False, Case "b" 2 False]
-            divisible = [s | (c, s) <- sliceBudget budget cases, not (caseIndivisible c)]
-            totalCpu = sum [b.cpu | b <- divisible]
-        assertBool "cpu slices sum within budget" (totalCpu <= 7)
-    , testCase "splitByWeight floors proportionally" $
-        splitByWeight (V.Budget 10 20 40) [1, 1] @?= [V.Budget 5 10 20, V.Budget 5 10 20]
+representationCases :: [TestTree]
+representationCases =
+    [ testCase "the harness and Core.dhall contain no parallel execution selector" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        harness <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Harness.hs")
+        core <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
+        let selectorType = "Run" <> "Model"
+        mapM_
+            (\token -> assertBool "Harness.hs must not define a parallel execution selector" (not (token `T.isInfixOf` harness)))
+            ["data " <> selectorType, "data " <> selectorType <> "Key", "select" <> selectorType, "data Topology"]
+        assertBool "Core.dhall must not define a parallel execution union" (not (("let " <> selectorType) `T.isInfixOf` core))
+    , testCase "typed drafts stay pure and dead/stringly matrix plumbing is absent" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        harness <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Harness.hs")
+        command <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Command.hs")
+        demoConfig <- TIO.readFile (root </> "demo" </> "src" </> "HostBootstrapDemo" </> "Config.hs")
+        fixture <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "test" </> "Fixture.hs")
+        assertBool "VariantDraft is exactly stable identity plus a pure typed payload" ("data VariantDraft a = VariantDraft VariantId a" `T.isInfixOf` harness)
+        assertBool "VariantDraft constructor remains opaque" (not ("VariantDraft (..)" `T.isInfixOf` harness))
+        assertBool "the engine receives typed selections, not a raw String selector" (not ("[ConfigVariant] ->\n    String ->" `T.isInfixOf` harness))
+        assertBool "the command boundary parses the typed selector" ("parseCaseSelector" `T.isInfixOf` command)
+        let deadField = "test" <> "Suites"
+        assertBool "demo TestConfig has no dead suite list" (not (deadField `T.isInfixOf` demoConfig))
+        assertBool "generic fixture TestConfig has no dead suite list" (not (deadField `T.isInfixOf` fixture))
     ]
-  where
-    sliceFor cid sliced = snd <$> find ((== cid) . caseId . fst) sliced
 
-runModelCases :: [TestTree]
-runModelCases =
-    [ testCase "cluster topology selects Cluster" $
-        selectRunModel (RunModelKey ClusterTopology False) @?= Cluster
-    , testCase "daemon topology selects HostDaemon" $
-        selectRunModel (RunModelKey DaemonTopology False) @?= HostDaemon
-    , testCase "container-only with a host-native build selects HostNative" $
-        selectRunModel (RunModelKey ContainerOnly True) @?= HostNative
-    , testCase "container-only without host-native selects OneShot" $
-        selectRunModel (RunModelKey ContainerOnly False) @?= OneShot
-    ]
+cid :: T.Text -> CaseId
+cid value = either (error . show) id (mkCaseId value)
+
+vid :: T.Text -> VariantId
+vid value = either (error . show) id (mkVariantId value)
+
+draft :: T.Text -> a -> VariantDraft a
+draft ident = variantDraft (vid ident)
+
+selector :: T.Text -> CaseSelector
+selector value = either (error . show) id (parseCaseSelector value)
+
+fixtureCase :: T.Text -> Case
+fixtureCase ident = Case (cid ident) 1 False
+
+nonEmptyCaseIds :: [T.Text] -> NonEmpty CaseId
+nonEmptyCaseIds (first : rest) = cid first :| map cid rest
+nonEmptyCaseIds [] = error "test ConfigVariant needs at least one case"

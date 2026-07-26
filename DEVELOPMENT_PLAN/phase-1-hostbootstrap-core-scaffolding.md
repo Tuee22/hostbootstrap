@@ -12,7 +12,7 @@
 
 **Status**: Done
 
-The `hostbootstrap-core` Cabal package exists, pinned to the base-image GHC toolchain, with the
+The `hostbootstrap-core` Cabal package exists, selecting the repository's supported GHC line, with the
 `HostBootstrap.*` module surface, the bare `hostbootstrap` executable, and the generic
 `runHostBootstrapCLI` project entrypoint over a buildable command tree. `cabal build all` and `cabal
 test` pass, and `hostbootstrap --help` exits 0. Later phases own the host-management logic exposed
@@ -38,7 +38,7 @@ phases own the concrete host-management behavior.
 #### Objective
 
 Create the `hostbootstrap-core` Cabal package with a `library` stanza and a bare executable
-stanza, pinned to the base-image GHC toolchain.
+stanza, selecting the repository's supported GHC line.
 
 #### Deliverables
 
@@ -84,9 +84,8 @@ onward has named modules to fill in and the command-tree extension contract has 
 #### Command Surface
 
 - `hostbootstrap --help` lists the (initially empty) core command groups.
-- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to extend the tree through its
-  `ProjectSpec` streams — the lift chain (`chain :: cfg -> [Step]` via `withChain`), the service-handler
-  registry (`withServices`) plus config selector (`withServiceConfig`; config-selected `service run`), a
+- A project binary calls `runHostBootstrapCLI "<project>" projectSpec` to extend the tree through an
+  opaque finalized `ProjectSpec` — additive plan fragments, a typed service registry/role codecs, a
   non-empty `TestSuite`, a `check-code` action, any
   project `ConfigArtifact`s, and its init builders; projects add no new verbs
   (see [development_plan_standards.md § P](development_plan_standards.md)).

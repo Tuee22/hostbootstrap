@@ -3,22 +3,33 @@
 -- | Canonical project-root admission and scope-bound path projections.
 module HostBootstrap.ProjectRoot
     ( CanonicalProjectRoot
+    , CanonicalHostPath
     , ProjectRootError (..)
     , withCanonicalProjectRoot
     , canonicalProjectRootPath
-    , durableRootPath
+    , canonicalDurableHostPath
+    , canonicalHostPathValue
     )
 where
 
 import Control.Exception (IOException, try)
-import System.Directory (canonicalizePath, doesDirectoryExist)
-import System.FilePath (isAbsolute, normalise, takeDirectory, takeFileName, (</>))
+import Data.List (isPrefixOf)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesPathExist)
+import System.FilePath (addTrailingPathSeparator, equalFilePath, isAbsolute, normalise, takeDirectory, takeFileName, (</>))
 
--- | A root whose constructor and phantom identity are private to this module.
-newtype CanonicalProjectRoot rootId = CanonicalProjectRoot FilePath
+-- | A root whose constructor and scope/root identities are private to this
+-- module. Both phantoms are minted by 'withCanonicalProjectRoot'.
+newtype CanonicalProjectRoot scope rootId = CanonicalProjectRoot FilePath
+
+-- | An absolute host path derived from one canonical project-root identity.
+-- The constructor is private; host adapters consume this type instead of a raw
+-- 'FilePath'.
+newtype CanonicalHostPath scope rootId = CanonicalHostPath FilePath
 
 data ProjectRootError
     = ProjectRootMissing FilePath
+    | ProjectRootNotDirectory FilePath
+    | ProjectRootEscapesAnchor FilePath FilePath
     | ProjectRootResolutionFailed FilePath String
     deriving (Eq, Show)
 
@@ -29,7 +40,7 @@ data ProjectRootError
 withCanonicalProjectRoot ::
     FilePath ->
     FilePath ->
-    (forall rootId. CanonicalProjectRoot rootId -> IO a) ->
+    (forall scope rootId. CanonicalProjectRoot scope rootId -> IO a) ->
     IO (Either ProjectRootError a)
 withCanonicalProjectRoot configPath configuredRoot action = do
     let configDir = takeDirectory configPath
@@ -43,13 +54,33 @@ withCanonicalProjectRoot configPath configuredRoot action = do
     case resolved of
         Left err -> pure (Left (ProjectRootResolutionFailed candidate (show err)))
         Right root -> do
+            anchorResolved <- try (canonicalizePath (normalise anchor)) :: IO (Either IOException FilePath)
+            let escaped = case anchorResolved of
+                    Right stableAnchor ->
+                        not (isAbsolute configuredRoot)
+                            && not
+                                ( equalFilePath stableAnchor root
+                                    || addTrailingPathSeparator stableAnchor `isPrefixOf` addTrailingPathSeparator root
+                                )
+                    Left _ -> False
+            present <- doesPathExist root
             exists <- doesDirectoryExist root
-            if exists
-                then Right <$> action (CanonicalProjectRoot root)
-                else pure (Left (ProjectRootMissing root))
+            case anchorResolved of
+                Left err -> pure (Left (ProjectRootResolutionFailed anchor (show err)))
+                Right stableAnchor
+                    | escaped -> pure (Left (ProjectRootEscapesAnchor root stableAnchor))
+                    | not present -> pure (Left (ProjectRootMissing root))
+                    | not exists -> pure (Left (ProjectRootNotDirectory root))
+                    | otherwise -> Right <$> action (CanonicalProjectRoot root)
 
-canonicalProjectRootPath :: CanonicalProjectRoot rootId -> FilePath
+canonicalProjectRootPath :: CanonicalProjectRoot scope rootId -> FilePath
 canonicalProjectRootPath (CanonicalProjectRoot root) = root
 
-durableRootPath :: CanonicalProjectRoot rootId -> FilePath
-durableRootPath root = canonicalProjectRootPath root </> ".data"
+-- | The canonical host-side Production durable root.
+canonicalDurableHostPath :: CanonicalProjectRoot scope rootId -> CanonicalHostPath scope rootId
+canonicalDurableHostPath root = CanonicalHostPath (canonicalProjectRootPath root </> ".data")
+
+-- | Render a canonical host path for the small set of trusted adapters that
+-- consume it. Construction remains private.
+canonicalHostPathValue :: CanonicalHostPath scope rootId -> FilePath
+canonicalHostPathValue (CanonicalHostPath path) = path

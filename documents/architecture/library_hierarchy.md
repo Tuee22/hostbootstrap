@@ -4,8 +4,8 @@
 **Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)
 
-> **Purpose**: Describe the three Cabal library levels, the target one-additive-merge-idiom-per-stream
-> contract, and the current APIs that still permit replacement or shadow-shaped values.
+> **Purpose**: Describe the three Cabal library levels and the implemented checked
+> additive/single-assignment extension-stream contract.
 
 ## TL;DR
 
@@ -15,18 +15,17 @@
 - The reusable surface is a three-level Cabal library hierarchy: `hostbootstrap-core` (L0) ◄
   `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2). `mcts` and `hostbootstrap-demo` consume L0
   directly.
-- The target extension contract admits only additive **streams**, one merge idiom each: the **lift chain**
-  (`chain :: cfg -> [Step]`, core + project steps), the **Dhall vocabulary**, the
+- The extension contract admits checked additive **streams**, one merge idiom each: ordered step
+  fragments finalized as one `StepPlan`, the **Dhall vocabulary**, the
   **schema-gen** `ConfigArtifact` registry, the **test seams** `Seams`, and the **service handlers**
   (the `ServiceType` variants `service run` resolves). The command surface itself is never a stream.
 - A project's primary contribution is its lift **chain value** plus its service handlers — never a new
   noun verb: the core ships host-management step kinds and the project contributes its own step kinds
   into the same ordered `[Step]`, and registers service handlers behind the fixed `service` verb.
-- Current APIs enforce only part of that target. `withServices` appends and core concatenates the
-  project artifact delta, but `withChain`, `withFrameContext`, `withTeardown`, and
-  `withServiceConfig` replace earlier values. Public `Step`/`StepKind` constructors also permit
-  duplicate names, a project kind that renders like a core kind, and noncontiguous repeated frames.
-  The opaque target constructors make append-only composition and disjoint identities structural.
+- `addSteps`, `addArtifacts`, `addAssemblyInputs`, and `addServices` append without erasure.
+  `setFrameContext` and `setTeardown` are explicit single-assignment slots whose absence or duplicate
+  assignment prevents finalization. Raw `ProjectSpec`/`Step` constructors are hidden; plan validation
+  enforces disjoint core/project identities, exact contiguous frame order, and explicit reverse policy.
 - The chain shape is the canonical model owned by
   [composition_methodology](composition_methodology.md); this document defers to it for the chain and
   the recursive `project up` interpreter and describes only how the streams layer.
@@ -37,7 +36,7 @@ The hierarchy is a chain of pinned Cabal libraries, each importing the one below
 
 | Level | Library | Imports | Adds |
 |-------|---------|---------|------|
-| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). It owns **no default config values**. Current `psInit`, `psTestInit`, and `psTestConfig` are independent project callbacks; the demo shares a helper by convention. The target project assembler is the only structural default-bearing path. |
+| L0 | `hostbootstrap-core` | — | The host-management base: the fixed `project`/`test`/`service`/`context`/`check-code` command surface, the core host-management `Step` kinds, the `Core.dhall` vocabulary, the `coreArtifacts` registry, the service-handler registry, and the composable-operation algebra + the recursive lift interpreter (see [composition_methodology](composition_methodology.md)). It owns **no default config values**. One scope-aware restricted `psAssemble` is the structural default source for Production init and Harness variants; `psTestInit` separately creates the project's test config. |
 | L1 | `daemon-substrate` | L0 | The daemon run-model surface — the concrete business-logic composition primitives (roles over durable external stores) on top of core. |
 | L2 | `jitML`, `infernix` | L1 | App-level step kinds, vocabulary, and artifacts on top of the daemon substrate. |
 
@@ -56,17 +55,14 @@ generic project `ENTRYPOINT`. The command surface itself is fixed and is never a
 ## The Extension Streams
 
 A level is intended to compose on the level below through five parallel streams. Each target stream has
-one additive merge idiom. The current implementation reaches that rule for services, artifact
-concatenation, and vocabulary by convention, but its function-valued setters and public step constructors
-do not universally preserve the lower contribution. The sections below state the target rule and call
-out current enforcement.
+one additive merge idiom. Additive streams append; frame-context and teardown are named checked
+single-assignment slots. The sections below state current enforcement.
 
 ### Stream 1 — The Lift Chain
 
-The first stream is the project's lift **chain**: an ordered `[Step]` value
-(`chain :: cfg -> [Step]`) that the core's recursive `project up` interpreter walks frame by
-frame. The intended merge contributes new step kinds into that single list while preserving the lower
-plan; the core's
+The first stream is the project's lift **plan**: ordered `cfg -> [Step]` fragments validated into the
+opaque `StepPlan` that the recursive `project up` interpreter walks frame by frame. `addSteps`
+contributes new step kinds while preserving lower fragments; the core's
 host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
 deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
 interleave freely in one chain. This Step algebra is the reuse unit and the workload-extension seam.
@@ -83,21 +79,20 @@ runHostBootstrapCLI progName projectSpec
 The core command surface (`project init|up|down|destroy`, `test init|run`, `service init|schema|run`,
 `context`, `check-code`) shares one parser and dispatch shape between the bare `hostbootstrap` binary and
 project binaries. Behavior is intentionally different: the bare entrypoint supplies minimal empty/no-op
-project behavior. A project entrypoint must supply a non-empty test suite, but current validation does
-not require a non-empty chain or service registry and does not inspect function-valued callbacks. See
-[hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project
-can never add or shadow a core top-level verb, but `ProjectStep String` can currently use the rendered
-name of a core kind and `Step`/`StepFrame` constructors permit duplicate or noncontiguous frames.
-`withChain` also replaces any previously attached chain instead of accepting a typed delta.
+project behavior. A project entrypoint must finalize a non-empty test suite and step contribution, one
+frame-context projection, and one teardown projection; artifacts, inputs, typed step identities, and
+services are duplicate-checked. See
+[hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project can
+never add or shadow a core top-level verb or typed core step identity; presentation labels do not select
+behavior.
 
 - **WRONG**: a project re-implements VM bring-up or kind cluster deploy with its own top-level noun
   verb, intending to "extend" the core. This is wrong because it shadows the core step kind with a
   parallel verb — behavior then diverges across binaries and the append-only guarantee is broken; it
   also introduces a second representation the single-representation doctrine forbids.
-- **RIGHT (target)**: the project supplies a typed delta whose identifiers are disjoint from core and
+- **RIGHT**: the project supplies a typed delta whose identifiers are disjoint from core and
   whose frames extend the validated plan; the append combinator preserves lower steps, and construction
-  rejects a shadow before dispatch. Today this discipline is a consumer convention, not a guarantee of
-  the public constructors.
+  rejects a duplicate or invalid frame return before dispatch.
 
 ### Stream 2 — Dhall Vocabulary
 
@@ -125,23 +120,23 @@ The schema-generation stream is assembled by core concatenating `coreArtifacts` 
 artifact **delta** passed to `projectSpec`:
 
 ```haskell
-withChain projectChain
-  (projectSpec projectSuite projectCheckCode
-      [ artifactOf @ProjectConfig "project" sampleProjectConfig ]
-      projectInit projectTestInit projectTestConfig)
+addArtifacts
+  [artifactOf "projectWidget" projectWidgetCodec sampleProjectWidget]
+  (projectSpec projectSuite projectCheckCode [] testConfigCodec projectTestInit projectAssemble)
 ```
 
 The read-only `context` surface then prints the transitive union of the in-scope schemas and
-materializes static example renders from the same registry. The current `ConfigArtifact` constructor is
-public and can pair arbitrary schema/render text; the target admits only opaque validated codec-backed
-artifacts. Runtime child projection/delivery is separate from this registry and is currently split among
+materializes static example renders from the same registry. `ConfigArtifact` construction is opaque:
+each entry requires one admitted codec that owns both its schema and render. The project-local `cfg`
+schema remains the separate `service schema` surface. Runtime child projection/delivery is separate from
+this registry and is currently split among
 bootstrap/frame-context/deployment seams. See
 [config_generation](../engineering/config_generation.md).
 
 - **WRONG**: a project passes `coreArtifacts ++ projectArtifacts` as its `ProjectSpec` argument. This
   is wrong because `HostBootstrap.Command` already prepends `coreArtifacts`, producing duplicates.
-- **RIGHT**: pass only the project artifact delta. Core performs the one concatenation. In the target,
-  each delta is built through an opaque codec so its printed schema cannot be unrelated text.
+- **RIGHT**: pass only the project artifact delta. Core performs the one concatenation, and each delta is
+  built through an opaque validated codec so its printed schema cannot be unrelated text.
 
 ### Stream 4 — Test-Harness Seams
 
@@ -149,9 +144,9 @@ The fourth stream is the standardized test harness. A project supplies a non-emp
 existential (safety precondition, bring-up, case matrix, per-case assertion, teardown); `ProjectSpec` threads
 that suite into the inherited `test` surface. The `Seams`/`runMatrix` engine is built internally by the harness
 (`assertSeams`), not supplied by the project.
-The harness **drives the real `project up`**: it **generates** the run's `<project>.dhall` functionally via
-the project's own independent `psTestConfig` callback (the demo shares a helper with `psInit` by
-convention; core does not), never shells the CLI,
+The harness **drives the real `project up`**: it **generates** the run's `<project>.dhall` functionally
+through the Harness request of the project's single restricted `psAssemble`, under fresh run authority
+and the matching mapped codec. It never shells the CLI,
 runs `project up`, asserts in-frame, then `project destroy`; it owns no second cluster-bring-up path. A
 suite may carry **more than one config variant** (the demo's two-message run); the harness stands each up,
 asserts, and tears it down in turn. The standardized-test-harness phase
@@ -159,12 +154,12 @@ asserts, and tears it down in turn. The standardized-test-harness phase
 
 ### Stream 5 — Service Handlers
 
-The fifth stream is the project's **service handlers**. A project defines its long-running roles as a Dhall
-`ServiceType` ADT (`< Web : … | WorkloadOrchestrator : … >`) and contributes the matching handlers as a
-registry threaded through `ProjectSpec`; the fixed `service run` verb dispatches on the variant. The
-registry may be empty (not every project ships a service). This stream completes the target extension
-contract: every level adds through the five typed streams and never through a new command verb. The
-current exceptions for other stream setters remain those documented above.
+The fifth stream is the project's **typed service registry**. Each definition inseparably binds one
+stable identity, structural config-to-role-field projection, reflected role-wire codec, and handler.
+`addServices` appends registries; finalization rejects duplicate identities and hashes the closed
+registry into the full project codec's `specDigest`. The fixed `service run` verb verifies one snapshot
+and dispatches the typed request. The registry may be empty, in which case both Production and Harness
+schema families report structured empty results.
 
 ## Why Parallel Streams
 
@@ -182,8 +177,9 @@ statement of the contract lives in
 The reusable surface is the chain stream and the recursive `project` interpreter this document
 describes, exercised end-to-end on real hardware:
 
-- Stream 1 is the single contributed chain value walked by the recursive `project up` interpreter and
-  threaded through `ProjectSpec`. Under the generic model (§ BB) the chain is `chain :: cfg -> [Step]` over
+- Stream 1 is the ordered set of additive step fragments resolved to one opaque `StepPlan` walked by the
+  recursive `project up` interpreter and threaded through finalized `ProjectSpec`. Under the generic model
+  (§ BB), fragments are `cfg -> [Step]` over
   a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` through the
   substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
   `demo/src/HostBootstrapDemo/Commands.hs`. The core ships
@@ -195,8 +191,9 @@ describes, exercised end-to-end on real hardware:
   `accelerator` service variants and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
   persistent stack — deploy-kind → deploy-minio → deploy-registry → push-image → deploy-chart →
   expose-port, followed by the selected accelerator-daemon placement. Current native validation status
-  belongs in the development plan. Its public representation still admits empty/noncontiguous frames,
-  duplicate/render-shadowing step kinds, and replacement of an earlier chain/context/teardown value.
+  belongs in the development plan. Its public representation rejects empty/noncontiguous plans and
+  duplicate identities; frame context and teardown are checked single-assignment slots, while later
+  receipt-driven reverse traversal remains Phase 16.6.
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
   `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
   static renders surface through the read-only `context` command; child runtime projection is not a

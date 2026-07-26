@@ -11,9 +11,9 @@
 - A derived project's container is built **by the project binary**, not by the
   Python bootstrapper: the binary is the builder (see
   [build and run model](../architecture/build_and_run_model.md)).
-- The reference container is `FROM ${BASE_IMAGE}` → install the container-only
+- The reference container is `FROM ${BASE_IMAGE}` → copy the project and its ordinary
   `cabal.project` → build + install the project
-  binary (reusing the warm store) → create the image-build sibling
+  binary (opportunistically reusing the warm store) → create the image-build sibling
   `<project>.dhall` → `RUN <project> check-code` → web build (`spago build` → `esbuild`
   over the bridge-generated sources the build-image step's `writeBridge` invocation
   staged into the context) → tini ENTRYPOINT.
@@ -26,7 +26,7 @@
 ## The reference shape
 
 The derived Dockerfile (the worked example is `demo/docker/Dockerfile`) inherits the warm-store base
-image, copies both the in-repo core source and demo source, selects the **container-only** Cabal project,
+image, copies both the in-repo core source and demo source, uses the same Cabal project as the host build,
 builds and installs the project binary (reusing the warm store), writes the image-build sibling
 `<project>.dhall`, runs the code-check gate, then builds the web bundle, with tini as PID 1. At runtime the
 launch handoff overrides the image entry point with `sh`, streams a freshly minted config on standard
@@ -44,15 +44,12 @@ COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY <project> /workspace/<project>
 WORKDIR /workspace/<project>
 
-# 1. Select the container Cabal project. The host-native project must not import
-#    the absolute in-image freeze.
-RUN cp docker/container.cabal.project cabal.project
-
-# 2. Build/install the project binary (reusing the layered warm store).
+# 1. Build/install the project binary. Matching inherited store artifacts are
+#    reused; cache misses resolve and compile normally.
 RUN cabal build --enable-tests --enable-benchmarks all \
     && install -m 0755 "$(cabal list-bin ... exe:<project>)" /usr/local/bin/<project>
 
-# 3. Create the image-build config next to /usr/local/bin/<project>.
+# 2. Create the image-build config next to /usr/local/bin/<project>.
 RUN <project> project init \
     --role image-build-container \
     --output /usr/local/bin/<project>.dhall \
@@ -60,10 +57,10 @@ RUN <project> project init \
     --dockerfile docker/Dockerfile \
     ...
 
-# 4. The mandatory code-check gate.
+# 3. The mandatory code-check gate.
 RUN <project> check-code
 
-# 5. The web build. The bridge codegen is re-homed into the build-image chain
+# 4. The web build. The bridge codegen is re-homed into the build-image chain
 #    step's `writeBridge` invocation, which runs BEFORE this image build and
 #    stages the generated PureScript sources into the build context — there is no
 #    `web bridge` verb. The Dockerfile only compiles and bundles them.
@@ -85,16 +82,13 @@ skipped rather than worked around. Derived projects copy this directive verbatim
 ## The base inheritance
 
 `FROM ${BASE_IMAGE}` inherits the warm-store base
-([base image](base_image.md)). The container build reuses the warm Cabal store via
-the layered `core.freeze` ([warm store](warm_store.md)), so dependencies compatible
-with that in-image freeze are cache hits — the demo's `purescript-bridge` dependency
-lives in that warm store's `core.freeze`. The host-native project files do not import
-the in-image freeze, so this is not a claim that the host and container builds use an
-identical solved plan.
+([base image](base_image.md)). The container uses the ordinary host-compatible project file unchanged.
+Cabal reuses matching inherited store artifacts and resolves/downloads/compiles cache misses normally;
+there is no base-owned freeze import ([warm store](warm_store.md)).
 
-`BASE_IMAGE` is currently a mutable tag in the demo builder and the builder omits `--pull`. The target
-requires an explicitly pulled published `repository@sha256:...` value and rejects a same-named local base;
-see [build and release](build_release.md).
+The normal workflow pulls the published rolling tag before a compatibility build. A publisher may pass
+the resulting digest to bind that one smoke to the pulled artifact; this is not a permanent consumer pin.
+See [build and release](build_release.md).
 
 ## The `check-code` gate
 
@@ -144,19 +138,18 @@ The ordering is load-bearing and every derived project preserves it:
 | Order | Step | Why it is here |
 |---|---|---|
 | 1 | `FROM ${BASE_IMAGE}` + `COPY` | Inherit the warm-store base; bring the source in. |
-| 2 | Select `docker/container.cabal.project` | Import in-image freezes without breaking host-native builds. |
-| 3 | Build + install the binary | The web build and the gate both need the installed binary. |
-| 4 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
-| 5 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
-| 6 | `spago build` → `esbuild` over the `writeBridge`-staged sources | The build-image step's `writeBridge` invocation staged the PureScript types into the context before this build; `spago` compiles them and the bundle is the last artifact. |
-| 7 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
+| 2 | Build + install with the ordinary `cabal.project` | Reuse matching cache artifacts and allow normal online misses. |
+| 3 | `RUN <project> project init --role image-build-container ...` | Store the image-build sibling config before any normal command dispatch. |
+| 4 | `RUN <project> check-code` | Fail fast on violations before the more expensive web build. |
+| 5 | `spago build` → `esbuild` over the `writeBridge`-staged sources | The build-image step's `writeBridge` invocation staged the PureScript types into the context before this build; `spago` compiles them and the bundle is the last artifact. |
+| 6 | tini ENTRYPOINT | tini is PID 1 for correct signal handling. |
 
 ## Current Status
 
 The worked demo Dockerfile follows the current reference ordering and uses a baked descriptive
 image-build config for `check-code`. The target replaces config-derived build authority with a fresh
-ephemeral `BuildInvocationAuthority` and requires immutable published-base selection; their
-implementation and validation state remains in the development plan.
+ephemeral `BuildInvocationAuthority`; its implementation and validation state remains in the
+development plan.
 
 This is the reference shape; see [derived project standards](derived_project_standards.md)
 for the broader rules every derived project follows.

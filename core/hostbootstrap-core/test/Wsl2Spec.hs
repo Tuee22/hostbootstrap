@@ -10,12 +10,7 @@ tests :: TestTree
 tests =
   testGroup
     "Wsl2Spec"
-    [ testCase "readiness classifier" $ do
-        classifyWsl2Readiness (ExitSuccess, "", "") @?= Ready
-        classifyWsl2Readiness (ExitSuccess, "Default Version: 2\nWSL2 is unable to start since virtualization is not enabled", "") @?= Unsatisfiable
-        classifyWsl2Readiness (ExitFailure (-1), "Windows Subsystem for Linux has no installed distributions.", "") @?= Ready
-        classifyWsl2Readiness (ExitFailure 1, "Restart required", "") @?= NeedsReboot
-        classifyWsl2Readiness (ExitFailure 1, "", "unsupported") @?= Unsatisfiable
+    [ testCase "platform diagnostic classifiers" $ do
         assertBool "detects WSL virtualization startup diagnostic" $
           wslReportsVirtualizationDisabled (ExitSuccess, "WSL2 is unable to start since virtualization is not enabled", "")
         assertBool "detects UTF-16-shaped WSL virtualization startup diagnostic" $
@@ -24,8 +19,6 @@ tests =
         bcdeditHypervisorLaunchArgs @?= ["/set", "hypervisorlaunchtype", "auto"]
         wslInstallArgs "hostbootstrap-demo" "80GB"
           @?= ["--install", "-d", "Ubuntu-24.04", "--name", "hostbootstrap-demo", "--no-launch", "--vhd-size", "80GB"]
-        wslImportArgs "hostbootstrap-demo" "C:\\hb\\wsl" "ubuntu.tar"
-          @?= ["--import", "hostbootstrap-demo", "C:\\hb\\wsl", "ubuntu.tar", "--version", "2"]
         wslExecArgs "hostbootstrap-demo" ["hostbootstrap-demo", "project", "up"]
           @?= ["-d", "hostbootstrap-demo", "--", "hostbootstrap-demo", "project", "up"]
         wslTerminateArgs "hostbootstrap-demo" @?= ["--terminate", "hostbootstrap-demo"]

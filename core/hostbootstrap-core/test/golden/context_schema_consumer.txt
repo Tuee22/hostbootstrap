@@ -1,0 +1,16 @@
+-- budget
+{ cpu : Natural, memory : Natural, storage : Natural }
+
+-- podResources
+{ cpuLimit : Natural
+, cpuRequest : Natural
+, memoryLimit : Natural
+, memoryRequest : Natural
+, replicas : Natural
+}
+
+-- kindNode
+{ cpus : Natural, memory : Natural, storage : Natural }
+
+-- localBudget
+{ cpu : Natural, memory : Natural, storage : Natural }

@@ -24,7 +24,6 @@ module HostBootstrap.Context
     TopologyFrame (..),
     WitnessKind (..),
     BinaryContextError (..),
-    defaultResourceEnvelope,
     defaultRoleName,
     contextForKind,
     addRole,
@@ -78,12 +77,6 @@ import System.IO (hPutStrLn, stderr)
 #ifndef mingw32_HOST_OS
 import System.Posix.Files (FileStatus, getFileStatus, isSocket)
 #endif
-
--- | A build-time placeholder for bootstrap-only config initialization surfaces
--- that run before a parent context is available. Normal derived contexts carry
--- the parent envelope forward.
-defaultResourceEnvelope :: ResourceEnvelope
-defaultResourceEnvelope = ResourceEnvelope {cpu = 0, memory = "0GiB", storage = "0GiB"}
 
 -- | Render the global lift composition this context declares — the
 -- 'topologyFrames' chain with the current frame highlighted — for the read-only
@@ -222,15 +215,14 @@ data BinaryContext = BinaryContext
     runtimeWitnesses :: [RuntimeWitness],
     capabilities :: [Capability],
     allowedCommandClasses :: [CommandClass],
-    resourceEnvelope :: ResourceEnvelope,
     childContextKinds :: [ContextKind]
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | Construct a standalone context of the requested kind. Parent-generated
 -- child contexts use the same role-specific authority, plus a parent frame.
-contextForKind :: Text -> Text -> Text -> ResourceEnvelope -> ContextKind -> BinaryContext
-contextForKind projectName binaryName root envelope kind =
+contextForKind :: Text -> Text -> Text -> ContextKind -> BinaryContext
+contextForKind projectName binaryName root kind =
   let frameId = generatedFrameId kind 0
    in
   BinaryContext
@@ -253,7 +245,6 @@ contextForKind projectName binaryName root envelope kind =
       runtimeWitnesses = runtimeWitnessesForKind kind frameId,
       capabilities = capabilitiesForKind kind,
       allowedCommandClasses = commandClassesForKind kind,
-      resourceEnvelope = envelope,
       childContextKinds = childKindsForKind kind
     }
 
@@ -272,9 +263,9 @@ addRole role ctx =
     }
 
 -- | Construct a host-orchestrator context.
-hostOrchestratorContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
-hostOrchestratorContext projectName binaryName root envelope =
-  contextForKind projectName binaryName root envelope HostOrchestrator
+hostOrchestratorContext :: Text -> Text -> Text -> BinaryContext
+hostOrchestratorContext projectName binaryName root =
+  contextForKind projectName binaryName root HostOrchestrator
 
 -- | Derive a VM-local orchestrator context from its parent.
 deriveVMContext :: BinaryContext -> Text -> BinaryContext
@@ -386,13 +377,13 @@ deriveTestHarnessContext parent root =
 
 -- | Create the standalone image-build context used by Dockerfile bootstrap
 -- surfaces before a parent-derived runtime context exists.
-imageBuildContainerContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
-imageBuildContainerContext projectName binaryName root envelope =
-  contextForKind projectName binaryName root envelope ImageBuildContainer
+imageBuildContainerContext :: Text -> Text -> Text -> BinaryContext
+imageBuildContainerContext projectName binaryName root =
+  contextForKind projectName binaryName root ImageBuildContainer
 
 -- | Backward-compatible name for the Dockerfile bootstrap context. Runtime
 -- project containers must be parent-derived with 'deriveContainerContext'.
-standaloneContainerContext :: Text -> Text -> Text -> ResourceEnvelope -> BinaryContext
+standaloneContainerContext :: Text -> Text -> Text -> BinaryContext
 standaloneContainerContext = imageBuildContainerContext
 
 childContext ::
@@ -454,7 +445,6 @@ childContextWith parent root kind provider role witnesses caps classes childKind
       runtimeWitnesses = witnesses,
       capabilities = caps,
       allowedCommandClasses = classes,
-      resourceEnvelope = resourceEnvelope parent,
       childContextKinds = childKinds
     }
 

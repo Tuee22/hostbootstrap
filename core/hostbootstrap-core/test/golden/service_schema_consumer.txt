@@ -1,0 +1,11 @@
+service variants:
+  web
+-- full project schema (not a service-role wire)
+service schema family Production:
+  - service: web
+    wire: ServiceRoleWire
+      , roleServiceFields : {}
+service schema family Harness:
+  - service: web
+    wire: ServiceRoleWire
+      , roleServiceFields : {}

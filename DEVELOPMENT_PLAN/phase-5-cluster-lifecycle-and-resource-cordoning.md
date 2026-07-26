@@ -114,7 +114,8 @@ What non-enumeration and the landed host-root carry do and do not guarantee is
 
 ## Remaining Work
 
-**Durable read-back — open (Sprint 5.6).** Add the command-level write → destroy → up → read assertion.
+**Durable read-back — active (Sprint 5.6).** Canonical direct-host root admission is complete. Run the
+command-level write → destroy → up → read assertion once the native registry route is healthy.
 
 **Storage/ownership reconciliation — blocked (Sprint 5.7).** Implement typed backend reconcile outcomes,
 exclusive ownership, conditional cleanup, provider storage enforcement, and backend-level durable
@@ -442,10 +443,9 @@ recorded yet, so the
 historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
 work remains in this sprint.
 
-### Sprint 5.6: Host-durable project state [Blocked]
+### Sprint 5.6: Host-durable project state [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprint 5.6.1
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/kind.yaml`, `demo/chart/`
 **Docs to update**: `documents/architecture/durable_state.md`, `documents/architecture/readiness.md`, `documents/engineering/cluster_lifecycle.md`
 
@@ -484,20 +484,19 @@ Windows/WSL2 `test run all` **`8/8`** (2026-07-23): the recast pure, readiness-g
 **Remaining (real-run-gated, § C):** the end-to-end durable-root **read-back** (write a marker through the
 running service → `project destroy` → `project up` → read the same marker from the host-backed root) is
 implemented as the `durable-readback` harness case. Static validation passed on 2026-07-25 with 100 demo
-tests. The native Linux GPU live attempt reached the direct Docker handoff and failed because Docker
-rejects the compatibility symlink `/var/tmp/hostbootstrap-demo-data` as a bind source while the pure
-frame-context API has only relative `sourceRoot = "."` and therefore cannot supply the canonical absolute
-host `.data` path. The gate remains open until the root-authority/profile tranche supplies that absolute,
-verified root and the case passes. Until then no governed document may describe host-durable `.data` as
-validated (§ J).
+tests. Sprint 5.6.1 now supplies the canonical absolute direct-host bind. A native Linux GPU rerun passed
+that boundary, created and cordoned nvkind, and proved allocatable GPU capacity, then failed while
+finalizing the pushed image manifest because the in-cluster registry returned `unknown error`. Sprint
+13.18 owns that registry/MinIO integration failure. This sprint stays Active until the read-back case
+passes; no governed document may yet describe host-durable `.data` as end-to-end validated (§ J).
 
 That result is the handoff prerequisite for Phase 15.9 to promote the descriptive `DurableStore` label
 into opaque mutation authority. This sprint does not own that later command-gate change and can close
 when the durability proof itself passes.
 
-### Sprint 5.6.1: Canonical project-root authority and durable projections [Active]
+### Sprint 5.6.1: Canonical project-root authority and durable projections [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
@@ -519,13 +518,15 @@ guest compatibility alias for the actual host directory.
 - Root-config admission resolves a relative `sourceRoot` against the stable project-home/config-ownership
   anchor, not `cwd` or the executable's sibling `.build` directory, verifies the project tree, and
   canonicalizes it once inside a rank-2 `CanonicalProjectRoot scope rootId` bracket.
-- `ProjectPlan` consumes that authority and derives scope-correct Production `.data` or Harness
-  `.test_data/<runId>` plus typed host, provider-guest, container, kind-node, and pod projections. No
-  downstream planner re-reads config, calls `getCurrentDirectory`, or reconstructs the root from text.
+- The current lifecycle admission seam consumes that authority without rewriting `BinaryContext` and
+  derives the Production host `.data` projection under the same `scope`/`rootId`. The final opaque
+  `ProjectPlan`, Harness `.test_data/<runId>` selection, and its complete guest/container/kind/pod
+  projection family remain owned by Sprints 10.9, 16.6, and 19.8; this foundational sprint is deliberately
+  not a hidden prerequisite of those already-declared blockers.
 - The direct-host Docker adapter binds the canonical absolute host durable path. Provider lanes may use
   a protected guest alias as a provider-local projection only; that alias is never host-root authority.
-- Raw host/guest/container path interchange and the direct-host alias compatibility path are entered in
-  the deletion ledger with owning consumers.
+- Raw host/guest/container path interchange and the retired direct-host alias compatibility description
+  are entered in the deletion ledger with their remaining owning consumers.
 
 #### Validation
 
@@ -533,20 +534,20 @@ guest compatibility alias for the actual host directory.
   missing, wrong, escaping, replaced, or wrong-kind root fails before plan construction.
 - Compile-fail/API tests prove raw `FilePath`, guest aliases, container paths, and a root from another
   `scope`/`rootId` cannot enter the host-bind adapter or plan.
-- Pure-plan golden tests show all substrate projections derive from one root identity and that direct
-  Linux uses the canonical host `.data` path while WSL2, Incus, and Lima use only their own guest
-  projections.
+- Pure frame-context tests show direct Linux uses the canonical host `.data` path while WSL2, Incus, and
+  Lima use only their provider-guest projection.
 - The Sprint 5.6 native direct-Linux durable-readback gate reaches Docker with an absolute nonsymlink
   host bind before Sprint 5.6 resumes its write→destroy→up→readback validation.
 
 #### Remaining Work
 
-Config admission now resolves `sourceRoot` against the config-owned project anchor and carries its
-canonical absolute value in the validated context. The constructor for `CanonicalProjectRoot rootId` is
-private and its rank-2 bracket derives the durable path. The direct Linux GPU handoff binds that
-canonical `<project>/.data` directory; only VM-backed provider lanes retain
-`/var/tmp/hostbootstrap-demo-data` as a guest-local projection. Core and demo validation passed on
-2026-07-25 with 377 and 100 tests respectively under `-Werror`.
+Completed 2026-07-25. Config admission resolves descriptive `sourceRoot` against the config-owned project
+anchor without consulting caller `cwd`, rejects missing, wrong-kind, escaping, and redirected roots, and
+yields a private rank-2 `CanonicalProjectRoot scope rootId`. It does not materialize the canonical path
+back into `BinaryContext`. Root-aware lifecycle frame and teardown seams carry the authority, and the
+direct-host adapter accepts only a `CanonicalHostPath` with the same `scope`/`rootId`; raw `FilePath` and
+cross-root projections fail to compile. Direct Linux binds canonical `<project>/.data`; only VM-backed
+lanes retain `/var/tmp/hostbootstrap-demo-data` as a provider-guest projection.
 
 The native Linux GPU rerun reached Docker with the absolute nonsymlink bind, created nvkind, cordoned
 both nodes, and proved `nvidia.com/gpu` allocatable after the device-plugin and CUDA workload were moved
@@ -555,9 +556,14 @@ all layers uploaded to `localhost:30500/library/hostbootstrap-demo`, but the reg
 `unknown error`. That registry/MinIO failure blocks the command-level durable-readback case and is
 tracked with the demo registry/provenance work in Sprint 13.18.
 
-This sprint remains Active until the canonical root is consumed by the scoped `ProjectPlan` rather than
-materialized back into the descriptive `BinaryContext`, and compile-fail coverage proves raw paths and
-cross-scope roots cannot enter host adapters.
+Validation passed on 2026-07-25: the focused seven-case `ProjectRootSpec`, the full **386-test**
+`hostbootstrap-core` suite, and the full **100-test** demo suite all passed under `-Werror`. The final
+scope-/profile-indexed `ProjectPlan` consumes this closed authority in its owning later sprints; it does
+not reopen this root-admission contract.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Blocked]
 
@@ -641,15 +647,18 @@ remain explicitly outside this sprint in the coordinated 10.9/15.9/16.6 tranche,
 back into this foundation. Sprint 5.5 remains independently Active for the unavailable native
 accelerator lanes; neither lane can close this phase by proxy for the other.
 
-### Sprint 5.8: Applied per-project Apple provider budget [Blocked]
+### Sprint 5.8: Applied per-project Apple provider budget [Done]
 
-**Status**: Blocked
-**Blocked by**: Sprint 9.10
+**Status**: Done
+**Blocked by**: None (Sprint 9.10 is complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Docs to update**: `documents/engineering/resource_budgeting.md`,
 `documents/engineering/prerequisites.md`, `documents/engineering/applied_cordon.md`,
+`documents/engineering/ensure_reconcilers.md`,
+`documents/architecture/hostbootstrap_core_library.md`, `system-components.md`,
 `legacy-tracking-for-deletion.md`
 
 #### Objective
@@ -659,13 +668,14 @@ starting an unsized shared default profile.
 
 #### Deliverables
 
-- Derive a stable project-specific Colima profile identity from validated `ProjectIdentity`.
+- Derive a stable project-specific Colima profile identity from the validated binary context.
 - Reconcile that profile with the declared CPU, memory, and storage budget; an already running profile
   with a conflicting wall is a structured conflict, not silently accepted.
 - Route direct Apple Docker operations through the reconciled profile and its socket/context, while the
   pristine demo's separate Lima wall remains unchanged.
-- Return typed changed/unchanged/foreign/unsupported outcomes and retain the matching receipt for
-  `down`/`destroy`; no bare `colima start` default-profile fallback satisfies the contract.
+- Return typed applied/unchanged/repaired/conflict/failure observations whose settlement retains the
+  matching live wall authority and receipt. No bare `colima start` default-profile fallback satisfies
+  the contract.
 
 #### Validation
 
@@ -678,9 +688,39 @@ starting an unsized shared default profile.
 
 #### Remaining Work
 
-Blocked until Sprint 9.10 lands the ownership/result algebra. Then wire the existing sizing builder into
-the Colima reconciler/provider path and run the Apple gate. Sprint 5.1 remains Done for its pure
-derivation contract.
+None in Sprint 5.8. Completed 2026-07-26:
+
+- `HostBootstrap.Ensure.Colima` now derives an opaque plan-bound profile from matching validated
+  project/binary identity, rejects `default`, consumes only the Phase 9 exact
+  wall/partition/reservation, parses `colima list --json` JSONL, and refuses incompatible same-name
+  CPU/memory/disk/runtime state.
+- The prepared call uses current Colima `--cpus`, fixes the runtime to Docker, and passes
+  `--activate=false`. `runColimaDocker` always adds the stable `colima-<project>` named context; it never
+  changes the process-global active context. The old config-free Colima reconciler is absent from
+  `allReconcilers`.
+- A failed competing start is re-observed: exact running state converges to unchanged, incompatible
+  state becomes a structured conflict, and unresolved state remains a typed retryable failure. Empty or
+  unreadable machine identity returns a typed failure and cannot mint epoch-zero authority.
+- Focused `ColimaSpec`, `CordonSpec`, and `EnsureSpec` coverage validates exact prepared argv, disjoint
+  identities, named-context routing, JSONL observations, absent/running/stopped classification,
+  conflict refusal, and removal of the default-profile route. The `hostbootstrap-core-test` suite passed
+  all 448 tests under `-Werror` on 2026-07-26; the demo workspace passed all 106 demo tests and its
+  embedded 448-test core suite under the same gate. `DocValidatorSpec` and `git diff --check` passed.
+- Two Apple gates used disposable profiles only. The ordinary gate observed exactly 2 CPU, 4 GiB memory,
+  20 GiB disk, Docker runtime, a reachable named-context Docker daemon, an unchanged active `colima`
+  context, and an idempotent second start. The concurrent absent-profile gate produced one successful
+  creator and one backend conflict, converged on that same exact running wall, and served Docker through
+  only its named context. Both disposable profiles and contexts were deleted; the pre-existing
+  `default` and `incus` profiles were not mutated.
+
+#### Scope Disposition
+
+Sprint 5.8 owns exact project-profile acquisition and the retained live wall authority/receipt.
+Generation-conditional `down`/`destroy` cannot be implemented safely from a Colima name check: the
+backend exposes no conditional delete primitive that excludes same-privilege replacement. Sprint 5.7
+already owns receipt-guarded provider cleanup and must either supply a backend-authoritative operation or
+return `Unsupported`; Sprint 16.6 owns consuming that result from the recursive reverse plan. This is a
+narrow dependency assignment, not a claim that name-only deletion is safe.
 
 ## Documentation Requirements
 

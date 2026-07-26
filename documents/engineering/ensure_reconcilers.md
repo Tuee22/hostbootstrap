@@ -22,10 +22,10 @@
 - **`ensure` is not a command.** There is no top-level or hidden `ensure <tool>` verb. The command
   surface remains exactly `project`, `test`, `service`, `context`, and `check-code`; the reconcilers are
   library primitives that projects compose into their chains.
-- **Current provider probes do not all establish "usable".** `ensure docker` checks daemon
-  reachability, and Apple Incus checks both its Colima profile and `incus list`. Linux Incus currently
-  checks only that the `incus` client resolves. No current provider reconciler verifies egress. Proving
-  the exact capability needed by the next step, including egress where required, is the target contract.
+- **Incus readiness is a total capability observation.** Its final probe distinguishes missing client,
+  absent/permission-denied/unreachable daemon, missing VM capability, missing image-server egress, and
+  ready. Only ready mints the opaque `IncusProviderCapability`. Other reconcilers still vary in probe
+  strength, and the universal plan-owned prepared-operation integration remains target work.
 - The Python wrapper's host minimums are the **pre-binary** hard fail-fast surface (the irreducible
   host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
   (where a substrate-specific install plan exists) is installed by a reconciler when its action runs, so
@@ -49,8 +49,8 @@ A reconciler is a value, not a free function, and carries two parts:
 - a **reconcile action** that brings the host to the desired state and is safe to re-run.
 
 Idempotence is the target contract: running a reconciler when the host is already in the desired state
-must be a successful, verified no-op. The shared driver is probe-first, but a current weak probe can
-classify an unusable dependency as present; Linux Incus is the concrete presence-only case. A
+must be a successful, verified no-op. The shared driver is probe-first, and the strongest reconcilers
+add a final capability observation after remediation. A
 **missing dependency with a supported install plan on that substrate** is not a hard stop merely because
 it is absent — the reconcile action installs it when its probe reports absence (see
 *Install-and-Verify* below). A reconciler nonetheless
@@ -114,10 +114,10 @@ A reconcile action takes a no-op path when its probe reports presence and, when 
 3. **re-run the same probe** and fail fast with a one-line diagnostic if it is still unsatisfied.
 
 This is install-and-reprobe mechanically. It is install-and-**verify** semantically only to the extent
-that the probe proves the desired state. Docker's daemon probe and Apple Incus's provider probe are
-capability checks; Linux Incus's current `toolPresent Incus` probe proves only client presence. The target
-replaces weak probes with capability observations and retains those observations as explicit reconcile
-outcomes.
+that the probe proves the desired state. Docker's daemon probe is a capability check. Incus goes further:
+after client convergence it performs one total provider observation and only the fully usable branch
+mints an opaque capability. The target operation algebra still retains such observations as scoped
+reconcile outcomes rather than returning `IO ()`.
 
 Tools are re-resolved after each step, so a freshly installed tool (for example `ghcup` just laid
 down by `brew`) is discoverable by the next step. Homebrew formula steps are written as plain
@@ -129,36 +129,38 @@ is exercised during real bootstrap runs.
 
 | Reconciler | Current probe | Install plan (per substrate) |
 |------------|------------------|------------------------------|
-| `docker` | `docker info` reachable; on Linux the follow-up also establishes invoking-user socket access | Linux only: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when needed. On Apple a missing daemon is refused with an instruction to reconcile Colima first; on Windows it is delegated to the WSL2/provider path. |
-| `colima` | installed and `colima status` running | Apple: `brew install colima` + `colima start`. |
+| `docker` | `docker info` reachable; on Linux the follow-up also establishes invoking-user socket access | Linux only: `apt-get install -y docker.io acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when needed. On Apple config-free setup is refused because the prepared project Colima wall owns Docker; on Windows it is delegated to the WSL2/provider path. |
 | `lima` | `limactl` resolved | Apple: `brew install lima`. |
 | `cuda` | `nvidia-smi -L` reports a GPU and Docker's official nvkind volume-mount smoke (`/dev/null:/var/run/nvidia-container-devices/all`) sees that GPU | linux-gpu: install `nvidia-container-toolkit`; configure the NVIDIA runtime as Docker's default with CDI; enable `accept-nvidia-visible-devices-as-volume-mounts`; restart Docker. The kernel driver is a substrate precondition, not auto-installed. |
 | `homebrew` | `brew` resolved | Apple: none — Homebrew is an independently installed host minimum asserted by the Python bootstrapper; an absent `brew` fails fast with the install instruction. |
 | `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
 | `cudawin` | `nvcc -V` resolves, `vswhere` finds VCTools, `clang` resolves, the NVIDIA driver reports a GPU, and an `nvcc -ccbin <MSVC>` smoke artifact compiles | windows-gpu: unattended `winget install` of the CUDA Toolkit (`Nvidia.CUDA`), MSVC C++ Build Tools/VCTools (`Microsoft.VisualStudio.2022.BuildTools`), and LLVM (`LLVM.LLVM`); the NVIDIA Windows driver is a substrate precondition, not auto-installed. |
 | `wsl2` | `wsl --status` reports usable platform state, or the online-distribution list is reachable and includes Ubuntu 24.04; when that probe fails, separate firmware and hypervisor checks classify the failure before installation | windows: install `Microsoft.WSL`, enable WSL2 + Virtual Machine Platform (`wsl --install --no-distribution`), ensure Windows hypervisor launch readiness, and set default WSL version 2; a required reboot exits with an explicit diagnostic. A project-owned `deploy-VM` step registers that project's own named Ubuntu-24.04 distro. |
-| `incus` | Apple: `colima status incus` and `incus list` succeed. Linux: only the host `incus` client resolves; this does **not** prove that the daemon is initialized, reachable, or VM-capable. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`. Linux, when the presence probe reports absence: `apt-get install -y incus` + `sudo incus admin init --minimal` + add the invoking user to `incus-admin`. |
+| `incus` | Total final status distinguishes missing client, absent/permission-denied/unreachable daemon, missing KVM/QEMU/OVMF VM capability, missing `images:` egress, and ready; only ready mints `IncusProviderCapability` | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`, then final provider/profile/egress probe. Linux: install `incus` + `acl`, initialize/restart the daemon when absent, grant `incus-admin` and immediate socket access, install QEMU/OVMF, preserve `incusbr0` forwarding through `DOCKER-USER`, then run the same final capability/egress classification. |
 
 ## Current Provider Probes And Target Usability
 
 The target contract does not call a provider ready merely because its package is on disk. It requires the
-capability the dependent operation consumes and, where subsequent work pulls remote inputs, working egress.
-Current probes implement only part of that contract:
+capability the dependent operation consumes and, where subsequent work pulls remote inputs, working
+egress. Current Incus code implements that provider observation, while general lifecycle integration
+still returns a result-free reconciler action:
 
 - **`ensure docker`** checks that the invoking process can reach the Docker daemon. On Linux the install
-  path also grants socket access through group membership and an immediate ACL. On Apple the current
-  `ensure colima` dependency starts the default, unsized Colima profile and checks `colima status`.
-- **`ensure incus` on Apple** checks that the named Colima Incus profile is running and that `incus list`
-  reaches it.
-- **`ensure incus` on Linux** checks only `toolPresent Incus`. Although its absent-client install plan
-  installs the package and runs `sudo incus admin init --minimal`, a pre-existing client takes the no-op
-  path without proving daemon initialization, reachability, or VM capability. See [incus](incus.md) and
-  [cluster_lifecycle](cluster_lifecycle.md).
+  path also grants socket access through group membership and an immediate ACL. On Apple a missing
+  daemon is refused at this config-free seam: the plan-bound Colima adapter observes/reconciles the
+  exact project profile and routes Docker through its named context.
+- **Prepared Colima wall** is deliberately not a `Reconciler` row. It requires a validated binary
+  context, lifecycle plan, admitted exact wall, partition, and journal-before-call reservation. It
+  installs the Colima tool when absent, but never probes or starts the shared `default` profile.
+- **`ensure incus` on Apple and Linux** converges its substrate-specific provider, then probes daemon
+  reachability, VM capability, and `images:ubuntu/24.04` metadata egress. Permission, absence,
+  reachability, VM capability, and egress failures remain distinct typed statuses; only ready enters the
+  opaque capability continuation. See [incus](incus.md) and [cluster_lifecycle](cluster_lifecycle.md).
 
-No current provider reconciler probes **egress**. Egress still matters because later steps pull base images
-and warm-store inputs; forwarding a Docker Hub credential down the lift supplies authentication but does
-not prove network reachability. The target provider transition therefore observes daemon/provider
-capability and required egress before minting readiness for dependent steps. See
+Egress still matters because later steps pull base images and warm-store inputs; forwarding a Docker Hub
+credential down the lift supplies authentication but does not prove network reachability. Incus now
+checks its image-server route, but other provider/dependent routes must retain their own exact
+observations. See
 [composition_methodology](../architecture/composition_methodology.md) for credential forwarding and
 [lifecycle_state_model](../architecture/lifecycle_state_model.md) for the target typed observation.
 
@@ -166,8 +168,7 @@ capability and required egress before minting readiness for dependent steps. See
 
 | Reconciler step | Applies to | Fail-fast behavior on wrong host |
 |-----------------|------------|----------------------------------|
-| `ensure-docker` | applicability predicate accepts all substrates | It installs/grants access only on Linux. On Apple, absence refuses and directs the caller to Colima; on Windows, absence refuses because Docker belongs to the WSL2/provider path. A reachable pre-existing daemon is accepted. It does not verify egress. |
-| `ensure-colima` | `apple-silicon` | Errors on Linux: Colima is the macOS Docker substrate; Linux uses native Docker. |
+| `ensure-docker` | applicability predicate accepts all substrates | It installs/grants access only on Linux. On Apple, absence refuses because Docker belongs to the prepared project Colima wall; on Windows, absence refuses because Docker belongs to the WSL2/provider path. A reachable pre-existing daemon is accepted. It does not verify egress. |
 | `ensure-lima` | `apple-silicon` | Errors on Linux: Lima is the macOS VM provider used by the demo pristine Linux VM; Linux uses native Incus for the demo VM. |
 | `ensure-apple-metal` | `apple-silicon` | Errors off Apple Silicon: verifies a visible Metal device, the macOS SDK through `xcrun`, and a Swift + Metal compile/run probe for the host-native accelerator daemon. It has no meaning in a Linux daemon pod or on Windows. |
 | `ensure-cuda` | `linux-gpu` | Errors on `linux-cpu` and `apple-silicon`: no NVIDIA GPU substrate present. |
@@ -175,7 +176,7 @@ capability and required egress before minting readiness for dependent steps. See
 | `ensure-ghc` | `apple-silicon` | Errors on Linux: reconciles the Apple host GHC toolchain. The host build toolchain itself is ensured pre-binary by the bootstrapper, since every substrate builds host-native. |
 | `ensure-cudawin` | `windows-gpu` | Errors on `windows-cpu`, `linux-*`, and `apple-silicon`: verifies the non-installable NVIDIA driver/GPU prerequisite, reconciles CUDA Toolkit + MSVC VCTools + LLVM clang for the headless host build, and compiles a CUDA smoke artifact through `nvcc -ccbin <MSVC>`; it has no meaning off a Windows GPU host. |
 | `ensure-wsl2` | `windows-cpu` and `windows-gpu` | Errors off Windows: enables WSL/VMP and reconciles Windows hypervisor launch readiness. A separate project-owned `deploy-VM` step registers that project's own named `Ubuntu-24.04` distro that is the Windows VM frame, peer of Lima/Incus. See [wsl2](wsl2.md). |
-| `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. On Apple it starts and probes the Colima-backed Incus provider. On Linux its absent-client plan installs and initializes the native daemon, but its present-client no-op probe does not verify the daemon. See [incus](incus.md). |
+| `ensure-incus` | `apple-silicon` and `linux` | Applies on both: `appliesTo = isAppleSilicon || isLinux`. It converges the substrate-specific provider and requires the total final daemon/permission/VM-capability/egress status to be ready. See [incus](incus.md). |
 
 `ensure-incus` has an explicit Apple-or-Linux predicate
 (`appliesTo = isAppleSilicon || isLinux`). It is not the first/only cross-substrate predicate:
@@ -184,8 +185,9 @@ is Linux-only and delegates/refuses elsewhere.
 
 The Python bootstrapper asserts Homebrew and uses it to establish the host-native Haskell build
 toolchain before a project binary exists. It does not install Homebrew and does not drive the Colima
-runtime step. Once built, `project up` reaches `ensure-colima` and the other runtime reconcilers through
-the Haskell chain; see [python_haskell_boundary](../architecture/python_haskell_boundary.md).
+runtime step. The built Haskell project owns the prepared Colima provider adapter and the other runtime
+reconcilers; recursive command-plan integration remains tracked in the development plan. See
+[python_haskell_boundary](../architecture/python_haskell_boundary.md).
 `ensure-cuda` aligns with the GPU host requirements tracked in [prerequisites](prerequisites.md).
 
 ## Accelerator Build-Stack Ensures
@@ -238,10 +240,11 @@ than that target. Invocation is not yet one representation: the recursive `proje
 `chain cfg :: [Step]`, but the demo calls reconciler runners from composite actions and also duplicates
 some guest installation as shell work.
 
-The concrete reconciler set is still centralized as `allReconcilers` (the `docker`, `colima`,
-`apple-metal`, `cuda`, `cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus`
-reconcilers), and project-owned actions can call `runEnsure` directly when they need one reconciler in a
-specific scripted seam. That remains a library call, not a surfaced command.
+The nine context-free reconcilers are centralized as `allReconcilers` (`docker`, `apple-metal`, `cuda`,
+`cudawin`, `homebrew`, `ghc`, `lima`, `wsl2`, and cross-substrate `incus`). Project/config/plan-dependent
+provider adapters cannot appear in that list: Colima now requires the prepared project wall rather than
+a standalone `ensure-colima`. Project-owned actions can call `runEnsure` directly when they need a
+context-free reconciler in a scripted seam. That remains a library call, not a surfaced command.
 
 ## Current Status
 

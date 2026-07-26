@@ -21,32 +21,28 @@
   before push. Delete raw endpoint/redirect assembly and tests that treat initial push or `/v2/` as
   persistence proof. Owning sprints: 9.10 (plan-owned readiness/preconditions), 14.7 (generic algebra),
   and 13.20 (demo migration/live proof).
-- **Direct-host durable compatibility alias and repeated raw root reconstruction**
+- **Provider-guest durable compatibility alias and remaining raw root reconstruction**
   (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
-  `demo/src/HostBootstrapDemo/Commands.hs`) — direct Linux currently creates/observes
-  `/var/tmp/hostbootstrap-demo-data` and passes it to Docker because pure frame planning receives only
-  descriptive relative `sourceRoot = "."`. The same raw-path surface permits consumers to derive roots
-  from `cwd`, executable/config location, concatenation, or a guest alias, so substrate policies can
-  drift and Docker rejects the direct-host symlink bind. Replacement: root-config admission resolves and
-  canonicalizes once against the stable config-owned project-home anchor, yields opaque
-  `CanonicalProjectRoot scope rootId`, and lets `ProjectPlan` derive distinct typed host, guest,
-  container, kind-node, and pod projections. Direct-host Docker consumes only the canonical absolute
-  host `.data`; provider aliases remain guest-local reconciled projections. Delete direct-host
-  `mintLocalDurableAlias`/`removeLocalDurableAliasIfOwned` and equivalent alias-fact bypasses, plus raw
-  adapter inputs that allow path-kind substitution. Owning sprints: 5.6.1 (root authority/projections),
-  11.10 (provider guest alias consolidation and direct bypass deletion), 15.9 (root/config binding), and
-  16.6 (recursive plan consumption).
-- **Independent Dhall encoder/decoder schema claims and partially ungated hand-written `Core.dhall`**
-  (`core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`,
-  `core/hostbootstrap-core/dhall/Core.dhall`,
-  `core/hostbootstrap-core/test/DhallGenSpec.hs`) — `schemaText` comes from `ToDhall.declared`, decoding
-  comes from a separate `FromDhall` instance, and not every committed vocabulary type has an explicit
-  equality owner. Replacement: lower-layer opaque `CodecWitness a`, mismatch rejection, exhaustive
-  generated/equality-tested vocabulary coverage, and a distinct project/scope wrapper
-  `ProjectCodec scope specDigest cfg` consumed by config promotion and plan construction. Owning phases: Phase 8
-  Sprint 8.7 and Phase 19 Sprint 19.7.
+  `demo/src/HostBootstrapDemo/Commands.hs`) — closed Sprint 5.6.1 now resolves root config against its
+  stable project-home anchor, yields `CanonicalProjectRoot scope rootId` without rewriting descriptive
+  context, and makes direct-host Docker consume only the matching canonical absolute host `.data`.
+  `/var/tmp/hostbootstrap-demo-data` remains a guest-local projection for VM-backed Docker daemons, and
+  other lifecycle adapters still accept raw path values while the final opaque `ProjectPlan` is open.
+  Replacement: consolidate the provider alias behind its typed guest projection and conditional
+  ownership operation, then make the finalized plan derive and retain distinct guest, container,
+  kind-node, and pod projections. Delete the remaining alias-fact bypasses and raw adapter inputs that
+  allow path-kind substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
+  (root/config binding), 16.6 (recursive plan consumption), and 19.8 (finalized plan projections).
+- **Unowned global WSL `.wslconfig` merge/restore**
+  (`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
+  `demo/src/HostBootstrapDemo/Commands.hs`) — the selected `wsl --install` route is singular, but its
+  utility-VM wall still merges a global user file after checking only a cooperative backup pathname.
+  Concurrent projects/operators can race it, and an absent original has no durable pre-write origin
+  receipt. Replacement: a Windows platform-authoritative lock/CAS retained across mutation plus an
+  identity-bound receipt recording exact original bytes or absence before the first write; retry and
+  restore must revalidate that identity. A process-local lock or sidecar returns `Unsupported` and mints
+  no strong receipt. Owning sprints: Phase 11 Sprint 11.10 and Phase 5 Sprint 5.7.
 - **Definition-only public `HostBootstrap.RoleLifecycle` callback engine**
   (`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Service.hs`) — `runRole` is consumed only by its test module
@@ -74,22 +70,6 @@
   `ServiceGenerationLease` through Drain. Ready restartable workers expose stable supervisor handles;
   only a journal-prepared core transition may replace/reprobe a child. Hide/delete the parallel public
   callback path. Owning phase: Phase 14 Sprint 14.6.
-- **Forgeable readiness/probe tags and raw invalid polling policies**
-  (`core/hostbootstrap-core/src/HostBootstrap/Readiness/Internal.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
-  `core/hostbootstrap-core/hostbootstrap-core.cabal`) — the Cabal library exposes an
-  `Internal` module whose constructor lets a consumer forge readiness without observing a resource.
-  Even if `MkReady` alone is hidden, public function-valued `Probe`, public `ProbeReady`, and an
-  independently chosen result `tag` permit an always-ready forge. Public `Micros(..)`/`PollPolicy(..)` and
-  raw `Int` attempts admit zero/negative values and overflow. Replacement: opaque,
-  plan/backend-produced `Probe resource dependency`, resource-instance-bound generative witnesses, and
-  opaque positive/bounded/overflow-safe polling smart constructors. A plan-owned dependency-snapshot
-  producer internally traverses the exact zero/one/many edge set and runs its probes; callers cannot
-  supply retained witnesses or omit an edge. It seals only those fresh observations into
-  `OperationPreconditionSet`; prepare reruns all probes/versions and jointly returns the matching
-  `PreparedOperation`/`PreparedPreconditions` pair accepted by the conditional adapter. Raw or stale
-  readiness never enters preparation or an effect. Tests use only the real validating
-  transition and injected backend facts. Owning phase: Phase 9 Sprint 9.10.
 - **Unjournaled `IO ()` lifecycle effects and blind retry after uncertain outcome**
   (`core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
@@ -136,14 +116,10 @@
   record-update fields; decoded context labels plus `addRole` can therefore assert or widen the same
   values command gates currently treat as authority. `service run` still rejects a widened non-leaf
   primary kind, while `project up` can accept a widened daemon/image-build leaf, so the same union is
-  neither sufficient nor safely restrictive. `ProjectCfg` also requires a public
-  `cfgWithContext :: BinaryContext -> cfg -> cfg` raw updater; it has no production caller, so it is a
-  compatibility obligation rather than active lift authority, but consumer instances can still express
-  arbitrary record replacement. Replacement: keep placement/context descriptive, delete the raw updater
-  in favor of scope-correct `ProjectCodec` verification, mint opaque capability tokens only through
+  neither sufficient nor safely restrictive. The former `cfgWithContext` updater is removed; the
+  remaining replacement is to keep placement/context descriptive, mint opaque capability tokens only through
   validated transitions, enforce compatible role composition, and narrow authority at every child
-  handoff. Owning phases: Phase 15 Sprint 15.9 (opaque transition tokens from Phase 9 Sprint 9.10) and
-  Phase 19 Sprint 19.7 (generic codec boundary and updater removal).
+  handoff. Owning phase: Phase 15 Sprint 15.9 (opaque transition tokens from Phase 9 Sprint 9.10).
 - **Partial topology validation and an open supplied-witness list**
   (`core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`) — current validation finds the selected
@@ -155,7 +131,7 @@
   validate a unique connected acyclic graph with a terminating visited traversal, and compute a closed
   frame/kind/provider-indexed required-witness relation that callers cannot omit or extend as authority.
   Owning phases: Phase 15 Sprint 15.9, Phase 16 Sprint 16.6, and Phase 19 Sprint 19.8.
-- **Stringly service dispatch, split config identity, and fallback/full-record service projection**
+- **Raw service-handler IO and incomplete runtime authority/effect binding**
   (`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
@@ -170,15 +146,15 @@
   `demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`,
   `demo/test/ConfigSpec.hs`,
   `demo/test/WebServerSpec.hs`,
-  `demo/test/AcceleratorSpec.hs`) — core accepts arbitrary
-  `psServiceVariant :: cfg -> Either String String`, requires no service-specific capability, and
-  performs a string registry lookup. The demo selector validates its ADT by convention, but both
-  handlers reopen the sibling file after selection. Projection invents fallback ports/timeouts, retains
-  host/build/deploy fields, and cannot preserve both variant parameter sets. The shared missing-config
-  loader always recommends root `project init`, which still fails a service-leaf gate. Replacement: a
-  codec-hidden field row, one `specDigest`, jointly finalized full/role codecs and typed registry, and a
-  role-specific non-secret descriptive wire that omits non-consumer fields. The signed rollout revision
-  is paired at startup with a concrete process `instanceId`; the activation-bound private channel
+  `demo/test/AcceleratorSpec.hs`) — Sprint 19.8 removed arbitrary string selection, split sibling-config
+  reads, fallback ports/timeouts, and full-record handler delivery. The current finalized registry binds
+  typed service definitions and role codecs to the full codec's canonical `specDigest`; `service run`
+  canonically verifies one sibling snapshot, structurally selects exactly one definition, and closes the
+  action over only its typed role fields plus a safe framework view. That action is still raw `IO`, and
+  service/daemon child config delivery still carries the broader project record before local role-wire
+  projection. The shared missing-config loader also recommends root `project init`, which fails a
+  service-leaf gate. Replacement: pair the signed rollout revision at startup with a concrete process
+  `instanceId`; the activation-bound private channel
   separately yields the exact `VerifiedSecretBundle`. Child-local wire verification produces opaque
   `ValidatedServiceRequest specDigest configId secretDigest fields service`, inseparably containing
   `RoleParams specDigest configId secretDigest fields service`, under a fresh identity distinct from the
@@ -210,8 +186,8 @@
   substitutable key/payload/action/config ID/field row/revision/instance/phase/effect row crosses the
   boundary, and neither lifecycle acquisition nor handler execution can start twice.
   Add total role-specific
-  projections with no fallback source and command-specific recovery guidance. Owning phases: Phase 15
-  Sprint 15.9, Phase 17 Sprint 17.4, Phase 18 Sprint 18.6, and Phase 19 Sprint 19.8.
+  Add command-specific recovery guidance. Owning phases: Phase 15 Sprint 15.9, Phase 17 Sprint 17.4, and
+  Phase 18 Sprint 18.6.
 - **Config-only self-reference handoff with no authenticated authority transfer**
   (`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
@@ -385,97 +361,21 @@
   all old sessions Closed and yield the new revision's `CurrentBrokerSessionAdmission`; neither the frozen
   old state nor the committed-new window can open a session.
   Owning phase: Phase 16 Sprint 16.6.
-- **Unscoped `SecretRef` union carrying `TestPlaintext` into production-shaped config**
-  (`core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`,
-  `demo/src/HostBootstrapDemo/Config.hs`) — the current
-  union uses consumer code-check policy to keep its inline constructor out of production.
-  Replacement: `SecretRef scope` and project-owned `cfg scope`, with
-  `TestPlaintext` requiring matching opaque `HarnessConfigAuthority projectId runId` and constructing
-  only `SecretRef (Harness projectId runId)`; the `Production projectId` schema has no inline
-  alternative. Root assembly derives config authority from `HarnessAuthority projectId runId`, and a
-  verified normal child-config handoff may mint only child-local authority for that same project/run.
-  Restartable runtime activation instead reads/verifies its activation-bound private bundle internally
-  and mints no `HarnessConfigAuthority`. Owning phase: Phase 19 Sprint 19.7.
-- **Definition-only `HostTarget` and parallel WSL/reboot readiness paths**
-  (`core/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Ensure/Wsl2.hs`) —
-  `HostBootstrap.HostTarget` remains exposed beside the production `SubstrateProvider`/`Lift` route, and
-  WSL readiness/reboot helpers that have no production consumer describe a second provider model.
-  Replacement: one Provider/Lift lifecycle with total probes and ownership-/phase-indexed state. Owning
-  phase: Phase 11 Sprint 11.10 (types from Phase 9 Sprint 9.10).
-- **Linux Incus client-presence satisfaction and provider-readiness-without-egress**
-  (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`) — current Linux
-  `ensure incus` treats a resolved client as satisfied without proving daemon reachability or VM
-  capability, and provider reconcilers do not observe the egress required by later pulls/bootstrap.
-  Replacement: total capability/egress probes that alone mint the resource-indexed provider readiness
-  consumed by dependent steps. Owning phase: Phase 11 Sprint 11.10 (observation types from Phase 9
-  Sprint 9.10).
-- **Readiness/remediation branch inside demo-local `ensureIncusProvider`**
-  (`demo/src/HostBootstrapDemo/Commands.hs`) — the demo compensates for core's weak Linux Incus
-  probe by separately installing/checking QEMU/OVMF and restarting the daemon. That is a second provider
-  readiness path whose result is not the capability consumed by `deploy-VM`. Replacement: fold the
-  capability checks/remediation into the one core provider transition and delete the demo-local bypass.
-  Owning phase: Phase 11 Sprint 11.10.
-- **Unused `wslImportArgs` and cached-rootfs doctrine**
-  (`core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
-  `core/hostbootstrap-core/test/Wsl2Spec.hs`) — the exported/tested `wsl --import` builder and
-  prose about a cached rootfs do not match the production WSL install/provision path. Choose and implement
-  one path (including VHDX sizing), then delete the unused builder and stale cache claims. Owning phase:
-  Phase 11 Sprint 11.10.
-- **Dead `TestConfig.testSuites :: [Text]`, stringly/possibly-empty variant projection, and hard-coded
-  demo variants** (`demo/src/HostBootstrapDemo/Config.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-  `demo/src/HostBootstrapDemo/Commands.hs`) — the decoded field does not drive selection, current
-  `psTestConfig :: tcfg -> IO [(Text, cfg)]` admits an empty result and duplicate/invalid text labels, and
-  the demo's two message variants and case identities still live in Haskell. Replacement: validated
-  `CaseId`/`VariantId` values plus a non-empty project-owned typed config-to-variant projection. Owning
-  phases: Phase 19 Sprint 19.6 (generic types) and Phase 20 Sprint 20.5 (demo consumption).
-- **Independent, effectful Production/Harness config assembly paths**
+- **Hard-coded demo variants** (`demo/src/HostBootstrapDemo/Config.hs`) — the generic typed matrix is
+  implemented, but the demo's two message drafts still live in Haskell rather than decoded
+  `<project>.test.dhall`. Replacement: Phase 20's typed config-driven variant mapping, including proof
+  that a config-only third variant runs without a Haskell edit. Owning phase: Phase 20 Sprint 20.5.
+- **Independent `StepPlan` / frame-context / teardown lifecycle views**
   (`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
-  `demo/src/HostBootstrapDemo/Config.hs`) — `psInit` and
-  `psTestConfig :: tcfg -> IO [(Text, cfg)]` are unrelated callbacks, so defaults/shape can drift and
-  Harness assembly can perform unjournaled effects before a validated plan exists. Replacement:
-  scope-indexed `psAssemble :: AssemblyRequest scope tcfg -> ConfigAssembly scope (cfg scope)` is the
-  single restricted, default-bearing structural assembler for Production and Harness. Pure
-  `psTestMatrix` supplies typed drafts; `ConfigAssembly` exposes only declared config/secret reads and no
-  general `IO` or backend mutation. `psTestInit` remains a distinct writer for the thin test-config
-  input and is not merged into assembly. Owning phases: Phase 19 Sprints 19.6–19.7 and Phase 20 Sprint
-  20.5.
-- **Unconsumed parallel `RunModel` representations**
-  (`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
-  `core/hostbootstrap-core/dhall/Core.dhall`) — `HostBootstrap.Harness` exports
-  `RunModel`/`RunModelKey`/`selectRunModel` and tests the selector, while `Core.dhall` independently exports
-  the same four alternatives; no production path consumes either representation to drive `project up`.
-  The same sprint must audit definition/test-only `oneShotSeams`, `defaultSeams`, `sliceBudget`,
-  `guardTestDelete`, `testCaseProfile`, and `oneShotRunArgs`. Replacement: the typed lifecycle step plan
-  is the single execution representation. Delete each helper without a real production consumer; any
-  independently live primitive is explicitly moved to **Retained Current Surfaces**, and a named
-  execution projection is retained only when derived from and consumed from that plan. Owning phase:
-  Phase 10 Sprint 10.10.
-- **Independent `psChain` / `psFrameContext` / `psTeardown` lifecycle views**
-  (`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — forward steps, frame
-  selection, and reverse cleanup are supplied separately and can disagree despite the single-representation
-  doctrine. Replacement: one typed lifecycle plan whose topology, forward traversal, acquisition ledger,
+  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — Sprint 19.8 now validates the exact forward
+  sequence, identities, frame contiguity, dependencies, operation keys, and per-step reverse policies,
+  but frame-context and teardown contributions remain separate checked single-assignment slots. They can
+  still disagree with the resource topology despite the single-representation doctrine. Replacement:
+  one typed lifecycle plan whose topology, forward traversal, acquisition ledger,
   and reverse teardown are projections of the same resource identities. Its destroy forest exposes a
   separate pre-descent reachability step for an exact stopped provider before retained children, then
   exposes the ordinary provider stop/delete step only after those children settle; the two orders cannot
   be conflated. Owning phase: Phase 16 Sprint 16.6.
-- **Public `ProjectSpec`/`Step` algebra admits invalid or lossy extension states**
-  (`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Command.hs`) — `ProjectSpec (..)` and `Step (..)` expose
-  unconstrained records/lists; `projectSpec` defaults to an empty chain; `withChain`,
-  `withFrameContext`, `withTeardown`, and `withServiceConfig` replace prior contributions; arbitrary
-  `ProjectStep String` values can shadow core step names; and first-appearance frame grouping can turn an
-  `A/B/A` chain into `A/A/B` execution without rejecting the non-contiguous frame. Current validation
-  checks case/artifact/service names but not the lifecycle topology or replacement loss. Replacement: an
-  opaque validated `ProjectSpec` assembled through additive combinators, non-empty plan/test relations,
-  disjoint typed core/project step IDs, contiguous frame topology, and one plan-owned context/teardown
-  projection. Owning phase: Phase 19 Sprint 19.8.
 - **Hard-coded Production cluster/profile projection inside harness-driven demo runs**
   (`demo/src/HostBootstrapDemo/Commands.hs`, especially `containerPlan`,
   `demoTestUp`, `demoTestDown`, and direct-plan construction;
@@ -501,20 +401,20 @@
   9.10/15.9/10.9/16.6 validate, carry, and require its proof before the first mutation permit; Sprint
   5.7 owns only the budget-aware backend operation. Owning phases: Phase 5 Sprint 5.7, Phase 9 Sprint
   9.10, Phase 10 Sprint 10.9, Phase 13 Sprint 13.18, Phase 15 Sprint 15.9, and Phase 16 Sprint 16.6.
-- **Duplicate/raw config budget authority and unchanged child-resource projection**
+- **Unconsumed budget partitions and unchanged child-resource projection**
   (`demo/src/HostBootstrapDemo/Config.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`) — editable top-level refined
-  `resources` can disagree with raw `context.resourceEnvelope`; lifecycle consumes the latter, child
-  projection copies it unchanged, and the locally computed cluster slice never reaches service leaves.
-  Public constructors and bare/zero/provider-invalid quantities also bypass decode intent. Replacement:
-  one opaque `ValidatedBudget scope planId budgetId`, finalized as the sole plan/config authority, plus
-  the pure exact
+  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`) — the duplicate context budget and
+  public scalar-constructor bypasses are removed, but child projection still copies the sole full
+  project `resources` value unchanged and live consumers do not use the plan-indexed slice. The locally
+  computed cluster slice therefore never reaches every service leaf. Replacement: consume the delivered
+  pure exact
   `ProviderBudgetCapability` → `ProviderWallSpec`/`EffectiveBudget` → `VerifiedWorkloadFit` →
   `BudgetPartition` → `ResourceSlice` lineage that projects each frame/resource slice before effects.
   A later same-`wallSpecId` live wall authority is tracked by the provider-reconciliation entry below.
-  Complete demo workload derivation is the preceding entry. Owning phases: Phase 9 Sprint 9.10 and Phase
-  19 Sprint 19.8.
+  Complete demo workload derivation is the preceding entry. Owning phases: Phase 13 Sprint 13.18 and the
+  consuming provider/interpreter Sprints 5.7, 10.9, 11.10, 15.9, and 16.6. Sprint 5.8 has consumed the
+  lineage for direct Colima acquisition but does not close the remaining child-slice consumers.
 - **Same-name kind cluster adoption and destructive unhealthy recovery without ownership evidence**
   (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `ensureCluster`) — a healthy
   same-name cluster is silently reused and an unhealthy/unverifiable one is deleted and recreated without
@@ -586,8 +486,8 @@
   `demo/src/HostBootstrapDemo/Web/Api.hs`,
   `demo/src/HostBootstrapDemo/Web/Server.hs`,
   `demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`, `hostbootstrap/bootstrap.py`, and
-  `hostbootstrap/cli.py`) — comments/help claim schema
-  reflection from the decoder and universal byte-stable round trips, contiguous frame grouping despite
+  `hostbootstrap/cli.py`) — closed Sprint 8.7 reconciled the lower-layer codec/schema and
+  surface-specific snapshot claims. Remaining comments/help claim contiguous frame grouping despite
   first-appearance regrouping, best-effort teardown idempotence despite swallowed failures, and Python
   installation of Homebrew despite the bootstrapper only requiring it. Additional stale claims call the
   compiled test-case selector a `SUITE`/suite and already root-only; say `project down` removes no
@@ -595,57 +495,25 @@
   “everything” provisioned and call best-effort `project up` idempotent; describe publicly exposed
   `MkReady` as test-only while production imports it;
   call cooperative harness checks mechanically exclusive, say test storage is always one literal path,
-  deny the Dhall-backed RunModel field, and call definition-only `defaultSeams` the bare matrix path;
   describe demo safety probes as mutual exclusion; claim a POSIX `exec` handoff on Windows and that the
   permanent thin Python pre-binary floor is temporary; and describe maintainer commands as Poetry-only
   despite the importability-only Python dispatch gate. Resource comments also claim `fitsBudget` is wired
   to cluster bring-up and agrees with the applied slice; place every Linux lane behind Incus; give bare
-  Linux a storage wall; use the wrong host-reserve example; call real `df` storage generous; and call
-  projection fallback values the single defaults source. Service comments/help also label
-  encoder-declared schema as decoder-reflected, conflate `service schema`'s project-config schema with
-  `context schema`'s static in-scope artifact union, reopen config inside handlers despite one-snapshot
-  intent, call `psInit` the sole default source despite projection fallbacks, claim an encoder schema
-  cannot drift from the separate decoder, and unconditionally recommend root `project init` for a
-  missing service-leaf config.
+  Linux a storage wall; use the wrong host-reserve example; and call real `df` storage generous.
+  Service comments/help also reopen config inside handlers despite one-snapshot intent and
+  unconditionally recommend root `project init` for a missing service-leaf config.
   Replacement:
   after the owning implementations land, make Haddock/help describe the exact validated codec, plan
   topology, structured teardown outcome, host-root durability boundary, case-ID/parser authority,
   constructor visibility, resource-authoritative Harness ownership/profile derivation, reflected
-  RunModel ownership, actual harness consumers, substrate-specific binary handoff, permanent pre-binary
+  vocabulary ownership, actual harness consumers, substrate-specific binary handoff, permanent pre-binary
   prerequisite ownership, and real Python dispatch surface; add drift checks for every retired phrase. Owning
   phase: Phase 21 Sprint 21.4, after the complete `Blocked by` set in that sprint closes.
-- **Local/unpublished or mutable-tag derived-base validation**
-  (`hostbootstrap/base_image.py`, `demo/src/HostBootstrapDemo/Commands.hs`) — building a consumer against a local base,
-  or a tag that was not pulled and resolved to a digest, bypasses the published source of truth.
-  Replacement: native build → full gate → publish → pull → digest-qualified derived build. Owning phase:
-  Phase 6 Sprint 6.7 (generic publication path) and Phase 13 Sprint 13.18 (demo consumption).
-- **Incomplete base-publish preflight** (`hostbootstrap/base_image.py`,
-  `hostbootstrap/check_code.py`) — `base build-and-push` gates on the Python source check but not the
-  repository Haskell formatter/linter/build/tests before Docker or registry mutation. Replacement: one
-  preflight that completes every Python and Haskell gate, including documentation validation, before
-  the first build/push effect. Owning phase: Phase 6 Sprint 6.7.
-- **Requested base-tag architecture is not bound to the native builder**
-  (`hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`) — `--arch` selects the published tag,
-  but the current plain `docker build` path does not verify that the host/Docker engine has that native
-  architecture. A mismatch can therefore mislabel a native image. Replacement: resolve one validated
-  native builder architecture, compare it to the requested tag architecture before any build/push, and
-  expose no build authority on mismatch. Owning phase: Phase 6 Sprint 6.7.
-- **Unconditional Cabal-index refresh and unchanged native-binary copy**
-  (`hostbootstrap/bootstrap.py`) — the native build path performs network/index refresh work without a
-  missing/stale predicate or explicit offline mode, then recopies an unchanged built artifact on every
-  run. Those effects are non-idempotent noise and make an otherwise warm invocation depend on network
-  availability. Replacement: a typed index state chooses update only when missing/stale, `--offline`
-  performs no network effect and fails clearly when cached inputs are insufficient, and an
-  identity/digest comparison returns `Unchanged` without copying an identical binary. Owning phase:
-  Phase 6 Sprint 6.7.
-- **Importability-only maintainer-command gate**
-  (`hostbootstrap/cli.py`, `_maintainer_cli_enabled`) — the current parser exposes `base`, `check-code`,
-  and `test-all` whenever ruff/black/mypy/pytest can be imported. An ordinary pipx environment omits
-  them, but injecting those dependencies makes the supposedly development-only mutation surface
-  appear without proving repository/Poetry provenance. Replacement: parser construction consumes an
-  opaque `MaintainerCommandAuthority` minted only from a validated canonical checkout and active
-  development interpreter; dependency presence alone yields no maintainer parser. Owning phase: Phase 6
-  Sprint 6.7.
+- **Demo derived build can consume a stale same-named local base**
+  (`demo/src/HostBootstrapDemo/Commands.hs`) — the consumer path still needs to pull the selected
+  published rolling tag before its derived build. A digest may identify/bind that one pull-to-build
+  invocation, but digest pinning is not the replacement contract. Owning phase: Phase 13 Sprint 13.18
+  (demo consumption).
 - **Unpinned Windows GHCup download and unasserted Linux `curl` bootstrap dependency**
   (`hostbootstrap/bootstrap.py`, `hostbootstrap/prereqs.py`) — the Windows bootstrap executes a current
   upstream executable without an expected digest, while Linux can pass `doctor` and fail later because
@@ -658,23 +526,6 @@
   facts. Replacement: retain the module but narrow it to the exact Python pre-binary floor; delete these
   duplicate checks so each runtime capability has one probe/reconcile authority. Owning phase: Phase 2
   Sprint 2.5.
-- **Parallel Cabal-stem / executable-stanza / CLI `progName` identities**
-  (`hostbootstrap/bootstrap.py`, `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`) — Python stores the Cabal
-  filename stem, builds the independently discovered executable stanza into `.build/<executable>`, and
-  Haskell accepts another free `String` for sibling config and context identity. The demo happens to use
-  one spelling for all three, but the boundary does not require it. Replacement: one opaque validated
-  `ProjectIdentity` projected into build target, artifact/config names, context, resource prefixes, and
-  ownership records; reject every mismatch before mutation. Owning phase: Phase 6 Sprint 6.7.
-- **Unproven reusable host/container Cabal split and mutable warm-store inputs**
-  (`demo/cabal.project`, `demo/docker/container.cabal.project`,
-  `core/warm-deps/cabal.project`, `core/warm-deps/core.project`,
-  `core/warm-deps/daemon.project`,
-  `core/warm-deps/core/basecontainer-core-deps.cabal`,
-  `core/warm-deps/daemon/basecontainer-daemon-deps.cabal`,
-  `docker/basecontainer.Dockerfile`) — the demo has separate project files, but the reusable consumer
-  contract does not yet mechanically prove both solver contexts, pin every network-resolved tool/input,
-  or verify claimed build ways/cache reuse. Replacement: validated reusable host/container templates plus
-  digest/version manifests and build-plan assertions. Owning phase: Phase 12 Sprint 12.4.
 - **Provider-wall rounding/reconcile gaps and success labels that claim unapplied reconciliation**
   (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
@@ -697,16 +548,6 @@
   distinguish applied, unchanged, conflict, unsupported, unknown/recovery-required, and failure, and
   messages derive from those outcomes. The duplicate config authority and workload-set defects are
   separate entries above. Owning phases: Phase 9 Sprint 9.10 and Phase 11 Sprint 11.10.
-- **Unsized shared Colima default profile** (`core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`) — the reconciler starts the default
-  profile without applying the project budget or a project identity even though sizing builders exist.
-  Replacement: a plan-owned named profile whose CPU, memory, disk, and ownership observations are
-  derived together and whose no-op probe verifies the applied wall. Owning phase: Phase 5 Sprint 5.8.
-- **Non-threaded demo test component** (`demo/hostbootstrap-demo.cabal`) — the executable enables the
-  threaded RTS required by Warp, but the static test component does not, so server tests can fail at
-  timer-manager startup. Replacement: apply the required threaded build/runtime options to every
-  component that starts the server and keep the canonical `cabal test all` gate green. Owning phase:
-  Phase 13 Sprint 13.19.
 - **Shared boolean `InitArgs` write policy and role widening**
   (`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
@@ -731,7 +572,7 @@
   `demo/src/HostBootstrapDemo/Web/Server.hs`,
   `demo/src/HostBootstrapDemo/Accelerator/Daemon.hs`,
   granted by `capabilitiesForKind` for `ClusterService` and `Daemon`, reflected into the golden
-  `core/hostbootstrap-core/test/golden/config_schema.dhall` and
+  `core/hostbootstrap-core/test/golden/service_schema_consumer.txt` and
   `core/hostbootstrap-core/dhall/example.dhall`) — the host-root share/alias and nested carry have
   landed. Initial `service run` dispatch and the accelerator handler pass no required capability; the
   Web handler alone reopens the sibling config after selection and asks `validateContext` for
@@ -776,26 +617,123 @@ These surfaces are intentionally present and are not cleanup obligations.
   `demo/src/HostBootstrapDemo/Commands.hs`) — the IO that the dissolved `vm` /
   `incus` verbs used to expose is **retained as the metal chain's step actions** the core `project up`
   interprets. Only the verbs were removed (see **Removed Surfaces**), not the provider step IO. The
-  separate readiness/remediation branch currently named `ensureIncusProvider` is explicitly excluded
-  from this retained surface and remains Pending above.
-- **Demo web behavior + bridge IO** (`serveWeb` / `writeBridge`) — the Web business behavior/entrypoint
+  former separate `ensureIncusProvider` remediation branch has now been deleted in favor of the core
+  Incus capability transition recorded under **Removed Surfaces**.
+- **Demo web behavior + bridge IO** (`serveWebWithConfig` / `writeBridge`) — the Web business behavior/entrypoint
   remains selected when `service run` starts, and `writeBridge` remains the bridge codegen the
-  build-image chain step runs before the image build. The current `ServiceHandler :: IO ()` registry
-  wrapper and `serveWeb` sibling-config reload are **not** retained target surfaces; they remain Pending
-  replacement by the config-ID-bound `RoleParams`/closed `ServiceProgram` package above. Only the old
-  `web` verb was removed.
+  build-image chain step runs before the image build. The handler now receives exact assembled Web fields
+  and does not reload sibling config. Its remaining raw-`IO` execution wrapper is **not** a retained
+  target surface; it remains Pending replacement by the config-ID-bound, one-use
+  `RoleParams`/`ServiceProgram` authority package above. Only the old `web` verb was removed.
 - **`core/hostbootstrap-core/dhall/example.dhall`** — retained as a live project-config fixture decoded
-  by `SchemaSpec` and guarded against renderer drift. `service schema` exposes the encoder-declared
-  project-local shape; `context schema` exposes the separate static-artifact registry. The current
-  `config_schema.dhall` golden synthetically concatenates the core registry with the project-config
-  schema and is not literal command output. This file remains an example value, not a hand-maintained
-  type.
+  by `SchemaSpec` and guarded against renderer drift. `service schema` exposes the validated-codec
+  project-local shape; `context schema` exposes the separate static-artifact registry. Literal
+  surface-specific snapshots keep the project config out of both bare and consumer `context schema`
+  expectations. This file remains an example value, not a hand-maintained type.
 
 ## Removed Surfaces
 
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
+- **Unsized shared Colima default-profile reconciler** — Sprint 5.8 removed `colima` from the
+  config-free `allReconcilers` set and replaced it with a prepared, plan-bound direct-Apple adapter.
+  The adapter derives a validated project profile, consumes Phase 9's exact wall/partition/reservation,
+  observes JSONL state, refuses incompatible same-name state, disables global context activation, and
+  routes Docker through `colima-<project>`. Pure tests cover exact argv, identity separation, conflicts,
+  and observation parsing; a disposable Apple profile verified exact 2 CPU / 4 GiB / 20 GiB state,
+  named-context Docker, idempotent restart, preserved active context, and exact cleanup. Conditional
+  generation-safe lifecycle cleanup remains the separate Sprint 5.7 obligation. Removed 2026-07-26;
+  owner: Phase 5 Sprint 5.8.
+- **Parallel provider dispatch, dead provider classifiers/builders, and demo-local Incus
+  remediation** — Sprint 11.10 deleted the public `HostBootstrap.HostTarget` module and its reboot loop;
+  removed unconsumed Incus/WSL readiness classifiers, the unused Incus restart builder, and
+  `wslImportArgs`; retained `wslInstallArgs` as the sole production/tested registration route; and made
+  `SubstrateProvider`/`Lift` the single dispatch fold. Core Incus now owns Linux daemon initialization,
+  permission, QEMU/OVMF, bridge forwarding, and image-server egress remediation behind a total status
+  table whose ready branch alone mints `IncusProviderCapability`, so the demo-local
+  `ensureIncusProvider` branch was deleted. Strong guest-alias and global-WSL ownership remain separate
+  Pending Sprint 11.10 obligations. Removed 2026-07-26; owner: Phase 11 Sprint 11.10.
+- **Exposed `HostBootstrap.Readiness.Internal`, forgeable phantom readiness, and raw polling
+  constructors** — Sprint 9.10 removed the exposed internal module and `MkReady`, made `Probe`, `Ready`,
+  `Micros`, and `PollPolicy` opaque, validated bounded polling, and bound backend probes to closed
+  planned-resource families plus positive generation/phase/observation versions. Public tests now drive
+  the real transition and compile-fail fixtures protect constructor opacity. `ObservedReady` remains
+  only as named non-authorizing compatibility evidence; live effect migration is tracked by the
+  lifecycle entries still Pending above. Removed 2026-07-25; owner: Phase 9 Sprint 9.10.
+- **Duplicate `BinaryContext.resourceEnvelope` and public demo scalar/resource construction
+  bypasses** — Sprint 9.10 removed the context budget field so `ProjectConfig.resources` is the sole
+  editable budget and child projection preserves the already-refined project value. `Resources`,
+  `Quantity`, `HaReplicas`, `Port`, and `TimeoutSeconds` constructors are private, total smart
+  constructors replace them, and `Num`/`IsString` bypasses are gone. Exact whole-byte parsing and
+  provider admission reject inexact ceilings instead of rounding them upward. Per-frame slice
+  consumption remains separately Pending above. Removed 2026-07-25; owner: Phase 9 Sprint 9.10.
+- **Non-threaded demo test component** — `hostbootstrap-demo-test` now carries
+  `-threaded -rtsopts "-with-rtsopts=-N"`, matching the executable because its unchanged
+  `WebServerSpec` starts Warp/WebSocket listeners. A test reads the exact Cabal component stanza and
+  fails if that runtime contract is removed. The canonical demo workspace gate most recently passed all
+  104 demo and 397 embedded core tests under `-Werror` on 2026-07-25. Owner: Phase 13 Sprint 13.19.
+- **Unconsumed parallel `RunModel` representations** — `HostBootstrap.Harness` formerly exported
+  `RunModel`/`RunModelKey`/`selectRunModel` and tested the selector, while `Core.dhall` independently
+  exported the same four alternatives; no production path consumed either representation to drive
+  `project up`. The audit also found definition/test-only `oneShotSeams`, `defaultSeams`, `sliceBudget`,
+  `guardTestDelete`, `testCaseProfile`, and `oneShotRunArgs`. Sprint 10.10 deleted the Haskell
+  selector/key/topology surface, the Dhall union and codec, and every audited helper because repository
+  search found no typed lifecycle-plan consumer. The four names remain only as derived behavior
+  taxonomy. Removed 2026-07-25; owner: Phase 10 Sprint 10.10.
+- **Dead `TestConfig.testSuites`, parallel case-id list, and stringly/possibly-empty variant
+  projection** — Sprint 19.6 removed the decoded suite list from demo and fixture schemas and made `all`
+  only a typed parser selector. Opaque validated `CaseId`/`VariantId`, pure `VariantDraft`, and the total
+  `TestMatrix` constructor now reject empty/duplicate/missing/unknown/ambiguous/orphan relations before
+  mutation. `TestCfg` projects `tcfg` plus the executable registry into that matrix. Sprint 19.7 later
+  replaced the historical `psTestConfig` callback with scope-indexed `psAssemble`.
+  Matrix/source regressions and the canonical demo workspace gate passed 382 core plus 101 demo tests
+  under `-Werror` on 2026-07-25. The demo's still-hard-coded concrete messages remain separately tracked
+  above for Phase 20 Sprint 20.5. Owner: Phase 19 Sprint 19.6.
+- **Unscoped secrets, raw context update, unscoped project codec, and parallel config builders** —
+  Sprint 19.7 removed the unscoped `SecretRef` union, `cfgWithContext`, `psInit`, and `psTestConfig`.
+  `SecretRef scope` now requires exact `HarnessConfigAuthority projectId runId` for fixture plaintext;
+  the Production schema has no plaintext alternative. `ProjectCfg projectId cfg` installs mapped
+  `ProjectCodec scope specDigest cfg` values, allowing a secrets-strict config to decode untrusted
+  Production/Harness wire without exporting direct `FromDhall` for `cfg scope`. One restricted
+  `psAssemble :: AssemblyRequest ... scope -> ConfigAssembly scope (cfg scope)` owns defaults for both
+  scopes, and its interpreter permits only declared text reads. Secret-free and secrets-strict fixtures,
+  runtime decode/verification tests, API drift assertions, and four compile-fail fixtures cover the
+  boundary. Removed 2026-07-25; owner: Phase 19 Sprint 19.7.
+- **Public invalid/lossy `ProjectSpec` and `Step` construction** — Sprint 19.8 hid raw constructors
+  behind `ProjectSpecBuilder`, `finalizeProjectSpec`, and `mkStepPlan`. Additive fragments preserve
+  declaration order; frame-context and teardown are checked single-assignment contributions; typed core
+  and project identities cannot shadow one another; and validation rejects empty plans, duplicate
+  identities, label conflicts, invalid post-handoff placement, and non-contiguous `A/B/A` frame returns.
+  Every accepted step has an explicit reverse policy, namespaced operation key, and exact validated
+  dependency prefix. Compile-fail fixtures cover raw construction, forged project identity, replacement,
+  unfinished dispatch, and cross-finalization use; generated frame-sequence tests prove exact-order
+  preservation or pre-effect rejection. Removed 2026-07-25; owner: Phase 19 Sprint 19.8.
+- **String selector, split service snapshot, fallback role values, and full-record handler delivery** —
+  Sprint 19.8 removed `psServiceVariant`/`withServiceConfig` and jointly finalizes the full project codec,
+  typed service registry, and structural role codecs under one canonical `specDigest`. `service run`
+  canonically verifies one sibling snapshot, selects exactly one typed definition, and mints an opaque
+  validated request before invoking an action closed over only its role fields and safe
+  `LocalContextView`; demo Web/Accelerator handlers no longer reopen config. Both role parameter records
+  are mandatory and survive child projection without fallback literals. Full-config and role-wire
+  schema families are separately named for Production and Harness, including structured empty registry
+  results. The core and demo gates passed 397 and 104 tests respectively under `-Werror` on 2026-07-25.
+  Raw handler `IO` and runtime placement/effect authority remain separately Pending above for Sprint
+  18.6. Removed 2026-07-25; owner: Phase 19 Sprint 19.8.
+- **Phase 6 thin-build/publication defects** — the importability-only maintainer parser, mismatched
+  requested/native Docker architecture path, Python-only base preflight, unconditional Cabal-index
+  refresh, absent explicit offline refusal, unchanged-binary recopy, ambiguous Cabal selection, and
+  unconstrained Cabal-stem/package/executable identities were removed on 2026-07-25. The publisher now
+  requires canonical checkout/Poetry authority, validates request/host/engine architecture, runs all
+  Python/core/demo source gates, and orders native build → push → pull → compatibility validation. The
+  bootstrapper validates one selected Cabal identity, passes Cabal `--offline` only
+  after local-tool/index proof, refreshes only missing/stale indexes, and copies only changed bytes.
+  `runHostBootstrapCLI` also rejects a declared project name that differs from the invoked executable
+  identity before command dispatch. An outward-facing CPU/arm64 publication completed on 2026-07-25 at
+  `docker.io/tuee22/hostbootstrap@sha256:303193124924bdd27c1e1d3bb66dd3254f83ffdcecd3d91aa4896e61645a02a6`;
+  the digest identifies that historical build only. Sprint 12.4 replaced its synthetic offline
+  validator with a real-demo compatibility smoke and rolling input selection. Demo-specific published
+  pull remains a separate Pending item above. Owning phase: Phase 6 Sprint 6.7.
 - **Duplicated cross-phase “current” status and suite-count authorities** — removed from
   `DEVELOPMENT_PLAN/00-overview.md` and `DEVELOPMENT_PLAN/system-components.md`; the phase table in
   `DEVELOPMENT_PLAN/README.md` is the sole cross-phase status source, while exact counts remain only as
@@ -814,9 +752,18 @@ a plan update creates a new current owner for it.
   reusable project binary/entrypoint; supported consumers declare a Cabal dependency and call
   `runHostBootstrapCLI`. A freeze constrains the solver only. Reintroducing the proposal as a supported
   mode is a regression.
-- **Single Cabal project importing the container-only freeze path** — the demo now keeps the host
-  workspace in `demo/cabal.project` and imports `/opt/basecontainer/.../core.freeze` only from
-  `demo/docker/container.cabal.project`. A host-native build cannot resolve that in-image path.
+- **Container-only Cabal project and base-owned freeze imports** —
+  `demo/docker/container.cabal.project`, `core/warm-deps/{core,daemon}.project`, generated
+  `core.freeze`/`daemon.freeze`, the Dockerfile project swap, and `/opt/basecontainer/...` imports were
+  removed. The demo now uses one host-compatible `demo/cabal.project` unchanged on the host and in the
+  container. Owning phase: Phase 12 Sprint 12.4; rolling-policy correction recorded 2026-07-25.
+- **Committed reproducible-base lock and synthetic offline/full-hit validator** —
+  `docker/base-inputs.json`, `templates/cabal/`,
+  `docker/base-validation.Dockerfile`, and `core/warm-deps/verify_store.py` were introduced for a
+  short-lived doctrine and then removed. The replacement resolves current compatible inputs during each
+  rolling build, treats the inherited Cabal store as opportunistic, permits online cache misses, and
+  uses the real demo Dockerfile for post-publish compatibility smoke. The resulting digest identifies a
+  publication but is not a replay or consumer-freeze contract. Owning phase: Phase 12 Sprint 12.4.
 - **The demo-local compound `set -eu` durable-alias step** (`prepareVMDurableAlias` in
   `demo/src/HostBootstrapDemo/Commands.hs`, including the inline `test` / shell `if` / nested
   `readlink` / `ln -s` program) — removed after it raced the provider mount and collapsed the
@@ -839,22 +786,23 @@ a plan update creates a new current owner for it.
 - **Witness-free mutating in-guest step signatures** (`stageSource`, `streamVMConfig`, the
   `runVmBootstrap` install/build calls, and the durable-alias mutation) — removed from the named call
   graph by threading `Ready VMReady`, `Ready NetworkReady`, and `Ready DurableShareMounted` through the
-  dependent functions. This records call ordering only: the still-public `MkReady` constructor and lack
-  of resource identity remain Pending under Phase 9 Sprint 9.10. Owning phases: Phase 9 Sprint 9.8 and
-  Phase 11 Sprint 11.9.
+  dependent functions. That historical phantom witness was later replaced by Sprint 9.10's opaque
+  plan/resource-indexed foundation; these live call paths currently receive only its explicitly
+  non-authorizing compatibility observation until their provider/interpreter migration. Owning phases:
+  Phase 9 Sprints 9.8/9.10 and Phase 11 Sprint 11.9.
 - **Raw `Text` memory/storage fields in the demo's decoded project/test resources**
   (`HostBootstrapDemo.Config.Resources.memory` / `.storage`) — removed by the transparent `Quantity`
-  newtype, whose `FromDhall` validates units at decode through the canonical `parseQuantity`. The generic
-  binary-context envelope still transports unchecked quantity text and is the lifecycle's applied input;
-  the removed surface is limited to malformed-unit top-level project/test decoding. The applied-envelope
-  replacement remains Pending above. Owning phase: Phase 9 Sprint 9.9.
+  newtype, whose `FromDhall` validates units at decode through the canonical `parseQuantity`. Sprint 9.10
+  then removed the generic binary-context envelope, hid resource/quantity constructors, and made the
+  project value the lifecycle input. Per-frame slice consumption remains Pending above. Owning phase:
+  Phase 9 Sprints 9.9/9.10.
 - **Unbounded `Natural` lifecycle config fields** (`DeployConfig.haReplicas`,
   `WebServiceConfig.publicPort` / `.acceleratorPort`, and
   `AcceleratorServiceConfig.requestTimeoutSeconds`, plus an accepted-below-floor `Resources.cpu`) —
   narrowed at the Dhall boundary by decode-validating `HaReplicas`, `Port`, and `TimeoutSeconds` newtypes
-  and the validating top-level `Resources` decoder. Public constructors/`Num` paths and the raw applied
-  envelope mean invalid programmatic/applied states remain Pending; transparent encoding preserves the
-  Dhall schema shape. Owning phase: Phase 9 Sprint 9.9.
+  and the validating top-level `Resources` decoder. Sprint 9.10 hid the constructors, removed `Num`/
+  `IsString` bypasses and the raw applied envelope, and retained transparent encoding so the Dhall schema
+  shape remains stable. Owning phase: Phase 9 Sprints 9.9/9.10.
 - **The generated-config `Budget/fitsWithin` assertion requirement** — removed/reconciled because no such
   assertion was ever attached: generated project configs carry Kubernetes quantity `Text` and no resolved
   pod set, so the assertion had no operands it could honestly compare. `Core.dhall`'s standalone
@@ -948,27 +896,27 @@ a plan update creates a new current owner for it.
   `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`, plus the `fromMaybe (cpu
   defaultResources)` / `value (memory defaultResources)` / `value (storage defaultResources)` flag
   defaults in `HostBootstrap.Command.initAction`) — removed 2026-06-23 by the phase-19 genericization.
-  `hostbootstrap-core` owns **no** default config values. Current `project init` gets defaults from the
-  project-owned `psInit :: InitArgs -> cfg`; core stores `psInit`, `psTestInit`, and `psTestConfig` as
-  independent callbacks. Only the demo conventionally calls a shared helper from more than one callback.
-  Demo service-projection fallbacks remain a separate Pending defect above; the target `psAssemble` is the
-  sole structural default-bearing path. Owning phase: phase-19, sprint 19.1.
+  `hostbootstrap-core` owns **no** default config values. Sprint 19.1 initially moved defaults to
+  project-owned callbacks; Sprint 19.7 subsequently replaced the project-config callbacks with the
+  single scope-aware restricted `psAssemble`. `psTestInit` remains separate because it constructs
+  `tcfg`. Demo service-projection fallbacks remain a separate Pending defect above. Owning phase:
+  phase-19, sprints 19.1 and 19.7.
 - **The fixed universal `ProjectConfig` / `Resources` / `DeployConfig` / `TestConfig` types as core types**
   (`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`) — removed 2026-06-23 by the phase-19
-  genericization. Core owns no config type: `ProjectSpec` is parameterized as `ProjectSpec cfg tcfg`.
-  The current `ProjectCfg` boundary exposes `cfgContext` plus the required but production-unused
-  `cfgWithContext` compatibility method; its removal is a separate Pending obligation above, not
-  evidence of lift authority. The universal types became the demo's concrete `cfg`/`tcfg`.
+  genericization. Core owns no config type. Sprint 19.7 further parameterized the boundary as
+  `ProjectSpec projectId cfg tcfg`, with `cfg :: Type -> Type`, and removed the temporary
+  `cfgWithContext` compatibility method. The universal types became the demo's concrete
+  scope-indexed `cfg`/`tcfg`.
   **Rejected alternative (recorded as rejected, not a cleanup obligation):** a core-owned generic
   `extra : Map Text Text` slot on a universal config type — rejected because core owns no project-specific
   field and no generic extra slot. Owning phase: phase-19, sprint 19.2.
 - **The `test init` reads-existing-config / `test run` reuses-existing-config flow** (`runTestInit` in
   `HostBootstrap.Command` copying `resources cfg` from a pre-existing `<project>.dhall`; the demo's
   `demoTestUp` driving `project up` against that pre-existing config) — removed 2026-06-23 by the phase-19
-  genericization. The harness now **generates** the run's `<project>.dhall` via the project-owned
-  independent `psTestConfig` callback (the demo calls a helper also used by `psInit` by convention; core
-  does not structurally reuse it), never shells the CLI, runs the real `project up`, asserts, and runs
-  `project destroy`. The later path/byte-based claim that this proves safe deletion of generated config
+  genericization. The initial replacement used the project-owned `psTestConfig`; Sprint 19.7 then
+  replaced it with the Harness request of the single scope-aware restricted `psAssemble`. The harness
+  never shells the CLI, runs the real `project up`, asserts, and runs `project destroy`. The later
+  path/byte-based claim that this proves safe deletion of generated config
   and `.test_data` is superseded by Phase 10.9: only resource-authoritative reservations plus verified
   identity-bearing ownership receipts authorize deletion; changed bytes remain quarantined with
   ownership retained.
@@ -1015,11 +963,15 @@ a plan update creates a new current owner for it.
   explicit direct Linux-GPU shape carries its distinct marker, and local smokes use a test-harness
   context. Current validation follows only selected ancestry and supplied witnesses, so completeness
   remains Pending above.
+- **Independent Dhall encoder/decoder schema claims, partially ungated `Core.dhall`, and the synthetic
+  schema fixture** — removed by Phase 8 Sprint 8.7 on 2026-07-25. Opaque `CodecWitness a` owns
+  schema/decode/render, `ConfigArtifact` construction requires it, every current `Core.dhall` type export
+  is judgmentally equality-owned, and literal bare/consumer `context schema` plus consumer
+  `service schema` snapshots replace the synthetic `config_schema.dhall`.
 - **`core/hostbootstrap-core/dhall/Type.dhall`** — deleted by
-  [Phase 21](phase-21-documentation-code-consistency-reconciliation.md). The encoder-declared project-local
-  shape exposed by `service schema` and the separate registry exposed by `context schema` replace a
-  hand-maintained type file; the current synthetic `config_schema.dhall` fixture is not literal output
-  from either command. Owning phase: phase-8.
+  [Phase 21](phase-21-documentation-code-consistency-reconciliation.md). The validated-codec
+  project-local shape exposed by `service schema` and the separate registry exposed by `context schema`
+  replace a hand-maintained type file. Owning phase: phase-8.
 - **Python Dhall provisioning** (`hostbootstrap/dhall_tool.py`, `hostbootstrap/spec.py`, and
   `hostbootstrap/dhall/package.dhall`) — Python discovers the Cabal file/executable build metadata and
   never reads or writes Dhall. The current parallel-name defect is tracked separately under Pending.
@@ -1031,12 +983,13 @@ a plan update creates a new current owner for it.
   builds and invokes the host-native binary (POSIX `exec`; Windows child subprocess); it does not
   initialize or trigger config creation, and a
   normal command fails fast (exit 1) when no sibling `<project>.dhall` exists — the config is created by an
-  explicit `project init` or generated by the test harness (`psTestConfig`). Owning phase: phase-19,
-  sprint 19.5.
+  explicit `project init` or generated by the test harness through `psAssemble`. Owning phase: phase-19,
+  sprints 19.5 and 19.7.
 - **`StaticBase` compatibility API in `HostBootstrap.Config.Schema`** (`StaticBase`,
   `decodeStaticBaseText`, `decodeStaticBaseFile`, `renderStaticBase`) — the core replacement is generic:
-  `ProjectCfg cfg`, generic sibling-config IO/validation in `HostBootstrap.Config.Schema`,
-  `ProjectSpec cfg tcfg`, explicit `project init`, and the sibling `<project>.dhall` command gate. Concrete
+  `ProjectCfg projectId cfg`, generic sibling-config IO/validation in `HostBootstrap.Config.Schema`,
+  `ProjectSpec projectId cfg tcfg`, explicit `project init`, and the sibling `<project>.dhall` command
+  gate. Concrete
   `ProjectConfig` / `TestConfig` records and their decode/render helpers live in
   `demo/src/HostBootstrapDemo/Config.hs`, not in core.
 - **`project-binary-context-config.dhall` artifact name** — host, VM, container, daemon, and service

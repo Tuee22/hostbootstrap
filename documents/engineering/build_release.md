@@ -1,111 +1,92 @@
 # Build and Release
 
 **Status**: Authoritative source
-**Supersedes**: the workflow that allowed derived projects to consume a same-named local base tag
-**Referenced by**: [documents index](../README.md), [base image](base_image.md), [warm store](warm_store.md), [derived Dockerfile](derived_dockerfile.md)
+**Supersedes**: immutable-input and synthetic offline base validation
+**Referenced by**: [documents index](../README.md), [base image](base_image.md),
+[warm store](warm_store.md), [derived Dockerfile](derived_dockerfile.md)
 
-> **Purpose**: Define the current base publish command and the target immutable consumption contract.
+> **Purpose**: Define the native rolling-base publish workflow and its real-consumer compatibility
+> smoke.
 
-## TL;DR
+## Workflow
 
-- Maintainers build and publish single-architecture base tags with `hostbootstrap base
-  build-and-push`.
-- Derived builds must consume the published registry artifact, never a same-named local image.
-- The target resolves the mutable discovery tag to a verified digest and runs the complete
-  Python/Haskell preflight before any Docker or registry mutation.
-
-## Current Status
-
-The current command builds and pushes mutable tags and runs only the Python code-check before Docker.
-Derived demo builds still accept a tag without forced pull/digest binding. The development plan owns the
-full Haskell preflight, immutable consumer handoff, integrity checks, and publication evidence.
-
-## Current maintainer command
-
-From the repository Poetry environment:
+Maintainers publish one native architecture at a time:
 
 ```sh
 poetry run hostbootstrap base build-and-push --arch amd64
 ```
 
-Run that command on a native amd64 host/Docker engine; an arm64 publication must run as a separate
-`--arch arm64` invocation on a native arm64 peer. The current CLI accepts a mismatched requested
-architecture while still using plain `docker build`, so the operator must enforce the match until Phase
-6 Sprint 6.7 adds the fail-closed preflight.
+Run the arm64 form on a native arm64 host and Docker engine. The CLI rejects request/host/engine
+architecture disagreement before source gates or Docker work. `--flavor` narrows to CPU or CUDA;
+otherwise independent flavors may build concurrently unless `--sequential` is supplied.
 
-The command resolves dynamic build arguments, runs the Python `ruff`/`black`/`mypy` self-check, cold-builds
-the selected CPU/CUDA tag(s) with plain single-architecture `docker build`, and pushes each tag. Two
-flavors build concurrently unless `--sequential` or `--flavor` narrows the work. Buildx, emulation, and
-multi-architecture manifest lists are outside this workflow.
+For each selected flavor the workflow:
 
-## Missing Haskell preflight
+1. discovers current compatible upstream versions and URLs;
+2. runs the complete Python/core/demo source preflight;
+3. cold-builds the rolling tag with plain native `docker build`;
+4. pushes the rolling tag;
+5. pulls that published tag so a same-named local image cannot mask registry state;
+6. resolves the pulled repository digest as an identifier for this workflow;
+7. cold-builds the real `demo/docker/Dockerfile` with that pulled base as a compatibility smoke.
 
-The current preflight calls only `python -m hostbootstrap.check_code`. It does **not** run the Haskell
-formatter/linter/build/test gate over `hostbootstrap-core` before Docker or registry mutation. The base
-Dockerfile merely smoke-tests the installed formatter/linter against warm-store sample modules; that is
-not a source-tree Haskell preflight.
+Buildx, emulation, and multi-architecture manifest lists are outside this workflow.
 
-The publish target must run, before any build or push:
+## Source preflight
+
+Before any build or push:
 
 ```text
 Python code check
-Python tests
-Haskell canonical code check/build
-Haskell tests (including documentation validation)
+Python tests and configured coverage threshold
+core Cabal build/test with -Werror
+demo Cabal build/test with -Werror
 ```
 
-Any failure stops before Docker build. Publishing must not infer success from an in-image sample smoke.
+Any failure stops before registry mutation. The in-image Fourmolu/HLint sample check verifies the
+rolling tools themselves and does not replace source preflight.
 
-## Published base is the only derived input
+## Rolling selection and evidence
 
-`base build` may be used to inspect a base image itself, but a downstream/derived project must never build
-against that local tag. A same-named local image hides registry drift and defeats reproducibility.
+The published tag is the consumer discovery reference and intentionally moves. The source tree contains
+no base-input lock. Rebuilding the same revision can select newer compatible parents, toolchains, and
+packages.
 
-The old workflow “build the base locally, then let a derived build resolve the local tag” is prohibited.
-After changing a base input, rebuild and publish the affected tag, then make consumers pull that
-published copy.
+A digest is still useful to identify the exact artifact just pulled and to bind the subsequent smoke
+against a registry result rather than a stale local tag. That use does not make the digest a permanent
+consumer pin and does not turn dynamic inputs into reproducibility evidence.
 
-## Immutable pull and digest target
+The compatibility smoke uses the real demo project and its ordinary `cabal.project`. It may download and
+compile cache misses. It proves that the publication can build the consumer, not that the store is
+complete or the build is offline.
 
-The human-facing tag remains a discovery pointer, not a build identity. A derived build must:
+## Local inspection versus publication
 
-1. authenticate if needed and explicitly pull the published tag;
-2. resolve the repository digest returned by the registry;
-3. use `repository@sha256:<digest>` as `BASE_IMAGE`;
-4. record the digest and resolved tool-input manifest in build output/provenance;
-5. reject a tag-only or local-only base.
+`hostbootstrap base build` may build a local image for inspection. Derived validation of the published
+source of truth follows an operator-authorized `build-and-push`, explicit pull, and real-consumer smoke.
+Do not silently substitute a same-named local base.
 
-Pseudocode:
+Publishing mutates Docker Hub and requires explicit user authorization. A requested documentation/code
+change alone does not authorize it.
 
-```text
-pull docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64
-resolve -> docker.io/tuee22/hostbootstrap@sha256:...
-docker build --build-arg BASE_IMAGE=docker.io/tuee22/hostbootstrap@sha256:...
-```
+## Evidence and partial failure
 
-The current demo builder passes a mutable tag and omits `--pull`, so this target is open.
+Output records selected versions, architecture/flavor, pushed tag, pulled digest, source-gate results,
+and compatibility-smoke result. These identify what happened in that run; no committed replay manifest
+is produced.
 
-## Publish atomicity and evidence
-
-Current `build-and-push` pushes each mutable tag as soon as its build completes. There is no multi-tag
-transaction, signed provenance record, or post-push digest handoff to consumers. The target publication
-record includes:
-
-- source revision supplied by the human release process;
-- architecture/flavor;
-- Dockerfile and warm-store input fingerprint;
-- fully resolved base/tool manifest and checksums;
-- pushed repository digest;
-- preflight results.
-
-No claim of immutability should be based on the mutable tag alone.
+Each flavor is pushed after its build succeeds. There is no multi-tag transaction. If one flavor fails,
+report which rolling tags changed and which compatibility smokes completed; do not describe the whole
+set as atomic.
 
 ## Validation
 
-- A test seeds a conflicting local tag and proves the derived builder still selects the registry digest.
-- A tag republish changes the resolved digest and the consumer records the new value.
-- A failed Haskell gate proves Docker build/push were not invoked.
-- Download/base digest mismatch fails before executing or installing the artifact.
+Unit seams cover:
 
-Release status and which tags require publication belong in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+- architecture mismatch before mutation;
+- dynamic resolver output feeding build arguments;
+- source-gate failure before Docker build/push;
+- build → push → pull → digest identification → real-demo smoke ordering;
+- the smoke's use of the real Dockerfile and ordinary online consumer project.
+
+Live publication evidence belongs in the owning development-plan sprint.

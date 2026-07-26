@@ -1,20 +1,29 @@
--- | A pure, testable readiness/poll combinator that replaces the hand-rolled
--- @waitX _ 0 = die; waitX cfg n = probe >>= ...@ loops scattered across the
--- lifecycle (10 of them, with 3 delays and budgets from 4 to 60). The per-attempt
--- decision ('pollStep') is a total pure function — the unit-tested heart — and the
--- only effectful code is the thin 'pollUntilReadyWith' seam. A sealed 'Ready'
--- witness (constructor hidden in "HostBootstrap.Readiness.Internal"; minted only by
--- 'awaitReady') makes "act before a dependency is ready" a type error wherever a
--- 'Ready' is required.
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE RankNTypes #-}
+
+{- | Total polling plus sealed, resource-indexed readiness evidence.
+
+The ordinary polling functions return payloads or 'ObservedReady'.  The latter is
+deliberately non-authorizing compatibility evidence for lifecycle code that has
+not yet entered a generative plan.  Authoritative 'Ready' values are available
+only through the closed 'BackendProbeKey' relation and retain scope, plan,
+resource identity, resource type, dependency type, generation, phase, and
+observation version indices.
+-}
 module HostBootstrap.Readiness
-  ( -- * Delay + policy
-    Micros (..),
+  ( -- * Validated delay and policy
+    Micros,
+    microsValue,
     seconds,
-    PollPolicy (..),
+    PollPolicy,
+    PollPolicyError (..),
+    mkPollPolicy,
     withAttempts,
+    pollAttempts,
+    pollDelay,
     pollSchedule,
 
-    -- * Named policies (each pinned to the historical budget of the loop it replaces)
+    -- * Named policies
     rolloutPoll,
     pushPoll,
     reachPoll,
@@ -23,145 +32,330 @@ module HostBootstrap.Readiness
     dockerPoll,
     nodePoll,
 
-    -- * Probe + outcome
+    -- * Total observations
     ProbeResult (..),
-    Probe,
+    ProbeConflict (..),
+    ProbeFailure (..),
     PollError (..),
     renderPollError,
-
-    -- * The pure decision (unit-tested)
     Decision (..),
     pollStep,
-
-    -- * Drivers
     pollUntilReady,
     pollUntilReadyWith,
     drivePure,
 
-    -- * Readiness witness (phantom-tagged proof; constructor sealed, see "HostBootstrap.Readiness.Internal")
+    -- * Non-authorizing compatibility observation
+    ObservedReady,
+    awaitObservedReady,
+    awaitObservedReadyWith,
+
+    -- * Plan/resource-indexed readiness
+    BackendProbeKey (..),
+    ProbeConstructionError (..),
+    Probe,
+    withBackendProbe,
     Ready,
-    awaitReady,
-    awaitReadyWith,
+    readyGeneration,
+    readyPhaseVersion,
+    readyObservationVersion,
+    awaitPlanReady,
+    awaitPlanReadyWith,
   )
 where
 
 import Control.Concurrent (threadDelay)
+import Data.Int (Int64)
+import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Readiness.Internal (Ready (MkReady))
+import HostBootstrap.Reconcile
+  ( ClusterResource,
+    DockerResource,
+    DurableShareResource,
+    MinioResource,
+    PlannedResource,
+    ProviderResource,
+    RegistryResource,
+  )
+import Numeric.Natural (Natural)
 
--- | Microseconds — the unit 'threadDelay' takes.
+-- | Microseconds accepted by 'threadDelay'. The constructor is private.
 newtype Micros = Micros Int
   deriving (Eq, Ord, Show)
 
--- | A whole number of seconds as 'Micros'.
-seconds :: Int -> Micros
-seconds s = Micros (s * 1000000)
+microsValue :: Micros -> Int
+microsValue (Micros value) = value
 
--- | An attempt budget and the delay between attempts.
+-- | Validate a whole number of seconds. Negative and overflowing values fail.
+seconds :: Integer -> Either PollPolicyError Micros
+seconds value
+  | value < 0 = Left (NegativeDelay value)
+  | value > fromIntegral (maxBound :: Int) `div` 1000000 =
+      Left (DelayOverflow value)
+  | otherwise = Right (Micros (fromInteger value * 1000000))
+
+data PollPolicyError
+  = ZeroAttempts
+  | AttemptsTooLarge Natural
+  | NegativeDelay Integer
+  | DelayOverflow Integer
+  | TotalDurationOverflow
+  | TotalDurationTooLarge Integer
+  deriving (Eq, Show)
+
 data PollPolicy = PollPolicy
-  { ppAttempts :: Int,
-    ppDelay :: Micros
+  { policyAttempts :: Natural,
+    policyDelay :: Micros
   }
   deriving (Eq, Show)
 
--- | Override a policy's attempt budget (the reachability probe polls at 6/12/24/60).
--- Written to read infix: @reachPoll \`withAttempts\` 24@.
-withAttempts :: PollPolicy -> Int -> PollPolicy
-withAttempts p n = p {ppAttempts = n}
+-- A deliberately generous upper bound which keeps accidental multi-day polling
+-- out of command construction while preserving every named policy.
+maxAttempts :: Natural
+maxAttempts = 1000000
 
--- | The pure delay schedule a policy would run: @attempts - 1@ gaps. For tests.
+maxPollMicros :: Integer
+maxPollMicros = 24 * 60 * 60 * 1000000
+
+mkPollPolicy :: Natural -> Micros -> Either PollPolicyError PollPolicy
+mkPollPolicy attempts delay
+  | attempts == 0 = Left ZeroAttempts
+  | attempts > maxAttempts = Left (AttemptsTooLarge attempts)
+  | total > fromIntegral (maxBound :: Int64) = Left TotalDurationOverflow
+  | total > maxPollMicros = Left (TotalDurationTooLarge total)
+  | otherwise = Right (PollPolicy attempts delay)
+  where
+    total = toInteger (attempts - 1) * toInteger (microsValue delay)
+
+withAttempts :: PollPolicy -> Natural -> Either PollPolicyError PollPolicy
+withAttempts policy attempts = mkPollPolicy attempts (policyDelay policy)
+
+pollAttempts :: PollPolicy -> Natural
+pollAttempts = policyAttempts
+
+pollDelay :: PollPolicy -> Micros
+pollDelay = policyDelay
+
 pollSchedule :: PollPolicy -> [Micros]
-pollSchedule p = replicate (max 0 (ppAttempts p - 1)) (ppDelay p)
+pollSchedule policy =
+  replicate (fromIntegral (policyAttempts policy - 1)) (policyDelay policy)
 
--- The named policies reproduce, exactly, the attempt/delay of each hand-rolled
--- loop they replace, so the refactor is behaviour-preserving. Do not "unify" the
--- numbers — the budgets differ for real reasons (a slow first pull vs a fast probe).
+namedPolicy :: Natural -> Integer -> PollPolicy
+namedPolicy attempts delaySeconds =
+  case seconds delaySeconds >>= mkPollPolicy attempts of
+    Right policy -> policy
+    Left err -> error ("invalid built-in poll policy: " ++ show err)
+
 rolloutPoll, pushPoll, reachPoll, vmBootPoll, networkPoll, dockerPoll, nodePoll :: PollPolicy
-rolloutPoll = PollPolicy 6 (seconds 5)
-pushPoll = PollPolicy 4 (seconds 5)
-reachPoll = PollPolicy 24 (seconds 5)
-vmBootPoll = PollPolicy 60 (seconds 2)
-networkPoll = PollPolicy 20 (seconds 3)
-dockerPoll = PollPolicy 30 (seconds 2)
-nodePoll = PollPolicy 10 (seconds 3)
+rolloutPoll = namedPolicy 6 5
+pushPoll = namedPolicy 4 5
+reachPoll = namedPolicy 24 5
+vmBootPoll = namedPolicy 60 2
+networkPoll = namedPolicy 20 3
+dockerPoll = namedPolicy 30 2
+nodePoll = namedPolicy 10 3
 
--- | A probe's verdict: ready (carrying a payload, e.g. captured stdout to print),
--- not-yet (keep polling), or a deterministic failure (stop now, do not burn the
--- remaining budget on an error that will not clear).
+data ProbeConflict = ProbeConflict
+  { conflictExpected :: String,
+    conflictObserved :: String,
+    conflictRemedy :: String
+  }
+  deriving (Eq, Show)
+
+data ProbeFailure = ProbeFailure
+  { failedOperation :: String,
+    failureCause :: String
+  }
+  deriving (Eq, Show)
+
+-- | Exhaustive probe observation. Only 'ProbeReady' is readiness.
 data ProbeResult a
   = ProbeReady a
-  | NotReady
-  | Failed String
+  | NotReady String
+  | Unavailable String
+  | ProbeConflicted ProbeConflict
+  | Failed ProbeFailure
   deriving (Eq, Show)
 
--- | A probe reads the host config and returns a verdict.
-type Probe a = HostConfig -> IO (ProbeResult a)
-
--- | Why a poll ended without success.
 data PollError
-  = PollTimeout String
-  | PollFailed String
+  = PollTimeout String String
+  | PollUnavailable String String
+  | PollConflict String ProbeConflict
+  | PollFailed String ProbeFailure
   deriving (Eq, Show)
 
--- | Render a poll failure into the one-line message a @die@ site prints.
 renderPollError :: PollError -> String
-renderPollError (PollTimeout lbl) = lbl ++ ": did not become ready within the poll budget"
-renderPollError (PollFailed msg) = msg
+renderPollError err = case err of
+  PollTimeout label lastObservation ->
+    label ++ ": did not become ready within the poll budget (" ++ lastObservation ++ ")"
+  PollUnavailable label reason -> label ++ ": unavailable: " ++ reason
+  PollConflict label conflict ->
+    label
+      ++ ": conflict: expected "
+      ++ conflictExpected conflict
+      ++ ", observed "
+      ++ conflictObserved conflict
+      ++ "; "
+      ++ conflictRemedy conflict
+  PollFailed label failure ->
+    label ++ ": " ++ failedOperation failure ++ ": " ++ failureCause failure
 
--- | The pure per-attempt decision — the tested heart of the combinator.
 data Decision a
   = Yield a
   | Retry Micros
   | GiveUp PollError
   deriving (Eq, Show)
 
--- | Decide what to do after attempt @i@ (0-based) returned this verdict.
-pollStep :: PollPolicy -> String -> Int -> ProbeResult a -> Decision a
-pollStep _ _ _ (ProbeReady a) = Yield a
-pollStep _ lbl _ (Failed e) = GiveUp (PollFailed (lbl ++ ": " ++ e))
-pollStep pol lbl i NotReady
-  | i + 1 >= ppAttempts pol = GiveUp (PollTimeout lbl)
-  | otherwise = Retry (ppDelay pol)
+pollStep :: PollPolicy -> String -> Natural -> ProbeResult a -> Decision a
+pollStep _ _ _ (ProbeReady value) = Yield value
+pollStep _ label _ (Unavailable reason) =
+  GiveUp (PollUnavailable label reason)
+pollStep _ label _ (ProbeConflicted conflict) =
+  GiveUp (PollConflict label conflict)
+pollStep _ label _ (Failed failure) =
+  GiveUp (PollFailed label failure)
+pollStep policy label attempt (NotReady observation)
+  | attempt + 1 >= policyAttempts policy =
+      GiveUp (PollTimeout label observation)
+  | otherwise = Retry (policyDelay policy)
 
--- | Poll @probe@ to readiness, running @recover@ before each retry delay (e.g. an
--- @incus restart@ for the reboot-to-ready loop). The one effectful seam; all the
--- decision logic lives in the pure 'pollStep'.
 pollUntilReadyWith ::
-  PollPolicy -> String -> (HostConfig -> IO ()) -> Probe a -> HostConfig -> IO (Either PollError a)
-pollUntilReadyWith pol lbl recover probe cfg = go 0
+  PollPolicy ->
+  String ->
+  (HostConfig -> IO ()) ->
+  (HostConfig -> IO (ProbeResult a)) ->
+  HostConfig ->
+  IO (Either PollError a)
+pollUntilReadyWith policy label recover runProbe cfg = go 0
   where
-    go i = do
-      r <- probe cfg
-      case pollStep pol lbl i r of
-        Yield a -> pure (Right a)
-        GiveUp e -> pure (Left e)
-        Retry (Micros d) -> recover cfg >> threadDelay d >> go (i + 1)
+    go attempt = do
+      observation <- runProbe cfg
+      case pollStep policy label attempt observation of
+        Yield value -> pure (Right value)
+        GiveUp err -> pure (Left err)
+        Retry delay -> recover cfg >> threadDelay (microsValue delay) >> go (attempt + 1)
 
--- | 'pollUntilReadyWith' with no between-attempt recovery.
-pollUntilReady :: PollPolicy -> String -> Probe a -> HostConfig -> IO (Either PollError a)
-pollUntilReady pol lbl = pollUntilReadyWith pol lbl (const (pure ()))
+pollUntilReady ::
+  PollPolicy ->
+  String ->
+  (HostConfig -> IO (ProbeResult a)) ->
+  HostConfig ->
+  IO (Either PollError a)
+pollUntilReady policy label =
+  pollUntilReadyWith policy label (const (pure ()))
 
--- | A pure driver for tests: fold a canned probe sequence through 'pollStep',
--- returning the outcome and the delays that would have elapsed. A sequence shorter
--- than the budget yields a timeout (a test that means to exhaust the budget
--- supplies exactly @attempts@ 'NotReady's).
 drivePure :: PollPolicy -> String -> [ProbeResult a] -> (Either PollError a, [Micros])
-drivePure pol lbl = go 0 []
+drivePure policy label = go 0 []
   where
-    go _ ds [] = (Left (PollTimeout lbl), reverse ds)
-    go i ds (r : rs) = case pollStep pol lbl i r of
-      Yield a -> (Right a, reverse ds)
-      GiveUp e -> (Left e, reverse ds)
-      Retry d -> go (i + 1) (d : ds) rs
+    go _ delays [] =
+      (Left (PollTimeout label "probe sequence ended"), reverse delays)
+    go attempt delays (result : rest) =
+      case pollStep policy label attempt result of
+        Yield value -> (Right value, reverse delays)
+        GiveUp err -> (Left err, reverse delays)
+        Retry delay -> go (attempt + 1) (delay : delays) rest
 
--- | Poll to readiness and, on success, mint the phantom-tagged 'Ready' proof
--- (discarding the probe payload). The only way to obtain a @Ready tag@ — so a
--- function requiring @Ready Dep@ cannot run before @Dep@ was observed ready.
-awaitReady :: PollPolicy -> String -> Probe a -> HostConfig -> IO (Either PollError (Ready tag))
-awaitReady pol lbl = awaitReadyWith pol lbl (const (pure ()))
+-- | A successful observation that is not lifecycle authority.
+data ObservedReady dependency = ObservedReady
 
--- | 'awaitReady' with a between-attempt recovery hook (e.g. a progress note the
--- rollout wait prints while a slow first image pull is still in flight).
-awaitReadyWith ::
-  PollPolicy -> String -> (HostConfig -> IO ()) -> Probe a -> HostConfig -> IO (Either PollError (Ready tag))
-awaitReadyWith pol lbl recover probe cfg = fmap (const MkReady) <$> pollUntilReadyWith pol lbl recover probe cfg
+awaitObservedReady ::
+  PollPolicy ->
+  String ->
+  (HostConfig -> IO (ProbeResult a)) ->
+  HostConfig ->
+  IO (Either PollError (ObservedReady dependency))
+awaitObservedReady policy label =
+  awaitObservedReadyWith policy label (const (pure ()))
+
+awaitObservedReadyWith ::
+  PollPolicy ->
+  String ->
+  (HostConfig -> IO ()) ->
+  (HostConfig -> IO (ProbeResult a)) ->
+  HostConfig ->
+  IO (Either PollError (ObservedReady dependency))
+awaitObservedReadyWith policy label recover runProbe cfg =
+  fmap (const ObservedReady)
+    <$> pollUntilReadyWith policy label recover runProbe cfg
+
+-- Closed resource/dependency pairs. A caller can inject observations for tests,
+-- but cannot choose an unrelated dependency phantom for a key.
+data BackendProbeKey resource dependency where
+  ProviderRespondingProbe :: BackendProbeKey ProviderResource ProviderResponding
+  ProviderNetworkProbe :: BackendProbeKey ProviderResource ProviderNetworkReady
+  DurableShareProbe :: BackendProbeKey DurableShareResource DurableShareReady
+  DockerDaemonProbe :: BackendProbeKey DockerResource DockerDaemonReady
+  MinioRolloutProbe :: BackendProbeKey MinioResource MinioRolloutReady
+  RegistryServingProbe :: BackendProbeKey RegistryResource RegistryReady
+  ClusterApiProbe :: BackendProbeKey ClusterResource ClusterApiReady
+  GpuPluginProbe :: BackendProbeKey ClusterResource GpuPluginReady
+
+data ProviderResponding
+data ProviderNetworkReady
+data DurableShareReady
+data DockerDaemonReady
+data MinioRolloutReady
+data RegistryReady
+data ClusterApiReady
+data GpuPluginReady
+
+data Probe scope planId id resource dependency probeId a =
+  Probe
+    (HostConfig -> IO (ProbeResult a))
+    Word64
+    Word64
+    Word64
+
+data ProbeConstructionError
+  = ZeroProbeGeneration
+  | ZeroProbePhaseVersion
+  | ZeroProbeObservationVersion
+  deriving (Eq, Show)
+
+-- | Inject a backend observation under a closed resource/dependency key. The
+-- fresh @probeId@ cannot escape except through the continuation.
+withBackendProbe ::
+  BackendProbeKey resource dependency ->
+  PlannedResource scope planId id resource frame ->
+  Word64 ->
+  Word64 ->
+  Word64 ->
+  (HostConfig -> IO (ProbeResult a)) ->
+  (forall probeId. Probe scope planId id resource dependency probeId a -> r) ->
+  Either ProbeConstructionError r
+withBackendProbe _ _planned generation phaseVersion observationVersion runProbe consume
+  | generation == 0 = Left ZeroProbeGeneration
+  | phaseVersion == 0 = Left ZeroProbePhaseVersion
+  | observationVersion == 0 = Left ZeroProbeObservationVersion
+  | otherwise =
+      Right (consume (Probe runProbe generation phaseVersion observationVersion))
+
+data Ready scope planId id resource dependency = Ready Word64 Word64 Word64
+
+readyGeneration :: Ready scope planId id resource dependency -> Word64
+readyGeneration (Ready generation _ _) = generation
+
+readyPhaseVersion :: Ready scope planId id resource dependency -> Word64
+readyPhaseVersion (Ready _ phaseVersion _) = phaseVersion
+
+readyObservationVersion :: Ready scope planId id resource dependency -> Word64
+readyObservationVersion (Ready _ _ observationVersion) = observationVersion
+
+awaitPlanReady ::
+  PollPolicy ->
+  String ->
+  Probe scope planId id resource dependency probeId a ->
+  HostConfig ->
+  IO (Either PollError (Ready scope planId id resource dependency))
+awaitPlanReady policy label =
+  awaitPlanReadyWith policy label (const (pure ()))
+
+awaitPlanReadyWith ::
+  PollPolicy ->
+  String ->
+  (HostConfig -> IO ()) ->
+  Probe scope planId id resource dependency probeId a ->
+  HostConfig ->
+  IO (Either PollError (Ready scope planId id resource dependency))
+awaitPlanReadyWith policy label recover (Probe runProbe generation phaseVersion observationVersion) cfg =
+  fmap (const (Ready generation phaseVersion observationVersion))
+    <$> pollUntilReadyWith policy label recover runProbe cfg

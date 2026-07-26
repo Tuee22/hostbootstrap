@@ -10,14 +10,15 @@
 ## TL;DR
 
 - The host-level `<project>.dhall` `resources` value is intended to be a hard ceiling. Current
-  CPU/memory application is partial: VM limits are creation-time, direct Linux GPU outer effects and
-  direct Colima are uncapped, and bare-Linux storage is only preflighted.
+  CPU/memory application is partial: Lima/Incus/WSL limits are creation-time, direct Linux GPU outer
+  effects are uncapped, the exact Colima adapter is not yet in the recursive command plan, and
+  bare-Linux storage is only preflighted.
 - One canonical parser, `parseQuantity` in `HostBootstrap.Cluster.Cordon`, decodes every quantity; one
   builder family produces each provider's sizing representation (argv where applicable and the
   `.wslconfig` body for WSL2).
-- The top-level demo decode ring uses typed `Quantity`, resource-floor, replica, port, and timeout
-  refinements, but constructors remain public and lifecycle consumes a separate raw context envelope.
-  The current capacity ring checks host/cluster capacity and the runtime ring applies selected
+- The top-level demo decode ring uses private, smart-constructed `Quantity`, resource-floor, replica,
+  port, and timeout refinements. Lifecycle consumes that sole project-owned resource value; context has
+  no duplicate budget. The current capacity ring checks host/cluster capacity and the runtime ring applies selected
   VM/kind-node CPU/memory caps. The target workload ring checks a plan-derived non-empty concurrent pod
   set, but lifecycle bring-up does not yet call `fitsBudget`.
 - Target admission uses a pure provider-capability proof to create one provider-exact `ProviderWallSpec`
@@ -30,25 +31,31 @@
 - Multi-node clusters consume the cluster envelope once. Lifecycle splits it across the declared node
   list and caps every node; the explicit `nvkind` topology is one control-plane plus one GPU worker.
 - Storage carries no `docker update` flag. Provider VM disks receive creation-time sizing, but existing
-  walls are not uniformly observed or reconciled; bare Linux has no implemented
-  quota/garbage-collection wall.
+  walls are not uniformly observed or reconciled. `storageCordonPolicy BareLinuxStorage` returns the
+  typed result `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable`; bare Linux has no
+  implemented quota/garbage-collection wall.
 
 ## One Canonical Quantity Parser
 
 `parseQuantity` is the shared quantity grammar in `HostBootstrap.Cluster.Cordon`. It accepts binary
 suffixes (`Ki`, `Mi`, `Gi`, `Ti`, each optionally followed by `B`) and decimal suffixes (`K`, `M`,
-`G`, `T`); a bare number is bytes. It decodes the `"8Gi"` form correctly, but also accepts zero and
-sub-provider-minimum values. Preflight uses the parsed byte count while Lima/Colima/Incus/WSL builders
-round memory/storage up to whole GiB, so fractional or decimal-SI values do not currently have one exact
-meaning at every layer. Phase 9.10 admits an exact, positive, provider-valid quantity only when the
-selected backend can represent it without upward rounding; the admitted `EffectiveBudget` equals the
-validated declaration and is the sole numeric input to capacity checks and partitions. A builder also
-requires authority from the post-partition journal: the initial create/apply adapter consumes the
-same-`wallSpecId` reservation and mints `ProviderWallAuthority` only after observation, while later
-builders consume that live authority. The pure effective value alone is not mutation authority.
+`G`, `T`); a bare number is bytes. It decodes fractional values exactly when they represent a whole
+number of bytes (`0.5Ki` is 512 bytes) and rejects inexact byte fractions (`0.1B`). Grammar parsing is
+separate from budget admission: a zero or otherwise invalid budget fails before capability construction.
+Lima/Colima/Incus/WSL admission rejects memory or storage that is not exactly representable as whole GiB;
+builders do not round a hard ceiling upward. The admitted `EffectiveBudget` equals the validated
+declaration and is the sole numeric input to capacity checks and partitions.
+
+Phase 9.10 also implements the pure journal-before-call wall algebra: a matching wall spec, partition,
+and positive fence create a reservation; only the prepared matching call exposes provider arguments; and
+successful settlement mints live wall authority. WSL settlement returns its global lease inseparably
+with that authority, while uncertain acquisition returns no authority. Live provider adapters and their
+durable CAS/recovery implementations remain owned by the dependent provider phases; the pure effective
+value alone is never mutation authority.
 
 The Python bootstrapper builds no sizing argv. `colimaSizingArgs project resources` emits the complete
-`colima start --profile <project> --cpu N --memory <GiB> --disk <GiB>` argv. Haskell owns the complete
+`colima start --profile <project> --runtime docker --activate=false --cpus N --memory <GiB> --disk
+<GiB>` argv. Haskell owns the complete
 argv; the Python bootstrapper does not size VMs. See
 [build and run model](../architecture/build_and_run_model.md) for where the project binary owns sizing,
 and [resource budgeting](resource_budgeting.md) for the budget field itself.
@@ -69,10 +76,11 @@ wall.
 
 The demo's top-level config decodes `memory`/`storage` through a transparent `Quantity` newtype backed by
 `parseQuantity`; its `Resources` decoder enforces the CPU floor; and `HaReplicas`, service ports, and
-timeouts use bounded decode-time newtypes. Those constructors and `Num`/`IsString` paths remain public,
-and the separately decoded `Context.ResourceEnvelope` is raw `Natural`/`Text`/`Text`. Thus these are
-decode-boundary checks, not proof that invalid applied resource states are unrepresentable. Cross-field
-port distinctness remains runtime validation because one field newtype cannot express it.
+timeouts use bounded decode-time newtypes. Their constructors are private, public smart constructors are
+total, and the `Num`/`IsString` bypasses have been removed. `Resources` is the sole editable budget;
+`BinaryContext` has no raw copy. Provider exactness and workload fit remain later plan checks rather than
+properties one field newtype can express. Cross-field port distinctness remains runtime validation for
+the same reason.
 
 A generated project config carries Kubernetes quantities as `Text` and contains no resolved pod set.
 Consequently a Dhall `Budget/fitsWithin` assertion has neither numeric operands nor workloads to compare
@@ -86,7 +94,7 @@ CPU/memory requests or limits.
 
 | Ring | Mechanism | Where |
 |------|-----------|-------|
-| Decode (partial) | Top-level demo quantity/resource/replica/port/timeout refinements; raw applied envelope remains | Dhall extraction |
+| Decode | Private smart-constructed demo quantity/resource/replica/port/timeout refinements; one project-owned budget | Dhall extraction |
 | Capacity | The pure `verifyBudget` preflight | `clusterCreate`, before cluster creation but after outer provider/container work |
 | Workload (target) | `fitsBudget` over the exact plan's non-empty concurrent set | Before the first mutating plan operation; not wired today |
 | Runtime | Applied VM / kind-node CPU and memory caps | The live substrate; storage incomplete on bare Linux |
@@ -157,10 +165,11 @@ flag. The cluster library can apply this path to either profile, but the demo ha
 hardcodes the Production profile.
 
 On Apple, the pristine path uses `limaSizingArgs` when creating a Lima VM; an already-existing VM is
-started without comparing or updating its sizing. The parallel
-`colimaSizingArgs` builder emits a profiled `colima start` argv for direct Docker workflows but is not
-yet wired: the Colima reconciler currently starts an unsized `colima start`, so no code path sizes a Colima VM
-from the budget today.
+started without comparing or updating its sizing. Direct Docker workflows use the separate prepared
+Colima adapter: a plan-bound project profile and admitted wall jointly produce the only accepted start
+argv, observation compares Docker runtime/CPU/memory/disk exactly, a same-name mismatch is refused, and
+Docker calls use the profile's named context. The adapter is intentionally absent from the config-free
+`allReconcilers` list. Recursive command-plan consumption and receipt-conditional cleanup remain open.
 
 On Windows, the WSL2 wall is **honest about what WSL2 can enforce**. Unlike incus `limits.memory` and
 Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the *global*, per-user
@@ -193,10 +202,15 @@ Each substrate cordons storage where it can:
 
 | Substrate | Storage cordon |
 |-----------|----------------|
-| Apple | Lima `--disk` only on initial VM creation; the Colima builder exists but its sized profile is not wired |
+| Apple | Lima `--disk` only on initial VM creation; the prepared direct-Colima adapter observes and enforces the exact project-profile `--disk` wall, with command integration still downstream |
 | incus VM | `root,size` on initial instance launch; existing sizing is not reconciled |
 | WSL2 VM | The distro's VHDX, capped only at registration through `wsl --install --vhd-size`; existing VHDX sizing is not reconciled. Memory/CPU are global `.wslconfig` settings, not per-distro flags |
-| Bare Linux | **Not implemented**: no hostPath quota or image-garbage-collection cap |
+| Bare Linux | `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable`: no hostPath quota or image-garbage-collection cap |
+
+`storageCordonPolicy` represents these rows as a typed `StorageCordonResult`: provider-backed targets
+return `StorageCordonSupported` with their concrete disk mechanism, while bare Linux returns the
+explicit unsupported constructor above. This policy is not an ownership receipt or a substitute for
+applying a provider wall.
 
 On Linux CPU, `incusSizingArgs resources` emits `limits.cpu`, `limits.memory`, and `root,size` arguments
 for initial instance launch. Direct Linux GPU has no Incus boundary. Neither path provides a bare-host
@@ -205,8 +219,8 @@ storage quota, and existing Incus sizing is not reconciled.
 ## Current Status
 
 Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
-initial-create behavior for Lima/Incus/WSL2; bare Linux has no runtime storage cordon, Colima is unsized,
-and direct Linux GPU outer effects are uncapped. Existing resource sizing is not uniformly compared or
+initial-create behavior for Lima/Incus/WSL2; direct Colima has an exact observed project-profile adapter;
+bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing resource sizing is not uniformly compared or
 reconciled. WSL2's global `.wslconfig` mechanism has historical runtime evidence only for its ordinary
 cordon mechanics, not exclusive global ownership, absent-original crash recovery, immutable budget
 identity, current durability, or test-profile closure. Native-lane status and exact dated test evidence

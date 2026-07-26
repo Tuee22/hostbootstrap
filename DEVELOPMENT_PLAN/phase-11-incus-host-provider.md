@@ -11,12 +11,14 @@
 
 ## Phase Status
 
-**Status**: Blocked
-**Blocked by**: Sprint 9.10
+**Status**: Active
+**Blocked by**: None (Sprint 9.10 is complete)
 
-**Reopened 2026-07-24.** Sprint 11.10 owns the parallel `HostTarget`/Provider boundary, unused WSL import
-builder, direct-alias bypass, and global WSL ownership defects. The Windows `8/8` result below is dated
-evidence for the earlier implementation, not current closure.
+**Reopened 2026-07-24.** Sprint 11.10 removed the parallel `HostTarget`/Provider boundary, unused provider
+classifiers/builders, demo-local Incus compensation, and direct-host alias bypass; it also added the total
+Incus daemon/permission/VM-capability/egress probe. Provider-guest alias receipts, authoritative WSL
+global-state ownership, and the native provider gates remain open. The Windows `8/8` result below is
+dated evidence for the earlier implementation, not current closure.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — the guest-side durable alias as pure, readiness-gated
 provider data.** The 2026-07-19 host-path share primitive (Sprint 11.8) delivered only the **host-side** half
@@ -29,10 +31,11 @@ the alias state machine into one classifier; it depends on the legible-failure s
 and the readiness framework (phase-9 Sprint 9.8). **CLOSED** on a live Windows/WSL2 `test run all` reporting
 **`8/8 passed`** (2026-07-23): the durable alias now links cleanly —
 `vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/Users/Matt/hostbootstrap/demo/.data` —
-on both variants, the exact step that collapsed `0/8` before. That closure proves the witness-threaded
-VM-lane call ordering and the live result, not unforgeable readiness: `HostBootstrap.Readiness.Internal`
-is publicly exposed, `MkReady` can be constructed without a probe, and `Ready tag` carries no resource
-instance identity. Phase 9 Sprint 9.10 owns sealing and resource-indexing the witness.
+on both variants, the exact step that collapsed `0/8` before. That closure proved only the historical
+witness-threaded VM-lane call ordering and live result. Sprint 9.10 has since removed
+`HostBootstrap.Readiness.Internal` and replaced the forgeable phantom with opaque
+plan/resource-indexed readiness; Sprint 11.10 owns migrating this provider path from non-authorizing
+compatibility observations to prepared operations.
 
 **Historical reopening (2026-07-19) — host-path share primitive.** At that point the governed docs asserted
 that a project's `.data` survived teardown as *host* state on every provider, but every substrate staged
@@ -57,7 +60,7 @@ daemon ready in hostbootstrap-demo-vm`, on both bring-ups) all fired, and teardo
 an `AbsExe` like every host tool); `HostBootstrap.Ensure.Incus` is a cross-substrate install-and-verify
 reconciler (Colima-backed Incus runtime on Apple, native daemon on Linux);
 `HostBootstrap.Substrate.Provider` plus `HostBootstrap.Lift` is the production provider route;
-`HostBootstrap.Incus` carries the VM lifecycle argv and `classifyDockerReadiness`; and
+`HostBootstrap.Incus` carries the consumed VM lifecycle argv; and
 `incusSizingArgs` uses the canonical quantity parser to cordon the VM at the wall
 (`limits.cpu`/`limits.memory`/`root,size`). `incus` is not a substrate and not a fifth run-model; it is a
 supported host-provider layer. The **Windows** host-provider peer is **WSL2** — an Ubuntu-24.04 distro
@@ -68,8 +71,8 @@ exactly as they do inside the Lima/Incus VMs (Sprint 11.7).
 
 `HostBootstrap.Lift` is the production subcommand-level self-reference lift over an n-level context stack
 (`Local`, provider-backed `InVM`, `InContainer`), so a binary crosses any boundary by invoking its own
-subcommand in the nested context. The older `HostTarget = Local | InVM` module remains exposed but has no
-production consumer; Sprint 11.10 removes that definition-only parallel abstraction. The pure provider
+subcommand in the nested context. The former definition-only `HostTarget = Local | InVM` module and
+uncalled restart/readiness helpers have been removed. The pure provider
 and lift cores, argv builders, dispatch, and fold are unit-tested, and the worked demo exercises the
 in-VM and in-container path in real runs.
 
@@ -84,7 +87,7 @@ sized at creation by the `wsl2SizingArgs` `.wslconfig` body plus the separate `w
 argument from
 [phase-9-applied-cordon-and-one-parser.md](phase-9-applied-cordon-and-one-parser.md), running Docker +
 kind + the workload inside the distro exactly as the Lima/Incus VMs do. `HostBootstrap.Wsl2` carries the
-pure argv builders and the host-reboot readiness classifier `classifyWsl2Readiness`,
+single consumed install route and other pure argv/output builders,
 `HostBootstrap.Ensure.Wsl2` exposes `ensure wsl2` (windows-cpu + windows-gpu), and `HostBootstrap.Lift`
 folds a provider-backed VM layer through WSL2 into the distro (`wsl -d <distro> -- <inner>`). That is
 Sprint 11.7 (`[Done]`), which also carried the Windows/WSL2 demo real-run validation — **closed 2026-07-01**
@@ -93,10 +96,12 @@ ceiling applied.
 
 ## Remaining Work
 
-**Current:** Sprint 11.10 is Blocked by Sprint 9.10's opaque readiness/reconcile/receipt algebra. It then
-owns the single Provider/Lift route, removal of definition-only `HostTarget`/`wslImportArgs` surfaces,
-provider-guest alias consolidation, deletion of the direct-host compatibility alias, and exclusive
-ownership of WSL global state.
+**Current:** Sprint 11.10 is partially delivered. `SubstrateProvider`/`Lift` is now the sole dispatch;
+dead provider APIs are removed; Incus has one total capability/egress transition; and the direct-host
+lane creates no alias. The provider-guest alias still uses non-authorizing compatibility observations
+and an ordinary pathname, and the WSL `.wslconfig` effect still infers ownership from backup existence
+without an authoritative lock/CAS or absent-origin receipt. The unavailable native Windows and Linux
+gates, plus a current disposable Lima lifecycle gate, remain required.
 
 **Historical closure (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
 (`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
@@ -105,8 +110,8 @@ Windows/WSL2 gate 0/8 by collapsing to `ExitFailure 1`). Both closed on a live W
 reporting **`8/8 passed`** (2026-07-23): the share mounts (a `Ready DurableShareMounted` probe) and the alias
 links cleanly on both variants. The end-to-end durable-root **read-back** contract (write → `project destroy`
 → `project up` → read) is phase-5 Sprint 5.6's; its share/alias mechanism is now validated here. The
-historical witness proves threaded call ordering only; public, forgeable, non-resource-indexed `MkReady`
-remains Phase 9 Sprint 9.10 work.
+historical witness proved threaded call ordering only; Sprint 9.10 has since removed the forge path.
+Live provider integration remains Sprint 11.10 work.
 
 **Historical reopening 2026-07-05 — provider lifecycle reliability. Code landed, code-check-validated, and
 real-run-closed (§ C) 2026-07-05:**
@@ -227,11 +232,11 @@ the original typed `HostTarget` abstraction and the Incus VM lifecycle.
 #### Deliverables
 
 - The historical `data HostTarget = Local | InVM IncusVM`; `runInTarget cfg Local t args = runTool cfg t
-  args`; `runInTarget cfg (InVM vm) t args = execVM …` (`incus exec <name> -- <cmd>`). The module remains
-  only as pending cleanup; it is not the current production provider route.
+  args`; `runInTarget cfg (InVM vm) t args = execVM …` (`incus exec <name> -- <cmd>`). At this delivery
+  point the module remained as pending cleanup; Sprint 11.10 later deleted it.
 - VM lifecycle through the resolved host `incus`: `createVM`, `start`/`stop`, `execVM`, `pushFiles`
-  (`incus file push`), `rebootVM`, `destroyVM` (name-prefix delete-guarded, reusing the harness
-  `guardTestDelete` idiom). The in-VM tool is the VM's own PATH binary reached through the single host
+  (`incus file push`), `rebootVM`, `destroyVM` (name-prefix delete-guarded through the same historical
+  guard idiom; Sprint 10.10 later removed the unconsumed public harness helper). The in-VM tool is the VM's own PATH binary reached through the single host
   `incus exec` (§ K governs host invocation only).
 
 #### Validation
@@ -250,8 +255,8 @@ None.
 **Docs to update**: `documents/engineering/incus.md`
 
 **Historical scope.** This is the original `HostTarget` callback-loop delivery record, not the current
-provider contract. The pure classifier remains useful; the definition-only `HostTarget` loop is pending
-replacement by the one `SubstrateProvider`/`Lift` total-readiness route in Sprint 11.10. See the
+provider contract. Sprint 11.10 later deleted both the definition-only loop and its unconsumed
+classifier/restart builder after `SubstrateProvider`/`Lift` became the sole route. See the
 [deletion ledger](legacy-tracking-for-deletion.md).
 
 #### Objective
@@ -426,10 +431,11 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   `wsl --install -d Ubuntu-24.04 --name <distro> --no-launch --vhd-size <size>` route and the separately
   exported/tested `wsl --import <distro> <dir> <tarball>` alternative, plus
   `wsl -d <distro> -- <inner>`, `wsl --terminate <distro>`, `wsl --shutdown`, the name-prefix
-  delete-guarded `wsl --unregister <distro>` (the guarded destroy, reusing the harness `guardTestDelete`
-  idiom), and `classifyWsl2Readiness`. The import builder has no production consumer, so this historical
-  sprint does not make `--import` the selected provisioning route: Sprint 11.10 decides install versus
-  import and retains one production builder. Phase 9's current `wsl2SizingArgs` owns only the
+  delete-guarded `wsl --unregister <distro>` (the guarded destroy uses the same historical prefix-check
+  idiom; Sprint 10.10 later removed the unconsumed public harness helper), and
+  `classifyWsl2Readiness`. The import builder had no production consumer, so this historical
+  sprint did not make `--import` the selected provisioning route: Sprint 11.10 later deleted it and
+  retained `wslInstallArgs` as the one production builder. Phase 9's current `wsl2SizingArgs` owns only the
   **global** `.wslconfig` `[wsl2]` `processors`/`memory`/`swap` utility-VM ceiling (WSL2 has no per-distro
   `wsl --memory`/`--cpu`); the selected install builder separately supplies the per-distro
   registration-time VHDX storage cap.
@@ -457,7 +463,7 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   `hostbootstrap-demo-vm`) and currently provisions it with `wslInstallArgs` if absent,
   `demoFrameContext` hands off through `inWsl2VM`, source/config staging uses the distro's
   `/mnt/<drive>/...` view of host files, and `project destroy` uses the name-prefix-guarded
-  `wsl --unregister` builder. Sprint 11.10 decides whether install or import remains canonical.
+  `wsl --unregister` builder. Sprint 11.10 later retained install and deleted import.
 - **Registry credential forwarding on Windows (operator prerequisite, no new code).** Symmetric with the
   other substrates: with the **standalone Docker CLI** (`docker.exe`, no Docker Desktop) and `docker login`
   (a Docker Hub PAT, no credential helper), the inline token in `%USERPROFILE%\.docker\config.json` is
@@ -469,11 +475,11 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
 
 #### Validation
 
-- `Wsl2Spec` asserts both the consumed `wsl --install` builder and the definition-only `wsl --import`
+- Historical `Wsl2Spec` asserted both the consumed `wsl --install` builder and the definition-only `wsl --import`
   builder, plus `wsl -d <distro> --` / `wsl --terminate` / `wsl --shutdown` argv, the
   name-prefix-guarded `wsl --unregister` (refusing a non-prefixed distro), and the
-  `classifyWsl2Readiness` branches. Testing the import argv is not evidence that production selected it;
-  Sprint 11.10 owns that choice. `EnsureSpec` asserts `wsl2` applicability (windows-cpu + windows-gpu)
+  `classifyWsl2Readiness` branches. Testing the import argv was not evidence that production selected it;
+  Sprint 11.10 later removed both unconsumed surfaces. `EnsureSpec` asserts `wsl2` applicability (windows-cpu + windows-gpu)
   and wrong-host fail-fast; `LiftSpec` covers the WSL2 VM fold; `HostToolSpec` covers the `Wsl`
   constructor. `cabal test all` passes.
 - 2026-06-26 live Windows validation: after Phase 2 supplied GHC/Cabal, `cabal build all` and
@@ -542,7 +548,7 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
   pinned `fourmolu`, `hlint` (`No hints`), `cabal -Werror`, `spago build`, and `esbuild`; however the
   lifecycle did not close because the WSL/Docker session later exits non-zero before `test run all` and
   `project destroy`. Repeated closure attempts fail during or immediately after the in-distro Docker
-  build (`COPY demo` / `RUN cp docker/container.cabal.project cabal.project`) with the parent
+  build (`COPY demo` / ordinary `demo/cabal.project`) with the parent
   `wsl -d hostbootstrap-demo-vm -- ...` session ending non-zero or with `Wsl/Service/0x80072746`. A clean
   `wsl --shutdown` recovers the distro and `/root` remains writable. A direct `hostbootstrap-demo.exe
   project destroy` against the partial stack succeeds through the guarded WSL2 delete path
@@ -640,17 +646,17 @@ step that raced and collapsed on the Windows/WSL2 gate. Direct-host totality and
   `Ready DurableShareMounted` witness (§ CC); `waitVMNetwork` mints a `Ready NetworkReady` the mount probe
   consumes; `mintDurableAlias` requires the mount witness. Those signatures thread
   `substrateWait → waitVMNetwork → awaitDurableShareMounted → mintDurableAlias` in call order, so callers
-  using the intended results cannot omit a predecessor. They do **not** make readiness unforgeable or bind
-  it to a resource instance: public `HostBootstrap.Readiness.Internal.MkReady` can mint any phantom tag.
-  Phase 9 Sprint 9.10 owns the sealed, generative, resource-indexed witness.
+  using the intended results could not omit a predecessor. At this historical landing the public
+  `HostBootstrap.Readiness.Internal.MkReady` still allowed forging; Sprint 9.10 subsequently removed it
+  and delivered the sealed, generative, resource-indexed witness.
 - A collision (`AliasLinkedElsewhere` / `AliasOccupied`) is a `Failed` message, never a bare exit code.
 
 #### Validation
 
 - `cabal test` from `core/` — `ProviderSpec` (or a new alias spec) covers all four `AliasState` cases, the
   create/remove planner, and the mount/alias probe classification; type checking proves the named
-  functions require the preceding result to be threaded. Constructor opacity and resource identity are
-  explicitly not validation from this sprint and remain Phase 9 Sprint 9.10 work.
+  functions require the preceding result to be threaded. Constructor opacity and resource identity were
+  explicitly not validation from this sprint; Sprint 9.10 now supplies them.
 - Real-run gate (§ C), jointly with phase-5 Sprint 5.6 and phase-10 Sprint 10.8: the Windows/WSL2
   `test run all` reaches `8/8`, or fails with a legible `LifecycleFailure` naming the cause — never a bare
   `ExitFailure 1`.
@@ -666,24 +672,25 @@ is a legible `Left`, never a bare exit code. The VM-shell lane reads facts with 
 than claimed as this sprint's closure. VM readiness ordering is threaded through the initial witness:
 `waitVMNetwork` mints `Ready NetworkReady`, `awaitDurableShareMounted` consumes it and mints
 `Ready DurableShareMounted` (a retrying `test -d && test -w` probe), and `mintDurableAlias` requires the mount
-witness. This makes the intended call graph explicit, but the public `MkReady` constructor means a consumer
-can forge either phantom witness and neither value identifies the observed resource; sealing and
-resource-indexing are Phase 9 Sprint 9.10. A residual failure is legible via phase-10 Sprint 10.8's
+witness. This made the intended call graph explicit, but at the time a consumer could forge either
+phantom witness. Sprint 9.10 subsequently sealed and resource-indexed readiness. A residual failure is
+legible via phase-10 Sprint 10.8's
 `LifecycleFailure`. Static gate green:
 `cabal test all --ghc-options=-Werror` **core 382** (7 new `ProviderSpec` alias cases) **+ demo 98**.
 **Historical VM-lane gate (§ C, 2026-07-23):** the live Windows/WSL2 `test run all` reported **`8/8 passed`** with
 the alias linking cleanly on both variants
 (`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/…/demo/.data`) — the exact step that
 failed `0/8` before. None remains in this narrowed VM-lane scope; Sprint 11.10 owns direct-host totality,
-one Provider/Lift path, and exclusive alias ownership; Phase 9 Sprint 9.10 owns generative readiness.
+one Provider/Lift path, and exclusive alias ownership; Phase 9 Sprint 9.10 now supplies generative
+readiness.
 
-### Sprint 11.10: One provider/lift path and guest durable projections [Blocked]
+### Sprint 11.10: One provider/lift path and guest durable projections [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprint 9.10
+**Status**: Active
+**Blocked by**: None (Sprint 9.10 is complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/HostTarget.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -735,22 +742,49 @@ projection primitive without treating them as direct-host path authority.
 
 #### Remaining Work
 
-Blocked until Sprint 9.10 lands the opaque readiness/reconcile/receipt algebra. Then consolidate the
-provider abstractions, remove definition-only exports, strengthen capability/egress probes, wire the
-guest aliases through the shared typed primitive, delete the direct-host compatibility alias, and rerun
-each native provider gate. The Windows `8/8`
-snapshot validates the historical WSL lane only; it does not close direct Linux, Lima, Incus, egress, or
-ownership-conflict behavior.
+**Delivered and statically validated 2026-07-26:**
+
+- deleted public `HostBootstrap.HostTarget`, its result-free reboot loop, the unconsumed Incus/WSL
+  readiness classifiers, the unused Incus restart builder, and `wslImportArgs`; every remaining exported
+  provider argv builder has a production consumer and `wslInstallArgs` is the one registration route;
+- made `vmShellArgs` use the same `Lift.foldLeaf` dispatcher as all other VM handoffs;
+- replaced Linux Incus client presence with the total `IncusProviderStatus` table. Linux convergence now
+  covers daemon initialization/restart, immediate permission, KVM/QEMU/OVMF, Incus bridge forwarding, and
+  `images:` egress; only `IncusProviderReady` enters the opaque capability continuation. Deleted the
+  demo-local remediation branch;
+- removed the direct-host alias observation/mutation surface; the direct lane consumes the canonical
+  same-root host path.
+
+**Still open:**
+
+- migrate each provider-guest alias from `ObservedReady` plus `ln -s` to the plan-owned prepared
+  operation and a backend able to provide same-privilege-resistant identity-bound conditional
+  mutation/delete. The ordinary `/var/tmp` pathname cannot mint that receipt; an unsupported backend
+  must return typed `Unsupported`, and the demo may not bypass it;
+- replace WSL backup-existence inference with a Windows platform-authoritative lock/CAS and a durable
+  origin receipt that distinguishes exact original bytes from absence, then condition restore on that
+  identity. A pathname sidecar or process-local lock is not sufficient;
+- run current native WSL2, native Incus/direct-Linux, and disposable Lima gates. The Windows `8/8`
+  snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows lane.
+
+**Validation evidence (2026-07-26):** `cabal build all --ghc-options=-Werror` and the complete **448**
+core tests passed; the demo `-Werror` build plus **105** demo and embedded **448** core tests passed; the
+provider source/use drift test passed through the supported Python runner; and the focused documentation
+validator passed. A disposable Apple `hostbootstrap-phase-11-10-smoke` Lima instance proved exact
+2-CPU/4-GiB/20-GiB VZ sizing, its sole writable host share, guest DNS egress, already-running no-op,
+stop/start recovery, and guarded exact deletion; no pre-existing Lima instance existed, and the
+disposable instance and mount directory were removed. This closes only the available Lima lifecycle
+slice, not the guest-alias ownership primitive or any Windows/native-Linux gate.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
-- `documents/engineering/wsl2.md` - **(new)** the Windows WSL2 host provider: `ensure wsl2`, the
-  production-selected install-or-import route (Sprint 11.10), `wsl -d <distro> --`,
-  `wsl --terminate`, `wsl --shutdown`, guarded `wsl --unregister`, `classifyWsl2Readiness`, and the
+- `documents/engineering/wsl2.md` - the Windows WSL2 host provider: `ensure wsl2`, the
+  production-selected install route, `wsl -d <distro> --`,
+  `wsl --terminate`, `wsl --shutdown`, guarded `wsl --unregister`, and the
   `wsl2SizingArgs` budget cordon (the `.wslconfig` + VHDX wall), with a WRONG/RIGHT pair (WRONG: bare
   `$PATH` `wsl` / unguarded `wsl --unregister`; RIGHT: resolved `AbsExe` / name-prefix-guarded destroy).
-  Do not preselect `wsl --import` before Sprint 11.10 closes.
+  The deleted `wsl --import` alternative is historical, not a supported route.
 - `documents/engineering/incus.md` - the host-provider axis, the `ensure incus` install, the VM lifecycle
   and `incus exec` dispatch, the reboot reconcile, and the `incusSizingArgs` budget cordon, with a
   WRONG/RIGHT pair (WRONG: bare `$PATH` `incus` / unguarded `incus delete`; RIGHT: resolved `AbsExe` /
@@ -772,8 +806,8 @@ ownership-conflict behavior.
 
 **Cross-references to add:**
 - `documents/engineering/ensure_reconcilers.md` adds the `ensure incus` and `ensure wsl2` rows.
-- `system-components.md` records `HostBootstrap.HostTarget` as definition-only pending removal and adds
-  `HostBootstrap.Substrate.Provider`, `HostBootstrap.Lift`, `HostBootstrap.Incus`,
+- `system-components.md` records the single `HostBootstrap.Substrate.Provider`/`HostBootstrap.Lift`
+  route and adds `HostBootstrap.Incus`,
   `HostBootstrap.Ensure.Incus`, `HostBootstrap.Wsl2`, `HostBootstrap.Ensure.Wsl2`, the `Wsl` host tool,
   and the `ensure incus` / `ensure wsl2` reconciler rows.
 - `development_plan_standards.md` § U records WSL2 as the Windows VM-provider peer of Lima/Incus.

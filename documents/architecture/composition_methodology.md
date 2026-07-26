@@ -4,19 +4,20 @@
 **Supersedes**: N/A
 **Referenced by**: [documents-index](../README.md), [hostbootstrap_core_library](hostbootstrap_core_library.md), [binary_context_config](binary_context_config.md), [library_hierarchy](library_hierarchy.md), [run_models](run_models.md)
 
-> **Purpose**: Define the foundational composition model of `hostbootstrap-core`: the current
-> `chain :: cfg -> [Step]` is the one forward step ordering consumed by recursive `project up`, while the
-> target opaque `ProjectPlan scope specDigest planId configId cfg` derives forward order, topology, and verb-indexed,
+> **Purpose**: Define the foundational composition model of `hostbootstrap-core`: project fragments
+> produce one opaque validated `StepPlan` consumed by recursive `project up`, while the later
+> `ProjectPlan scope specDigest planId configId cfg` derives receipt-bound reverse traversal,
+> resource/effect authority, and verb-indexed
 > receipt-driven reverse traversal from
 > one validated representation. The same step algebra composes deployment and runtime business logic.
 
 ## TL;DR
 
-- **The chain is the current declared forward list.** A project binary contributes
-  `chain :: cfg -> [Step]`, and `project up --dry-run` renders that list. The recursive interpreter
-  groups work by first frame occurrence and does not validate contiguous unique frame segments: a
-  representable `A1, B1, A2` list renders in that order but executes `A1, A2, B1`. Current
-  `psFrameContext`, child-config delivery, and `psTeardown` are also independent. The target opaque
+- **The validated step plan is the declared forward order.** A project binary contributes additive
+  `cfg -> [Step]` fragments; final projection runs `mkStepPlan`, and `project up --dry-run` renders that
+  opaque plan. Validation preserves the exact order or rejects empty/duplicate/conflicting plans,
+  including a non-contiguous `A1, B1, A2` return and misplaced post-handoff work, before effects. The
+  frame-context and teardown single-assignment slots remain separate. The later receipt-aware
   `ProjectPlan scope specDigest planId configId cfg` rejects those shapes and derives every view from one
   representation (§ W).
 - **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
@@ -44,14 +45,15 @@
 ## The Step And The Chain
 
 The foundational unit is a composable **step**: an action a binary runs and reports inside one execution
-frame. The current declared forward order is the list of those steps:
+frame. Project fragments declare lists, but the interpreter receives only their opaque validated result:
 
 ```haskell
-chain :: cfg -> [Step]
+addSteps :: (cfg (Production projectId) -> [Step]) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
+mkStepPlan :: [Step] -> Either StepPlanError StepPlan
 ```
 
-The project-defined `cfg` is decoded from the root `<project>.dhall` parameters, so the chain is a pure
-function — there is no hidden, imperatively assembled command graph. Steps differ in execution semantics,
+The project-defined `cfg` is decoded from the root `<project>.dhall` parameters, so plan projection is
+pure — there is no hidden, imperatively assembled command graph. Steps differ in execution semantics,
 and that difference drives plan/apply and retry:
 
 | Step kind | Semantics | Target / control plane | Layer |
@@ -101,7 +103,7 @@ local host. `project up` is the recursive interpreter of the chain over that sta
 
 `project up` attempts reconcile-to-running, but most reconcilers return `IO ()` rather than an explicit
 create/repair/no-op/conflict result, so typed idempotence is not yet enforced. `project up --dry-run`
-renders `chain cfg` without effects.
+resolves and renders the same `StepPlan` without effects.
 `project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
 VMs use provider stop, while kind clusters use `kind delete cluster`. `project destroy` invokes
 current-frame cleanup plus the project teardown hook. It does **not** recursively dispatch the verb into
@@ -257,10 +259,12 @@ still the chain and context graph, not a second hidden accelerator path; see
 
 ## Single Representation: The Chain Is The Representation
 
-A project must have exactly **one lifecycle representation** (§ W). The current implementation has not
-fully reached that target: forward deployment is `psChain`, while `psFrameContext` and `psTeardown` are
-separate `ProjectSpec` functions. They can disagree with the chain, and current teardown is a
-current-frame hook rather than a reverse interpretation.
+A project must have exactly **one lifecycle representation** (§ W). Forward order is now one opaque
+`StepPlan`: typed core/project identities are disjoint, operation keys and dependency prefixes derive
+from that plan, frame segments are exact and contiguous, and render/apply/frame traversal consume the
+same value. The implementation has not fully reached the receipt-aware lifecycle target:
+frame-context and teardown remain checked single-assignment functions beside the plan, and current
+teardown is a current-frame hook rather than a reverse interpretation.
 
 The target replaces those independent inputs with one **opaque** validated plan from which forward steps,
 frame topology, and reverse transitions are derived:
@@ -713,20 +717,19 @@ demo contributes its deploy as the substrate-selected pure value
 `web` and `accelerator` service variants, and its VM/provider IO inside the composite actions represented
 by chain steps.
 
-The list is not yet structurally validated. Public `Step`/`StepKind` constructors permit duplicate frame
-IDs/labels, project labels that shadow core step names, non-contiguous repeated frames, and misplaced
-post-handoff work. `chainFrames` deduplicates by first frame appearance while `stepsForFrame` later
-collects every occurrence, so dry-run order and effect order can differ for an accepted `A, B, A` shape.
-The target plan rejects all such inputs before its first mutation and gives core/project step kinds
-disjoint typed identities.
+`Step`, `StepKind`, and `ProjectStepId` constructors are hidden. Smart constructors attach an explicit
+reverse policy and namespaced operation key; core/project identities are disjoint even when presentation
+labels match. `mkStepPlan` rejects duplicate identities, conflicting frame labels, non-contiguous frame
+returns, and invalid post-handoff placement. Generated-sequence properties prove a valid list is
+preserved exactly and an invalid `A, B, A` shape is rejected rather than regrouped.
 
-`project up` is the recursive interpreter driven by `chain :: cfg -> [Step]`. The VM-backed demo branches
+`project up` is the recursive interpreter driven by the resolved `StepPlan`. The VM-backed demo branches
 descend the 3-frame topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`); the direct native Linux GPU branch
 uses a 2-frame metal → direct-project-container chain with no VM frame. `project down`/`destroy` are not
 the same recursive interpretation: they clean the owning current frame and invoke a project hook.
-`ProjectSpec` also accepts `psFrameContext` and `psTeardown` separately from `psChain`, so the stronger
-single-plan invariant remains open; Phase 16.6 owns that consolidation and receipt-driven reverse walk.
+The finalized `ProjectSpec` still carries its one frame-context and teardown projections beside the plan,
+so receipt-bound child-first reverse traversal remains open; Phase 16.6 owns that consolidation.
 
 `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <case-id>|all` runs the
@@ -752,9 +755,9 @@ specifications are implemented; closure still requires the live host/in-cluster 
 the UI add operation reaches the daemon-built worker.
 
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
-reads the thin `<project>.test.dhall`, generates each run's `<project>.dhall` via the independent
-`psTestConfig` callback (the demo shares `demoInitWithMessage` with `demoInit` by convention),
-drives `project up` against that generated config, and deletes it on teardown only while the exact bytes
+reads the thin `<project>.test.dhall`, generates each run's scope-indexed `<project>.dhall` through the
+Harness request of the single restricted `psAssemble` and matching mapped codec, drives `project up`
+against that generated config, and deletes it on teardown only while the exact bytes
 still match; changed bytes remain in the reported locked quarantine. The
 pre-existing-config flow is removed and recorded in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
@@ -801,7 +804,7 @@ from these primitives, never baked into L0.
 - [binary_context_config](binary_context_config.md) — how a frame verifies its place before acting.
 - [library_hierarchy](library_hierarchy.md) — the L0/L1/L2 levels and the extension-stream merge that adds step
   kinds (stream 1 = the lift chain).
-- [run_models](run_models.md) — the four execution-shape names and the current definition-only selector.
+- [run_models](run_models.md) — the four execution-shape names derived from the validated plan.
 - [incus](../engineering/incus.md) and [cluster_lifecycle](../engineering/cluster_lifecycle.md) — the
   `InVM` frame and the fail-closed in-container cluster path.
 - [harness_workflow](harness_workflow.md) — the `runMatrix` + `Seams` test engine that `test run all`
@@ -809,4 +812,4 @@ from these primitives, never baked into L0.
 - [composition_patterns](../engineering/composition_patterns.md) — the cookbook of shapes that instantiate
   this model.
 - [authoring_project_binaries](../engineering/authoring_project_binaries.md) — how a consumer authors its
-  `chain :: cfg -> [Step]`.
+  additive step fragments and finalizes their `StepPlan`.

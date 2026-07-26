@@ -19,8 +19,7 @@ WINDOWS_CPU = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
 
 def _project(project_root: Path) -> bootstrap.ProjectBuildSpec:
     return bootstrap.ProjectBuildSpec(
-        project="demo",
-        executable="demo",
+        identity="demo",
         cabal_file=project_root / "demo.cabal",
     )
 
@@ -36,15 +35,14 @@ def test_discover_project_derives_name_from_single_cabal_file(tmp_path: Path) ->
         """
 name: hostbootstrap-demo
 
-executable hostbootstrap
+executable hostbootstrap-demo
   main-is: Main.hs
 """.strip(),
         encoding="utf-8",
     )
 
     assert bootstrap.discover_project(tmp_path) == bootstrap.ProjectBuildSpec(
-        project="hostbootstrap-demo",
-        executable="hostbootstrap",
+        identity="hostbootstrap-demo",
         cabal_file=cabal,
     )
 
@@ -58,7 +56,53 @@ def test_discover_project_rejects_multiple_cabal_files(tmp_path: Path) -> None:
     (tmp_path / "a.cabal").touch()
     (tmp_path / "b.cabal").touch()
 
-    with pytest.raises(bootstrap.ProjectDiscoveryError, match="multiple .cabal files"):
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="--cabal-file"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_accepts_explicit_selection_when_multiple_exist(tmp_path: Path) -> None:
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.cabal").write_text(
+            f"name: {name}\n\nexecutable {name}\n  main-is: Main.hs\n",
+            encoding="utf-8",
+        )
+
+    selected = bootstrap.discover_project(tmp_path, selected_cabal_file=Path("b.cabal"))
+
+    assert selected.identity == "b"
+    assert selected.cabal_file == (tmp_path / "b.cabal").resolve()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        Path("missing.cabal"),
+        Path("nested/demo.cabal"),
+        Path("demo.txt"),
+    ],
+)
+def test_discover_project_rejects_invalid_explicit_selection(
+    tmp_path: Path, selection: Path
+) -> None:
+    (tmp_path / "demo.txt").touch()
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested/demo.cabal").touch()
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="directly under"):
+        bootstrap.discover_project(tmp_path, selected_cabal_file=selection)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "name: other\n\nexecutable demo\n  main-is: Main.hs\n",
+        "name: demo\n\nexecutable other\n  main-is: Main.hs\n",
+    ],
+)
+def test_discover_project_rejects_every_identity_mismatch(tmp_path: Path, contents: str) -> None:
+    (tmp_path / "demo.cabal").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="identity mismatch"):
         bootstrap.discover_project(tmp_path)
 
 
@@ -66,6 +110,23 @@ def test_discover_project_rejects_missing_executable_stanza(tmp_path: Path) -> N
     (tmp_path / "demo.cabal").write_text("name: demo\n", encoding="utf-8")
 
     with pytest.raises(bootstrap.ProjectDiscoveryError, match="no executable stanza"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_rejects_missing_package_name(tmp_path: Path) -> None:
+    (tmp_path / "demo.cabal").write_text("executable demo\n  main-is: Main.hs\n", encoding="utf-8")
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="no package name"):
+        bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_rejects_multiple_package_names(tmp_path: Path) -> None:
+    (tmp_path / "demo.cabal").write_text(
+        "name: demo\nname: duplicate\n\nexecutable demo\n  main-is: Main.hs\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(bootstrap.ProjectDiscoveryError, match="multiple package name"):
         bootstrap.discover_project(tmp_path)
 
 
@@ -223,8 +284,55 @@ async def test_verified_ghcup_download_rejects_digest_mismatch(
     assert not (tmp_path / ".ghcup/bin/ghcup").exists()
 
 
+async def test_verified_ghcup_download_supports_windows_powershell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = b"windows ghcup"
+    digest = hashlib.sha256(payload).hexdigest()
+    destination = tmp_path / "ghcup.exe"
+    monkeypatch.setattr(bootstrap, "_WINDOWS_GHCUP", str(destination))
+    monkeypatch.setitem(
+        bootstrap._GHCUP_DOWNLOADS,
+        ("windows", "amd64"),
+        ("https://downloads.haskell.org/ghcup/pinned.exe", digest),
+    )
+    commands: list[tuple[str, ...]] = []
+
+    async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        downloaded = Path(command[-1].rsplit("'", 2)[1])
+        downloaded.write_bytes(payload)
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _download)
+    await bootstrap._install_verified_ghcup(WINDOWS_CPU)
+
+    assert commands[0][:3] == (
+        bootstrap._POWERSHELL,
+        "-NoProfile",
+        "-Command",
+    )
+    assert destination.read_bytes() == payload
+
+
+async def test_verified_ghcup_download_rejects_unknown_platform_arch() -> None:
+    unsupported = Substrate(SubstrateName.LINUX_CPU, "ppc64le")
+    with pytest.raises(RuntimeError, match="no pinned GHCup download"):
+        await bootstrap._install_verified_ghcup(unsupported)
+
+
+async def test_verified_ghcup_download_requires_curl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="curl disappeared"):
+        await bootstrap._install_verified_ghcup(LINUX_CPU)
+
+
 def test_native_build_command() -> None:
     spec = _project(Path("/proj"))
+    assert spec.project == "demo"
     cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_build_command(spec, Path("/proj")) == (
         cabal,
@@ -235,9 +343,53 @@ def test_native_build_command() -> None:
     )
 
 
+def test_native_build_command_offline() -> None:
+    spec = _project(Path("/proj"))
+    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
+    assert bootstrap.native_build_command(spec, Path("/proj"), offline=True) == (
+        cabal,
+        "--store-dir",
+        str(Path("/proj") / ".build/cabal-store"),
+        "build",
+        "--offline",
+        "exe:demo",
+    )
+
+
 def test_cabal_update_command() -> None:
     cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.cabal_update_command() == (cabal, "update")
+
+
+def test_cabal_index_path_honors_cabal_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CABAL_DIR", str(tmp_path / "configured"))
+    assert bootstrap.cabal_index_path() == (
+        tmp_path / "configured/packages/hackage.haskell.org/01-index.tar"
+    )
+
+    monkeypatch.delenv("CABAL_DIR")
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    assert bootstrap.cabal_index_path() == (
+        tmp_path / ".cabal/packages/hackage.haskell.org/01-index.tar"
+    )
+
+
+def test_cabal_index_state_distinguishes_missing_fresh_and_stale(tmp_path: Path) -> None:
+    index = tmp_path / "01-index.tar"
+    assert bootstrap.cabal_index_state(index, now=100.0) is bootstrap.CabalIndexState.MISSING
+
+    index.write_bytes(b"index")
+    index.touch()
+    modified = index.stat().st_mtime
+    assert bootstrap.cabal_index_state(index, now=modified) is bootstrap.CabalIndexState.FRESH
+    assert (
+        bootstrap.cabal_index_state(
+            index,
+            now=modified + bootstrap._CABAL_INDEX_MAX_AGE_SECONDS + 1,
+        )
+        is bootstrap.CabalIndexState.STALE
+    )
+    assert bootstrap.cabal_index_state(index, now=modified - 1) is bootstrap.CabalIndexState.FRESH
 
 
 def test_native_listbin_command() -> None:
@@ -381,6 +533,145 @@ async def test_build_binary_builds_without_exec_or_dhall(
     assert execed == []
 
 
+async def test_build_native_skips_update_for_fresh_index_and_unchanged_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spec = _project(tmp_path)
+    source = tmp_path / "dist/demo"
+    source.parent.mkdir()
+    source.write_bytes(b"same binary")
+    destination = bootstrap.binary_path(spec, tmp_path)
+    destination.parent.mkdir()
+    destination.write_bytes(b"same binary")
+    commands: list[tuple[str, ...]] = []
+    copies: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.FRESH,
+    )
+
+    async def _checked(command: object, **_kwargs: object) -> bootstrap.process.CommandResult:
+        argv = tuple(str(part) for part in command)  # type: ignore[union-attr]
+        commands.append(argv)
+        stdout = str(source) if "list-bin" in argv else ""
+        return bootstrap.process.CommandResult(argv, 0, stdout, "")
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _checked)
+    monkeypatch.setattr(bootstrap.shutil, "copy2", lambda left, right: copies.append((left, right)))
+
+    await bootstrap._build_native(spec, project_root=tmp_path)
+
+    assert commands == [
+        bootstrap.native_build_command(spec, tmp_path),
+        bootstrap.native_listbin_command(spec, tmp_path),
+    ]
+    assert copies == []
+
+
+async def test_build_native_offline_uses_cache_and_copies_changed_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spec = _project(tmp_path)
+    source = tmp_path / "dist/demo"
+    source.parent.mkdir()
+    source.write_bytes(b"new binary")
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.STALE,
+    )
+
+    async def _checked(command: object, **_kwargs: object) -> bootstrap.process.CommandResult:
+        argv = tuple(str(part) for part in command)  # type: ignore[union-attr]
+        commands.append(argv)
+        stdout = str(source) if "list-bin" in argv else ""
+        return bootstrap.process.CommandResult(argv, 0, stdout, "")
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _checked)
+
+    await bootstrap._build_native(spec, project_root=tmp_path, offline=True)
+
+    assert commands == [
+        bootstrap.native_build_command(spec, tmp_path, offline=True),
+        bootstrap.native_listbin_command(spec, tmp_path),
+    ]
+    assert bootstrap.binary_path(spec, tmp_path).read_bytes() == b"new binary"
+
+
+async def test_build_native_offline_rejects_missing_index_before_cabal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.MISSING,
+    )
+
+    async def _unexpected(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Cabal must not run without an offline index")
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _unexpected)
+    with pytest.raises(RuntimeError, match="requires a cached Cabal package index"):
+        await bootstrap._build_native(_project(tmp_path), project_root=tmp_path, offline=True)
+
+
+async def test_build_native_offline_wraps_unresolved_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.FRESH,
+    )
+
+    async def _failed(command: object, **_kwargs: object) -> object:
+        argv = tuple(str(part) for part in command)  # type: ignore[union-attr]
+        result = bootstrap.process.CommandResult(argv, 1, "", "dependency unavailable")
+        raise bootstrap.process.CommandError(result)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _failed)
+    with pytest.raises(RuntimeError, match="could not resolve all inputs"):
+        await bootstrap._build_native(_project(tmp_path), project_root=tmp_path, offline=True)
+
+
+async def test_build_native_online_preserves_cabal_command_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.FRESH,
+    )
+
+    async def _failed(command: object, **_kwargs: object) -> object:
+        argv = tuple(str(part) for part in command)  # type: ignore[union-attr]
+        result = bootstrap.process.CommandResult(argv, 1, "", "build failed")
+        raise bootstrap.process.CommandError(result)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _failed)
+    with pytest.raises(bootstrap.process.CommandError):
+        await bootstrap._build_native(_project(tmp_path), project_root=tmp_path)
+
+
+def test_copy_if_changed_handles_missing_size_and_digest_differences(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"abc")
+
+    assert bootstrap._copy_if_changed(source, destination) is True
+    assert destination.read_bytes() == b"abc"
+    assert bootstrap._copy_if_changed(source, destination) is False
+
+    source.write_bytes(b"longer")
+    assert bootstrap._copy_if_changed(source, destination) is True
+    source.write_bytes(b"XXXXXX")
+    assert bootstrap._copy_if_changed(source, destination) is True
+
+
 async def test_bootstrap_and_build_share_one_doctor(
     monkeypatch: pytest.MonkeyPatch,
     recorded_commands: list[tuple[str, ...]],
@@ -505,6 +796,23 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
         bootstrap.native_listbin_command(spec, tmp_path),
     ]
     assert execed == [[str(bootstrap.binary_path(spec, tmp_path)), "--help"]]
+
+
+async def test_offline_toolchain_refuses_missing_tool_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _missing(_probe: tuple[str, ...]) -> bool:
+        return False
+
+    async def _unexpected(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("offline toolchain check must not install or download")
+
+    monkeypatch.setattr(bootstrap, "_already_present", _missing)
+    monkeypatch.setattr(bootstrap, "_install_verified_ghcup", _unexpected)
+    monkeypatch.setattr(bootstrap.process, "run_checked", _unexpected)
+
+    with pytest.raises(RuntimeError, match="requires the host build tool to be preinstalled"):
+        await bootstrap._ensure_toolchain(LINUX_CPU, offline=True)
 
 
 # ---------------------------------------------------------------------------

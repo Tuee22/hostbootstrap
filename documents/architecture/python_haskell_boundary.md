@@ -4,34 +4,37 @@
 **Supersedes**: the offline/common-path and winget-installed-Haskell narratives
 **Referenced by**: [documents index](../README.md), [build and run model](build_and_run_model.md), [prerequisites](../engineering/prerequisites.md), [self update](../engineering/self_update.md)
 
-> **Purpose**: Define the thin Python bootstrapper's actual pre-binary responsibilities and the
-> provenance/offline gaps that remain.
+> **Purpose**: Define the thin Python bootstrapper's actual pre-binary responsibilities, project
+> selection contract, and online/offline behavior.
 
 ## TL;DR
 
-In the ordinary project path, Python discovers exactly one top-level Cabal file, provisions the pinned
-Haskell tools, performs an online host build, and hands off to the project binary. It does not currently
-offer verified downloads, an offline mode, or explicit Cabal-file selection; Haskell owns every later
-project config and lifecycle action. Explicit pipx self-update and repository maintainer commands are
-separate distribution surfaces, not exceptions that move project runtime ownership into Python.
+In the ordinary project path, Python selects one top-level Cabal file, validates one filename/package/
+executable identity, provisions the pinned Haskell tools, builds host-native, and hands off to the
+project binary. Online builds refresh only a missing/stale package index; `--offline` requires the
+toolchain/index/store to be present and forbids provisioning or index/network resolution. Haskell owns
+every later project config and lifecycle action. Explicit pipx self-update and repository maintainer
+commands are separate distribution surfaces, not exceptions that move project runtime ownership into
+Python.
 
 ## Current Status
 
-The ownership boundary is implemented, but the network, provenance, project-discovery, and Windows
-process-handoff limitations below remain open. Phase status belongs in
+The ownership, selection, verified-download, and explicit offline boundaries are implemented. Windows
+intentionally uses a child subprocess rather than POSIX process replacement. Phase status belongs in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Ownership boundary
 
 For `doctor`/`build`/`run`, Python owns only work that must happen before a project binary exists:
 
-1. discover one top-level `*.cabal` file in the selected project root;
-2. derive the **project** identifier from that filename;
-3. parse that file for exactly one `executable` stanza and derive the executable name separately;
+1. discover one top-level `*.cabal` file, or consume an explicit `--cabal-file` selection;
+2. parse exactly one package `name` and one `executable` stanza;
+3. require the selected filename stem, package name, and executable name to be identical;
 4. assert the pre-binary host floor;
 5. ensure GHCup, GHC 9.12.4, and Cabal;
-6. run `cabal update`;
-7. build the executable with a repo-local store and copy it to `.build/<executable>`;
+6. classify the local Cabal index and refresh it only when missing/stale in online mode;
+7. build the executable with a repo-local store and copy it to `.build/<identity>` only when its bytes
+   changed;
 8. invoke it with the requested arguments.
 
 The installed distribution also owns the explicit `update` command. In a source checkout, the
@@ -49,42 +52,38 @@ build, cluster/workload lifecycle, services, tests, and teardown.
 
 ## Project discovery
 
-The current CLI accepts `--project-root`, not an explicit Cabal-file option. Discovery requires exactly
-one top-level `.cabal` file. Its filename stem and its single `executable` stanza may differ:
+The CLI accepts `--project-root` plus optional `--cabal-file`. Without explicit selection, more than one
+top-level `.cabal` file is a fail-fast ambiguity. The selected file must be an existing direct child of
+the project root. Its three build identities must agree:
 
 ```text
-project identity    = cabal-file stem
-binary identity     = executable stanza name
+project identity = cabal-file stem = package name = executable stanza name
 ```
 
-The bootstrapper's stable output path uses the executable name. Descriptions that say it merely derives
-the binary name from the Cabal filename are incomplete.
-
-The parser is intentionally small and line-oriented; it is not a full Cabal parser. The target accepts an
-explicit Cabal-file selection when discovery is ambiguous, parses the package/project identity with a
-real Cabal-aware mechanism, and enforces **one identity** across Cabal package name, sole executable,
-config filename, image name, and project namespace. If distinct identities are genuinely required, the
-unused parallel identity must be eliminated from lifecycle naming rather than silently tolerated.
+The parser is intentionally small and line-oriented; it validates the top-level package field and sole
+executable stanza needed by the bootstrap boundary rather than pretending to be a general Cabal parser.
+The Haskell entrypoint additionally compares its declared project name to the actual invoked executable
+name before command dispatch, so a renamed/mismatched binary cannot select a different sibling config
+namespace.
 
 ## Network and offline behavior
 
-The current path is online:
+Online mode permits network work when required:
 
-- `_build_native` runs `cabal update` on every build, even when GHC/Cabal are already installed.
+- `_build_native` runs `cabal update` only when the secure Hackage index is missing or older than the
+  declared freshness window.
 - Linux downloads the pinned architecture-specific GHCup binary with resolved `curl`.
 - Windows downloads the pinned GHCup executable with PowerShell `Invoke-WebRequest`.
 - GHCup installs and Cabal dependency resolution require their upstream indexes/artifacts when not
   cached.
 
-Therefore “offline after installation” and “no network call on the common path” are false. Linux
-asserts `curl` as part of the pre-binary floor before using it.
+`--offline` is explicit and fail-closed:
 
-The target offline mode must be explicit:
-
-- `--offline` forbids index refresh and all downloads;
-- every required tool/index/package must be proven present before build;
-- missing cache content produces a deterministic refusal naming the artifact;
-- normal online mode may refresh, but reports that network access is required.
+- an absent GHCup/GHC/Cabal probe refuses before any installer/download;
+- a missing Cabal index refuses before Cabal;
+- Cabal receives `--offline`, so an unresolved cached dependency is reported as an offline-cache
+  failure;
+- no package-index update runs.
 
 ## Download provenance
 
@@ -112,9 +111,10 @@ config is absent.
 
 The boundary is closed only when tests prove:
 
-- filename and executable identities are handled distinctly;
+- Cabal selection ambiguity and every stem/package/executable mismatch fail before build;
+- the Haskell declared name and invoked executable identity agree before dispatch;
 - POSIX exec and Windows subprocess provenance are documented and surfaced;
-- online/offline modes behave as declared;
+- online/offline modes and fresh-index/unchanged-copy no-ops behave as declared;
 - Linux checks its download prerequisites;
 - every downloaded bootstrap artifact is verified before execution;
 - the host-native project never imports an in-image absolute freeze.

@@ -40,6 +40,11 @@ def recorded_commands(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
     monkeypatch.setattr(process, "run", _fake)
     monkeypatch.setattr(process, "run_checked", _fake)
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.MISSING,
+    )
     # _build_native copies the located binary to the stable path; with the fakes
     # above there is no real source file, so stub the copy to keep tests off-disk.
     monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
@@ -68,5 +73,10 @@ def recorded_commands_fresh_host(monkeypatch: pytest.MonkeyPatch) -> list[tuple[
 
     monkeypatch.setattr(process, "run", _probe)
     monkeypatch.setattr(process, "run_checked", _checked)
+    monkeypatch.setattr(
+        bootstrap,
+        "cabal_index_state",
+        lambda _index: bootstrap.CabalIndexState.MISSING,
+    )
     monkeypatch.setattr(bootstrap.shutil, "copy2", lambda *a, **k: None)
     return calls

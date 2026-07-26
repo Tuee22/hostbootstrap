@@ -9,11 +9,12 @@
 
 ## TL;DR
 
-The target resolves descriptive `sourceRoot` once into opaque canonical project-root authority.
-Production `.data` and every host, guest, container, kind-node, and pod path are typed projections of
-that identity. Provider lanes may use `/var/tmp/hostbootstrap-demo-data` as a guest-local projection;
-direct-host Docker must bind the actual canonical host `.data` directory. The current implementation
-still substitutes the compatibility alias on direct Linux, so end-to-end durability remains unvalidated.
+Root-config admission now resolves descriptive `sourceRoot` once into opaque
+`CanonicalProjectRoot scope rootId` authority without rewriting the descriptive context. Direct-host
+Docker binds the matching typed canonical `.data` projection; provider lanes continue to use
+`/var/tmp/hostbootstrap-demo-data` only as a guest-local projection. The final opaque plan still has to
+carry all guest, container, kind-node, and pod projections, and end-to-end durability remains
+unvalidated until the destroy/up/readback gate passes.
 
 ## Current Status
 
@@ -42,14 +43,18 @@ source into the node path. The web pod mounts the final `/web` directory from th
 
 The canonical host directory is `<project-root>/.data`. Provider setup creates it, carries it into the
 VM/container topology, waits for the share, and reconciles the guest alias. The direct Linux GPU lane
-currently uses that alias too; Sprint 5.6.1 reopens this as a compatibility defect.
+instead receives the canonical absolute host directory from root admission; it does not substitute the
+guest alias.
 
 ## What is implemented
 
 - `HostPathShare`/`ShareReconcile` describe the provider-specific host-to-guest carry.
 - WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
-- Provider and direct-host paths create the host durable root; current code also attempts to establish
-  `/var/tmp/hostbootstrap-demo-data` in both cases.
+- Provider and direct-host paths create the host durable root. Provider guests establish
+  `/var/tmp/hostbootstrap-demo-data`; the direct-host Docker handoff consumes the typed canonical path.
+- Root lifecycle frame/teardown callbacks receive `CanonicalProjectRoot scope rootId` separately from
+  `BinaryContext`, and the host-mount adapter accepts only a `CanonicalHostPath` carrying the same
+  indices.
 - Project-container, kind/nvkind, and pod configurations carry the directory to the web workload.
 - Cluster teardown excludes its configured data path from its filesystem removal set.
 
@@ -60,17 +65,18 @@ code created it.
 
 The carry is not yet a delivered durability guarantee:
 
-- Direct Linux passes `/var/tmp/hostbootstrap-demo-data` to Docker because the pure frame context has
-  only relative `sourceRoot = "."`; Docker rejects that symlink as a bind source. The target deletes
-  this direct-host alias path and supplies the canonical absolute host `.data` projection.
+- The current `ProjectSpec` still keeps forward chain, frame context, and teardown as separate
+  representations. The final `ProjectPlan` must retain the canonical authority and derive every
+  provider-guest/container/kind-node/pod projection rather than letting remaining adapters accept raw
+  path values.
 - VM-shell and direct observations do not yet share one total, typed probe result at the IO boundary.
 - `/var/tmp/hostbootstrap-demo-data` is an ordinary shared pathname. Current create/check/remove logic
   cannot exclude a same-privilege process replacing it between operations, so it is not an
   identity-authoritative ownership backend and cannot honestly mint a strong cleanup receipt.
-- `DurableStore` is not uniform mutation authority. Initial core `service run` dispatch and the
-  accelerator handler require no capability; only the Web handler's later sibling-config reload asks
-  `validateContext` for `[DurableStore]`. That check consumes an editable decoded label after selection,
-  so it neither binds one config snapshot nor proves durable placement.
+- `DurableStore` is not uniform mutation authority. Core `service run` now binds typed role selection and
+  handler fields to one canonically verified sibling snapshot, but neither Web nor accelerator handler
+  yet receives plan-derived effect/capability authority. The remaining raw handler `IO` therefore does
+  not prove durable placement.
 - The demo test harness currently resolves `containerPlan` with the `Production` profile. It creates and
   mounts `.data`; the nominal `.test_data` lifecycle is not what the live demo cluster uses.
 - No live gate writes through the pod path, runs `project destroy`, runs `project up`, and reads the same
@@ -84,10 +90,14 @@ implemented, end-to-end persistence unvalidated**.
 ## Root authority and alias target
 
 Root-config admission resolves relative `sourceRoot` against the stable project-home anchor owned by the
-selected root config—not `cwd` or the executable's sibling `.build` directory—then verifies and
-canonicalizes it once. Its rank-2 `CanonicalProjectRoot scope rootId` is the only source of host durable
-paths. `ProjectPlan` derives the lifecycle-profile root and all boundary projections under the same
-identity. Raw `FilePath` values and guest aliases cannot enter a host-bind adapter.
+selected root config—not caller `cwd` or the executable's sibling `.build` directory—then verifies and
+canonicalizes it once. Its rank-2 `CanonicalProjectRoot scope rootId` is the only source of direct-host
+durable paths. `CanonicalHostPath` construction is private, and the host-bind adapter requires the root
+and path to carry the same `scope`/`rootId`; raw `FilePath`, redirected roots, and cross-root projections
+are rejected.
+
+The final `ProjectPlan` target derives the lifecycle-profile root and all remaining boundary projections
+under that identity. That broader plan work is not yet implemented.
 
 Alias reconciliation remains necessary only for provider guests. It is a typed projection operation,
 not root discovery or authority.
@@ -165,10 +175,11 @@ Those claims require the live validation gates below.
    `ManagedResult Unchanged` with the same verified receipt.
 2. Wrong-link, occupied-node, permission, and unexpected IO failures are reported without partial
    filesystem exceptions.
-3. Root-resolution tests are independent of process `cwd`; wrong/replaced roots fail before plan
-   construction, and API tests prevent guest/container paths from entering direct-host bind operations.
-4. Direct Linux reaches Docker with the canonical absolute nonsymlink host `.data` path; each provider
-   lane reaches it through only its own typed guest projection.
+3. **Passed 2026-07-25:** root-resolution tests are independent of process `cwd`; missing, wrong-kind,
+   escaping, and redirected roots fail before the callback, and compile-fail tests prevent raw or
+   cross-root paths from entering direct-host bind operations.
+4. **Direct half passed:** native Linux reached Docker with the canonical absolute nonsymlink host
+   `.data` path. Final plan-indexed provider guest projections remain open.
 5. Every supported native substrate writes a unique value through the pod-mounted `/web` path, destroys
    the stack, recreates it, and reads the value from both host and pod.
 6. `test run all` proves its cluster name is test-scoped and that neither `.data` nor the production

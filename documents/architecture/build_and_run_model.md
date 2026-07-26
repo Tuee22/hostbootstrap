@@ -1,7 +1,8 @@
 # Build and Run Model
 
 **Status**: Authoritative source
-**Supersedes**: the `HostTarget` runtime narrative, recursive-teardown claim, and offline-capable claim
+**Supersedes**: the `HostTarget` runtime narrative, recursive-teardown claim, and two-project/freeze
+consumer claim
 **Referenced by**: [documents index](../README.md), [Python/Haskell boundary](python_haskell_boundary.md), [composition methodology](composition_methodology.md), [base image](../engineering/base_image.md), [lifecycle state model](lifecycle_state_model.md)
 
 > **Purpose**: Describe how the host-native project binary and Linux project image are built, and how
@@ -9,65 +10,55 @@
 
 ## TL;DR
 
-The host binary and Linux image intentionally use different Cabal projects. Current derived builds can
-reuse a stale local mutable base tag, lifecycle readiness/teardown are incomplete, and demo tests use
-Production state; the target selects a freshly pulled published base by digest and applies the typed
-lifecycle contract.
+The host binary and Linux image use the same Cabal project. The Python host build retains its explicit
+offline option, while image builds are ordinary online distribution builds and may compile Cabal cache
+misses. Published rolling bases are explicitly pulled before compatibility smoke-testing; lifecycle
+readiness/teardown remain incomplete, and demo tests still use Production state.
 
 ## Current Status
 
-The sections below describe the working two-build chain and identify its open reproducibility and
-lifecycle defects. Delivery status and closure evidence live in
+The sections below describe the working two-build chain and identify its open lifecycle defects.
+Delivery status and closure evidence live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
-## Two builds and two Cabal projects
+## Two builds and one Cabal project
 
 The outer Python bootstrap builds the project executable **host-native** into
-`<project-root>/.build/<executable>` and hands the requested arguments to it. This uses the project's
-host-native `cabal.project`. In this repository, `demo/cabal.project` includes the demo package and local
-`hostbootstrap-core`; it does not import an absolute in-image freeze.
-
-The project binary later builds the Linux project image. The demo Dockerfile copies
-`demo/docker/container.cabal.project` over `cabal.project` inside the image. That container-only project
-imports `/opt/basecontainer/haskell-deps/core.freeze`, which exists in the published base image.
-
-These configurations must remain separate:
+`<project-root>/.build/<executable>` and hands the requested arguments to it. The project binary later
+builds the Linux project image from the same source. In this repository, `demo/cabal.project` includes
+the demo package and local `hostbootstrap-core`; the Docker build copies both packages into matching
+relative locations and uses that same file unchanged.
 
 | Build | Project file | Store/pins |
 |---|---|---|
-| Host-native binary | `demo/cabal.project` | host `.build/cabal-store`; local core source; no in-image absolute import |
-| Linux project image | `demo/docker/container.cabal.project` | `/opt/cache/cabal`; imports the base image's freeze |
+| Host-native binary | `demo/cabal.project` | host `.build/cabal-store`; local core source |
+| Linux project image | `demo/cabal.project` | inherited `/opt/cache/cabal`; local core source; online misses allowed |
 
-Teaching one `cabal.project` for both environments is incorrect because the absolute freeze path is not
-available on the host.
+No project file imports `/opt/basecontainer/...`, and the Dockerfile does not swap in a
+container-specific configuration. The inherited store improves performance when keys match; it does not
+control the consumer solver.
 
 ## Network behavior
 
-The bootstrap is not offline-capable:
+The ordinary online bootstrap probes tools first, downloads a pinned/digest-verified GHCup binary only
+when absent, refreshes a missing/stale Cabal index, and lets Cabal resolve uncached build inputs.
+`--offline` instead requires every tool and the index to be present, adds Cabal's `--offline` mode, and
+fails clearly when the local index/store cannot satisfy the build. An unchanged located binary is not
+recopied to `.build/`.
 
-- Python runs `cabal update` before every host-native build.
-- A missing Linux GHCup is installed with `curl ... | sh`.
-- Windows downloads a pinned GHCup executable with PowerShell.
-- Base and derived builds download/pull toolchains, packages, and images.
-
-An already-installed tool avoids its install fallback, but that does not make the whole build offline;
-the unconditional package-index refresh still needs network. Download provenance and offline targets are
-documented in [Python/Haskell boundary](python_haskell_boundary.md) and
+Base and derived image builds remain online distribution operations: they pull images and may download
+toolchains/packages. The rolling base workflow queries authoritative release metadata for current
+compatible inputs; it has no committed replay lock. Its selection contract is documented in
+[Python/Haskell boundary](python_haskell_boundary.md) and
 [base image](../engineering/base_image.md).
 
 ## Project image source
 
-Derived images must build from the **published** base, never from a same-named local base left in a Docker
-daemon. The current demo builder passes a mutable tag and does not add `--pull`, so it can silently use a
-stale local tag. This is an open reproducibility defect.
-
-The target is:
-
-1. explicitly pull the required published tag;
-2. resolve and record its registry digest;
-3. pass `BASE_IMAGE=<repository>@sha256:<digest>`;
-4. reject a derived build that has only a mutable/local tag;
-5. report the digest in build output and deployment provenance.
+Derived compatibility smoke builds consume the **published** rolling base, never a same-named local
+image left in a Docker daemon. The publisher explicitly pulls the tag and may use the resolved digest to
+bind that one smoke to the pulled artifact. Ordinary consumers use the rolling tag and pull it through
+the normal published-base workflow; the digest is not a permanent configuration or reproducibility
+contract.
 
 See [base image](../engineering/base_image.md) and [build and release](../engineering/build_release.md).
 
@@ -96,15 +87,16 @@ a host daemon after the private ingress is reachable.
 ## Provider dispatch
 
 The active provider abstraction is `SubstrateProvider` plus its `LiftLayer` and generic folds for launch,
-shell, copy, share, stop, and destroy. The older `HostTarget`/`runInTarget` and
-`rebootDockerToReady` symbols remain in source but have no live demo call sites. They are stale surfaces,
-not the architecture. See [Incus](../engineering/incus.md) and [WSL2](../engineering/wsl2.md).
+shell, copy, share, stop, and destroy. The former parallel `HostTarget`/`runInTarget` module and
+result-free reboot loop have been deleted. See [Incus](../engineering/incus.md) and
+[WSL2](../engineering/wsl2.md).
 
 ## Lifecycle truth
 
-Bring-up has several bounded waits and fail-closed command checks, but readiness is not universally
-type-gated and `Ready` is forgeable. Reconcilers mostly return `IO ()`, not explicit
-create/adopt/repair/no-op/conflict results.
+Bring-up has several bounded waits and fail-closed command checks. Plan-indexed readiness is now opaque,
+resource-bound, and unforgeable at the Phase 9 API boundary, but live effects are not universally
+type-gated and mostly still consume non-authorizing compatibility observations. Reconcilers mostly
+return `IO ()`, not the implemented explicit create/adopt/repair/no-op/conflict foundation.
 
 Teardown is also not recursive. Root `project down`/`destroy` cleans the current cluster only when that
 frame owns it and then invokes the project teardown hook. VM deletion or direct-container cleanup handles
@@ -145,7 +137,7 @@ the source help's stale suite terminology).
 
 Static unit suites validate many pure builders and classifiers. They do not close:
 
-- immutable base selection by digest;
+- remaining native rolling-base publication/compatibility lanes;
 - universal readiness/ownership typing;
 - recursive teardown;
 - target `Harness projectId runId` isolation;

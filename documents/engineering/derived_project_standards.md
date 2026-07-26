@@ -5,7 +5,7 @@
 **Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [in_cluster_registry.md](in_cluster_registry.md), [linking_and_optimization.md](linking_and_optimization.md), [binary_context_config](../architecture/binary_context_config.md)
 
 > **Purpose**: State the rules a derived project follows to build the one binary that extends
-> `hostbootstrap-core`, contribute its lift **chain** and step actions, inherit the base image, gate on
+> `hostbootstrap-core`, contribute and finalize its lift **plan** and step actions, inherit the base image, gate on
 > `check-code`, and materialize the binary at `./.build/`.
 
 ## TL;DR
@@ -14,8 +14,8 @@
 - It extends the fixed command/parser surface through typed chain steps, config codecs, cases, services,
   and code checks rather than adding top-level verbs.
 - It builds host-native for host execution and derives its project image from the published base.
-- The current chain/context/teardown seams are not yet one opaque plan, and recursive teardown,
-  immutable base selection, and harness root isolation remain plan-owned target work.
+- Forward steps are one opaque validated `StepPlan`; frame-context/teardown are checked single-assignment
+  slots. Receipt-driven recursive teardown and harness root isolation remain plan-owned target work.
 
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
@@ -28,26 +28,28 @@ re-derives it.
 ## The derived project is one binary whose identity is its lift chain
 
 A derived project currently ships **exactly one executable stanza** in exactly one top-level Cabal file.
-Python derives the project identifier from the Cabal filename stem and the binary identifier separately
-from that executable stanza; the current implementation permits those names to differ and writes
-`.build/<executable>`. `hostbootstrap-demo.cabal` and its `hostbootstrap-demo` executable happen to match.
-The target rejects ambiguous or mismatched identity rather than silently carrying parallel names. Once
+Python requires the Cabal filename stem, package name, and executable stanza to match and writes
+`.build/<identity>`; ambiguous discovery requires explicit `--cabal-file` selection. The Haskell
+entrypoint then requires its declared project name to equal the invoked executable before dispatch. Once
 the binary exists, command dispatch is governed by its sibling runtime config file,
 [`<project>.dhall`](schema.md). See
 [Python/Haskell boundary](../architecture/python_haskell_boundary.md).
 
-The binary's primary contribution is **not** a set of noun verbs — it is a value:
+The binary's primary contribution is **not** a set of noun verbs — it is one finalized plan assembled
+from additive fragments:
 
 ```haskell
-chain :: cfg -> [Step]
+addSteps appSteps builder
+finalizeProjectSpec builder :: Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
 ```
 
-an ordered list of `Step`s the core interprets. It is the current forward ordering
+where `appSteps :: cfg (Production projectId) -> [Step]`. Core validates the combined exact order into
+an opaque `StepPlan`
 (see [composition methodology](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
 host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
 (deploy-minio, deploy-registry, push-image, accelerator-daemon placement, …). `project up` interprets
-`chain cfg` from the current frame
+the resolved plan from the current frame
 and hands off `pb project up` into the next frame; `project up --dry-run` renders the chain plan without
 executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
 verifies it is in the frame its `.dhall` describes, or fails fast.
@@ -55,30 +57,39 @@ verifies it is in the frame its `.dhall` describes, or fails fast.
 The binary extends `hostbootstrap-core`'s command tree rather than re-implementing core verbs:
 
 ```haskell
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain)
+import HostBootstrap.CLI
+  ( addServices, addSteps, finalizeProjectSpec, projectSpec
+  , runHostBootstrapCLI, setFrameContext, setTeardown )
 
 main :: IO ()
-main =
-  runHostBootstrapCLI
-    "app"
-    ( withChain
-        appChain
-        (projectSpec appTestSuite appCheckCode appArtifacts appInit appTestInit appTestConfig)
+main = do
+  spec <- either (fail . show) pure
+    ( finalizeProjectSpec
+        ( addServices appServices
+            ( addSteps appSteps
+                ( setFrameContext appFrameContext
+                    ( setTeardown appTeardown
+                        (projectSpec appTestSuite appCheckCode appArtifacts appTestCodec appTestInit appAssemble)
+                    )
+                )
+            )
+        )
     )
+  runHostBootstrapCLI "app" spec
 ```
 
-`projectSpec` takes the project's test suite, code-check action, schema artifacts, and the project-owned config builders (`psInit` / `psTestInit` / `psTestConfig`);
-`withChain` sets the lift chain (and `withFrameContext` / `withTeardown` set the per-frame
-lift-context builder and the chain-frame teardown). Repeating one of those calls replaces the earlier
-value; only `withServices` is currently additive. `runHostBootstrapCLI progName projectSpec` composes
+`projectSpec` takes the project's test suite, code-check action, schema artifacts, test codec,
+`psTestInit`, and the single scope-aware restricted `psAssemble`. `addSteps`, `addArtifacts`,
+`addAssemblyInputs`, and `addServices` append. `setFrameContext` and `setTeardown` are checked
+single-assignment slots; a second assignment is a construction error. `runHostBootstrapCLI progName spec` composes
 the project's chain, test suite, code-check action, and
 the artifact delta onto the inherited tree (`project init|up|down|destroy`, `context`, `test init|run`,
 `service init|schema|run`, `check-code`). The spec is generic: the chain consumes the project's `cfg`, the test suite must
 be non-empty, the `check-code` action is required, duplicate case/artifact names are rejected, and project
-artifacts feed the inherited `context` introspection registry. Current validation does not require a
-non-empty/contiguous chain, prevent a `ProjectStep` from rendering as a core kind, inspect the
-function-valued callbacks, or validate the generated case/variant relation. `ConfigArtifact` is also a
-public record whose schema/render text can be hand-paired. The bare `hostbootstrap` binary uses
+artifacts feed the inherited `context` introspection registry. Finalization and plan projection require
+a non-empty contiguous plan, disjoint unique typed step identities, consistent frame labels, explicit
+reverse policy, unique artifacts/inputs/services/cases, and exactly one frame-context/teardown
+projection. `ConfigArtifact` construction remains codec-backed. The bare `hostbootstrap` binary uses
 `runBareHostBootstrapCLI`; it is the only intentional empty-chain/empty-suite binary. `project init` runs
 without an active local config to write the root `<project>.dhall`; `service init` and `test init` are
 likewise bootstrap writers. Static schema/render/path commands are config-free, `context inspect|show`
@@ -88,18 +99,21 @@ valid for the declared frame. There is
 no Python-owned `hostbootstrap.dhall`; resource, context, and witness settings live in the binary-owned
 root config. In the current demo, child config projection/delivery occurs in composite
 bootstrap/frame-context/deployment actions and the `context-init` row is only an announcer. Under the
-implemented generic project model a project supplies a `ProjectSpec cfg tcfg`; core ships no defaults.
-Current `psInit`, `psTestInit`, and `psTestConfig` are independent callbacks. The demo shares an
-initialization helper between root and harness paths by convention, while service projection still
-supplies separate fallback ports/timeouts. The target scope-aware assembler is
-the only default-bearing path, so every role projection is total from the same result (see
+implemented generic project model a project supplies a `ProjectSpec projectId cfg tcfg`; core ships no
+defaults. One restricted `psAssemble` is the structural default source for Production init and Harness
+variant generation, while `psTestInit` constructs the distinct test config. The typed service registry
+and full codec are jointly finalized under one digest; demo Web/Accelerator role projection is total
+from explicit assembled fields and has no fallback literals (see
 [authoring_project_binaries](authoring_project_binaries.md) and
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
 
+Before parser dispatch, the entrypoint normalizes the actual invoked executable name (including a
+Windows `.exe`) and requires it to equal `progName`. The Python build boundary has already required the
+Cabal filename stem, package name, and sole executable name to equal that same artifact identity.
+
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` detects the
-substrate, then calls
-`runHostBootstrapCLI "hostbootstrap-demo" (withChain (demoChainFor substrate) (...
-(projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)))`.
+substrate, adds `demoChainFor substrate`, `demoServices`, `demoFrameContext`, and `demoTeardown` to the
+builder, finalizes it, then calls `runHostBootstrapCLI "hostbootstrap-demo" spec`.
 Its `demoChainFor :: Substrate -> ProjectConfig -> [Step]` contributes the demo's
 substrate-selected lift as a single `[Step]`: VM-backed lanes use host→VM→container→cluster (deploy VM,
 build pb + image in the VM, then carry the project-container child config through the
@@ -132,12 +146,13 @@ The target has the same **parallel extension streams**, one additive merge idiom
 | **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test run` verb |
 | **service handlers** | `withServices` | append handlers; duplicate variants are rejected |
 
-This table is the target composition rule. Today core itself concatenates `coreArtifacts` with the
-project-supplied artifact delta and `withServices` appends. The function-valued chain/context/teardown
-setters replace, and public `Step`/`ConfigArtifact` constructors do not enforce the target invariants.
+This table is the current composition rule. Builder fragments append steps, artifacts, assembly inputs,
+and typed services under duplicate checks; frame context and teardown are checked single-assignment
+slots. `Step` and `StepPlan` constructors are opaque. `ConfigArtifact` still has its separate validated
+codec constructor and registry duplicate checks.
 
-Stream 1 is the workload-extension seam: a project contributes step kinds into the same `[Step]` the core
-interprets. "L0-direct" means consuming L0 without going through L1; it does not imply a second
+Stream 1 is the workload-extension seam: a project contributes step kinds into the same `StepPlan` the
+core interprets. "L0-direct" means consuming L0 without going through L1; it does not imply a second
 base-image-only integration mechanism.
 
 ## One project-binary integration model
@@ -150,22 +165,16 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
 
 ## The rules
 
-1. **Inherit an explicitly pulled published base by digest.** The current demo still passes a mutable
-   tag, which is an open defect. The target `BASE_IMAGE` is `repository@sha256:...`; a same-named local
-   base is never a derived-build input. See [build_release.md](build_release.md).
-2. **Use separate host-native and container Cabal projects.** The host project must not import an
-   absolute path that exists only in the image. The container-only project sets
-   `with-compiler: ghc-9.12.4`, `tests: True`, `benchmarks: True`, `shared: True`,
-   `optimization: 2`, and imports the fragment(s) for the project's layer: an
-   L0-direct consumer adds `import: /opt/basecontainer/haskell-deps/core.freeze`; a daemon app
-   additionally adds `import: /opt/basecontainer/haskell-deps/daemon.freeze`. Derived projects ship
-   **zero** freeze files of their own — the freezes live only in the base image and are referenced
-   at build time so version drift cannot happen. Add `hostbootstrap-core` as a
+1. **Pull the published rolling base before a compatibility build.** A same-named local image is never
+   evidence for the registry copy. A resolved digest may bind one pull-to-smoke transaction, but
+   consumers follow the rolling tag and no input replay contract is implied. See
+   [build_release.md](build_release.md).
+2. **Use one Cabal project on the host and in the container.** It must not import an absolute
+   `/opt/basecontainer/...` project or freeze. Add `hostbootstrap-core` as a
    `source-repository-package` with a full immutable commit `tag` (or a local sibling) dependency; its
-   transitive closure is already warm in the store. A moving branch or omitted remote `tag` is not a
-   governed consumer input. The demo uses `demo/cabal.project` on the host and
-   `demo/docker/container.cabal.project` in the image. See
-   [warm_store.md](warm_store.md#required-import-the-freeze-fragments).
+   transitive closure may already be warm in the store. A moving branch or omitted remote `tag` is not
+   a governed consumer source dependency. The demo uses `demo/cabal.project` unchanged in both
+   environments. See [warm_store.md](warm_store.md).
 3. **Build the binary, materialize the image-build context, run `<project> check-code`, and add a
    tini-wrapped `ENTRYPOINT`.** Image-build context materialization is explicit: the Dockerfile runs the
    binary once to write its image-build-container `<project>.dhall` after the binary is installed and
@@ -181,16 +190,13 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
 4. **Link executables statically; build libraries with `shared: True`.** Do not pass
    `--enable-executable-dynamic` or `--enable-executable-static`. See
    [linking_and_optimization.md](linking_and_optimization.md#recommended-policy).
-5. **Don't rebuild what the warm store already builds.** Check
-   `cabal build --dry-run --enable-tests --enable-benchmarks all` inside the container. If a
-   third-party package (including a `hostbootstrap-core` dependency) shows up in the plan, fix your
-   project's flags first; if it's a genuine miss, add it to the appropriate layer
-   manifest under [`core/warm-deps/`](../../core/warm-deps/)
-   (core + web → `basecontainer-core-deps.cabal`; daemon-family →
-   `basecontainer-daemon-deps.cabal`).
-   See [warm_store.md](warm_store.md#how-to-verify-your-project-hits-the-cache).
+5. **Treat the inherited store as an optimization.** `cabal build --dry-run` can diagnose reuse, but a
+   third-party package in the plan is a permitted cache miss. Add broadly useful dependencies to the
+   descriptive manifest under [`core/warm-deps/`](../../core/warm-deps/) when useful; do not contort
+   consumer constraints merely to force a hit. Publication uses the real demo as an online compatibility
+   smoke, not an offline completeness proof. See [warm_store.md](warm_store.md#cache-behavior).
 
-A project that follows all five rules has a Dockerfile that is small, a build that hits the cache,
+A project that follows all five rules has a small Dockerfile, opportunistic cache reuse,
 a binary whose chain extends the core step algebra, and an image that cannot exist with code-check
 violations.
 
@@ -215,9 +221,9 @@ substrate:
 
 Building the project **container** is the invoked binary's job (its `check-code` gate), not the
 bootstrapper's. A `./.build/<executable>` is always present after a successful bootstrap, regardless of
-substrate. The notation `<project>` elsewhere on this page denotes the intended single logical identity;
-today Python does not enforce that the Cabal filename stem, executable stanza, and
-`runHostBootstrapCLI` program name agree. That identity defect and its fail-closed target are defined in
+substrate. The notation `<project>` elsewhere on this page denotes the validated single build identity:
+Cabal filename stem = package name = executable stanza = invoked/declared CLI program name. Broader
+opaque plan/resource identity remains in the later lifecycle phases; see
 [schema](schema.md#project-and-executable-identity).
 
 ## Worked compliant Dockerfile shape
@@ -252,10 +258,6 @@ Its `cabal.project`:
 ```cabal
 packages: .
 
-with-compiler: ghc-9.12.4
-
-import: /opt/basecontainer/haskell-deps/core.freeze
-
 tests: True
 benchmarks: True
 shared: True
@@ -268,14 +270,11 @@ source-repository-package
   subdir: core/hostbootstrap-core
 ```
 
-This worked consumer is L0-direct, so it imports `core.freeze` only. A daemon app would add a second
-`import: /opt/basecontainer/haskell-deps/daemon.freeze` line alongside it.
-
 Remote consumers replace the placeholder with one full immutable commit ID. The in-repository demo uses
 the sibling local package instead, so it has no remote `tag` field.
 
-No freeze is committed in the project — the layered warm-store freezes are imported from the
-base image at build time, and `hostbootstrap-core`'s dependency closure is already warm.
+The same project file is used host-native and in the derived container. It imports no base-owned freeze;
+matching `hostbootstrap-core` dependencies may be warm, and missing ones compile normally.
 
 The `project init --role image-build-container` line is the container-image bootstrap hook. It is the only
 binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
@@ -292,12 +291,12 @@ The implemented binary surface is the `project` chain, and the core command tree
 `test`, `service`, `context`, and `check-code`. Hardware evidence and closure status belong in the
 development plan:
 
-- `chain :: cfg -> [Step]` is recursively interpreted by `project up`. Current `down`/`destroy` perform
+- opaque validated `StepPlan` is recursively interpreted by `project up`. Current `down`/`destroy` perform
   current-frame cleanup plus a project hook; recursive child-to-parent teardown remains a target.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, `show` decodes a selected project-local config, `path` prints its canonical filename, and
-  `schema`/`render` expose the separate static `ConfigArtifact` registry. The encoder-declared project-local
-  `cfg` shape is emitted by `service schema`.
+  `schema`/`render` expose the separate static `ConfigArtifact` registry. The validated-codec
+  project-local `cfg` shape is emitted by `service schema`.
 - `test init` writes the sibling `<project>.test.dhall`; `test run <case-id>|all` runs a compiled case or
   the whole matrix with `all`. The help calls this root-only, but a root context gate is not currently
   enforced.

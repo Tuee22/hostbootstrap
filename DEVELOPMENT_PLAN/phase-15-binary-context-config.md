@@ -161,7 +161,8 @@ verified capability; a decoded declaration is not sufficient.
 
 [Phase 19](phase-19-generic-project-model.md) builds **forward** on this surface (the generic project
 model, § BB): the binary-context coupling becomes the generic `cfg -> BinaryContext` accessor on
-`ProjectSpec cfg tcfg`, so the gate is expressed over a project-defined config type. The superseded
+`ProjectSpec projectId cfg tcfg`, with `cfg :: Type -> Type`, so the gate is expressed over a
+project-defined scope-indexed config family. The superseded
 fixed-`ProjectConfig` coupling is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. The phase-19
 genericization did **not** reopen this phase; the **2026-07-02 in-place-delivery reopening** (Sprint 15.7
@@ -460,8 +461,9 @@ binary copy; opaque mutation authority is separate blocked Sprint 15.9 work.
 #### Remaining Work
 
 None in the historical sibling-discovery/descriptive-gate landing. Current membership gating and startup
-metadata are built; read-once execution is not. Demo step actions and service handlers reload the sibling
-file after initial dispatch, so Sprint 15.9 owns immutable snapshot identity/injection. Explicit
+metadata are built. Sprint 19.8 made service dispatch read and canonically verify one sibling snapshot;
+general demo lifecycle step actions are not yet all closed over one validated config, so Sprint 15.9
+owns plan-wide immutable snapshot identity/injection. Explicit
 `project init` owns host config creation; Python never auto-initializes. The declared image-build context
 uses the project-owned initializer before `check-code`, and `project up --dry-run` renders the project
 plan through the current gate. The sibling config carries parameters + context + witness, never the plan
@@ -618,7 +620,7 @@ static-test work remains.
 ### Sprint 15.9: Opaque capability and context authority [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.6.1–5.7, 9.10, and 19.7–19.8
+**Blocked by**: Sprints 5.7, 9.10, and 19.7–19.8
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
@@ -895,7 +897,7 @@ data or by replaying a prior handoff.
 
 #### Remaining Work
 
-Blocked until Sprints 5.6.1–5.7, 9.10, and 19.7–19.8 land canonical root authority, the durable-state
+Blocked until Sprints 5.7, 9.10, and 19.7–19.8 land the durable-state
 proof, ownership/result types,
 scoped codec, and finalized plan. Then refactor context/capability construction around the Phase 9 opaque
 tokens, replace the current class-membership-only project-up gate and raw `addRole`, replace the shell writer with the framed

@@ -6,16 +6,16 @@
 
 > **Purpose**: A cookbook of reusable composition shapes — frame topologies, step kinds, and
 > business-logic shapes — so a downstream author can recognize their workflow and express it as the
-> `chain :: cfg -> [Step]` value a self-referential project binary interprets.
+> ordered step contribution finalized into the `StepPlan` a self-referential project binary interprets.
 
 ## TL;DR
 
-- A workflow is a **chain** of `Step`s (what each step does) interpreted across a **frame topology**
+- A workflow is an opaque validated **`StepPlan`** of `Step`s (what each step does) interpreted across a **frame topology**
   (where each step runs — the self-reference lift stack). The two axes are orthogonal; this cookbook
   catalogues both.
-- **The chain is the project.** A consumer's identity is the single ordered `[Step]` value its
-  `chain` function returns from root parameters; `project up` is the recursive interpreter that walks
-  it. The shapes below are generic; any consumer assembles its specific chain from them.
+- **The plan is the project.** A consumer contributes one ordered step fragment from root parameters;
+  finalization produces the `StepPlan` that `project up` recursively interprets. The shapes below are
+  generic; any consumer assembles its specific fragment from them.
 - The foundational model is [composition_methodology](../architecture/composition_methodology.md) (the
   canonical home — defer to it, do not re-derive it); the layering of who contributes which step kind
   is [library_hierarchy](../architecture/library_hierarchy.md).
@@ -73,15 +73,15 @@ stays a pure function of root parameters.
 
 ## The Chain And Its Recursive Interpreter
 
-The chain is the current single forward ordering and `project up` is its recursive (fractal)
-interpreter. Current frame transport and teardown remain separate inputs; the target opaque plan derives
+`StepPlan` is the current single forward ordering and `project up` is its recursive (fractal)
+interpreter. Current frame transport and teardown remain separate checked inputs; the target lifecycle plan derives
 all three views together. The canonical home for this doctrine is
 [composition_methodology § The Self-Reference Lift](../architecture/composition_methodology.md#the-recursive-project-up-interpreter);
 the cookbook summary:
 
-- **`chain :: cfg -> [Step]`.** The current forward source is one flat list computed from root
-  parameters. `--dry-run` renders source order, but public constructors do not enforce a non-empty,
-  contiguous frame sequence: `A/B/A` is grouped by first frame appearance and executes as `A/A/B`.
+- **Opaque validated `StepPlan`.** The forward source begins as ordered additive fragments computed from
+  root parameters. `mkStepPlan` rejects empty, duplicate, conflicting, post-handoff-invalid, and
+  non-contiguous `A/B/A` sequences; `--dry-run` renders every accepted plan in exact source order.
 - **Fractal descent.** Each `project up` frame boundary is the same move: *provision the frame → build/install the
   pb in it → hand off `pb project up`*. The interpreter runs the current frame's steps, then re-invokes
   the binary in the next frame, which interprets its own segment of the same chain. Reconcilers attempt
@@ -198,18 +198,19 @@ Reused across shapes and step kinds:
 
 ## Current Status
 
-The **chain surface** this cookbook describes is the running system: the core command tree is exactly
+The **plan surface** this cookbook describes is the running system: the core command tree is exactly
 `project`, `test`, `service`, `context`, and `check-code`, and the demo's deploy is the pure value
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (`demo/src/HostBootstrapDemo/Commands.hs`), whose
-VM-backed branch realizes shape 2 as one ordered chain that stands up the persistent stack and ends at a
-live web service. The lift
+`demoChainFor :: Substrate -> ProjectConfig scope -> [Step]`
+(`demo/src/HostBootstrapDemo/Commands.hs`), whose result is accepted only through `addSteps` and
+`finalizeProjectSpec`; its VM-backed branch realizes shape 2 as one ordered plan that stands up the
+persistent stack and ends at a live web service. The lift
 primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, with full lifecycle closure
 still tracked in phase 11 — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The
 reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
-The `chain :: cfg -> [Step]` value, the recursive `project up` interpreter, the core Step
+The opaque `StepPlan`, the recursive `project up` interpreter, the core Step
 algebra, and workload-contributed step kinds compose the current forward path end-to-end: a single
 `project up` on Incus/Linux stands up the live persistent stack — a
 cordoned kind cluster, the in-cluster registry, the project image pushed to that registry, and

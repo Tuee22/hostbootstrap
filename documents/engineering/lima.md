@@ -71,7 +71,8 @@ bring-up, stop, and teardown:
 
 - `deploy-VM` runs the sized template start only when the instance is absent. For an existing instance it
   runs the unsized start and waits for the VM to answer a shell before the chain proceeds. Current code
-  does not observe/resize/refuse a stale CPU, memory, or disk wall; Sprint 9.10 owns that reconcile result.
+  does not observe/resize/refuse a stale CPU, memory, or disk wall. Phase 9 supplies the reconcile result
+  algebra; Sprints 5.7/11.10 still own its provider-authoritative Lima application.
 - `project down` is the **stop-without-delete** path. It halts the VM so the host reclaims CPU and
   memory, but preserves the instance and its disk; a subsequent `project up` brings the same instance
   back.
@@ -85,9 +86,10 @@ remain unvalidated; see [durable state](../architecture/durable_state.md).
 
 A host directory reaches the Lima guest through the same host-path share primitive the other lanes use.
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
-`ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
+`HostPathShare` has no post-create `ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
 **same** alias state vocabulary used by the other lane. Mount polling precedes alias reconciliation, but
-the readiness constructor is currently exposed and the direct-host absence probe is partial; see
+the live path still threads non-authorizing `ObservedReady` and the ordinary alias pathname cannot mint
+a same-privilege-resistant ownership receipt; see
 [readiness](../architecture/readiness.md) and [durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted
@@ -129,6 +131,12 @@ Linux VM (see [wsl2](wsl2.md)).
 
 The VM-provider axis is tracked in the development plan
 ([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)).
+
+A disposable Apple validation on 2026-07-26 exercised the exact production command shapes with a unique
+instance: 2 CPUs, 4 GiB memory, 20 GiB disk, VZ, containerd disabled, one writable host share, guest DNS
+egress, already-running no-op, stop/start recovery, and exact deletion. The disposable instance and
+mount directory were removed, and no pre-existing Lima instance was present. This evidence covers the
+Lima lifecycle slice only; it does not prove the still-open strong alias receipt or another provider.
 
 ## See Also
 

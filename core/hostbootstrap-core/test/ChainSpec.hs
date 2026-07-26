@@ -41,21 +41,25 @@ ctrFrame = StepFrame{frameId = "vm-project-container-2", frameLabel = "container
 noop :: a -> IO ()
 noop _ = pure ()
 
-demoChain :: [Step]
-demoChain =
+demoSteps :: [Step]
+demoSteps =
     [ deployVMStep "launch the VM" metal noop
     , copySourceStep "stage source into the VM" metal noop
     , buildPbStep "build the binary in the VM" metal noop
     , contextInitStep "mint the container config" vmFrame noop
     , buildImageStep "build the project image" vmFrame noop
     , deployKindStep "bring up kind" ctrFrame noop
-    , projectStep "deploy-harbor" "install harbor" ctrFrame noop
+    , projectStep (fixtureProjectStepId "deploy-harbor") ProjectManagedReverse "install harbor" ctrFrame noop
     , exposePortStep "expose the NodePort" ctrFrame noop
     ]
 
-acceleratorChain :: [Step]
-acceleratorChain =
-    demoChain
+demoPlan :: StepPlan
+demoPlan = expectPlan demoSteps
+
+acceleratorPlan :: StepPlan
+acceleratorPlan =
+    expectPlan $
+        demoSteps
         ++ [postHandoffStep "start-accelerator-daemon" "start the host accelerator daemon" metal noop]
 
 self :: SelfRef
@@ -80,13 +84,13 @@ container =
 nextFrameCases :: [TestTree]
 nextFrameCases =
     [ testCase "hands off from the metal frame to the VM frame" $
-        nextFrameAfter "host-orchestrator-0" demoChain @?= Just vmFrame
+        nextFrameAfter "host-orchestrator-0" demoPlan @?= Just vmFrame
     , testCase "hands off from the VM frame to the container frame" $
-        nextFrameAfter "vm-orchestrator-1" demoChain @?= Just ctrFrame
+        nextFrameAfter "vm-orchestrator-1" demoPlan @?= Just ctrFrame
     , testCase "bottoms out at the innermost frame" $
-        nextFrameAfter "vm-project-container-2" demoChain @?= Nothing
+        nextFrameAfter "vm-project-container-2" demoPlan @?= Nothing
     , testCase "a frame the chain never enters has no next frame" $
-        nextFrameAfter "no-such-frame" demoChain @?= Nothing
+        nextFrameAfter "no-such-frame" demoPlan @?= Nothing
     ]
 
 handoffCases :: [TestTree]
@@ -112,7 +116,7 @@ handoffCases =
 renderCases :: [TestTree]
 renderCases =
     [ testCase "the dry-run plan lists every step the interpreter would run, in order" $
-        renderChain demoChain
+        renderChain demoPlan
             @?= unlines
                 [ "1. [host-orchestrator-0] deploy-vm — launch the VM"
                 , "2. [host-orchestrator-0] copy-source — stage source into the VM"
@@ -124,10 +128,10 @@ renderCases =
                 , "8. [vm-project-container-2] expose-port — expose the NodePort"
                 ]
     , testCase "frame-segmenting the chain across the descent preserves every step in order" $
-        concatMap (\f -> map stepLabel (stepsForFrame (frameId f) demoChain)) (chainFrames demoChain)
-            @?= map stepLabel demoChain
+        concatMap (\f -> map stepLabel (stepsForFrame (frameId f) demoPlan)) (chainFrames demoPlan)
+            @?= map stepLabel demoSteps
     , testCase "post-handoff hook stays after the container exposes the ingress" $ do
-        renderChain acceleratorChain
+        renderChain acceleratorPlan
             @?= unlines
                 [ "1. [host-orchestrator-0] deploy-vm — launch the VM"
                 , "2. [host-orchestrator-0] copy-source — stage source into the VM"
@@ -139,8 +143,14 @@ renderCases =
                 , "8. [vm-project-container-2] expose-port — expose the NodePort"
                 , "9. [host-orchestrator-0] post-handoff-start-accelerator-daemon — start the host accelerator daemon"
                 ]
-        map stepLabel (preHandoffStepsForFrame (frameId metal) acceleratorChain)
+        map stepLabel (preHandoffStepsForFrame (frameId metal) acceleratorPlan)
             @?= ["launch the VM", "stage source into the VM", "build the binary in the VM"]
-        map stepLabel (postHandoffStepsForFrame (frameId metal) acceleratorChain)
+        map stepLabel (postHandoffStepsForFrame (frameId metal) acceleratorPlan)
             @?= ["start the host accelerator daemon"]
     ]
+
+fixtureProjectStepId :: String -> ProjectStepId
+fixtureProjectStepId = either error id . projectStepId
+
+expectPlan :: [Step] -> StepPlan
+expectPlan = either (error . show) id . mkStepPlan

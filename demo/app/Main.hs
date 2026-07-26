@@ -3,18 +3,18 @@
 It calls 'runHostBootstrapCLI' with the demo's project spec, so the demo binary
 surfaces exactly the fixed core command tree (@project@ / @test@ / @service@ /
 @context@ / @check-code@) — it adds no verbs. The demo extends the core only
-through the extension streams threaded into its 'projectSpec': its lift chain
-('withChain'), per-frame lift context ('withFrameContext'), chain-frame teardown
-('withTeardown'), service-handler registry ('withServices'), test suite, schema
+through the extension streams threaded into its opaque project builder: its
+ordered steps ('addSteps'), per-frame lift context ('setFrameContext'), chain-frame teardown
+('setTeardown'), typed service registry ('addServices'), test suite, schema
 artifacts, and @check-code@ action. See @documents/operations/demo_runbook.md@.
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (projectSpec, runHostBootstrapCLI, withChain, withFrameContext, withServiceConfig, withServices, withTeardown)
+import HostBootstrap.CLI (addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI, setFrameContext, setTeardown)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
 import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
-import HostBootstrapDemo.Config (configuredServiceVariant, demoInit, demoTestConfig, demoTestInit)
+import HostBootstrapDemo.Config (demoAssemble, demoTestInit, testConfigCodec)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
 
@@ -35,21 +35,18 @@ main = do
         -- metal→VM handoff to the right provider shell (Incus on Linux, Lima on
         -- Apple Silicon).
         substrate <- detect >>= either die pure
-        runHostBootstrapCLI
-            "hostbootstrap-demo"
-            ( withChain
-                (demoChainFor substrate)
-                ( withFrameContext
-                    (demoFrameContext substrate)
-                    ( withTeardown
-                        demoTeardown
-                        ( withServiceConfig
-                            configuredServiceVariant
-                            ( withServices
+        let builder =
+                addSteps
+                    (demoChainFor substrate)
+                    ( setFrameContext
+                        (demoFrameContext substrate)
+                        ( setTeardown
+                            demoTeardown
+                            ( addServices
                                 demoServices
-                                (projectSpec demoTestSuite demoCheckCode demoArtifacts demoInit demoTestInit demoTestConfig)
+                                (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
                             )
                         )
                     )
-                )
-            )
+        spec <- either (die . show) pure (finalizeProjectSpec builder)
+        runHostBootstrapCLI "hostbootstrap-demo" spec

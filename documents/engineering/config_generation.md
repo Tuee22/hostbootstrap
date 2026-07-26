@@ -4,30 +4,28 @@
 **Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](../architecture/binary_context_config.md)
 
-> **Purpose**: Describe the current public `ConfigArtifact` registry and sampled render/decode evidence,
+> **Purpose**: Describe the validated-codec `ConfigArtifact` registry and sampled render/decode evidence,
 > the fresh-root `<project>.dhall` produced by the default `project init` mode, the writer's explicit
 > role/output/policy modes, and the current split versus target unified ownership of child `.dhall`
 > projection/delivery — the parameters/context/witness the chain consumes, never the chain shape.
 
 ## TL;DR
 
-- The chain `chain :: cfg -> [Step]` is **code** — it is the project's identity and the single
-  representation of the lift sequence. The `.dhall` is **parameters + context + witness**, never the
-  chain shape. The canonical home of that model is
+- The opaque validated `StepPlan` is **code** — it is the project's single forward representation of
+  the lift sequence. The `.dhall` is **parameters + context + witness**, never the plan shape. The
+  canonical home of that model is
   [composition_methodology](../architecture/composition_methodology.md); this doc defers to it and
   covers only how the config text is generated.
-- `HostBootstrap.Dhall.Gen` defines `ConfigArtifact` — a named artifact carrying an encoder-declared
-  `schemaText` and a rendered `renderText` — commonly built by `artifactOf @a name value`. The record
-  constructor and fields are public, so callers can also supply unrelated arbitrary text. `artifactOf`
-  requires only `ToDhall`: its schema comes from the encoder's `declared` expression and it carries no
-  decoder. Separate tests exercise selected matching `FromDhall` instances, but the registry API does
-  not establish that relationship. The target opaque lower-layer `CodecWitness a` validates normalized
-  encoder/decoder type expressions once and supplies every schema/decode/render operation; project config
-  promotion additionally requires its installed-identity/scope wrapper,
+- `HostBootstrap.Dhall.Gen` defines opaque `ConfigArtifact` and `CodecWitness a`. The witness validates
+  normalized decoder `expected` and encoder `declared` expressions once; `artifactOf name codec value`
+  derives both `schemaText` and `renderText` from it. Schema, decode, render, project/test config IO, and
+  artifact registration therefore share one admitted pair. Semantic round trips remain sampled tests,
+  not a proof for every value. Target project-config promotion additionally requires the
+  installed-identity/scope wrapper
   `ProjectCodec scope specDigest cfg`.
 - `coreArtifacts` is the L0 registry (`budget`, `podResources`, `kindNode`). A project supplies its
   artifact delta through `ProjectSpec`; the read-only `context` command renders the in-scope registry's
-  schemas and static example renders; the encoder-declared project-local `ProjectConfig` schema is
+  schemas and static example renders; the validated project-local `ProjectConfig` schema is
   printed by `service schema`, not `context`.
 - The no-flag `project init` invocation writes the **fresh root** `<project>.dhall` — the
   host-orchestrator config with no parent frame, carrying resource budget and deploy knobs. The current
@@ -37,16 +35,15 @@
   configs by deployment actions. The target gives projection and delivery one plan operation.
 - `deployConfigText` renders a standalone numeric budget/pod artifact carrying a Dhall `fitsWithin`
   assertion. It is not the runtime `<project>.dhall`: that config has text quantities and no resolved pod
-  set. Current decode/validation rejects malformed and selected top-level scalar values, but public/raw
-  quantities and `context.resourceEnvelope` can still represent zero/bare/provider-invalid values.
-  `fitsBudget` exists, but bring-up does not yet call it with the complete topology-derived workload set.
+  set. Current decode/validation uses private scalar constructors and one project-owned resource value;
+  later plan/provider admission rejects zero and backend-inexact budgets. `fitsBudget` exists, but
+  bring-up does not yet call it with the complete topology-derived workload set.
   Selected fixtures have byte-stable
   render → decode → re-render tests; that is not a universal property of arbitrary `ConfigArtifact`.
 
 ## The `ConfigArtifact` Registry
 
-`HostBootstrap.Dhall.Gen` is the generation substrate. A `ConfigArtifact` is currently a public record
-of three text fields:
+`HostBootstrap.Dhall.Gen` is the generation substrate. Its internal artifact record has three fields:
 
 ```haskell
 data ConfigArtifact = ConfigArtifact
@@ -56,17 +53,14 @@ data ConfigArtifact = ConfigArtifact
   }
 ```
 
-`artifactOf @a name value` is the safe-by-convention helper normally used to build one:
+The constructor is hidden. `artifactOf name codec value` is the only construction path:
 
-- `schemaText` is `reflectedSchema @a` — `Dhall.Core.pretty (declared (Dhall.inject :: Encoder a))`.
-  This is the encoder's declared type. `artifactOf` has no `FromDhall` constraint and stores no decoder,
-  so a “matching decoder” is outside this value and selected equality/round-trip checks are test
-  evidence, not a registry invariant.
-- `renderText` is `renderValue value` — the `ToDhall` embedding of a concrete canonical value.
+- `schemaText` is `codecSchemaText codec`, admitted only after the normalized decoder and encoder type
+  expressions are judgmentally equal.
+- `renderText` is `renderValue codec value`, using the same admitted encoder.
 
-Because `ConfigArtifact (..)` is exported, a consumer can bypass `artifactOf` and pair arbitrary
-`schemaText` with arbitrary `renderText`. The target hides that constructor and admits artifacts only
-through a validated codec plus canonical value.
+Matching type expressions do not prove semantic encode/decode behavior. Representative
+render → decode → re-render tests retain that separate responsibility.
 
 `coreArtifacts` is the L0 registry:
 
@@ -79,8 +73,8 @@ through a validated codec plus canonical value.
 A project binary supplies its own artifacts in `ProjectSpec`; `HostBootstrap.Command` concatenates them
 onto `coreArtifacts` for the inherited inspection surface — the schema-gen stream of the extension
 contract (the command surface itself is fixed and is not a stream; see
-[library_hierarchy](../architecture/library_hierarchy.md)). The
-encoder-declared/current versus validated-codec/target split is described in
+[library_hierarchy](../architecture/library_hierarchy.md)). The validated-codec versus
+scope/identity-wrapped target split is described in
 [dhall_generation](../architecture/dhall_generation.md).
 
 ## `project init`: Fresh-Root Default And Explicit Writes
@@ -122,14 +116,12 @@ owns the file, because another writer may have published identical content. Temp
 the invocation identity: retry may clean only its verified orphan, reports a typed cleanup-required
 outcome when that cannot be settled, and never adopts or deletes a foreign temp.
 
-The values it writes are NOT core defaults: `project init` calls the project-owned `psInit` to render a
-fully-populated config, then layers any flag overrides on top. The flags are optional precisely because
-`psInit` already supplies every field — core ships no default config values, so the no-flag invocation
+The values it writes are NOT core defaults: `project init` passes parsed flags to
+`psAssemble (ProductionAssembly args)` and renders the resulting complete config. The flags are optional
+because the project assembler supplies every field — core ships no default config values, so the no-flag invocation
 renders the project's own defaults (for the demo, `6/10/80`, `haReplicas = 1`, `docker/Dockerfile`,
-`message = "Hello, world!"`). The current generic contract does not make that builder the harness's
-structural source: `psTestConfig` is an independent callback. The demo calls
-`demoInitWithMessage` from both `demoInit` and `demoTestConfig` by convention; see *The Current Demo
-Helper And Target Structural Assembler* below.
+`message = "Hello, world!"`). The same scope-polymorphic assembler handles each Harness request under
+fresh exact-run authority; see *The Structural Assembler* below.
 
 The written config shape carries the Dockerfile path, the editable resource budget, the deploy
 knobs, any project-extended field (the demo's `message`), and the declared root context (a single
@@ -144,21 +136,19 @@ current demo step actions reopen the sibling file, so one invocation can observe
 Every deeper frame's config is generated rather than hand-edited. Phase 15.9's target validates one
 immutable `configId` snapshot and injects it into every step/projection.
 
-## The Current Demo Helper And Target Structural Assembler
+## The Structural Assembler
 
-Core currently stores `psInit`, `psTestInit`, and `psTestConfig` as independent callbacks. In the demo,
-`demoInit` (= `demoInitWithMessage demoDefaultMessage`) delegates to the value-taking
-`projectConfigForRole` assembler for `project init`, while `demoTestConfig` calls the same
-`demoInitWithMessage` helper when generating each run's `<project>.dhall`. That reuse is a demo
-convention, not a relation enforced by `ProjectSpec`; a future project or edit can make the paths drift.
-`test init` follows the separate `psTestInit` path and writes the thin `<project>.test.dhall` value.
-The harness builds its run config **functionally** in process and never shells out to `<project> project
-init`, but that does not make the independent callbacks one structural source.
+Core stores one `psAssemble` polymorphic over Production/Harness scope. In the demo, `demoAssemble`
+handles `ProductionAssembly` with the default message and handles `HarnessAssembly` with the selected
+validated variant message. `test init` follows the separate `psTestInit` path because it writes the thin
+`<project>.test.dhall` value rather than project config. The harness builds its run config
+**functionally** in process and never shells out to `<project> project init`.
 
-The target `psAssemble` is the sole default-bearing structural assembler used by Production and Harness
-requests. Complete per-role parameter projections derive from the same validated assembly result, so
-they cannot substitute the demo's current hard-coded Web ports or accelerator timeout when an inherited
-optional service constructor does not match.
+`ConfigAssembly` admits only project-declared read-only inputs and no arbitrary `IO`, process, backend,
+write, or lifecycle operation. Production and Harness wire schemas are admitted by separate mapped
+codecs, and Harness admission closes over exact run config authority. Complete per-role parameter
+projection remains target work; it must derive from the validated assembly result rather than substitute
+the demo's current hard-coded Web ports or accelerator timeout.
 
 The on-disk config is normally **absent** after a build: nothing creates it as a side effect of building
 the binary, and Python does not initialize or trigger config creation. Existing-frame commands
@@ -240,7 +230,7 @@ composite bootstrap, frame-context/handoff, and deployment seams described above
 to one plan operation.
 
 The registry surface `context schema` prints is the transitive union of the in-scope artifacts' schemas
-(`coreArtifacts ++ project artifacts`), each labelled by name — the encoder-declared project-local
+(`coreArtifacts ++ project artifacts`), each labelled by name — the validated project-local
 `ProjectConfig` schema is printed by `service schema`, not `context schema`:
 
 ```text
@@ -259,11 +249,11 @@ The registry surface `context schema` prints is the transitive union of the in-s
 { cpus : Natural, memory : Natural, storage : Natural }
 ```
 
-The helper-generated L0 portion of that schema is guarded by a committed snapshot at
-`core/hostbootstrap-core/test/golden/config_schema.dhall`. A `ToDhall` encoder-declaration change that
-is not re-snapshotted fails the golden diff. A decoder-only
-change need not affect that snapshot. This pins the selected encoder-declared text; it does not prove
-decoder equality or constrain a consumer that constructs `ConfigArtifact` directly.
+Literal command output is guarded by three committed snapshots:
+`context_schema_core.txt` for the bare core registry, `context_schema_consumer.txt` for an ordered
+consumer delta, and `service_schema_consumer.txt` for the project-config schema. A changed, omitted, or
+reordered consumer artifact fails its owning snapshot; the project `cfg` cannot be smuggled into the
+`context schema` expectation. Every schema in those outputs came from an admitted codec.
 The static example renders `context` materializes are each the `renderText` of an artifact — the
 `ToDhall` embedding of its canonical value.
 
@@ -298,11 +288,10 @@ scheduler contract.
 ## The Round-Trip Invariant
 
 For covered values, a test proves a byte-stable render → decode → re-render round trip. That test is
-useful evidence about the exercised values, but it does not prove that the encoder's `declared`
-expression equals the decoder's independently supplied `expected` expression for every type or value.
-The target opaque `CodecWitness a` closes the type-expression seam by refusing unequal normalized
-expressions; the project boundary wraps it as `ProjectCodec scope specDigest cfg`. Round-trip and property tests
-remain necessary for semantic encode/decode behavior. The
+useful evidence about the exercised values, but it does not prove semantic agreement for every value.
+The opaque `CodecWitness a` separately closes the type-expression seam by refusing unequal normalized
+expressions; the target project boundary wraps it as `ProjectCodec scope specDigest cfg`. Round-trip and
+property tests remain necessary for semantic encode/decode behavior. The
 standards-level statement of the model lives in
 [derived_project_standards](derived_project_standards.md) and
 [development_plan_standards § P, Q, T, X](../../DEVELOPMENT_PLAN/development_plan_standards.md); the
@@ -312,11 +301,11 @@ authority distinction is in
 
 ## Current Status
 
-The current generation substrate includes the `ConfigArtifact` registry, encoder-declared
-`reflectedSchema`, the standalone `deployConfigText` budget artifact, parent-to-child projection
-helpers, union hoisting, a committed hand-written schema snapshot, and round-trip tests. It does not yet
-force encoder, decoder, and every committed vocabulary type through one validated codec; the
-development plan owns that repair.
+The current generation substrate includes the opaque validated-codec `ConfigArtifact` registry, the
+standalone `deployConfigText` budget artifact, parent-to-child projection helpers, union hoisting, exact
+command snapshots, and representative round-trip tests. An exhaustive inventory derives every
+type-valued `Core.dhall` export and judgmentally compares it with its named admitted Haskell codec;
+hand-written functions remain under evaluation tests.
 
 The surface that drives them is the recursive lifecycle command: the default `project init` invocation
 writes a fresh root host-orchestrator config and refuses an existing output, while

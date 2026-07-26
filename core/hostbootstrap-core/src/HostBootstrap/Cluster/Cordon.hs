@@ -15,11 +15,20 @@ so they can be unit-tested; the IO driver resolves the host capacity and runs
 the sized tools.
 -}
 module HostBootstrap.Cluster.Cordon (
-    ResourceBudget (..),
+    ResourceBudget,
+    mkResourceBudget,
+    budgetCpu,
+    budgetMemoryBytes,
+    budgetStorageBytes,
     HostCapacity (..),
     CapacityReadSource (..),
     CapacityReadPlan (..),
+    StorageCordonTarget (..),
+    StorageCordonMechanism (..),
+    StorageCordonUnsupportedReason (..),
+    StorageCordonResult (..),
     capacityReadPlan,
+    storageCordonPolicy,
     Overflow (..),
     parseQuantity,
     budgetFromResources,
@@ -43,7 +52,8 @@ where
 
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
-import Data.Char (isDigit)
+import Data.Char (digitToInt, isDigit)
+import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import qualified HostBootstrap.Config.Vocab as Vocab
@@ -65,6 +75,20 @@ data ResourceBudget = ResourceBudget
     , budgetStorageBytes :: Integer
     }
     deriving (Eq, Show)
+
+-- | Construct a positive, bounded canonical budget. Raw record construction is
+-- private so zero/negative/overflowed values cannot reach provider builders.
+mkResourceBudget :: Natural -> Integer -> Integer -> Either String ResourceBudget
+mkResourceBudget cores memoryBytes storageBytes
+    | cores == 0 = Left "resource budget: cpu must be positive"
+    | cores > fromIntegral (maxBound :: Int) = Left "resource budget: cpu exceeds the supported bound"
+    | memoryBytes <= 0 = Left "resource budget: memory must be positive"
+    | storageBytes <= 0 = Left "resource budget: storage must be positive"
+    | memoryBytes > maxResourceBytes = Left "resource budget: memory exceeds the supported bound"
+    | storageBytes > maxResourceBytes = Left "resource budget: storage exceeds the supported bound"
+    | otherwise = Right (ResourceBudget cores memoryBytes storageBytes)
+  where
+    maxResourceBytes = toInteger (maxBound :: Int64)
 
 {- | Resolved host capacity, in the same canonical units. The reads differ by
 substrate: Linux reports @/proc/meminfo@ @MemAvailable@ (genuinely spare RAM),
@@ -103,6 +127,46 @@ data CapacityReadPlan = CapacityReadPlan
     }
     deriving (Eq, Show)
 
+-- | The substrate boundary at which a declared storage budget needs a wall.
+data StorageCordonTarget
+    = ColimaVmStorage
+    | LimaVmStorage
+    | IncusVmStorage
+    | Wsl2DistroStorage
+    | BareLinuxStorage
+    deriving (Eq, Show)
+
+-- | The concrete storage-wall mechanism represented by the provider builders.
+data StorageCordonMechanism
+    = ColimaDiskFlag
+    | LimaDiskFlag
+    | IncusRootDiskLimit
+    | Wsl2VhdSize
+    deriving (Eq, Show)
+
+-- | A typed reason why a target cannot currently enforce the storage budget.
+data StorageCordonUnsupportedReason
+    = BareLinuxQuotaAndImageGcUnavailable
+    deriving (Eq, Show)
+
+-- | The honest storage-cordon policy result. A supported result identifies the
+-- provider mechanism that an interpreter must apply. Bare Linux has neither a
+-- quota'd host path nor an image-GC wall, so it returns an explicit typed
+-- unsupported result instead of treating the capacity preflight as enforcement.
+data StorageCordonResult
+    = StorageCordonSupported StorageCordonMechanism
+    | StorageCordonUnsupported StorageCordonUnsupportedReason
+    deriving (Eq, Show)
+
+-- | Select the represented storage-wall mechanism for a substrate boundary.
+storageCordonPolicy :: StorageCordonTarget -> StorageCordonResult
+storageCordonPolicy target = case target of
+    ColimaVmStorage -> StorageCordonSupported ColimaDiskFlag
+    LimaVmStorage -> StorageCordonSupported LimaDiskFlag
+    IncusVmStorage -> StorageCordonSupported IncusRootDiskLimit
+    Wsl2DistroStorage -> StorageCordonSupported Wsl2VhdSize
+    BareLinuxStorage -> StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable
+
 {- | A budget overflow: which dimension, what the pods want, and the budget cap
 (in the vocabulary's units).
 -}
@@ -125,16 +189,29 @@ parseQuantity raw =
         unit = T.unpack (T.strip unitText)
      in if T.null numText
             then Left ("not a quantity: " ++ T.unpack raw)
-            else case readNumber (T.unpack numText) of
-                Nothing -> Left ("not a number: " ++ T.unpack numText)
-                Just n -> case multiplier unit of
+            else case readDecimal (T.unpack numText) of
+                Left err -> Left err
+                Right (numerator, denominator) -> case multiplier unit of
                     Nothing -> Left ("unknown unit: " ++ unit)
-                    Just m -> Right (round (n * fromIntegral m :: Double))
+                    Just m ->
+                        let scaled = numerator * m
+                         in if scaled `mod` denominator == 0
+                                then Right (scaled `div` denominator)
+                                else Left ("quantity is not an exact whole-byte value: " ++ T.unpack raw)
 
-readNumber :: String -> Maybe Double
-readNumber s = case reads s of
-    [(n, "")] -> Just n
-    _ -> Nothing
+readDecimal :: String -> Either String (Integer, Integer)
+readDecimal text =
+    case break (== '.') text of
+        (whole, "")
+            | validDigits whole -> Right (digits whole, 1)
+        (whole, '.' : fractional)
+            | validDigits whole && validDigits fractional ->
+                let denominator = 10 ^ length fractional
+                 in Right (digits whole * denominator + digits fractional, denominator)
+        _ -> Left ("not a number: " ++ text)
+  where
+    validDigits value = not (null value) && all isDigit value
+    digits = foldl' (\total digit -> total * 10 + toInteger (digitToInt digit)) 0
 
 -- | The byte multiplier for a quantity unit. @""@ is bytes.
 multiplier :: String -> Maybe Integer
@@ -163,7 +240,7 @@ budgetFromResources :: ResourceEnvelope -> Either String ResourceBudget
 budgetFromResources r = do
     mem <- parseQuantity (memory r)
     sto <- parseQuantity (storage r)
-    pure (ResourceBudget (cpu r) mem sto)
+    mkResourceBudget (cpu r) mem sto
 
 {- | The host-OS reserve subtracted from memory capacity before the budget must
 fit: the headroom the host OS, the Docker daemon, and the orchestrator need
@@ -255,35 +332,43 @@ fitsBudget b pods
 
 {- | The complete @colima start@ argv that sizes a per-project VM to the budget
 (the canonical arg-builder; the Python bootstrapper does not size VMs).
-Memory and disk are rounded up to whole GiB (Colima's unit); CPU is the whole
-core count. Storage is cordoned here via @--disk@.
+Memory and disk must already be exactly representable in whole GiB (Colima's
+unit); an inexact hard ceiling is rejected rather than rounded upward. CPU is
+the whole core count. Storage is cordoned here via @--disk@.
 -}
 colimaSizingArgs :: String -> ResourceEnvelope -> Either String [String]
 colimaSizingArgs project r = do
     b <- budgetFromResources r
+    memoryGiB <- exactGibibytes "Colima memory" (budgetMemoryBytes b)
+    storageGiB <- exactGibibytes "Colima storage" (budgetStorageBytes b)
     pure
         [ "start"
         , "--profile"
         , project
-        , "--cpu"
+        , "--runtime"
+        , "docker"
+        , "--activate=false"
+        , "--cpus"
         , show (budgetCpu b)
         , "--memory"
-        , show (gibibytes (budgetMemoryBytes b))
+        , show memoryGiB
         , "--disk"
-        , show (gibibytes (budgetStorageBytes b))
+        , show storageGiB
         ]
 
 -- | The Lima VM sizing flags derived from the same canonical resource parser.
 limaSizingArgs :: ResourceEnvelope -> Either String [String]
 limaSizingArgs r = do
     b <- budgetFromResources r
+    memoryGiB <- exactGibibytes "Lima memory" (budgetMemoryBytes b)
+    storageGiB <- exactGibibytes "Lima storage" (budgetStorageBytes b)
     pure
         [ "--cpus"
         , show (budgetCpu b)
         , "--memory"
-        , show (gibibytes (budgetMemoryBytes b))
+        , show memoryGiB
         , "--disk"
-        , show (gibibytes (budgetStorageBytes b))
+        , show storageGiB
         ]
 
 {- | The applied Linux kind-node cordon argv: a @docker update@ cap on the
@@ -322,10 +407,12 @@ form is a list of @incus@ config arguments the caller applies to the VM.
 incusSizingArgs :: ResourceEnvelope -> Either String [String]
 incusSizingArgs r = do
     b <- budgetFromResources r
+    memoryGiB <- exactGibibytes "Incus memory" (budgetMemoryBytes b)
+    storageGiB <- exactGibibytes "Incus storage" (budgetStorageBytes b)
     pure
         [ "limits.cpu=" ++ show (budgetCpu b)
-        , "limits.memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GiB"
-        , "root,size=" ++ show (gibibytes (budgetStorageBytes b)) ++ "GiB"
+        , "limits.memory=" ++ show memoryGiB ++ "GiB"
+        , "root,size=" ++ show storageGiB ++ "GiB"
         ]
 
 {- | The WSL2 wall as a @.wslconfig@ @[wsl2]@ body derived from the one canonical
@@ -348,13 +435,15 @@ gap (see @documents/engineering/wsl2.md@).
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs r = do
     b <- budgetFromResources r
+    memoryGiB <- exactGibibytes "WSL2 memory" (budgetMemoryBytes b)
+    _storageGiB <- exactGibibytes "WSL2 VHDX storage" (budgetStorageBytes b)
     pure
         [ "[general]"
         , "instanceIdleTimeout=-1"
         , "[wsl2]"
         , "processors=" ++ show (budgetCpu b)
-        , "memory=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB"
-        , "swap=" ++ show (gibibytes (budgetMemoryBytes b)) ++ "GB"
+        , "memory=" ++ show memoryGiB ++ "GB"
+        , "swap=" ++ show memoryGiB ++ "GB"
         , "vmIdleTimeout=-1"
         ]
 
@@ -375,12 +464,11 @@ capacityReadPlan sub = case substrateName sub of
     -- Apple/Linux too instead of an unconditional petabyte.
     posixFreeStorage = PosixFreeStorage "/"
 
-{- | Resolve spare host capacity for the preflight. CPU, memory, and storage
+{- | Resolve host capacity for the preflight. CPU, memory, and storage
 come from the substrate-specific sources selected by 'capacityReadPlan'.
-Linux and Apple storage is still reported generously because their applied VM
-cordons own the real wall; Windows reads system-drive free space so WSL2 does
-not start a large VHDX-backed build on a disk that cannot satisfy the
-declared storage budget.
+Apple/Linux read the root filesystem's actual free bytes; Windows reads the
+system-drive free bytes so WSL2 does not start a large VHDX-backed build on a
+disk that cannot satisfy the declared storage budget.
 -}
 resolveHostCapacity :: HostConfig -> IO (Either String HostCapacity)
 resolveHostCapacity cfg = do
@@ -559,6 +647,14 @@ findMemAvailable ls = case [w | l <- ls, "MemAvailable:" `isPrefixOf` l, w <- ta
 -- | Bytes to whole gibibytes, rounded up.
 gibibytes :: Integer -> Integer
 gibibytes bytes = (bytes + gib - 1) `div` gib
+  where
+    gib = 1024 ^ (3 :: Integer)
+
+exactGibibytes :: String -> Integer -> Either String Integer
+exactGibibytes label bytes
+    | bytes `mod` gib /= 0 =
+        Left (label ++ " must be exactly representable as whole GiB; got " ++ show bytes ++ " bytes")
+    | otherwise = Right (bytes `div` gib)
   where
     gib = 1024 ^ (3 :: Integer)
 

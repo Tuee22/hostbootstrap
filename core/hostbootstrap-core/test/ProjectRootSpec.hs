@@ -1,0 +1,127 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module ProjectRootSpec (tests) where
+
+import qualified Data.Text as T
+import Data.List (isInfixOf)
+import HostBootstrap.Config.Vocab (Mount (..))
+import HostBootstrap.Lift (canonicalHostMount)
+import HostBootstrap.ProjectRoot (
+    ProjectRootError (..),
+    canonicalDurableHostPath,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
+import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing, createDirectoryLink, withCurrentDirectory)
+import System.FilePath ((</>))
+import System.Exit (ExitCode (..))
+import System.IO (hClose, hPutStr)
+import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
+import System.Info (os)
+import System.Process (readProcessWithExitCode)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+
+tests :: TestTree
+tests =
+    testGroup
+        "ProjectRootSpec"
+        [ testCase "relative roots resolve against the config-owned anchor, independent of cwd" $
+            withSystemTempDirectory "hostbootstrap-project-root" $ \workspace -> do
+                let project = workspace </> "project"
+                    buildDir = project </> ".build"
+                    other = workspace </> "other"
+                    configPath = buildDir </> "demo.dhall"
+                createDirectoryIfMissing True buildDir
+                createDirectory other
+                expected <- canonicalizePath project
+                result <-
+                    withCurrentDirectory other $
+                        withCanonicalProjectRoot configPath "." (pure . canonicalProjectRootPath)
+                result @?= Right expected
+        , testCase "a missing root fails before the callback" $
+            withSystemTempDirectory "hostbootstrap-project-root-missing" $ \project -> do
+                let buildDir = project </> ".build"
+                    configPath = buildDir </> "demo.dhall"
+                    missing = project </> "missing"
+                createDirectory buildDir
+                result <- withCanonicalProjectRoot configPath "missing" (const (pure ()))
+                result @?= Left (ProjectRootMissing missing)
+        , testCase "a file cannot be admitted as a project root" $
+            withSystemTempDirectory "hostbootstrap-project-root-file" $ \project -> do
+                let buildDir = project </> ".build"
+                    configPath = buildDir </> "demo.dhall"
+                    wrongKind = project </> "not-a-directory"
+                createDirectory buildDir
+                writeFile wrongKind "not a directory"
+                result <- withCanonicalProjectRoot configPath "not-a-directory" (const (pure ()))
+                result @?= Left (ProjectRootNotDirectory wrongKind)
+        , testCase "a relative root cannot escape the config-owned project anchor" $
+            withSystemTempDirectory "hostbootstrap-project-root-escape" $ \workspace -> do
+                let project = workspace </> "project"
+                    buildDir = project </> ".build"
+                    outside = workspace </> "outside"
+                    configPath = buildDir </> "demo.dhall"
+                createDirectoryIfMissing True buildDir
+                createDirectory outside
+                canonicalOutside <- canonicalizePath outside
+                canonicalProject <- canonicalizePath project
+                result <- withCanonicalProjectRoot configPath "../outside" (const (pure ()))
+                result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+        , testCase "a replaced relative root cannot redirect admission outside the project anchor" $
+            if os == "mingw32"
+                then pure ()
+                else
+                    withSystemTempDirectory "hostbootstrap-project-root-replaced" $ \workspace -> do
+                        let project = workspace </> "project"
+                            buildDir = project </> ".build"
+                            outside = workspace </> "outside"
+                            redirected = project </> "root"
+                            configPath = buildDir </> "demo.dhall"
+                        createDirectoryIfMissing True buildDir
+                        createDirectory outside
+                        createDirectoryLink outside redirected
+                        canonicalOutside <- canonicalizePath outside
+                        canonicalProject <- canonicalizePath project
+                        result <- withCanonicalProjectRoot configPath "root" (const (pure ()))
+                        result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+        , testCase "the direct host bind consumes the canonical .data projection" $
+            withSystemTempDirectory "hostbootstrap-project-root-bind" $ \project -> do
+                let buildDir = project </> ".build"
+                    configPath = buildDir </> "demo.dhall"
+                createDirectory buildDir
+                canonicalProject <- canonicalizePath project
+                result <-
+                    withCanonicalProjectRoot configPath "." $ \root ->
+                        pure (canonicalHostMount root (canonicalDurableHostPath root) "/workspace/demo/.data" False)
+                result
+                    @?= Right
+                        Mount
+                            { source = T.pack (canonicalProject </> ".data")
+                            , target = "/workspace/demo/.data"
+                            , readOnly = False
+                            }
+        , testCase "raw paths and cross-root projections do not type-check at the host bind adapter" $
+            withSystemTempFile "ProjectRootCompileFail.hs" $ \fixture handle -> do
+                hPutStr handle compileFailFixture
+                hClose handle
+                (code, _, err) <-
+                    readProcessWithExitCode
+                        "cabal"
+                        ["exec", "--", "ghc", "-fno-code", "-package", "hostbootstrap-core", fixture]
+                        ""
+                code @?= ExitFailure 1
+                assertBool ("expected type mismatch, got:\n" ++ err) ("Couldn't match" `isInfixOf` err)
+        ]
+
+compileFailFixture :: String
+compileFailFixture =
+    unlines
+        [ "module ProjectRootCompileFail where"
+        , "import HostBootstrap.Config.Vocab (Mount)"
+        , "import HostBootstrap.Lift (canonicalHostMount)"
+        , "import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot)"
+        , "badRaw = canonicalHostMount (\"/tmp\" :: FilePath) (\"/tmp\" :: FilePath) \"/inside\" False"
+        , "badCross :: CanonicalProjectRoot s1 r1 -> CanonicalHostPath s2 r2 -> Mount"
+        , "badCross root foreignPath = canonicalHostMount root foreignPath \"/inside\" False"
+        ]

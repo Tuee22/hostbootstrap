@@ -1,7 +1,6 @@
--- The full warm-store build: both layer packages, so `cabal build all`
--- pre-builds the entire shared Cabal store. The layered version-pin freezes are
--- projected per layer by core.project (-> core.freeze) and daemon.project
--- (-> daemon.freeze); see warm-store.config and documents/engineering/warm_store.md.
+-- The full best-effort warm-store build. The two packages are organizational
+-- dependency groups built into one shared Cabal store; they produce no consumer
+-- freeze or version contract. See documents/engineering/warm_store.md.
 import: warm-store.config
 
 packages:

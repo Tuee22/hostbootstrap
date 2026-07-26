@@ -8,7 +8,6 @@ import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Incus
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import System.Exit (ExitCode (..))
 
 vm :: IncusVM
 vm = IncusVM {vmName = "hostbootstrap-demo-vm", vmImage = "images:ubuntu/24.04"}
@@ -19,7 +18,6 @@ tests =
     "IncusSpec"
     [ testGroup "VM argv builders" argvCases,
       testGroup "name-prefix delete-guard" guardCases,
-      testGroup "reboot-to-ready classification" readinessCases,
       testGroup "incusSizingArgs" sizingCases
     ]
 
@@ -48,8 +46,6 @@ argvCases =
               "source=/srv/demo/.data",
               "path=/srv/demo/.data"
             ],
-    testCase "restart reboots the guest" $
-      rebootVMArgs vm @?= ["restart", "hostbootstrap-demo-vm"],
     testCase "stop halts the VM without deleting it (project down)" $
       stopVMArgs vm @?= ["stop", "hostbootstrap-demo-vm"]
   ]
@@ -61,18 +57,6 @@ guardCases =
         @?= Right ["delete", "hostbootstrap-demo-vm", "--force"],
     testCase "a non-prefixed VM name is refused" $
       assertBool "refuses to delete" (isLeft (destroyVMArgs "other-prefix-" vm))
-  ]
-
-readinessCases :: [TestTree]
-readinessCases =
-  [ testCase "exit 0 is Ready" $
-      classifyDockerReadiness (ExitSuccess, "ok", "") @?= Ready,
-    testCase "a permission-denied failure is NeedsReboot" $
-      classifyDockerReadiness (ExitFailure 1, "", "Got permission denied while trying to connect")
-        @?= NeedsReboot,
-    testCase "a missing-binary failure is Unsatisfiable" $
-      classifyDockerReadiness (ExitFailure 127, "", "docker: command not found")
-        @?= Unsatisfiable
   ]
 
 sizingCases :: [TestTree]

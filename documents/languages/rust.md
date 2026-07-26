@@ -8,10 +8,10 @@
 
 This page documents what the base image ships for Rust.
 
-The base image installs the pinned Rust toolchain via `rustup`:
+The base image installs Rustup's rolling stable toolchain:
 
 ```
-RUSTUP_TOOLCHAIN=1.95.0
+RUSTUP_TOOLCHAIN=stable
 ```
 
 with `llvm-tools-preview` and `rustfmt` components. Caches:

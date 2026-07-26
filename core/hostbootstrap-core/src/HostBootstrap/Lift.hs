@@ -13,8 +13,8 @@
 --
 -- Contexts compose as a stack of layers ('LiftContext'), outermost-first.
 -- 'foldLift' is pure (the argv fold is unit-tested); 'liftSubcommand' is the thin
--- @IO@ seam. This is the /subcommand-level/ lift; 'HostBootstrap.HostTarget' is
--- the narrower /tool-level/ lift kept alongside it.
+-- @IO@ seam. Raw tool/probe leaves use the same 'foldLeaf' route, so there is no
+-- parallel tool-level provider dispatcher.
 --
 -- A container layer is terminal in the fold: its @ENTRYPOINT@ runs the binary
 -- directly, so the subcommand is passed bare after the image and any deeper
@@ -30,6 +30,7 @@ module HostBootstrap.Lift
     inLimaVM,
     inWsl2VM,
     inContainer,
+    canonicalHostMount,
 
     -- * Self-reference
     SelfRef (..),
@@ -66,6 +67,7 @@ import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), toolCommandN
 import HostBootstrap.Incus (IncusVM, execVMArgs)
 import HostBootstrap.Lima (LimaVM)
 import qualified HostBootstrap.Lima as Lima
+import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot, canonicalHostPathValue)
 import HostBootstrap.Registry (RegistryAuth, registryAuthEnvVar, registryConfigPayload)
 import HostBootstrap.Wsl2 (Wsl2VM)
 import qualified HostBootstrap.Wsl2 as Wsl2
@@ -104,6 +106,13 @@ data ConfigDelivery = ConfigDelivery
     cdPayload :: T.Text
   }
   deriving (Eq, Show)
+
+-- | Build a container mount whose host source can only come from canonical
+-- project-root admission. Raw paths and provider-local guest aliases cannot
+-- enter this adapter.
+canonicalHostMount :: CanonicalProjectRoot scope rootId -> CanonicalHostPath scope rootId -> FilePath -> Bool -> Mount
+canonicalHostMount _ hostPath containerPath readOnly =
+  Vocab.Mount (T.pack (canonicalHostPathValue hostPath)) (T.pack containerPath) readOnly
 
 -- | One context-boundary layer: a VM provider or a container.
 data LiftLayer = ViaVM IncusVM | ViaLimaVM LimaVM | ViaWsl2VM Wsl2VM | ViaContainer ContainerLift

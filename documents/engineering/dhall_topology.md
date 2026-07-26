@@ -10,8 +10,8 @@
 
 ## TL;DR
 
-- The chain shape is **code**: `chain :: cfg -> [Step]` is the project's identity, owned by the
-  project binary and interpreted recursively by `project up`. It is not in any `.dhall`.
+- The plan shape is **code**: ordered step fragments are finalized into an opaque validated `StepPlan`,
+  owned by the project binary and interpreted recursively by `project up`. It is not in any `.dhall`.
 - `.dhall` carries **parameters + context + witness**, never the shape. The sibling `<project>.dhall`
   parameterizes the chain (budgets, ports, replicas, optional structural flags) and declares the
   topology frame the binary occupies.
@@ -33,8 +33,9 @@
 
 ## The Chain Is Code; The Dhall Is Parameters
 
-The recursive forward ordering is a Haskell value, `chain :: cfg -> [Step]`; the sibling
-`<project>.dhall` does not encode that chain. Current frame-context and teardown callbacks are separate,
+The recursive forward ordering is an opaque validated Haskell `StepPlan`; the sibling
+`<project>.dhall` does not encode that plan. Current frame-context and teardown callbacks are separate
+checked single-assignment contributions,
 while the target opaque `ProjectPlan scope specDigest planId configId cfg` derives them from the same validated
 representation (see
 [composition_methodology](../architecture/composition_methodology.md)). The Dhall supplies three things
@@ -75,7 +76,7 @@ This is the data behind the file-reading part of the read-only `context` command
 renders the global lift composition — `topologyFrames` / `parentChain` — with the current frame
 highlighted, and `context show` decodes a selected project-local config. The other routes are static:
 `path` prints the canonical filename, `schema` prints the separate in-scope `ConfigArtifact` registry,
-and `render` prints static artifact examples. The encoder-declared project-local `cfg` shape belongs to
+and `render` prints static artifact examples. The validated-codec project-local `cfg` shape belongs to
 `service schema`, not `context schema`.
 
 ## Each Binary Checks Its Frame
@@ -146,11 +147,10 @@ The host-root and child configs share one **canonical location**: the executable
 `<project>.dhall` (`siblingProjectConfigPath` — e.g. `.build/<project>.dhall` beside the host binary). The
 host root is written and read at that one path, and each descent mints its child at the same sibling rule in
 its own frame. The values a config carries are the project's own: core owns no defaults. Current
-`psInit`, `psTestInit`, and `psTestConfig` are independent callbacks; the demo shares
-`demoInitWithMessage` between `demoInit` and `demoTestConfig` by convention, while `test init` follows
-the separate `psTestInit` path. Demo service projection still contains fallback values. Target
-`psAssemble` is the sole default-bearing structural assembler. The on-disk config is a complete value
-the project (not core) defines.
+`psAssemble` is the sole default-bearing project-config assembler for Production init and Harness
+variants; `test init` follows the separate `psTestInit` path because it creates `tcfg`. Demo service
+projection still contains fallback values that later finalized role projection must remove. The
+on-disk config is a complete value the project (not core) defines.
 
 ## Rich And Test Dhall
 
@@ -177,7 +177,7 @@ not yet opaque authority. The core command surface is
 `web` and `accelerator` service variants and its VM/provider IO as chain steps — the surface is fixed, so
 it adds no verbs.
 
-The model this document describes is the recursive `project` chain: `chain :: cfg -> [Step]`
+The model this document describes is the recursive project plan: opaque `StepPlan`
 interpreted by `project up`, with `project init` writing the root config, the current split seams
 producing child configs, and `context` providing read-only introspection. A single `project up` on Incus/Linux
 stands up the live persistent stack — a cordoned kind cluster, the in-cluster registry, the

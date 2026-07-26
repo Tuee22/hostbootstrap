@@ -170,6 +170,7 @@ def test_run_command_detached_service() -> None:
 
 def test_push_tag_inspect_commands() -> None:
     assert docker_ops.push_command("r:t") == ("docker", "push", "r:t")
+    assert docker_ops.pull_command("r:t") == ("docker", "pull", "r:t")
     assert docker_ops.tag_command("a", "b") == ("docker", "tag", "a", "b")
     assert docker_ops.image_exists_command("x") == ("docker", "image", "inspect", "x")
     assert docker_ops.image_entrypoint_command("x") == (
@@ -179,6 +180,67 @@ def test_push_tag_inspect_commands() -> None:
         "--format",
         "{{json .Config.Entrypoint}}",
         "x",
+    )
+    assert docker_ops.engine_arch_command() == (
+        "docker",
+        "info",
+        "--format",
+        "{{.Architecture}}",
+    )
+    assert docker_ops.image_repo_digests_command("r:t") == (
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .RepoDigests}}",
+        "r:t",
+    )
+
+
+@pytest.mark.parametrize(
+    ("rendered", "expected"),
+    [
+        ("amd64\n", "amd64"),
+        ("x86_64", "amd64"),
+        ("arm64", "arm64"),
+        ("AARCH64", "arm64"),
+    ],
+)
+def test_normalize_architecture(rendered: str, expected: str) -> None:
+    assert docker_ops.normalize_architecture(rendered) == expected
+
+
+def test_normalize_architecture_rejects_unknown_value() -> None:
+    with pytest.raises(RuntimeError, match="unsupported Docker architecture"):
+        docker_ops.normalize_architecture("ppc64le")
+
+
+def test_parse_digest_reference_requires_one_matching_sha256() -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    expected = f"docker.io/tuee22/hostbootstrap@sha256:{'a' * 64}"
+    rendered = '["unrelated/image@sha256:' + "b" * 64 + '","' + expected + '"]'
+    assert docker_ops.parse_digest_reference(rendered, tag=tag) == expected
+
+    with pytest.raises(RuntimeError, match="could not parse"):
+        docker_ops.parse_digest_reference("not-json", tag=tag)
+    with pytest.raises(RuntimeError, match="unexpected"):
+        docker_ops.parse_digest_reference('"not-a-list"', tag=tag)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        docker_ops.parse_digest_reference("[]", tag=tag)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        docker_ops.parse_digest_reference(
+            f'["{expected}","{expected}"]',
+            tag=tag,
+        )
+
+
+def test_parse_digest_reference_accepts_docker_hub_registry_elision() -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    digest = f"sha256:{'c' * 64}"
+    rendered = f'["tuee22/hostbootstrap@{digest}"]'
+
+    assert docker_ops.parse_digest_reference(rendered, tag=tag) == (
+        f"docker.io/tuee22/hostbootstrap@{digest}"
     )
 
 
@@ -211,11 +273,13 @@ async def test_async_wrappers_delegate_to_process(
 
     assert (await docker_ops.build(spec)).ok
     assert (await docker_ops.push("t")).ok
+    assert (await docker_ops.pull("t")).ok
     assert await docker_ops.image_exists("t")
 
     assert recorded_commands[0][:2] == ("docker", "build")
     assert recorded_commands[1] == ("docker", "push", "t")
-    assert recorded_commands[2] == ("docker", "image", "inspect", "t")
+    assert recorded_commands[2] == ("docker", "pull", "t")
+    assert recorded_commands[3] == ("docker", "image", "inspect", "t")
 
     async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
         argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
@@ -229,6 +293,30 @@ async def test_async_wrappers_delegate_to_process(
 
     monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
     assert await docker_ops.image_entrypoint("t") == ("/usr/bin/tini", "--", "proj")
+
+
+async def test_arch_and_digest_async_wrappers_parse_quiet_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    digest = f"docker.io/tuee22/hostbootstrap@sha256:{'c' * 64}"
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
+        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
+        calls.append(argv)
+        assert kwargs == {"quiet": True}
+        stdout = "aarch64\n" if argv[:2] == ("docker", "info") else f'["{digest}"]\n'
+        return process.CommandResult(argv, 0, stdout, "")
+
+    monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
+
+    assert await docker_ops.engine_arch() == "arm64"
+    assert await docker_ops.image_digest_reference(tag) == digest
+    assert calls == [
+        docker_ops.engine_arch_command(),
+        docker_ops.image_repo_digests_command(tag),
+    ]
 
 
 async def test_image_exists_false(monkeypatch) -> None:

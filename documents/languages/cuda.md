@@ -8,13 +8,13 @@
 
 ## Current Status
 
-The CUDA base and Linux/Windows toolchain paths below exist, but dynamic base selection is not an
-immutable pin and live lane closure varies by substrate. The development plan owns hardware evidence
-and gate status; this page owns the stable division between in-container Linux CUDA and host-native
-Windows CUDA.
+The CUDA base and Linux/Windows toolchain paths below exist. The container parent is selected by the
+rolling build; live
+lane closure still varies by substrate. The development plan owns hardware evidence and gate status;
+this page owns the stable division between in-container Linux CUDA and host-native Windows CUDA.
 
-This page documents what the cuda-flavored base image ships. The sections below — the dynamically
-resolved `nvidia/cuda:*-cudnn-devel-ubuntu24.04` base, `ldconfig`, CUDA drift, and arm64 — all describe
+This page documents what the cuda-flavored base image ships. The sections below — the rolling compatible
+NVIDIA CUDA parent, `ldconfig`, CUDA updates, and arm64 — all describe
 the **in-container, `linux-gpu` CUDA path**: the GPU toolchain baked into the base image and reached at
 runtime through the `nvidia-container-toolkit` runtime (readied and proved by `ensure cuda`). The host
 NVIDIA kernel driver is a precondition: `ensure cuda` requires `nvidia-smi -L` to report a GPU, but owns
@@ -22,18 +22,8 @@ the install-and-verify lifecycle for the container toolkit. A second, distinct p
 artifacts on a bare Windows host — is described separately under
 [Windows Host-Build CUDA (headless)](#windows-host-build-cuda-headless).
 
-The `basecontainer-cuda-<arch>` tags are built `FROM` the latest
-`nvidia/cuda:*-cudnn-devel-ubuntu24.04` image that has a manifest for the
-target arch. Resolution lives in
-[`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py):
-
-1. Query Docker Hub for `nvidia/cuda` tags matching
-   `*-cudnn-devel-ubuntu24.04`.
-2. Sort by semver descending.
-3. Pick the first tag whose `images` array carries the target arch.
-
-The selected tag becomes `--build-arg BASE_IMAGE=nvidia/cuda:…` at build
-time.
+The `basecontainer-cuda-<arch>` workflow queries Docker Hub and selects the highest compatible
+`cudnn-devel-ubuntu24.04` tag that publishes the native requested architecture.
 
 ## Ldconfig
 
@@ -41,14 +31,12 @@ The Dockerfile checks for `/usr/local/cuda/lib64`; when present it adds the
 path to `/etc/ld.so.conf.d/cuda.conf` and runs `ldconfig`. This is a build-time
 filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 
-## CUDA drift
+## CUDA updates
 
-Dynamic resolution always pulls the latest `cudnn-devel-ubuntu24.04` tag. A
-project pinned to an older CUDA must override the resolved base explicitly
-through the Python build API — `compute_build_args(base_image_override=…)` or
-`with_base_override` in [`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py). The
-`hostbootstrap base build-and-push` CLI exposes only `--flavor`, `--arch`,
-`--context`, and `--sequential`; it carries no base-image override flag.
+CUDA updates are intentional rolling behavior: each rebuild discovers the current compatible parent,
+then the operator publishes, pulls, and compatibility-smokes the affected native tag. The selected
+parent is observable in that build's output and resulting image, but is not committed as a replay lock.
+The internal Python build API retains a `base_image_override` test seam.
 
 ## arm64
 

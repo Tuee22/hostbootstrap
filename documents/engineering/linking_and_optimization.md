@@ -5,7 +5,7 @@
 **Referenced by**: [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [../languages/haskell.md](../languages/haskell.md)
 
 > **Purpose**: Give the authoritative recommendation for how derived Haskell projects link and
-> optimise so they match the warm store and get cache hits.
+> optimise for the repository's workloads while improving opportunistic warm-store reuse.
 
 This page is the authoritative recommendation for **how derived projects link
 and optimise their Haskell code**. The defaults are tuned for the
@@ -19,7 +19,7 @@ JIT compilation) rather than for distribution size.
   keep it.
 * **Libraries ship both vanilla and dyn ways in the Cabal store.** Set
   `shared: True` in the project's `cabal.project`; the warm store already does
-  this, and matching the warm store gives cache hits.
+  this, and matching the warm store can avoid rebuilds.
 * **Standardise on `-O2`.** Set `optimization: 2` in `cabal.project`. Apply
   `-O2` in the library and executable stanzas' `ghc-options` so the project's
   own modules also benefit.
@@ -50,7 +50,7 @@ TH-heavy libraries (`brick`, `aeson` with `deriving`, `proto-lens`,
 
 The warm store is built with `--enable-shared`, so the `dyn` way exists for
 every cached package. A project enabling `shared: True` in its `cabal.project`
-matches the warm store's store keys and gets cache hits; a project leaving it
+matches the warm store's store keys and can reuse matching artifacts; a project leaving it
 off rebuilds the dyn way of any TH-using package.
 
 ## Why `-O2`

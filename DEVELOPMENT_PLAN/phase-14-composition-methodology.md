@@ -11,8 +11,8 @@
 
 ## Phase Status
 
-**Status**: Blocked
-**Blocked by**: Sprints 9.10, 15.9, and 19.7–19.8
+**Status**: Active
+**Blocked by**: Sprint 15.9 for Sprint 14.6; Sprint 14.7 is dependency-ready
 
 **Extended 2026-07-25.** Sprint 14.7 reopens the generic network-planning boundary: raw endpoint text
 and an independently serialized redirect default currently permit a host-local registry client to be
@@ -36,15 +36,16 @@ The composition methodology is documented and the foundational primitive is `Hos
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
 principles, and the L0 role-lifecycle skeleton on which L1 builds concrete business-logic primitives
 (roles, topologies, policies). The operation *interface* is the documented taxonomy, not a Haskell
-typeclass. Current reconcilers commonly have the historical `HostConfig -> IO ()` shape; Phase 9.10
-replaces result-free mutation with typed transition descriptors and `ReconcileResult`, while this phase
-owns the role-lifecycle consumer/integration.
+typeclass. Current live reconcilers commonly have the historical `HostConfig -> IO ()` shape; Phase 9.10
+now supplies typed transition descriptors and `ReconcileResult`, while this phase owns the
+role-lifecycle and network-plan consumers.
 
 The single-representation doctrine is part of the methodology: one operation has one representation.
-Today `chain :: cfg -> [Step]` is the one **forward ordering** and the harness adds no second deployment
-graph; it is not yet the complete lifecycle representation because frame topology and teardown are
-separate callbacks. `composition_methodology.md` (the canonical home) and `composition_patterns.md`
-present `project up` as the recursive/fractal interpreter of the chain, the target opaque plan, and the
+Today opaque validated `StepPlan` is the one **forward ordering** and the harness adds no second
+deployment graph; it is not yet the complete lifecycle representation because frame context and
+teardown are separate checked contributions. `composition_methodology.md` (the canonical home) and
+`composition_patterns.md` present `project up` as the recursive/fractal interpreter of that plan, the
+target resource-indexed lifecycle plan, and the
 Python bootstrapper as the metal-frame instance of the fractal bootstrap. The interpreter primitive
 (`HostBootstrap.Chain`) and the `project` command exist and are unit-tested (phase-16); their effectful
 end-to-end provisioning is real-run-gated and owned by phase-16.
@@ -273,7 +274,7 @@ None.
 ### Sprint 14.6: One phase-indexed role lifecycle consumer [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 9.10, 15.9, and 19.7–19.8
+**Blocked by**: Sprint 15.9 (Sprints 9.10 and 19.7–19.8 are complete)
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
@@ -373,15 +374,15 @@ definition-only public callback skeleton.
 
 #### Remaining Work
 
-Blocked until Sprints 9.10, 15.9, and 19.7–19.8 land the shared reconcile, signed rollout-revision plus
-measured-instance activation authority, scoped codec, and finalized plan contracts. Then integrate the
+Blocked until Sprint 15.9 lands the signed rollout-revision plus measured-instance activation
+authority. The shared reconcile, scoped codec, and finalized plan contracts are complete. Then integrate the
 role phase machine into `service run`,
 hide/remove the definition-only surface, and migrate the unit tests to the opaque phase API.
 
-### Sprint 14.7: Scope-indexed endpoints and registry blob delivery [Blocked]
+### Sprint 14.7: Scope-indexed endpoints and registry blob delivery [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprints 9.10 and 19.8
+**Status**: Active
+**Blocked by**: None (Sprints 9.10 and 19.8 are complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
 `core/hostbootstrap-core/test/RegistryPlanSpec.hs`
@@ -417,9 +418,9 @@ client's verified network scope.
 
 #### Remaining Work
 
-Blocked on opaque finalized-plan identity and plan-owned readiness/precondition foundations. Once they
-land, implement the algebra and migrate the demo through Sprint 13.20; do not add a temporary raw
-redirect flag.
+The opaque finalized-plan identity and plan-owned readiness/precondition foundations are complete.
+Implement the algebra and migrate the demo through Sprint 13.20; do not add a temporary raw redirect
+flag.
 
 ## Documentation Requirements
 

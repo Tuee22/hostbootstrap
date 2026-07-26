@@ -24,7 +24,7 @@ module HostBootstrapDemo.Accelerator.Daemon (
     runDaemonClientLoop,
     runWorkerProcess,
     runWorkerRequest,
-    serveAcceleratorDaemon,
+    serveAcceleratorDaemonWithConfig,
     startWorkerSession,
     updateDaemonReadiness,
     webSocketDaemonTransport,
@@ -44,8 +44,6 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified HostBootstrap.Config.Schema as Schema
-import qualified HostBootstrap.Context as Context
 import HostBootstrap.Ensure (runEnsure, runTool)
 import qualified HostBootstrap.Ensure.AppleMetal as AppleMetal
 import qualified HostBootstrap.Ensure.CudaWin as CudaWin
@@ -72,7 +70,7 @@ import HostBootstrapDemo.Accelerator.Protocol (
     decodeAcceleratorMessage,
     encodeAcceleratorMessage,
  )
-import HostBootstrapDemo.Config (AcceleratorServiceConfig (requestTimeoutSeconds), ProjectConfig (context, service), ServiceType (Accelerator))
+import HostBootstrapDemo.Config (AcceleratorServiceConfig (requestTimeoutSeconds), timeoutSecondsNat)
 import HostBootstrapDemo.Web.Api (
     AcceleratorAddFailure (AcceleratorAddFailure),
     AcceleratorAddRequest (AcceleratorAddRequest),
@@ -703,23 +701,20 @@ The handler loads its daemon context, builds or reuses the substrate-specific
 worker, then connects to the web service's accelerator ingress over CBOR
 WebSocket.
 -}
-serveAcceleratorDaemon :: IO ()
-serveAcceleratorDaemon = do
+serveAcceleratorDaemonWithConfig :: FilePath -> AcceleratorServiceConfig -> IO ()
+serveAcceleratorDaemonWithConfig sourceRoot acceleratorConfig = do
     readinessFile <- lookupEnv "HOSTBOOTSTRAP_ACCELERATOR_READY_FILE"
     maybe (pure ()) removeReadinessMarker readinessFile
     serveWithReadiness readinessFile
         `finally` maybe (pure ()) removeReadinessMarker readinessFile
   where
     serveWithReadiness readinessFile = do
-        cfg <- loadAcceleratorConfig
-        timeoutSeconds <- case service cfg of
-            Just (Accelerator params) -> pure (requestTimeoutSeconds params)
-            _ -> die "service run: accelerator handler requires the Accelerator ServiceType variant"
+        let timeoutSeconds = timeoutSecondsNat (requestTimeoutSeconds acceleratorConfig)
         detected <- detect
         sub <- either die pure detected
         backend <- either (die . T.unpack) pure (acceleratorBackendForSubstrate sub)
         hostCfg <- buildHostConfig sub
-        let workerRoot = T.unpack (Context.sourceRoot (context cfg)) </> ".build" </> "accelerator"
+        let workerRoot = sourceRoot </> ".build" </> "accelerator"
         spec <- buildWorkerWithHostConfig hostCfg workerRoot backend
         endpoint <- webSocketEndpointFromEnv
         shutdownFile <- lookupEnv "HOSTBOOTSTRAP_ACCELERATOR_SHUTDOWN_FILE"
@@ -748,10 +743,3 @@ serveAcceleratorDaemon = do
                         onDaemonEvent baseTransport event
                     }
         runDaemonClientLoop clientConfig supervisor readinessTransport
-
-loadAcceleratorConfig :: IO ProjectConfig
-loadAcceleratorConfig =
-    Schema.requireSiblingProjectConfig
-        (T.pack "hostbootstrap-demo")
-        Context.ServiceCommand
-        []

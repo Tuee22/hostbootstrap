@@ -1,15 +1,8 @@
-"""Resolve versions/URLs/CUDA bases and build/push the four base tags.
+"""Resolve rolling base inputs and build/push the four native tags.
 
-This module is the source of truth for every value the logic-free
-``docker/basecontainer.Dockerfile`` consumes. The CLI's ``base build`` /
-``base build-and-push`` commands call into the helpers here.
-
-Tag scheme (single-arch, no manifest lists; see ``documents/engineering/base_image.md`` Tags):
-
-* ``basecontainer-cpu-amd64``
-* ``basecontainer-cpu-arm64``
-* ``basecontainer-cuda-amd64``
-* ``basecontainer-cuda-arm64``
+The build workflow intentionally discovers current compatible upstream versions.
+The resulting tag/digest identifies a publication; it is not a reproducible-input
+contract.
 """
 
 from __future__ import annotations
@@ -32,31 +25,10 @@ class Flavor(StrEnum):
     CUDA = "cuda"
 
 
-# ---------------------------------------------------------------------------
-# Hostbootstrap repo / image-name conventions
-# ---------------------------------------------------------------------------
-
 HOSTBOOTSTRAP_IMAGE_REPO: Final[str] = "docker.io/tuee22/hostbootstrap"
 CPU_BASE_IMAGE: Final[str] = "ubuntu:24.04"
-
-# Pinned toolchain versions (the single-GHC line).
-GHC_VERSION: Final[str] = "9.12.4"
-CABAL_VERSION: Final[str] = "3.16.1.0"
-RUST_TOOLCHAIN: Final[str] = "1.95.0"
-FOURMOLU_VERSION: Final[str] = "0.19.0.1"
-HLINT_VERSION: Final[str] = "3.10"
 HASKELL_STYLE_TOOLS_DIR: Final[str] = "/opt/hostbootstrap/haskell-style/bin"
-
-# LLVM major is hardcoded against the Ubuntu 24.04 noble apt repo (latest llvm-N
-# available there). Probing apt-cache from outside the container would require
-# spawning a throwaway container; hardcoding keeps the Dockerfile truly
-# logic-free and makes the resolved value visible at the call site.
 LLVM_MAJOR: Final[str] = "19"
-
-
-# ---------------------------------------------------------------------------
-# Arch-to-string maps (one row per Docker arch)
-# ---------------------------------------------------------------------------
 
 _NODE_ARCH: Final[Mapping[str, str]] = {"amd64": "x64", "arm64": "arm64"}
 _GHCUP_ARCH: Final[Mapping[str, str]] = {"amd64": "x86_64", "arm64": "aarch64"}
@@ -69,11 +41,6 @@ _PURESCRIPT_ASSET: Final[Mapping[str, str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Substrate → base flavor mapping (see documents/engineering/base_image.md Flavor And Arch Selection)
-# ---------------------------------------------------------------------------
-
-
 def base_tag(flavor: Flavor, arch: str) -> str:
     return f"basecontainer-{flavor.value}-{arch}"
 
@@ -83,15 +50,11 @@ def base_image_ref(flavor: Flavor, arch: str) -> str:
 
 
 def substrate_to_flavor(substrate: SubstrateName) -> Flavor:
-    """The base-image family a declared hardware target builds against."""
+    """Return the base family used by a declared hardware target."""
     if substrate is SubstrateName.LINUX_GPU:
         return Flavor.CUDA
     return Flavor.CPU
 
-
-# ---------------------------------------------------------------------------
-# Version resolvers
-# ---------------------------------------------------------------------------
 
 _HTTP_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(30.0)
 
@@ -129,25 +92,16 @@ def _str_field(mapping: dict[str, object], key: str) -> str:
 
 
 def resolve_node_version(arch: str) -> str:
-    """Latest Node **LTS** release that ships a ``linux-<arch>`` tarball.
-
-    Filters to LTS releases (``lts`` field is the codename string, e.g.
-    ``"Iron"``; non-LTS releases set ``lts: false``). Without this filter the
-    resolver picks the bleeding-edge current release, which breaks every
-    downstream Node tool that hasn't certified the new major yet
-    (``spago`` caps Node at ``<25`` while current is ``v26.x``).
-    """
-    node_arch = _NODE_ARCH[arch]
-    platform_key = f"linux-{node_arch}"
-    index = _as_list(_http_get_json("https://nodejs.org/dist/index.json"))
-    for raw in index:
+    """Return the latest Node LTS release that has the requested Linux asset."""
+    platform_key = f"linux-{_NODE_ARCH[arch]}"
+    for raw in _as_list(_http_get_json("https://nodejs.org/dist/index.json")):
         entry = _as_dict(raw)
         if not entry.get("lts"):
             continue
         files = entry.get("files")
         if isinstance(files, list) and platform_key in files:
             return _str_field(entry, "version")
-    raise RuntimeError(f"no node release found for {platform_key}")
+    raise RuntimeError(f"no node LTS release found for {platform_key}")
 
 
 def _latest_release_tag(url: str) -> str:
@@ -175,9 +129,8 @@ def resolve_pulumi_version() -> str:
 
 
 def resolve_go_version() -> str:
-    """Latest stable Go release version (e.g. ``1.23.4``)."""
-    data = _as_list(_http_get_json("https://go.dev/dl/?mode=json"))
-    for raw in data:
+    """Return the latest stable Go release version without its ``go`` prefix."""
+    for raw in _as_list(_http_get_json("https://go.dev/dl/?mode=json")):
         entry = _as_dict(raw)
         if entry.get("stable") is True:
             version = _str_field(entry, "version")
@@ -213,7 +166,7 @@ def _arch_in_images(images: object, arch: str) -> bool:
 
 
 def resolve_cuda_base_image(arch: str) -> str:
-    """Latest ``nvidia/cuda:*-cudnn-devel-ubuntu24.04`` with a manifest for *arch*."""
+    """Return the newest compatible CUDA/CuDNN Ubuntu parent with *arch*."""
     candidates: list[tuple[tuple[int, int, int], str, object]] = []
     for tag_entry in _iter_cuda_tags():
         name_value = tag_entry.get("name")
@@ -226,39 +179,20 @@ def resolve_cuda_base_image(arch: str) -> str:
         candidates.append((version, name_value, tag_entry.get("images")))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-
     for _version, name, images in candidates:
         if _arch_in_images(images, arch):
             return f"nvidia/cuda:{name}"
-
     raise RuntimeError(f"no nvidia/cuda cudnn-devel-ubuntu24.04 tag found with a {arch} manifest")
-
-
-# ---------------------------------------------------------------------------
-# Build args
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class BaseImageBuildArgs:
-    """Every ARG the logic-free Dockerfile consumes, resolved on the host."""
+    """Every ARG consumed by the Dockerfile, resolved for one rolling build."""
 
     base_image: str
     image_flavor: str
     target_arch: str
-    tool_arch: str
-    node_arch: str
-    ghcup_arch: str
-    aws_arch: str
-    pulumi_arch: str
-    go_arch: str
-    purescript_asset: str
     llvm_major: str
-    ghc_version: str
-    cabal_version: str
-    rust_toolchain: str
-    fourmolu_version: str
-    hlint_version: str
     haskell_style_tools_dir: str
     go_version: str
     go_download_url: str
@@ -285,17 +219,7 @@ class BaseImageBuildArgs:
             "BASE_IMAGE": self.base_image,
             "IMAGE_FLAVOR": self.image_flavor,
             "TARGETARCH": self.target_arch,
-            "TOOL_ARCH": self.tool_arch,
-            "NODE_ARCH": self.node_arch,
-            "GHCUP_ARCH": self.ghcup_arch,
-            "AWS_ARCH": self.aws_arch,
-            "PULUMI_ARCH": self.pulumi_arch,
             "LLVM_MAJOR": self.llvm_major,
-            "GHC_VERSION": self.ghc_version,
-            "CABAL_VERSION": self.cabal_version,
-            "RUST_TOOLCHAIN": self.rust_toolchain,
-            "FOURMOLU_VERSION": self.fourmolu_version,
-            "HLINT_VERSION": self.hlint_version,
             "HASKELL_STYLE_TOOLS_DIR": self.haskell_style_tools_dir,
             "GO_VERSION": self.go_version,
             "GO_DOWNLOAD_URL": self.go_download_url,
@@ -325,24 +249,16 @@ def compute_build_args(
     *,
     base_image_override: str | None = None,
 ) -> BaseImageBuildArgs:
-    """Resolve every dynamic value for ``(flavor, arch)`` in one shot."""
-
+    """Resolve current compatible values for ``(flavor, arch)``."""
     if arch not in {"amd64", "arm64"}:
         raise RuntimeError(f"unsupported arch: {arch}")
 
     if base_image_override is not None:
-        base_image = base_image_override
+        parent = base_image_override
     elif flavor is Flavor.CPU:
-        base_image = CPU_BASE_IMAGE
+        parent = CPU_BASE_IMAGE
     else:
-        base_image = resolve_cuda_base_image(arch)
-
-    node_arch = _NODE_ARCH[arch]
-    ghcup_arch = _GHCUP_ARCH[arch]
-    aws_arch = _AWS_ARCH[arch]
-    pulumi_arch = _PULUMI_ARCH[arch]
-    go_arch = _GO_ARCH[arch]
-    purescript_asset = _PURESCRIPT_ASSET[arch]
+        parent = resolve_cuda_base_image(arch)
 
     go_version = resolve_go_version()
     node_version = resolve_node_version(arch)
@@ -352,67 +268,47 @@ def compute_build_args(
     helm_version = resolve_helm_version()
     pulumi_version = resolve_pulumi_version()
 
-    go_download_url = f"https://go.dev/dl/go{go_version}.linux-{go_arch}.tar.gz"
-    node_download_url = (
-        f"https://nodejs.org/dist/{node_version}/node-{node_version}-linux-{node_arch}.tar.xz"
-    )
-    purescript_download_url = (
-        f"https://github.com/purescript/purescript/releases/download/"
-        f"{purescript_version}/{purescript_asset}"
-    )
-    ghcup_download_url = f"https://downloads.haskell.org/~ghcup/{ghcup_arch}-linux-ghcup"
-    kind_download_url = f"https://kind.sigs.k8s.io/dl/{kind_version}/kind-linux-{arch}"
-    kubectl_download_url = f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/{arch}/kubectl"
-    helm_download_url = f"https://get.helm.sh/helm-{helm_version}-linux-{arch}.tar.gz"
-    mc_download_url = f"https://dl.min.io/client/mc/release/linux-{arch}/mc"
-    aws_download_url = f"https://awscli.amazonaws.com/awscli-exe-linux-{aws_arch}.zip"
-    pulumi_download_url = (
-        f"https://get.pulumi.com/releases/sdk/pulumi-{pulumi_version}-linux-{pulumi_arch}.tar.gz"
-    )
-
     return BaseImageBuildArgs(
-        base_image=base_image,
+        base_image=parent,
         image_flavor=flavor.value,
         target_arch=arch,
-        tool_arch=arch,
-        node_arch=node_arch,
-        ghcup_arch=ghcup_arch,
-        aws_arch=aws_arch,
-        pulumi_arch=pulumi_arch,
-        go_arch=go_arch,
-        purescript_asset=purescript_asset,
         llvm_major=LLVM_MAJOR,
-        ghc_version=GHC_VERSION,
-        cabal_version=CABAL_VERSION,
-        rust_toolchain=RUST_TOOLCHAIN,
-        fourmolu_version=FOURMOLU_VERSION,
-        hlint_version=HLINT_VERSION,
         haskell_style_tools_dir=HASKELL_STYLE_TOOLS_DIR,
         go_version=go_version,
-        go_download_url=go_download_url,
+        go_download_url=f"https://go.dev/dl/go{go_version}.linux-{_GO_ARCH[arch]}.tar.gz",
         node_version=node_version,
-        node_download_url=node_download_url,
+        node_download_url=(
+            f"https://nodejs.org/dist/{node_version}/"
+            f"node-{node_version}-linux-{_NODE_ARCH[arch]}.tar.xz"
+        ),
         purescript_version=purescript_version,
-        purescript_download_url=purescript_download_url,
+        purescript_download_url=(
+            "https://github.com/purescript/purescript/releases/download/"
+            f"{purescript_version}/{_PURESCRIPT_ASSET[arch]}"
+        ),
         kind_version=kind_version,
         kubectl_version=kubectl_version,
         helm_version=helm_version,
         pulumi_version=pulumi_version,
-        ghcup_download_url=ghcup_download_url,
-        kind_download_url=kind_download_url,
-        kubectl_download_url=kubectl_download_url,
-        helm_download_url=helm_download_url,
-        mc_download_url=mc_download_url,
-        aws_download_url=aws_download_url,
-        pulumi_download_url=pulumi_download_url,
+        ghcup_download_url=(
+            f"https://downloads.haskell.org/~ghcup/{_GHCUP_ARCH[arch]}-linux-ghcup"
+        ),
+        kind_download_url=f"https://kind.sigs.k8s.io/dl/{kind_version}/kind-linux-{arch}",
+        kubectl_download_url=(
+            f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/{arch}/kubectl"
+        ),
+        helm_download_url=f"https://get.helm.sh/helm-{helm_version}-linux-{arch}.tar.gz",
+        mc_download_url=f"https://dl.min.io/client/mc/release/linux-{arch}/mc",
+        aws_download_url=f"https://awscli.amazonaws.com/awscli-exe-linux-{_AWS_ARCH[arch]}.zip",
+        pulumi_download_url=(
+            "https://get.pulumi.com/releases/sdk/"
+            f"pulumi-{pulumi_version}-linux-{_PULUMI_ARCH[arch]}.tar.gz"
+        ),
     )
 
 
-# ---------------------------------------------------------------------------
-# Pull / build
-# ---------------------------------------------------------------------------
-
 REPO_ROOT_DOCKERFILE: Final[Path] = Path("docker/basecontainer.Dockerfile")
+DEMO_DOCKERFILE: Final[Path] = Path("demo/docker/Dockerfile")
 
 
 def build_spec_for(
@@ -427,24 +323,14 @@ def build_spec_for(
     no_cache: bool = False,
     budget: resources.BuildBudget | None = None,
 ) -> tuple[docker_ops.BuildSpec, BaseImageBuildArgs]:
-    """Build the ``BuildSpec`` for ``(flavor, arch)``.
-
-    *args* is resolved lazily; pass it in to override values for testing.
-
-    *budget*, when supplied, applies explicit resource limits: the docker
-    ``--memory`` / ``--cpus`` caps on the build container, and a memory-sized
-    cabal ``-j`` (``CABAL_BUILD_JOBS``) so the warm-store build stays within the
-    memory cap instead of OOM-racing. Without it the build is unbounded (the
-    historical behaviour) and ``CABAL_BUILD_JOBS`` keeps the Dockerfile default.
-    """
+    """Build the native rolling ``BuildSpec`` for ``(flavor, arch)``."""
     resolved = args if args is not None else compute_build_args(flavor, arch)
     if budget is not None:
         resolved = replace(resolved, cabal_build_jobs=str(budget.cabal_jobs))
-    primary_tag = base_image_ref(flavor, arch)
     spec = docker_ops.BuildSpec(
         dockerfile=dockerfile if dockerfile is not None else context / REPO_ROOT_DOCKERFILE,
         context=context,
-        tags=(primary_tag, *extra_tags),
+        tags=(base_image_ref(flavor, arch), *extra_tags),
         build_args=resolved.as_build_args(),
         pull=pull,
         no_cache=no_cache,
@@ -457,3 +343,21 @@ def build_spec_for(
 
 def with_base_override(args: BaseImageBuildArgs, new_base: str) -> BaseImageBuildArgs:
     return replace(args, base_image=new_base)
+
+
+def compatibility_smoke_spec(
+    flavor: Flavor,
+    arch: str,
+    *,
+    context: Path,
+    pulled_reference: str,
+) -> docker_ops.BuildSpec:
+    """Cold-build the real demo against the just-pulled publication."""
+    return docker_ops.BuildSpec(
+        dockerfile=context / DEMO_DOCKERFILE,
+        context=context,
+        tags=(f"hostbootstrap-base-compatibility:{flavor.value}-{arch}",),
+        build_args={"BASE_IMAGE": pulled_reference},
+        pull=True,
+        no_cache=True,
+    )

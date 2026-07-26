@@ -30,12 +30,7 @@ evidence belong only in [the development-plan index](../../DEVELOPMENT_PLAN/READ
 
 Open operator-significant defects are:
 
-- readiness capabilities are publicly forgeable and mutation gating is incomplete;
-- the direct-host lane still substitutes a guest-oriented alias for the canonical host path, and Docker
-  rejects that symlink bind;
-- derived image builds may reuse a stale local mutable base tag because the builder omits `--pull`;
-- the supported `demo/` static entry `cabal test all` currently fails because
-  `hostbootstrap-demo-test` lacks `-threaded`, which Warp's timer manager requires;
+- opaque plan/resource-indexed readiness exists, but live mutation gating is incomplete;
 - teardown is not recursive and ownership receipts are not universal;
 - the demo harness resolves the Production profile and `.data`;
 - no live gate proves workload write → destroy → up → host-and-workload readback;
@@ -49,9 +44,9 @@ The Python entry point builds the sole Cabal executable host-native into `.build
 off its arguments. It discovers exactly one top-level Cabal file, runs `cabal update`, and is not an
 offline path. See [Python/Haskell boundary](../architecture/python_haskell_boundary.md).
 
-The demo host build uses `demo/cabal.project`. The later Linux image build uses
-`demo/docker/container.cabal.project`, which imports the base image's absolute freeze. Do not use the
-container project for the host build. The current mutable-base defect and digest target are documented in
+The demo host build and later Linux image build both use `demo/cabal.project`. It contains no
+base-owned absolute import; the container inherits the warm store opportunistically and may compile
+cache misses. Published-base pull behavior is documented in
 [build and run model](../architecture/build_and_run_model.md).
 
 Initialize the executable-sibling root config with:
@@ -87,7 +82,7 @@ Use `project up --dry-run` to render the selected step chain without applying it
 
 VM-backed lanes descend host → provider VM → project container. Native Linux GPU uses a direct
 host → GPU-enabled project-container path and nvkind. The active provider abstraction is
-`SubstrateProvider`/`LiftLayer`; older `HostTarget` helpers are not the live dispatch model.
+`SubstrateProvider`/`LiftLayer`; the former parallel `HostTarget` helpers have been removed.
 
 The workload segment is ordered:
 
@@ -165,14 +160,13 @@ The compiled case ids are `pristine-bootstrap`, `web-build`, `e2e-tabs`,
 file currently decodes as:
 
 ```haskell
-data TestConfig = TestConfig
-  { testSuites    :: [Text]
-  , testResources :: Resources
-  }
+newtype TestConfig = TestConfig { testResources :: Resources }
 ```
 
-`testSuites` is informational/redundant; case selection uses the compiled matrix, and config variants
-use `testResources`. The harness creates two message variants, drives the real `project up`, asserts, and
+Case selection uses opaque compiled `CaseId`s and a validated total `TestMatrix`; `all` is only a parser
+selector. The demo's current Haskell projection creates two stable message variants using
+`testResources` (Phase 20 will move that concrete mapping into config). The harness drives the real
+`project up`, asserts, and
 invokes `project destroy`.
 
 Important safety warning: help describes this as root-only, but the parser does not enforce a root

@@ -166,7 +166,7 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 ## Remaining Work
 
 **Production-plan and provenance work — open (Sprint 13.18).** Thread one typed production
-plan/`TestComponent`, consume pulled digest-qualified bases, and reconcile MinIO/registry metadata and
+plan/`TestComponent`, consume freshly pulled rolling bases, and reconcile MinIO/registry metadata and
 persistence assertions.
 
 **Registry route repair — open (Sprint 13.20).** Replace the raw host-client/cluster-only-backend
@@ -175,9 +175,9 @@ registry-pod recreation. `/v2/` readiness and the historical initial-push run do
 
 **Accelerator daemon demo — implementation complete; honest live gates open.**
 
-- **Landed (static):** the real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
-  AcceleratorServiceConfig`; `withServiceConfig` dispatches config-selected `service run`, with no
-  positional service argument. The chart and daemon process both use `service run`.
+- **Landed (static):** mandatory `webServiceConfig` and `acceleratorServiceConfig` fields preserve both
+  parameter sets; leaf context structurally selects the typed role through the finalized registry, with
+  no positional service argument or fallback. The chart and daemon process both use `service run`.
 - **Landed (static):** the UI, typed CBOR protocol, request correlation, bounded timeouts, no-in-process
   fallback, linked public/private listeners, distinct Service target ports, fail-closed listener errors,
   single-flight 503 behavior, and `haReplicas = 1` constraint. Playwright runs its three browser
@@ -288,12 +288,12 @@ gate green; verified on the real binary that the surface is fixed and `project u
   `demoTestSuite` (the stack-driven `TestSuite`, [phase-10](phase-10-standardized-test-harness.md)) drives
   the real `project up` / `project destroy` via the binary self-reference and asserts against the live
   stack.
-- **Historical budget doubling removed; full resource authority remains open.**
-  `vmSizingWithHeadroom` is **removed**; creation of a new VM uses the raw context envelope and
-  `deployKindAction` computes a smaller local cluster slice. Current config still has independently
-  editable top-level `resources` and `context.resourceEnvelope`, the slice does not reach service leaves,
-  existing provider walls are not uniformly reconciled, and direct Colima/Linux-GPU outer effects remain
-  uncapped. Sprints 9.10/19.8 own the one-budget repair.
+- **Historical budget doubling removed; later authority repair recorded.**
+  `vmSizingWithHeadroom` was **removed**; at this landing creation used a raw context envelope and
+  `deployKindAction` computed a smaller local cluster slice. Sprints 9.10/19.8 subsequently removed the
+  duplicate and made top-level `resources` the sole project budget. The slice still does not reach every
+  service leaf, existing provider walls are not uniformly reconciled, and direct Colima/Linux-GPU outer
+  effects remain uncapped; those live integrations retain their later sprint owners.
 - **Web role moved to `service`.** `web serve` → config-selected `service run` (the `Web` handler in
   `demoServices`, [phase-18](phase-18-service-runtime-command.md)); `web bridge` → the build-image chain
   step (`runVmBootstrap` runs `writeBridge` before the image build); the chart pod's entrypoint is
@@ -469,7 +469,7 @@ None. (The from-zero bootstrap **inside** the VM — `apt install pipx` → `pip
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` (historical `vm pristine-bootstrap` path),
-`demo/docker/Dockerfile`, `demo/docker/container.cabal.project` (build #3)
+`demo/docker/Dockerfile`, `demo/cabal.project` (build #3)
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
@@ -561,7 +561,8 @@ that is the reference shape derived projects copy.
 
 - A `warp`/`wai` webservice (`Web.Server`) over an `aeson` `BudgetView` (`Web.Api`) whose `fits` field is
   the real `Cordon.fitsBudget` verdict; `Web.Bridge` reflects the API types into PureScript via
-  `purescript-bridge` (warm in `core.freeze`) — chosen over servant so the build stays warm. A Halogen SPA
+  `purescript-bridge` (included in the opportunistic warm-store manifest) — chosen over servant to
+  improve cache reuse. A Halogen SPA
   (Overview/Budget/Status tabs); the idiomatic `docker/Dockerfile` (`FROM ${BASE_IMAGE}` -> install binary
   -> `RUN hostbootstrap-demo check-code` -> `web bridge` -> `spago build` + `esbuild` -> tini), the
   reference shape derived projects copy.
@@ -577,10 +578,10 @@ that is the reference shape derived projects copy.
 #### Remaining Work
 
 None. The Halogen SPA (`demo/web/`) compiles with `spago build` against the bridge-generated `BudgetView`
-and bundles with `esbuild`; build #3 runs that web build in-container. The container `cabal.project`
-gap the live run surfaced is resolved: `demo/docker/container.cabal.project` imports the base warm-store
-freeze and references `hostbootstrap-core`, and the Dockerfile builds from the **repo-root context** (so
-the L0-direct demo reaches the core source). Validated by a real `docker build` + the Playwright e2e (9/9: 3 specs × chromium/firefox/webkit).
+and bundles with `esbuild`; build #3 runs that web build in-container. The Dockerfile builds from the
+**repo-root context**, so the one ordinary `demo/cabal.project` reaches the L0-direct core source in both
+host and container layouts. Matching inherited store artifacts are reused opportunistically. Validated
+historically by a real `docker build` + the Playwright e2e (9/9: 3 specs × chromium/firefox/webkit).
 
 ### Sprint 13.6: Harness cluster lifecycle + Playwright (in-cluster, via NodePort) [Done]
 
@@ -683,10 +684,10 @@ the target context.
 
 #### Remaining Work
 
-None. The self-reference lift stays valid and is reused by the migrated chain. The demo's plan is no longer
-a hand-composed `liftSubcommand` fold wired behind the removed `demo deploy` noun verb; it is a
-`chain :: cfg -> [Step]` value the core `project` interpreter folds onto `liftSubcommand` at each
-frame transition (§ Y).
+None. The self-reference lift stays valid and is reused by the migrated plan. The demo's plan is no
+longer a hand-composed `liftSubcommand` fold wired behind the removed `demo deploy` noun verb; its pure
+step fragment is finalized into the opaque `StepPlan` that the core `project` interpreter folds onto
+`liftSubcommand` at each frame transition (§ Y).
 
 ### Sprint 13.9: Real per-case seams [Done]
 
@@ -1115,9 +1116,9 @@ accelerator daemon and perform real `Float` addition through the correct native 
 
 Implementation and static validation are complete:
 
-- The real Dhall `ServiceType` selects `Web WebServiceConfig` or `Accelerator
-  AcceleratorServiceConfig`; `withServiceConfig` dispatches config-selected `service run`, and both the
-  chart and host-daemon argv omit a positional variant.
+- Mandatory Web/Accelerator parameter records survive child projection; leaf context structurally
+  selects the typed role through the finalized registry, and both chart and host-daemon argv omit a
+  positional variant.
 - The web server runs linked configured public and private listeners (defaults 8080/8081). Separate Service
   target ports and the local-only `127.0.0.1:30081` host mapping keep the daemon route private; the public
   listener cannot upgrade it. Listener failures propagate, a second concurrent request fails 503, and the
@@ -1138,13 +1139,13 @@ Implementation and static validation are complete:
   reservation/receipt replacement and verified teardown.
 
 The accelerator implementation has dated static evidence, but current work is not limited to live closure:
-Sprint 13.18 also owns the typed Production plan/TestComponent, pulled digest-qualified base, and
+Sprint 13.18 also owns the typed Production plan/TestComponent, freshly pulled rolling base, and
 registry/MinIO metadata/provenance repair. Native Apple/Linux accelerator gates remain open separately.
 
 ### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.7, 6.7, 10.9, 12.4, 13.19–13.20, 14.6, 15.9, 16.6, 17.4, and 20.5
+**Blocked by**: Sprints 5.7, 10.9, 13.20, 14.6, 15.9, 16.6, 17.4, and 20.5
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/app/Main.hs`, `demo/docker/Dockerfile`,
 `demo/kind*.yaml`, `demo/nvkind-in-cluster.yaml`
@@ -1155,7 +1156,7 @@ registry/MinIO metadata/provenance repair. Native Apple/Linux accelerator gates 
 #### Objective
 
 Make the worked demo exercise a typed production plan without hard-coded harness variants or stale
-registry/object-store metadata, and consume the published base by immutable identity.
+registry/object-store metadata, and consume a freshly pulled published rolling base.
 
 #### Deliverables
 
@@ -1165,8 +1166,9 @@ registry/object-store metadata, and consume the published base by immutable iden
   `TestComponent`. The two
   instances share plan shape, not indexed values or journals. The test component receives only opaque
   `HarnessAuthority demoProjectId runId` and cannot construct or consume the Production instance.
-- Pull and resolve the selected published base before each derived-image build, pass a digest-qualified
-  base reference into the Docker build, and verify substrate flavor/architecture selection.
+- Pull the selected published rolling base before each derived-image build, verify substrate
+  flavor/architecture selection, and prevent a same-named local image from substituting for the
+  publication. A resolved digest may bind that invocation without becoming a permanent consumer lock.
 - Reconcile the current MinIO-backed registry path across step names, manifests, case metadata, and
   assertions; remove stale Harbor/appended-verb metadata rather than preserving it as compatibility text.
 - Make durable-registry assertions prove the MinIO/PVC state actually claimed, with explicit ownership
@@ -1208,9 +1210,9 @@ the in-cluster registry Ready. The subsequent `docker push` uploaded every proje
 when the registry finalized the manifest (`error from registry: unknown error`) in both variants. This is
 the current concrete registry/MinIO repair input; it is not accepted matrix or durability evidence.
 
-### Sprint 13.19: Threaded static demo test component [Planned]
+### Sprint 13.19: Threaded static demo test component [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `demo/hostbootstrap-demo.cabal`,
 `demo/test/Spec.hs`
 **Docs to update**: `README.md`, `documents/engineering/testing.md`,
@@ -1235,10 +1237,15 @@ Warp server tests require.
 - A negative build/test fixture or Cabal assertion prevents removal of the threaded option while those
   tests depend on the GHC timer manager.
 
+**Passed 2026-07-25.** The canonical command completed with all **101 demo tests** and the embedded
+**379-test core suite** green under `-Werror`; `WebServerSpec` remained enabled, including its real
+listener and WebSocket cases. The new component-contract case reads the test stanza and requires
+`-threaded -rtsopts "-with-rtsopts=-N"`. Pinned Fourmolu and HLint are clean on the changed test entry
+module.
+
 #### Remaining Work
 
-Update the test-component Cabal stanza, run the canonical static suite, and record the dated result in
-this sprint.
+None.
 
 ### Sprint 13.20: Reachability-safe registry route and persistence proof [Blocked]
 

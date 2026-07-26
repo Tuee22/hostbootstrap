@@ -1,7 +1,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 {- | The one standardized, Dhall-driven test harness.
 
@@ -10,15 +10,38 @@ generates **one** run config and brings a single test stack up, then drives that
 variant's chosen cases against the shared, already-up environment via 'runMatrix'
 (whose per-case 'Seams' are built internally by @assertSeams@), tearing the stack
 down once per variant while preserving production @.data@. The harness is
-parameterized by a 'Seams' record (the default seams do a one-shot container
-run; cluster projects supply kind/Helm seams), and the app supplies only the
-case matrix (see @development_plan_standards.md § S, § T@).
+parameterized by a 'Seams' record for the live-stack assertions, and the app
+supplies only the case matrix (see @development_plan_standards.md § S, § T@).
 
-The isolation/profile derivation, the prefix delete-guard, the budget slicing,
-and the report aggregation are pure so never-touch-production is mechanical and
-unit-tested; 'runMatrix' is the thin IO loop that guarantees teardown.
+The self-created-data removal decision and report aggregation are pure;
+'runMatrix' is the thin IO loop that guarantees teardown. Execution shape comes
+only from the project's lifecycle step plan, never from a parallel harness
+selector.
 -}
 module HostBootstrap.Harness (
+    CaseId,
+    caseIdText,
+    mkCaseId,
+    VariantId,
+    variantIdText,
+    mkVariantId,
+    IdentifierError (..),
+    CaseSelector,
+    parseCaseSelector,
+    VariantDraft,
+    variantDraft,
+    variantDraftId,
+    variantDraftValue,
+    TestMatrix,
+    TestMatrixError (..),
+    mkTestMatrix,
+    emptyTestMatrix,
+    testMatrixCaseIds,
+    testMatrixVariantIds,
+    SelectedVariant,
+    selectedVariantDraft,
+    selectedVariantCaseIds,
+    selectTestMatrix,
     Case (..),
     CaseResult (..),
     Report (..),
@@ -35,48 +58,237 @@ module HostBootstrap.Harness (
     lifecycleFailureMarker,
     runSuiteSelection,
     testSafetyPreconditions,
-    RunModel (..),
-    Topology (..),
-    RunModelKey (..),
-    testCaseProfile,
-    guardTestDelete,
-    GuardError (..),
     testDataRoot,
     selfCreatedTestDataRemoval,
     withSelfCreatedTestData,
-    sliceBudget,
-    splitByWeight,
-    selectRunModel,
-    OneShotSpec (..),
-    oneShotRunArgs,
     runMatrix,
     reportCard,
     allPassed,
-    defaultSeams,
-    oneShotSeams,
 )
 where
 
 import Control.Exception (Exception, SomeAsyncException, SomeException, displayException, fromException, mask, onException, tryJust)
 import Control.Exception.Safe (finally)
 import Control.Monad (unless)
-import Data.List (intercalate, isPrefixOf, partition)
+import Data.Char (isAlphaNum)
+import Data.List (group, sort)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NE
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
-import HostBootstrap.Cluster.Lifecycle (ClusterProfile (TestCase))
-import qualified HostBootstrap.Config.Vocab as Vocab
-import HostBootstrap.Ensure (runTool)
-import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Docker))
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectory, removePathForcibly)
-import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeDirectory)
+
+{- | A validated, stable test-case identity. Construction rejects empty,
+reserved, or malformed text; the constructor remains private so every value has
+passed the same boundary.
+-}
+newtype CaseId = CaseId T.Text
+    deriving (Eq, Ord)
+
+instance Show CaseId where
+    show = show . caseIdText
+
+caseIdText :: CaseId -> T.Text
+caseIdText (CaseId value) = value
+
+{- | A validated, stable configuration-variant identity. It is reporting and
+configuration identity only: it grants no lifecycle ownership.
+-}
+newtype VariantId = VariantId T.Text
+    deriving (Eq, Ord)
+
+instance Show VariantId where
+    show = show . variantIdText
+
+variantIdText :: VariantId -> T.Text
+variantIdText (VariantId value) = value
+
+data IdentifierError
+    = EmptyCaseId
+    | InvalidCaseId T.Text
+    | ReservedCaseId T.Text
+    | EmptyVariantId
+    | InvalidVariantId T.Text
+    deriving (Eq, Show)
+
+mkCaseId :: T.Text -> Either IdentifierError CaseId
+mkCaseId raw
+    | T.null raw = Left EmptyCaseId
+    | raw == T.pack allCasesSelector = Left (ReservedCaseId raw)
+    | not (validIdentifier raw) = Left (InvalidCaseId raw)
+    | otherwise = Right (CaseId raw)
+
+mkVariantId :: T.Text -> Either IdentifierError VariantId
+mkVariantId raw
+    | T.null raw = Left EmptyVariantId
+    | not (validIdentifier raw) = Left (InvalidVariantId raw)
+    | otherwise = Right (VariantId raw)
+
+validIdentifier :: T.Text -> Bool
+validIdentifier value =
+    case T.uncons value of
+        Nothing -> False
+        Just (first, rest) -> isAlphaNum first && T.all validRest rest
+  where
+    validRest c = isAlphaNum c || c `elem` ("-._" :: String)
+
+data CaseSelector = AllCases | SelectedCase CaseId
+    deriving (Eq, Show)
+
+parseCaseSelector :: T.Text -> Either IdentifierError CaseSelector
+parseCaseSelector raw
+    | raw == T.pack allCasesSelector = Right AllCases
+    | otherwise = SelectedCase <$> mkCaseId raw
+
+{- | A pure project-owned variant declaration. The payload may carry typed
+configuration inputs, but the draft itself contains no run, plan, rendered
+config, lease, or cleanup action.
+-}
+data VariantDraft a = VariantDraft VariantId a
+    deriving (Eq, Show)
+
+variantDraft :: VariantId -> a -> VariantDraft a
+variantDraft = VariantDraft
+
+variantDraftId :: VariantDraft a -> VariantId
+variantDraftId (VariantDraft ident _) = ident
+
+variantDraftValue :: VariantDraft a -> a
+variantDraftValue (VariantDraft _ value) = value
+
+{- | Construction failures for the opaque total case-to-variant relation.
+Every error is discovered before the harness performs a mutation.
+-}
+data TestMatrixError
+    = EmptyCaseRegistry
+    | DuplicateCaseIds [CaseId]
+    | EmptyVariantRegistry
+    | DuplicateVariantIds [VariantId]
+    | MissingCaseRows [CaseId]
+    | UnknownCaseRows [CaseId]
+    | DuplicateCaseRows [CaseId]
+    | EmptyVariantRow CaseId
+    | UnknownVariantReferences [(CaseId, VariantId)]
+    | DuplicateVariantPairs [(CaseId, VariantId)]
+    | OrphanVariants [VariantId]
+    | UnknownSelectedCase CaseId
+    deriving (Eq, Show)
+
+data TestMatrix a = TestMatrix
+    { matrixCases :: [CaseId]
+    , matrixVariants :: [VariantDraft a]
+    , matrixRows :: [(CaseId, NonEmpty VariantId)]
+    }
+    deriving (Eq, Show)
+
+{- | The sole validated matrix constructor. Input rows deliberately use lists so
+an empty row can be diagnosed rather than made unrepresentable only at a caller.
+-}
+mkTestMatrix ::
+    [CaseId] ->
+    [VariantDraft a] ->
+    [(CaseId, [VariantId])] ->
+    Either TestMatrixError (TestMatrix a)
+mkTestMatrix caseRegistry variantRegistry rows = do
+    nonEmptyCases <- maybe (Left EmptyCaseRegistry) Right (NE.nonEmpty caseRegistry)
+    let duplicateCases = duplicates caseRegistry
+    unlessEither (null duplicateCases) (DuplicateCaseIds duplicateCases)
+    nonEmptyVariants <- maybe (Left EmptyVariantRegistry) Right (NE.nonEmpty variantRegistry)
+    let variantIds = map variantDraftId variantRegistry
+        duplicateVariants = duplicates variantIds
+    unlessEither (null duplicateVariants) (DuplicateVariantIds duplicateVariants)
+    let rowCaseIds = map fst rows
+        duplicateRows = duplicates rowCaseIds
+        missingRows = filter (`notElem` rowCaseIds) caseRegistry
+        unknownRows = filter (`notElem` caseRegistry) rowCaseIds
+    unlessEither (null duplicateRows) (DuplicateCaseRows duplicateRows)
+    unlessEither (null missingRows) (MissingCaseRows missingRows)
+    unlessEither (null unknownRows) (UnknownCaseRows unknownRows)
+    case [cid | (cid, refs) <- rows, null refs] of
+        cid : _ -> Left (EmptyVariantRow cid)
+        [] -> pure ()
+    let unknownRefs =
+            [ (cid, vid)
+            | (cid, refs) <- rows
+            , vid <- refs
+            , vid `notElem` variantIds
+            ]
+        duplicatePairs =
+            concatMap
+                (\(cid, refs) -> map (cid,) (duplicates refs))
+                rows
+    unlessEither (null unknownRefs) (UnknownVariantReferences unknownRefs)
+    unlessEither (null duplicatePairs) (DuplicateVariantPairs duplicatePairs)
+    let referenced = concatMap snd rows
+        orphans = filter (`notElem` referenced) variantIds
+    unlessEither (null orphans) (OrphanVariants orphans)
+    totalRows <-
+        traverse
+            (\(cid, refs) -> maybe (Left (EmptyVariantRow cid)) (\nonEmptyRefs -> Right (cid, nonEmptyRefs)) (NE.nonEmpty refs))
+            rows
+    nonEmptyCases `seq` nonEmptyVariants `seq` pure (TestMatrix caseRegistry variantRegistry totalRows)
+
+{- | Bare-core-only empty matrix. Real project specs are rejected when their
+Haskell suite is empty and cannot construct this through 'mkTestMatrix'.
+-}
+emptyTestMatrix :: TestMatrix ()
+emptyTestMatrix = TestMatrix [] [] []
+
+testMatrixCaseIds :: TestMatrix a -> [CaseId]
+testMatrixCaseIds (TestMatrix cases _ _) = cases
+
+testMatrixVariantIds :: TestMatrix a -> [VariantId]
+testMatrixVariantIds (TestMatrix _ variants _) = map variantDraftId variants
+
+data SelectedVariant a = SelectedVariant (VariantDraft a) (NonEmpty CaseId)
+    deriving (Eq, Show)
+
+selectedVariantDraft :: SelectedVariant a -> VariantDraft a
+selectedVariantDraft (SelectedVariant draft _) = draft
+
+selectedVariantCaseIds :: SelectedVariant a -> NonEmpty CaseId
+selectedVariantCaseIds (SelectedVariant _ cases) = cases
+
+{- | Project one case or the complete registry from an already-total matrix.
+Variants retain registry order and are emitted once even when shared by cases.
+-}
+selectTestMatrix :: CaseSelector -> TestMatrix a -> Either TestMatrixError [SelectedVariant a]
+selectTestMatrix selector (TestMatrix cases variants rows) = do
+    chosenCases <-
+        case selector of
+            AllCases -> Right cases
+            SelectedCase cid
+                | cid `elem` cases -> Right [cid]
+                | otherwise -> Left (UnknownSelectedCase cid)
+    pure (mapMaybe (selectedFor chosenCases) variants)
+  where
+    selectedFor chosenCases draft =
+        SelectedVariant draft
+            <$> NE.nonEmpty
+                [ cid
+                | cid <- chosenCases
+                , Just refs <- [lookup cid rows]
+                , variantDraftId draft `elem` NE.toList refs
+                ]
+
+unlessEither :: Bool -> e -> Either e ()
+unlessEither condition err
+    | condition = Right ()
+    | otherwise = Left err
+
+duplicates :: (Ord a) => [a] -> [a]
+duplicates = foldr duplicate [] . group . sort
+  where
+    duplicate (value : _ : _) rest = value : rest
+    duplicate _ rest = rest
 
 {- | A test case: an id, a budget-slicing weight, and whether it is indivisible
 (e.g. a GPU case that cannot share a device and runs serially at full budget).
 -}
 data Case = Case
-    { caseId :: String
+    { caseId :: CaseId
     , caseWeight :: Natural
     , caseIndivisible :: Bool
     }
@@ -100,49 +312,9 @@ data Seams env = Seams
     , seamTeardown :: env -> Case -> IO ()
     }
 
-{- | The four run-models the wider system selects between (never declared in
-Dhall; see 'selectRunModel').
--}
-data RunModel = OneShot | HostNative | HostDaemon | Cluster
-    deriving (Eq, Show)
-
--- | The generated topology — the spine of the run-model selection key.
-data Topology = ContainerOnly | ClusterTopology | DaemonTopology
-    deriving (Eq, Show)
-
-{- | The run-model selection key: @(verb × detected-substrate × library-layer ×
-generated-topology)@ collapsed to the two dimensions that decide the model —
-the generated topology and whether a host-native build+exec is in force.
--}
-data RunModelKey = RunModelKey
-    { keyTopology :: Topology
-    , keyHostNative :: Bool
-    }
-    deriving (Eq, Show)
-
-{- | The isolated per-case cluster profile (@<project>-test-<case>@, data under
-@./.test_data/<case>/@). Pure.
--}
-testCaseProfile :: Case -> ClusterProfile
-testCaseProfile c = TestCase (caseId c)
-
--- | A delete-guard error: a name that does not carry the test prefix.
-data GuardError = NotPrefixed {guardPrefix :: String, guardName :: String}
-    deriving (Eq, Show)
-
-{- | The parameterized prefix delete-guard: the test-profile teardown refuses any
-cluster name not carrying the project-supplied test prefix, so a harness run can
-never delete a production cluster. Pure.
--}
-guardTestDelete :: String -> String -> Either GuardError String
-guardTestDelete prefix name
-    | prefix `isPrefixOf` name = Right name
-    | otherwise = Left (NotPrefixed prefix name)
-
 {- | The canonical durable directory for test runs (development_plan_standards § Z):
 test durable storage is always @.test_data@, **never** @.data@. A test stack's
-data is rooted here (the @TestCase@ cluster profile resolves to
-@\<root\>/.test_data/\<case\>@; see "HostBootstrap.Cluster.Lifecycle").
+data is rooted here.
 -}
 testDataRoot :: FilePath
 testDataRoot = ".test_data"
@@ -178,74 +350,6 @@ withSelfCreatedTestData path body =
                     release = removeOwned `finally` removeDirectory runLock
                 restore body `finally` release
 
-{- | Split a budget proportionally across weights by floor division (the Haskell
-mirror of @Core.dhall@ @split@; an empty/zero total yields zero slices).
--}
-splitByWeight :: Vocab.Budget -> [Natural] -> [Vocab.Budget]
-splitByWeight b weights =
-    let total = sum weights
-     in map
-            ( \w ->
-                if total == 0
-                    then Vocab.Budget 0 0 0
-                    else Vocab.Budget (b.cpu * w `div` total) (b.memory * w `div` total) (b.storage * w `div` total)
-            )
-            weights
-
-{- | Slice the project budget across the case matrix: divisible cases share the
-budget proportionally to weight (concurrent); indivisible (e.g. GPU) cases each
-get the **full** budget and run serially at concurrency 1. Pure.
--}
-sliceBudget :: Vocab.Budget -> [Case] -> [(Case, Vocab.Budget)]
-sliceBudget budget cases =
-    let (indivisible, divisible) = partition caseIndivisible cases
-        slices = splitByWeight budget (map caseWeight divisible)
-     in zip divisible slices ++ [(c, budget) | c <- indivisible]
-
-{- | Select the run-model from the (collapsed) selection key. The generated
-topology is the spine; a host-native build+exec promotes a container-only
-topology to 'HostNative'. Never declared in Dhall. Pure.
--}
-selectRunModel :: RunModelKey -> RunModel
-selectRunModel key = case keyTopology key of
-    ClusterTopology -> Cluster
-    DaemonTopology -> HostDaemon
-    ContainerOnly -> if keyHostNative key then HostNative else OneShot
-
-{- | The inputs to a 'OneShot' container run: the image, the in-container
-command, the budget caps (CPU cores and memory bytes), the bind mounts, and
-whether to allocate a TTY.
--}
-data OneShotSpec = OneShotSpec
-    { oneShotImage :: String
-    , oneShotCommand :: [String]
-    , oneShotCpus :: Natural
-    , oneShotMemoryBytes :: Integer
-    , oneShotMounts :: [Vocab.Mount]
-    , oneShotInteractive :: Bool
-    }
-    deriving (Eq, Show)
-
-{- | The L0 'OneShot' model's @docker run --rm@ argv, budget-capped (@--cpus@ /
-@--memory@) and mount-bound. Pure, so the argv is unit-tested; the IO seam
-that runs it is app-supplied (it carries the resolved 'HostBootstrap.HostConfig'
-and the resolved Docker tool). The default container-run seam ('defaultSeams')
-ships in L0; this builder is what a real OneShot seam runs.
--}
-oneShotRunArgs :: OneShotSpec -> [String]
-oneShotRunArgs s =
-    ["run", "--rm"]
-        ++ ["-it" | oneShotInteractive s]
-        ++ ["--cpus", show (oneShotCpus s), "--memory", show (oneShotMemoryBytes s)]
-        ++ concatMap mountArg (oneShotMounts s)
-        ++ [oneShotImage s]
-        ++ oneShotCommand s
-  where
-    mountArg m =
-        [ "-v"
-        , T.unpack (Vocab.source m) ++ ":" ++ T.unpack (Vocab.target m) ++ (if Vocab.readOnly m then ":ro" else "")
-        ]
-
 {- | Drive the case matrix: per case run setup → body → teardown, guaranteeing
 teardown via 'finally' (the body's exception is recorded as a 'Fail', not
 leaked), and aggregate a 'Report'. A throwing /setup/ is isolated too — it
@@ -258,26 +362,13 @@ runMatrix seams cases = Report <$> mapM runOne cases
     runOne c = do
         esetup <- trySynchronousIO (seamSetup seams c)
         case esetup of
-            Left (err :: SomeException) -> pure (caseId c, Fail ("setup: " ++ show err))
+            Left (err :: SomeException) -> pure (renderCaseId c, Fail ("setup: " ++ show err))
             Right env -> do
                 result <-
                     trySynchronousIO (seamRun seams env c)
                         `finally` seamTeardown seams env c
-                pure (caseId c, either (Fail . show) id result)
-
-{- | The default L0 seams: a one-shot container run (the 'OneShot' model). Setup
-and teardown are no-ops because a one-shot @docker run --rm@ leaves nothing to
-clean up; a cluster project supplies kind/Helm seams instead. The body is a
-project-supplied closure in real use; this stub passes so the bare binary's
-empty matrix runs cleanly.
--}
-defaultSeams :: Seams ()
-defaultSeams =
-    Seams
-        { seamSetup = \_ -> pure ()
-        , seamRun = \_ _ -> pure Pass
-        , seamTeardown = \_ _ -> pure ()
-        }
+                pure (renderCaseId c, either (Fail . show) id result)
+    renderCaseId = T.unpack . caseIdText . caseId
 
 {- | A project's complete, /stack-driven/ test surface
 (development_plan_standards § W, § Z). The harness is **not** a second
@@ -293,10 +384,9 @@ The fields, in order:
   1. the two hard fail-fast safety preconditions (§ Z): @Right ()@ to proceed,
      @Left reason@ to refuse before any side effect — built with
      'testSafetyPreconditions';
-  2. /bring up/: given the active variant's label, drive @project up@ against
+  2. /bring up/: given the active stable 'VariantId', drive @project up@ against
      the variant's already-written @<project>.dhall@, then resolve the assertion
-     @env@ (one @project up@ per variant). The label is the variant's expected
-     message, threaded into the assertion env;
+     @env@ (one @project up@ per variant);
   3. the 'Case' matrix the assertions cover;
   4. the per-case assertion against the live stack (reusing the self-reference
      lift, § U);
@@ -312,7 +402,7 @@ data TestSuite
     = forall env.
         TestSuite
         (IO (Either String ()))
-        (T.Text -> IO env)
+        (VariantId -> IO env)
         [Case]
         (env -> Case -> IO CaseResult)
         (IO ())
@@ -326,7 +416,7 @@ emptySuite = TestSuite (pure (Right ())) (\_ -> pure ()) [] (\_ _ -> pure Pass) 
 {- | The case ids in a suite. Used by the CLI layer to reject accidental empty or
 duplicate project suites before command dispatch.
 -}
-testSuiteCaseIds :: TestSuite -> [String]
+testSuiteCaseIds :: TestSuite -> [CaseId]
 testSuiteCaseIds (TestSuite _ _ cases _ _) = map caseId cases
 
 -- | The number of cases in a suite.
@@ -340,14 +430,14 @@ a case @all@.
 allCasesSelector :: String
 allCasesSelector = "all"
 
-{- | One labeled test-config variant the command layer supplies to
-'runSuiteSelection': the variant label (its expected message, threaded into the
-suite's bring-up) and the rank-2 bracket that writes that variant's generated
-@<project>.dhall@ before bring-up and removes it after teardown. A newtype (not a
-bare tuple) so the @forall@ bracket needs no impredicativity.
+{- | One already-selected test-config variant the command layer supplies to
+'runSuiteSelection': its stable identity, non-empty typed case selection, and
+the rank-2 bracket that writes that variant's generated @<project>.dhall@ before
+bring-up and removes it after teardown.
 -}
 data ConfigVariant = ConfigVariant
-    { variantLabel :: T.Text
+    { variantId :: VariantId
+    , variantCaseIds :: NonEmpty CaseId
     , variantWithConfig :: forall a. IO a -> IO a
     }
 
@@ -411,66 +501,60 @@ testSafetyPreconditions configPath productionClusterRunning = do
                     then Left "a production cluster is already running; refusing to touch production state"
                     else Right ()
 
-{- | Resolve a @test run@ selector against a suite, enforce the safety
-preconditions, then **loop over the labeled config variants** the command layer
-supplies — for each variant: generate the run config, bring the test stack up
-(drive @project up@), run the chosen case(s)' assertions against it (with the
-variant label available), tear it down (drive @project destroy@), and delete the
-generated config — full teardown + spin-up between variants. 'allCasesSelector'
-runs the whole matrix; any other value runs the single case with that id; an
-unknown id is a 'Left' naming the valid case ids plus @all@, so the inherited
-@test run@ verb can fail fast. A refused safety precondition is a 'Left' and **no
-stack is brought up and no config is generated**. The per-case loop reuses
+{- | Enforce the safety preconditions, then loop over the typed matrix selection
+the command layer supplies — for each variant: generate the run config, bring
+the test stack up (drive @project up@), run the selected case assertions, tear
+it down (drive @project destroy@), and delete the generated config — full
+teardown + spin-up between variants. Selector parsing and total-matrix
+projection occur before this engine. A refused safety precondition is a 'Left'
+and **no stack is brought up and no config is generated**. The per-case loop reuses
 'runMatrix' (the live stack is the shared, already-up env), so the harness owns no
 second bring-up path (§ W).
 
-Each @(label, withGeneratedConfig)@ bracket is supplied by the command layer (it
-holds the project's 'tcfg' / @psTestConfig@): it writes that variant's generated
+Each @(VariantId, case ids, withGeneratedConfig)@ value is supplied by the command layer (it
+holds the project's @tcfg@ and scope-aware restricted assembler): it writes that variant's generated
 run config as the sibling @<project>.dhall@ before bring-up and removes it after
 teardown. The brackets run **after** the safety precondition (which refuses if a
 production config already exists), so the harness only ever generates and removes
 a config of its own making. The safety precondition is checked **once** up front;
-the per-variant reports are aggregated into one 'Report', each row labeled with
-its variant.
+the per-variant reports are aggregated into one 'Report', each row identified by
+its stable variant ID.
 -}
 runSuiteSelection ::
     TestSuite ->
     [ConfigVariant] ->
-    String ->
     IO (Either String Report)
-runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants selector =
-    case chosenCases of
-        Left err -> pure (Left err)
-        Right chosen -> do
-            safe <- safety
-            case safe of
-                Left reason -> pure (Left ("test run refused: " ++ reason))
-                -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
-                -- the self-created-only delete-guard, so the run's durable storage is
-                -- isolated and a `.test_data` (or `.data`) the run did not create is never
-                -- removed. Each variant's run config is generated inside its
-                -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
-                -- brought up against it; the variant reports are concatenated.
-                Right () -> withSelfCreatedTestData testDataRoot $ do
-                    variantReports <- mapM (safeRunVariant chosen) variants
-                    pure (Right (Report (concatMap reportResults variantReports)))
+runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants = do
+    safe <- safety
+    case safe of
+        Left reason -> pure (Left ("test run refused: " ++ reason))
+        -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
+        -- the self-created-only delete-guard, so the run's durable storage is
+        -- isolated and a `.test_data` (or `.data`) the run did not create is never
+        -- removed. Each variant's run config is generated inside its
+        -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
+        -- brought up against it; the variant reports are concatenated.
+        Right () -> withSelfCreatedTestData testDataRoot $ do
+            variantReports <- mapM safeRunVariant variants
+            pure (Right (Report (concatMap reportResults variantReports)))
   where
     -- A whole variant is isolated: an unexpected exception anywhere in it (the
     -- config bracket, an escaped teardown) fails only that variant's cases and the
     -- loop moves on to the next variant, rather than aborting the run.
-    safeRunVariant chosen cv@(ConfigVariant label _) = do
+    safeRunVariant cv@(ConfigVariant ident selected _) = do
+        let chosen = casesFor selected
         e <- trySynchronousIO (runVariant chosen cv)
         pure $ case e of
             Right report -> report
-            Left err -> labelReport label (allFail chosen ("variant failed: " ++ show err))
+            Left err -> labelReport ident (allFail chosen ("variant failed: " ++ show err))
     -- Bring-up is **inside** the guaranteed teardown: a failed @project up@ runs
     -- the same @project destroy@ and turns into a per-case 'Fail' for this variant.
     -- A teardown exception also fails the variant (a green report may never hide a
     -- leaked stack); 'safeRunVariant' still catches it so later variants can run.
-    runVariant chosen (ConfigVariant label withGeneratedConfig) =
-        labelReport label <$> withGeneratedConfig (runFrame chosen label)
-    runFrame chosen label = do
-        eenv <- trySynchronousIO (bringUp label)
+    runVariant chosen (ConfigVariant ident _ withGeneratedConfig) =
+        labelReport ident <$> withGeneratedConfig (runFrame chosen ident)
+    runFrame chosen ident = do
+        eenv <- trySynchronousIO (bringUp ident)
         case eenv of
             Left err ->
                 case fromException err :: Maybe SafetyRefusal of
@@ -482,12 +566,9 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
                     Nothing -> pure (allFail chosen ("bring-up failed: " ++ displayException err)) `finally` tearDown
             Right env -> runMatrix (assertSeams env) chosen `finally` tearDown
     -- Every chosen case fails with one reason (the bring-up / variant failure).
-    allFail chosen reason = Report [(caseId c, Fail reason) | c <- chosen]
-    chosenCases
-        | selector == allCasesSelector = Right cases
-        | otherwise = case filter ((== selector) . caseId) cases of
-            [] -> Left unknown
-            chosen -> Right chosen
+    allFail chosen reason = Report [(T.unpack (caseIdText (caseId c)), Fail reason) | c <- chosen]
+    casesFor selected =
+        [c | c <- cases, caseId c `elem` NE.toList selected]
     -- Reuse the per-case loop: the live stack `bringUp` produced is the shared
     -- env every case asserts against; teardown is the suite-level `project
     -- destroy`, so the per-case teardown is a no-op.
@@ -497,36 +578,10 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
             , seamRun = assertCase
             , seamTeardown = \_ _ -> pure ()
             }
-    -- Prefix each case id with the variant label so the aggregated report card
+    -- Prefix each case id with the stable variant ID so the aggregated report card
     -- attributes every row to the variant it ran under.
-    labelReport label (Report rs) =
-        Report [("[" ++ T.unpack label ++ "] " ++ cid, r) | (cid, r) <- rs]
-    unknown =
-        "unknown test case "
-            ++ show selector
-            ++ "; available: "
-            ++ intercalate ", " (map caseId cases ++ [allCasesSelector])
-
-{- | The real L0 'OneShot' container-run seam: each case runs @docker run --rm@
-(budget-capped via 'oneShotRunArgs') through the resolved Docker tool, passing
-iff the container exits zero. The app supplies the resolved 'HostConfig' and a
-per-case 'OneShotSpec'; there is no setup/teardown because a @--rm@ run is
-self-cleaning. The IO is wired here (like @cluster up@); the live container run
-is exercised in real runs. 'defaultSeams' remains the trivial pass-through for
-the bare binary's empty matrix.
--}
-oneShotSeams :: HostConfig -> (Case -> OneShotSpec) -> Seams ()
-oneShotSeams cfg specFor =
-    Seams
-        { seamSetup = \_ -> pure ()
-        , seamRun = \_ c -> do
-            result <- runTool cfg Docker (oneShotRunArgs (specFor c))
-            pure $ case result of
-                Right (ExitSuccess, _, _) -> Pass
-                Right (_, _, err) -> Fail err
-                Left err -> Fail err
-        , seamTeardown = \_ _ -> pure ()
-        }
+    labelReport ident (Report rs) =
+        Report [("[" ++ T.unpack (variantIdText ident) ++ "] " ++ cid, r) | (cid, r) <- rs]
 
 {- | Catch synchronous failures while allowing cancellation and user interrupts
 to propagate through the surrounding cleanup brackets.

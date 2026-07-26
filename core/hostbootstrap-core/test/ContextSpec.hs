@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module ContextSpec (tests) where
@@ -9,15 +10,21 @@ import qualified Data.Text.IO as TIO
 import qualified Fixture
 import HostBootstrap.CLI (
     ProjectSpec,
+    addSteps,
+    finalizeProjectSpec,
     projectSpec,
-    runBareHostBootstrapCLI,
-    runHostBootstrapCLI,
+    setFrameContext,
+    setTeardown,
  )
+import qualified HostBootstrap.CLI as CLI
 import qualified HostBootstrap.Config.Schema as Schema
+import HostBootstrap.Config.Class (AssemblyRequest (..), pureConfigAssembly)
 import HostBootstrap.Context
-import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite))
+import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
+import HostBootstrap.Lift (localContext)
+import HostBootstrap.Step (StepFrame (StepFrame), deployVMStep)
 import System.Directory (removeFile)
-import System.Environment (withArgs)
+import System.Environment (withArgs, withProgName)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -45,7 +52,6 @@ sampleContext =
         , runtimeWitnesses = []
         , capabilities = [DockerSocket, ContainerRuntime, KindNetwork]
         , allowedCommandClasses = [TestWorkflowCommand, CheckCodeCommand, ConfigGenerationCommand]
-        , resourceEnvelope = ResourceEnvelope{cpu = 4, memory = "8GiB", storage = "20GiB"}
         , childContextKinds = [ClusterService]
         }
 
@@ -63,19 +69,54 @@ write/read a concrete 'Fixture.ProjectConfig' shape (so a written config
 decodes back), and the suite is a trivial passing one (these tests never run
 @test run@).
 -}
-fixtureSpec :: String -> ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+fixtureSpec ::
+    String ->
+    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec progName =
-    projectSpec
-        passingSuite
-        (pure ())
-        []
-        (Fixture.projectInit (T.pack progName))
-        (const (Fixture.defaultTestConfig ["ok", "all"] (Fixture.Resources 4 "8GiB" "20GiB")))
-        (const (pure [(T.pack "default", Fixture.defaultProjectConfig (T.pack progName) "/workspace/demo" HostOrchestrator)]))
+    either (error . show) id $
+        finalizeProjectSpec $
+            addSteps
+                (const [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))])
+                ( setFrameContext
+                    (\_ _ _ -> localContext)
+                    ( setTeardown
+                        (\_ _ _ -> pure ())
+                        ( projectSpec
+                            passingSuite
+                            (pure ())
+                            []
+                            Fixture.testConfigCodec
+                            (const (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")))
+                            ( \request ->
+                                case request of
+                                    ProductionAssembly args ->
+                                        pureConfigAssembly (Fixture.projectInit (T.pack progName) args)
+                                    HarnessAssembly _ _ _ ->
+                                        pureConfigAssembly
+                                            ( Fixture.defaultProjectConfig
+                                                (T.pack progName)
+                                                "/workspace/demo"
+                                                HostOrchestrator
+                                            )
+                            )
+                        )
+                    )
+                )
+
+runHostBootstrapCLI ::
+    String ->
+    ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig ->
+    IO ()
+runHostBootstrapCLI name spec =
+    withProgName name (CLI.runHostBootstrapCLI name spec)
+
+runBareHostBootstrapCLI :: String -> IO ()
+runBareHostBootstrapCLI name =
+    withProgName name (CLI.runBareHostBootstrapCLI name)
 
 passingSuite :: TestSuite
 passingSuite =
-    TestSuite (pure (Right ())) (\_ -> pure ()) [Case "ok" 1 False] (\_ _ -> pure Pass) (pure ())
+    TestSuite (pure (Right ())) (\_ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False] (\_ _ -> pure Pass) (pure ())
 
 tests :: TestTree
 tests =
@@ -128,7 +169,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
             contextKind host @?= HostOrchestrator
             roleName host @?= "host-orchestrator"
             capabilities host @?= [HostTools, IncusProvider]
@@ -139,7 +179,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 dual = addRole ClusterService host
             -- the primary project (deployment) authority is retained ...
             commandAllowed dual HostOrchestratorCommand @?= True
@@ -150,13 +189,12 @@ tests =
             -- the primary kind/frame is unchanged; service capabilities are unioned in
             contextKind dual @?= HostOrchestrator
             assertBool "service port capability unioned" (ServicePort `elem` capabilities dual)
-        , testCase "deriveContainerContext appends the VM frame and carries the envelope" $ do
+        , testCase "deriveContainerContext appends the VM frame without duplicating project resources" $ do
             let host =
                     hostOrchestratorContext
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
                 ctr = deriveContainerContext vm "/workspace/demo"
             contextKind ctr @?= VMProjectContainer
@@ -168,7 +206,6 @@ tests =
                     , TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" LimaVMProvider VMOrchestrator "vm-orchestrator"
                     , TopologyFrame "vm-project-container-2" "vm-orchestrator-1" DockerContainerProvider VMProjectContainer "vm-project-container"
                     ]
-            resourceEnvelope ctr @?= resourceEnvelope host
             commandAllowed ctr CheckCodeCommand @?= True
             validateContext testRequirement ctr @?= Right ctr
         , testCase "deriveVMContext and deriveServiceContext preserve identity and enforce narrower roles" $ do
@@ -177,7 +214,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 vm = deriveVMContext host "/workspace/demo"
                 svc = deriveServiceContext vm "/srv/demo"
             contextKind vm @?= VMOrchestrator
@@ -194,7 +230,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 daemon = deriveHostDaemonContext host "/workspace/demo"
                 serviceReq = contextRequirement "demo" ServiceCommand []
                 projectReq = contextRequirement "demo" ClusterLifecycleCommand []
@@ -211,7 +246,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
                 ctr = deriveContainerContext vm "/workspace/demo"
                 hostDaemon = deriveHostDaemonContext host "/workspace/daemon"
@@ -232,7 +266,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 badWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "daemon-1"
                 daemon = (deriveHostDaemonContext host "/workspace/daemon"){runtimeWitnesses = [badWitness]}
                 req = contextRequirement "demo" ServiceCommand []
@@ -243,14 +276,14 @@ tests =
                     assertBool "env witness reports a frame mismatch" ("environment HOSTBOOTSTRAP_CURRENT_FRAME" `isInfixOfS` detail)
                 other -> assertFailure ("expected runtime witness failure, got " ++ show other)
         , testCase "standaloneContainerContext is the Dockerfile bootstrap context" $ do
-            let ctr = standaloneContainerContext "demo" "demo" "/workspace/demo" defaultResourceEnvelope
+            let ctr = standaloneContainerContext "demo" "demo" "/workspace/demo"
             contextKind ctr @?= ImageBuildContainer
             roleName ctr @?= "image-build-container"
             parentChain ctr @?= []
             commandAllowed ctr CheckCodeCommand @?= True
             commandAllowed ctr TestWorkflowCommand @?= False
         , testCase "image-build context rejects direct test workflow execution" $ do
-            let img = imageBuildContainerContext "demo" "demo" "/workspace/demo" defaultResourceEnvelope
+            let img = imageBuildContainerContext "demo" "demo" "/workspace/demo"
             validateContext testRequirement img
                 @?= Left (ContextCommandNotAllowed TestWorkflowCommand ImageBuildContainer)
         , testCase "standalone VM-project-container config cannot authorize a VM-scoped workflow" $ do
@@ -259,7 +292,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                         VMProjectContainer
             validateContext testRequirement ctr
                 @?= Left (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
@@ -269,7 +301,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 direct = deriveLinuxGpuContainerContext host "/workspace/demo"
             contextKind direct @?= VMProjectContainer
             roleName direct @?= "linux-gpu-project-container"
@@ -289,7 +320,6 @@ tests =
                         "demo"
                         "demo"
                         "/workspace/demo"
-                        (ResourceEnvelope 4 "8GiB" "20GiB")
                 direct = deriveLinuxGpuContainerContext host "/workspace/demo"
                 missingExplicitWitness =
                     direct
@@ -311,7 +341,6 @@ tests =
                             "demo"
                             "demo"
                             "/workspace/demo"
-                            (ResourceEnvelope 4 "8GiB" "20GiB")
                     req = contextRequirement "demo" CheckCodeCommand []
                 TIO.writeFile path "ok"
                 validateRuntimeContext req host{runtimeWitnesses = [okWitness]} >>= (@?= Right host{runtimeWitnesses = [okWitness]})
@@ -347,7 +376,7 @@ tests =
             path <- Schema.siblingProjectConfigPath projectName
             let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
             ( do
-                    Schema.writeProjectConfigFile path cfg
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg
                     result <-
                         try (withArgs ["check-code"] (runHostBootstrapCLI (T.unpack projectName) (fixtureSpec (T.unpack projectName)))) ::
                             IO (Either ExitCode ())

@@ -1,45 +1,29 @@
-# Run-Model Taxonomy
+# Execution-Shape Taxonomy
 
 **Status**: Authoritative source
-**Supersedes**: the claim that `selectRunModel` is wired into `project up` and that `RunModel` is absent from Dhall
+**Supersedes**: the detached harness selector and configurable Dhall execution union removed by Sprint 10.10
 **Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
 
-> **Purpose**: Define the four useful execution-shape names, record the current definition-only selector
-> honestly, and preserve the project chain as the sole executable representation.
+> **Purpose**: Define four useful names for behavior already expressed by lifecycle steps while
+> preserving the project chain as the sole executable representation.
 
 ## TL;DR
 
 - `OneShot`, `HostNative`, `HostDaemon`, and `Cluster` are useful names for four execution shapes.
-- The repository currently defines and tests `RunModel`, `RunModelKey`, and `selectRunModel`, but
-  production `project up` does not call the selector. The demo selects concrete chain steps directly.
-- `Core.dhall` currently exports a `RunModel` union. Therefore “a run model never appears in Dhall” is
-  false; it is vocabulary even though the demo runtime config does not contain a run-model field.
-- The target keeps `chain :: cfg -> [Step]` as the only executable plan. It removes the unconsumed
-  parallel selector and Dhall literal rather than allowing topology, steps, and a run-model value to
-  disagree.
+- They are documentation/reporting labels, not Haskell dispatch values or Dhall configuration.
+- opaque validated `StepPlan` is the only current executable representation; the later
+  `ProjectPlan` strengthens that same representation rather than introducing another selector.
 
 ## Current Status
 
-`HostBootstrap.Harness` exposes:
+Sprint 10.10 removed the detached Haskell selector, its selector-only topology/key types, the
+definition-only one-shot and budget helpers that had no production call path, and the corresponding
+Dhall union. A structural test checks both `HostBootstrap.Harness` and `Core.dhall` for that removed
+parallel surface.
 
-```haskell
-data RunModel = OneShot | HostNative | HostDaemon | Cluster
-
-data RunModelKey = RunModelKey
-  { keyTopology :: Topology
-  , keyHostNative :: Bool
-  }
-
-selectRunModel :: RunModelKey -> RunModel
-```
-
-Unit tests cover the mapping, but no production interpreter consumes its result. The real demo path uses
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]`; that function selects VM/direct-container,
-kind/nvkind, service, and host-daemon steps. `project up` interprets those concrete steps.
-
-`Core.dhall` also exports `RunModel`. No current demo `<project>.dhall` field selects it, but its presence
-in the public vocabulary means a downstream schema can declare it. This is a definition-only parallel
-surface, not proof that runtime selection is wired.
+The real demo path contributes `demoChainFor :: Substrate -> ProjectConfig -> [Step]`; final plan
+projection validates its exact order and `project up` interprets only the resulting `StepPlan`. No
+project or test config carries a second execution-mode literal.
 
 Current status and cleanup ownership live in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
@@ -48,43 +32,43 @@ Current status and cleanup ownership live in
 
 | Name | Execution shape | Current concrete examples |
 |---|---|---|
-| `OneShot` | A bounded container invocation that exits | `oneShotRunArgs`; definition-only `oneShotSeams` helper |
+| `OneShot` | A bounded container invocation that exits | container/build lifecycle steps that terminate |
 | `HostNative` | A host-native binary is built and executed on that host | the Python bootstrap handoff and host worker builds |
 | `HostDaemon` | A long-running service/daemon process | config-selected `service run`, in a pod or host placement |
 | `Cluster` | A kind/nvkind cluster plus deployed workloads | `deploy-kind`/`deploy-chart` and demo workload steps |
 
-This table is a taxonomy. It does not imply that a `RunModel` value controls those paths today.
+This table is a taxonomy. It does not imply that a separate value controls those paths.
 
 ## Single-Representation Rule
 
-The current forward representation is the project chain:
+The current forward representation is the opaque validated plan:
 
 ```haskell
-chain :: cfg -> [Step]
+mkStepPlan :: [Step] -> Either StepPlanError StepPlan
 ```
 
-The chain's rows currently determine:
+The plan's rows determine:
 
-- frame ids and their first-appearance descent order (while provider handoff details remain in the
+- exact contiguous frame segments and descent order (while provider handoff details remain in the
   independently supplied `psFrameContext`);
 - whether work is host-native, containerized, daemonized, or clustered;
 - the order in which those operations run.
 
-A current `Step` carries no resource envelope. Actions reload or close over config/context values, while
+A current `Step` carries no resource envelope. General lifecycle actions may reload or close over
+config/context values, while
 `psFrameContext` and resource slicing are separately supplied, so step identity and applied budget can
 disagree. The target opaque `ProjectPlan` derives each operation's exact `ResourceSlice` alongside its
 frame/dependencies/effect set; only then does the single representation determine resources.
 
-A second configurable `RunModel` can contradict those facts. For example, a Dhall value could say
-`Cluster` while the chain contains only a one-shot container, or a selector could return `HostNative`
-while the interpreter still executes a container step. Keeping both values would violate the
-single-representation contract.
+A second configurable execution selector could contradict those facts. For example, a Dhall value
+could say `Cluster` while the chain contains only a one-shot container, or a detached classifier could
+say `HostNative` while the interpreter still executes a container step. Keeping both values would
+violate the single-representation contract.
 
-The chain itself is not yet a validated single representation: public constructors permit an empty
-chain, repeated/noncontiguous frames, duplicate/render-shadowing kinds, and `psFrameContext`/teardown
-callbacks that can disagree with it. The target cleanup therefore consumes the same opaque
-`ProjectPlan` used by render/apply/reverse traversal; it does not merely delete `RunModel` while leaving
-those illegal shapes public.
+Raw step/plan constructors are hidden. Validation rejects an empty plan, duplicate typed identities,
+conflicting labels, noncontiguous frame returns, and invalid post-handoff order before effects; render,
+frame selection, and apply consume the same `StepPlan`. Provider context and teardown are still separate
+checked single-assignment callbacks, so the later `ProjectPlan`/receipt cleanup remains open.
 
 The target therefore treats the four names as derived documentation/reporting labels, not configuration
 or a second dispatch input:
@@ -104,12 +88,12 @@ return a non-authoritative view. It must not independently choose behavior.
 
 ## Service And Daemon Shape
 
-`service run` is a leaf process, not a second orchestrator. The effective project config selects a
-project-owned service variant, and `ProjectSpec` maps it to a registered handler. In current core this
-means an arbitrary `psServiceVariant :: cfg -> Either String String` function followed by a string lookup.
-Core checks the primary context is a `ClusterService`/`Daemon` leaf, but it does not prove a service
-field/capability/registry relation. The demo selector performs additional checks by convention, then its
-handlers reopen the sibling config; selection and execution can therefore observe different bytes.
+`service run` is a leaf process, not a second orchestrator. The finalized project specification binds a
+closed typed registry to the full config codec under one `specDigest`. Each definition contains one
+typed structural projection, reflected `RoleCodec`, and handler; there is no arbitrary string selector.
+Core checks the primary context is a `ClusterService`/`Daemon` leaf, canonically verifies one sibling
+snapshot, mints an opaque typed request, and closes the handler over only that role's fields plus a safe
+framework view. Demo handlers do not reopen the sibling config.
 
 - An in-cluster service or daemon receives a projected ConfigMap and runs inside the controller-owned
   pod.
@@ -117,11 +101,10 @@ handlers reopen the sibling config; selection and execution can therefore observ
   project lifecycle.
 - There is no `service down`; `project down`/`destroy` own the enclosing lifecycle.
 
-The demo accelerator uses both placements depending on substrate. This behavior exists independently of
-the unused `selectRunModel` value.
+The demo accelerator uses both placements depending on substrate. Its placement follows the configured
+service and lifecycle steps.
 
-The target replaces that convention with
-an internal existential
+Sprint 18.6 replaces the remaining raw handler action with an internal existential
 `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
 fields`. A validated
 parent projects only a role-specific descriptive wire; the child verifies those exact mounted bytes
@@ -167,20 +150,19 @@ It does not need a separate run-model dispatch to bring up a parallel test topol
 Production/`.data`, ownership, and recursive-teardown defects are documented in
 [harness workflow](harness_workflow.md); the presence of the four-name taxonomy does not close them.
 
-## Target Cleanup
+## Completed Cleanup
 
-The owning development sprint must:
+Sprint 10.10:
 
-1. remove `RunModel` from `Core.dhall` unless a downstream decoded field has a documented, consumed
-   contract;
-2. remove the unconsumed `RunModelKey`/`selectRunModel` API, or replace it only with a read-only
-   classifier over the exact executable plan;
-3. prove no runtime/config field can disagree with the chain; and
-4. update tests to exercise the chain constructors/interpreter rather than a detached selection table.
+1. removed the unconsumed Haskell selector/key/topology surface;
+2. removed the corresponding union from `Core.dhall` and its admitted Haskell vocabulary codec;
+3. removed definition/test-only helpers that had no typed-plan consumer; and
+4. added exact vocabulary coverage plus a structural source test guarding the single-representation
+   boundary.
 
 ## Validation
 
-- A source/API test proves there is no unconsumed runtime selector or configurable Dhall run-model
+- A source/API test proves there is no unconsumed runtime selector or configurable Dhall execution
   literal.
 - Plan/interpreter tests prove each supported topology is expressed by concrete steps and the same plan
   is rendered and executed.

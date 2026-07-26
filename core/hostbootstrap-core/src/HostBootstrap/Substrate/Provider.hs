@@ -58,7 +58,7 @@ where
 import Data.Char (isAsciiUpper)
 import Data.List (dropWhileEnd, isPrefixOf)
 import HostBootstrap.Cluster.Cordon (
-    ResourceBudget (..),
+    budgetStorageBytes,
     budgetFromResources,
     gibibytes,
     incusSizingArgs,
@@ -78,7 +78,13 @@ import HostBootstrap.Incus (
     startVMArgs,
     stopVMArgs,
  )
-import HostBootstrap.Lift (LiftLayer (..))
+import HostBootstrap.Lift
+    ( LiftContext (..)
+    , LiftDispatch (..)
+    , LiftLayer (..)
+    , LiftLeaf (..)
+    , foldLeaf
+    )
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), substrateName)
@@ -370,10 +376,16 @@ single-layer lift the consumer uses to shell into the distro. 'Nothing' for a
 container layer (a container is reached through 'HostBootstrap.Lift', not here).
 -}
 vmShellArgs :: LiftLayer -> [String] -> Maybe (HostTool, [String])
-vmShellArgs (ViaVM vm) cmd = Just (Incus, execVMArgs vm cmd)
-vmShellArgs (ViaLimaVM vm) cmd = Just (Lima, Lima.shellVMArgs vm cmd)
-vmShellArgs (ViaWsl2VM vm) cmd = Just (Wsl, Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) cmd)
-vmShellArgs (ViaContainer _) _ = Nothing
+vmShellArgs layer cmd =
+    case foldLeaf (LiftContext [layer]) (RawCmd cmd) of
+        DispatchTool tool args
+            | layerIsVM layer -> Just (tool, args)
+        _ -> Nothing
+  where
+    layerIsVM (ViaVM _) = True
+    layerIsVM (ViaLimaVM _) = True
+    layerIsVM (ViaWsl2VM _) = True
+    layerIsVM (ViaContainer _) = False
 
 -- ---------------------------------------------------------------------------
 -- Guest-side durable alias: one pure state machine (§ DD).
