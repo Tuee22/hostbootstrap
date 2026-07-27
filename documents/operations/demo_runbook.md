@@ -141,6 +141,12 @@ verb through every reachable child. Cleanup is best-effort and aggregates some f
 yet carry verified ownership receipts for every resource and cannot promise orphan-free recovery after a
 hard kill.
 
+On Apple and Linux, `project down` also returns the VM's CPU and memory to the host. **On Windows it
+does not**: the distro is terminated and `.wslconfig` restored, but the managed body pins the WSL2 idle
+timeouts to `-1`, so the shared utility VM stays resident holding the full memory balloon. Run
+`wsl --shutdown` to reclaim it — non-destructive, and already part of the provider's disclosed
+lifecycle. See [wsl2](../engineering/wsl2.md) § Wall release.
+
 The provider disk may be removed by `destroy`; host `<project-root>/.data` is shared from outside that
 disk and is not intentionally included in cluster removal. Do not infer successful reattachment until
 the destroy/up/readback gate passes.

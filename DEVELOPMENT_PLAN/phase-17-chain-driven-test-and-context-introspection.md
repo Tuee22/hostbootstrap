@@ -49,7 +49,7 @@ The implemented command/config-input matrix that Sprint 17.4 must preserve or de
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads the executable-sibling `<project>.dhall`; no command-authority gate |
 | `context show [FILE]` | Reads the selected/default file; no command-authority gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling `<project>.dhall`, writes each variant behind the cooperative sidecar lock, removes it only when its bytes still match, and currently does not prove the target root authority; Phase 10.9 owns resource-authoritative reservations and verified receipts |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling `<project>.dhall`, writes each variant behind the cooperative sidecar lock, removes it only when its bytes still match, and currently does not prove the target root authority; Phase 10.9 owns the four § EE ownership clauses and verified receipts |
 | `project up\|down\|destroy`, `service run`, `check-code` | Read and gate on the sibling `<project>.dhall` |
 
 The current shared init parser gives `project init` `--role`, repeatable `--also-role`, `--output`,

@@ -2756,8 +2756,8 @@ distro's running state; a RUNNING distro already booted with the cordon live, so
 leave the live stack untouched (skip the global side-effect); a STOPPED distro is
 safe to restart, so run the disclosed @wsl --shutdown@ — the subsequent
 'substrateWait' then cold-boots the utility VM, which re-reads the merged
-@[general] instanceIdleTimeout=-1@ (the key that keeps the distro instance alive) +
-@[wsl2] vmIdleTimeout=-1@. This is what makes an idempotent @project up@ reconcile of a
+@[general] instanceIdleTimeout=21600000@ (the key that keeps the distro instance alive) +
+@[wsl2] vmIdleTimeout=21600000@. This is what makes an idempotent @project up@ reconcile of a
 crashed-run distro survive the idle-stop instead of losing the kind cluster.
 -}
 applyReconcileCordon :: HostConfig -> SubstrateProvider -> IO ()

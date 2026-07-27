@@ -177,21 +177,30 @@ Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the
 So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all derived from
 `parseQuantity`; `swap` is sized to the memory budget for OOM headroom), and the WSL2 launch is a
 *list* of effects: write `.wslconfig` (backing up any existing file), `wsl --shutdown` to apply it, then
-register the distro. The body also carries `[wsl2] vmIdleTimeout=-1` plus `[general] instanceIdleTimeout=-1` —
-the latter keeps the distro *instance* (not just the shared utility VM) alive after `project up` returns, so
+register the distro. The body also carries `[wsl2] vmIdleTimeout` plus `[general] instanceIdleTimeout`,
+both set to the finite `managedWslIdleTimeoutMillis` (six hours) — the latter keeps the distro *instance*
+(not just the shared utility VM) alive after `project up` returns, so
 the in-VM kind cluster does not idle-stop; `mergeWslConfig` manages both sections. Because the file is global,
 teardown restores the backed-up `.wslconfig` when an original file produced that backup. If the original
-was absent and the first run crashes after writing, no absence receipt exists; retry can back up the
+was absent and the first run crashes after writing, no absence record exists; retry can back up the
 generated file as if it were the original, so teardown restores generated content rather than absence.
 An existing distro also skips registration/VHDX resize, and a running distro can avoid the shutdown that
 would apply a changed global ceiling. This is a
 weaker guarantee than a hard per-VM cap and the launch is a two-step write-then-shutdown rather than a
 single sized argv — the unified `spLaunch` effect list (one pure lift per substrate) models exactly that
-difference. Current code also has no platform-authoritative exclusive owner for this global wall, so
-concurrent projects can race the file. The target acquires an exclusive, crash-recoverable global-state
-lease/CAS before mutation, records original-present bytes or original-absent in the matching receipt, and
-returns structured `Conflict` for a foreign or incompatible concurrent declaration. See
-[wsl2](wsl2.md) for the provider detail.
+difference. Current code holds none of the four
+[ownership invariant](../architecture/ownership_invariant.md) clauses for this global wall, so
+concurrent projects can race the file. The target takes the OS-released exclusive lock before mutation,
+records original-present bytes or original-absent durably before the first write, binds every later
+operation to the file's object identity, and returns structured `Conflict` for a foreign or incompatible
+concurrent declaration.
+
+`project down` still does not return the memory promptly: teardown terminates the distro but does not
+shut the utility VM down, so the balloon is held until the managed idle timeouts expire. Sprint 9.11
+replaced the former `-1` pins with that finite duration, so the host now recovers the memory on its own
+rather than holding it until the next reboot; Sprint 5.7 owns the remaining restore-then-shutdown
+teardown effect that makes the release immediate. Lima and Incus release on stop. See
+[wsl2](wsl2.md) § Wall release for the provider detail and that ordering.
 
 ## Per-Substrate Storage Cordon
 
@@ -222,7 +231,7 @@ Capacity reads, the shared parser, and CPU/memory arg builders are implemented. 
 initial-create behavior for Lima/Incus/WSL2; direct Colima has an exact observed project-profile adapter;
 bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing resource sizing is not uniformly compared or
 reconciled. WSL2's global `.wslconfig` mechanism has historical runtime evidence only for its ordinary
-cordon mechanics, not exclusive global ownership, absent-original crash recovery, immutable budget
+cordon mechanics, not the four ownership clauses, absent-original crash recovery, immutable budget
 identity, current durability, or test-profile closure. Native-lane status and exact dated test evidence
 belong in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

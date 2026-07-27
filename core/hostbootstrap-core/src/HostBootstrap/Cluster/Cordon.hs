@@ -41,6 +41,8 @@ module HostBootstrap.Cluster.Cordon (
     colimaSizingArgs,
     limaSizingArgs,
     wsl2SizingArgs,
+    managedWslIdleTimeoutHours,
+    managedWslIdleTimeoutMillis,
     kindNodeCordonArgs,
     kindNodeCordonArgsFor,
     incusSizingArgs,
@@ -423,14 +425,22 @@ to the memory budget for OOM headroom so a budget-fitting build is not killed.
 Storage is /not/ a @.wslconfig@ key — the per-distro VHDX cap is applied at
 install time via @wsl --install --vhd-size@ (see
 'HostBootstrap.Wsl2.wslInstallArgs'), so it is intentionally absent here.
-Two idle-timeout keys, in two sections, are both required: @[wsl2] vmIdleTimeout=-1@
+Two idle-timeout keys, in two sections, are both required: @[wsl2] vmIdleTimeout@
 pins the shared /utility VM/ alive across the gaps between the separate @wsl -d@
-steps a lifecycle runs, while @[general] instanceIdleTimeout=-1@ keeps the individual
+steps a lifecycle runs, while @[general] instanceIdleTimeout@ keeps the individual
 distro /instance/ alive after the last @wsl@ session ends. @vmIdleTimeout@ governs
 only the utility VM, so with it alone the distro (and its kind cluster) still
 idle-stops ~15–60 s after @project up@ returns — and the kind control plane does not
 recover on the next cold start. @instanceIdleTimeout@ is the peer that closes that
 gap (see @documents/engineering/wsl2.md@).
+
+Both keys carry the /finite/ 'managedWslIdleTimeoutMillis' rather than the
+never-idle @-1@ they previously used. @-1@ kept the distro from idle-stopping
+mid-run, but it also meant the shared utility VM held the whole memory balloon
+until the next reboot: a wall that is never released is not a wall the host
+shares. A duration measured in hours preserves the mid-run guarantee — the demo
+gate runs 25–50 minutes — while guaranteeing the host eventually recovers the
+memory even if teardown never runs.
 -}
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs r = do
@@ -439,13 +449,32 @@ wsl2SizingArgs r = do
     _storageGiB <- exactGibibytes "WSL2 VHDX storage" (budgetStorageBytes b)
     pure
         [ "[general]"
-        , "instanceIdleTimeout=-1"
+        , "instanceIdleTimeout=" ++ show managedWslIdleTimeoutMillis
         , "[wsl2]"
         , "processors=" ++ show (budgetCpu b)
         , "memory=" ++ show memoryGiB ++ "GB"
         , "swap=" ++ show memoryGiB ++ "GB"
-        , "vmIdleTimeout=-1"
+        , "vmIdleTimeout=" ++ show managedWslIdleTimeoutMillis
         ]
+
+{- | How long the managed @.wslconfig@ body keeps the shared utility VM and the
+project distro alive after their last session, expressed in whole hours. This is
+the single place the duration is chosen; 'managedWslIdleTimeoutMillis' derives
+the emitted value so neither call site carries a magic number.
+
+Six hours is an order of magnitude beyond the longest lifecycle this project
+runs (the demo gate is 25–50 minutes), so no run can be idle-stopped in the gaps
+between its @wsl -d@ steps, while an abandoned run still returns the balloon to
+the host the same day.
+-}
+managedWslIdleTimeoutHours :: Int
+managedWslIdleTimeoutHours = 6
+
+{- | 'managedWslIdleTimeoutHours' in the milliseconds both @.wslconfig@
+idle-timeout keys are denominated in.
+-}
+managedWslIdleTimeoutMillis :: Int
+managedWslIdleTimeoutMillis = managedWslIdleTimeoutHours * 60 * 60 * 1000
 
 -- | Select the host-capacity read sources for a detected substrate.
 capacityReadPlan :: Substrate -> CapacityReadPlan

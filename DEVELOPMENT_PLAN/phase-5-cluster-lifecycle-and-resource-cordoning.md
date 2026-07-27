@@ -596,13 +596,24 @@ it does not construct lifecycle profiles, root/test authority, or the final `Pro
   classification, and receipt inputs. Do not mint `LifecycleProfile`, root/test authority, or
   `ProjectPlan` here: Sprint 10.9 owns Production/Harness mode/profile construction, and the coordinated
   10.9/15.9/16.6 tranche binds these backend operations to the final plan and command authority.
-- Acquire the backend's resource-authoritative reservation before mutating a cluster, durable root, or
-  global cordon and require its receipt for cleanup. Use provider CAS/create-if-absent plus conditional
-  delete with immutable generation identity, an OS-enforced global-setting lock, or a filesystem
-  namespace/conditional operation that excludes same-privilege replacement. Bare exclusive
-  create/rename or compare-then-unlink is insufficient; a backend without the full primitive reports
-  `Unsupported`. A local sidecar is not universal exclusion, and a conflict or safety refusal never
-  tears down operator-owned state.
+- Hold the four § EE ownership clauses before mutating a cluster, durable root, or global cordon, and
+  require the resulting receipt for cleanup: an OS-released exclusive lock across the bracket, a durable
+  origin record naming exact bytes or absence before the first write, binding to the object's stable
+  kernel identity, and release conditioned on re-observing that identity. Provider CAS/create-if-absent
+  with immutable generation identity satisfies the same clauses at a provider backend. Bare exclusive
+  create/rename or compare-then-unlink binds a pathname and satisfies none of them; a backend that
+  cannot hold a clause reports `Unsupported`. A conflict or safety refusal never tears down
+  operator-owned state. See
+  [ownership_invariant](../documents/architecture/ownership_invariant.md). **Restated 2026-07-27:** this
+  bullet previously required a namespace protected from same-privilege replacement — a guarantee no
+  substrate supplies.
+- Make `spStop` release the WSL2 wall so `project down` means the same thing on every substrate: restore
+  `.wslconfig` **first**, then run `wsl --shutdown`. The order matters — the shared utility VM re-reads
+  the file on its next cold boot, so restoring after the shutdown would republish the managed body. The
+  shutdown is the same disclosed global side effect already performed on bring-up, and
+  `discloseWslShutdown` must be wired into the `down` path as it already is for `up`. Depends on Sprint
+  9.11's finite idle timeouts: without them the utility VM stays pinned between runs regardless. Lima
+  and Incus already release on stop, so no change is needed there.
 - At the backend-contract level, prove that the host-owned durable root survives provider
   destroy/recreate and that conditional cleanup rejects a replaced generation. Sprint 5.6 retains the
   existing command-level write → `project destroy` → `project up` → read gate; the coordinated
@@ -716,9 +727,10 @@ None in Sprint 5.8. Completed 2026-07-26:
 #### Scope Disposition
 
 Sprint 5.8 owns exact project-profile acquisition and the retained live wall authority/receipt.
-Generation-conditional `down`/`destroy` cannot be implemented safely from a Colima name check: the
-backend exposes no conditional delete primitive that excludes same-privilege replacement. Sprint 5.7
-already owns receipt-guarded provider cleanup and must either supply a backend-authoritative operation or
+Generation-conditional `down`/`destroy` cannot be implemented safely from a Colima name check: a name is
+not an object identity, so clauses 3 and 4 are unmet. Sprint 5.7
+already owns receipt-guarded provider cleanup and must either supply an identity-bound conditional
+operation or
 return `Unsupported`; Sprint 16.6 owns consuming that result from the recursive reverse plan. This is a
 narrow dependency assignment, not a claim that name-only deletion is safe.
 

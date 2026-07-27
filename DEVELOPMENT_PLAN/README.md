@@ -21,7 +21,7 @@ Project behavior is supplied through typed extension streams, including one life
 configuration, test components, and service handlers. The active repair program is intended to make those
 boundaries enforceable through one opaque `ProjectPlan scope specDigest planId configId cfg`, plan/resource-indexed capabilities,
 ownership- and phase-indexed lifecycle state, dependency-indexed total probes, structured
-reconciliation, resource-authoritative reservations with verified ownership receipts, authenticated
+reconciliation, § EE clause-holding reservations with verified ownership receipts, authenticated
 one-time cross-process authority handoffs and operation sessions, durable delayed-permit fencing,
 project-wide Production/Harness exclusion, exhaustive bound-run/migration/close recovery,
 native rolling-base publication with real-consumer compatibility smoke, and typed test case/variant
@@ -29,6 +29,13 @@ configuration. The same repair program separates
 production and harness config scope so test-only plaintext secrets are unrepresentable in production
 configuration rather than excluded only by consumer policy. These are target contracts until their named
 sprints close, not current implementation claims.
+
+Ownership across every substrate is governed by one invariant — the four **Locked-Origin Identity
+Ownership** clauses in [development_plan_standards.md § EE](development_plan_standards.md), explained in
+[ownership_invariant](../documents/architecture/ownership_invariant.md). It was restated 2026-07-27: the
+previous rule demanded a platform primitive no substrate supplies, so no backend satisfied it and the
+typed ownership path was unreachable on Lima, Incus and WSL2 alike. The restated clauses are met with
+dependencies already present, on every provider lane rather than one.
 
 Historical test counts and real-run results live as dated validation evidence in the phase sprint that
 produced them. They are not copied here as a mutable “current suite” claim.
@@ -46,13 +53,13 @@ defer status to this table.
 | 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done | — |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done | — |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done | — |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprint 5.8 done; 5.7 waits on 11.10; Sprints 5.5 and 5.6 retain their native/live gates |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprint 5.8 done; 5.7 waits on 11.10 and now also owns the WSL2 `spStop` wall release; Sprints 5.5 and 5.6 retain their native/live gates |
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done | — |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done | — |
 | 8 | [Dhall generation and extension contract](phase-8-dhall-generation-and-extension.md) | Done | — |
-| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done | — |
-| 10 | [Standardized test harness and execution shapes](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 done; 10.9 waits on Sprints 5.7 and 15.9 |
-| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10 has typed alias/WSL foundations; protected production authority, integration, a clean full gate, and native Windows/Linux gates remain |
+| 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active | Sprint 9.11's implementation landed 2026-07-27 (clauses restated; finite WSL2 idle timeouts derived from one constant); it stays open only for the live release observation it shares with Sprint 5.7. Sprints 9.1–9.10 remain delivered |
+| 10 | [Standardized test harness and execution shapes](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 done; 10.9 waits on Sprints 5.7 and 15.9, and now owns the un-gated cross-substrate ownership-clause suite |
+| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10 has typed alias/WSL foundations; the portable ownership backend, native-shim removal, production integration, a clean full gate, and native Windows/Linux gates remain |
 | 12 | [Opportunistic warm store](phase-12-layered-warm-store.md) | Done | — |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprint 13.19 done; 13.17 active; 13.20 registry route waits on 14.7; 13.18 waits on the integration chain |
 | 14 | [Composition methodology](phase-14-composition-methodology.md) | Active | Sprint 14.7 is dependency-ready; Sprint 14.6 waits on 15.9 |

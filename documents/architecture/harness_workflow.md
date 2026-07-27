@@ -29,9 +29,9 @@ The fixed surface is:
 variant projection into one opaque `TestMatrix`, and writes each selected variant's executable-sibling
 `<project>.dhall` behind a **cooperative** sidecar
 guard, drives the project's real bring-up/assert/teardown seams, and removes the generated config only
-when its bytes still match. The sidecar acquisition and destination write are separate operations, so a
-non-cooperating writer can still win the check-to-write race; this is not atomic exclusive creation or a
-complete ownership receipt.
+when its bytes still match. The sidecar acquisition and destination write are separate operations, and
+the guard binds a pathname rather than an object identity, so it holds none of the four
+[ownership_invariant](ownership_invariant.md) clauses and mints no receipt.
 
 The command description calls this a root-only surface, but the parser does not apply a binary-context
 root gate to either subcommand. `test run` deliberately does not load a pre-existing project config,
@@ -92,10 +92,12 @@ described below; a hard kill also bypasses the handler. Durable recovery is targ
 currently generates two message variants and runs the compiled cases for each.
 
 Generated project config uses a cooperative sidecar collision guard plus compare-before-delete behavior.
-Those are useful safeguards, but the sidecar does not atomically reserve the destination against every
-writer, and most lifecycle resources still return `IO ()`; the runner does not receive opaque ownership
-receipts for the config, VM, cluster, alias, daemon, or data root. The target ownership model is defined
-in [lifecycle_state_model](lifecycle_state_model.md).
+Those are useful safeguards, but the guard takes no OS-released exclusive lock, records no durable
+origin, and compares a pathname rather than the destination object's identity; most lifecycle resources
+still return `IO ()`, and the runner does not receive opaque ownership receipts for the config, VM,
+cluster, alias, daemon, or data root. The clauses this must satisfy are in
+[ownership_invariant](ownership_invariant.md); the transitions that consume the resulting receipt are in
+[lifecycle_state_model](lifecycle_state_model.md).
 
 Some current safety checks are late. VM bring-up can run provider ensure, create the durable path, and
 perform host preflight before its managed-VM refusal; the direct lane can run Docker ensure before its

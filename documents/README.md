@@ -67,9 +67,14 @@ defers to it rather than re-deriving it. The command surface is summarized in
   provider-local guest aliases, direct-host canonical-path bypass, and the still-open strong
   provider-alias ownership and
   destroy/up/readback proof.
+- [architecture/ownership_invariant.md](architecture/ownership_invariant.md) — the **canonical home of
+  the ownership invariant**: the four Locked-Origin Identity Ownership clauses (exclusive entry, durable
+  origin record, identity binding, conditional release), their per-substrate realization, and the exact
+  guarantee they do and do not provide. Replaces the platform-primitive rule that no substrate could
+  satisfy.
 - [architecture/readiness.md](architecture/readiness.md) — current retrying probes and the open defects
   after opaque, resource-indexed witnesses and validated polling landed: live adapters still need the
-  plan-owned prepared-operation pair and authoritative conditional backends.
+  plan-owned prepared-operation pair and a backend holding the four ownership clauses.
 - [architecture/lifecycle_state_model.md](architecture/lifecycle_state_model.md) — the canonical target
   for ownership-/phase-indexed handles, opaque resource capabilities, total observations, explicit
   idempotent reconcile outcomes, one-use session/fence permits, project-mode exclusion, exhaustive

@@ -70,7 +70,7 @@ closure.
 ## Remaining Work
 
 **Current:** Sprint 10.9 is Blocked by Sprints 5.7, 9.10, 15.9, and 19.7–19.8, then owns
-resource-authoritative reservations/ownership, per-variant failure isolation, structured cleanup
+§ EE clause-holding reservations/ownership, per-variant failure isolation, structured cleanup
 outcomes, and authenticated cross-process harness-authority handoff. The dated
 closure record below does not cover concurrent acquisition, identity-bearing teardown, or authority
 rehydration in the self-invoked `project up`.
@@ -111,7 +111,7 @@ model, § BB): it *generates* the run's `<project>.dhall` from the `<project>.te
 Harness request of the project-owned scope-aware restricted `psAssemble`; core enforces one structural
 project-config assembly path. The harness deletes only bytes that still match the generated
 payload under the current cooperative sidecar guard; changed bytes remain in the reported locked
-quarantine. That byte match is neither a resource-authoritative reservation nor a verified
+quarantine. That byte match holds none of the four § EE ownership clauses and mints no
 identity-bearing ownership receipt (Sprint 10.9). The
 superseded `test`-reuses-existing-config flow is recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with phase 19 as owner. **This phase built
@@ -259,7 +259,7 @@ matrix engine or prove that an applied workload fits the project ceiling.
 #### Remaining Work
 
 None for the historical helper landing. Sprint 10.10 removes the definition-only API unless the
-resource-authoritative plan work introduces a real consumer; Sprints 9.10/10.9 own the applied workload
+identity-bound plan work introduces a real consumer; Sprints 9.10/10.9 own the applied workload
 proof and harness scheduling authority.
 
 ### Sprint 10.4: Historical four-run-model taxonomy and selector [Done]
@@ -492,13 +492,20 @@ cleanup cannot delete foreign or concurrently replaced state.
 
 #### Deliverables
 
-- Acquire a resource-specific authoritative reservation plus conditional mutation/delete before strong
-  ownership is claimed: a retained bound socket for ports, an OS-enforced lock/lease for host daemons,
-  and provider create-if-absent/CAS plus immutable generation for VMs/clusters. For generated config and
-  `.test_data`, bare exclusive create/rename or compare-then-unlink is insufficient against same-privilege
-  replacement; only a protected namespace with an identity-bound kernel operation may mint a strong
-  receipt. A local sidecar/cooperative lock remains a weaker mode. A backend without the full primitive
-  reports `Unsupported`.
+- Hold the four § EE ownership clauses before ownership is claimed: a retained bound socket for ports, an
+  OS-released lock for host daemons, and provider create-if-absent/CAS plus immutable generation for
+  VMs/clusters. For generated config and `.test_data`, bare exclusive create/rename or
+  compare-then-unlink binds a pathname and satisfies none of the clauses; a receipt requires the
+  OS-released lock, the durable origin record, identity binding, and conditional release together. A
+  backend that cannot hold a clause reports `Unsupported` and mints no receipt. See
+  [ownership_invariant](../documents/architecture/ownership_invariant.md). **Restated 2026-07-27:** this
+  bullet previously required a protected namespace with an identity-bound kernel operation.
+- Prove the clauses in this phase's harness suite the same way on every substrate — the ownership tests
+  are not `os(windows)`-gated. Cover adversary replacement reported as `Conflict` without clobbering,
+  release refused on identity mismatch, a second entry excluded while the lock is held and admitted after
+  the holder is killed, and a kill between the origin record and the first write recovered — including
+  the **absent-original** case, where the next run restores absence rather than adopting generated
+  content.
 - Use Phase 9/19's opaque lifecycle-scope/type foundation and define the mode/profile opener here:
   generate the stable run identifier inside a rank-2 opener, acquire its exclusive lease, and expose
   `HarnessAuthority projectId runId` only after that acquisition.
@@ -743,7 +750,7 @@ Blocked until Sprints 5.7, 9.10, 15.9, and 19.7–19.8 land the provider/storage
 state/result algebra, independent root authority, scoped assembler/codec, and finalized plan. This sprint owns the
 fresh and bound-recovery lifecycle mode/profile openers rather than depending on Phase 5 to construct
 them. Then replace
-cooperative/path-based ownership with resource-authoritative reservations and verified receipts,
+cooperative/path-based ownership with the four § EE clauses and verified receipts,
 implement the authenticated
 authority-rehydration handoff, thread the structured results through the report card, and run the
 concurrency/failure matrix. Historical `6/6` and `8/8` runs did not exercise these ownership or handoff

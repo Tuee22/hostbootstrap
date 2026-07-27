@@ -53,6 +53,16 @@ surfaces are recorded in
 **Current:** Sprint 21.4 is Blocked on the named owning implementation phases. After they land, it must
 reconcile the governed docs, source comments/help, status authority, and mechanical drift checks.
 
+**Not this phase's work: the 2026-07-27 ownership-invariant restatement.** § EE's ownership rule was
+replaced with the four Locked-Origin Identity Ownership clauses, and the governed suite, root `README.md`,
+and phase documents were restated in the same change by the phases that own those surfaces — Phase 9
+(reopened, Sprint 9.11), Phases 5, 10, and 11. That is deliberate: a doctrine restatement is made by its
+owner, not deferred to a later reconciliation sweep, or the docs describe a rule the code was never
+written against. Sprint 21.4's obligation is to **verify** the result — that no surviving text states the
+superseded platform-primitive rule, that phase-local statuses match the
+[README table](README.md#current-phase-status), and that source comments citing § EE agree with
+[ownership_invariant](../documents/architecture/ownership_invariant.md) — not to perform the restatement.
+
 **Historical closure (Sprint 21.3, 2026-07-23).** The `.data` doctrine sweep across `README.md`, `documents/`, and
 `DEVELOPMENT_PLAN/`, the `.data`-adjacent `§ O` → `§ Y` citation repoint, and the 2026-07-21
 readiness/legible-failure/type-level-config-validity reconciliation are complete: `DocValidatorSpec` is green

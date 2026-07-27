@@ -41,14 +41,14 @@ tests =
         -- idempotent: re-merging our own output replaces [wsl2] in place, not appends
         assertBool "idempotent [wsl2]" (length (filter (== "[wsl2]") (lines (mergeWslConfig merged body))) == 1),
       testCase "mergeWslConfig manages both [general] and [wsl2], preserving unrelated sections" $ do
-        let body = ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=6", "vmIdleTimeout=-1"]
+        let body = ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "vmIdleTimeout=21600000"]
         -- both managed sections are written from an empty file
-        mergeWslConfig "" body @?= "[general]\ninstanceIdleTimeout=-1\n[wsl2]\nprocessors=6\nvmIdleTimeout=-1\n"
+        mergeWslConfig "" body @?= "[general]\ninstanceIdleTimeout=21600000\n[wsl2]\nprocessors=6\nvmIdleTimeout=21600000\n"
         -- an unrelated user section survives; the user's own [general]/[wsl2] keys are replaced
         let existing = "[experimental]\nsparseVhd=true\n\n[general]\ndistro=old\n\n[wsl2]\nmemory=4GB\n"
             merged = mergeWslConfig existing body
         assertBool "keeps unrelated [experimental] key" ("sparseVhd=true" `elemLine` merged)
-        assertBool "applies instanceIdleTimeout" ("instanceIdleTimeout=-1" `elemLine` merged)
+        assertBool "applies instanceIdleTimeout" ("instanceIdleTimeout=21600000" `elemLine` merged)
         assertBool "replaces the user's [general] key" (not ("distro=old" `elemLine` merged))
         assertBool "replaces the user's [wsl2] key" (not ("memory=4GB" `elemLine` merged))
         assertBool "exactly one [general] header" (length (filter (== "[general]") (lines merged)) == 1)

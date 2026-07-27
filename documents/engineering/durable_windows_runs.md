@@ -2,10 +2,11 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
+**Referenced by**: [documents index](../README.md), [WSL2](wsl2.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
 
 > **Purpose**: Explain why a long agent-driven run (the ~25–50 min demo gate) gets killed on Windows
-> under a Claude Code / agentic-CLI session, and give the Windows-only procedure that makes it survive.
+> under a Claude Code / agentic-CLI session, give the Windows-only procedure that makes it survive, and
+> state what a surviving run keeps holding after the session ends.
 
 ## TL;DR
 
@@ -99,6 +100,31 @@ tmux session also escapes the reaper (its server daemonizes outside `claude.exe`
 native Win32 tmux port on this host is fragile — see the host notes on the tmux server crashing on
 desktop logon/unlock — so it is not recommended for unattended durability without a sturdier
 multiplexer.
+
+## The run outlives the session — and so does the wall
+
+Surviving the reaper is the point of this mechanism, and it has a consequence worth stating plainly:
+**a finished-looking agent session is no evidence that the gate has stopped.** The run is detached, so
+it disappears from the session UI while continuing to hold everything it reserved — on Windows that is
+the project's full CPU and memory budget, walled into the shared WSL2 utility VM.
+
+This bites harder than on the other substrates because WSL2 does not release its wall on `project down`
+(see [wsl2](wsl2.md) § Wall release): the managed `.wslconfig` pins the idle timeouts to `-1`, so the
+utility VM stays resident with the whole balloon committed even after the distro is terminated. On a
+host sized close to the budget, that memory stays gone until the next reboot or a manual
+`wsl --shutdown`, and any other memory-hungry application on the machine will fail in its own vocabulary
+rather than telling you the budget is still walled off.
+
+Before treating the host as free, check the run rather than the UI:
+
+```powershell
+Get-Content <scratchpad>\<label>.exit -ErrorAction SilentlyContinue   # sentinel: present = finished
+Get-Process vmmem* -ErrorAction SilentlyContinue                       # expect nothing when released
+[math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB, 2)
+```
+
+`wsl --shutdown` reclaims the balloon immediately and is non-destructive — the utility VM restarts on
+next use and re-reads the ceiling. It is already a disclosed part of the provider's own lifecycle.
 
 ## Verification
 

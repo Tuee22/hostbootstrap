@@ -18,9 +18,11 @@
 - On provider-backed lanes, the target effective wall is cordon #1. A `BudgetPartition` exists only after
   proving every positive cluster slice plus explicit provider/VM overhead fits within that wall and meets
   all provider/node minima. Lima and Incus use per-VM walls. **WSL2 has no per-distro CPU/memory wall**:
-  its one shared utility-VM ceiling is protected by an exclusive, crash-recoverable global-state
-  lease/CAS, while the VHDX is a separate per-distro slice; a foreign or incompatible concurrent
-  declaration returns `Conflict` rather than overwriting `.wslconfig`. The pure algebra now rejects
+  its one shared utility-VM ceiling is protected by the four
+  [ownership invariant](../architecture/ownership_invariant.md) clauses, while the VHDX is a separate
+  per-distro slice; a foreign or incompatible concurrent declaration returns `Conflict` rather than
+  overwriting `.wslconfig`. WSL2 is also the one substrate that does not yet **release** its wall on
+  `project down` — see [wsl2](wsl2.md) § Wall release. The pure algebra now rejects
   backend-inexact byte quantities rather than rounding them upward and represents WSL live authority
   only with its global lease. Current Lima/Incus sizing is creation-only, WSL rewrites global settings
   without resizing an existing VHDX, and live adapters have not yet adopted the authority. The budget is
@@ -176,7 +178,7 @@ settles it.
 Later reconcile and dependent mutation permits accept no raw quantities or same-shaped slice from another
 lineage: they require both the exact same-`wallSpecId` partition projection and the live authority, and
 revalidate its epoch/fence. On WSL the `ProviderWallReservation ... reservationId fence` retains the
-platform-exclusive pre-call lock/CAS across the initial shared-wall operation. Observed completion
+OS-released exclusive lock across the initial shared-wall operation. Observed completion
 consumes that reservation and jointly returns the epoch-indexed `WslGlobalWallLease` inseparably with the
 live authority; the capability, spec, partition, or `EffectiveBudget` by itself cannot edit or restore
 `.wslconfig`.
@@ -257,7 +259,7 @@ below only in the stated places; the project binary applies them, never the Pyth
 | `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. Direct Apple Docker has a prepared project-profile Colima adapter that observes/reconciles exact CPU, memory, disk, and Docker runtime state and uses the named Docker context without global activation. Recursive command integration and conditional cleanup remain downstream. |
 | `linux-cpu` | A newly created Incus VM receives CPU/memory/storage limits only for exact admitted quantities; existing VM sizing is not reconciled. The later kind-node CPU/memory cap is applied during cluster bring-up. Storage has no runtime cap if a path runs directly on bare Linux. |
 | `linux-gpu` | The outer host-native build and project-container handoff are direct and uncapped. The later nvkind cluster envelope is split across `control-plane` and GPU `worker`, and `docker update --cpus --memory --memory-swap` is applied fail-closed to both nodes. Bare-Linux storage is not capped. |
-| `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The file is reapplied on reconcile, but a running distro is not necessarily shut down and an existing VHDX is not resized. Original-file restoration is reliable only when an original file produced a backup; absent-original crash recovery lacks an absence receipt. See [wsl2](wsl2.md). |
+| `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The file is reapplied on reconcile, but a running distro is not necessarily shut down and an existing VHDX is not resized. Original-file restoration is reliable only when an original file produced a backup; absent-original crash recovery lacks a durable origin record. The wall is also not released promptly on `project down` — teardown does not shut the utility VM down, so it stays resident with its full balloon until the managed finite idle timeouts expire (Sprint 9.11 replaced the former `-1` pins; Sprint 5.7 owns the restore-then-shutdown teardown effect). See [wsl2](wsl2.md). |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows have the prepared
 per-project Colima wall adapter; on Linux the cluster-side cordon is applied after kind/nvkind create and before workload

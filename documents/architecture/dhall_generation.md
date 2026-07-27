@@ -78,7 +78,7 @@ writers; `service schema` and `context path|schema|render` are static and config
 reads the executable-sibling config and `context show [FILE]` reads its selected/default file without a
 mutation-authority gate. `test run` reads `<project>.test.dhall`, refuses a pre-existing sibling
 `<project>.dhall`, and writes/removes each run variant under the current cooperative sidecar and
-matching-byte cleanup guard; Phase 10.9 owns resource-authoritative reservations and verified receipts.
+matching-byte cleanup guard; Phase 10.9 owns the four § EE ownership clauses and verified receipts.
 Only the existing-frame commands
 `project up|down|destroy`, `service run`, and `check-code` use the sibling project-config command gate.
 The exact current-versus-target matrix lives in

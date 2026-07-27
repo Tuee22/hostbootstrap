@@ -142,7 +142,7 @@ implemented by Sprint 19.7. In brief:
   extra inputs such as `test-secrets.dhall`. For each variant the current harness writes
   `<project>.dhall`, runs `project up`, asserts, and attempts `project destroy` plus matching-artifact
   cleanup. Cleanup preserves a differing config in quarantine for explicit recovery. These guards are
-  neither resource-authoritative reservations nor verified identity-bearing ownership;
+  neither the § EE ownership clauses nor verified identity-bearing ownership;
   Phase 10.9 owns that upgrade. Teardown errors fail the variant; independent teardown actions
   are all attempted and aggregated. A true pre-effect `SafetyRefusal` owns nothing; any later
   conflict/failure rolls back every separately journaled preparation this run owns instead of using a
@@ -256,7 +256,7 @@ the § Z code-vs-contract drift). Fix the harness existence precondition to chec
 - `test run` applies cooperative path/byte ownership guards to its generated config and `.test_data`, then
   generates → `project up` → assert → `project destroy` → delete only matching artifacts; it keeps
   `<project>.test.dhall`, and any differing config remains in reported quarantine. This sprint did not deliver
-  resource-authoritative reservations and verified identity-bearing receipts.
+  the four § EE ownership clauses and verified identity-bearing receipts.
 - An ordinary failure after acquisition triggers root teardown; `SafetyRefusal` skips that teardown because
   the harness did not acquire ownership. Teardown failure fails the variant, while project teardown tries
   independent cleanup actions and reports their aggregate failures.
@@ -275,7 +275,7 @@ Code complete and validated (2026-06-23): `psInit` / `psTestInit` / `psTestConfi
 needs no pre-existing `<project>.dhall`; `test run` generates the run's config via `psTestConfig`, drives
 the real `project up`, asserts, `project destroy`, then deletes config bytes only while they still match
 the generated payload under the cooperative sidecar guard (keeping `<project>.test.dhall`; changed bytes remain in
-the reported locked quarantine). This is neither a resource-authoritative reservation nor verified
+the reported locked quarantine). This is neither a clause-holding reservation nor verified
 identity-bearing ownership;
 `demoTestSafety` checks the executable-sibling `siblingProjectConfigPath`, not the project root. Verified
 at phase close by `cabal test all` (232) + the demo suite (13), and real-run-validated 2026-06-23 (`3/3`
@@ -283,7 +283,7 @@ from a generated config).
 
 The current harness further distinguishes `SafetyRefusal`, fails a variant on teardown failure, attempts
 independent cleanup, and preserves differing config bytes. Its lock/path convention remains cooperative
-and race-prone; Phase 10.9 supplies resource-authoritative reservations and verified identity-bearing
+and race-prone; Phase 10.9 supplies the four § EE ownership clauses and verified identity-bearing
 ownership receipts. That open engine work does not change this sprint's Done generic-config status or its
 dated evidence.
 

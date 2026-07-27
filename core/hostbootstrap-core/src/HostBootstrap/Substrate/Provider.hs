@@ -312,7 +312,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , -- Apply the global @.wslconfig@ cordon on reconcile only when the
                   -- distro is STOPPED (a running distro already booted with it live):
                   -- probe the running state, and if stopped run @wsl --shutdown@ so the
-                  -- utility VM re-reads @vmIdleTimeout=-1@ on its next cold boot.
+                  -- utility VM re-reads @vmIdleTimeout=21600000@ on its next cold boot.
                   spReconcileCordon =
                     Just
                         ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember

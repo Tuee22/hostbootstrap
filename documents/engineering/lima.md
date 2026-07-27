@@ -88,8 +88,11 @@ A host directory reaches the Lima guest through the same host-path share primiti
 Lima declares its **host-side share** as the create-time mount argument on `limactl start` (its
 `HostPathShare` has no post-create `ShareReconcile`); the **guest-side alias** — the stable Docker-visible symlink to the share — is the
 **same** alias state vocabulary used by the other lane. Mount polling precedes alias reconciliation, but
-the live path still threads non-authorizing `ObservedReady` and the ordinary alias pathname cannot mint
-a same-privilege-resistant ownership receipt; see
+the live path still threads non-authorizing `ObservedReady`, and the alias is created and removed by
+pathname, so it holds none of the four
+[ownership invariant](../architecture/ownership_invariant.md) clauses and mints no receipt. The backend
+that closes this is shared with Incus and WSL2 — all three guests run the same Linux image — so Lima
+gains clauses 2–4 from the same change. See
 [readiness](../architecture/readiness.md) and [durable state](../architecture/durable_state.md).
 
 The `deploy-VM` step kind is the reuse unit, not a Lima-specific command: the same kind is interpreted
@@ -136,7 +139,7 @@ A disposable Apple validation on 2026-07-26 exercised the exact production comma
 instance: 2 CPUs, 4 GiB memory, 20 GiB disk, VZ, containerd disabled, one writable host share, guest DNS
 egress, already-running no-op, stop/start recovery, and exact deletion. The disposable instance and
 mount directory were removed, and no pre-existing Lima instance was present. This evidence covers the
-Lima lifecycle slice only; it does not prove the still-open strong alias receipt or another provider.
+Lima lifecycle slice only; it does not prove the still-open alias ownership clauses or another provider.
 
 ## See Also
 

@@ -1135,7 +1135,7 @@ Implementation and static validation are complete:
 - The Playwright Add spec asserts the daemon-returned sum, backend, and artifact hash. The later
   post-ensure direct-cluster/VM checks and `SafetyRefusal` are fail-closed, but the initial cooperative
   precondition currently maps an unavailable provider/Docker probe tool to “not running”; it may mutate
-  setup before the later refusal and is not resource-authoritative. Sprint 10.9 owns that fail-closed
+  setup before the later refusal and holds none of the § EE ownership clauses. Sprint 10.9 owns that fail-closed
   reservation/receipt replacement and verified teardown.
 
 The accelerator implementation has dated static evidence, but current work is not limited to live closure:

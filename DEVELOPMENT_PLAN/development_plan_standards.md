@@ -431,14 +431,17 @@ complete workload projection remain owned by their dependent sprints:
   and conditional cleanup remain downstream. Direct Linux GPU outer build/container effects are
   uncapped; only the later nvkind nodes receive CPU/memory caps. Bare Linux has no storage quota or
   image-GC wall;
-- WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro and
-  has no current platform-authoritative exclusive owner, so concurrent project declarations can race or
-  overwrite one another. A focused-tested pure state model, exact UTF-8/UTF-16 byte transformer, and
-  Windows FILE_ID/hard-link/HKCU interpreter now model present/absent crash recovery, but the interpreter
-  remains cooperative: a same-user peer can ignore its mutex or alter its caller-writable record, and
-  the production route still uses backup-existence inference. It therefore mints no strong authority.
-  A protected broker/receipt bridge and runtime observation remain open, and an existing running
-  distro/VHDX need not adopt a changed declaration.
+- WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro, and
+  the production route still infers ownership from backup existence, so concurrent project declarations
+  can race or overwrite one another and an absent original has no durable origin record. A
+  focused-tested pure state model and exact UTF-8/UTF-16 byte transformer exist; the four § EE clauses
+  are not yet held at this call site. An existing running distro/VHDX need not adopt a changed
+  declaration;
+- the WSL2 wall is also not released on `project down`: teardown terminates the distro and restores the
+  file, but the managed body pins the idle timeouts to `-1`, so the shared utility VM retains the full
+  memory balloon indefinitely. Lima and Incus release their walls on stop. Until WSL2 does the same, the
+  "a project holds its wall from `up` until `destroy`" contract is stated uniformly but honored on two
+  of three provider substrates.
 
 The target defense has three closed rings: promotion mints the sole provider-exact `ValidatedBudget`;
 plan preparation runs `verifyBudget` plus `fitsBudget` over the exact non-empty workload/effect set and
@@ -1049,10 +1052,10 @@ incompatible identity is `Conflict`, policy refusal is `SafetyRefusal`, and miss
 semantics is `Unsupported`. State the run did not create is never torn down, while any journaled
 preparatory resources it did acquire are rolled back by receipt; a late refusal cannot silently skip
 that owned rollback. Generated config and
-`.test_data` require the resource-authoritative reservation/conditional-mutation contract in § EE, not a
+`.test_data` require all four Locked-Origin Identity Ownership clauses in § EE, not a
 check-then-create sidecar, path-name heuristic, bare exclusive create, or compare-then-unlink. A
-filesystem namespace that cannot exclude same-privilege replacement reports `Unsupported` for the
-strong mode; a cooperative guard cannot mint the verified receipt. The harness carries a strong receipt
+backend that cannot take the kernel lock, record the origin, or report a stable object identity
+reports `Unsupported` and mints no receipt. The harness carries a receipt
 through bring-up, assertions, and teardown and may remove only that exact generation. An incompatible
 pre-existing path or contradictory ownership claim is a structured conflict and no test runs; a
 compatible unowned object remains `ForeignResult`. Changed config bytes are quarantined
@@ -1581,15 +1584,31 @@ Ordinary Haskell values are not linear, so “consumed” is also an interpreter
 checks the current generation/lease and journals the successor state or one-time nonce consumption.
 Hidden constructors and indices prevent construction and wrong-resource/scope mixing; the journal
 rejects stale replay by cooperating interpreters. It does **not** by itself exclude an external actor in
-the check/effect window. That stronger guarantee requires an end-to-end resource-authoritative
-primitive—for example a retained bound socket, an OS-enforced lock/lease, provider
-CAS/create-if-absent plus conditional delete with immutable generation metadata, or a filesystem
-namespace protected from same-privilege replacement plus a kernel conditional mutation tied to the
-reserved identity. Plain exclusive create/rename prevents an initial collision but does not make later
-compare-then-unlink race-free. A backend without the full primitive reports `Unsupported`; it may not
-call a local sidecar, descriptor/hash check, or immediate re-probe “race-free.” A separately named
-cooperative mode cannot mint the strong receipt. No plan may claim compile-time exactly-once effects from
-phantom types alone.
+the check/effect window.
+
+Closing that window is a **protocol** requirement, not a platform-primitive requirement. Before mutating
+a named VM, cluster, generated config, data root, port, host daemon, global provider setting, or durable
+alias, a backend satisfies all four clauses of **Locked-Origin Identity Ownership**:
+
+1. **Exclusive entry.** A kernel-held lock the OS releases on process death is acquired before any
+   mutation and retained across the whole observe/mutate/settle bracket.
+2. **Durable origin record before the first write.** The exact original bytes *or* an explicit
+   absence marker are recorded durably, keyed by a generative nonce, before the first mutating call.
+3. **Identity binding, never pathname.** Every operation after the first binds to the object's stable
+   kernel identity — the `(volumeOrDevice, fileIndexOrInode)` pair — not to the name it was reached by.
+4. **Conditional release.** Restore and delete re-observe that identity and act only on an exact match;
+   any other observation is a structured `Conflict` and the object is left untouched.
+
+The guarantee this buys, stated exactly: it **excludes** crash/retry and concurrent cooperating runs, and
+it **detects** rather than silently overwrites foreign mutation. It does **not** exclude a hostile
+same-privilege process. No substrate supplies that exclusion, so no plan may claim it. A backend that
+cannot satisfy all four clauses — an unsupported filesystem, an unavailable lock, an identity the
+platform will not report — reports `Unsupported` and mints no receipt. A pathname compare, content hash,
+or immediate re-probe substitutes for none of the four. No plan may claim compile-time exactly-once
+effects from phantom types alone.
+
+The canonical statement of this contract, with its per-substrate realization, is
+[ownership_invariant](../documents/architecture/ownership_invariant.md).
 
 The lifecycle interpreter carries lifecycle scope, resource identity, ownership, and phase indices in
 its state type: `ResourceHandle scope planId id resource ownership phase`. `Unclassified`, `Managed`,
@@ -1622,12 +1641,12 @@ unsupported, foreign ownership, and probe failure cannot collapse into one branc
 refusal never triggers cleanup of the refused resource.
 
 Before a run mutates a named VM, cluster, generated config, data root, port, host daemon, or global
-provider setting, it must obtain that backend's **resource-authoritative** reservation and conditional
-mutation/delete primitive under the rule above. A backend without one returns `Unsupported`; a local
-sidecar or bare pathname does not exclude external actors. The resulting ownership receipt records the
+provider setting, it must hold all four clauses above for that backend. A backend that cannot supply
+them returns `Unsupported`; a pathname compare or content hash substitutes for none of them. The
+resulting ownership receipt records the
 exact plan/resource identity and generation and is required by recursive teardown. Cleanup is therefore a typed
 ownership operation: compatible unowned state remains `ForeignResult`, incompatible identity is
-`Conflict`, a policy refusal remains `SafetyRefusal`, and missing strong semantics is `Unsupported`.
+`Conflict`, a policy refusal remains `SafetyRefusal`, and an unsatisfiable clause is `Unsupported`.
 Owned partial state is unwound in reverse lifecycle order and all cleanup failures are aggregated.
 
 Because an external effect and the ownership record cannot share one atomic transaction, durable state

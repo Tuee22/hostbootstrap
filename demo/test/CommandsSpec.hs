@@ -252,8 +252,12 @@ tests =
             assertBool "teardown deletes the managed name" $
                 ["delete", "cluster", "--name", "hostbootstrap-demo"] `isSuffixOf` directClusterTeardownArgs
         , testCase "the direct Docker build context is the repository root" $
+            -- Build the expectation with the same separator the input uses:
+            -- 'repoRootOfProjectRoot' is 'takeDirectory', so on Windows both
+            -- sides are backslash-joined and a hardcoded POSIX literal would
+            -- assert the platform rather than the parent-of-project-root rule.
             repoRootOfProjectRoot ("/workspace" </> "hostbootstrap" </> "demo")
-                @?= "/workspace/hostbootstrap"
+                @?= ("/workspace" </> "hostbootstrap")
         , testCase "accelerator daemon manifest requests a GPU only in the CUDA lane" $ do
             let cpuManifest = acceleratorDaemonManifest False "daemon-3" "config" 8081
                 gpuManifest = acceleratorDaemonManifest True "daemon-3" "config" 8081

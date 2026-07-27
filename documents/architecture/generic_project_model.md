@@ -37,7 +37,7 @@
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
   through the scope-aware restricted assembler, runs the real `project up`, then deletes only matching
   generated config bytes; changed bytes remain in place and are reported rather than being deleted. The
-  current sidecar guard is cooperative, not a resource-authoritative reservation or verified ownership
+  current sidecar guard is cooperative, not the four § EE ownership clauses or verified ownership
   receipt.
 - `SecretRef scope` replaces raw secret `Text` with references and core never resolves secrets.
   `TestPlaintext` requires exact `HarnessConfigAuthority projectId runId`; the Production schema has no

@@ -15,8 +15,9 @@ The Phase 9 foundation now prevents forged readiness and cross-plan/resource cap
 new API boundary. It supplies total probes, opaque planned resources and edges, exact prepared-operation
 pairs, explicit reconcile/adoption results, phase-indexed handles, and a legal journal transition graph.
 Most live interpreters have not yet adopted that boundary, so end-to-end ordering, ownership-driven
-teardown, profile selection, and resource-authoritative compare-before-mutate effects remain assigned
-to their dependent phases.
+teardown, profile selection, and identity-bound compare-before-mutate effects remain assigned
+to their dependent phases. The ownership clauses those effects must hold are defined in
+[ownership_invariant](ownership_invariant.md).
 
 ## Navigation and split decision
 
@@ -540,23 +541,27 @@ scope, locks the persisted record, and checks stable resource identity, generati
 current ownership through the resource backend. It may mint a fresh
 `ResourceHandle scope planId id resource Managed phase` and
 `OwnershipReceipt scope planId id resource` only inside a freshly revalidated plan continuation. A
-missing, stale, wrong-plan, or mismatched record yields `Unmanaged` or a typed conflict; a backend unable
-to reserve/compare identity authoritatively yields `Unsupported`, not a race-free claim. Persisted bytes
-cannot be decoded directly into `Managed`.
+missing, stale, wrong-plan, or mismatched record yields `Unmanaged` or a typed conflict; a backend that
+cannot bind and re-observe the object's stable kernel identity yields `Unsupported`, not a race-free
+claim. Persisted bytes cannot be decoded directly into `Managed`.
 
 Ordinary Haskell values are also not linear: a caller can retain and reuse a handle or receipt value.
 Phase indices and hidden constructors prevent construction and wrong-resource mixing, but they do not by
 themselves prove single use or exclude external races. The interpreter must additionally serialize
 transitions and journal the current generation/state. Excluding a non-cooperating external actor also
-requires a resource-authoritative primitive—a retained bound socket, an OS-enforced lock/lease, provider
-CAS/create-if-absent with immutable generation metadata, or a filesystem namespace protected from
-same-privilege replacement plus a kernel conditional mutation tied to the reserved identity. Plain
-exclusive create/rename prevents an initial collision but does not make a pathname safe from later
-replacement; compare-then-unlink is still a race. A local sidecar, retained descriptor, content hash, or
-immediate compare is not enough by itself. Without an end-to-end authoritative primitive the strong
-transition reports `Unsupported`; it may expose a separately named cooperative mode, but that mode
-cannot mint a strong ownership receipt. The target therefore avoids claims of compile-time exactly-once
-effects or universal race-freedom.
+requires the four **Locked-Origin Identity Ownership** clauses — an OS-released exclusive lock held
+across the bracket, a durable origin record written before the first mutation, binding to the object's
+stable kernel identity rather than its pathname, and release conditioned on re-observing that exact
+identity. Plain exclusive create/rename prevents an initial collision but does not make a pathname safe
+from later replacement; compare-then-unlink without identity binding is still a race. A local sidecar,
+content hash, or immediate compare substitutes for none of the four clauses. A backend that cannot hold
+all four reports `Unsupported` and mints no receipt.
+
+What the clauses buy is stated exactly: they exclude crash/retry and concurrent cooperating runs, and
+they detect rather than silently overwrite foreign mutation. They do not exclude a hostile
+same-privilege process, and no substrate in scope does. The target therefore avoids claims of
+compile-time exactly-once effects or universal race-freedom. The canonical statement of the clauses and
+their per-substrate realization is [ownership_invariant](ownership_invariant.md).
 
 ## Typed lifecycle transitions
 
@@ -825,7 +830,7 @@ adoption. Every cross-resource mutation receives a
 plan. Merely
 sharing a lifecycle scope is insufficient: a share is tied to its provider, an alias to its share, a
 cluster to its alias, and a workload to its cluster. Each same-resource transition retains both
-generative identities. The interpreter's acquisition journal plus resource-authoritative reservation,
+generative identities. The interpreter's acquisition journal plus the identity-bound reservation,
 not ordinary Haskell value linearity, rejects stale replay after the transition has committed.
 
 Every reconciler starts from one `Unclassified Observed` handle. Its private total classifier then
@@ -1558,10 +1563,12 @@ children to be settled and without allowing parent deletion while child state is
 
 An ownership receipt records enough immutable identity to prove what this invocation may later mutate or
 delete: lifecycle scope, generative plan identity, project, resource kind, provider/frame, stable name,
-and a content fingerprint or creation generation. Each supported backend uses a resource-authoritative
-identity reservation and conditional mutation/delete operation. A backend without one returns
-`Unsupported`. Plain exclusive pathname creation, a path-only sidecar, and compare-then-unlink are not
-such an operation when an uncooperative same-privilege writer can replace the path.
+and a content fingerprint or creation generation. Each supported backend holds the four
+[ownership invariant](ownership_invariant.md) clauses: exclusive entry, a durable origin record written
+before the first mutation, identity binding to the object's stable kernel identity, and release
+conditioned on re-observing that identity. A backend that cannot hold all four returns `Unsupported`.
+Plain exclusive pathname creation, a path-only sidecar, and compare-then-unlink satisfy none of them,
+because a pathname is not evidence of object identity between two operations.
 
 An external provider/filesystem/process effect cannot be atomically committed with a local file write.
 The target therefore records a durable acquisition journal instead of pretending the two systems share a
@@ -1742,8 +1749,9 @@ none is coerced through ordinary `IntentRecorded`.
 2. Only a probe that verifies the reservation's immutable identity may advance the entry to `Reserved`.
    A crash after the backend accepted the reservation but before that journal update therefore resumes
    from `ReservationOutcomeUnknown` and probes the same generation; it never creates a second
-   reservation. If the backend cannot provide an authoritative, identity-bearing reservation, the
-   strong transition returns `Unsupported`; a sidecar used only by cooperating callers is not enough.
+   reservation. If the backend cannot provide an identity-bearing reservation — clause 3 of the
+   [ownership invariant](ownership_invariant.md) — the transition returns `Unsupported`; a sidecar that
+   records only a pathname is not a reservation.
 3. The root interpreter records `EffectOutcomeUnknown` **before** invoking or permitting the ordinary
    acquisition effect, using the same stable operation key/name. A root, relay, or child death can
    therefore leave an explicit uncertain state, never an implied absence or success.
@@ -4548,9 +4556,24 @@ The target is not complete until all of these gates pass:
     jointly constructs the Production-validated config,
     `ImageBuildFrame projectId specDigest configId frame`, and build authority. A baked config, runtime
     activation, or build authority cannot mutate lifecycle resources outside its exact class.
-19. Filesystem adversary tests replace a reserved pathname from a same-privilege process between
-    observation and mutation. A backend without a protected namespace or identity-bound conditional
-    kernel operation must return `Unsupported` in strong mode and must not mint an ownership receipt.
+19. Ownership-invariant tests prove the four clauses on **every** substrate, not only the one whose
+    native backend motivated them. A uniform contract requires a uniform gate, so this suite is not
+    `os(windows)`-gated.
+    - Filesystem adversary tests replace a reserved object from a same-privilege process between
+      observation and mutation. The backend reports `Conflict` with structured expected/observed
+      identity, leaves the object untouched, and mints no receipt. It must not report `Unchanged`, and
+      must not clobber (clause 3).
+    - Release is refused when the observed identity does not match the receipt's (clause 4).
+    - A second entry attempt is excluded while the lock is held, and succeeds after the holding process
+      is killed rather than unlocked — proving the lock is OS-released, not library-released (clause 1).
+    - A kill between the durable origin record and the first write leaves recoverable state. The
+      **absent-original** case is covered explicitly: the next run restores absence rather than treating
+      generated content as the original (clause 2).
+    - A clean-path run reaches absence, creates the object, and reruns to `Unchanged` with the same
+      verified receipt.
+    - A host that cannot satisfy a clause — no stable object identity, no available lock, no writable
+      state directory — returns `Unsupported` carrying the attempted operation and reason, and mints no
+      receipt.
 20. Harness kill/restart tests terminate `test run` after every prepared operation and before cleanup.
     The next invocation verifies the protected incomplete-lease record and uses
     `withAbandonedHarnessRun` to reopen the exact abandoned `Harness projectId oldRunId` with only
@@ -4653,6 +4676,8 @@ destroy/up/readback and native-substrate runs.
 
 ## Related
 
+- [ownership invariant](ownership_invariant.md) — the four clauses a backend must hold before this
+  model's transitions may mint a receipt, and their per-substrate realization.
 - [readiness](readiness.md) — current readiness implementation and the opaque-witness target.
 - [durable state](durable_state.md) — current durable carry, the stable Docker-visible alias, and its live
   validation gap.

@@ -70,6 +70,7 @@ import HostBootstrap.Cluster.Cordon
     budgetFromResources,
     budgetMemoryBytes,
     budgetStorageBytes,
+    managedWslIdleTimeoutMillis,
   )
 import HostBootstrap.Context (ResourceEnvelope)
 import Data.Word (Word64)
@@ -258,12 +259,12 @@ providerWallArgs name (ProviderWallSpec providerKey budget) =
     Wsl2ProviderKey ->
       pure
         [ "[general]",
-          "instanceIdleTimeout=-1",
+          "instanceIdleTimeout=" ++ show managedWslIdleTimeoutMillis,
           "[wsl2]",
           "processors=" ++ show (budgetCpu budget),
           "memory=" ++ show memoryGiB ++ "GB",
           "swap=" ++ show memoryGiB ++ "GB",
-          "vmIdleTimeout=-1"
+          "vmIdleTimeout=" ++ show managedWslIdleTimeoutMillis
         ]
     DockerNodeProviderKey ->
       pure

@@ -30,9 +30,12 @@
   `/var/tmp/hostbootstrap-demo-data` remains a guest-local projection for VM-backed Docker daemons, and
   other lifecycle adapters still accept raw path values while the final opaque `ProjectPlan` is open.
   `HostBootstrap.Substrate.Provider.Alias` now supplies the typed prepared call/release and
-  receipt-shaped foundation, but its strong backend is definition-only and the ordinary guest pathname
-  cannot instantiate it. Replacement: make a same-privilege-resistant backend consume that typed
-  projection, then make the finalized plan derive and retain distinct guest, container, kind-node, and
+  receipt-shaped foundation, but its backend is definition-only and the ordinary guest pathname
+  instantiates none of the four § EE ownership clauses. Replacement: one portable backend holding all
+  four — `flock` for exclusive entry, a host-side origin record, `stat -c '%d %i'` for identity binding,
+  and compare-before-`unlink` release — consuming that typed projection. All three provider guests run
+  the same Linux image, so this closes WSL2, Lima and Incus together rather than per-provider. Then make
+  the finalized plan derive and retain distinct guest, container, kind-node, and
   pod projections. Delete the remaining alias-fact bypasses and raw adapter inputs that allow path-kind
   substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
   (root/config binding), 16.6 (recursive plan consumption), and 19.8 (finalized plan projections).
@@ -40,17 +43,30 @@
   (`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
   `demo/src/HostBootstrapDemo/Commands.hs`) — the selected `wsl --install` route is singular, but its
   production utility-VM wall still merges a global user file after checking only a cooperative backup
-  pathname. `HostBootstrap.Wsl2.GlobalWall`, `.ConfigBytes`, `.Windows`, and
-  `cbits/wsl_global_wall.c` now supply an exact-origin/crash-model and Win32 primitive foundation; they
-  are not the replacement authority. Their named mutex is advisory, their journal is caller-writable
-  HKCU, and no applied-state handle is retained against a same-user peer. Replacement: a hardened
-  Windows service/broker with a protected HKLM journal and same-volume NTFS object vault, retained
-  guard handle, authenticated local IPC, sealed prepared permit, and identity-bound opaque receipt
-  recording exact original bytes or absence before the first write. Retry and restore revalidate that
-  identity; released records remain protected tombstones for fenced generation rollover. A process-local
-  lock or sidecar returns `Unsupported` and mints no strong receipt. After production consumes the
-  broker, delete the backup-existence route. Owning sprints: Phase 11 Sprint 11.10 and Phase 5
-  Sprint 5.7.
+  pathname, which records no *absent* original. `HostBootstrap.Wsl2.GlobalWall` and `.ConfigBytes`
+  supply the exact-origin crash model and the byte transformer; both are portable and are retained.
+  Replacement: the same portable backend as the alias entry above, realized on Windows through
+  `createFile` share-mode `0` for exclusive entry, a journalled origin record naming exact bytes or
+  absence, and `getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair for identity
+  binding. Retry and restore revalidate that identity; a non-NTFS profile volume returns `Unsupported`
+  rather than assuming a unique file index. After production consumes it, delete the backup-existence
+  route. Owning sprints: Phase 11 Sprint 11.10 and Phase 5 Sprint 5.7.
+- **Superseded native Windows wall shim and its FFI surface**
+  (`core/hostbootstrap-core/cbits/wsl_global_wall.c`,
+  `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
+  `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+  `core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`) — written against the superseded
+  platform-primitive ownership rule, which demanded `FILE_ID_INFO`, no-replace
+  `SetFileInformationByHandle`, and a per-SID named mutex because no Haskell binding exposed them. The
+  restated § EE clauses do not need those: `Win32` (GHC-bundled) already binds
+  `getFileInformationByHandle`, whose `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair is the direct
+  analogue of POSIX `(st_dev, st_ino)` and is unique and stable on NTFS. Delete the `.c` file, the
+  `if os(windows)` `c-sources` and `extra-libraries: advapi32, ole32, shell32` block, the test-suite
+  `-threaded` carve-out (present solely for the named mutex's OS-thread affinity), and the seven
+  `hb_wsl_*` `foreign import`s inside `#if defined(mingw32_HOST_OS)`. No `.c` is retained in the
+  repository. Rewrite the Windows wall spec against the portable interface and **un-gate** it: the
+  ownership suite runs on every substrate, because a uniform invariant needs a uniform gate.
+  Replacement: the portable backend above. Owning sprint: Phase 11 Sprint 11.10.
 - **Definition-only public `HostBootstrap.RoleLifecycle` callback engine**
   (`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Service.hs`) — `runRole` is consumed only by its test module
@@ -513,7 +529,7 @@
   Replacement:
   after the owning implementations land, make Haddock/help describe the exact validated codec, plan
   topology, structured teardown outcome, host-root durability boundary, case-ID/parser authority,
-  constructor visibility, resource-authoritative Harness ownership/profile derivation, reflected
+  constructor visibility, clause-holding Harness ownership/profile derivation, reflected
   vocabulary ownership, actual harness consumers, substrate-specific binary handoff, permanent pre-binary
   prerequisite ownership, and real Python dispatch surface; add drift checks for every retired phrase. Owning
   phase: Phase 21 Sprint 21.4, after the complete `Blocked by` set in that sprint closes.
@@ -633,6 +649,12 @@ These surfaces are intentionally present and are not cleanup obligations.
   and does not reload sibling config. Its remaining raw-`IO` execution wrapper is **not** a retained
   target surface; it remains Pending replacement by the config-ID-bound, one-use
   `RoleParams`/`ServiceProgram` authority package above. Only the old `web` verb was removed.
+- **`HostBootstrap.Wsl2.GlobalWall` and `.ConfigBytes`** — retained through the 2026-07-27 ownership
+  restatement, and easy to mistake for cleanup work because their sibling `.Windows` adapter and the C
+  shim are Pending deletion above. They are not. `GlobalWall` is the pure exact-origin/crash state
+  machine, and `ConfigBytes` is the bounded byte-exact UTF-8/UTF-16 `.wslconfig` transformer with
+  idempotence fixtures — both are portable, hold no platform assumption, and are consumed unchanged by
+  the replacement backend. Only the native adapter beneath them is superseded.
 - **`core/hostbootstrap-core/dhall/example.dhall`** — retained as a live project-config fixture decoded
   by `SchemaSpec` and guarded against renderer drift. `service schema` exposes the validated-codec
   project-local shape; `context schema` exposes the separate static-artifact registry. Literal
@@ -644,6 +666,19 @@ These surfaces are intentionally present and are not cleanup obligations.
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
 
+- **Root-level ownership/host-collision analysis scratch files** (`DO_WE_NEED_C_CODE.md`,
+  `HD2_GAMEGUARD_ISSUE.md`) — two ungoverned root documents that carried the analysis behind the
+  2026-07-27 ownership restatement and the WSL2 wall-release defect. They had no metadata block, no
+  canonical home, and ALL-CAPS names that
+  [documentation_standards.md](../documents/documentation_standards.md) reserves for
+  `README`/`AGENTS`/`CLAUDE`/`LICENSE`, so they were a parallel status authority by construction. Their
+  durable content moved to [ownership_invariant](../documents/architecture/ownership_invariant.md)
+  (the four clauses, the per-substrate realization, and why the platform-primitive rule was replaced),
+  [wsl2](../documents/engineering/wsl2.md) § Wall release,
+  [durable_windows_runs](../documents/engineering/durable_windows_runs.md) (a detached run keeps holding
+  the wall), and [demo_runbook](../documents/operations/demo_runbook.md). Machine-specific measurements
+  and the third-party application diagnosis were host findings, not repository contracts, and were
+  deliberately not carried. Removed 2026-07-27; owner: Phase 9 Sprint 9.11.
 - **Unsized shared Colima default-profile reconciler** — Sprint 5.8 removed `colima` from the
   config-free `allReconcilers` set and replaced it with a prepared, plan-bound direct-Apple adapter.
   The adapter derives a validated project profile, consumes Phase 9's exact wall/partition/reservation,
@@ -925,7 +960,7 @@ a plan update creates a new current owner for it.
   replaced it with the Harness request of the single scope-aware restricted `psAssemble`. The harness
   never shells the CLI, runs the real `project up`, asserts, and runs `project destroy`. The later
   path/byte-based claim that this proves safe deletion of generated config
-  and `.test_data` is superseded by Phase 10.9: only resource-authoritative reservations plus verified
+  and `.test_data` is superseded by Phase 10.9: only § EE ownership clauses plus verified
   identity-bearing ownership receipts authorize deletion; changed bytes remain quarantined with
   ownership retained.
   `test init` requires no pre-existing `<project>.dhall`, the fail-fast existence precondition checks

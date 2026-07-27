@@ -17,12 +17,12 @@ import Test.Tasty.HUnit
 managedBody :: [ByteString]
 managedBody =
   [ "[general]",
-    "instanceIdleTimeout=-1",
+    "instanceIdleTimeout=21600000",
     "[wsl2]",
     "processors=6",
     "memory=10GB",
     "swap=10GB",
-    "vmIdleTimeout=-1"
+    "vmIdleTimeout=21600000"
   ]
 
 tests :: TestTree
@@ -32,14 +32,14 @@ tests =
     [ testCase "absent and present-empty files produce the exact CRLF body" $ do
         spec <- expectRight (mkManagedWslConfigSpec managedBody)
         let expected =
-              "[general]\r\ninstanceIdleTimeout=-1\r\n[wsl2]\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=-1\r\n"
+              "[general]\r\ninstanceIdleTimeout=21600000\r\n[wsl2]\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n"
         mergeManagedWslConfig ByteString.empty spec @?= Right expected,
       testCase "merge preserves unrelated bytes and keys inside managed sections" $ do
         spec <- expectRight (mkManagedWslConfigSpec managedBody)
         let original =
               "\xEF\xBB\xBF; leading comment\r\n[general]\r\n# general comment\r\ncustomGeneral=yes\r\ninstanceIdleTimeout=5\r\n[experimental]\r\nprocessors=99\r\nunicode=\xE2\x98\x83\r\n[wsl2]\r\nnestedVirtualization=true\r\nmemory=4GB\r\n; wsl comment\r\n"
             expected =
-              "\xEF\xBB\xBF; leading comment\r\n[general]\r\n# general comment\r\ncustomGeneral=yes\r\ninstanceIdleTimeout=-1\r\n[experimental]\r\nprocessors=99\r\nunicode=\xE2\x98\x83\r\n[wsl2]\r\nnestedVirtualization=true\r\n; wsl comment\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=-1\r\n"
+              "\xEF\xBB\xBF; leading comment\r\n[general]\r\n# general comment\r\ncustomGeneral=yes\r\ninstanceIdleTimeout=21600000\r\n[experimental]\r\nprocessors=99\r\nunicode=\xE2\x98\x83\r\n[wsl2]\r\nnestedVirtualization=true\r\n; wsl comment\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n"
         desired <- expectRight (mergeManagedWslConfig original spec)
         desired @?= expected
         mergeManagedWslConfig desired spec @?= Right desired,
@@ -48,7 +48,7 @@ tests =
         let original =
               "[general]\ninstanceIdleTimeout=3\n[experimental]\ninstanceIdleTimeout=keep-me\n[wsl2]\nprocessors=2\nmemory=2GB\nswap=2GB\nvmIdleTimeout=5\n"
             expected =
-              "[general]\ninstanceIdleTimeout=-1\n[experimental]\ninstanceIdleTimeout=keep-me\n[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=-1\n"
+              "[general]\ninstanceIdleTimeout=21600000\n[experimental]\ninstanceIdleTimeout=keep-me\n[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=21600000\n"
         mergeManagedWslConfig original spec @?= Right expected,
       testCase "UTF-8 Unicode values cannot hide controlled keys" $ do
         spec <- expectRight (mkManagedWslConfigSpec managedBody)
@@ -59,7 +59,7 @@ tests =
             expected =
               "[wsl2]\r\n"
                 <> preserved
-                <> "\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=-1\r\n[general]\r\ninstanceIdleTimeout=-1\r\n"
+                <> "\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n[general]\r\ninstanceIdleTimeout=21600000\r\n"
             controlledLines =
               [ "memory=" <> four <> "GB",
                 "memory=4GB ; " <> snowman
@@ -79,7 +79,7 @@ tests =
             expectedUnits =
               asciiUnits "[wsl2]\r\n"
                 ++ preservedUnits
-                ++ asciiUnits "\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=-1\r\n[general]\r\ninstanceIdleTimeout=-1\r\n"
+                ++ asciiUnits "\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n[general]\r\ninstanceIdleTimeout=21600000\r\n"
             controlledUnitLines =
               [ asciiUnits "memory=" ++ [0x56DB] ++ asciiUnits "GB",
                 asciiUnits "memory=4GB ; " ++ [0x2603]
@@ -114,20 +114,20 @@ tests =
                 <> "]\n"
                 <> "memory=keep-under-unrelated-section\n"
             expectedUtf8 =
-              "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=-1\n"
+              "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=21600000\n"
                 <> "["
                 <> four
                 <> "]\n"
                 <> "memory=keep-under-unrelated-section\n"
-                <> "[general]\ninstanceIdleTimeout=-1\n"
+                <> "[general]\ninstanceIdleTimeout=21600000\n"
             originalUnits =
               asciiUnits "[wsl2]\nmemory=1GB\n["
                 ++ [0x56DB]
                 ++ asciiUnits "]\nmemory=keep-under-unrelated-section\n"
             expectedUnits =
-              asciiUnits "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=-1\n["
+              asciiUnits "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=21600000\n["
                 ++ [0x56DB]
-                ++ asciiUnits "]\nmemory=keep-under-unrelated-section\n[general]\ninstanceIdleTimeout=-1\n"
+                ++ asciiUnits "]\nmemory=keep-under-unrelated-section\n[general]\ninstanceIdleTimeout=21600000\n"
         assertExactIdempotent spec originalUtf8 expectedUtf8
         mapM_
           ( \encode ->
@@ -193,7 +193,7 @@ tests =
                 "processors=6",
                 "memory=10GB",
                 "swap=10GB",
-                "vmIdleTimeout=-1"
+                "vmIdleTimeout=21600000"
               ]
           ),
       testCase "UTF-16LE and UTF-16BE BOM files merge byte-exactly and idempotently" $ do

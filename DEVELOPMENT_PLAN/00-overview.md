@@ -103,11 +103,16 @@ complete judgmental-equality ownership of every current `Core.dhall` type export
 
 Owns canonical quantity/resource types, opaque resource-instance readiness, total probes,
 ownership- and phase-indexed lifecycle state, `ReconcileResult`, structured
-conflict/safety/failure, and managed receipts for both changed and unchanged reconciliation.
+conflict/safety/failure, and managed receipts for both changed and unchanged reconciliation. Reopened
+2026-07-27: it also owns the restated ownership clauses its own text asserted, and the managed
+`.wslconfig` body whose idle timeouts govern whether the WSL2 wall can be released. Sprint 9.11 landed
+both — the clauses are restated and the timeouts are finite and derived from one constant — leaving only
+the live release observation it shares with Sprint 5.7.
 
 ### Phase 10 — Standardized test harness and execution shapes
 
-Owns resource-authoritative test reservations/receipts, per-variant failure isolation, structured report
+Owns identity-bound test reservations/receipts under the four § EE ownership clauses, the un-gated
+cross-substrate clause suite, per-variant failure isolation, structured report
 outcomes, and receipt-driven cleanup. Sprint 10.9 opens the Production/Harness lifecycle mode and profile
 over Phase 9/19's scope foundation, Phase 5's backend planning/receipt operations, and Phase 15.9's root
 authority. It exposes to a `TestComponent` no Production constructor and owns the harness run lease/
@@ -119,10 +124,12 @@ only by the lifecycle plan.
 
 Owns one `SubstrateProvider`/`Lift` dispatch path for Incus, Lima, WSL2, and direct-host operations,
 including durable aliases and exclusive global WSL state. The definition-only `HostTarget` and WSL
-import surfaces have been removed. Typed provider-guest alias operations and a pure/Windows WSL wall
-protocol now exist as static foundations, but ordinary guest paths cannot supply strong alias authority
-and the HKCU/named-mutex wall adapter is cooperative rather than same-privilege-resistant. A protected
-Windows broker, production receipt integration, and the native provider gates remain open.
+import surfaces have been removed. Typed provider-guest alias operations and a pure WSL wall protocol
+now exist as static foundations, but no backend yet holds the four § EE ownership clauses, so
+production still uses the unowned alias and backup-existence paths. One portable backend closes all
+three provider guests together; the superseded native Windows shim is tracked for deletion. That
+backend, production receipt integration, the WSL2 wall release, and the native provider gates remain
+open.
 
 ### Phase 12 — Opportunistic warm store
 

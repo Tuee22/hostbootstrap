@@ -70,9 +70,11 @@ The carry is not yet a delivered durability guarantee:
   provider-guest/container/kind-node/pod projection rather than letting remaining adapters accept raw
   path values.
 - VM-shell and direct observations do not yet share one total, typed probe result at the IO boundary.
-- `/var/tmp/hostbootstrap-demo-data` is an ordinary shared pathname. Current create/check/remove logic
-  cannot exclude a same-privilege process replacing it between operations, so it is not an
-  identity-authoritative ownership backend and cannot honestly mint a strong cleanup receipt.
+- `/var/tmp/hostbootstrap-demo-data` is created and removed by pathname. Current logic holds none of the
+  four [ownership invariant](ownership_invariant.md) clauses — no exclusive entry, no durable origin
+  record, no identity binding, no conditional release — so it cannot mint a cleanup receipt. This is
+  true on every provider guest, not only one: Lima and Incus aliases are in exactly the same state as
+  WSL2's.
 - `DurableStore` is not uniform mutation authority. Core `service run` now binds typed role selection and
   handler fields to one canonically verified sibling snapshot, but neither Web nor accelerator handler
   yet receives plan-derived effect/capability authority. The remaining raw handler `IO` therefore does
@@ -125,10 +127,12 @@ observed target/node on conflicts. A correctly linked foreign alias returns `For
 `Unmanaged` handle, not mutation/deletion authority. Destructive cleanup requires the managed handle and
 matching opaque ownership receipt; it never removes an alias merely because its pathname matches. IO
 failure is `ProbeFailed`/`Failure` in the probe/reconcile error sum, not an alias state.
-Strong alias reconciliation is available only when the substrate supplies a protected namespace plus an
-identity-bound conditional mutation/delete (or an equivalent kernel/provider primitive). Otherwise it
-returns `Unsupported`; an explicitly named cooperative pathname guard may aid diagnostics but cannot
-mint the strong receipt. Sprints 9.10 and 11.10 own the shared algebra and Incus/filesystem integration.
+Alias reconciliation may mint a receipt only when the backend holds all four
+[ownership invariant](ownership_invariant.md) clauses. Because all three provider guests run the same
+Linux image, one backend satisfies them identically on WSL2, Lima, and Incus: `flock` for exclusive
+entry, a host-side origin record, `stat -c '%d %i'` for identity binding, and a compare-before-`unlink`
+release. A host that cannot supply a clause returns `Unsupported` and mints no receipt. Sprints 9.10 and
+11.10 own the shared algebra and the provider-guest integration.
 
 The broader capability and ownership contract is defined in
 [lifecycle_state_model](lifecycle_state_model.md).
@@ -172,9 +176,15 @@ Those claims require the live validation gates below.
 ## Validation gates
 
 1. Each provider-guest clean-path test reaches `AliasAbsent`, creates the link, and reruns to
-   `ManagedResult Unchanged` with the same verified receipt.
+   `ManagedResult Unchanged` with the same verified receipt. This runs on **every** provider guest —
+   WSL2, Lima, and Incus — because one backend serves all three.
 2. Wrong-link, occupied-node, permission, and unexpected IO failures are reported without partial
-   filesystem exceptions.
+   filesystem exceptions. A run killed between the durable origin record and the link creation is
+   recoverable, including the case where the alias path was originally **absent**: the next run
+   restores absence rather than adopting what the killed run left behind. An alias replaced by a
+   same-privilege process between observation and mutation is reported as `Conflict` with
+   expected/observed identity, is not clobbered, and mints no receipt; release is refused on identity
+   mismatch. See [ownership_invariant](ownership_invariant.md) § Validation for the full clause suite.
 3. **Passed 2026-07-25:** root-resolution tests are independent of process `cwd`; missing, wrong-kind,
    escaping, and redirected roots fail before the callback, and compile-fail tests prevent raw or
    cross-root paths from entering direct-host bind operations.
@@ -193,6 +203,8 @@ Validation status and scheduling belong in
 
 - [lifecycle state model](lifecycle_state_model.md) — typed transitions, opaque readiness and ownership,
   total probes, and recursive teardown.
+- [ownership invariant](ownership_invariant.md) — the four clauses the alias backend must hold before it
+  may mint a cleanup receipt.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — current kind/Helm operations.
 - [harness workflow](harness_workflow.md) — current test-profile and DSL mismatch.
 - [gitignore guardrails](../engineering/gitignore_guardrails.md) — keeping `.data/` and `.test_data/`

@@ -615,9 +615,18 @@ receiveDaemonRequest transport connection = do
     shutdownThread <- forkIO (watchForShutdown resultVar)
     takeMVar resultVar
         `finally` do
-            killThread receiverThread
-            killThread shutdownThread
+            signalStop receiverThread
+            signalStop shutdownThread
   where
+    -- 'killThread' is 'throwTo', which blocks until the exception is *delivered*.
+    -- The receiver is parked in a socket read that is not interruptible on every
+    -- platform, so waiting for delivery here deadlocks the shutdown path: the
+    -- caller's next action on 'ReceiveShutdown' is to close the connection, and
+    -- that close is exactly what ends the read. Signal asynchronously so the
+    -- close can happen; the exception still lands once the read returns, so no
+    -- thread outlives the connection.
+    signalStop = void . forkIO . killThread
+
     watchForShutdown resultVar = do
         result <- trySynchronous (shouldShutdown transport)
         case (result :: Either SomeException Bool) of

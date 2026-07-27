@@ -129,7 +129,7 @@ launchCases =
             @?= Right
                 [ MergeWslConfig
                     "C:\\Users\\me\\.wslconfig"
-                    ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=-1"]
+                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
                 , RunHostTool Wsl ["--shutdown"]
                 , RunHostTool
                     Wsl

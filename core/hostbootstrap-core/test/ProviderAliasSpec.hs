@@ -232,7 +232,7 @@ withPreparedAliasFixture ::
     Either ReconcileError summary
   ) ->
   IO (Either ReconcileError summary)
-withPreparedAliasFixture readyObservationVersion consume =
+withPreparedAliasFixture shareObservationVersion consume =
   case fixtureAction of
     Left err -> pure (Left err)
     Right action -> action
@@ -265,7 +265,7 @@ withPreparedAliasFixture readyObservationVersion consume =
           share
           11
           19
-          readyObservationVersion
+          shareObservationVersion
           (const (pure (ProbeReady ())))
           ( \probe -> do
               readyResult <-

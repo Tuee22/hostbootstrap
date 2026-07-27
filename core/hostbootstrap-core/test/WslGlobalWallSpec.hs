@@ -17,7 +17,7 @@ import Test.Tasty.HUnit
 
 desiredBytes :: ByteString
 desiredBytes =
-  "[general]\r\ninstanceIdleTimeout=-1\r\n[wsl2]\r\nprocessors=4\r\n"
+  "[general]\r\ninstanceIdleTimeout=21600000\r\n[wsl2]\r\nprocessors=4\r\n"
 
 originalBytes :: ByteString
 originalBytes =

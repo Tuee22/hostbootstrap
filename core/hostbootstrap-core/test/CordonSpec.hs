@@ -2,7 +2,7 @@
 
 module CordonSpec (tests) where
 
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Map.Strict as Map
 import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Context (ResourceEnvelope (..))
@@ -13,7 +13,7 @@ import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import System.Directory (findExecutable)
 import qualified System.Info as Info
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 gib :: Integer
 gib = 1024 ^ (3 :: Integer)
@@ -194,7 +194,17 @@ sizingCases =
       isLeft (wsl2SizingArgs inexact) @?= True,
     testCase "wsl2 sizing emits the .wslconfig [general]+[wsl2] ceiling with swap + both idle timeouts (no vhdx-size key)" $
       wsl2SizingArgs demoResources
-        @?= Right ["[general]", "instanceIdleTimeout=-1", "[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=-1"],
+        @?= Right ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=21600000"],
+    testCase "both managed idle timeouts are finite, so the host always recovers the balloon" $ do
+      -- The wall was previously pinned open with -1, which is why `project down`
+      -- could leave the whole budget committed until the next reboot. A finite
+      -- duration is the property that matters; the exact value is asserted above.
+      managedWslIdleTimeoutMillis > 0 @?= True
+      managedWslIdleTimeoutMillis @?= managedWslIdleTimeoutHours * 60 * 60 * 1000
+      body <- either assertFailure pure (wsl2SizingArgs demoResources)
+      let timeouts = filter (\l -> "instanceIdleTimeout=" `isPrefixOf` l || "vmIdleTimeout=" `isPrefixOf` l) body
+      length timeouts @?= 2
+      all (\l -> not ("=-" `isInfixOf` l)) timeouts @?= True,
     testCase "applied Linux cordon caps the control-plane with 2x swap headroom" $
       kindNodeCordonArgs "demo-test-case1" demoResources
         @?= Right

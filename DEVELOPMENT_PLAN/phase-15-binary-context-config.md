@@ -101,7 +101,7 @@ The exact implemented config-input matrix is:
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads the executable-sibling `<project>.dhall`; decode-only, without a command-class gate |
 | `context show [FILE]` | Reads the selected/default file; decode-only, without a command-class gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling project config, writes each variant behind the cooperative sidecar lock, and removes it only when its bytes still match; Phase 10.9 owns resource-authoritative reservations and verified receipts, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling project config, writes each variant behind the cooperative sidecar lock, and removes it only when its bytes still match; Phase 10.9 owns the four § EE ownership clauses and verified receipts, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
 | `project up\|down\|destroy`, `service run`, `check-code` | Read the sibling project config and apply an existing-frame gate |
 
 The default `project init` mode writes a fresh sibling host-orchestrator root and refuses an existing
@@ -379,7 +379,7 @@ Ensure existing-frame runtime dispatch uses the sibling project-local config.
 
 - Tests proving project lifecycle, daemon/service, check-code, and host-orchestrator handlers are accepted
   only when the current descriptive gate passes. `test run` instead manages a generated sibling config
-  behind the current cooperative sidecar/matching-byte guard; resource-authoritative reservations and
+  behind the current cooperative sidecar/matching-byte guard; the § EE ownership clauses and
   verified receipts are Phase 10.9 work, opaque root/command authority is Sprint 15.9 work, and parser
   enforcement of that authority is Sprint 17.4 work.
 - Demo dry-run output and unit tests proving the lifted sequence still has one representation while each

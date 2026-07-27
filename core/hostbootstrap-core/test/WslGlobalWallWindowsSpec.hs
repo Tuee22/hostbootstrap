@@ -87,12 +87,12 @@ foreign import ccall unsafe "hb_wsl_free"
 managedBody :: [ByteString.ByteString]
 managedBody =
   [ "[general]",
-    "instanceIdleTimeout=-1",
+    "instanceIdleTimeout=21600000",
     "[wsl2]",
     "processors=4",
     "memory=8GB",
     "swap=8GB",
-    "vmIdleTimeout=-1"
+    "vmIdleTimeout=21600000"
   ]
 
 tests :: TestTree

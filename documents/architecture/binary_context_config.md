@@ -1402,7 +1402,7 @@ The implemented config-input matrix is:
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads and decodes the executable-sibling `<project>.dhall`; no command-authority gate |
 | `context show [FILE]` | Reads and decodes the selected file, or its parser default when `FILE` is omitted; no command-authority gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling `<project>.dhall`, then writes each run variant behind the current cooperative sidecar lock and removes it only when the bytes still match; Phase 10.9 owns resource-authoritative reservations and verified receipts, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling `<project>.dhall`, then writes each run variant behind the current cooperative sidecar lock and removes it only when the bytes still match; Phase 10.9 owns the [ownership_invariant](ownership_invariant.md) clauses and verified receipts for this path, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
 | `project up\|down\|destroy`, `service run`, `check-code` | Read the sibling `<project>.dhall` and apply the existing-frame command gate |
 
 This distinction matters: neither read-only inspection nor a config-free writer is evidence that the

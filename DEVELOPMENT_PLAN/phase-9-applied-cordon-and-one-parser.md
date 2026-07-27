@@ -10,9 +10,28 @@
 
 ## Phase Status
 
-**Status**: Done
+**Status**: Active
 
-**Closed 2026-07-25.** Sprint 9.10 delivers this phase's type-and-pure-validation foundation. Readiness
+**Reopened 2026-07-27 — the ownership invariant was restated, and this phase owns two of its consequences.**
+§ EE no longer requires an OS-protected namespace plus an identity-bound conditional kernel mutation. It
+now requires the four **Locked-Origin Identity Ownership** clauses — an OS-released exclusive lock, a
+durable origin record written before the first mutation, binding to the object's stable kernel identity
+rather than its pathname, and release conditioned on re-observing that identity — and states exactly what
+they buy: exclusion of crash/retry and cooperating races, detection of foreign mutation, and no claim to
+exclude a hostile same-privilege process. The canonical statement is
+[ownership_invariant](../documents/architecture/ownership_invariant.md).
+
+Two Phase 9 surfaces move as a result. First, this phase's own normative text stated the superseded rule
+and must be restated. Second, `wsl2SizingArgs` in `HostBootstrap.Cluster.Cordon` emits the managed
+`.wslconfig` body, whose two literal `-1` idle timeouts are why the WSL2 wall is never released — Lima and
+Incus return their walls on stop and WSL2 does not. Sprint 9.11 owns both. **Both landed 2026-07-27**:
+the bullet is restated against the four clauses with the original marked superseded, and both idle
+timeouts now carry a finite duration derived from one `managedWslIdleTimeoutHours` constant. The phase
+stays `Active` only for the joint live Windows observation that the wall is actually released, which
+cannot fire until Sprint 5.7 lands the `spStop` restore-then-shutdown effect. The prior closure below
+stands as delivered work.
+
+**Historical closure 2026-07-25.** Sprint 9.10 delivers this phase's type-and-pure-validation foundation. Readiness
 constructors are private; probes are total and tied to closed planned-resource families; lifecycle plans,
 resources, edges, reconcile/adoption outcomes, phase handles, operation pairs, and journal transitions
 are opaque and plan-indexed. The demo has one project-owned budget with private scalar constructors.
@@ -104,7 +123,11 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 
 ## Remaining Work
 
-**Current:** None in Phase 9 scope. Sprint 9.4 closed with an explicit typed bare-Linux unsupported
+**Current:** Sprint 9.11's two implementation deliverables — the restated ownership clauses in this
+phase's normative text and the `wsl2SizingArgs` idle-timeout change that lets the WSL2 wall be released —
+landed 2026-07-27 and are statically gated. Its one open item is the joint live Windows
+release observation it shares with Sprint 5.7. Sprint 9.4 closed with an
+explicit typed bare-Linux unsupported
 storage result; the real quota/image-GC enforcement decision remains Phase 5.7 work. Sprint 9.10 consumes
 the completed 19.7–19.8 codec/plan authority and closes opaque readiness, phase/reconcile state, exact
 budget admission/partition, and pure provider-wall preparation. The live provider, complete workload,
@@ -739,10 +762,13 @@ silently claimed by this Phase 9 closure. Sprint 5.8 has since completed its dir
   PhaseObservedForeign` total observation; the from branch has the same fenced same-key retry rule, and
   only `PhaseObservedTo → PhaseCommitted` commits. Both families retain the prior ownership receipt and
   have no edge into acquisition, release, or fresh-generation rollover.
-- Define strong filesystem ownership honestly: bare exclusive create/rename, content comparison, and
-  compare-then-unlink do not exclude a same-privilege replacement. Only an OS-protected namespace plus a
-  conditional identity-bound mutation/delete may mint a strong receipt; otherwise return `Unsupported`
-  (a separately named cooperative mode remains non-authorizing).
+- Define filesystem ownership honestly: bare exclusive create/rename, content comparison, and
+  compare-then-unlink bind a pathname, not an object, so they satisfy none of the four § EE clauses. A
+  receipt requires all four — exclusive entry, durable origin record, identity binding, conditional
+  release — and a backend that cannot hold one returns `Unsupported`. **Superseded 2026-07-27:** this
+  bullet originally required an OS-protected namespace plus a conditional identity-bound kernel
+  mutation. See Sprint 9.11 and
+  [ownership_invariant](../documents/architecture/ownership_invariant.md).
 - Keep all quantity/resource constructors total at the public boundary and prove invalid decoded values
   cannot reach argument builders.
 
@@ -818,9 +844,104 @@ dated behavior evidence and is not reused as proof of those downstream integrati
 (442 core tests and 106 demo tests; the demo workspace also reran the embedded 442-test core suite).
 `DocValidatorSpec` and `git diff --check` passed.
 
+### Sprint 9.11: Restated ownership clauses and a releasable WSL2 wall [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/engineering/wsl2.md`, `documents/engineering/applied_cordon.md`,
+`documents/engineering/resource_budgeting.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Carry the restated § EE ownership clauses through this phase's own normative text, and stop the WSL2
+wall from being unreleasable. Both follow from the same observation: an invariant stated at a tier no
+substrate can meet is not enforcement, and a wall that is never released is not a wall the host shares.
+
+#### Deliverables
+
+- Restate this phase's filesystem-ownership bullet against the four clauses rather than the superseded
+  platform-primitive rule, and mark the original as superseded rather than deleting it.
+- Replace the two literal `-1` idle timeouts in `wsl2SizingArgs` with a generous **finite** duration.
+  `-1` was adopted so the distro instance would not idle-stop mid-run; a timeout measured in hours
+  preserves that (the demo gate is 25–50 minutes) while guaranteeing the host eventually recovers its
+  memory. Both keys are already managed by `HostBootstrap.Wsl2.GlobalWall.ConfigBytes`, so the merge and
+  its idempotence properties are unchanged.
+- Keep the managed body exact: the emitted duration is derived, not a magic literal at the call site,
+  and remains representable by the byte transformer's controlled-key handling.
+
+The matching `spStop` change — restore `.wslconfig`, then `wsl --shutdown` — is Sprint 5.7's, because
+the teardown effect list belongs to the provider lane. This sprint supplies the body that makes the
+release meaningful; without the finite timeout the utility VM would still be pinned between runs.
+
+#### Validation
+
+- `wsl2SizingArgs` unit tests assert the exact emitted body, including the finite timeouts, and that an
+  exact-GiB budget still round-trips.
+- `ConfigBytes` idempotence tests still pass on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new
+  values — the controlled-key set is unchanged, so a second merge must be a byte-for-byte no-op.
+- Live: after `project up` and `project down` on Windows, the shared utility VM is not left resident
+  holding the balloon. This is the observable that fails today; see
+  [wsl2](../documents/engineering/wsl2.md) § Wall release.
+
+#### Remaining Work
+
+**Implementation and static validation completed 2026-07-27. Remaining: the joint live observation.**
+
+- The restated filesystem-ownership bullet is in place: Sprint 9.10's deliverable states the four clauses
+  and marks the superseded platform-primitive rule as superseded rather than deleting it.
+- `wsl2SizingArgs` no longer emits `-1`. Both `[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`
+  carry `managedWslIdleTimeoutMillis`, derived in `HostBootstrap.Cluster.Cordon` from the single
+  `managedWslIdleTimeoutHours = 6` constant, so neither call site holds a magic literal. The exact
+  admission path in `HostBootstrap.Cluster.Budget` (`Wsl2ProviderKey`) carried a second copy of the same
+  body; it now consumes the exported constant instead of duplicating the value.
+- The controlled-key set is unchanged, so `ConfigBytes` merge and idempotence behaviour is unchanged.
+
+Dated static validation evidence (2026-07-27): `cabal build all --ghc-options=-Werror` and
+`cabal test all --ghc-options=-Werror` passed from `core/` with **495 tests**; the demo workspace passed
+its **105** demo tests plus the embedded **495**-test core suite under the same gate. `CordonSpec` asserts
+the exact emitted body including both finite timeouts, that an exact-GiB budget still round-trips, and a
+regression guard that neither emitted timeout is negative. `WslGlobalWallConfigBytesSpec` idempotence
+still passes on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new values.
+
+**Remaining (real-run-gated, § C, jointly with Sprint 5.7):** the live Windows observation that
+`project up` followed by `project down` does not leave the shared utility VM resident holding the
+balloon. This sprint supplies the finite body that makes a release meaningful; Sprint 5.7 supplies the
+`spStop` restore-then-shutdown effect that makes it prompt. Neither alone produces the released wall, so
+the observation is recorded once, against both.
+
+#### Gate-enabling defects fixed alongside this sprint
+
+Validating this sprint required the canonical gates to be trustworthy, and three pre-existing defects
+were blocking them. They are recorded here because this sprint's validation surfaced them; none is part
+of Sprint 9.11's contract, and none changes a phase's ownership.
+
+- **The `hostbootstrap-core` suite raced against itself.** `CLISpec`, `ContextSpec`, `HarnessSpec`, and
+  `ProjectRootSpec` bracket a process-global `withCurrentDirectory`, and the harness/config ownership
+  guards claim lock directories at paths relative to that working directory. Run concurrently, one
+  group's `chdir` was visible to the others: the guards collided, bracket cleanups deleted paths they no
+  longer resolved to, and the leftover `.test_data.hostbootstrap-run-owner` /
+  `<project>.dhall.hostbootstrap-test-owner` directories poisoned the *next* run as well — the working
+  tree was carrying exactly such leftovers. Those guards are the behaviour under test, so `test/Spec.hs`
+  now pins `NumThreads 1` rather than weakening them. The suite is ~10 s serially.
+- **A `-Werror` violation the core workspace's cached objects were hiding.** `ProviderAliasSpec`'s
+  `withPreparedAliasFixture` bound a parameter shadowing `readyObservationVersion` from
+  `HostBootstrap.Readiness`. A clean build from `demo/` failed `-Wname-shadowing`; the parameter is now
+  `shareObservationVersion`.
+- **Two demo tests were not portable/correct on Windows.** `CommandsSpec` built a path with `</>` but
+  asserted a hardcoded POSIX literal, so it asserted the platform rather than the
+  parent-of-project-root rule. More seriously, `receiveDaemonRequest` in the demo accelerator daemon
+  used `killThread` — i.e. `throwTo`, which blocks until *delivery* — on a receiver parked in a socket
+  read that is not interruptible on every platform. The caller's next action on `ReceiveShutdown` is to
+  close the connection, and that close is what ends the read, so waiting for delivery deadlocked the
+  shutdown path. The signal is now sent asynchronously; the exception still lands once the read returns.
+  That is a real daemon-shutdown defect, not only a test artifact.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
+- `documents/architecture/ownership_invariant.md` - the four Locked-Origin Identity Ownership clauses,
+  their per-substrate realization, and the exact guarantee they do and do not provide (Sprint 9.11).
 - `documents/architecture/readiness.md` - the initial Sprint 9.8 mechanism plus Sprint 9.10's opaque,
   resource-instance-bound witness, total probes, and ownership-/phase-indexed lifecycle contract.
 - `documents/architecture/dhall_generation.md` - partial current scalar/resource decoding and the target

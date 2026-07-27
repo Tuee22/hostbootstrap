@@ -43,7 +43,8 @@ The repository does not yet enforce that boundary end to end:
   or return `IO ()` rather than consuming a prepared operation;
 - dependent operations fail closed until the downstream interpreter owns complete ordered dependency
   traversal and fresh re-observation immediately before preparation;
-- provider adapters still need their resource-authoritative conditional effects and recovery paths; and
+- provider adapters still need identity-bound conditional effects and recovery paths — a backend holding
+  the four [ownership_invariant](ownership_invariant.md) clauses; and
 - structured `LifecycleFailure` is not yet the universal subprocess boundary.
 
 Those are assigned integration obligations in the dependent provider/interpreter phases, not missing
@@ -169,8 +170,11 @@ deliberately does not maintain a second copy of the operation-prepare algebra.
 ## Probe discipline
 
 Guest probes should remain simple because the Windows path crosses PowerShell, `wsl`, and `bash -lc`.
-One probe performs one observation, such as `test -e`, `readlink`, `docker info`, or `kubectl get`.
-Branching and retry live in Haskell.
+One probe performs one observation, such as `test -e`, `readlink`, `stat -c '%d %i'`, `docker info`, or
+`kubectl get`. Branching and retry live in Haskell. The ownership primitives the guest lane needs —
+`flock` for exclusive entry and `stat -c '%d %i'` for identity binding, per
+[ownership_invariant](ownership_invariant.md) — are single trivial commands and meet this bar without a
+compound shell.
 
 Filesystem classifiers must establish existence before asking questions that are partial on absence:
 

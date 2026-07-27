@@ -58,9 +58,13 @@ Deleting the VM removes nested compute incidentally. See
 
 The host durable root is carried into Incus through a disk device and exposed to Docker through
 `/var/tmp/hostbootstrap-demo-data`; it is not merely guest-root-disk state. The destroy/up/readback
-guarantee remains unvalidated. The ordinary guest alias pathname also cannot mint the standards'
-same-privilege-resistant ownership receipt; that provider projection remains an open Sprint 11.10
-integration item. See [durable state](../architecture/durable_state.md).
+guarantee remains unvalidated. The guest alias is still created and removed by pathname, so it holds
+none of the four [ownership invariant](../architecture/ownership_invariant.md) clauses and mints no
+receipt. Because every provider guest runs the same Linux image, the backend that closes this is shared
+with Lima and WSL2 rather than Incus-specific: `flock`, a host-side origin record, and `stat -c '%d %i'`
+identity binding. Incus gains clauses 2–4 for the first time when it lands — this is new ground here,
+not a Windows fix arriving late. Open Sprint 11.10 integration item; see
+[durable state](../architecture/durable_state.md).
 
 ## Resource wall
 

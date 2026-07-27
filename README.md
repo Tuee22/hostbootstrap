@@ -237,8 +237,10 @@ hostbootstrap run -- test run all
 
 Current safety checks refuse an existing sibling project config or detected production cluster, but the
 demo planner still resolves Production/`.data`, some provider/Docker preparation precedes refusal, and
-resource-authoritative receipts/recursive teardown are incomplete. Run the long gate only on a
-disposable host with no production demo state. Its Playwright case executes the already-built project
+ownership receipts/recursive teardown are incomplete. Run the long gate only on a
+disposable host with no production demo state. On Windows the gate also holds the project's full
+CPU/memory budget until the shared WSL2 utility VM is shut down — `project down` does not yet release it
+(see [documents/engineering/wsl2.md](documents/engineering/wsl2.md)). Its Playwright case executes the already-built project
 image with `--network host` in the VM frame and points `BASE_URL` at that VM's localhost NodePort.
 Authoritative current evidence and remaining live substrates are in the
 [development-plan index](DEVELOPMENT_PLAN/README.md).
@@ -252,7 +254,11 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
   only the matching fresh prepared pair;
 - versioned one-use operation sessions with durable initial/rotated fences and crash-recoverable acquisition,
   repair, phase-change, adoption, teardown, and migration journals;
-- exact ownership receipts and foreign-state refusal;
+- one ownership invariant every substrate can satisfy — an OS-released exclusive lock, a durable origin
+  record written before the first mutation, binding to the object's kernel identity rather than its
+  pathname, and release conditioned on re-observing that identity — plus exact ownership receipts and
+  foreign-state refusal
+  (see [documents/architecture/ownership_invariant.md](documents/architecture/ownership_invariant.md));
 - one validated forward/topology/reverse plan;
 - authenticated normal/recovery handoffs and controller/build config gates;
 - a project-wide Production/Harness mode lease, exact bound-Production recovery profiles, exhaustive
