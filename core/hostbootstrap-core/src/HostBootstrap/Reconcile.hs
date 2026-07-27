@@ -30,6 +30,7 @@ module HostBootstrap.Reconcile
     PlannedResource,
     ProviderResource,
     DurableShareResource,
+    DurableAliasResource,
     DockerResource,
     MinioResource,
     RegistryResource,
@@ -41,8 +42,11 @@ module HostBootstrap.Reconcile
     withPlannedResourceOfKind,
     PlannedEdge,
     withPlannedEdge,
+    withProviderGuestAliasProjection,
     withObservedPlannedResource,
     OwnershipReceipt,
+    ownershipReceiptOperationKey,
+    validateOwnershipReceipt,
     ReconcileError (..),
     ConflictDetail (..),
     SafetyDetail (..),
@@ -60,11 +64,13 @@ module HostBootstrap.Reconcile
     BackendReconcileObservation (..),
     OperationDescriptor,
     plannedOperation,
+    plannedGuestAliasOperation,
     DependencyObservation,
     dependencyObservation,
     PreparedOperation,
     PreparedPreconditions,
     withPreparedOperation,
+    withPreparedSingleDependencyOperation,
     ReconcileResult,
     completeReconcile,
     withReconcileResult,
@@ -76,7 +82,7 @@ module HostBootstrap.Reconcile
     verifyPersistedJournalRecord,
     PriorCommitProof,
     withPriorCommitProof,
-    completeUnchanged,
+    completePreparedUnchanged,
     PhaseTransition,
     planMarkReady,
     planStage,
@@ -171,6 +177,7 @@ data PlannedResource scope planId id resource frame =
 
 data ProviderResource
 data DurableShareResource
+data DurableAliasResource
 data DockerResource
 data MinioResource
 data RegistryResource
@@ -333,6 +340,82 @@ withPlannedEdge (LifecyclePlan _ plan) targetKey dependencyKey consume = do
             )
         )
 
+{- | Derive the provider-guest durable alias as a sealed child resource of the
+validated provider/share prefix.  The alias is intentionally not a caller-owned
+step identity: its stable key is derived from the closed @deploy-vm@ and
+@copy-source@ operation keys, and the only dependency edge exposed by this
+bracket is alias -> durable share.
+-}
+withProviderGuestAliasProjection ::
+  LifecyclePlan scope planId ->
+  PlannedResource scope planId providerId ProviderResource providerFrame ->
+  PlannedResource scope planId shareId DurableShareResource shareFrame ->
+  ( forall aliasId.
+    PlannedResource scope planId aliasId DurableAliasResource shareFrame ->
+    PlannedEdge
+      scope
+      planId
+      aliasId
+      DurableAliasResource
+      shareFrame
+      shareId
+      DurableShareResource
+      shareFrame ->
+    result
+  ) ->
+  Either ReconcileError result
+withProviderGuestAliasProjection (LifecyclePlan _ plan) provider share consume
+  | providerKey /= "core:deploy-vm" =
+      wrongKind providerKey "provider operation core:deploy-vm"
+  | shareKey /= "core:copy-source" =
+      wrongKind shareKey "durable-share operation core:copy-source"
+  | otherwise =
+      case (findStep providerKey, findStep shareKey) of
+        (Just providerStep, Just shareStep)
+          | stepIdentity providerStep `elem` stepDependencies plan shareStep ->
+              Right
+                ( consume
+                    (PlannedResource aliasKey (plannedResourceFrame share))
+                    (PlannedEdge aliasKey shareKey)
+                )
+          | otherwise ->
+              Left
+                ( Conflict
+                    ( ConflictDetail
+                        aliasKey
+                        "validated provider -> durable-share prefix"
+                        "durable share is not downstream of the provider"
+                        "derive the projection from the finalized provider/share plan"
+                    )
+                )
+        _ ->
+          Left
+            ( Failure
+                ( FailureDetail
+                    "derive provider guest alias"
+                    "provider or durable-share operation disappeared from the validated plan"
+                    DoNotRetry
+                )
+            )
+  where
+    providerKey = plannedResourceKey provider
+    shareKey = plannedResourceKey share
+    aliasKey = providerKey <> "/" <> shareKey <> "/guest-alias"
+    findStep key =
+      find
+        ((== Text.unpack key) . operationKeyText . stepOperationKey)
+        (stepPlanSteps plan)
+    wrongKind observed expected =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                observed
+                expected
+                "resource belongs to another operation family"
+                "use the closed planned resource kind for the provider guest projection"
+            )
+        )
+
 withObservedPlannedResource ::
   LifecyclePlan scope planId ->
   PlannedResource scope planId id resource frame ->
@@ -355,6 +438,45 @@ withObservedPlannedResource _ planned generation version consume
 
 data OwnershipReceipt scope planId id resource =
   OwnershipReceipt Text Word64 Text
+
+ownershipReceiptOperationKey ::
+  OwnershipReceipt scope planId id resource ->
+  Text
+ownershipReceiptOperationKey (OwnershipReceipt _ _ operationKey) = operationKey
+
+{- | Check that an opaque receipt still names the exact managed identity and
+generation.  The shared type indices reject cross-plan/resource use at compile
+time; these value checks reject stale durable records.
+-}
+validateOwnershipReceipt ::
+  ResourceHandle scope planId id resource Managed phase ->
+  OwnershipReceipt scope planId id resource ->
+  Either ReconcileError ()
+validateOwnershipReceipt handle (OwnershipReceipt receiptKey receiptGeneration operationKey)
+  | receiptKey /= resourceHandleKey handle =
+      mismatch "resource key" (resourceHandleKey handle) receiptKey
+  | receiptGeneration /= resourceHandleGeneration handle =
+      mismatch
+        "generation"
+        (showText (resourceHandleGeneration handle))
+        (showText receiptGeneration)
+  | nullText operationKey =
+      Left
+        ( Failure
+            (FailureDetail "validate ownership receipt" "operation key is empty" DoNotRetry)
+        )
+  | otherwise = Right ()
+  where
+    mismatch field expected observed =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                (field <> "=" <> expected)
+                (field <> "=" <> observed)
+                "load the ownership receipt for the exact managed generation"
+            )
+        )
 
 data ConflictDetail = ConflictDetail
   { conflictResource :: Text,
@@ -588,6 +710,66 @@ plannedOperation (LifecyclePlan _ plan) planned handle callDigest
         ((== Text.unpack (plannedResourceKey planned)) . operationKeyText . stepOperationKey)
         (stepPlanSteps plan)
 
+{- | Prepare the synthetic provider-guest alias operation from the exact sealed
+alias -> durable-share edge.  Unlike 'plannedOperation', this operation is a
+plan-derived child rather than a standalone step, so its dependency set is
+exactly the durable share named by the edge.
+-}
+plannedGuestAliasOperation ::
+  PlannedResource scope planId aliasId DurableAliasResource aliasFrame ->
+  PlannedEdge
+    scope
+    planId
+    aliasId
+    DurableAliasResource
+    aliasFrame
+    shareId
+    DurableShareResource
+    shareFrame ->
+  ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed ->
+  Text ->
+  Either
+    ReconcileError
+    ( OperationDescriptor
+        scope
+        planId
+        aliasId
+        DurableAliasResource
+        Observed
+        Provisioned
+    )
+plannedGuestAliasOperation planned (PlannedEdge edgeTarget edgeDependency) handle callDigest
+  | plannedResourceKey planned /= resourceHandleKey handle =
+      mismatch
+        "planned alias"
+        (plannedResourceKey planned)
+        (resourceHandleKey handle)
+  | edgeTarget /= plannedResourceKey planned =
+      mismatch "alias edge target" (plannedResourceKey planned) edgeTarget
+  | nullText edgeDependency =
+      Left
+        (Failure (FailureDetail "plan guest alias" "durable-share dependency is empty" DoNotRetry))
+  | nullText callDigest =
+      Left (Failure (FailureDetail "plan guest alias" "call digest is empty" DoNotRetry))
+  | otherwise =
+      Right
+        ( OperationDescriptor
+            (plannedResourceKey planned)
+            callDigest
+            [edgeDependency]
+        )
+  where
+    mismatch field expected observed =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                (field <> "=" <> expected)
+                (field <> "=" <> observed)
+                "derive the alias operation from one provider guest projection"
+            )
+        )
+
 data DependencyObservation scope planId dependencyId dependency =
   DependencyObservation Text Word64 Word64
 
@@ -610,10 +792,10 @@ dependencyObservation handle phaseVersion
         )
 
 data PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion =
-  PreparedOperation Text Word64 Word64
+  PreparedOperation Text Text Text Word64 Word64
 
 data PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion =
-  PreparedPreconditions Word64
+  PreparedPreconditions Text Text Text Word64 Word64
 
 withPreparedOperation ::
   OperationDescriptor scope planId id resource fromPhase toPhase ->
@@ -646,8 +828,20 @@ withPreparedOperation (OperationDescriptor operationKey callDigest expectedDepen
   | otherwise =
       Right
         ( consume
-            (PreparedOperation (operationKey <> ":" <> callDigest) attempt journalVersion)
-            (PreparedPreconditions journalVersion)
+            ( PreparedOperation
+                operationKey
+                (operationKey <> ":" <> callDigest)
+                callDigest
+                attempt
+                journalVersion
+            )
+            ( PreparedPreconditions
+                operationKey
+                (operationKey <> ":" <> callDigest)
+                callDigest
+                attempt
+                journalVersion
+            )
         )
   where
     invalidObservation (SomeDependencyObservation (DependencyObservation _ generation phaseVersion)) =
@@ -656,6 +850,26 @@ withPreparedOperation (OperationDescriptor operationKey callDigest expectedDepen
       [ key
       | SomeDependencyObservation (DependencyObservation key _ _) <- observations
       ]
+
+{- | Prepare an operation whose closed descriptor requires exactly one managed
+dependency.  Keeping the existential packaging private prevents callers from
+assembling an unrelated heterogeneous dependency list.
+-}
+withPreparedSingleDependencyOperation ::
+  OperationDescriptor scope planId id resource fromPhase toPhase ->
+  DependencyObservation scope planId dependencyId dependency ->
+  Word64 ->
+  Word64 ->
+  ( forall operationKey callDigest attempt journalVersion.
+    PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
+    PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
+    result
+  ) ->
+  Either ReconcileError result
+withPreparedSingleDependencyOperation descriptor observation =
+  withPreparedOperation
+    descriptor
+    [SomeDependencyObservation observation]
 
 data SomeDependencyObservation scope planId where
   SomeDependencyObservation ::
@@ -679,26 +893,63 @@ completeReconcile ::
   PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
   BackendReconcileObservation ->
   Either ReconcileError (ReconcileResult scope planId id resource Provisioned)
-completeReconcile handle _ _ observation =
-  case observation of
-    BackendCreated generation ->
-      managed Created generation
-    BackendRepaired generation ->
-      managed Repaired generation
-    BackendForeign generation foreignState ->
-      Right
-        ( ForeignResult
-            (ResourceHandle (resourceHandleKey handle) generation (resourceHandleObservationVersion handle))
-            foreignState
-        )
-    BackendAbsent ->
-      Left
-        (Failure (FailureDetail "reconcile resource" "resource remained absent" ReprobeBeforeRetry))
-    BackendUnsupported reason ->
-      Left (Unsupported (UnsupportedDetail "reconcile resource" reason))
-    BackendFailed cause disposition ->
-      Left (Failure (FailureDetail "reconcile resource" cause disposition))
+completeReconcile
+  handle
+  (PreparedOperation targetKey operationKey callDigest attempt journalVersion)
+  (PreparedPreconditions expectedTarget expectedOperation expectedDigest expectedAttempt expectedJournal)
+  observation
+    | targetKey /= resourceHandleKey handle =
+        preparedMismatch "target resource" (resourceHandleKey handle) targetKey
+    | (targetKey, operationKey, callDigest, attempt, journalVersion)
+        /= (expectedTarget, expectedOperation, expectedDigest, expectedAttempt, expectedJournal) =
+        Left
+          ( Conflict
+              ( ConflictDetail
+                  (resourceHandleKey handle)
+                  "preconditions from the exact prepared operation"
+                  "preconditions belong to another preparation"
+                  "discard both values and prepare the operation again"
+              )
+          )
+    | nullText operationKey || nullText callDigest || attempt == 0 || journalVersion == 0 =
+        Left
+          ( Failure
+              (FailureDetail "complete reconcile" "prepared operation is invalid" DoNotRetry)
+          )
+    | otherwise =
+        case observation of
+          BackendCreated generation ->
+            managed Created generation
+          BackendRepaired generation ->
+            managed Repaired generation
+          BackendForeign generation foreignState
+            | generation == 0 ->
+                Left
+                  (Failure (FailureDetail "reconcile resource" "foreign generation must be positive" DoNotRetry))
+            | otherwise ->
+                Right
+                  ( ForeignResult
+                      (ResourceHandle (resourceHandleKey handle) generation (resourceHandleObservationVersion handle))
+                      foreignState
+                  )
+          BackendAbsent ->
+            Left
+              (Failure (FailureDetail "reconcile resource" "resource remained absent" ReprobeBeforeRetry))
+          BackendUnsupported reason ->
+            Left (Unsupported (UnsupportedDetail "reconcile resource" reason))
+          BackendFailed cause disposition ->
+            Left (Failure (FailureDetail "reconcile resource" cause disposition))
   where
+    preparedMismatch field expected observed =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                (field <> "=" <> expected)
+                (field <> "=" <> observed)
+                "prepare against the exact observed resource"
+            )
+        )
     managed change generation
       | generation /= resourceHandleGeneration handle =
           Left
@@ -714,7 +965,7 @@ completeReconcile handle _ _ observation =
           Right
             ( ManagedResult
                 (ResourceHandle (resourceHandleKey handle) generation (resourceHandleObservationVersion handle))
-                (OwnershipReceipt (resourceHandleKey handle) generation "ordinary-acquire")
+                (OwnershipReceipt (resourceHandleKey handle) generation operationKey)
                 (Changed change)
             )
 
@@ -879,7 +1130,7 @@ advancePersistedJournalRecord record nextPhase
             persistedPhase = nextPhase
           }
 
-data VerifiedJournalRecord scope planId id resource =
+newtype VerifiedJournalRecord scope planId id resource =
   VerifiedJournalRecord PersistedJournalRecord
 
 verifyPersistedJournalRecord ::
@@ -914,7 +1165,8 @@ verifyPersistedJournalRecord plan handle expectedOperation record
             )
         )
 
-data PriorCommitProof scope planId id resource = PriorCommitProof Text
+newtype PriorCommitProof scope planId id resource =
+  PriorCommitProof (OwnershipReceipt scope planId id resource)
 
 withPriorCommitProof ::
   VerifiedJournalRecord scope planId id resource ->
@@ -922,7 +1174,16 @@ withPriorCommitProof ::
   Either ReconcileError result
 withPriorCommitProof (VerifiedJournalRecord record) consume
   | persistedPhase record == Committed =
-      Right (consume (PriorCommitProof (persistedOperationKey record)))
+      Right
+        ( consume
+            ( PriorCommitProof
+                ( OwnershipReceipt
+                    (persistedResourceKey record)
+                    (persistedGeneration record)
+                    (persistedOperationKey record)
+                )
+            )
+        )
   | otherwise =
       Left
         ( Failure
@@ -933,23 +1194,61 @@ withPriorCommitProof (VerifiedJournalRecord record) consume
             )
         )
 
-completeUnchanged ::
+completePreparedUnchanged ::
   ResourceHandle scope planId id resource Unclassified Observed ->
+  PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
+  PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
   PriorCommitProof scope planId id resource ->
-  ReconcileResult scope planId id resource Provisioned
-completeUnchanged handle (PriorCommitProof operationKey) =
-  ManagedResult
-    ( ResourceHandle
-        (resourceHandleKey handle)
-        (resourceHandleGeneration handle)
-        (resourceHandleObservationVersion handle)
-    )
-    ( OwnershipReceipt
-        (resourceHandleKey handle)
-        (resourceHandleGeneration handle)
-        operationKey
-    )
-    Unchanged
+  Either ReconcileError (ReconcileResult scope planId id resource Provisioned)
+completePreparedUnchanged
+  handle
+  (PreparedOperation targetKey operationKey callDigest attempt journalVersion)
+  (PreparedPreconditions expectedTarget expectedOperation expectedDigest expectedAttempt expectedJournal)
+  (PriorCommitProof receipt@(OwnershipReceipt receiptKey receiptGeneration receiptOperation))
+    | targetKey /= resourceHandleKey handle =
+        mismatch "target resource" (resourceHandleKey handle) targetKey
+    | (targetKey, operationKey, callDigest, attempt, journalVersion)
+        /= (expectedTarget, expectedOperation, expectedDigest, expectedAttempt, expectedJournal) =
+        Left
+          ( Conflict
+              ( ConflictDetail
+                  (resourceHandleKey handle)
+                  "preconditions from the exact prepared operation"
+                  "preconditions belong to another preparation"
+                  "prepare again before rebinding the prior commit"
+              )
+          )
+    | receiptKey /= resourceHandleKey handle =
+        mismatch "receipt resource" (resourceHandleKey handle) receiptKey
+    | receiptGeneration /= resourceHandleGeneration handle =
+        mismatch
+          "receipt generation"
+          (showText (resourceHandleGeneration handle))
+          (showText receiptGeneration)
+    | receiptOperation /= operationKey =
+        mismatch "receipt operation key" operationKey receiptOperation
+    | otherwise =
+        Right
+          ( ManagedResult
+              ( ResourceHandle
+                  (resourceHandleKey handle)
+                  (resourceHandleGeneration handle)
+                  (resourceHandleObservationVersion handle)
+              )
+              receipt
+              Unchanged
+          )
+  where
+    mismatch field expected observed =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                (field <> "=" <> expected)
+                (field <> "=" <> observed)
+                "load the committed record for the exact prepared operation"
+            )
+        )
 
 data PhaseTransition scope planId id resource fromPhase toPhase =
   PhaseTransition Text Text
@@ -1015,7 +1314,9 @@ verifyPhaseTransition ::
   PhaseTransition scope planId id resource fromPhase toPhase ->
   Word64 ->
   Either ReconcileError (PhaseAdvance scope planId id resource toPhase)
-verifyPhaseTransition handle (OwnershipReceipt _ receiptGeneration _) (PhaseTransition operation target) observedGeneration
+verifyPhaseTransition handle receipt@(OwnershipReceipt receiptKey receiptGeneration _) (PhaseTransition operation target) observedGeneration
+  | receiptKey /= resourceHandleKey handle =
+      Left (Conflict (ConflictDetail (resourceHandleKey handle) "matching ownership receipt" "receipt resource mismatch" "load the matching receipt"))
   | receiptGeneration /= resourceHandleGeneration handle =
       Left (Conflict (ConflictDetail (resourceHandleKey handle) "matching ownership receipt" "receipt generation mismatch" "load the matching receipt"))
   | observedGeneration /= resourceHandleGeneration handle =
@@ -1030,7 +1331,7 @@ verifyPhaseTransition handle (OwnershipReceipt _ receiptGeneration _) (PhaseTran
                 observedGeneration
                 (resourceHandleObservationVersion handle + 1)
             )
-            (OwnershipReceipt (resourceHandleKey handle) receiptGeneration operation)
+            receipt
             (VerifiedAtPhase (operation <> ":" <> target) observedGeneration)
         )
 

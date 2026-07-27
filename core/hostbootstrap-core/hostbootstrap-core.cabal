@@ -34,6 +34,7 @@ library
       HostBootstrap.HostPrereqs
       HostBootstrap.Substrate
       HostBootstrap.Substrate.Provider
+      HostBootstrap.Substrate.Provider.Alias
       HostBootstrap.Ensure
       HostBootstrap.Ensure.AppleMetal
       HostBootstrap.Ensure.Docker
@@ -48,6 +49,9 @@ library
       HostBootstrap.Incus
       HostBootstrap.Lima
       HostBootstrap.Wsl2
+      HostBootstrap.Wsl2.GlobalWall
+      HostBootstrap.Wsl2.GlobalWall.ConfigBytes
+      HostBootstrap.Wsl2.GlobalWall.Windows
       HostBootstrap.Lift
       HostBootstrap.Step
       HostBootstrap.Chain
@@ -84,6 +88,13 @@ library
   if !os(windows)
     build-depends:
         unix
+  if os(windows)
+    c-sources:
+        cbits/wsl_global_wall.c
+    extra-libraries:
+        advapi32
+      , ole32
+      , shell32
 
 executable hostbootstrap
   import: warnings
@@ -96,6 +107,12 @@ executable hostbootstrap
 test-suite hostbootstrap-core-test
   import: warnings
   type: exitcode-stdio-1.0
+  if os(windows)
+    -- The Windows wall tests exercise an OS-thread-affine named mutex.  Link
+    -- only the test executable with the threaded RTS so runInBoundThread can
+    -- pin the complete acquire/action/release bracket without changing the
+    -- library's ABI or imposing an RTS choice on library consumers.
+    ghc-options: -threaded
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
@@ -112,6 +129,7 @@ test-suite hostbootstrap-core-test
       DhallGenSpec
       CordonSpec
       ProviderSpec
+      ProviderAliasSpec
       ProjectRootSpec
       ContextSpec
       LifecycleSpec
@@ -119,6 +137,9 @@ test-suite hostbootstrap-core-test
       IncusSpec
       LimaSpec
       Wsl2Spec
+      WslGlobalWallSpec
+      WslGlobalWallConfigBytesSpec
+      WslGlobalWallWindowsSpec
       LiftSpec
       StepSpec
       ChainSpec

@@ -18,6 +18,7 @@ import qualified LiftSpec
 import qualified LimaSpec
 import qualified ProjectRootSpec
 import qualified ProviderSpec
+import qualified ProviderAliasSpec
 import qualified ReadinessSpec
 import qualified ReconcileSpec
 import qualified RegistrySpec
@@ -28,6 +29,9 @@ import qualified SubstrateSpec
 import System.Environment (getArgs)
 import Test.Tasty (defaultMain, testGroup)
 import qualified Wsl2Spec
+import qualified WslGlobalWallConfigBytesSpec
+import qualified WslGlobalWallSpec
+import qualified WslGlobalWallWindowsSpec
 
 main :: IO ()
 main = do
@@ -51,6 +55,7 @@ main = do
                     , DhallGenSpec.tests
                     , CordonSpec.tests
                     , ProviderSpec.tests
+                    , ProviderAliasSpec.tests
                     , ProjectRootSpec.tests
                     , ContextSpec.tests
                     , LifecycleSpec.tests
@@ -58,6 +63,9 @@ main = do
                     , IncusSpec.tests
                     , LimaSpec.tests
                     , Wsl2Spec.tests
+                    , WslGlobalWallSpec.tests
+                    , WslGlobalWallConfigBytesSpec.tests
+                    , WslGlobalWallWindowsSpec.tests
                     , LiftSpec.tests
                     , StepSpec.tests
                     , ChainSpec.tests

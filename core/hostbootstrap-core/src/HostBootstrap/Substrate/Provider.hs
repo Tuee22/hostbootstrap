@@ -45,6 +45,7 @@ module HostBootstrap.Substrate.Provider (
     windowsPathToWslMount,
 
     -- * Guest-side durable alias (one pure state machine, § DD)
+    AliasNodeKind (..),
     AliasState (..),
     AliasFacts (..),
     classifyAlias,
@@ -406,6 +407,13 @@ vmShellArgs layer cmd =
 {- | The observed state of the stable Docker-visible alias that points at a
 host-backed durable share (§ DD).
 -}
+data AliasNodeKind
+    = AliasRegularFile
+    | AliasDirectory
+    | AliasOtherNode
+    | AliasNodeKindUnknown
+    deriving (Eq, Show)
+
 data AliasState
     = -- | nothing exists at the alias path
       AliasAbsent
@@ -413,15 +421,15 @@ data AliasState
       AliasLinkedCorrectly
     | -- | a symlink pointing somewhere else — a stale/foreign link (a collision)
       AliasLinkedElsewhere FilePath
-    | -- | a non-symlink file or directory occupies the path (a collision)
-      AliasOccupied
+    | -- | a non-symlink node occupies the path (a collision)
+      AliasOccupied AliasNodeKind
     deriving (Eq, Show)
 
 {- | The raw facts a lane's probes gather about the alias path, classified the same
-way by 'classifyAlias'. 'afSymlinkTarget' is @Just t@ exactly when the path is a
-symlink (@t@ its @readlink@ / 'getSymbolicLinkTarget' target, or @""@ if the link
-is present but its target could not be read); 'afExists' is whether the path exists
-as anything at all (@test -e@ / a dir-or-file-or-symlink test).
+way by 'classifyAlias'. 'afSymlinkTarget' is @Just t@ only when the path is a
+symlink and its target was read successfully. Probe failures are structured
+backend failures and must not be encoded as an empty target. 'afExists' is
+whether the path exists as anything at all.
 -}
 data AliasFacts = AliasFacts
     { afSymlinkTarget :: Maybe FilePath
@@ -430,7 +438,7 @@ data AliasFacts = AliasFacts
     deriving (Eq, Show)
 
 {- | Classify the alias path against the expected share target. Total. Trailing
-slashes are trimmed before comparison; both lanes create the link with the exact
+slashes are trimmed before comparison; a backend that creates the link uses the exact
 expected target string, so a correctly-linked alias compares equal.
 -}
 classifyAlias :: FilePath -> AliasFacts -> AliasState
@@ -439,7 +447,7 @@ classifyAlias expected facts = case afSymlinkTarget facts of
         | trimTrailingSlash t == trimTrailingSlash expected -> AliasLinkedCorrectly
         | otherwise -> AliasLinkedElsewhere t
     Nothing
-        | afExists facts -> AliasOccupied
+        | afExists facts -> AliasOccupied AliasNodeKindUnknown
         | otherwise -> AliasAbsent
 
 trimTrailingSlash :: FilePath -> FilePath
@@ -449,7 +457,7 @@ trimTrailingSlash = dropWhileEnd (`elem` ("/\\" :: String))
 idempotent correct link is 'AliasLeaveLinked'; an absent path is 'AliasCreateLink';
 a collision ('AliasLinkedElsewhere' / 'AliasOccupied') is a 'Left' message — a
 deterministic @Failed@ condition (§ CC), surfaced legibly, never a bare exit code.
-Pure.
+Pure and diagnostic only: this view does not authorize mutation or cleanup.
 -}
 data AliasAction = AliasLeaveLinked | AliasCreateLink
     deriving (Eq, Show)
@@ -460,14 +468,24 @@ planAliasEnsure aliasPath target state = case state of
     AliasLinkedCorrectly -> Right AliasLeaveLinked
     AliasLinkedElsewhere other ->
         Left ("durable alias " ++ aliasPath ++ " points to " ++ other ++ ", expected " ++ target)
-    AliasOccupied ->
-        Left ("durable alias collision: " ++ aliasPath ++ " already exists and is not a symbolic link to " ++ target)
+    AliasOccupied nodeKind ->
+        Left
+            ( "durable alias collision: "
+                ++ aliasPath
+                ++ " already exists as "
+                ++ show nodeKind
+                ++ " and is not a symbolic link to "
+                ++ target
+            )
 
 {- | The teardown action: remove the alias **only** when it is still the exact link
 this project owns ('AliasLinkedCorrectly' → 'AliasUnlink'); an absent path or a
 foreign non-symlink occupant is left in place with a reason ('AliasKeep'); a
 retargeted link is a 'Left' refusal (never silently clobbered). Pure. Mirrors the
 never-delete-@.data@ discipline (§ Y): the host target itself is never removed here.
+This diagnostic view is not ownership proof; effectful teardown additionally
+requires the matching managed handle, receipt, and an identity-bound conditional
+backend operation.
 -}
 data AliasRemoval = AliasKeep String | AliasUnlink
     deriving (Eq, Show)
@@ -478,7 +496,7 @@ planAliasRemove aliasPath target state = case state of
     AliasLinkedCorrectly -> Right AliasUnlink
     AliasLinkedElsewhere other ->
         Left ("refusing to remove durable alias " ++ aliasPath ++ ": it points to " ++ other ++ ", expected " ++ target)
-    AliasOccupied ->
+    AliasOccupied _ ->
         Right (AliasKeep ("durable alias path " ++ aliasPath ++ " is occupied by a non-symlink; leaving it untouched"))
 
 {- | Rewrite a Windows path (@C:\\…@) to its WSL2 drive mount (@/mnt/c/…@), so a

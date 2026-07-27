@@ -29,20 +29,28 @@
   context, and makes direct-host Docker consume only the matching canonical absolute host `.data`.
   `/var/tmp/hostbootstrap-demo-data` remains a guest-local projection for VM-backed Docker daemons, and
   other lifecycle adapters still accept raw path values while the final opaque `ProjectPlan` is open.
-  Replacement: consolidate the provider alias behind its typed guest projection and conditional
-  ownership operation, then make the finalized plan derive and retain distinct guest, container,
-  kind-node, and pod projections. Delete the remaining alias-fact bypasses and raw adapter inputs that
-  allow path-kind substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
+  `HostBootstrap.Substrate.Provider.Alias` now supplies the typed prepared call/release and
+  receipt-shaped foundation, but its strong backend is definition-only and the ordinary guest pathname
+  cannot instantiate it. Replacement: make a same-privilege-resistant backend consume that typed
+  projection, then make the finalized plan derive and retain distinct guest, container, kind-node, and
+  pod projections. Delete the remaining alias-fact bypasses and raw adapter inputs that allow path-kind
+  substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
   (root/config binding), 16.6 (recursive plan consumption), and 19.8 (finalized plan projections).
 - **Unowned global WSL `.wslconfig` merge/restore**
   (`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
   `demo/src/HostBootstrapDemo/Commands.hs`) — the selected `wsl --install` route is singular, but its
-  utility-VM wall still merges a global user file after checking only a cooperative backup pathname.
-  Concurrent projects/operators can race it, and an absent original has no durable pre-write origin
-  receipt. Replacement: a Windows platform-authoritative lock/CAS retained across mutation plus an
-  identity-bound receipt recording exact original bytes or absence before the first write; retry and
-  restore must revalidate that identity. A process-local lock or sidecar returns `Unsupported` and mints
-  no strong receipt. Owning sprints: Phase 11 Sprint 11.10 and Phase 5 Sprint 5.7.
+  production utility-VM wall still merges a global user file after checking only a cooperative backup
+  pathname. `HostBootstrap.Wsl2.GlobalWall`, `.ConfigBytes`, `.Windows`, and
+  `cbits/wsl_global_wall.c` now supply an exact-origin/crash-model and Win32 primitive foundation; they
+  are not the replacement authority. Their named mutex is advisory, their journal is caller-writable
+  HKCU, and no applied-state handle is retained against a same-user peer. Replacement: a hardened
+  Windows service/broker with a protected HKLM journal and same-volume NTFS object vault, retained
+  guard handle, authenticated local IPC, sealed prepared permit, and identity-bound opaque receipt
+  recording exact original bytes or absence before the first write. Retry and restore revalidate that
+  identity; released records remain protected tombstones for fenced generation rollover. A process-local
+  lock or sidecar returns `Unsupported` and mints no strong receipt. After production consumes the
+  broker, delete the backup-existence route. Owning sprints: Phase 11 Sprint 11.10 and Phase 5
+  Sprint 5.7.
 - **Definition-only public `HostBootstrap.RoleLifecycle` callback engine**
   (`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Service.hs`) — `runRole` is consumed only by its test module

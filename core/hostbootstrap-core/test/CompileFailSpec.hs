@@ -22,6 +22,11 @@ tests =
         , rejects "RawReadiness.hs"
         , rejects "RawBudget.hs"
         , rejects "RawReconcile.hs"
+        , rejects "ForgeStrongAliasBackend.hs"
+        , rejects "ForgePreparedGuestAliasCall.hs"
+        , rejects "ObservedReadyGuestAlias.hs"
+        , rejects "ForeignGuestAliasRelease.hs"
+        , rejects "CrossAliasReceipt.hs"
         ]
 
 rejects :: FilePath -> TestTree

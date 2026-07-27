@@ -18,11 +18,12 @@ tests =
   testGroup
     "ReconcileSpec"
     [ testCase "observed resources require stable positive identity versions" $
-        ( withTestLifecyclePlan $ \plan ->
-            joinReconcile $
-              withPlannedResource plan "core:context-init" $ \planned ->
-                withObservedPlannedResource plan planned 0 0 (const ())
-        )
+        withTestLifecyclePlan
+          ( \plan ->
+              joinReconcile $
+                withPlannedResource plan "core:context-init" $ \planned ->
+                  withObservedPlannedResource plan planned 0 0 (const ())
+          )
           @?= Left
             (Failure (FailureDetail "observe resource" "generation must be positive" DoNotRetry)),
       testCase "prepared created result mints managed handle and receipt together" $
@@ -184,18 +185,31 @@ unchangedSummary =
       withPlannedResource plan "core:context-init" $ \planned ->
         joinReconcile $
           withObservedPlannedResource plan planned 7 3 $ \handle -> do
-            verified <-
-              verifyPersistedJournalRecord
-                plan
-                handle
-                "acquire"
-                (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+            descriptor <- plannedOperation plan planned handle "call:one"
             joinReconcile $
-              withPriorCommitProof verified $ \proof ->
-                withReconcileResult
-                  (completeUnchanged handle proof)
-                  (\_ _ change -> Right change)
-                  (\_ _ -> error "committed unchanged resource must be managed")
+              withPreparedOperation descriptor [] 1 4 $ \prepared preconditions -> do
+                verified <-
+                  verifyPersistedJournalRecord
+                    plan
+                    handle
+                    "acquire"
+                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+                        { persistedOperationKey = "core:context-init:call:one"
+                        }
+                    )
+                joinReconcile $
+                  withPriorCommitProof verified $ \proof -> do
+                    result <-
+                      completePreparedUnchanged
+                        handle
+                        prepared
+                        preconditions
+                        proof
+                    pure $
+                      withReconcileResult
+                        result
+                        (\_ _ change -> change)
+                        (\_ _ -> error "committed unchanged resource must be managed")
 
 phaseSummary :: Either ReconcileError Word
 phaseSummary =
@@ -262,8 +276,7 @@ text = Text.pack
 withTestLifecyclePlan ::
   (forall planId. LifecyclePlan (Production Fixture.FixtureProject) planId -> result) ->
   result
-withTestLifecyclePlan consume =
-  withTestLifecyclePlanFor testPlan consume
+withTestLifecyclePlan = withTestLifecyclePlanFor testPlan
 
 withTestLifecyclePlanFor ::
   StepPlan ->

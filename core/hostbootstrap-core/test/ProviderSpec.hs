@@ -299,7 +299,7 @@ interpreterCases =
         windowsPathToWslMount "C:\\Users\\Matt\\f.tgz" @?= "/mnt/c/Users/Matt/f.tgz"
     ]
 
-{- | The one pure alias state machine (§ DD) both lanes share: all four
+{- | The pure diagnostic alias state machine (§ DD): all four
 'AliasState' cases from raw 'AliasFacts', and the create/remove planners over
 each — an idempotent correct link, a fresh create, and a collision surfaced as a
 legible 'Left' (never a bare exit code).
@@ -314,13 +314,13 @@ aliasCases =
     , testCase "classifyAlias: symlink to a different target" $
         classifyAlias target (AliasFacts (Just "/some/other/path") True) @?= AliasLinkedElsewhere "/some/other/path"
     , testCase "classifyAlias: a non-symlink occupant" $
-        classifyAlias target (AliasFacts Nothing True) @?= AliasOccupied
+        classifyAlias target (AliasFacts Nothing True) @?= AliasOccupied AliasNodeKindUnknown
     , testCase "planAliasEnsure: absent creates, correct is a no-op" $ do
         planAliasEnsure alias target AliasAbsent @?= Right AliasCreateLink
         planAliasEnsure alias target AliasLinkedCorrectly @?= Right AliasLeaveLinked
     , testCase "planAliasEnsure: a collision is a legible Left, never an exit code" $ do
         assertLeftHas "points to" (planAliasEnsure alias target (AliasLinkedElsewhere "/elsewhere"))
-        assertLeftHas "collision" (planAliasEnsure alias target AliasOccupied)
+        assertLeftHas "collision" (planAliasEnsure alias target (AliasOccupied AliasDirectory))
     , testCase "planAliasRemove: unlink only the owned link; keep absent; refuse a retarget" $ do
         planAliasRemove alias target AliasLinkedCorrectly @?= Right AliasUnlink
         case planAliasRemove alias target AliasAbsent of

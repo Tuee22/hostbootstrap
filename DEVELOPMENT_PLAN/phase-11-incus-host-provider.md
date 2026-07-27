@@ -14,11 +14,15 @@
 **Status**: Active
 **Blocked by**: None (Sprint 9.10 is complete)
 
-**Reopened 2026-07-24.** Sprint 11.10 removed the parallel `HostTarget`/Provider boundary, unused provider
+**Updated 2026-07-27.** Sprint 11.10 removed the parallel `HostTarget`/Provider boundary, unused provider
 classifiers/builders, demo-local Incus compensation, and direct-host alias bypass; it also added the total
-Incus daemon/permission/VM-capability/egress probe. Provider-guest alias receipts, authoritative WSL
-global-state ownership, and the native provider gates remain open. The Windows `8/8` result below is
-dated evidence for the earlier implementation, not current closure.
+Incus daemon/permission/VM-capability/egress probe. Typed guest-alias operations and a crash-recovery
+model/byte transformer/Windows primitive layer for the global WSL wall now exist as static foundations.
+Neither foundation closes the strong-authority requirement: no provider-guest backend can yet supply the
+same-privilege-resistant conditional alias primitive, and an HKCU journal plus a caller-held named mutex
+is cooperative rather than platform-authoritative. Production still uses the historical alias and WSL
+backup paths. Protected authority, production integration, and the native provider gates remain open.
+The Windows `8/8` result below is dated evidence for the earlier implementation, not current closure.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — the guest-side durable alias as pure, readiness-gated
 provider data.** The 2026-07-19 host-path share primitive (Sprint 11.8) delivered only the **host-side** half
@@ -96,12 +100,16 @@ ceiling applied.
 
 ## Remaining Work
 
-**Current:** Sprint 11.10 is partially delivered. `SubstrateProvider`/`Lift` is now the sole dispatch;
-dead provider APIs are removed; Incus has one total capability/egress transition; and the direct-host
-lane creates no alias. The provider-guest alias still uses non-authorizing compatibility observations
-and an ordinary pathname, and the WSL `.wslconfig` effect still infers ownership from backup existence
-without an authoritative lock/CAS or absent-origin receipt. The unavailable native Windows and Linux
-gates, plus a current disposable Lima lifecycle gate, remain required.
+**Current:** Sprint 11.10 is partially delivered. `SubstrateProvider`/`Lift` is the sole dispatch; dead
+provider APIs are removed; Incus has one total capability/egress transition; and the direct-host lane
+creates no alias. The new typed guest-alias API refuses to pretend an ordinary guest symlink backend is
+authoritative, but the production provider path has not consumed it. The WSL foundation models exact
+present/absent origin, FILE_ID-bound staging, durable unknown phases, apply/restore classification, and
+strict UTF-8/UTF-16 config transformation. Its current Windows interpreter is deliberately
+non-authorizing: a same-user peer can ignore its mutex or alter its HKCU record, its fencing and released
+receipt lifecycle are not yet the protected Sprint 9/10/15 journal contract, and production still uses
+backup-existence inference. The unavailable native Windows and Linux gates, plus a current disposable
+Lima lifecycle gate, remain required.
 
 **Historical closure (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
 (`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
@@ -689,9 +697,14 @@ readiness.
 **Status**: Active
 **Blocked by**: None (Sprint 9.10 is complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/ConfigBytes.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
+`core/hostbootstrap-core/cbits/wsl_global_wall.c`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/engineering/wsl2.md`, `documents/engineering/ensure_reconcilers.md`,
@@ -755,15 +768,44 @@ projection primitive without treating them as direct-host path authority.
 - removed the direct-host alias observation/mutation surface; the direct lane consumes the canonical
   same-root host path.
 
+**Static foundations delivered 2026-07-27:**
+
+- added the opaque `DurableAliasResource` path, prepared alias call/release values, typed observations,
+  receipt-preserving outcomes, and a definition-only `StrongAliasBackend`. The ordinary guest symlink
+  path cannot construct that backend and therefore cannot mint a strong ownership receipt;
+- added a pure WSL global-wall state machine for exact present/absent origin, durable outcome-unknown
+  transitions, FILE_ID-bound stage/apply/restore classification, opaque receipt/authority values, and
+  conservative conflict handling;
+- added a bounded, exact byte transformer for UTF-8, UTF-16LE, and UTF-16BE `.wslconfig` files. It
+  preserves unrelated bytes and newline/encoding shape, recognizes controlled ASCII keys through the
+  first `=`, and refuses malformed or ambiguous bracket-prefixed section syntax;
+- added a Windows-only interpreter and narrow C shim for current-profile discovery, bound-thread named
+  mutex use, exclusive regular-file handles, FILE_ID observation, write-through delete-on-close staging,
+  no-replace hard-link/rename/delete operations, and flushed Registry records. The shim documents why
+  these exact Win32 mechanisms are needed, why the selected Haskell dependency surface does not expose
+  them directly, and the ownership/crash limits of every exported function.
+
 **Still open:**
 
 - migrate each provider-guest alias from `ObservedReady` plus `ln -s` to the plan-owned prepared
   operation and a backend able to provide same-privilege-resistant identity-bound conditional
   mutation/delete. The ordinary `/var/tmp` pathname cannot mint that receipt; an unsupported backend
-  must return typed `Unsupported`, and the demo may not bypass it;
-- replace WSL backup-existence inference with a Windows platform-authoritative lock/CAS and a durable
-  origin receipt that distinguishes exact original bytes from absence, then condition restore on that
-  identity. A pathname sidecar or process-local lock is not sufficient;
+  returns typed `Unsupported`, and the demo may not bypass it;
+- keep the current HKCU/named-mutex WSL adapter out of production authority. A same-user process can
+  ignore the advisory mutex and alter the caller-writable record, so it cannot satisfy § EE even though
+  its focused crash model and native primitives are useful implementation foundations;
+- implement the smallest authoritative Windows boundary as a hardened LocalSystem service with an
+  authenticated local-only pipe, service/SYSTEM-only HKLM journal, protected same-volume NTFS
+  original/managed-object vault, retained applied-state guard handle, and sealed one-use prepared permits
+  plus opaque receipt references. Unsupported filesystems/profile layouts and an unavailable or
+  unverifiable broker return typed `Unsupported`;
+- bind wall generations/fences to opaque expected leases instead of copying the current record's fence;
+  retain protected released tombstones for safe generation rollover; preflight unsupported hard-link
+  layouts before journaling; separate live-applied authority from restore/release authority; and bridge
+  the exact `ProviderWallAuthority`/`WslGlobalWallLease`/prepared-operation identity into the broker;
+- replace the production backup-existence effect only after that protected boundary exists, wire it
+  through Provider/demo apply and teardown, observe the runtime-effective CPU/memory/swap wall, and
+  remove the legacy `.bak` route through the deletion ledger;
 - run current native WSL2, native Incus/direct-Linux, and disposable Lima gates. The Windows `8/8`
   snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows lane.
 
@@ -775,6 +817,16 @@ validator passed. A disposable Apple `hostbootstrap-phase-11-10-smoke` Lima inst
 stop/start recovery, and guarded exact deletion; no pre-existing Lima instance existed, and the
 disposable instance and mount directory were removed. This closes only the available Lima lifecycle
 slice, not the guest-alias ownership primitive or any Windows/native-Linux gate.
+
+**Focused validation evidence (2026-07-27):** the alias suite passed **9**, the affected Reconcile,
+Readiness, and Provider suites passed **11**, **15**, and **34**, and all **5** alias compile-fail
+fixtures rejected the forbidden constructions. The combined WSL wall/model/config/native command
+`cabal test hostbootstrap-core-test --ghc-options=-Werror --test-options="-p WslGlobalWall"` passed
+**30/30**, including the Windows-native subset (**5/5**). `git diff --check`, the no-`.log` scan, and LF
+checks were clean. This evidence is intentionally focused: a direct threaded invocation of the complete
+test executable aborted with a generated-code access violation, and its leftover generated ownership
+directories contaminated a subsequent `CLISpec` retry. No new complete-suite result is credited; a clean
+sequential canonical core gate remains required before this tranche can be promoted.
 
 ## Documentation Requirements
 

@@ -119,7 +119,10 @@ only by the lifecycle plan.
 
 Owns one `SubstrateProvider`/`Lift` dispatch path for Incus, Lima, WSL2, and direct-host operations,
 including durable aliases and exclusive global WSL state. The definition-only `HostTarget` and WSL
-import surfaces have been removed; strong provider-guest alias ownership and global WSL CAS remain open.
+import surfaces have been removed. Typed provider-guest alias operations and a pure/Windows WSL wall
+protocol now exist as static foundations, but ordinary guest paths cannot supply strong alias authority
+and the HKCU/named-mutex wall adapter is cooperative rather than same-privilege-resistant. A protected
+Windows broker, production receipt integration, and the native provider gates remain open.
 
 ### Phase 12 — Opportunistic warm store
 

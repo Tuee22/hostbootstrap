@@ -433,8 +433,12 @@ complete workload projection remain owned by their dependent sprints:
   image-GC wall;
 - WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro and
   has no current platform-authoritative exclusive owner, so concurrent project declarations can race or
-  overwrite one another. Absent-original crash recovery lacks a persisted absence receipt, and an
-  existing running distro/VHDX need not adopt a changed declaration.
+  overwrite one another. A focused-tested pure state model, exact UTF-8/UTF-16 byte transformer, and
+  Windows FILE_ID/hard-link/HKCU interpreter now model present/absent crash recovery, but the interpreter
+  remains cooperative: a same-user peer can ignore its mutex or alter its caller-writable record, and
+  the production route still uses backup-existence inference. It therefore mints no strong authority.
+  A protected broker/receipt bridge and runtime observation remain open, and an existing running
+  distro/VHDX need not adopt a changed declaration.
 
 The target defense has three closed rings: promotion mints the sole provider-exact `ValidatedBudget`;
 plan preparation runs `verifyBudget` plus `fitsBudget` over the exact non-empty workload/effect set and

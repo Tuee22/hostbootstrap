@@ -52,7 +52,7 @@ defer status to this table.
 | 8 | [Dhall generation and extension contract](phase-8-dhall-generation-and-extension.md) | Done | — |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Done | — |
 | 10 | [Standardized test harness and execution shapes](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 done; 10.9 waits on Sprints 5.7 and 15.9 |
-| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10 removed dead dispatch/builders and strengthened Incus; strong guest-alias/WSL ownership plus native Windows/Linux gates remain |
+| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10 has typed alias/WSL foundations; protected production authority, integration, a clean full gate, and native Windows/Linux gates remain |
 | 12 | [Opportunistic warm store](phase-12-layered-warm-store.md) | Done | — |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprint 13.19 done; 13.17 active; 13.20 registry route waits on 14.7; 13.18 waits on the integration chain |
 | 14 | [Composition methodology](phase-14-composition-methodology.md) | Active | Sprint 14.7 is dependency-ready; Sprint 14.6 waits on 15.9 |

@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | Total polling plus sealed, resource-indexed readiness evidence.
@@ -51,6 +52,7 @@ module HostBootstrap.Readiness
 
     -- * Plan/resource-indexed readiness
     BackendProbeKey (..),
+    DurableShareReady,
     ProbeConstructionError (..),
     Probe,
     withBackendProbe,
@@ -58,6 +60,7 @@ module HostBootstrap.Readiness
     readyGeneration,
     readyPhaseVersion,
     readyObservationVersion,
+    dependencyObservationFromReady,
     awaitPlanReady,
     awaitPlanReadyWith,
   )
@@ -65,16 +68,28 @@ where
 
 import Control.Concurrent (threadDelay)
 import Data.Int (Int64)
+import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Reconcile
   ( ClusterResource,
+    ConflictDetail (ConflictDetail),
+    DependencyObservation,
     DockerResource,
     DurableShareResource,
+    FailureDetail (FailureDetail),
+    Managed,
     MinioResource,
     PlannedResource,
     ProviderResource,
+    ReconcileError (Conflict, Failure),
+    RecoveryDisposition (DoNotRetry),
+    ResourceHandle,
     RegistryResource,
+    dependencyObservation,
+    resourceHandleGeneration,
+    resourceHandleKey,
+    resourceHandleObservationVersion,
   )
 import Numeric.Natural (Natural)
 
@@ -339,6 +354,44 @@ readyPhaseVersion (Ready _ phaseVersion _) = phaseVersion
 
 readyObservationVersion :: Ready scope planId id resource dependency -> Word64
 readyObservationVersion (Ready _ _ observationVersion) = observationVersion
+
+{- | Bind readiness to the exact managed dependency snapshot consumed by a
+prepared operation.  The shared indices reject another plan/resource at compile
+time; equality of generation and observation version rejects stale evidence.
+-}
+dependencyObservationFromReady ::
+  ResourceHandle scope planId id resource Managed phase ->
+  Ready scope planId id resource dependency ->
+  Either
+    ReconcileError
+    (DependencyObservation scope planId id resource)
+dependencyObservationFromReady handle ready
+  | readyGeneration ready /= resourceHandleGeneration handle =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                ("generation=" <> Text.pack (show (resourceHandleGeneration handle)))
+                ("ready generation=" <> Text.pack (show (readyGeneration ready)))
+                "reprobe readiness for the exact managed generation"
+            )
+        )
+  | readyObservationVersion ready /= resourceHandleObservationVersion handle =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                (resourceHandleKey handle)
+                ("observation version=" <> Text.pack (show (resourceHandleObservationVersion handle)))
+                ("ready observation version=" <> Text.pack (show (readyObservationVersion ready)))
+                "reprobe the dependency and readiness from one snapshot"
+            )
+        )
+  | readyPhaseVersion ready == 0 =
+      Left
+        ( Failure
+            (FailureDetail "bind readiness" "phase version must be positive" DoNotRetry)
+        )
+  | otherwise = dependencyObservation handle (readyPhaseVersion ready)
 
 awaitPlanReady ::
   PollPolicy ->
