@@ -29,6 +29,18 @@ Every project that adopts hostbootstrap must keep these out of git:
   resets the full build state, deps included — see
   [build_and_run_model.md](../architecture/build_and_run_model.md)), so the
   existing `.build/` ignore already covers the store; no separate entry is needed.
+  **On Windows that reset requires long-path support.** Cabal stages every install
+  under `<store>/ghc-*/incoming/new-<pid>/` and replicates the absolute destination
+  path beneath it, so the repo-local store doubles to roughly 285 characters — past
+  the 260-char `MAX_PATH`. GHC creates those paths without complaint (its `base`
+  prefixes `\\?\`), and Cabal removes its own staging on a successful build, so the
+  leftovers only survive an **interrupted** build — exactly what the long demo gate
+  invites (see [durable_windows_runs.md](durable_windows_runs.md)). Without
+  `git config --global core.longpaths true`, `git clean -fxd` then fails with
+  `Filename too long` and silently leaves the tree behind. `hostbootstrap doctor`
+  reports this on Windows; see [prerequisites.md](prerequisites.md). Shortening the
+  store path is not an alternative — the doubling applies to the whole absolute path,
+  so the user-profile prefix alone consumes the headroom.
 * `.data/` — the production profile's durable host directory. The demo creates
   `<project-root>/.data`, carries it through provider shares and
   `/var/tmp/hostbootstrap-demo-data`, and mounts it through kind/nvkind into the

@@ -20,7 +20,9 @@ by the binary's ``ensure`` logic (``ensure incus``'s KVM self-heal and
 * **Windows** — winget (a required precondition, used by ``ensure cudawin``; the
   GHC/Cabal toolchain is PowerShell-bootstrapped, not winget-installed) and Windows
   PowerShell (which runs the toolchain bootstrap). WSL2 is a provider
-  dependency owned by the built binary's ``ensure wsl2`` path.
+  dependency owned by the built binary's ``ensure wsl2`` path. Long-path support is
+  reported *advisorily* rather than asserted: it governs build-state cleanup, not
+  whether the host can build (see ``_long_paths_status``).
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .substrate import Substrate, SubstrateName
+
+_LONG_PATHS_KEY = r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem"
 
 
 class PrereqError(RuntimeError):
@@ -135,6 +139,67 @@ def _check_powershell() -> None:
         )
 
 
+def _git_long_paths_enabled() -> bool | None:
+    """Whether Git is configured for paths past ``MAX_PATH``; ``None`` when Git is absent."""
+    if not _have("git"):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "core.longpaths"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip().lower() == "true"
+
+
+def _windows_long_paths_policy_enabled() -> bool:
+    """Whether the machine-wide ``LongPathsEnabled`` policy is on; unreadable means off."""
+    try:
+        result = subprocess.run(
+            ["reg", "query", _LONG_PATHS_KEY, "/v", "LongPathsEnabled"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    fields = result.stdout.split()
+    return bool(fields) and fields[-1] == "0x1"
+
+
+def _long_paths_status() -> str:
+    """Report long-path support: advisory, never fail-fast.
+
+    Cabal stages each install under ``<store>/ghc-*/incoming/new-<pid>/`` and replicates the
+    absolute destination path beneath it, so the repo-local ``.build/cabal-store`` doubles to
+    roughly 285 characters — past Windows' 260-char ``MAX_PATH``. GHC creates those paths
+    happily; what breaks is removing the leftovers an interrupted build strands. That makes
+    this a cleanup concern, not the pre-binary build floor this module otherwise asserts, so a
+    consumer whose project root is not even a Git repository must never be aborted over it.
+    """
+    git_enabled = _git_long_paths_enabled()
+    if git_enabled is None:
+        return "long paths: git not found; core.longpaths not verified"
+    remedies: list[str] = []
+    if not git_enabled:
+        remedies.append("run `git config --global core.longpaths true`")
+    if not _windows_long_paths_policy_enabled():
+        remedies.append(f"set LongPathsEnabled=1 under {_LONG_PATHS_KEY} (admin) for non-git tools")
+    if not remedies:
+        return "long paths: OK"
+    return (
+        "long paths: not fully enabled; "
+        + "; ".join(remedies)
+        + ". The cabal store under .build/ exceeds MAX_PATH, so `git clean -fxd` cannot "
+        "remove leftovers stranded by an interrupted build."
+    )
+
+
 async def _run_apple(substrate: Substrate) -> DoctorResult:
     messages: list[str] = []
     _check_macos_arm64()
@@ -168,6 +233,7 @@ async def _run_windows(substrate: Substrate) -> DoctorResult:
     messages.append("winget: OK")
     _check_powershell()
     messages.append("PowerShell: OK")
+    messages.append(_long_paths_status())
     return DoctorResult(substrate=substrate, messages=tuple(messages))
 
 

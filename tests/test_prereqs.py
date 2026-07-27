@@ -168,6 +168,90 @@ def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
         prereqs._check_powershell()
 
 
+def test_git_long_paths_enabled_reads_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "git")
+
+    def _run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert args == ["git", "config", "--get", "core.longpaths"]
+        return _completed(args, stdout="true\n")
+
+    monkeypatch.setattr(prereqs.subprocess, "run", _run)
+    assert prereqs._git_long_paths_enabled() is True
+
+    monkeypatch.setattr(
+        prereqs.subprocess, "run", lambda args, **_k: _completed(args, returncode=1, stdout="")
+    )
+    assert prereqs._git_long_paths_enabled() is False
+
+
+def test_git_long_paths_enabled_none_when_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
+    assert prereqs._git_long_paths_enabled() is None
+
+    monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "git")
+
+    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("no git")
+
+    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    assert prereqs._git_long_paths_enabled() is None
+
+
+def test_windows_long_paths_policy_reads_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    enabled = f"{prereqs._LONG_PATHS_KEY}\n    LongPathsEnabled    REG_DWORD    0x1\n"
+    monkeypatch.setattr(
+        prereqs.subprocess, "run", lambda args, **_k: _completed(args, stdout=enabled)
+    )
+    assert prereqs._windows_long_paths_policy_enabled()
+
+    disabled = enabled.replace("0x1", "0x0")
+    monkeypatch.setattr(
+        prereqs.subprocess, "run", lambda args, **_k: _completed(args, stdout=disabled)
+    )
+    assert not prereqs._windows_long_paths_policy_enabled()
+
+    monkeypatch.setattr(
+        prereqs.subprocess, "run", lambda args, **_k: _completed(args, returncode=1, stdout="")
+    )
+    assert not prereqs._windows_long_paths_policy_enabled()
+
+
+def test_windows_long_paths_policy_false_when_reg_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("no reg.exe")
+
+    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    assert not prereqs._windows_long_paths_policy_enabled()
+
+
+def test_long_paths_status_reports_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: None)
+    assert prereqs._long_paths_status() == "long paths: git not found; core.longpaths not verified"
+
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: True)
+    monkeypatch.setattr(prereqs, "_windows_long_paths_policy_enabled", lambda: True)
+    assert prereqs._long_paths_status() == "long paths: OK"
+
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: False)
+    git_only = prereqs._long_paths_status()
+    assert "core.longpaths" in git_only
+    assert "LongPathsEnabled" not in git_only
+    assert "MAX_PATH" in git_only
+
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: True)
+    monkeypatch.setattr(prereqs, "_windows_long_paths_policy_enabled", lambda: False)
+    policy_only = prereqs._long_paths_status()
+    assert "LongPathsEnabled" in policy_only
+    assert "core.longpaths" not in policy_only
+
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: False)
+    both = prereqs._long_paths_status()
+    assert "core.longpaths" in both
+    assert "LongPathsEnabled" in both
+
+
 async def test_run_linux_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     # The Linux floor is the build floor on every substrate: only Ubuntu +
     # passwordless sudo plus curl for the pinned GHCup download. KVM and the linux-gpu NVIDIA runtime moved to the
@@ -210,11 +294,27 @@ async def test_run_windows_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(prereqs, "_check_winget", lambda: calls.append("winget"))
     monkeypatch.setattr(prereqs, "_check_powershell", lambda: calls.append("powershell"))
+    monkeypatch.setattr(prereqs, "_long_paths_status", lambda: "long paths: OK")
 
     result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
 
     assert calls == ["winget", "powershell"]
-    assert result.messages == ("winget: OK", "PowerShell: OK")
+    assert result.messages == ("winget: OK", "PowerShell: OK", "long paths: OK")
+    assert not result.reboot_required
+
+
+async def test_run_windows_long_path_advisory_never_aborts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host missing long-path support still passes doctor; the message is advisory."""
+    monkeypatch.setattr(prereqs, "_check_winget", lambda: None)
+    monkeypatch.setattr(prereqs, "_check_powershell", lambda: None)
+    monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: False)
+    monkeypatch.setattr(prereqs, "_windows_long_paths_policy_enabled", lambda: False)
+
+    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
+
+    assert result.messages[-1].startswith("long paths: not fully enabled")
     assert not result.reboot_required
 
 

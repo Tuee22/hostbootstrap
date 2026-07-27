@@ -96,6 +96,17 @@ The Python bootstrapper asserts, fail-fast:
   a direct PowerShell download (`Invoke-WebRequest`), not through winget.
 - **PowerShell.** The host shell the pre-binary bootstrapper runs in (it drives the ghcup download).
 
+**Long-path support is reported, not asserted.** `doctor` adds an advisory `long paths:` line on
+Windows covering Git's `core.longpaths` and the machine-wide `LongPathsEnabled` policy, and it never
+raises. This is deliberate on two grounds. First, the concern is *cleanup*, not the pre-binary build
+floor this page owns: the repo-local Cabal store doubles past the 260-char `MAX_PATH` (see
+[gitignore_guardrails.md](gitignore_guardrails.md)), which GHC handles fine while `git clean -fxd`
+does not — so the host still builds. Second, `hostbootstrap` is a pipx-distributed CLI invoked against
+arbitrary project roots, which need not be Git repositories at all; a missing Git setting must never
+abort `doctor` on a host where it is irrelevant. The fix, when the advisory does fire, is
+`git config --global core.longpaths true` — sufficient on its own for `git clean`, with
+`LongPathsEnabled=1` covering non-Git tools.
+
 On `windows-gpu` the host additionally needs the **NVIDIA Windows driver** as an irreducible
 precondition for the headless host-build CUDA path (`ensure cudawin`, composition pattern #7).
 `ensure cudawin` installs the absent CUDA Toolkit and compiler stack through winget; that installable
