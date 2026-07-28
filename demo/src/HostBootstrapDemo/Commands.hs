@@ -78,9 +78,9 @@ import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
+    budgetFromResources,
     budgetMemoryBytes,
     budgetStorageBytes,
-    budgetFromResources,
     gibibytes,
     preflightHostBudget,
     resolveHostCapacity,
@@ -165,8 +165,8 @@ import HostBootstrap.Step (
     deployVMStep,
     exposePortStep,
     postHandoffStep,
-    projectStepId,
     projectStep,
+    projectStepId,
  )
 import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
@@ -195,24 +195,24 @@ import HostBootstrapDemo.Config (
     AcceleratorServiceConfig,
     DemoProject,
     DeployConfig (..),
-    haReplicasNat,
-    portNat,
     ProjectConfig (..),
     Resources,
-    cpu,
-    memory,
-    storage,
-    mkResources,
     WebServiceConfig (WebServiceConfig),
     configuredServiceVariant,
+    cpu,
     decodeProjectConfigFile,
     demoDefaultProjectConfig,
     demoDefaultResources,
     envelopeOfResources,
+    haReplicasNat,
+    memory,
+    mkResources,
+    portNat,
     projectConfigCodec,
     projectConfigFromContext,
     quantityText,
     renderProjectConfig,
+    storage,
  )
 import HostBootstrapDemo.Container (dockerBuildArgs)
 import HostBootstrapDemo.Web.Api (demoWebPod)
@@ -799,9 +799,13 @@ minioManifest =
         , "            httpGet: { path: /minio/health/ready, port: 9000 }"
         , "            periodSeconds: 5"
         , "            failureThreshold: 30"
-        , "          resources:"
-        , "            requests: { cpu: 100m, memory: 256Mi }"
-        , "            limits: { cpu: 500m, memory: 512Mi }"
+        , -- The registry streams the project image's multi-GiB layers through
+          -- MinIO as S3 multipart uploads; a 512Mi cap OOM-kills MinIO mid-upload
+          -- (its ClusterIP then refuses the connection and the registry surfaces
+          -- a generic "unknown error"). Size MinIO to sustain a large-image push.
+          "          resources:"
+        , "            requests: { cpu: 250m, memory: 1Gi }"
+        , "            limits: { cpu: \"2\", memory: 4Gi }"
         , "          volumeMounts:"
         , "            - { name: data, mountPath: /data }"
         , "      volumes:"
@@ -1033,7 +1037,7 @@ plain 'runOrDie'.
 pushImageBlob :: ObservedReady RegistryServing -> HostConfig -> String -> IO ()
 pushImageBlob _serving cfg ref = do
     outcome <- pollUntilReadyWith pushPoll "push-image" backoffNote pushProbe cfg
-    either (die . renderPollError) emitProgress outcome
+    either (\e -> dumpPushDiagnostics cfg >> die (renderPollError e)) emitProgress outcome
   where
     -- The 'push-image' label is prepended to a 'Failed' message by 'pollStep', so
     -- the rendered non-transient / could-not-run errors read exactly as before.
@@ -1050,6 +1054,29 @@ pushImageBlob _serving cfg ref = do
     classify (Left err) = Failed (ProbeFailure "docker push" ("could not run: " ++ err))
     backoffNote _ = putStrLn "push-image: transient registry error; retrying after backoff"
     emitProgress out = unless (null out) (putStr out)
+
+{- | TEMP DIAGNOSTIC (Sprint 13.18): on a push failure, dump the in-cluster
+registry/MinIO pod state and logs so the generic "unknown error" the registry
+returns is backed by its real cause.
+-}
+dumpPushDiagnostics :: HostConfig -> IO ()
+dumpPushDiagnostics cfg = do
+    putStrLn "push-image: DIAGNOSTIC — in-cluster registry/MinIO state and logs:"
+    mapM_ dump probes
+  where
+    probes =
+        [ ("get pods", ["get", "pods", "-o", "wide"])
+        , ("describe registry", ["describe", "pod", "-l", "app=registry"])
+        , ("registry logs", ["logs", "-l", "app=registry", "--tail=100"])
+        , ("minio logs", ["logs", "-l", "app=minio", "--tail=60"])
+        , ("df on registry", ["exec", "deploy/registry", "--", "df", "-h"])
+        ]
+    dump (label, args) = do
+        putStrLn ("--- kubectl " ++ label ++ " ---")
+        result <- runToolWithStdin cfg Kubectl args ""
+        case result of
+            Right (_, out, err) -> putStr out >> putStr err
+            Left e -> putStrLn ("(kubectl failed: " ++ e ++ ")")
 
 {- | Render the service projection from the actual validated parent topology.
 This replaces the chart's former hand-written Lima-only context: Incus, WSL2,
@@ -1223,8 +1250,13 @@ acceleratorDaemonManifest gpuDaemon frame daemonConfig acceleratorServicePort =
             , "            initialDelaySeconds: 1"
             , "            periodSeconds: 2"
             ]
-            ++ gpuRuntimeClass
+            -- Order matters: the container-level @resources@ (indent 10) must be
+            -- emitted while still inside the container, BEFORE the pod-spec-level
+            -- @runtimeClassName@ (indent 6). Reversing them dedents to the pod
+            -- spec first, so the container @resources:@ then parses as a nested
+            -- mapping under @runtimeClassName@'s scalar and YAML rejects it.
             ++ gpuResources
+            ++ gpuRuntimeClass
     gpuRuntimeClass
         | gpuDaemon = "      runtimeClassName: nvidia\n"
         | otherwise = ""
@@ -2207,7 +2239,8 @@ demoServices =
                 Right
                     ( Just
                         AcceleratorRoleFields
-                            {acceleratorParameters = acceleratorServiceConfig cfg}
+                            { acceleratorParameters = acceleratorServiceConfig cfg
+                            }
                     )
             _ -> Right Nothing
     runWeb :: LocalContextView -> WebRoleFields -> IO ()
@@ -2917,11 +2950,15 @@ runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Cont
             throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
     runEnsure EnsureCuda.reconciler
     cfg <- resolveHostConfig
+    -- The Docker build context is the repository root because the Dockerfile
+    -- copies both demo/ and core/. @Context.sourceRoot@ may legitimately be the
+    -- relative ".", so resolve it to an absolute path before deriving the repo
+    -- root: @takeDirectory "."@ is "." (not the parent), which would otherwise
+    -- run @docker build@ from the demo project dir and fail to resolve
+    -- @demo/docker/Dockerfile@.
+    absoluteRoot <- makeAbsolute root
     let bridgeDir = T.unpack (Context.sourceRoot ctx) </> "web" </> "src" </> "Generated"
-        -- The binary runs with cwd at the project root. The Docker build context
-        -- is the repository root because the Dockerfile copies both demo/ and
-        -- core/; Context.sourceRoot may legitimately be ".".
-        repoRoot = repoRootOfProjectRoot root
+        repoRoot = repoRootOfProjectRoot absoluteRoot
         repoRootCfg = parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
     putStrLn ("build-image: generating the PureScript bridge into " ++ bridgeDir)
     createDirectoryIfMissing True bridgeDir

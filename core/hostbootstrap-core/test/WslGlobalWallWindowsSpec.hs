@@ -6,14 +6,14 @@ module WslGlobalWallWindowsSpec (tests) where
 import qualified Data.ByteString as ByteString
 import HostBootstrap.Wsl2.GlobalWall.Windows
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
-  ( assertBool,
+import Test.Tasty.HUnit (
     assertFailure,
     testCase,
     (@?=),
-  )
+ )
 
 #if defined(mingw32_HOST_OS)
+import Test.Tasty.HUnit (assertBool)
 import Control.Concurrent (rtsSupportsBoundThreads, runInBoundThread, yield)
 import Control.Exception (bracket)
 import Control.Monad (replicateM_)
@@ -86,19 +86,19 @@ foreign import ccall unsafe "hb_wsl_free"
 
 managedBody :: [ByteString.ByteString]
 managedBody =
-  [ "[general]",
-    "instanceIdleTimeout=21600000",
-    "[wsl2]",
-    "processors=4",
-    "memory=8GB",
-    "swap=8GB",
-    "vmIdleTimeout=21600000"
-  ]
+    [ "[general]"
+    , "instanceIdleTimeout=21600000"
+    , "[wsl2]"
+    , "processors=4"
+    , "memory=8GB"
+    , "swap=8GB"
+    , "vmIdleTimeout=21600000"
+    ]
 
 tests :: TestTree
 tests =
-  testGroup
-    "WslGlobalWallWindowsSpec"
+    testGroup
+        "WslGlobalWallWindowsSpec"
 #if defined(mingw32_HOST_OS)
     [ testCase "armed hard-link handoff preserves FILE_ID and raw bytes after close" $
         withSystemTempDirectory "hostbootstrap-wall-native" $ \directory -> do

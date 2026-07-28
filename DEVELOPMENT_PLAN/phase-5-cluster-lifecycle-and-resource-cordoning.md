@@ -565,10 +565,10 @@ not reopen this root-admission contract.
 
 None.
 
-### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Blocked]
+### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprints 9.10 and 11.10
+**Status**: Active
+**Blocked by**: None (Sprint 9.10 and Sprint 11.10's alias/ownership primitive are landed)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
@@ -651,12 +651,38 @@ it does not construct lifecycle profiles, root/test authority, or the final `Pro
 
 #### Remaining Work
 
-Blocked until Sprints 9.10 and 11.10 land the result/ownership algebra and total provider/alias
-primitive. Then wire every cluster/storage backend mutation through those inputs and complete its
-conditional-ownership/storage-wall gates. Profile/root/test authority and `ProjectPlan` integration
-remain explicitly outside this sprint in the coordinated 10.9/15.9/16.6 tranche, avoiding a dependency
-back into this foundation. Sprint 5.5 remains independently Active for the unavailable native
-accelerator lanes; neither lane can close this phase by proxy for the other.
+**Delivered 2026-07-27 (total cluster ownership classification):**
+`HostBootstrap.Cluster.Reconcile` expresses the § EE total ownership classification for the kind cluster
+over Phase 9's opaque resource/receipt algebra (the same shape as the guest-alias backend).
+`settleClusterReconcile` returns `Either ReconcileError ReconcileResult`: an absent cluster created is
+`Changed Created`; a healthy same-named cluster with a matching committed proof is `Unchanged`, and
+**without** proof is a `ForeignResult` (never adopted); an **unhealthy or unverifiable** same-named
+cluster is a structured `Conflict` that is **never auto-deleted** — the explicit replacement for the
+`ensureCluster` "delete and recreate an unhealthy cluster" behavior; and a probe fault is a typed
+`Failure`, never a false absence (§ CC). `withPreparedClusterCleanup` requires a `Managed` handle and a
+matching receipt, and `settleClusterCleanup` refuses to remove a replacement carrying a different
+generation. `ClusterReconcileSpec` covers all seven branches, and two compile-fail fixtures
+(`ForeignClusterCleanup`, `CrossClusterReceipt`) prove an unmanaged handle or a cross-resource receipt
+cannot enter cleanup. `spStop` already releases the WSL2 wall (see Sprint 11.10). Core gate: **503/503**
+under `-Werror` on Linux.
+
+**Still open (this sprint):**
+
+- the **storage-wall backend operation**: apply the declared storage ceiling on every supported provider
+  and return a typed `Unsupported` where enforcement is impossible (bare Linux has no storage quota,
+  § O/§ 9.4), over already-validated budget inputs — not silent success;
+- the **IO backend that holds the four clauses for the cluster** (produces the `ClusterObservation`s
+  while holding a `flock`/provider-CAS lock, an origin record, and identity binding), analogous to the
+  guest-alias `GuestExec` backend, plus the loopback-bound exposure/credential backend operation;
+- replace the imperative `ensureCluster` delete-recreate and same-name adoption with the classification
+  above — the **command/plan-level wiring** is the coordinated 10.9/15.9/16.6 tranche's to consume
+  (Sprint 5.6 retains the command-level durable-readback gate meanwhile);
+- native provider real runs proving the applied storage wall and backend-level durable preservation.
+
+Profile/root/test authority and `ProjectPlan` integration remain explicitly outside this sprint in the
+coordinated 10.9/15.9/16.6 tranche, avoiding a dependency back into this foundation. Sprint 5.5 remains
+independently Active for the unavailable native accelerator lanes; neither lane can close this phase by
+proxy for the other.
 
 ### Sprint 5.8: Applied per-project Apple provider budget [Done]
 

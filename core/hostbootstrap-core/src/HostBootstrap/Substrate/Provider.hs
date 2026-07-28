@@ -59,8 +59,8 @@ where
 import Data.Char (isAsciiUpper)
 import Data.List (dropWhileEnd, isPrefixOf)
 import HostBootstrap.Cluster.Cordon (
-    budgetStorageBytes,
     budgetFromResources,
+    budgetStorageBytes,
     gibibytes,
     incusSizingArgs,
     limaSizingArgs,
@@ -72,20 +72,20 @@ import HostBootstrap.Incus (
     IncusVM (..),
     addDiskDeviceArgs,
     createVMArgs,
-    deviceListArgs,
     destroyVMArgs,
+    deviceListArgs,
     execVMArgs,
     pushFileArgs,
     startVMArgs,
     stopVMArgs,
  )
-import HostBootstrap.Lift
-    ( LiftContext (..)
-    , LiftDispatch (..)
-    , LiftLayer (..)
-    , LiftLeaf (..)
-    , foldLeaf
-    )
+import HostBootstrap.Lift (
+    LiftContext (..),
+    LiftDispatch (..),
+    LiftLayer (..),
+    LiftLeaf (..),
+    foldLeaf,
+ )
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), substrateName)
@@ -100,9 +100,10 @@ file, so the write backs up any pre-existing copy and the restore puts it back);
 data HostEffect
     = -- | write @content@ to @path@ on the host, preserving any existing file
       WriteHostFile FilePath String
-    | -- | merge a @[wsl2]@ body (header + keys) into the @.wslconfig@ at @path@,
-      -- preserving the user's other sections (never a full clobber), backing up
-      -- the original once so 'RestoreHostFile' can put it back
+    | {- | merge a @[wsl2]@ body (header + keys) into the @.wslconfig@ at @path@,
+      preserving the user's other sections (never a full clobber), backing up
+      the original once so 'RestoreHostFile' can put it back
+      -}
       MergeWslConfig FilePath [String]
     | -- | restore @path@ from its backup (or remove it if there was none)
       RestoreHostFile FilePath
@@ -206,11 +207,12 @@ data SubstrateProvider = SubstrateProvider
     , spLaunch :: ResourceEnvelope -> Maybe HostPathShare -> Either String [HostEffect]
     , spShare :: FilePath -> HostPathShare
     , spStartExisting :: [HostEffect]
-    , -- | @Nothing@ where the cordon is baked into the VM at create (Lima/Incus,
-      -- which never idle-stop). @Just@ for WSL2, whose cordon is the GLOBAL
-      -- @.wslconfig@ that only takes effect on a utility-VM restart: a running-state
-      -- probe plus the effects to run when the distro is STOPPED (safe to restart).
-      spReconcileCordon :: Maybe (ExistsProbe, [HostEffect])
+    , spReconcileCordon :: Maybe (ExistsProbe, [HostEffect])
+    {- ^ @Nothing@ where the cordon is baked into the VM at create (Lima/Incus,
+    which never idle-stop). @Just@ for WSL2, whose cordon is the GLOBAL
+    @.wslconfig@ that only takes effect on a utility-VM restart: a running-state
+    probe plus the effects to run when the distro is STOPPED (safe to restart).
+    -}
     , spWait :: WaitProbe
     , spTransfer :: FileTransfer
     , spStop :: [HostEffect]
@@ -320,14 +322,19 @@ selectSubstrateProvider sub h = case substrateName sub of
                         )
                 , spWait = WaitProbe Wsl (Wsl2.wslExecArgs distro ["true"])
                 , spTransfer = Wsl2MountTransfer vm
-                , -- @project down@ terminates the distro AND restores the global
-                  -- @.wslconfig@ (crash-recoverable never-clobber): the global cordon
-                  -- stops throttling the user's other distros as soon as the stack is
-                  -- stopped, not only on @destroy@. The file restore is idempotent
-                  -- (a no-op when there was no backup to restore).
+                , -- @project down@ releases the WSL2 wall so it means the same thing
+                  -- on every substrate (Lima and Incus already release on stop). The
+                  -- order is load-bearing: restore the global @.wslconfig@ FIRST, then
+                  -- @wsl --shutdown@, so the shared utility VM re-reads the restored
+                  -- (uncordoned) file on its next cold boot and drops the memory
+                  -- balloon. @wsl --shutdown@ (whole utility VM) rather than
+                  -- @wsl --terminate <distro>@ (one distro) is what actually releases
+                  -- the global wall; against the finite @vmIdleTimeout@ from Sprint
+                  -- 9.11 the VM then idles down instead of pinning memory between runs.
+                  -- The file restore is idempotent (a no-op when there was no backup).
                   spStop =
-                    [ RunHostTool Wsl (Wsl2.wslTerminateArgs distro)
-                    , RestoreHostFile wslConfig
+                    [ RestoreHostFile wslConfig
+                    , RunHostTool Wsl Wsl2.wslShutdownArgs
                     ]
                 , spDestroy =
                     (\argv -> [RunHostTool Wsl argv, RestoreHostFile wslConfig])

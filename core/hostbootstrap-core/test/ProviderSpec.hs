@@ -227,12 +227,17 @@ shareCases =
 
 teardownCases :: [TestTree]
 teardownCases =
-    [ testCase "stop is the stop/terminate argv per substrate (wsl2 also restores .wslconfig)" $ do
+    [ testCase "stop releases the wall per substrate (wsl2 restores .wslconfig first, then wsl --shutdown)" $ do
         spStop apple @?= [RunHostTool Lima ["stop", "demo-vm"]]
         spStop linux @?= [RunHostTool Incus ["stop", "demo-vm"]]
+        -- WSL2 releases its global wall on `project down` like Lima/Incus: the
+        -- order is load-bearing (restore the uncordoned .wslconfig FIRST, then
+        -- `wsl --shutdown` so the utility VM re-reads it on next cold boot), and
+        -- it is `--shutdown` (whole utility VM, releases the wall) rather than
+        -- `--terminate <distro>` (one distro, leaves the balloon pinned).
         spStop windows
-            @?= [ RunHostTool Wsl ["--terminate", "demo-vm"]
-                , RestoreHostFile "C:\\Users\\me\\.wslconfig"
+            @?= [ RestoreHostFile "C:\\Users\\me\\.wslconfig"
+                , RunHostTool Wsl ["--shutdown"]
                 ]
     , testCase "guarded destroy emits the delete argv (and wsl2 restores .wslconfig)" $ do
         spDestroy apple @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]

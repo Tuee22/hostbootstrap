@@ -53,13 +53,13 @@ defer status to this table.
 | 2 | [Host floor, tools, and config](phase-2-host-tools-and-config.md) | Done | — |
 | 3 | [Ensure reconcilers](phase-3-ensure-reconcilers.md) | Done | — |
 | 4 | [Project-local Dhall and command tree](phase-4-skeletal-dhall-and-command-tree.md) | Done | — |
-| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprint 5.8 done; 5.7 waits on 11.10 and now also owns the WSL2 `spStop` wall release; Sprints 5.5 and 5.6 retain their native/live gates |
+| 5 | [Cluster lifecycle and resource cordoning](phase-5-cluster-lifecycle-and-resource-cordoning.md) | Active | Sprints 5.8/5.6.1 done; 5.7's total cluster-ownership classification + `spStop` wall release landed (Active: storage-wall backend, cluster IO clause-holding backend, and native provider runs remain); Sprints 5.5/5.6 retain their GPU/durable-readback real-run gates |
 | 6 | [Base image and Python CLI surface](phase-6-base-image-and-thin-python-bootstrapper.md) | Done | — |
 | 7 | [Consumer adoption](phase-7-consumer-migration.md) | Done | — |
 | 8 | [Dhall generation and extension contract](phase-8-dhall-generation-and-extension.md) | Done | — |
 | 9 | [Applied budget cordon and one canonical parser](phase-9-applied-cordon-and-one-parser.md) | Active | Sprint 9.11's implementation landed 2026-07-27 (clauses restated; finite WSL2 idle timeouts derived from one constant); it stays open only for the live release observation it shares with Sprint 5.7. Sprints 9.1–9.10 remain delivered |
 | 10 | [Standardized test harness and execution shapes](phase-10-standardized-test-harness.md) | Active | Sprint 10.10 done; 10.9 waits on Sprints 5.7 and 15.9, and now owns the un-gated cross-substrate ownership-clause suite |
-| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10 has typed alias/WSL foundations; the portable ownership backend, native-shim removal, production integration, a clean full gate, and native Windows/Linux gates remain |
+| 11 | [Incus first-class host-provider](phase-11-incus-host-provider.md) | Active | Sprint 11.10's guest-alias ownership backend + WSL2 `spStop` release landed (clean 503/503 core gate); the WSL `.wslconfig` host-wall Win32 port + C-shim retirement, demo alias/`.bak` production migration, and native Windows/Lima gates remain |
 | 12 | [Opportunistic warm store](phase-12-layered-warm-store.md) | Done | — |
 | 13 | [hostbootstrap-demo worked app](phase-13-hostbootstrap-demo.md) | Active | Sprint 13.19 done; 13.17 active; 13.20 registry route waits on 14.7; 13.18 waits on the integration chain |
 | 14 | [Composition methodology](phase-14-composition-methodology.md) | Active | Sprint 14.7 is dependency-ready; Sprint 14.6 waits on 15.9 |

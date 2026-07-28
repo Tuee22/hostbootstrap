@@ -2,8 +2,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -90,6 +90,7 @@ module HostBootstrapDemo.Config (
 )
 where
 
+import Data.Either (fromRight)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -312,6 +313,7 @@ bootstrapper from the Cabal file. Runtime identity is part of the nested
 context and is validated against the derived project/binary name before
 normal command dispatch.
 -}
+
 -- | Type-level identity for the installed demo project.
 data DemoProject
 
@@ -544,7 +546,7 @@ renderProjectConfigSummary
                     <> quantityText cfgResources.storage
                 , "ha-replicas:  " <> T.pack (show cfgDeploy.haReplicas)
                 , "message:      " <> cfgMessage
-                , "service:      " <> T.pack (either (const "none") id (configuredServiceVariant cfg))
+                , "service:      " <> T.pack (fromRight "none" (configuredServiceVariant cfg))
                 ]
 
 -- ---------------------------------------------------------------------------
@@ -591,8 +593,9 @@ builtIn :: String -> Either String a -> a
 builtIn label =
     either (error . (("invalid " ++ label ++ ": ") ++)) id
 
--- | Canonical secret-free value used only for the separately named full-schema
--- Production/Harness artifacts. Runtime config still comes from assembly.
+{- | Canonical secret-free value used only for the separately named full-schema
+Production/Harness artifacts. Runtime config still comes from assembly.
+-}
 demoDefaultProjectConfig :: ProjectConfig scope
 demoDefaultProjectConfig =
     projectConfigForRole

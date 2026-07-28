@@ -805,27 +805,41 @@ projection primitive without treating them as direct-host path authority.
   deletion in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Its crash model
   survives in the pure state machine above.
 
+**Delivered 2026-07-27 (guest-alias ownership backend + WSL2 wall release):**
+
+- the provider-guest durable alias now has a real backend
+  (`HostBootstrap.Substrate.Provider.Alias`). `discoverStrongAliasBackend` probes the guest for the POSIX
+  ownership tools (`flock`/`stat`/`ln`/`readlink`/`unlink`/`sed`) and mints an opaque `StrongAliasBackend`
+  carrying an injectable `GuestExec`; production dispatches it through the provider lift, and a test
+  injects a local runner so the four § EE clauses run against a real POSIX filesystem on every substrate
+  this suite runs on. `runPreparedGuestAliasCall`/`runPreparedGuestAliasRelease` hold clause 1 (a
+  `flock -x` across the observe/mutate/settle bracket), clause 2 (a guest-side origin record written
+  before the first mutation), clause 3 (a `device:inode` identity — `stat` lstats the symlink — with a
+  `readlink` target guard), and clause 4 (a conditional `unlink` re-observed under the same lock that
+  refuses a foreign-replaced link as a structured `Conflict` and leaves it intact). The echoed generation
+  is the plan nonce `completeReconcile` must confirm; the kernel identity lives in the origin record.
+  Cross-run stable-generation idempotence via journal rehydration remains Sprint 16.6 work;
+- `spStop` releases the WSL2 wall on `project down`: it now restores `.wslconfig` **first**, then runs
+  `wsl --shutdown` (not `wsl --terminate <distro>`), so the shared utility VM re-reads the uncordoned file
+  and drops the memory balloon, against Sprint 9.11's finite idle timeouts. Lima/Incus already release on
+  stop. (This is the § EE/Sprint 5.7 uniform-`down` obligation, satisfied at the pure `spStop` layer.)
+
 **Still open:**
 
-- build one portable ownership backend holding the four § EE clauses, selected per platform without a
-  foreign-function boundary: `createFile` share-mode `0` / `flock` for exclusive entry; a journalled
-  origin record naming exact bytes or absence; `getFileInformationByHandle`'s
-  `bhfiVolumeSerialNumber`/`bhfiFileIndex` on Windows and `deviceID`/`fileID` on POSIX for identity
-  binding; and compare-before-act release. `Win32` ships with the pinned GHC and `unix` is already a
-  conditional dependency, so this adds none;
-- migrate each provider-guest alias from `ObservedReady` plus `ln -s` to the plan-owned prepared
-  operation over that backend. All three guests run the same Linux image, so `flock` +
-  `stat -c '%d %i'` + compare-before-`unlink` closes WSL2, Lima and Incus together. A host that cannot
-  hold a clause returns typed `Unsupported`, and the demo may not bypass it;
-- delete `cbits/wsl_global_wall.c`, the cabal `c-sources`/`extra-libraries` block, the test-suite
-  `-threaded` carve-out, and the `hb_wsl_*` foreign imports; rewrite the Windows wall spec against the
-  portable interface and **un-gate** it so the ownership suite runs on every substrate;
-- replace the production backup-existence effect once the backend exists, wire it through Provider/demo
-  apply and teardown, observe the runtime-effective CPU/memory/swap wall, and remove the legacy `.bak`
-  route through the deletion ledger;
-- make WSL2 release its wall on `project down` — `spStop` restores `.wslconfig` then runs
-  `wsl --shutdown` (Sprint 5.7), against the finite idle timeouts from Sprint 9.11. Lima and Incus
-  already release on stop;
+- the WSL2 global `.wslconfig` **host** wall backend: port `HostBootstrap.Wsl2.GlobalWall.Windows` off the
+  `hb_wsl_*` C shim onto the same portable interface — `flock` / `Win32 LockFileEx` exclusive entry, the
+  journalled origin record, `deviceID`/`fileID` (POSIX) and `getFileInformationByHandle` (Windows)
+  identity — then delete `cbits/wsl_global_wall.c`, the cabal `c-sources`/`extra-libraries` block, the
+  test-suite `-threaded` carve-out, and the `hb_wsl_*` foreign imports, and rewrite the Windows wall spec
+  against the portable interface and **un-gate** it. The POSIX path is Linux-validatable; the Win32 path
+  needs a native-Windows gate;
+- wire the guest-alias backend into production: migrate the demo's `mintDurableAlias` `ln -s` to the
+  plan-owned prepared operation over the backend (building the production `GuestExec` from the provider
+  lift), and remove the alias-fact bypass — coordinated with the plan-driven wiring shared with Sprints
+  5.7 and 16.6;
+- replace the production backup-existence (`.bak`) effect with the origin record once the host wall
+  backend exists, wire it through Provider/demo apply and teardown, and remove the legacy `.bak` route
+  through the deletion ledger;
 - run current native WSL2, native Incus/direct-Linux, and disposable Lima gates. The Windows `8/8`
   snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows lane.
 
@@ -847,6 +861,19 @@ checks were clean. This evidence is intentionally focused: a direct threaded inv
 test executable aborted with a generated-code access violation, and its leftover generated ownership
 directories contaminated a subsequent `CLISpec` retry. No new complete-suite result is credited; a clean
 sequential canonical core gate remains required before this tranche can be promoted.
+
+**Validation evidence (2026-07-27, guest-alias backend):** `cabal build all --ghc-options=-Werror` and the
+**complete** core suite `cabal test all --ghc-options=-Werror` pass at **494/494** on the Linux host — a
+clean sequential run (the test executable is not `-threaded` off Windows). `ProviderAliasSpec` grew to
+**13** cases: the pure prepare/settle algebra plus new real-filesystem cases exercising
+`discoverStrongAliasBackend` (mint vs. tool-absent `Unsupported`), create → own → conditional release
+(the alias is unlinked), a foreign-repointed alias refused as a structured `Conflict` and left intact, and
+a non-symlink occupant reported foreign — all through the real `flock`/`stat`/`ln`/`unlink` protocol on the
+host filesystem. The five alias compile-fail fixtures still reject the forged
+backend/prepared-call/observed-only/foreign-handle/cross-receipt constructions. `fourmolu`/`hlint` validate
+only in the container `check-code` on this host (the host `fourmolu` is a non-canonical version). This does
+**not** close the sprint: the WSL2 host `.wslconfig` wall Win32 port and C-shim retirement, the demo
+`ln -s` / `.bak` production migration, and the native WSL2/Lima gates remain open.
 
 ## Documentation Requirements
 

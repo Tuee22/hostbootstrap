@@ -68,6 +68,7 @@ library
       HostBootstrap.Cluster.Lifecycle
       HostBootstrap.Cluster.Cordon
       HostBootstrap.Cluster.Budget
+      HostBootstrap.Cluster.Reconcile
       HostBootstrap.Harness
       HostBootstrap.Service
       HostBootstrap.DocValidator
@@ -130,6 +131,7 @@ test-suite hostbootstrap-core-test
       CordonSpec
       ProviderSpec
       ProviderAliasSpec
+      ClusterReconcileSpec
       ProjectRootSpec
       ContextSpec
       LifecycleSpec

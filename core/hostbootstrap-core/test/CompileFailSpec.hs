@@ -27,6 +27,8 @@ tests =
         , rejects "ObservedReadyGuestAlias.hs"
         , rejects "ForeignGuestAliasRelease.hs"
         , rejects "CrossAliasReceipt.hs"
+        , rejects "ForeignClusterCleanup.hs"
+        , rejects "CrossClusterReceipt.hs"
         ]
 
 rejects :: FilePath -> TestTree

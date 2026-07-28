@@ -17,6 +17,7 @@ import qualified LifecycleSpec
 import qualified LiftSpec
 import qualified LimaSpec
 import qualified ProjectRootSpec
+import qualified ClusterReconcileSpec
 import qualified ProviderSpec
 import qualified ProviderAliasSpec
 import qualified ReadinessSpec
@@ -72,6 +73,7 @@ main = do
                         , CordonSpec.tests
                         , ProviderSpec.tests
                         , ProviderAliasSpec.tests
+                        , ClusterReconcileSpec.tests
                         , ProjectRootSpec.tests
                         , ContextSpec.tests
                         , LifecycleSpec.tests

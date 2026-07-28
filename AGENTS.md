@@ -37,6 +37,32 @@ accident, and duplicate output the harness already retains. If you encounter a s
 working tree (for example a leftover `deploy.log`), delete it. If a run genuinely needs a persisted
 artifact, ask the user where it should live rather than dropping a log into the repo.
 
+## Removals must be statically resolvable
+
+Write every `rm`/`rmdir` so its target resolves **before** the shell expands it. Claude Code carries
+a `dangerousRemoval` circuit breaker that raises a permission prompt for removal targets it cannot
+resolve statically, and that prompt is **not** suppressed by `bypassPermissions` ("yolo") mode, by
+the auto-approve classifier, or by a `Bash(rm:*)` allow rule. Rewriting the command is the only way
+to avoid it.
+
+A target is statically resolvable when it is an **absolute path**, its command contains **no `cd`**,
+and **at most one path segment is globbed**. Targets containing `..` after a real segment, `$VAR`,
+`$(...)`, or `~user` are never resolvable.
+
+```bash
+# prompts — cd plus a relative glob target
+cd demo && rm -rf .data/*
+
+# prompts — two globbed segments
+rm -rf demo/.data/*/*
+
+# clean — absolute, no cd, one glob level
+rm -rf /abs/path/to/hostbootstrap/demo/.data/*
+```
+
+Agents should build an absolute path from the working directory the harness reports rather than
+`cd`-ing into a subdirectory first.
+
 ## Line endings
 
 The repository's canonical line ending for all text files is **LF**. Windows-specific scripts
