@@ -201,10 +201,11 @@ hostbootstrap run -- context inspect
 hostbootstrap run -- project destroy
 ```
 
-The current `context-init` row is only an announcing chain anchor. VM config is produced/streamed inside
-the composite VM bootstrap action, container config is derived through `psFrameContext` during handoff,
-and service config is delivered through a ConfigMap. The target gives projection and authenticated
-delivery one plan-owned operation.
+The current `context-init` row's action body is only an announcement. VM config is produced/streamed
+inside the composite VM bootstrap action; container config rides the descent that same `context-init`
+row declares, so the announced boundary and the delivered bytes are one plan node; and service config is
+delivered through a ConfigMap. The target gives projection and authenticated delivery one plan-owned
+operation.
 
 ## Tests
 

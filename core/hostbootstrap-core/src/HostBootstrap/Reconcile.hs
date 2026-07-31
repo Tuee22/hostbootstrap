@@ -12,6 +12,8 @@ module HostBootstrap.Reconcile
   ( LifecyclePlan,
     withLifecyclePlan,
     lifecyclePlanDigest,
+    lifecyclePlanFrames,
+    lifecyclePlanSteps,
     Unclassified,
     Managed,
     Unmanaged,
@@ -38,6 +40,7 @@ module HostBootstrap.Reconcile
     PlannedResourceKind (..),
     plannedResourceKey,
     plannedResourceFrame,
+    plannedResourcePlanDigest,
     withPlannedResource,
     withPlannedResourceOfKind,
     PlannedEdge,
@@ -65,12 +68,19 @@ module HostBootstrap.Reconcile
     OperationDescriptor,
     plannedOperation,
     plannedGuestAliasOperation,
-    DependencyObservation,
-    dependencyObservation,
+    operationDescriptorDependencies,
+    DependencyProbe,
+    dependencyProbe,
+    DependencySnapshot,
+    emptyDependencySnapshot,
+    withDependencySnapshotEntry,
+    OperationPreconditionSet,
+    operationPreconditionKeys,
+    withOperationPreconditions,
+    zeroDependencyPreconditions,
     PreparedOperation,
     PreparedPreconditions,
     withPreparedOperation,
-    withPreparedSingleDependencyOperation,
     ReconcileResult,
     completeReconcile,
     withReconcileResult,
@@ -103,6 +113,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Config.Class (ProjectCodec, projectCodecSpecDigest)
+import HostBootstrap.Lifecycle.Prepared (
+  PreparedGate,
+  preparedGateAttempt,
+  preparedGateJournalVersion,
+  preparedGateOperation,
+  preparedGatePlan,
+ )
 import HostBootstrap.Step
   ( StepPlan,
     frameId,
@@ -127,6 +144,23 @@ withLifecyclePlan codec plan consume =
 
 lifecyclePlanDigest :: LifecyclePlan scope planId -> Text
 lifecyclePlanDigest (LifecyclePlan digest _) = digest
+
+-- | The validated step plan this lifecycle plan was built from. The reverse
+-- projection reads it here rather than accepting one from a caller, so the
+-- forward traversal and the teardown forest are provably the same plan (§ W).
+lifecyclePlanSteps :: LifecyclePlan scope planId -> StepPlan
+lifecyclePlanSteps (LifecyclePlan _ plan) = plan
+
+-- | Every frame identifier the validated plan declares, in chain order. The
+-- command gate compares a requested frame against this list, so an authority
+-- cannot be minted for a frame outside the plan.
+lifecyclePlanFrames :: LifecyclePlan scope planId -> [Text]
+lifecyclePlanFrames (LifecyclePlan _ plan) =
+  foldr dedupe [] (map (Text.pack . frameId . stepFrame) (stepPlanSteps plan))
+  where
+    dedupe value seen
+      | value `elem` seen = seen
+      | otherwise = value : seen
 
 planDigest :: ProjectCodec scope specDigest cfg -> StepPlan -> Text
 planDigest codec plan =
@@ -173,7 +207,7 @@ resourceHandleObservationVersion ::
 resourceHandleObservationVersion (ResourceHandle _ _ version) = version
 
 data PlannedResource scope planId id resource frame =
-  PlannedResource Text Text
+  PlannedResource Text Text Text
 
 data ProviderResource
 data DurableShareResource
@@ -194,12 +228,20 @@ data PlannedResourceKind resource where
 plannedResourceKey ::
   PlannedResource scope planId id resource frame ->
   Text
-plannedResourceKey (PlannedResource key _) = key
+plannedResourceKey (PlannedResource _ key _) = key
 
 plannedResourceFrame ::
   PlannedResource scope planId id resource frame ->
   Text
-plannedResourceFrame (PlannedResource _ frame) = frame
+plannedResourceFrame (PlannedResource _ _ frame) = frame
+
+-- | The plan digest this resource was resolved from. The prepare gate is
+-- checked against it, so a gate recorded in another plan's journal cannot
+-- prepare this plan's operation.
+plannedResourcePlanDigest ::
+  PlannedResource scope planId id resource frame ->
+  Text
+plannedResourcePlanDigest (PlannedResource digest _ _) = digest
 
 withPlannedResource ::
   LifecyclePlan scope planId ->
@@ -209,7 +251,7 @@ withPlannedResource ::
     result
   ) ->
   Either ReconcileError result
-withPlannedResource (LifecyclePlan _ plan) requestedKey consume =
+withPlannedResource (LifecyclePlan planDigestOfPlan plan) requestedKey consume =
   case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
     Nothing ->
       Left
@@ -224,6 +266,7 @@ withPlannedResource (LifecyclePlan _ plan) requestedKey consume =
       Right
         ( consume
             ( PlannedResource
+                planDigestOfPlan
                 requestedKey
                 (Text.pack (frameId (stepFrame step)))
             )
@@ -238,7 +281,7 @@ withPlannedResourceOfKind ::
     result
   ) ->
   Either ReconcileError result
-withPlannedResourceOfKind (LifecyclePlan _ plan) resourceKind requestedKey consume
+withPlannedResourceOfKind (LifecyclePlan planDigestOfPlan plan) resourceKind requestedKey consume
   | plannedKindAccepts resourceKind requestedKey =
       case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
         Nothing ->
@@ -253,7 +296,7 @@ withPlannedResourceOfKind (LifecyclePlan _ plan) resourceKind requestedKey consu
         Just step ->
           Right
             ( consume
-                (PlannedResource requestedKey (Text.pack (frameId (stepFrame step))))
+                (PlannedResource planDigestOfPlan requestedKey (Text.pack (frameId (stepFrame step))))
             )
   | otherwise =
       Left
@@ -266,15 +309,47 @@ withPlannedResourceOfKind (LifecyclePlan _ plan) resourceKind requestedKey consu
             )
         )
 
-plannedKindAccepts :: PlannedResourceKind resource -> Text -> Bool
-plannedKindAccepts resourceKind key =
+{- | The closed operation key each planned resource family owns.  This is the
+single source of truth for "which validated steps carry a plan-owned resource":
+'plannedKindAccepts' and the dependency-snapshot traversal both read it, so a new
+family cannot be admitted to one and omitted from the other.
+-}
+plannedKindKey :: PlannedResourceKind resource -> Text
+plannedKindKey resourceKind =
   case resourceKind of
-    ProviderResourceKind -> key == "core:deploy-vm"
-    DurableShareResourceKind -> key == "core:copy-source"
-    DockerResourceKind -> key == "core:ensure-docker"
-    MinioResourceKind -> key == "project:deploy-minio"
-    RegistryResourceKind -> key == "project:deploy-registry"
-    ClusterResourceKind -> key == "core:deploy-kind"
+    ProviderResourceKind -> "core:deploy-vm"
+    DurableShareResourceKind -> "core:copy-source"
+    DockerResourceKind -> "core:ensure-docker"
+    MinioResourceKind -> "project:deploy-minio"
+    RegistryResourceKind -> "project:deploy-registry"
+    ClusterResourceKind -> "core:deploy-kind"
+
+data SomePlannedResourceKind where
+  SomePlannedResourceKind :: PlannedResourceKind resource -> SomePlannedResourceKind
+
+-- | Every planned resource family, in plan order.
+plannedResourceKinds :: [SomePlannedResourceKind]
+plannedResourceKinds =
+  [ SomePlannedResourceKind ProviderResourceKind,
+    SomePlannedResourceKind DurableShareResourceKind,
+    SomePlannedResourceKind DockerResourceKind,
+    SomePlannedResourceKind MinioResourceKind,
+    SomePlannedResourceKind RegistryResourceKind,
+    SomePlannedResourceKind ClusterResourceKind
+  ]
+
+{- | The operation keys that denote a plan-owned resource.  A validated step
+outside this set — a project's own @ensure@ fragment, a context announcement, a
+build step — mutates no plan resource, so it contributes no dependency edge and
+no managed handle can exist for it.  This is what makes the ordered edge set of
+§ CC a set over /resources/ rather than over every preceding step.
+-}
+plannedResourceFamilyKeys :: [Text]
+plannedResourceFamilyKeys =
+  [plannedKindKey resourceKind | SomePlannedResourceKind resourceKind <- plannedResourceKinds]
+
+plannedKindAccepts :: PlannedResourceKind resource -> Text -> Bool
+plannedKindAccepts resourceKind key = plannedKindKey resourceKind == key
 
 plannedKindName :: PlannedResourceKind resource -> Text
 plannedKindName resourceKind =
@@ -300,7 +375,7 @@ withPlannedEdge ::
     result
   ) ->
   Either ReconcileError result
-withPlannedEdge (LifecyclePlan _ plan) targetKey dependencyKey consume = do
+withPlannedEdge (LifecyclePlan planDigestOfPlan plan) targetKey dependencyKey consume = do
   targetStep <-
     maybe
       (missing targetKey)
@@ -315,8 +390,8 @@ withPlannedEdge (LifecyclePlan _ plan) targetKey dependencyKey consume = do
     then
       Right
         ( consume
-            (PlannedResource targetKey (Text.pack (frameId (stepFrame targetStep))))
-            (PlannedResource dependencyKey (Text.pack (frameId (stepFrame dependencyStep))))
+            (PlannedResource planDigestOfPlan targetKey (Text.pack (frameId (stepFrame targetStep))))
+            (PlannedResource planDigestOfPlan dependencyKey (Text.pack (frameId (stepFrame dependencyStep))))
             (PlannedEdge targetKey dependencyKey)
         )
     else
@@ -375,7 +450,7 @@ withProviderGuestAliasProjection (LifecyclePlan _ plan) provider share consume
           | stepIdentity providerStep `elem` stepDependencies plan shareStep ->
               Right
                 ( consume
-                    (PlannedResource aliasKey (plannedResourceFrame share))
+                    (PlannedResource (plannedResourcePlanDigest share) aliasKey (plannedResourceFrame share))
                     (PlannedEdge aliasKey shareKey)
                 )
           | otherwise ->
@@ -665,7 +740,7 @@ completeAdoption handle (VerifiedForeignOrigin originKey originGeneration origin
             )
 
 data OperationDescriptor scope planId id resource fromPhase toPhase =
-  OperationDescriptor Text Text [Text]
+  OperationDescriptor Text Text Text [Text]
 
 plannedOperation ::
   LifecyclePlan scope planId ->
@@ -695,13 +770,20 @@ plannedOperation (LifecyclePlan _ plan) planned handle callDigest
       Just step ->
         Right
           ( OperationDescriptor
+              (plannedResourcePlanDigest planned)
               (plannedResourceKey planned)
               callDigest
-              [ Text.pack (operationKeyText (stepOperationKey dependency))
+              -- The exact ordered *resource-bearing* prefix (§ CC).  The
+              -- validated prefix may also contain steps that own no plan
+              -- resource; those have no managed handle to observe, so including
+              -- them would make the edge set unsatisfiable rather than stricter.
+              [ key
               | dependencyIdentity <- stepDependencies plan step
               , dependency <-
                   maybeToList
                     (find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps plan))
+              , let key = Text.pack (operationKeyText (stepOperationKey dependency))
+              , key `elem` plannedResourceFamilyKeys
               ]
           )
   where
@@ -754,6 +836,7 @@ plannedGuestAliasOperation planned (PlannedEdge edgeTarget edgeDependency) handl
   | otherwise =
       Right
         ( OperationDescriptor
+            (plannedResourcePlanDigest planned)
             (plannedResourceKey planned)
             callDigest
             [edgeDependency]
@@ -769,6 +852,12 @@ plannedGuestAliasOperation planned (PlannedEdge edgeTarget edgeDependency) handl
                 "derive the alias operation from one provider guest projection"
             )
         )
+
+-- | The exact ordered dependency operation keys a descriptor demands.
+operationDescriptorDependencies ::
+  OperationDescriptor scope planId id resource fromPhase toPhase ->
+  [Text]
+operationDescriptorDependencies (OperationDescriptor _ _ _ dependencies) = dependencies
 
 data DependencyObservation scope planId dependencyId dependency =
   DependencyObservation Text Word64 Word64
@@ -791,27 +880,221 @@ dependencyObservation handle phaseVersion
             phaseVersion
         )
 
+{- | A plan-owned probe that produces a /fresh/ phase-observation version for one
+managed dependency at prepare time.  It is stored beside the managed handle in
+the dependency snapshot and is run by the traversal, never by the caller of
+'withPreparedOperation'; that is what stops a retained observation taken earlier
+in the bring-up from authorizing a later effect (§ CC).
+-}
+newtype DependencyProbe scope planId dependencyId dependency =
+  DependencyProbe (IO (Either ReconcileError Word64))
+
+dependencyProbe ::
+  IO (Either ReconcileError Word64) ->
+  DependencyProbe scope planId dependencyId dependency
+dependencyProbe = DependencyProbe
+
+data DependencySnapshotEntry scope planId where
+  DependencySnapshotEntry ::
+    ResourceHandle scope planId dependencyId dependency Managed phase ->
+    DependencyProbe scope planId dependencyId dependency ->
+    DependencySnapshotEntry scope planId
+
+{- | The managed resources this plan has acquired so far, each paired with its
+plan-owned probe.  Only 'completeReconcile' / 'completePreparedUnchanged' can
+produce the @Managed@ handle an entry requires, so an unowned or foreign
+resource cannot enter the snapshot.
+-}
+newtype DependencySnapshot scope planId =
+  DependencySnapshot [DependencySnapshotEntry scope planId]
+
+emptyDependencySnapshot :: DependencySnapshot scope planId
+emptyDependencySnapshot = DependencySnapshot []
+
+withDependencySnapshotEntry ::
+  ResourceHandle scope planId dependencyId dependency Managed phase ->
+  DependencyProbe scope planId dependencyId dependency ->
+  DependencySnapshot scope planId ->
+  DependencySnapshot scope planId
+withDependencySnapshotEntry handle probe (DependencySnapshot entries) =
+  DependencySnapshot (entries ++ [DependencySnapshotEntry handle probe])
+
+{- | The sealed preconditions of exactly one operation.  Its only producer is the
+plan-owned traversal 'withOperationPreconditions', so a caller can neither hand
+'withPreparedOperation' an assembled observation list nor select or omit a member
+of the plan's ordered edge set.
+-}
+data OperationPreconditionSet scope planId id resource =
+  OperationPreconditionSet Text Text Text [SomeDependencyObservation scope planId]
+
+-- | The dependency keys actually sealed, in plan order. Reporting only.
+operationPreconditionKeys ::
+  OperationPreconditionSet scope planId id resource ->
+  [Text]
+operationPreconditionKeys (OperationPreconditionSet _ _ _ observations) =
+  [key | SomeDependencyObservation (DependencyObservation key _ _) <- observations]
+
+{- | The plan-owned dependency-snapshot traversal (§ CC).
+
+It reads the exact ordered edge set out of the descriptor the plan minted, looks
+up each member's managed resource in the snapshot, and runs that member's
+plan-owned probe /now/.  A member the snapshot does not carry refuses; a member
+carried twice refuses; a probe that does not observe readiness refuses.  The
+zero-dependency branch is reached only when the descriptor itself declares no
+edges, because the traversal iterates the descriptor rather than the snapshot.
+-}
+{- | The zero-dependency branch of the traversal.  It is reachable only for an
+operation whose plan descriptor declares no edges — a descriptor that names any
+dependency is refused here and must go through 'withOperationPreconditions', so
+this is not a route around the snapshot.
+-}
+zeroDependencyPreconditions ::
+  OperationDescriptor scope planId id resource fromPhase toPhase ->
+  Either ReconcileError (OperationPreconditionSet scope planId id resource)
+zeroDependencyPreconditions (OperationDescriptor planDigestOfOperation operationKey callDigest expectedDependencies)
+  | null expectedDependencies =
+      Right (OperationPreconditionSet planDigestOfOperation operationKey callDigest [])
+  | otherwise =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                operationKey
+                "an operation with no plan dependencies"
+                ( "the plan declares "
+                    <> Text.intercalate "," expectedDependencies
+                )
+                "seal this operation through the plan dependency-snapshot traversal"
+            )
+        )
+
+withOperationPreconditions ::
+  OperationDescriptor scope planId id resource fromPhase toPhase ->
+  DependencySnapshot scope planId ->
+  IO (Either ReconcileError (OperationPreconditionSet scope planId id resource))
+withOperationPreconditions
+  (OperationDescriptor planDigestOfOperation operationKey callDigest expectedDependencies)
+  (DependencySnapshot entries) = go [] expectedDependencies
+    where
+      go acc [] =
+        pure
+          ( Right
+              ( OperationPreconditionSet
+                  planDigestOfOperation
+                  operationKey
+                  callDigest
+                  (reverse acc)
+              )
+          )
+      go acc (dependencyKey : rest) =
+        case [entry | entry@(DependencySnapshotEntry handle _) <- entries, resourceHandleKey handle == dependencyKey] of
+          [] ->
+            pure
+              ( Left
+                  ( Failure
+                      ( FailureDetail
+                          "seal operation preconditions"
+                          ( "no managed resource for plan dependency "
+                              <> dependencyKey
+                              <> " of "
+                              <> operationKey
+                          )
+                          ReprobeBeforeRetry
+                      )
+                  )
+              )
+          _ : _ : _ ->
+            pure
+              ( Left
+                  ( Conflict
+                      ( ConflictDetail
+                          dependencyKey
+                          "one managed resource per plan dependency"
+                          "the dependency snapshot carries the key more than once"
+                          "register each acquired resource under its plan operation key exactly once"
+                      )
+                  )
+              )
+          [DependencySnapshotEntry handle (DependencyProbe probe)] -> do
+            observed <- probe
+            case observed >>= dependencyObservation handle of
+              Left err -> pure (Left err)
+              Right observation ->
+                go (SomeDependencyObservation observation : acc) rest
+
 data PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion =
   PreparedOperation Text Text Text Word64 Word64
 
 data PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion =
   PreparedPreconditions Text Text Text Word64 Word64
 
+{- | Mint the prepared operation/preconditions pair for one plan operation.
+
+The attempt and journal version are read off the 'PreparedGate' rather than
+taken from the caller, so an adapter cannot be reached with a fabricated journal
+version: the gate exists only because
+'HostBootstrap.Lifecycle.Prepared.recordDurableUnknown' published this
+operation's unknown phase against the protected store first.  The gate is also
+checked to name /this/ operation, so a gate recorded for a different operation
+cannot prepare this one.
+-}
 withPreparedOperation ::
   OperationDescriptor scope planId id resource fromPhase toPhase ->
-  [SomeDependencyObservation scope planId] ->
-  Word64 ->
-  Word64 ->
+  OperationPreconditionSet scope planId id resource ->
+  PreparedGate ->
   ( forall operationKey callDigest attempt journalVersion.
     PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
     PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
     result
   ) ->
   Either ReconcileError result
-withPreparedOperation (OperationDescriptor operationKey callDigest expectedDependencies) observations attempt journalVersion consume
-  | attempt == 0 =
+withPreparedOperation
+  (OperationDescriptor planDigestOfOperation operationKey callDigest expectedDependencies)
+  (OperationPreconditionSet sealedPlan sealedOperation sealedDigest observations)
+  gate
+  consume
+  | preparedGatePlan gate /= planDigestOfOperation =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                operationKey
+                ("a prepare gate from plan " <> planDigestOfOperation)
+                ("a prepare gate from plan " <> preparedGatePlan gate)
+                "prepare each operation through its own plan's journal"
+            )
+        )
+  | sealedPlan /= planDigestOfOperation =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                operationKey
+                ("preconditions sealed for plan " <> planDigestOfOperation)
+                ("preconditions sealed for plan " <> sealedPlan)
+                "seal the precondition set from the same plan operation descriptor"
+            )
+        )
+  | preparedGateOperation gate /= operationKey =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                operationKey
+                ("a prepare gate recorded for " <> operationKey)
+                ("a prepare gate recorded for " <> preparedGateOperation gate)
+                "record this operation's unknown phase before preparing it"
+            )
+        )
+  | sealedOperation /= operationKey || sealedDigest /= callDigest =
+      Left
+        ( Conflict
+            ( ConflictDetail
+                operationKey
+                ("preconditions sealed for " <> operationKey <> ":" <> callDigest)
+                ("preconditions sealed for " <> sealedOperation <> ":" <> sealedDigest)
+                "seal the precondition set from the same plan operation descriptor"
+            )
+        )
+  | preparedGateAttempt gate == 0 =
       Left (Failure (FailureDetail "prepare operation" "attempt must be positive" DoNotRetry))
-  | journalVersion == 0 =
+  | preparedGateJournalVersion gate == 0 =
       Left (Failure (FailureDetail "prepare operation" "journal version must be positive" DoNotRetry))
   | any invalidObservation observations =
       Left (Conflict (ConflictDetail operationKey "fresh managed dependency" "stale dependency" "reprobe the complete dependency set"))
@@ -832,15 +1115,15 @@ withPreparedOperation (OperationDescriptor operationKey callDigest expectedDepen
                 operationKey
                 (operationKey <> ":" <> callDigest)
                 callDigest
-                attempt
-                journalVersion
+                (preparedGateAttempt gate)
+                (preparedGateJournalVersion gate)
             )
             ( PreparedPreconditions
                 operationKey
                 (operationKey <> ":" <> callDigest)
                 callDigest
-                attempt
-                journalVersion
+                (preparedGateAttempt gate)
+                (preparedGateJournalVersion gate)
             )
         )
   where
@@ -851,26 +1134,10 @@ withPreparedOperation (OperationDescriptor operationKey callDigest expectedDepen
       | SomeDependencyObservation (DependencyObservation key _ _) <- observations
       ]
 
-{- | Prepare an operation whose closed descriptor requires exactly one managed
-dependency.  Keeping the existential packaging private prevents callers from
-assembling an unrelated heterogeneous dependency list.
+{- | The private existential packaging of one sealed dependency observation.  It
+never leaves this module, so a caller cannot assemble a heterogeneous dependency
+list of its own.
 -}
-withPreparedSingleDependencyOperation ::
-  OperationDescriptor scope planId id resource fromPhase toPhase ->
-  DependencyObservation scope planId dependencyId dependency ->
-  Word64 ->
-  Word64 ->
-  ( forall operationKey callDigest attempt journalVersion.
-    PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
-    PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
-    result
-  ) ->
-  Either ReconcileError result
-withPreparedSingleDependencyOperation descriptor observation =
-  withPreparedOperation
-    descriptor
-    [SomeDependencyObservation observation]
-
 data SomeDependencyObservation scope planId where
   SomeDependencyObservation ::
     DependencyObservation scope planId dependencyId dependency ->

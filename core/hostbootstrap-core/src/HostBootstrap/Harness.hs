@@ -44,6 +44,9 @@ module HostBootstrap.Harness (
     selectTestMatrix,
     Case (..),
     CaseResult (..),
+    caseResultPassed,
+    caseResultLabel,
+    caseResultReason,
     Report (..),
     Seams (..),
     TestSuite (..),
@@ -59,17 +62,17 @@ module HostBootstrap.Harness (
     runSuiteSelection,
     testSafetyPreconditions,
     testDataRoot,
+    testDataGeneration,
     selfCreatedTestDataRemoval,
-    withSelfCreatedTestData,
+    HarnessRunOwnership (..),
     runMatrix,
     reportCard,
     allPassed,
 )
 where
 
-import Control.Exception (Exception, SomeAsyncException, SomeException, displayException, fromException, mask, onException, tryJust)
+import Control.Exception (Exception, SomeAsyncException, SomeException, displayException, fromException, tryJust)
 import Control.Exception.Safe (finally)
-import Control.Monad (unless)
 import Data.Char (isAlphaNum)
 import Data.List (group, sort)
 import Data.List.NonEmpty (NonEmpty)
@@ -77,8 +80,8 @@ import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import Numeric.Natural (Natural)
-import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectory, removePathForcibly)
-import System.FilePath (takeDirectory)
+import System.Directory (doesFileExist)
+import System.FilePath ((</>))
 
 {- | A validated, stable test-case identity. Construction rejects empty,
 reserved, or malformed text; the constructor remains private so every value has
@@ -294,9 +297,64 @@ data Case = Case
     }
     deriving (Eq, Show)
 
--- | The outcome of one case.
-data CaseResult = Pass | Fail String
+{- | The outcome of one case.
+
+Non-passing outcomes are __distinct__, not one flattened failure string
+(development_plan_standards § Y, § Z): "the assertion said no", "we refused
+before touching operator state", "the lifecycle broke", and "cleanup broke" have
+different operator consequences, so the report card names which one happened
+instead of leaving the reader to parse a prefix.
+
+'Fail' is the project's own verdict; every other non-passing constructor is the
+engine's classification of a lifecycle outcome, so a project assertion cannot
+label itself a refusal or a teardown failure.
+-}
+data CaseResult
+    = Pass
+    | -- | The case's own assertion said no.
+      Fail String
+    | -- | A post-ensure safety probe found pre-existing operator state. Nothing
+      -- was acquired, so nothing is torn down and no foreign state is touched.
+      Refused String
+    | -- | An attempted lifecycle operation failed. The run's owned state is torn
+      -- down; the cause is the reason, never a bare exit code (§ CC).
+      LifecycleFailed String
+    | -- | Cleanup failed. The variant is red rather than green with leaked
+      -- state, and the reason names what could not be released.
+      TeardownFailed String
     deriving (Eq, Show)
+
+{- | Whether an outcome is a pass. Total, so adding an outcome cannot silently
+be counted as success.
+-}
+caseResultPassed :: CaseResult -> Bool
+caseResultPassed outcome = case outcome of
+    Pass -> True
+    Fail _ -> False
+    Refused _ -> False
+    LifecycleFailed _ -> False
+    TeardownFailed _ -> False
+
+{- | The fixed-width report-card label for an outcome. Distinct labels are the
+point: an operator scanning a report can tell a broken assertion from a refusal
+from leaked state without reading the reason.
+-}
+caseResultLabel :: CaseResult -> String
+caseResultLabel outcome = case outcome of
+    Pass -> "PASS    "
+    Fail _ -> "FAIL    "
+    Refused _ -> "REFUSED "
+    LifecycleFailed _ -> "BROKEN  "
+    TeardownFailed _ -> "LEAKED? "
+
+-- | The reason an outcome carries, if it carries one.
+caseResultReason :: CaseResult -> Maybe String
+caseResultReason outcome = case outcome of
+    Pass -> Nothing
+    Fail reason -> Just reason
+    Refused reason -> Just reason
+    LifecycleFailed reason -> Just reason
+    TeardownFailed reason -> Just reason
 
 -- | The aggregated matrix report.
 newtype Report = Report {reportResults :: [(String, CaseResult)]}
@@ -313,11 +371,25 @@ data Seams env = Seams
     }
 
 {- | The canonical durable directory for test runs (development_plan_standards § Z):
-test durable storage is always @.test_data@, **never** @.data@. A test stack's
-data is rooted here.
+test durable storage is always @.test_data@, **never** @.data@.
+
+This is the shared /parent/ only. A run never owns this directory: it owns the
+per-run generation @.test_data\/\<runId\>@ underneath it, derived by
+'testDataGeneration'. The parent is ordinary project scaffolding — created if
+missing, never bound to a receipt and never removed — so two runs cannot contend
+for the same durable object, and a crashed predecessor's generation is
+identifiable by name as well as by kernel identity.
 -}
 testDataRoot :: FilePath
 testDataRoot = ".test_data"
+
+{- | The durable generation one harness run owns: @.test_data\/\<runId\>@
+(development_plan_standards § Z). The run identity is generative, so no two runs
+— concurrent or sequential — can name the same generation, and the terminal
+close projection releases exactly the generation its own @runId@ names.
+-}
+testDataGeneration :: FilePath -> T.Text -> FilePath
+testDataGeneration parent run = parent </> T.unpack run
 
 {- | The **self-created-only** delete-guard removal set for a run's @.test_data@
 directory (development_plan_standards § Z): a directory this run created is
@@ -328,27 +400,17 @@ directory it merely /found/). Pure, so the guard is unit-tested.
 selfCreatedTestDataRemoval :: Bool -> FilePath -> [FilePath]
 selfCreatedTestDataRemoval preexisting path = [path | not preexisting]
 
-{- | Run @body@ with a run's @.test_data@ durable directory under the
-self-created-only delete-guard (§ Z): create @path@ if it is absent (recording
-that this run created it), then on exit remove it **only** if this run created it.
-A pre-existing @.test_data@ (or any directory the harness found) is preserved, so
-a test never deletes durable state it did not create. The removal decision is the
-pure 'selfCreatedTestDataRemoval'; this is the thin IO bracket around it.
+{- | The exclusive-run-ownership bracket the engine runs its variants inside.
+
+The engine deliberately does not implement ownership itself: the protected
+store, project-wide mode, run lease, and abandoned-run sweep live in
+"HostBootstrap.Harness.Ownership", which the command layer builds from the
+project the binary *is*. The engine only requires that *some* bracket takes
+ownership before a variant runs and releases it afterwards, and that a refusal
+is a 'Left' rather than an exception.
 -}
-withSelfCreatedTestData :: FilePath -> IO a -> IO a
-withSelfCreatedTestData path body =
-    mask $ \restore -> do
-        let runLock = path ++ ".hostbootstrap-run-owner"
-        createDirectoryIfMissing True (takeDirectory path)
-        claimed <- trySynchronousIO (createDirectory runLock)
-        case claimed of
-            Left _ -> ioError (userError ("test data ownership is already active: " ++ path))
-            Right () -> do
-                preexisting <- doesDirectoryExist path `onException` removeDirectory runLock
-                unless preexisting (createDirectory path `onException` removeDirectory runLock)
-                let removeOwned = mapM_ removePathForcibly (selfCreatedTestDataRemoval preexisting path)
-                    release = removeOwned `finally` removeDirectory runLock
-                restore body `finally` release
+newtype HarnessRunOwnership = HarnessRunOwnership
+    {runWithOwnedRun :: forall result. IO result -> IO (Either String result)}
 
 {- | Drive the case matrix: per case run setup → body → teardown, guaranteeing
 teardown via 'finally' (the body's exception is recorded as a 'Fail', not
@@ -362,12 +424,13 @@ runMatrix seams cases = Report <$> mapM runOne cases
     runOne c = do
         esetup <- trySynchronousIO (seamSetup seams c)
         case esetup of
-            Left (err :: SomeException) -> pure (renderCaseId c, Fail ("setup: " ++ show err))
+            Left (err :: SomeException) ->
+                pure (renderCaseId c, LifecycleFailed ("setup: " ++ displayException err))
             Right env -> do
                 result <-
                     trySynchronousIO (seamRun seams env c)
                         `finally` seamTeardown seams env c
-                pure (renderCaseId c, either (Fail . show) id result)
+                pure (renderCaseId c, either (LifecycleFailed . displayException) id result)
     renderCaseId = T.unpack . caseIdText . caseId
 
 {- | A project's complete, /stack-driven/ test surface
@@ -521,10 +584,11 @@ the per-variant reports are aggregated into one 'Report', each row identified by
 its stable variant ID.
 -}
 runSuiteSelection ::
+    HarnessRunOwnership ->
     TestSuite ->
     [ConfigVariant] ->
     IO (Either String Report)
-runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants = do
+runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown) variants = do
     safe <- safety
     case safe of
         Left reason -> pure (Left ("test run refused: " ++ reason))
@@ -534,9 +598,10 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
         -- removed. Each variant's run config is generated inside its
         -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
         -- brought up against it; the variant reports are concatenated.
-        Right () -> withSelfCreatedTestData testDataRoot $ do
-            variantReports <- mapM safeRunVariant variants
-            pure (Right (Report (concatMap reportResults variantReports)))
+        Right () ->
+            runWithOwnedRun ownership $ do
+                variantReports <- mapM safeRunVariant variants
+                pure (Report (concatMap reportResults variantReports))
   where
     -- A whole variant is isolated: an unexpected exception anywhere in it (the
     -- config bracket, an escaped teardown) fails only that variant's cases and the
@@ -546,11 +611,14 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
         e <- trySynchronousIO (runVariant chosen cv)
         pure $ case e of
             Right report -> report
-            Left err -> labelReport ident (allFail chosen ("variant failed: " ++ show err))
+            Left err ->
+                labelReport
+                    ident
+                    (allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err)))
     -- Bring-up is **inside** the guaranteed teardown: a failed @project up@ runs
-    -- the same @project destroy@ and turns into a per-case 'Fail' for this variant.
-    -- A teardown exception also fails the variant (a green report may never hide a
-    -- leaked stack); 'safeRunVariant' still catches it so later variants can run.
+    -- the same @project destroy@ and turns into a per-case 'LifecycleFailed' for
+    -- this variant. 'safeRunVariant' still catches anything that escapes, so
+    -- later variants can run.
     runVariant chosen (ConfigVariant ident _ withGeneratedConfig) =
         labelReport ident <$> withGeneratedConfig (runFrame chosen ident)
     runFrame chosen ident = do
@@ -558,15 +626,48 @@ runSuiteSelection (TestSuite safety bringUp cases assertCase tearDown) variants 
         case eenv of
             Left err ->
                 case fromException err :: Maybe SafetyRefusal of
-                    Just refusal -> pure (allFail chosen ("bring-up refused: " ++ safetyRefusalReason refusal))
+                    -- A refusal proven to precede acquisition has an empty
+                    -- rollback set (§ Y), so teardown deliberately does not run
+                    -- and the operator's state is not touched.
+                    Just refusal ->
+                        pure (allOutcomes chosen (Refused (safetyRefusalReason refusal)))
                     -- Render the CAUSE, not @show err@: a 'LifecycleFailure' (or any
                     -- structured exception) surfaces its reason via 'displayException'
                     -- rather than collapsing to the literal @"ExitFailure 1"@ a
                     -- message-less @die@ would print (development_plan_standards § CC).
-                    Nothing -> pure (allFail chosen ("bring-up failed: " ++ displayException err)) `finally` tearDown
-            Right env -> runMatrix (assertSeams env) chosen `finally` tearDown
-    -- Every chosen case fails with one reason (the bring-up / variant failure).
-    allFail chosen reason = Report [(T.unpack (caseIdText (caseId c)), Fail reason) | c <- chosen]
+                    Nothing ->
+                        withTeardown
+                            chosen
+                            ( pure
+                                ( allOutcomes
+                                    chosen
+                                    (LifecycleFailed ("bring-up failed: " ++ displayException err))
+                                )
+                            )
+            Right env -> withTeardown chosen (runMatrix (assertSeams env) chosen)
+    {- Teardown always runs after acquisition, and its own failure is a
+    *distinct* outcome appended to the variant's rows: cleanup that broke makes
+    the variant red with the cause named, rather than a green report hiding
+    leaked state (§ Z). The per-case results are preserved, because "the
+    assertions passed but the stack did not come down" is exactly what an
+    operator needs to read. -}
+    withTeardown chosen body = do
+        ran <- trySynchronousIO body
+        torn <- trySynchronousIO tearDown
+        pure $ case (ran, torn) of
+            (Right report, Right ()) -> report
+            (Right report, Left err) -> addRows report [teardownRow err]
+            (Left err, Right ()) -> variantBroke chosen err
+            (Left err, Left tornErr) ->
+                addRows (variantBroke chosen err) [teardownRow tornErr]
+    variantBroke chosen err =
+        allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err))
+    teardownRow err = ("teardown", TeardownFailed (displayException err))
+    addRows (Report rs) extra = Report (rs ++ extra)
+    -- Every chosen case carries one engine-classified outcome (the bring-up or
+    -- variant failure), so the whole variant reports the same structured reason.
+    allOutcomes chosen outcome =
+        Report [(T.unpack (caseIdText (caseId c)), outcome) | c <- chosen]
     casesFor selected =
         [c | c <- cases, caseId c `elem` NE.toList selected]
     -- Reuse the per-case loop: the live stack `bringUp` produced is the shared
@@ -594,15 +695,23 @@ trySynchronousIO = tryJust $ \err ->
 
 -- | Whether every case passed.
 allPassed :: Report -> Bool
-allPassed (Report rs) = all ((== Pass) . snd) rs
+allPassed (Report rs) = all (caseResultPassed . snd) rs
 
 -- | Render a human-readable report card.
 reportCard :: Report -> String
 reportCard (Report rs) =
     unlines
-        ( ("test report: " ++ show (length (filter ((== Pass) . snd) rs)) ++ "/" ++ show (length rs) ++ " passed")
+        ( ( "test report: "
+                ++ show (length (filter (caseResultPassed . snd) rs))
+                ++ "/"
+                ++ show (length rs)
+                ++ " passed"
+          )
             : map line rs
         )
   where
-    line (cid, Pass) = "  PASS " ++ cid
-    line (cid, Fail msg) = "  FAIL " ++ cid ++ " — " ++ msg
+    line (cid, outcome) =
+        "  "
+            ++ caseResultLabel outcome
+            ++ cid
+            ++ maybe "" (" — " ++) (caseResultReason outcome)

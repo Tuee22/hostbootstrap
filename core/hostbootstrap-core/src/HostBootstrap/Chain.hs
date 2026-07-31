@@ -12,9 +12,10 @@ when each contributed step's action is itself idempotent.
 
 The descent logic is pure and unit-tested ('nextFrameAfter', 'handoffDispatch',
 'renderChain'); 'runChainFromFrame' is the thin effectful seam that runs a
-frame's steps and performs the one handoff. It is parameterised by @liftCtx@,
-which builds the lift context for a frame from the topology provider and the
-VM/container identity, so the interpreter stays provider-agnostic.
+frame's steps and performs the one handoff. The lift context for each transition
+is read off the plan itself ('frameDescent'), declared by the step that owns the
+boundary, so the interpreter stays provider-agnostic without a second,
+independently supplied per-frame resolver (§ W).
 -}
 module HostBootstrap.Chain (
     renderChain,
@@ -38,6 +39,7 @@ import HostBootstrap.Step (
     StepPlan,
     StepFrame (..),
     chainFrames,
+    frameDescent,
     postHandoffStepsForFrame,
     preHandoffStepsForFrame,
     renderChainPlan,
@@ -87,11 +89,10 @@ when this frame's segment and its descent complete.
 runChainFromFrame ::
     HostConfig ->
     SelfRef ->
-    (StepFrame -> LiftContext) ->
     String ->
     StepPlan ->
     IO (Either String ())
-runChainFromFrame cfg self liftCtx current plan
+runChainFromFrame cfg self current plan
     -- Fail closed if @current@ is not a frame the chain enters: otherwise
     -- 'stepsForFrame' is empty and 'nextFrameAfter' is 'Nothing', so the descent
     -- would be a silent successful no-op (a config/chain drift, e.g. a topology
@@ -110,13 +111,30 @@ runChainFromFrame cfg self liftCtx current plan
         mapM_ (\step -> runStep step cfg) (preHandoffStepsForFrame current plan)
         case nextFrameAfter current plan of
             Nothing -> runPostHandoff >> pure (Right ())
-            Just next -> do
-                -- Stream the next frame's child config in-place: for a container frame
-                -- with config delivery, 'liftStdin' carries the narrowed projection on
-                -- the handoff @stdin@ (the entrypoint wrapper writes the sibling before
-                -- dispatch); for a VM/local frame it is empty, byte-identical to the
-                -- former 'liftSubcommand'. See § X.
-                let nextCtx = liftCtx next
+            Just next -> descendInto next
+  where
+    -- Stream the next frame's child config in-place: for a container frame
+    -- with config delivery, 'liftStdin' carries the narrowed projection on
+    -- the handoff @stdin@ (the entrypoint wrapper writes the sibling before
+    -- dispatch); for a VM/local frame it is empty, byte-identical to the
+    -- former 'liftSubcommand'. See § X.
+    --
+    -- The context comes from the plan node that owns the boundary, so the
+    -- step announcing the descent and the payload crossing it are one value.
+    -- A validated plan always carries one for a frame that has a successor;
+    -- the 'Nothing' branch is the total fail-closed reading of that invariant.
+    descendInto next =
+        case frameDescent current plan of
+            Nothing ->
+                pure
+                    ( Left
+                        ( "project up: frame "
+                            ++ current
+                            ++ " declares no descent into "
+                            ++ frameId next
+                        )
+                    )
+            Just nextCtx -> do
                 result <- liftSubcommandWithStdin cfg self nextCtx handoffArgv (liftStdin nextCtx)
                 case result of
                     Right (ExitSuccess, out, _) -> putStr out >> runPostHandoff >> pure (Right ())
@@ -124,6 +142,6 @@ runChainFromFrame cfg self liftCtx current plan
                     -- the frame's step-by-step progress); the stderr becomes the error.
                     Right (_, out, err) -> putStr out >> pure (Left err)
                     Left err -> pure (Left err)
-  where
+
     runPostHandoff =
         mapM_ (\step -> runStep step cfg) (postHandoffStepsForFrame current plan)

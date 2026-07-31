@@ -15,10 +15,10 @@ Every per-substrate effect is expressed as pure data (a list of 'HostEffect'
 and the probe/transfer records), so the whole surface is unit-testable without
 running a host tool. The one place the substrates genuinely differ — Lima/Incus
 launch with a single sized argv, whereas WSL2's only memory/CPU wall is the
-/global/ @.wslconfig@ utility-VM ceiling that must be written and applied with
-@wsl --shutdown@ before the distro boots — is captured by 'spLaunch' returning a
-/list/ of effects: a 'WriteHostFile' for the WSL2 case, an empty file list for
-the others. See @documents/engineering/applied_cordon.md@ and
+/global/ @.wslconfig@ utility-VM ceiling that must be applied and made effective
+with @wsl --shutdown@ before the distro boots — is captured by 'spLaunch'
+returning a /list/ of effects: an 'ApplyGlobalWslWall' for the WSL2 case, and no
+wall effect for the others. See @documents/engineering/applied_cordon.md@ and
 @documents/engineering/wsl2.md@.
 -}
 module HostBootstrap.Substrate.Provider (
@@ -92,21 +92,25 @@ import HostBootstrap.Substrate (Substrate, SubstrateName (..), substrateName)
 import HostBootstrap.Wsl2 (Wsl2VM (..))
 import qualified HostBootstrap.Wsl2 as Wsl2
 
-{- | A single pure host-side effect the lifecycle interpreter runs. 'WriteHostFile'
-and 'RestoreHostFile' exist for the WSL2 @.wslconfig@ wall (a /global/ user
-file, so the write backs up any pre-existing copy and the restore puts it back);
-'RunHostTool' is the resolved-tool invocation every substrate uses.
+{- | A single pure host-side effect the lifecycle interpreter runs.
+'ApplyGlobalWslWall' and 'ReleaseGlobalWslWall' are the WSL2 @.wslconfig@ wall (a
+/global/ user file); 'RunHostTool' is the resolved-tool invocation every
+substrate uses.
+
+Neither wall effect carries a pathname.  The wall is the current user's one
+@%UserProfile%\\.wslconfig@, derived by
+'HostBootstrap.Wsl2.GlobalWall.Windows' itself, and it is acquired through the
+identity-owning host-wall backend rather than a backup copy: an origin record is
+journalled before the first mutation and release is conditioned on re-observing
+the same object.  Release therefore carries the same managed body it was applied
+with, because the wall's specification identity binds owner and body together —
+a different declaration is a structured conflict, not an overwrite.
 -}
 data HostEffect
-    = -- | write @content@ to @path@ on the host, preserving any existing file
-      WriteHostFile FilePath String
-    | {- | merge a @[wsl2]@ body (header + keys) into the @.wslconfig@ at @path@,
-      preserving the user's other sections (never a full clobber), backing up
-      the original once so 'RestoreHostFile' can put it back
-      -}
-      MergeWslConfig FilePath [String]
-    | -- | restore @path@ from its backup (or remove it if there was none)
-      RestoreHostFile FilePath
+    = -- | acquire the per-user global WSL wall with this managed body
+      ApplyGlobalWslWall [String]
+    | -- | release the per-user global WSL wall applied with this managed body
+      ReleaseGlobalWslWall [String]
     | -- | run a resolved host tool with these args
       RunHostTool HostTool [String]
     deriving (Eq, Show)
@@ -180,15 +184,14 @@ data HostPathShare = HostPathShare
     deriving (Eq, Show)
 
 {- | The consumer-supplied handles the pure selection needs: the per-substrate VM
-identities, the delete-guard prefix, and the resolved @.wslconfig@ path (an
-environment lookup the consumer performs; unused off Windows).
+identities and the delete-guard prefix. No @.wslconfig@ pathname appears here:
+the wall backend derives the current user's one target and accepts none.
 -}
 data VMHandles = VMHandles
     { vmhIncus :: IncusVM
     , vmhLima :: LimaVM
     , vmhWsl2 :: Wsl2VM
     , vmhGuardPrefix :: String
-    , vmhWslConfigPath :: FilePath
     }
     deriving (Eq, Show)
 
@@ -215,8 +218,8 @@ data SubstrateProvider = SubstrateProvider
     -}
     , spWait :: WaitProbe
     , spTransfer :: FileTransfer
-    , spStop :: [HostEffect]
-    , spDestroy :: Either String [HostEffect]
+    , spStop :: ResourceEnvelope -> Either String [HostEffect]
+    , spDestroy :: ResourceEnvelope -> Either String [HostEffect]
     }
 
 {- | Select the one pure lift for a detected substrate. 'Left' only for a
@@ -248,8 +251,9 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Lima (Lima.shellVMArgs vm ["true"])
                 , spTransfer = LimaFileTransfer vm
-                , spStop = [RunHostTool Lima (Lima.stopVMArgs vm)]
-                , spDestroy = (\argv -> [RunHostTool Lima argv]) <$> Lima.deleteVMArgs prefix vm
+                , spStop = \_ -> Right [RunHostTool Lima (Lima.stopVMArgs vm)]
+                , spDestroy =
+                    \_ -> (\argv -> [RunHostTool Lima argv]) <$> Lima.deleteVMArgs prefix vm
                 }
 
     linux =
@@ -280,14 +284,14 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Incus (execVMArgs vm ["true"])
                 , spTransfer = IncusFileTransfer vm
-                , spStop = [RunHostTool Incus (stopVMArgs vm)]
-                , spDestroy = (\argv -> [RunHostTool Incus argv]) <$> destroyVMArgs prefix vm
+                , spStop = \_ -> Right [RunHostTool Incus (stopVMArgs vm)]
+                , spDestroy =
+                    \_ -> (\argv -> [RunHostTool Incus argv]) <$> destroyVMArgs prefix vm
                 }
 
     windows =
         let vm = vmhWsl2 h
             distro = Wsl2.wsl2Distro vm
-            wslConfig = vmhWslConfigPath h
          in SubstrateProvider
                 { spVmId = distro
                 , spProviderKind = Wsl2VMProvider
@@ -298,7 +302,7 @@ selectSubstrateProvider sub h = case substrateName sub of
                     budget <- budgetFromResources env
                     let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
                     pure
-                        [ MergeWslConfig wslConfig body
+                        [ ApplyGlobalWslWall body
                         , RunHostTool Wsl Wsl2.wslShutdownArgs
                         , RunHostTool Wsl (Wsl2.wslInstallArgs distro vhd)
                         ]
@@ -324,21 +328,26 @@ selectSubstrateProvider sub h = case substrateName sub of
                 , spTransfer = Wsl2MountTransfer vm
                 , -- @project down@ releases the WSL2 wall so it means the same thing
                   -- on every substrate (Lima and Incus already release on stop). The
-                  -- order is load-bearing: restore the global @.wslconfig@ FIRST, then
+                  -- order is load-bearing: release the global @.wslconfig@ FIRST, then
                   -- @wsl --shutdown@, so the shared utility VM re-reads the restored
                   -- (uncordoned) file on its next cold boot and drops the memory
                   -- balloon. @wsl --shutdown@ (whole utility VM) rather than
                   -- @wsl --terminate <distro>@ (one distro) is what actually releases
                   -- the global wall; against the finite @vmIdleTimeout@ from Sprint
                   -- 9.11 the VM then idles down instead of pinning memory between runs.
-                  -- The file restore is idempotent (a no-op when there was no backup).
-                  spStop =
-                    [ RestoreHostFile wslConfig
-                    , RunHostTool Wsl Wsl2.wslShutdownArgs
-                    ]
-                , spDestroy =
-                    (\argv -> [RunHostTool Wsl argv, RestoreHostFile wslConfig])
-                        <$> Wsl2.wslUnregisterArgs prefix distro
+                  -- The release names the same managed body the wall was applied
+                  -- with, so it consumes this owner's journalled origin record
+                  -- rather than inferring ownership from a backup file's existence.
+                  spStop = \env -> do
+                    body <- wsl2SizingArgs env
+                    pure
+                        [ ReleaseGlobalWslWall body
+                        , RunHostTool Wsl Wsl2.wslShutdownArgs
+                        ]
+                , spDestroy = \env -> do
+                    body <- wsl2SizingArgs env
+                    argv <- Wsl2.wslUnregisterArgs prefix distro
+                    pure [RunHostTool Wsl argv, ReleaseGlobalWslWall body]
                 }
 
     -- incus sizing args are key=value pairs; @root,size=…@ is a device override

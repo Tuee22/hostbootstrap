@@ -170,6 +170,51 @@ def test_toolchain_ensure_steps_apple() -> None:
     )
 
 
+def test_linux_build_library_probe_is_one_all_of_query() -> None:
+    # `dpkg-query -s` exits non-zero if ANY named package is missing, so a
+    # partially provisioned host reinstalls the set instead of passing.
+    assert bootstrap.linux_build_library_probe() == (
+        "dpkg-query",
+        "-s",
+        "build-essential",
+        "libgmp-dev",
+        "libncurses-dev",
+        "libtinfo-dev",
+        "pkg-config",
+        "zlib1g-dev",
+    )
+
+
+def test_linux_build_library_install_refreshes_the_index_first() -> None:
+    # A cloud image's apt index is routinely older than its archive, so
+    # installing without the refresh 404s on the packages this step adds.
+    assert bootstrap.linux_build_library_install_commands() == (
+        ("sudo", "-n", "apt-get", "update"),
+        (
+            "sudo",
+            "-n",
+            "apt-get",
+            "install",
+            "-y",
+            "build-essential",
+            "libgmp-dev",
+            "libncurses-dev",
+            "libtinfo-dev",
+            "pkg-config",
+            "zlib1g-dev",
+        ),
+    )
+
+
+def test_linux_build_libraries_cover_the_closure_that_broke_a_pristine_host() -> None:
+    # The observed failure on a pristine Ubuntu 24.04 metal host was
+    # `Missing (or bad) C library: z` while building zlib, and GHC itself links
+    # gmp and ncurses.
+    packages = bootstrap.linux_build_library_probe()
+    for required in ("zlib1g-dev", "libgmp-dev", "libncurses-dev"):
+        assert required in packages
+
+
 @pytest.mark.parametrize("sub", [LINUX_CPU, LINUX_GPU])
 def test_toolchain_ensure_steps_linux(sub: Substrate) -> None:
     assert bootstrap.toolchain_ensure_steps(sub) == (
@@ -492,6 +537,8 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
 
     assert doctored == [LINUX_CPU]
     assert recorded_commands == [
+        # A satisfied host runs the library probe and installs nothing.
+        bootstrap.linux_build_library_probe(),
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
@@ -520,6 +567,8 @@ async def test_build_binary_builds_without_exec_or_dhall(
     # build_binary builds and locates the binary -- it does NOT run any
     # ``project init`` / config-init step (no auto-init).
     assert recorded_commands == [
+        # A satisfied host runs the library probe and installs nothing.
+        bootstrap.linux_build_library_probe(),
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
@@ -758,7 +807,11 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
+    # The C build libraries are installed FIRST, before GHC: GHC itself links
+    # gmp and ncurses, and the project's closure links zlib.
     assert recorded_commands_fresh_host == [
+        bootstrap.linux_build_library_probe(),
+        *bootstrap.linux_build_library_install_commands(),
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "install", "ghc", "9.12.4", "--set"),
@@ -808,6 +861,32 @@ async def test_offline_toolchain_refuses_missing_tool_before_install(
         raise AssertionError("offline toolchain check must not install or download")
 
     monkeypatch.setattr(bootstrap, "_already_present", _missing)
+    monkeypatch.setattr(bootstrap, "_install_verified_ghcup", _unexpected)
+    monkeypatch.setattr(bootstrap.process, "run_checked", _unexpected)
+
+    # Linux checks the C libraries first, so that is the refusal it reaches.
+    with pytest.raises(
+        RuntimeError, match="requires the host C build libraries to be preinstalled"
+    ):
+        await bootstrap._ensure_toolchain(LINUX_CPU, offline=True)
+    # Apple has no apt step, so it reaches the build-tool refusal.
+    with pytest.raises(RuntimeError, match="requires the host build tool to be preinstalled"):
+        await bootstrap._ensure_toolchain(APPLE, offline=True)
+
+
+async def test_offline_linux_accepts_preinstalled_build_libraries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A satisfied host must not be told to preinstall what it already has: the
+    # library step is a verified no-op, and the refusal then comes from the
+    # build tool it really is missing.
+    async def _libraries_only(probe: tuple[str, ...]) -> bool:
+        return probe == bootstrap.linux_build_library_probe()
+
+    async def _unexpected(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("offline toolchain check must not install or download")
+
+    monkeypatch.setattr(bootstrap, "_already_present", _libraries_only)
     monkeypatch.setattr(bootstrap, "_install_verified_ghcup", _unexpected)
     monkeypatch.setattr(bootstrap.process, "run_checked", _unexpected)
 

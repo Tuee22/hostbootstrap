@@ -1,5 +1,6 @@
 module StepSpec (tests) where
 
+import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -34,9 +35,9 @@ demoSteps =
     [ deployVMStep "launch the VM" metal noop
     , copySourceStep "stage source into the VM" metal noop
     , ensureStep "ghc" "ensure GHC in the VM" metal noop
-    , buildPbStep "build the binary in the VM" metal noop
+    , descendsVia localContext (buildPbStep "build the binary in the VM" metal noop)
     , contextInitStep "mint the container config" vmFrame noop
-    , buildImageStep "build the project image" vmFrame noop
+    , descendsVia localContext (buildImageStep "build the project image" vmFrame noop)
     , deployKindStep "bring up kind" ctrFrame noop
     , projectStep (fixtureProjectStepId "deploy-harbor") ProjectManagedReverse "install harbor" ctrFrame noop
     , exposePortStep "expose the NodePort" ctrFrame noop
@@ -182,6 +183,54 @@ validationCases =
             , projectStep (fixtureProjectStepId "mutate") ProjectManagedReverse "mutate" ctrFrame noop
             ]
             @?= [PreserveOnReverse, ProjectManagedReverse, ProjectManagedReverse]
+    , testCase "a frame that descends into another must declare exactly one descent" $ do
+        case mkStepPlan [deployVMStep "a" metal noop, contextInitStep "b" vmFrame noop] of
+            Left err -> err @?= MissingFrameDescent "host-orchestrator-0"
+            Right _ -> assertFailure "a frame with a successor and no descent was validated"
+        case
+            mkStepPlan
+                [ descendsVia localContext (deployVMStep "a" metal noop)
+                , descendsVia localContext (copySourceStep "a2" metal noop)
+                , contextInitStep "b" vmFrame noop
+                ] of
+            Left err -> err @?= DuplicateFrameDescent "host-orchestrator-0" 2
+            Right _ -> assertFailure "two descents out of one frame were validated"
+        case
+            mkStepPlan
+                [ descendsVia localContext (descendsVia localContext (deployVMStep "a" metal noop))
+                , contextInitStep "b" vmFrame noop
+                ] of
+            Left err -> err @?= DuplicateFrameDescent "host-orchestrator-0" 2
+            Right _ -> assertFailure "a step declaring two descents was validated"
+    , testCase "the innermost frame and post-handoff hooks declare no descent" $ do
+        case
+            mkStepPlan
+                [ descendsVia localContext (deployVMStep "a" metal noop)
+                , descendsVia localContext (contextInitStep "b" vmFrame noop)
+                ] of
+            Left err -> err @?= DescentFromInnermostFrame "vm-orchestrator-1"
+            Right _ -> assertFailure "a descent out of the innermost frame was validated"
+        case
+            mkStepPlan
+                [ deployVMStep "a" metal noop
+                , descendsVia localContext (postHandoffStep "late" "late hook" metal noop)
+                ] of
+            Left err -> err @?= DescentOnPostHandoffStep 2
+            Right _ -> assertFailure "a post-handoff descent was validated"
+    , testCase "a declared reverse effect must be able to run, and only once" $ do
+        let noReverse _ _ = pure TeardownReleased
+        case mkStepPlan [reversedBy noReverse (ensureStep "ghc" "ensure" metal noop)] of
+            Left err -> err @?= ReverseOnPreservedStep (CoreStepIdentity (EnsureToolId "ghc"))
+            Right _ -> assertFailure "a reverse on a preserve-on-reverse step was validated"
+        case mkStepPlan [reversedBy noReverse (reversedBy noReverse (deployVMStep "a" metal noop))] of
+            Left err -> err @?= DuplicateStepReverse (CoreStepIdentity DeployVMId) 2
+            Right _ -> assertFailure "two reverses on one step were validated"
+        -- A core-managed node MAY declare one: it then takes precedence over the
+        -- core adapter, which is how a cluster in an unreachable frame is
+        -- released by the project (the demo's direct Linux GPU lane).
+        case mkStepPlan [reversedBy noReverse (deployKindStep "cluster" metal noop)] of
+            Left err -> assertFailure ("a core-managed override was rejected: " ++ show err)
+            Right _ -> pure ()
     , testCase "validated plans derive one operation key and exact dependency prefix per step" $ do
         let steps = stepPlanSteps demoPlan
             keys = map (operationKeyText . stepOperationKey) steps
@@ -217,14 +266,36 @@ validateSequence frameIds =
             assertFailure ("invalid sequence failed for the wrong reason: " ++ show (frameIds, err))
   where
     steps =
-        [ projectStep
-            (fixtureProjectStepId ("generated-" ++ show index))
-            ProjectManagedReverse
-            ("step " ++ show index)
-            (StepFrame fid fid)
-            noop
-        | (index, fid) <- zip [1 :: Int ..] frameIds
-        ]
+        withDescents
+            [ projectStep
+                (fixtureProjectStepId ("generated-" ++ show index))
+                ProjectManagedReverse
+                ("step " ++ show index)
+                (StepFrame fid fid)
+                noop
+            | (index, fid) <- zip [1 :: Int ..] frameIds
+            ]
+
+{- | Attach the one descent every frame but the innermost must declare, to the
+last step of each frame's segment. The generated sequences carry no
+post-handoff hooks, so every step is a candidate.
+-}
+withDescents :: [Step] -> [Step]
+withDescents steps =
+    [ if frame /= innermost && index == lastIndexOf frame
+        then descendsVia localContext step
+        else step
+    | (index, step) <- indexed
+    , let frame = frameId (stepFrame step)
+    ]
+  where
+    indexed = zip [0 :: Int ..] steps
+    frames = map (frameId . stepFrame) steps
+    innermost = case distinct frames of
+        [] -> ""
+        ordered -> last ordered
+    lastIndexOf frame = last [index | (index, step) <- indexed, frameId (stepFrame step) == frame]
+    distinct = foldl (\seen value -> if value `elem` seen then seen else seen ++ [value]) []
 
 hasClosedFrameReturn :: [String] -> Bool
 hasClosedFrameReturn [] = False

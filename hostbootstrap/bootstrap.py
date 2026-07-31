@@ -41,6 +41,27 @@ from .substrate import Substrate, SubstrateName
 _BREW: str = "brew"
 _GHCUP: str = "ghcup"
 _CABAL: str = "cabal"
+_SUDO: str = "sudo"
+_APT_GET: str = "apt-get"
+_DPKG_QUERY: str = "dpkg-query"
+
+# The Debian/Ubuntu C build libraries GHC and the project's dependency closure
+# link against (``zlib`` for ``zlib``, ``gmp``/``ncurses`` for GHC itself).
+#
+# These are *pre-binary* work, not a manual prerequisite: they have a supported
+# apt install plan, so development_plan_standards.md § L requires installing them
+# rather than assuming them. Omitting them is why a pristine Ubuntu 24.04 host
+# failed to build the demo binary with
+# ``Missing (or bad) C library: z`` while the same bootstrap succeeded inside the
+# demo's provisioned VM, which installs this same set.
+_LINUX_BUILD_LIBRARY_PACKAGES: tuple[str, ...] = (
+    "build-essential",
+    "libgmp-dev",
+    "libncurses-dev",
+    "libtinfo-dev",
+    "pkg-config",
+    "zlib1g-dev",
+)
 _POWERSHELL: str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 # The family-pinned GHC every project's ``cabal.project`` selects.
@@ -187,6 +208,29 @@ class ToolchainStep(NamedTuple):
 
     probe: tuple[str, ...]
     install: tuple[str, ...]
+
+
+def linux_build_library_probe() -> tuple[str, ...]:
+    """Probe for every C build library in one query.
+
+    ``dpkg-query -s`` exits non-zero when *any* named package is not installed,
+    so this is an all-of probe: a partially provisioned host reinstalls the set
+    rather than being mistaken for a complete one.
+    """
+    return (_DPKG_QUERY, "-s", *_LINUX_BUILD_LIBRARY_PACKAGES)
+
+
+def linux_build_library_install_commands() -> tuple[tuple[str, ...], ...]:
+    """Refresh the apt index, then install the C build libraries.
+
+    The index refresh is not optional: a cloud image's index is routinely older
+    than its archive, and ``apt-get install`` against a stale index fails with a
+    404 on the very packages this step exists to add.
+    """
+    return (
+        (_SUDO, "-n", _APT_GET, "update"),
+        (_SUDO, "-n", _APT_GET, "install", "-y", *_LINUX_BUILD_LIBRARY_PACKAGES),
+    )
 
 
 def toolchain_ensure_steps(sub: Substrate) -> tuple[ToolchainStep, ...]:
@@ -348,8 +392,27 @@ async def _already_present(probe: tuple[str, ...]) -> bool:
     return False
 
 
+async def _ensure_linux_build_libraries(*, offline: bool = False) -> None:
+    """Install the C build libraries the host-native build links against.
+
+    Runs before GHC is installed, because GHC itself links ``gmp`` and
+    ``ncurses``. A satisfied host is a verified no-op.
+    """
+    if await _already_present(linux_build_library_probe()):
+        return
+    if offline:
+        missing = " ".join(_LINUX_BUILD_LIBRARY_PACKAGES)
+        raise RuntimeError(
+            f"offline build requires the host C build libraries to be preinstalled: {missing}"
+        )
+    for command in linux_build_library_install_commands():
+        await process.run_checked(command, env=_toolchain_env())
+
+
 async def _ensure_toolchain(sub: Substrate, *, offline: bool = False) -> None:
     """Ensure the host build toolchain."""
+    if not sub.is_windows and sub.name is not SubstrateName.APPLE_SILICON:
+        await _ensure_linux_build_libraries(offline=offline)
     for step in toolchain_ensure_steps(sub):
         if await _already_present(step.probe):
             continue

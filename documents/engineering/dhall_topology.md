@@ -24,18 +24,18 @@
   authority; Phase 15.9 closes both validation and widening/forgery gaps.
 - Children never reach back to read the parent's host file, but current child configs are not
   least-privilege projections: they adjust descriptive context while retaining the full demo project
-  record and parent resource envelope. Projection/delivery is split across composite bootstrap,
-  `psFrameContext`/handoff, and workload deployment actions; the named `context-init` action is only an
-  announcer/frame anchor. The target plan gives that operation one owner and emits a role-specific type.
+  record and parent resource envelope. Projection/delivery is split across composite bootstrap, the
+  descent the `context-init` node declares plus the handoff, and workload deployment actions; that
+  action's body is only an announcement. The target plan gives that operation one owner and emits a role-specific type.
 - [composition_methodology](../architecture/composition_methodology.md) is the canonical home of the
   chain / recursive-interpreter / fractal-bootstrap model; this document defers to it and describes only
   the Dhall side.
 
 ## The Chain Is Code; The Dhall Is Parameters
 
-The recursive forward ordering is an opaque validated Haskell `StepPlan`; the sibling
-`<project>.dhall` does not encode that plan. Current frame-context and teardown callbacks are separate
-checked single-assignment contributions,
+The recursive forward ordering and each frame's declared descent are one opaque validated Haskell
+`StepPlan`; the sibling `<project>.dhall` does not encode that plan. The teardown callback is still a
+separate checked single-assignment contribution,
 while the target opaque `ProjectPlan scope specDigest planId configId cfg` derives them from the same validated
 representation (see
 [composition_methodology](../architecture/composition_methodology.md)). The Dhall supplies three things
@@ -110,10 +110,10 @@ target makes that impossible through opaque narrowed capabilities.
 ## Generated Child Configs
 
 When `project up` crosses a frame boundary, the current demo obtains the next local config through
-different seams. The composite `build-pb` action derives/streams the VM config;
-`psFrameContext` derives the container payload and the handoff streams it in-place over `stdin`; service
-and daemon deployment actions render ConfigMaps. The `context-init` action itself prints only an
-announcement. VM/container children write the payload at their own sibling path before dispatch, with no
+different seams. The composite `build-pb` action derives/streams the VM config; the descent the
+`context-init` step declares carries the container payload and the handoff streams it in-place over
+`stdin`; service and daemon deployment actions render ConfigMaps. The `context-init` action body itself
+prints only an announcement. VM/container children write the payload at their own sibling path before dispatch, with no
 config bind-mount.
 
 Current projection narrows descriptive context and allowed commands for a named child frame and includes
@@ -138,8 +138,8 @@ service leaf cannot contain Docker-build, VM-orchestration, or host deploy input
 
 | Config | Shape | Produced by | Read by |
 |------|-------|-------------|---------|
-| Local runtime `<project>.dhall` | Project parameters plus the current topology frame (context + witness) | Written by `project init` (host root); for children, produced by the current bootstrap/frame-context/deployment seam or target unified plan operation; edited by the user only for host-level settings | The project binary before normal command dispatch |
-| Generated child `<project>.dhall` | Current: full project record with an adjusted child context; target: role-specific parameters plus validated child frame/resource/witness proof | Current demo: composite VM bootstrap, `psFrameContext`/handoff, or workload deployment; target: one plan-authorized projection/delivery operation | The child binary copy |
+| Local runtime `<project>.dhall` | Project parameters plus the current topology frame (context + witness) | Written by `project init` (host root); for children, produced by the current bootstrap/plan-declared-descent/deployment seam or target unified plan operation; edited by the user only for host-level settings | The project binary before normal command dispatch |
+| Generated child `<project>.dhall` | Current: full project record with an adjusted child context; target: role-specific parameters plus validated child frame/resource/witness proof | Current demo: composite VM bootstrap, the plan-declared descent plus handoff, or workload deployment; target: one plan-authorized projection/delivery operation | The child binary copy |
 | Rich project/deploy Dhall | Runtime/deploy records composed from the reusable vocabulary | The project binary | The project binary |
 | Project test Dhall | One project-owned test value containing resource/variant inputs; compiled Haskell currently owns case identities | `test init` | The project binary / test harness |
 

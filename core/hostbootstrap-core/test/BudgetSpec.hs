@@ -13,7 +13,14 @@ import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Reconcile (LifecyclePlan, withLifecyclePlan)
-import HostBootstrap.Reconcile (ChangeView (..), ChangedKind (..))
+import HostBootstrap.Reconcile (
+  ChangeView (..),
+  ChangedKind (..),
+  ConflictDetail (..),
+  ReconcileError (..),
+  UnsupportedDetail (..),
+ )
+import qualified Data.Text as Text
 import HostBootstrap.Step (StepFrame (StepFrame), StepPlan, contextInitStep, mkStepPlan)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -67,8 +74,132 @@ tests =
       testCase "an uncertain wall call yields no live authority" $
         assertBool
           "uncertain acquisition must fail closed"
-          (isLeft (wallSettlementSummary Wsl2Backend (WallAcquireUncertain "lost acknowledgement")))
+          (isLeft (wallSettlementSummary Wsl2Backend (WallAcquireUncertain "lost acknowledgement"))),
+      testCase "every VM provider applies the declared storage ceiling exactly" $ do
+        storageWallSummary LimaBackend storageWallShape
+          @?= Right (Right (LimaDiskArgument, ["--disk", "100"], 100 * gib))
+        storageWallSummary ColimaBackend storageWallShape
+          @?= Right
+            ( Right
+                ( ColimaDiskArgument,
+                  ["start", "--profile", "demo", "--disk", "100"],
+                  100 * gib
+                )
+            )
+        storageWallSummary IncusBackend storageWallShape
+          @?= Right
+            (Right (IncusRootSizeArgument, ["-d", "root,size=100GiB"], 100 * gib))
+        storageWallSummary Wsl2Backend storageWallShape
+          @?= Right
+            (Right (Wsl2VhdSizeArgument, ["--vhd-size", "100GB"], 100 * gib)),
+      testCase "a kind node container is Unsupported, never a silent success" $
+        case storageWallSummary DockerNodeBackend storageWallShape of
+          Right (Left (Unsupported detail)) ->
+            assertBool
+              "the reason names the missing storage flag"
+              ("DockerNodeHasNoStorageFlag" `Text.isInfixOf` unsupportedReason detail)
+          other -> assertBool ("expected Unsupported, got " ++ show other) False,
+      testCase "bare Linux is refused before a storage wall is even prepared" $
+        -- Bare Linux has no provider wall at all, so admission refuses it one
+        -- step earlier than the storage mechanism does. Either way the caller
+        -- gets a typed unsupported result, never a silent success.
+        storageWallSummary BareLinuxBackend storageWallShape
+          @?= Left
+            ( UnsupportedBudgetWall
+                BareLinuxBackend
+                "bare Linux has no quota/image-GC storage wall"
+            ),
+      testCase "an exactly applied storage ceiling settles as Changed Created" $
+        storageWallSummary
+          LimaBackend
+          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (100 * gib)) appliedStorageWallChange)
+          @?= Right (Right (Changed Created)),
+      testCase "an already-exact storage ceiling settles as Unchanged" $
+        storageWallSummary
+          LimaBackend
+          (\prepared -> settleStorageWallCall prepared (StorageWallAlreadyExact 4 (100 * gib)) appliedStorageWallChange)
+          @?= Right (Right Unchanged),
+      testCase "a rounded storage ceiling is a Conflict even when the provider succeeded" $
+        case storageWallSummary
+          LimaBackend
+          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 4 (128 * gib)) appliedStorageWallChange) of
+          Right (Left (Conflict detail)) ->
+            assertBool
+              "the remedy refuses a rounded hard ceiling"
+              ("rounded hard ceiling" `Text.isInfixOf` conflictRemedy detail)
+          other -> assertBool ("expected a rounding conflict, got " ++ show other) False,
+      testCase "a zero wall epoch cannot mint an applied storage wall" $
+        case storageWallSummary
+          LimaBackend
+          (\prepared -> settleStorageWallCall prepared (StorageWallApplied 0 (100 * gib)) appliedStorageWallChange) of
+          Right (Left (Failure _)) -> pure ()
+          other -> assertBool ("expected an epoch failure, got " ++ show other) False,
+      testCase "an inexact declared ceiling never reaches the storage wall" $
+        assertBool
+          "admission refuses an inexact storage quantity before any wall call"
+          ( isLeft
+              ( storageWallSummaryFor
+                  (ResourceEnvelope 8 "16GiB" (Text.pack (show (100 * gib + 1))))
+                  LimaBackend
+                  storageWallShape
+              )
+          )
     ]
+
+-- | The prepared storage wall's mechanism, argv, and exact declared ceiling.
+storageWallShape ::
+  PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  Either ReconcileError (StorageWallMechanism, [String], Integer)
+storageWallShape prepared =
+  Right
+    ( storageWallCallMechanism prepared,
+      storageWallCallArgs prepared,
+      storageWallCeilingBytes prepared
+    )
+
+storageWallSummary ::
+  ProviderBackend ->
+  ( forall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence.
+    PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+    Either ReconcileError result
+  ) ->
+  Either BudgetError (Either ReconcileError result)
+storageWallSummary = storageWallSummaryFor exactEnvelope
+
+{- | Prepare the storage wall from already-admitted budget inputs, so no case
+can hand the wall a value admission would have refused.
+-}
+storageWallSummaryFor ::
+  ResourceEnvelope ->
+  ProviderBackend ->
+  ( forall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence.
+    PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+    Either ReconcileError result
+  ) ->
+  Either BudgetError (Either ReconcileError result)
+storageWallSummaryFor envelope backend consume = do
+  workload <- mkWorkload "storage-wall-check" 1 1 gib gib
+  overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+  sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+  minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+  request <- mkSliceRequest "vm" "metal" sliceBudget minimumBudget
+  withTestLifecyclePlan $ \plan ->
+    joinBudget $ withValidatedBudget plan envelope $ \validated ->
+      withProviderKeyForBackend backend $ \providerKey ->
+        withProviderBudgetCapability plan providerKey $ \capability ->
+          joinBudget $
+            admitProviderBudget validated capability $ \wall effective ->
+              joinBudget $
+                withPlannedWorkloadSet [workload] $ \workloads -> do
+                  fit <- verifyPlannedWorkloadFit effective workloads
+                  joinBudget $
+                    withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                      joinBudget $
+                        withProviderWallReservation wall partition 1 $ \reservation ->
+                          Right
+                            ( prepareStorageWallCall "demo" wall partition reservation
+                                >>= consume
+                            )
 
 admissionSummary :: ResourceEnvelope -> ProviderBackend -> Either BudgetError [String]
 admissionSummary envelope backend =

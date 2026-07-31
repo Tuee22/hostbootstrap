@@ -284,6 +284,27 @@ incusProbeCases =
         let status = EIncus.classifyIncusProviderStatus True ok ok ok
         status @?= EIncus.IncusProviderReady
         EIncus.withIncusProviderCapability status (const "ready") @?= Right "ready"
+    , testCase "the VM-capability probe requires a virtiofsd Incus can exec" $ do
+        -- A host with QEMU and OVMF but no virtiofsd launches VMs and then fails
+        -- every durable-share attach, so "usable" (§ L) has to include it. The
+        -- candidate list is Incus's own search order.
+        EIncus.virtiofsdCandidatePaths
+            @?= [ "/usr/libexec/virtiofsd"
+                , "/usr/lib/qemu/virtiofsd"
+                , "/usr/lib/virtiofsd"
+                ]
+        let script = EIncus.linuxVmCapabilityProbeScript
+        mapM_
+            (\needle -> assertBool ("probe checks " ++ needle ++ ": " ++ script) (needle `isInfixOf` script))
+            ( [ "test -x /usr/bin/qemu-system-x86_64"
+              , "/usr/share/OVMF/OVMF_CODE.fd"
+              , "command -v virtiofsd"
+              ]
+                ++ map ("test -x " ++) EIncus.virtiofsdCandidatePaths
+            )
+        -- The three conjuncts are joined with && so a missing one fails the probe
+        -- rather than being reported ready.
+        length (filter (== "&&") (words script)) @?= 2
     ]
   where
     ok = Right (ExitSuccess, "", "")

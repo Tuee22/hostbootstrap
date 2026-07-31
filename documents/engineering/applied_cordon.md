@@ -176,31 +176,50 @@ Lima `--memory`, WSL2 has no per-distro memory/CPU cap — the only lever is the
 `%UserProfile%\.wslconfig` `[wsl2]` block that sizes the single shared utility VM hosting every distro.
 So `wsl2SizingArgs` emits that `[wsl2]` body (`processors` / `memory` / `swap`, all derived from
 `parseQuantity`; `swap` is sized to the memory budget for OOM headroom), and the WSL2 launch is a
-*list* of effects: write `.wslconfig` (backing up any existing file), `wsl --shutdown` to apply it, then
+*list* of effects: acquire the global wall (`ApplyGlobalWslWall`), `wsl --shutdown` to apply it, then
 register the distro. The body also carries `[wsl2] vmIdleTimeout` plus `[general] instanceIdleTimeout`,
 both set to the finite `managedWslIdleTimeoutMillis` (six hours) — the latter keeps the distro *instance*
 (not just the shared utility VM) alive after `project up` returns, so
-the in-VM kind cluster does not idle-stop; `mergeWslConfig` manages both sections. Because the file is global,
-teardown restores the backed-up `.wslconfig` when an original file produced that backup. If the original
-was absent and the first run crashes after writing, no absence record exists; retry can back up the
-generated file as if it were the original, so teardown restores generated content rather than absence.
-An existing distro also skips registration/VHDX resize, and a running distro can avoid the shutdown that
-would apply a changed global ceiling. This is a
+the in-VM kind cluster does not idle-stop; the byte-exact `GlobalWall.ConfigBytes` merge manages both
+sections and preserves every unrelated byte, comment, and encoding. Because the file is global, teardown
+releases the wall from a journalled origin record that names the original bytes **or** their absence, so
+a crash after the first write restores absence rather than generated content. An existing distro still
+skips registration/VHDX resize, and a running distro can avoid the shutdown that would apply a changed
+global ceiling. This is a
 weaker guarantee than a hard per-VM cap and the launch is a two-step write-then-shutdown rather than a
 single sized argv — the unified `spLaunch` effect list (one pure lift per substrate) models exactly that
-difference. Current code holds none of the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses for this global wall, so
-concurrent projects can race the file. The target takes the OS-released exclusive lock before mutation,
-records original-present bytes or original-absent durably before the first write, binds every later
-operation to the file's object identity, and returns structured `Conflict` for a foreign or incompatible
+difference. The wall now holds all four
+[ownership invariant](../architecture/ownership_invariant.md) clauses: it takes the OS-released
+exclusive lock before mutation, records original-present bytes or original-absent durably before the
+first write, binds every later operation to the file's object identity, and returns structured
+`Conflict` for a foreign or incompatible
 concurrent declaration.
 
-`project down` still does not return the memory promptly: teardown terminates the distro but does not
-shut the utility VM down, so the balloon is held until the managed idle timeouts expire. Sprint 9.11
-replaced the former `-1` pins with that finite duration, so the host now recovers the memory on its own
-rather than holding it until the next reboot; Sprint 5.7 owns the remaining restore-then-shutdown
-teardown effect that makes the release immediate. Lima and Incus release on stop. See
-[wsl2](wsl2.md) § Wall release for the provider detail and that ordering.
+`project down` returns the memory promptly: teardown releases the wall and then runs `wsl --shutdown`,
+in that order, so the utility VM re-reads the restored file on its next cold boot and drops the balloon.
+Sprint 9.11 additionally replaced the former `-1` idle-timeout pins with a finite duration, so the host
+recovers the memory on its own even when a run is interrupted before teardown. Lima and Incus release on
+stop. See [wsl2](wsl2.md) § Wall release for the provider detail and that ordering.
+
+## The Storage Wall Backend Operation
+
+`prepareStorageWallCall` is the operation that actually applies a declared storage ceiling. It consumes
+only already-admitted inputs — the `ProviderWallSpec`, the proved `BudgetPartition`, and the journaled
+`ProviderWallReservation` — so no caller can hand it a value admission would have refused.
+
+| Provider | Result |
+|----------|--------|
+| Colima | `ColimaDiskArgument` — `start --profile <name> --disk <GiB>` |
+| Lima | `LimaDiskArgument` — `--disk <GiB>` |
+| Incus | `IncusRootSizeArgument` — `-d root,size=<GiB>GiB` |
+| WSL2 | `Wsl2VhdSizeArgument` — `--vhd-size <GiB>GB` |
+| kind node container | `Unsupported (DockerNodeHasNoStorageFlag)` — `docker update` has no storage flag |
+| bare Linux | refused at admission; otherwise `Unsupported (BareLinuxHasNoStorageQuota)` |
+
+`settleStorageWallCall` compares the ceiling the provider **observed** against the one that was
+declared. They must be equal: a provider that reported success while rounding a hard ceiling upward
+settles as a `Conflict`, not as applied. A zero wall epoch mints nothing. This is what makes "we did not
+apply your storage ceiling" impossible to confuse with "applied".
 
 ## Per-Substrate Storage Cordon
 

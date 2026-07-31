@@ -108,12 +108,13 @@ Surviving the reaper is the point of this mechanism, and it has a consequence wo
 it disappears from the session UI while continuing to hold everything it reserved — on Windows that is
 the project's full CPU and memory budget, walled into the shared WSL2 utility VM.
 
-This bites harder than on the other substrates because WSL2 does not release its wall on `project down`
-(see [wsl2](wsl2.md) § Wall release): the managed `.wslconfig` pins the idle timeouts to `-1`, so the
-utility VM stays resident with the whole balloon committed even after the distro is terminated. On a
-host sized close to the budget, that memory stays gone until the next reboot or a manual
-`wsl --shutdown`, and any other memory-hungry application on the machine will fail in its own vocabulary
-rather than telling you the budget is still walled off.
+This bites harder than on the other substrates because WSL2 does not release its wall promptly on
+`project down` (see [wsl2](wsl2.md) § Wall release): teardown does not shut the utility VM down, so it
+stays resident with the whole balloon committed even after the distro is terminated. Sprint 9.11
+replaced the former `-1` idle-timeout pins with a finite six hours, so the host does eventually recover
+the memory by itself, but that is a backstop rather than a release. On a host sized close to the budget,
+run `wsl --shutdown` rather than waiting it out; any other memory-hungry application on the machine will
+otherwise fail in its own vocabulary rather than telling you the budget is still walled off.
 
 Before treating the host as free, check the run rather than the UI:
 

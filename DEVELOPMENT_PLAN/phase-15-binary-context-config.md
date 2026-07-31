@@ -15,8 +15,11 @@
 
 **Reopened and closed (2026-07-02)** for **in-place child-config delivery** (development_plan_standards
 § U, § X): the chain retains a named `context-init` frame anchor, while the current VM projection is
-produced inside the composite bootstrap action and the container projection is supplied independently
-through `psFrameContext` at the lift boundary. The context-adjusted full-record projection is **streamed
+produced inside the composite bootstrap action. The container projection is carried by the **descent the
+`context-init` step itself declares** (Sprint 16.6, 2026-07-30) rather than by a separately assigned
+per-frame resolver, so the announcing row and the delivered bytes are one plan value; the parent-side
+projection function remains distinct from the plan's own delivery operation. The context-adjusted
+full-record projection is **streamed
 into the child frame over the lift's `stdin` channel** and written by the descending binary to its own sibling
 `<project>.dhall` before dispatch — no **parent-side intermediate** config file and no config bind-mount
 for the VM and project-container frames (the Kubernetes service pod keeps its ConfigMap override). The
@@ -58,9 +61,10 @@ and runtime witnesses are built and validated; the Python boundary holds.
 This phase was **realigned** to the "chain is the project" model (§ Y, § Z, § X), and the binary-context
 contract now matches it: the sibling `<project>.dhall` carries **parameters + context + witness** and never
 the chain shape; child-config creation is off the dissolved `context create` mutation verb. Current
-`project up` projection/delivery is split across child-projection functions, composite bootstrap or
-`psFrameContext`, and the lift; the named `context-init` action is only an announcing anchor. Sprint 16.6
-owns their unification in one plan operation. The host-level default surface is renamed from `config init` to
+`project up` projection/delivery is split across child-projection functions, the composite bootstrap
+action, and the descent the plan declares; the named `context-init` action's body is still only an
+announcement, though for the container boundary it is now the same node that carries the payload
+(Sprint 16.6, 2026-07-30). Sprint 16.6 owns the remaining unification in one plan operation. The host-level default surface is renamed from `config init` to
 `project init`, which is explicit and is not triggered by Python; the read-only `context` command
 (`renderComposition` + `context inspect`)
 absorbs the former `config schema` / `config show FILE` / `config path` / static `config render` surfaces;
@@ -352,10 +356,10 @@ boundary without weakening existing-frame command gating.
 #### Remaining Work
 
 None in this historical sprint's command-surface scope. The child-config constructors remain and the
-standalone `context create` mutation verb is removed. During recursive `project up`, composite
-bootstrap/`psFrameContext` code selects the context-adjusted full-record projection and the lift delivers it; the named
-`context-init` action only announces. Sprint 16.6 owns unifying those independently supplied paths in one
-plan node. The `context` command is read-only. The declared image-build context is materialized through
+standalone `context create` mutation verb is removed. During recursive `project up`, the composite
+bootstrap action selects the VM projection and the plan's own declared descent carries the container
+projection the lift delivers; the named `context-init` action's body only announces. Sprint 16.6 owns
+unifying the remaining paths in one plan node. The `context` command is read-only. The declared image-build context is materialized through
 the project-owned `project init` family before `check-code`; Python does not invoke either initializer.
 
 ### Sprint 15.4: Normal runtime config reads [Done]
@@ -612,16 +616,32 @@ pod template so a subPath-mounted config change causes rollout. Dated validation
 embedded 364-core suite).
 
 Open only for real-run integration proving the remaining daemon placements **read** their delivered
-config and **connect**: native Linux CPU/GPU in-cluster lanes plus the unavailable Apple host-daemon
-lane. The dated Windows GPU/WSL2 `8/8` accepted by Phase 18 already covers the Windows host-daemon
-delivery/connect path; it does not stand in for these remaining native lanes. No config implementation or
-static-test work remains.
+config and **connect**.
 
-### Sprint 15.9: Opaque capability and context authority [Blocked]
+**Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
+across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
+recorded once with
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
 
-**Status**: Blocked
-**Blocked by**: Sprints 5.7, 9.10, and 19.7–19.8
+The GPU in-cluster placement read its dynamically generated ConfigMap, passed the in-pod runtime-witness
+gate at the derived `daemon-<n>` frame, and connected to the web `ClusterIP`.
+
+**Native Linux CPU real-run closure (2026-07-29).** The Incus-backed lane reported **`10/10 passed`** on a
+host that detects `linux-cpu` on its own evidence, with
+`deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)` —
+so the **CPU** in-cluster placement also read its generated ConfigMap, passed the in-pod runtime-witness
+gate, and connected. The full evidence is recorded once with
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). Only the unavailable **Apple**
+host-daemon lane remains. The dated Windows GPU/WSL2 `8/8`
+accepted by Phase 18 already covers the Windows host-daemon delivery/connect path; it does not stand in
+for those remaining native lanes. No config implementation or static-test work remains.
+
+### Sprint 15.9: Opaque capability and context authority [Active]
+
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/src/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
@@ -643,6 +663,305 @@ static-test work remains.
 `documents/architecture/dhall_generation.md`,
 `documents/architecture/hostbootstrap_core_library.md`,
 `documents/engineering/config_generation.md`, `legacy-tracking-for-deletion.md`
+
+
+**Partially delivered 2026-07-28 — the context-validation deliverables.** Two of this sprint's
+deliverables are independent of the broker/session/journal machinery that Sprints 10.9 and 16.6 own, and
+they landed on their own:
+
+- **`addRole` is a validating smart constructor, not a union.** It was reachable from operator input
+  (`--also-role`), so a `Daemon` primary could acquire `HostOrchestratorCommand` and `ProjectCommand`
+  simply by naming an extra role — self-asserted authority of exactly the kind the objective forbids.
+  `addRole` now returns `Either BinaryContextError BinaryContext` and consults the closed
+  `roleAdditionAllowed` relation: a **non-leaf** primary cannot acquire service-run authority, and a role
+  may not contribute a command class the primary's placement does not already justify. The surviving
+  legal case is leaf-to-leaf (a service placement may also serve another service role); a test enumerates
+  the relation over all 64 kind pairs and pins the permitted set to exactly four. The CLI, the demo
+  assembler, and the test fixture all propagate the refusal instead of dropping it, so a refused role
+  stops assembly rather than yielding a config that reads as authorized.
+- **One total topology graph validator (`validateTopology`) runs before command authorization.** A
+  decoded `<project>.dhall` is untrusted input, so the frame list is now checked as a graph: non-empty
+  and unique identifiers, exactly one root, every non-root parent resolvable, no parent walk revisiting a
+  frame, every frame reachable from the root, each child's kind legal for its parent, and the declared
+  `parentChain` in agreement with the edges. The cycle check is load-bearing rather than defensive —
+  `ancestorKinds` follows `topologyParentId` with no memory of where it has been, so a config whose
+  frames name each other as parents **looped forever**; every traversal now carries a visited set. The
+  direct Linux GPU `HostOrchestrator` → `VMProjectContainer` edge stays structurally permitted so
+  `requiredAncestorError` keeps owning its witness-specific refusal.
+
+Validation: `ContextSpec` grew from 36 to **45** cases, including the two cycle regressions, duplicate
+and empty identifiers, two roots, an unreachable component, an illegal child kind, a lying `parentChain`,
+and the relation enumeration. Core gate **561/561**, demo **106**, Python **227**, all under `-Werror`.
+An existing § K drift guard caught a bare `readProcessWithExitCode "mkdir"` introduced in the Sprint 5.7
+spec; it is now a direct directory call.
+
+**Partially delivered 2026-07-29 — the protected store and the root/command authority half.**
+
+- **The protected, versioned record store exists** (`HostBootstrap.Protected`). It is the mechanism
+  § EE calls "one protected compare-and-swap", and every later authority, mode, lease, and journal
+  record lives in it. A `ProtectedSession` is the only key to a read or write and exists only inside
+  `withProtectedEntry`, so no record operation can happen outside the OS-released exclusive entry
+  (clause 1; portable `hLock` — `flock`/`fcntl` on POSIX, `LockFileEx` on Windows). Writes publish a
+  fully flushed same-directory temporary by atomic rename, land only against the exact observed
+  version, and return the sole successor version; deletes are equally conditional. The store carries a
+  durable generative identity, so a proof retained across a delete-and-recreate cannot be replayed.
+  Re-entering the entry from the thread that holds it is an explicit refusal rather than a deadlock,
+  and `tryProtectedEntry` is the non-blocking peer used to observe a live holder.
+- **`RootInvocationAuthority` is minted only by the non-config gate** (`HostBootstrap.Authority`). It
+  verifies installed project identity, OS/operator authorization (stated exactly: the current OS
+  principal can write the protected authority store), the store's single project binding — a store
+  established for another project refuses this one — and the exact verb. It reads no
+  `<project>.dhall` and mints no lifecycle profile.
+- **`ProjectVerb` and `LifecyclePhase` are closed and type-indexed.** An `up` grant and a `down` grant
+  have different types, so `destroyCloseRoot` cannot accept an `up` authority: that is a compile error,
+  not a runtime check (`WrongVerbCloseRoot.hs`).
+- **`CommandAuthority` carries a hidden one-use invocation identity** and is minted only by the
+  effectful `authorizeProjectCommand`, which atomically reserves that invocation against the live
+  broker epoch. The second attempt at the same plan/frame/verb/phase/generation is
+  `AuthorityInvocationConsumed`, and a frame the plan does not declare is refused before any effect.
+- **The root/verb side of `ProductionClosureAuthorization`** is `ProductionCloseRoot`: the
+  settled-destroy branch takes only an exact `ProjectDestroy` root, and the pre-effect branch is
+  separately labelled so Phase 10's release can require the matching evidence.
+
+Validation (2026-07-29): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **619**, and the demo workspace passes its **106** demo
+tests plus the embedded **619**-test core suite under the same gate. The new `AuthoritySpec` contributes
+**26** cases against a real filesystem and a real kernel lock, including cross-process exclusion proved
+by re-invoking the test executable's own protected-entry probe rather than a lookalike `flock`. Five new
+compile-fail fixtures reject a forged `CommandAuthority`/`RootInvocationAuthority`, a wrong-verb close
+root, a forged run lease, a forged `ProtectedSession`, and a Production profile opened from a harness
+lease.
+
+**Partially delivered 2026-07-29 — the closed required-witness relation.**
+
+- **A placement, not a kind, indexes the required evidence.** `HostBootstrap.Context.placementFor` is
+  the closed (kind, provider, parent kind) → `ContextPlacement` relation, and `requiredWitnesses` is the
+  one definition of what each placement must prove locally. The two parallel hand-written witness
+  tables — `runtimeWitnessesForKind` plus the inline lists in `childDaemonContext` and
+  `deriveLinuxGpuContainerContext` — are deleted; the child-context constructors project this relation,
+  so the generated set and the validated set cannot drift.
+- **The declared list is no longer the authority.** `validateContext` re-derives the required set from
+  the validated topology and requires the declared `runtimeWitnesses` to equal it exactly. This closes a
+  real hole: validation previously verified only what the config *claimed*, so an **empty** or trimmed
+  list verified nothing and still authorized the command. Missing, extra, or irrelevant entries are
+  `ContextWitnessSetMismatch`; two entries sharing a kind and name — a duplicate, or a contradictory
+  pair demanding two values for one environment variable — are `ContextWitnessDuplicate`.
+  `validateRuntimeContext` then verifies the **derived** set against the real environment.
+- **The direct Linux GPU lane can no longer be self-asserted.** `isExplicitLinuxGpuContainer` read
+  `directLinuxGpuWitness` out of the declared list, so a hand-edited config could skip the VM-ancestor
+  requirement merely by naming that fact. It is now the structural question "a Docker project container
+  whose parent is the host orchestrator", and the witness is something that placement must *prove*.
+- **A frame's provider is load-bearing.** A kind its provider cannot own has no placement, so
+  `validateTopology` refuses it with `ContextTopologyIllegalProvider` rather than guessing a required
+  set — the provider half of the "legal child kind/provider/role relations" deliverable.
+
+Validation (2026-07-29): `ContextSpec` grew from 45 to **48** cases, covering the exact-set contract
+(omitted, empty, duplicated, contradictory, irrelevant), the self-asserted direct-GPU refusal, the
+illegal-provider refusal, and runtime verification of the derived rather than declared set. Core gate
+**622/622** and demo **106** plus the embedded **622** under `-Werror`; `poetry run python -m
+hostbootstrap.check_code` clean and `hostbootstrap.test_all` **227**. No witness values changed, so no
+provider lane's real-run behavior is altered by this change.
+
+**Partially delivered 2026-07-29 — `ValidatedConfig`-injected plan construction.**
+
+- **The sibling is admitted once per lifecycle invocation.**
+  `HostBootstrap.Config.Schema.withSiblingValidatedProjectConfigRoot` composes the existing root
+  admission with `withValidatedConfig`, so `project up|down|destroy` receive the verified wire, the
+  `ValidatedConfig scope specDigest configId (cfg scope)`, its context, and the canonical root together.
+  Plan construction consumes `validatedConfigValue` — the byte-stable round-tripped snapshot — rather
+  than the first decode.
+- **The demo's per-step reloads are gone.** Each chain step used to call its own
+  `withSiblingProjectConfigContext`, so a ten-step `project up` reopened and re-decoded
+  `<project>.dhall` ten times; a replacement between two steps split one run across two configs. The
+  chain builders already received the config and discarded it (`demoChain _ = …`). They now close every
+  step over that one snapshot, and `demoConfigContext` applies the same per-step
+  command-class/capability and runtime-witness gate to the **injected** value. Two imports
+  (`withProductionProjectCodec`, `withSiblingProjectConfigContext`) fell out of the demo as dead, which
+  is the mechanical confirmation that no reload path survives.
+- **Two now-dead seams removed** and entered in the ledger: `requireSiblingProjectConfig` (no consumer
+  at all) and the public `withSiblingProjectConfigRoot` export (now internal to the validated seam).
+
+Validation (2026-07-29): a `CLISpec` TOCTOU regression drives a real `project up` whose first step
+replaces the sibling on disk and whose second step records both its injected snapshot and a fresh read
+of the file — proving the step keeps the admitted value while a reload at that instant would have
+returned different bytes. Core gate **623/623**, demo **106** plus the embedded **623**, all under
+`-Werror`; `fourmolu --mode check app src` clean on the demo.
+
+**Partially delivered 2026-07-29 — the authenticated handoff transport (`HostBootstrap.Handoff`).**
+
+What it replaces authenticates nothing: the parent put the rendered child config on the lift's `stdin`
+and overrode the container entrypoint with `sh -c "cat > <sibling> && exec <binary> …"`, so whatever
+reached that pipe became the child's config.
+
+- **One exact `HandoffBinding` per edge** — scope, plan revision, broker generation, the parent→child
+  frame pair, the child config digest, verb, and phase. Rendered with **length-prefixed** fields, not
+  separator-joined: with a separator, parent `a-b`/child `c` and parent `a`/child `b-c` render
+  identically and one signature would authenticate two different edges. A test pins that.
+- **The root signs; parents relay.** `withRootBroker` mints an Ed25519 keypair from a verified
+  `RootInvocationAuthority` and never returns it, so the key cannot outlive its invocation. An immediate
+  parent receives only a keyless `BrokerRelay`, which has no field a signature can come from. The root
+  refuses to relay or sign a binding from another broker generation or for a verb it did not authorize.
+- **Fresh challenge, then one-time token.** The receiver mints a random challenge and the root signs over
+  it, so a recorded transcript carries a signature over a challenge this receiver never issued.
+  Verification checks the signature **first** — an unauthenticated message cannot burn a token — then
+  consumes the token by protected compare-and-swap against its absence, so a byte-identical replay of a
+  genuinely signed message is still refused.
+- **Digest recomputed from the bytes received**, never trusted from the binding; and the verification key
+  is a separately installed input (`installedVerificationKey`), never read from the envelope.
+- **`authorizeChildProject`** refuses a genuinely signed grant presented by the wrong frame or for the
+  wrong verb.
+
+Validation (2026-07-29): `HandoffSpec` runs **22** cases against a real Ed25519 keypair and a real
+protected store — framing round-trip, short header, short body, trailing bytes, an oversized declared
+length refused before allocation, field-boundary unambiguity, every bound field changing the rendering,
+a genuine handoff, double consumption, a stale challenge, a payload swapped after signing, another
+root's key, a sibling frame, an up-grant against a teardown verb, cross-generation relay/signing
+refusal, an offer whose payload the binding does not describe, malformed token frames, the
+signature-before-token ordering, and installed-key load/missing/malformed. The
+`ForgeVerifiedHandoff` compile-fail fixture rejects a promoted raw wire, an asserted `ChildPlanAuthority`,
+a forged broker, relay, grant, challenge, and verification key. `crypton`/`memory` were added as direct
+dependencies and resolve from the existing store with **no new builds**, so the warm store and published
+base are unaffected. Core gate **645/645**, demo **106**, Python **227**, demo `fourmolu` clean.
+
+**Not yet wired (still this sprint's):** the transport exists and is proved, but the live descent still
+uses `Lift.ConfigDelivery`'s `sh -c "cat > …"` writer. Replacing it needs the binary's internal receiver
+at the child entrypoint plus the duplex relay back to the root broker, which lands with Sprint 16.6's
+recursive interpreter. `withChildProjectPlan` is likewise deferred: it must yield a `ProjectPlan`, and
+that type is Sprint 16.6's to introduce. `ChildPlanAuthority` is the part of it that does not depend on
+`ProjectPlan` and is delivered here.
+
+**Partially delivered 2026-07-29 — the protected session/fence prepare protocol
+(`HostBootstrap.Lifecycle.Session`).**
+
+Sprint 9.10 landed the *pure* journal algebra: `Reconcile.withPreparedOperation` validates a dependency
+set and mints the `PreparedOperation`/`PreparedPreconditions` pair. But it takes the journal version as
+an ordinary `Word64` the caller supplies, so nothing proved that version was observed, still current, or
+that any session was open — two concurrent invocations could each pass `7` and each receive a prepared
+pair for the same operation. This is the durable half that makes those indices real; every transition is
+a compare-and-swap in the protected store.
+
+- **The project journal and its sole successor permit.** `ProjectPermit` carries the observed
+  `RecordVersion`, not a number, so a retained older permit fails its own compare-and-swap and cannot
+  authorize a second advance. Opening the journal twice observes one version rather than resetting it.
+- **Sessions.** `openOperationSession` refuses when the project is closed, when the presented permit is
+  no longer current, or when **any** older session is still Open — including a zero-operation session,
+  which is exactly what an invocation killed right after opening leaves behind.
+  `closeOperationSession` proves every registered operation settled and contends on the same session
+  record version a prepare does, so close and prepare have exactly one winner.
+- **Intent registration** is atomic with the journal advance and consumes an exact `NoHistory` or
+  `ReleasedReacquisition` origin; a second initial intent, or a reacquisition from a phase that is not
+  `Released`, is refused.
+- **Durable, idempotent fence rotation.** `FenceIntentRecorded → FenceOutcomeUnknown → FenceObserved`.
+  The proposal is written *before* it is used, so a re-establishment resumes the persisted epoch rather
+  than the caller's — a test proposes `99` against a persisted `1` and gets `1` back, including across a
+  store reopen. Rotation is strictly increasing, so a superseded epoch cannot rotate again.
+- **The total recovery discriminator.** `classifyRecordedPhase` maps every recorded phase to
+  `Continuable` (the five pre-call phases), `FencedRetryable` (the closed observed-absence whitelist),
+  `Settled`, `TerminalDisposition`, or `UnknownDisposition`. An unrecognised phase is `Unknown` and
+  **blocks** admission rather than being optimistically swept.
+  `recoverAbandonedSessions` closes each Open session only after classifying its operations.
+- **The prepare compare-and-swap.** `withPreparedGate` revalidates the broker generation, the session,
+  the project state, the current fence, and the recorded phase; **durably records the
+  operation-specific unknown phase before the continuation runs**; then consumes the journal version it
+  observed. A settled or terminal operation gets no authority; a fenced-retryable one needs a fence
+  strictly above the one it was observed at. `OperationAdvance`'s eliminator yields the adapter's result
+  only together with the successor permit, so a caller cannot keep the result and the stale permit.
+
+Validation (2026-07-29): `SessionSpec` runs **33** cases against a real protected store on a real
+filesystem — a "crash" is modelled by stopping between two durable writes and reopening the store, which
+is what an interrupted invocation actually leaves. The `ForgeSessionPermit` compile-fail fixture rejects
+a forged permit, session, fence epoch, prepared gate, and advance. Core gate **676/676**, demo **106**,
+Python **227**, demo `fourmolu` clean, `git diff --check` clean.
+
+**Joined 2026-07-30 by Sprint 16.6.** `Reconcile.withPreparedOperation` no longer accepts a
+caller-supplied attempt or journal version: it takes the unforgeable `PreparedGate` that
+`withPreparedGate` mints through the new lower `HostBootstrap.Lifecycle.Prepared`, and refuses one
+recorded under another plan digest or operation key. Both adapters thread it. What is still not wired is
+the *live* lifecycle call site — the sequence runs from the adapter specs, not yet from a real
+`project up` — which is Sprint 16.6's recursive-interpreter work.
+
+**Partially delivered 2026-07-29 — `BuildInvocationAuthority` (`HostBootstrap.Build`).**
+
+The gate this replaces authorizes from the **baked** config alone: the Dockerfile runs `project init
+--role image-build-container` and then `check-code`, so the gate proves only that a Dockerfile ran.
+Nothing binds it to the project whose sources are being built, to the exact source context, or to the
+binary doing the building — a stale or copied image-build config authorizes the same gate.
+
+- **A signed `BuildBinding`** names the project, spec digest, config digest, build id, source digest,
+  and **two** binary identities. Coordinator and builder are separate: a grant issued for one builder
+  cannot authorize a different one even when everything else matches. Fields are length-prefixed.
+- **Verification compares against what it measures, not what the grant says about itself.**
+  `verifyBuildInvocation` takes the verification key from an installed file, independently measures the
+  source context with `measureSourceDigest`, independently measures the running builder, and requires
+  the caller's locally computed Production config digest to match. Only then does it jointly mint
+  `ImageBuildFrame` and `BuildInvocationAuthority`, from which the two narrow `CheckCodePhase` /
+  `BuildPhase` authorities derive. A build authority is not a project verb, so no amount of it adds up
+  to `project up`.
+- **Source measurement binds path *and* contents**, so relocating bytes to a different filename changes
+  the digest — a test proves it.
+- **A backend with no coordinator channel is `BuildChannelUnavailable`**, an explicit refusal rather
+  than a fallback to the baked config.
+- **No function in the module accepts a `BinaryContext`**, so the baked config cannot reach any of it.
+
+Validation (2026-07-29): `BuildAuthoritySpec` runs **17** cases against real temporary trees, real
+files, and a real Ed25519 keypair. The tampered cases **re-sign** the modified binding, so each one is a
+genuine signature over a false description rather than a broken signature — wrong project, wrong config
+digest, a source digest that does not describe the context, sources edited after signing, another
+builder, another coordinator's key, and a coordinator refusing to sign a binding attributed to someone
+else. The `ForgeBuildAuthority` compile-fail fixture rejects a forged authority, frame, phase authority,
+grant, and coordinator, and pins that the baked config reaches none of them. Core gate **694/694**, demo
+**106**, Python **227**, demo `fourmolu` clean.
+
+**Not yet wired (still this sprint's):** `checkCodeCommand` still gates on the baked config through the
+ordinary sibling loader, and `demo/docker/Dockerfile` still runs a bare `RUN hostbootstrap-demo
+check-code`. Requiring the authority at that call site means the chain's build-image step must become the
+coordinator and deliver a channel into the build, which is Sprint 16.6's plan-driven wiring.
+
+**Partially delivered 2026-07-29 — `VerifiedRuntimeRoleActivation` (`HostBootstrap.Activation`).**
+
+A restartable service or daemon leaf cannot re-enter through the recursive handoff: the parent that
+would relay a grant is gone by the time a controller restarts a pod. Its authority instead comes from a
+manifest the root broker signed during plan validation, paired at startup with an identity the process
+measures for itself.
+
+- **The broker signs what it can honestly know.** `ActivationManifest` binds the immutable rollout
+  revision plus the plan, spec, binary, frame, config, secret, service, role-plan, and permitted-effect
+  indices — and deliberately carries **no instance identity**, because the pod does not exist yet and a
+  broker claiming to know its UID would be lying. Startup supplies that half.
+- **Startup measures its own reality.** `RuntimeMeasurement` carries the binary digest, the hash of the
+  role-wire bytes actually mounted, the hash of the private-channel bytes actually read, and the
+  `MeasuredInstance` — a pod UID **plus its container restart count** (a crash-looping container keeps
+  its UID, so the count is part of the identity), or a host daemon's protected invocation nonce.
+- **Refusals.** A changed ConfigMap or Secret hash, a different binary, a superseded revision, another
+  project's key, and a manifest edited after signing each refuse. Because the measured instance is bound
+  into the result, a value retained from `I1` is not an activation for `I2` — a test verifies the same
+  signed manifest twice at restart counts `0` and `1` and shows the two are not interchangeable.
+- **No cleartext is representable.** Every secret-shaped field is a digest and the channel field is a
+  locator, so a manifest, pod template, or diagnostic rendering cannot carry bundle bytes.
+- **Separate signing key from the handoff broker**, minted from the same verified root invocation, with
+  domain-separated material — so a captured handoff grant can never be presented as an activation
+  manifest without relying on the two encodings never colliding.
+- **The one-use `LifecycleAdmission`** Sprint 14.6 requires before Prereq/acquisition is a
+  compare-and-swap against absence keyed on plan, frame, revision, and measured instance: a duplicated
+  activation cannot open two admissions, while a genuine restart gets its own.
+
+Validation (2026-07-29): `ActivationSpec` runs **16** cases against real Ed25519 keys and a real
+protected store. The `ForgeRuntimeActivation` compile-fail fixture rejects a forged activation package,
+admission, grant, and broker. Core gate **710/710**, demo **106**, Python **227**, demo `fourmolu` clean,
+`git diff --check` clean, no stray `.log` files.
+
+**Not yet wired (still this sprint's):** `HostBootstrap.Service`/`service run` does not yet require the
+package, and no controller renders the signed manifest into a pod template. Sprint 14.6 owns the
+consuming role plan/cursor/phase machine and Sprint 18.6 the `selectAndRunService` gate; both are named
+downstream of this one.
+
+**Still open (the rest of this sprint):** the
+broker-relayed cross-frame handoff with `VerifiedConfigWire`/`VerifiedHandoff` and
+`withChildProjectPlan`/`authorizeChildProject`; the prepare compare-and-swap and its versioned
+session/fence protocol; `BuildInvocationAuthority` and the Dockerfile-time gate; and the inseparable
+`VerifiedRuntimeRoleActivation` package Sprint 14.6 consumes. Those remain coupled to Sprints 10.9 and
+16.6. The landed half deliberately stops before any of them: it grants authority to *start* a verb at a
+frame, not to prepare an effect.
 
 #### Objective
 
@@ -897,13 +1216,31 @@ data or by replaying a prior handoff.
 
 #### Remaining Work
 
-Blocked until Sprints 5.7, 9.10, and 19.7–19.8 land the durable-state
-proof, ownership/result types,
-scoped codec, and finalized plan. Then refactor context/capability construction around the Phase 9 opaque
-tokens, replace the current class-membership-only project-up gate and raw `addRole`, replace the shell writer with the framed
-broker/challenge/grant `BoundRunLease`/`HandoffToken` transport plus the versioned session/fence prepare
-protocol, enforce every gate, and update schema/golden
-tests. Coordinate
+The context-validation half (2026-07-28), the protected-store/root/command-authority half (2026-07-29),
+the closed required-witness relation (2026-07-29), `ValidatedConfig`-injected plan construction
+(2026-07-29), the authenticated handoff transport (2026-07-29), and the protected session/fence prepare
+protocol (2026-07-29), `BuildInvocationAuthority` (2026-07-29), and `VerifiedRuntimeRoleActivation`
+(2026-07-29) are landed and gated: **every mechanism this sprint owns now exists and is proved.**
+
+What remains is **wiring**, and it is deliberately not this sprint's to do alone — each remaining item
+is a call site owned by a named downstream sprint:
+
+- ~~replace the class-membership-only `project up` gate with `authorizeProjectCommand` at the command
+  layer~~ — **landed 2026-07-30** by Sprint 16.6: `Command.withRootLifecycleAuthority` runs all three
+  lifecycle verbs behind the independent root gate at the root frame, so
+  `Authority.withVerifiedRootInvocation` has its first production consumer. Refactoring the remaining
+  capability construction around the Phase 9 opaque tokens is still open, as is extending the gate past
+  the root frame (Sprint 16.6 item 2, the handoff receiver);
+- put the binary's internal receiver in place of `Lift.ConfigDelivery`'s shell writer and add the duplex
+  relay to the root broker (Sprint 16.6);
+- ~~put `withPreparedGate` in front of every adapter so `Reconcile.withPreparedOperation` can no longer
+  be reached with a caller-supplied journal version~~ — **landed 2026-07-30** by Sprint 16.6 through the
+  shared lower `HostBootstrap.Lifecycle.Prepared`; driving it from the live lifecycle call sites remains
+  Sprint 16.6's;
+- make the chain's build-image step the coordinator and deliver a channel into the image build, so
+  `check-code` requires `BuildInvocationAuthority` rather than the baked config (Sprint 16.6);
+- make `service run` require the activation package (Sprints 14.6 and 18.6);
+- update schema/golden tests once those call sites move. Coordinate
 lease/token acquisition, consumption, and unwind with
 [Sprint 10.9](phase-10-standardized-test-harness.md) and
 [Sprint 16.6](phase-16-project-lifecycle-command.md), which own exclusive run ownership and recursive

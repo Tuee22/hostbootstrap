@@ -19,6 +19,9 @@ build/
 .build/
 .data/
 .test_data/
+# The protected lifecycle authority store. Durable by design, and the test suite
+# creates one under whichever directory it runs from.
+.hostbootstrap/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

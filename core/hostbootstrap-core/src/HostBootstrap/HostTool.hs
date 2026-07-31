@@ -19,19 +19,15 @@ module HostBootstrap.HostTool (
     absExePath,
     mkAbsExe,
     discover,
+    cudaCandidatePaths,
 )
 where
 
-#ifdef mingw32_HOST_OS
 import Control.Exception (IOException, catch)
-#endif
-import System.Directory (findExecutable)
+import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
+import Data.List (isPrefixOf, sort)
+import System.FilePath (isAbsolute, (</>))
 #ifdef mingw32_HOST_OS
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-#endif
-import System.FilePath (isAbsolute)
-#ifdef mingw32_HOST_OS
-import System.FilePath ((</>))
 import System.Exit (ExitCode (ExitSuccess))
 import System.Process (readProcessWithExitCode)
 #endif
@@ -207,13 +203,46 @@ discoverWindowsMsvcClFromKnownRoots = do
         ]
   firstWindowsVersionedTool roots ("bin" </> "Hostx64" </> "x64" </> "cl.exe")
 #else
+discoverFallback Nvcc = discoverPosixCudaTool "nvcc"
 discoverFallback _ = pure Nothing
+
+{- | The CUDA toolkit's canonical POSIX location. A distribution or container
+image installs @nvcc@ under @/usr/local/cuda@ (a symlink to the versioned root)
+without necessarily putting that @bin@ directory on @PATH@ — the published CUDA
+base image is exactly such an image. Discovering it here is the POSIX peer of
+'discoverWindowsNvcc' and keeps § K's promise that a present toolchain resolves
+to an absolute path instead of being reported absent.
+-}
+discoverPosixCudaTool :: String -> IO (Maybe AbsExe)
+discoverPosixCudaTool name = do
+  exists <- doesDirectoryExist cudaPrefix
+  entries <- if exists then safeListDirectory cudaPrefix else pure []
+  firstExisting (cudaCandidatePaths name entries)
 #endif
 
-#ifdef mingw32_HOST_OS
 safeListDirectory :: FilePath -> IO [FilePath]
 safeListDirectory path = listDirectory path `catch` \(_ :: IOException) -> pure []
 
+cudaPrefix :: FilePath
+cudaPrefix = "/usr/local"
+
+{- | Where a POSIX CUDA tool may live, in the order it should be preferred: the
+stable unversioned @\/usr\/local\/cuda@ symlink first, then any versioned
+sibling newest-first. Pure so the ordering is unit-tested rather than inferred
+from whichever toolkit a particular host happens to carry.
+-}
+cudaCandidatePaths :: String -> [FilePath] -> [FilePath]
+cudaCandidatePaths name entries =
+  [ root </> "bin" </> name
+  | root <-
+      (cudaPrefix </> "cuda")
+        : [ cudaPrefix </> entry
+          | entry <- reverse (sort entries)
+          , "cuda-" `isPrefixOf` entry
+          ]
+  ]
+
+#ifdef mingw32_HOST_OS
 firstWindowsVersionedTool :: [FilePath] -> FilePath -> IO (Maybe AbsExe)
 firstWindowsVersionedTool [] _ = pure Nothing
 firstWindowsVersionedTool (root : roots) suffix = do
@@ -227,6 +256,8 @@ firstWindowsVersionedTool (root : roots) suffix = do
         Just exe -> pure (Just exe)
         Nothing -> firstWindowsVersionedTool roots suffix
 
+#endif
+
 firstExisting :: [FilePath] -> IO (Maybe AbsExe)
 firstExisting [] = pure Nothing
 firstExisting (path : paths) = do
@@ -234,4 +265,3 @@ firstExisting (path : paths) = do
   if exists
     then pure (either (const Nothing) Just (mkAbsExe path))
     else firstExisting paths
-#endif

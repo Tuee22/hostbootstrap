@@ -1,7 +1,8 @@
 # WSL2 Host Provider
 
 **Status**: Authoritative source
-**Supersedes**: the cached-rootfs/`wsl --import` runtime narrative and backup-existence-as-ownership claim
+**Supersedes**: the cached-rootfs/`wsl --import` runtime narrative, the backup-existence-as-ownership
+claim, and the native C-shim wall adapter
 **Referenced by**: [documents index](../README.md), [applied cordon](applied_cordon.md), [resource budgeting](resource_budgeting.md), [ensure reconcilers](ensure_reconcilers.md), [durable state](../architecture/durable_state.md)
 
 > **Purpose**: Describe the active Windows WSL2 provider, the selected install route, the exact limits of
@@ -40,11 +41,17 @@ install the Haskell toolchain. See
 
 WSL2 has no per-distro CPU or memory limit. The provider merges managed `[general]`/`[wsl2]` sections
 into the user's global `%UserProfile%\.wslconfig`. Initial creation follows that write with
-`wsl --shutdown` before install. On an existing distro, current reconcile merges the file again but runs
+`wsl --shutdown` before install. On an existing distro, current reconcile re-acquires the wall but runs
 shutdown only when the distro is stopped; a running distro is deliberately left live, so changed
 CPU/memory values may not take effect during that invocation. The target must return
 `Unchanged | Migrated | Refused` from an observation of the effective wall rather than calling a file
 rewrite an applied cordon.
+
+The lifecycle never names the file. `spLaunch` emits `ApplyGlobalWslWall <managed body>` and
+`spStop`/`spDestroy` emit `ReleaseGlobalWslWall <managed body>`; all three take the same
+`ResourceEnvelope`, so teardown releases exactly the wall bring-up applied, and a *different*
+declaration is a structured conflict rather than an overwrite. The target is derived from
+`%UserProfile%` by the backend itself.
 
 Target planning derives a pure exact `ProviderWallSpec ... wallSpecId`, `EffectiveBudget`, and proved
 `BudgetPartition` before touching this shared state. A journaled same-spec reservation plus the
@@ -57,18 +64,34 @@ result exposes recovery/reprobe state, not later mutation authority. Subsequent 
 restoration requires the live authority, lease, and exact partition projection, with the epoch/fence
 revalidated at the call.
 
-The provider currently restores a saved original when one existed. It holds none of the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses: no OS-released exclusive lock, no
-durable origin record (backup existence does not record an *absent* original), and no binding to the
-file's object identity. If a run crashes after its first write, retry can save generated content as the
-“original”; concurrent runs can also overwrite the global setting. This implementation therefore mints no
-receipt, and Sprint 11.10 remains open for the backend that holds all four clauses at this call site.
+The wall is acquired through the host-wall backend, which holds all four
+[ownership invariant](../architecture/ownership_invariant.md) clauses. The superseded route inferred
+ownership from a `.hostbootstrap-demo.bak` pathname: it recorded no *absent* original, so a crash after
+the first write let retry save generated content as the “original”, and concurrent runs could overwrite
+the global setting.
 
-On Windows those clauses are realized without a foreign-function boundary: `createFile` with share-mode
-`0` for exclusive entry, a journalled origin record naming exact bytes or absence, and
+The implementation is split so that the ownership logic is not Windows-only:
+
+| Module | Role |
+|--------|------|
+| `HostBootstrap.Wsl2.GlobalWall` | the pure phase machine, receipts, and conflicts |
+| `HostBootstrap.Wsl2.GlobalWall.ConfigBytes` | the byte-exact UTF-8/UTF-16 managed-section merge |
+| `HostBootstrap.Wsl2.GlobalWall.Host` | the recovery driver, durable record codec, and `HostWallBackend` seam |
+| `HostBootstrap.Wsl2.GlobalWall.Windows` | the production Win32 backend |
+| `HostBootstrap.Wsl2.GlobalWall.Posix` | the POSIX backend the ungated suite runs the driver against |
+
+On Windows the clauses are realized without a foreign-function boundary, using `Win32`'s existing
+bindings: `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` on a per-user lock file for exclusive entry, a
+journalled origin record naming exact bytes or absence under `%UserProfile%\.hostbootstrap`, and
 `getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair for identity binding. The
 64-bit file index is unique and stable on NTFS; a non-NTFS profile volume returns `Unsupported` rather
-than assuming it.
+than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the adapter needs
+neither a named mutex nor the threaded RTS.
+
+Because the driver is backend-parametric, every phase, conflict, and crash-resume branch is executed
+against a real kernel on any POSIX host through the second backend — `fcntl` exclusive entry, a journal
+file, and `device:inode` identity. A uniform invariant gets a uniform gate. The Win32 backend still owes
+a native-Windows run.
 
 Shutdown affects the shared WSL utility VM and stops every distro, so it is a global side effect rather
 than a project-local wall.
@@ -95,15 +118,15 @@ The managed body now emits six hours in milliseconds for both `[general] instanc
 magnitude beyond the longest lifecycle this project runs, so no run can be idle-stopped in the gaps
 between its `wsl -d` steps.
 
-**Open (Sprint 5.7): teardown does not yet release the wall promptly.** `project down` terminates the
-distro and restores `.wslconfig`, but does not shut the utility VM down, so the balloon is held until the
-finite timeout expires. The remaining change is ordered: restore `.wslconfig` **first**, then run
-`wsl --shutdown`. The order matters — the utility VM re-reads the file on its next cold boot, so
-restoring after the shutdown would publish the managed body one more time. The shutdown is the same
-disclosed global side effect already performed on bring-up.
+**Landed (Sprints 11.10/5.7): teardown releases the wall.** `project down` now emits
+`ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing — the utility VM re-reads
+the file on its next cold boot, so releasing *after* the shutdown would publish the managed body one more
+time. The shutdown is the same disclosed global side effect already performed on bring-up. Release
+restores the exact origin bytes, or their absence, from the journalled origin record; a foreign
+replacement of the managed file is refused as a `Conflict` and left intact rather than deleted.
 
-Until that lands, an operator who needs the memory back before the finite timeout expires runs
-`wsl --shutdown` by hand; it is non-destructive and the utility VM restarts on next use. See
+An operator who needs the memory back outside a `project down` can still run `wsl --shutdown` by hand; it
+is non-destructive and the utility VM restarts on next use. See
 [durable Windows runs](durable_windows_runs.md) for why a finished-looking session may still be holding
 the wall.
 

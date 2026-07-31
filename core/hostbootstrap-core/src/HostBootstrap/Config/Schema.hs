@@ -33,10 +33,9 @@ module HostBootstrap.Config.Schema (
     writeScopedProjectConfigFile,
     writeScopedProjectConfigFileExclusive,
     removeProjectConfigFileIfOwned,
-    requireSiblingProjectConfig,
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
-    withSiblingProjectConfigRoot,
+    withSiblingValidatedProjectConfigRoot,
     VerifiedConfigWire,
     verifiedConfigDigest,
     ValidatedConfig,
@@ -445,17 +444,6 @@ validateProjectConfigForProject expected cfg
   where
     ctx = cfgContext cfg
 
--- | Load and validate the current executable's sibling project config.
-requireSiblingProjectConfig ::
-    (ProjectCfg projectId cfg) =>
-    ProjectCodec configScope specDigest cfg ->
-    Text ->
-    Context.CommandClass ->
-    [Context.Capability] ->
-    IO (cfg configScope)
-requireSiblingProjectConfig codec projectName cls caps =
-    withSiblingProjectConfigRoot codec projectName cls caps $ \cfg _ _ -> pure cfg
-
 {- | Run an action with a validated sibling project config and its nested
 runtime context.
 -}
@@ -499,6 +487,38 @@ withSiblingValidatedProjectConfigContext codec projectName cls caps action =
         admitted <-
             withValidatedConfig codec cfg $ \wire validated ->
                 action wire validated cfgCtx
+        either (die . ("project config verification failed: " ++)) pure admitted
+
+{- | Read the sibling **once**, apply the runtime/root gate, and admit the exact
+snapshot through the same finalized codec — yielding the verified wire, the
+'ValidatedConfig', its context, and the canonical root together.
+
+This is the seam the project lifecycle verbs use (§ 15.9). Its point is that
+every later consumer — plan construction, each chain step, each child projection
+— receives *this* snapshot rather than reopening @<project>.dhall@. A file
+replaced after admission therefore cannot change what the running plan is
+executing; the next invocation validates a new snapshot under a new @configId@.
+-}
+withSiblingValidatedProjectConfigRoot ::
+    forall projectId cfg configScope specDigest result.
+    (ProjectCfg projectId cfg) =>
+    ProjectCodec configScope specDigest cfg ->
+    Text ->
+    Context.CommandClass ->
+    [Context.Capability] ->
+    ( forall configDigest configId rootScope rootId.
+      VerifiedConfigWire configScope configDigest configId ->
+      ValidatedConfig configScope specDigest configId (cfg configScope) ->
+      BinaryContext ->
+      CanonicalProjectRoot rootScope rootId ->
+      IO result
+    ) ->
+    IO result
+withSiblingValidatedProjectConfigRoot codec projectName cls caps action =
+    withSiblingProjectConfigRoot codec projectName cls caps $ \cfg cfgCtx root -> do
+        admitted <-
+            withValidatedConfig codec cfg $ \wire validated ->
+                action wire validated cfgCtx root
         either (die . ("project config verification failed: " ++)) pure admitted
 
 {- | Run an action with the validated config/context and the still-opaque

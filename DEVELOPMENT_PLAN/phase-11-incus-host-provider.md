@@ -35,9 +35,15 @@ with dependencies already present. Two consequences for this sprint:
   Incus together. Lima and Incus gain clauses 2–4 for the first time; this is a strengthening off
   Windows, not a Windows-only repair.
 
-Production still uses the historical alias and WSL backup paths. The portable backend, production
-integration, and the native provider gates remain open. The Windows `8/8` result below is dated evidence
-for the earlier implementation, not current closure.
+**Updated 2026-07-28 — the global WSL wall half is closed.** The portable host-wall driver, its POSIX and
+`Win32` backends, and the deletion of the C shim landed together with production integration: the
+lifecycle's WSL effects are now pathname-free wall acquire/release over a journalled origin record, and
+the backup-existence route is removed. The ownership suite is un-gated and runs on every substrate.
+
+Production still uses the historical guest **alias** path (`ln -s` over alias facts, minting no receipt).
+That production migration and the native provider gates remain open; the `Win32` backend in particular has
+no native run yet. The Windows `8/8` result below is dated evidence for the earlier implementation, not
+current closure.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — the guest-side durable alias as pure, readiness-gated
 provider data.** The 2026-07-19 host-path share primitive (Sprint 11.8) delivered only the **host-side** half
@@ -487,7 +493,8 @@ WSL2 lifecycle argv builders, the host-reboot readiness classifier, `ensure wsl2
 - The demo's chain selects WSL2 on `windows-cpu`/`windows-gpu`: `runVmEnsure` runs `ensure wsl2`,
   `runVmUp` composes the managed distro name from the project identity (`<project>-vm`, currently
   `hostbootstrap-demo-vm`) and currently provisions it with `wslInstallArgs` if absent,
-  `demoFrameContext` hands off through `inWsl2VM`, source/config staging uses the distro's
+  the metal frame's declared descent hands off through `inWsl2VM`, source/config staging uses the
+  distro's
   `/mnt/<drive>/...` view of host files, and `project destroy` uses the name-prefix-guarded
   `wsl --unregister` builder. Sprint 11.10 later retained install and deleted import.
 - **Registry credential forwarding on Windows (operator prerequisite, no new code).** Symmetric with the
@@ -721,6 +728,8 @@ readiness.
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/ConfigBytes.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Posix.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
@@ -824,24 +833,111 @@ projection primitive without treating them as direct-host path authority.
   and drops the memory balloon, against Sprint 9.11's finite idle timeouts. Lima/Incus already release on
   stop. (This is the § EE/Sprint 5.7 uniform-`down` obligation, satisfied at the pure `spStop` layer.)
 
+**Delivered 2026-07-28 (portable host wall, C-shim retirement, `.bak` retirement):**
+
+- the WSL2 global `.wslconfig` **host** wall is now a portable driver over an injected backend.
+  `HostBootstrap.Wsl2.GlobalWall.Host` owns the complete recovery driver, the durable record codec, and
+  the `HostWallBackend` seam; `HostBootstrap.Wsl2.GlobalWall.Posix` is an `fcntl`/journal-file/
+  `device:inode` backend; `HostBootstrap.Wsl2.GlobalWall.Windows` is the production backend over
+  `Win32`'s `LockFileEx`, `getFileInformationByHandle`, `MoveFileEx`, and `CreateHardLinkW`. Because a
+  byte-range lock is not affine to the acquiring OS thread, `cbits/wsl_global_wall.c`, the
+  `if os(windows)` `c-sources`/`extra-libraries` block, the seven `hb_wsl_*` foreign imports, and the
+  test-suite `-threaded` carve-out are all deleted. No `.c` remains in the repository;
+- the wall spec is **un-gated**. `test/WslGlobalWallWindowsSpec.hs` (Windows-only, `5/5` native subset)
+  is replaced by `test/WslGlobalWallHostSpec.hs`, which runs the production driver against a real kernel
+  on every substrate the suite runs on: publication and restored absence, exact origin retention and
+  byte-identical republication, recovery-name and journal cleanliness, idempotent re-apply, strictly
+  monotonic fences, clause-1 serialisation of concurrent entries, symlink refusal, foreign-owner and
+  incompatible-spec conflicts, clause-4 refusal to delete a replaced managed target, interrupted-publish
+  and interrupted-restore resume, durable armed-leftover reclamation, and the record codec;
+- the backup-existence (`.bak`) route is gone. `HostEffect` now carries pathname-free
+  `ApplyGlobalWslWall`/`ReleaseGlobalWslWall`; `spStop`/`spDestroy` take the same `ResourceEnvelope` as
+  `spLaunch`, so teardown releases exactly the wall bring-up applied; `VMHandles.vmhWslConfigPath`,
+  `WriteHostFile`/`MergeWslConfig`/`RestoreHostFile`, `HostBootstrap.Wsl2.mergeWslConfig`, and the demo's
+  `writeHostFileWithBackup`/`mergeWslConfigWithBackup`/`backupHostFileOnce`/`restoreHostFile` are
+  removed, and the harness teardown assertion now proves the wall **journal** is cleared rather than that
+  a backup file is absent.
+
+**Delivered 2026-07-29 (`virtiofsd`: the provider-usability gap this phase's own convergence list
+missed).**
+
+The first native Linux CPU lane run on a genuinely pristine Ubuntu 24.04 host reported
+`ensure incus: daemon, VM capability, and image-source egress ready` and then failed every case with:
+
+```text
+incus config device add hostbootstrap-demo-vm durable-data disk source=… path=… failed (exit 1)
+Error: Failed to start device "durable-data": Virtiofsd isn't running
+```
+
+`virtiofsd` is what Incus uses to share a host directory into a **VM**, so it is precisely the § DD Incus
+`ShareReconcile` — a disk device attached post-create — and the demo's durable root depends on it. It is
+not pulled in by `incus` or by `qemu-system-x86`, and this phase's convergence list checked
+KVM/QEMU/OVMF but not `virtiofsd`. That made `IncusProviderReady` a claim about installed binaries rather
+than a usable provider, which is the exact distinction § L draws.
+
+It was invisible until now for a specific reason worth recording: a share attached to a **stopped**
+instance before `incus start` succeeds without `virtiofsd`, and both the 2026-07-29 Sprint 5.7 storage-wall
+run and ordinary manual use take that cold-plug path. Only the demo's post-create hot-plug needs the
+daemon, so no earlier run could have surfaced it.
+
+- `reconcileLinuxIncus` now installs `virtiofsd` alongside `qemu-system-x86`, `ovmf`, and `acl`.
+- The VM-capability probe is the pure `linuxVmCapabilityProbeScript`: QEMU, an OVMF firmware image, **and**
+  a `virtiofsd` Incus can exec, joined with `&&` so a missing conjunct yields `IncusVMIncapable` rather
+  than a ready row. `virtiofsdCandidatePaths` pins Incus's own search order
+  (`/usr/libexec/virtiofsd`, `/usr/lib/qemu/virtiofsd`, `/usr/lib/virtiofsd`) with a `PATH` fallback, so the
+  list lives in one tested value instead of a call-site string.
+- `EnsureSpec` pins the candidate order, asserts each conjunct is present, and asserts the conjunct count,
+  so dropping one is a test failure rather than a silently weaker probe.
+
+Core gate: **738/738** under `-Werror`.
+
+**Delivered 2026-07-29 (the share ATTACH was itself ungated — the § CC violation one step earlier in the
+chain).**
+
+With `virtiofsd` installed, the same native lane still collapsed to `0/10`, now with:
+
+```text
+vm up: durable share not mounted/writable in hostbootstrap-demo-vm:
+  did not become ready within the poll budget (command has not succeeded)
+```
+
+The device attach reported success and the guest never mounted it. Reproduced directly and minimally on
+the same host, which makes the rule exact:
+
+- attach the disk device **after** the guest agent answers → `incus_durable-data … type virtiofs (rw)`
+  appears and is writable;
+- attach it **immediately after launch**, before the agent answers → `Device durable-data added` still
+  succeeds, and the guest **never** mounts it. No later probe can recover, because nothing re-triggers the
+  mount.
+
+On a provider whose share is a post-create device (§ DD), it is the **guest agent** that performs the
+mount, so the attach is a frame mutation with a real dependency. `runVmUp` ran it before `substrateWait`
+with no witness at all — while the mount probe and the alias step immediately after it were both
+readiness-gated, and a comment asserted the ordering was type-enforced. It was enforced for the two steps
+that consume the share and not for the one that creates it.
+
+This is the same class as the defect Sprint 11.9 already recorded ("the ungated `set -eu` step that
+collapsed `0/8` is gone"), one step earlier, and it collapsed `0/10` the same way. It could not have been
+caught before: WSL2 has no attach step at all (`hpsReconcile = Nothing`, because drvfs already exposes the
+drive), so the `6/6` and `8/8` runs never executed this path, and the 2026-06-18 Incus run predates the
+current alias/readiness recast.
+
+`reconcileDurableShare` now takes `ObservedReady VMReady` and runs after `substrateWait`, whose probe
+(`incus exec <vm> -- true`) is exactly the agent probe it depends on. Because the witness is a parameter,
+calling it before the wait is a **compile error**, which is the guarantee the old comment only claimed.
+
+Gates: demo **106** and core **738** under `-Werror`; demo `fourmolu --mode check app src` clean.
+
 **Still open:**
 
-- the WSL2 global `.wslconfig` **host** wall backend: port `HostBootstrap.Wsl2.GlobalWall.Windows` off the
-  `hb_wsl_*` C shim onto the same portable interface — `flock` / `Win32 LockFileEx` exclusive entry, the
-  journalled origin record, `deviceID`/`fileID` (POSIX) and `getFileInformationByHandle` (Windows)
-  identity — then delete `cbits/wsl_global_wall.c`, the cabal `c-sources`/`extra-libraries` block, the
-  test-suite `-threaded` carve-out, and the `hb_wsl_*` foreign imports, and rewrite the Windows wall spec
-  against the portable interface and **un-gate** it. The POSIX path is Linux-validatable; the Win32 path
-  needs a native-Windows gate;
 - wire the guest-alias backend into production: migrate the demo's `mintDurableAlias` `ln -s` to the
   plan-owned prepared operation over the backend (building the production `GuestExec` from the provider
   lift), and remove the alias-fact bypass — coordinated with the plan-driven wiring shared with Sprints
   5.7 and 16.6;
-- replace the production backup-existence (`.bak`) effect with the origin record once the host wall
-  backend exists, wire it through Provider/demo apply and teardown, and remove the legacy `.bak` route
-  through the deletion ledger;
-- run current native WSL2, native Incus/direct-Linux, and disposable Lima gates. The Windows `8/8`
-  snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows lane.
+- run current native WSL2 and disposable Lima gates, and the native Incus/direct-Linux gate. The Windows
+  `8/8` snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows
+  lane. The `Win32` backend specifically has **no** native run yet: its clause realization is validated
+  only by its POSIX peer through the shared driver.
 
 **Validation evidence (2026-07-26):** `cabal build all --ghc-options=-Werror` and the complete **448**
 core tests passed; the demo `-Werror` build plus **105** demo and embedded **448** core tests passed; the
@@ -862,6 +958,19 @@ test executable aborted with a generated-code access violation, and its leftover
 directories contaminated a subsequent `CLISpec` retry. No new complete-suite result is credited; a clean
 sequential canonical core gate remains required before this tranche can be promoted.
 
+**Validation evidence (2026-07-28, portable host wall):** `cabal build all --ghc-options=-Werror` and
+the complete core suite `cabal test all --ghc-options=-Werror` pass at **520/520** on the Linux host,
+including the new **20**-case `WslGlobalWallHostSpec`; the demo suite passes **105** with its embedded
+core **520**. `fourmolu --mode check app src` is clean on the demo, `poetry run python -m
+hostbootstrap.check_code` (ruff/black/mypy) is clean, and `poetry run python -m hostbootstrap.test_all`
+passes **227**. The canonical container gate ran for real: `docker pull` of the published
+`tuee22/hostbootstrap:basecontainer-cpu-amd64` followed by
+`docker build -f demo/docker/Dockerfile` executed `RUN hostbootstrap-demo check-code` — the in-container
+`fourmolu`/`hlint`/`cabal -Werror` gate — to success against these changes. That build then stopped at the
+Halogen `spago build` step, which consumes bridge sources a bare `docker build` does not stage (the chain
+generates them in the build-image step); this is the manual-invocation boundary, not a regression. No
+native Windows or Apple run is claimed.
+
 **Validation evidence (2026-07-27, guest-alias backend):** `cabal build all --ghc-options=-Werror` and the
 **complete** core suite `cabal test all --ghc-options=-Werror` pass at **494/494** on the Linux host — a
 clean sequential run (the test executable is not `-threaded` off Windows). `ProviderAliasSpec` grew to
@@ -874,6 +983,51 @@ backend/prepared-call/observed-only/foreign-handle/cross-receipt constructions. 
 only in the container `check-code` on this host (the host `fourmolu` is a non-canonical version). This does
 **not** close the sprint: the WSL2 host `.wslconfig` wall Win32 port and C-shim retirement, the demo
 `ln -s` / `.bak` production migration, and the native WSL2/Lima gates remain open.
+
+**Dependency finding 2026-07-30 — the demo `ln -s` migration is Sprint 16.6-gated, and this is
+structural rather than a scheduling preference.** `00-overview.md` item 1 named this migration the next
+phase-ordered dependency root; tracing the actual type obligations shows it is not reachable from the
+current plan surface. `runPreparedGuestAliasCall` needs the `PreparedGuestAliasCall` that
+`withPreparedGuestAliasCall` mints, which requires a **`Managed`** durable-share handle. The only
+producers of a `Managed` handle are `Reconcile.completeReconcile` / `completePreparedUnchanged`, both of
+which consume a `PreparedOperation` for the share; `withPreparedOperation` in turn refuses unless the
+supplied dependency observations are **exactly** the plan's ordered dependency set for that step. Two
+facts then close the path:
+
+- `Step.stepDependencies` is the whole preceding prefix, so `core:copy-source`'s dependency set contains
+  every step before it, not just `core:deploy-vm`;
+- a `DependencyObservation` requires a `PlannedResource`, and `Reconcile.plannedKindAccepts` is a
+  **closed** table over `core:deploy-vm`, `core:copy-source`, `core:ensure-docker`,
+  `project:deploy-minio`, `project:deploy-registry`, and `core:deploy-kind`. The demo's own
+  `project:hostbootstrap-demo:ensure-vm-provider` step precedes `deploy-vm` and has no planned-resource
+  family, so no observation for it is constructible.
+
+The demo therefore cannot mint a `Managed` share today without either reordering `ensure` after the VM
+launch (semantically wrong — the provider must exist before a VM is launched) or teaching core the
+demo's project step keys (a § BB violation). The correct producer is the **plan-owned dependency-snapshot
+traversal** of `development_plan_standards.md` § CC — "its internal dependency-snapshot traversal looks
+up the exact managed resources and runs the plan-owned probes for the complete ordered zero/one/many edge
+set" — which `Sprint 16.6` owns. The demo also carries no `copy-source` step at all today (the share is
+created inside the `deploy-vm` action), so the migration additionally needs the plan node 16.6 introduces.
+
+This sprint's own deliverable — the backend that holds the four § EE clauses for a provider-guest alias —
+is landed and tested. What is open here is its **call-site adoption**, and that call site does not exist
+until Sprint 16.6 builds it. The sprint's status is unchanged (`Active`); its `Blocked by` edge for this
+item is now stated explicitly rather than implied by the "tranche-owned" note in the README.
+
+**Update 2026-07-30 — the first of the two obstructions is gone; the second is now the binding one.**
+Sprint 16.6 landed the plan-owned dependency-snapshot traversal, and with it the resource-bearing edge
+set: `core:copy-source`'s dependency set on a demo-shaped plan is now exactly `["core:deploy-vm"]`, so
+`project:hostbootstrap-demo:ensure-vm-provider` no longer demands an unconstructible observation. The
+`copy-source` step constructor also already exists (`Step.copySourceStep`). What still blocks the demo
+migration is narrower and was not visible before: a chain step's action is `HostConfig -> IO ()`, so it
+receives no `LifecyclePlan` and cannot mint the `Managed` durable-share handle
+`withPreparedGuestAliasCall` requires. That is Sprint 16.6's open item 3 (the single `ProjectPlan`
+representation), which is where § U's replacement of the result-free step signature lives. Item 3's
+descent half landed 2026-07-30 and does **not** lift this block: it gives a step the boundary it
+descends through, not the plan its action runs against.
+
+**Blocked by (this item only)**: Sprint 16.6, open item 3.
 
 ## Documentation Requirements
 

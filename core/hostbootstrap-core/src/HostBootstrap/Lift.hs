@@ -41,6 +41,10 @@ module HostBootstrap.Lift
     LiftDispatch (..),
     LiftLeaf (..),
     reachLeaf,
+    blobUploadSessionLeaf,
+    blobUploadPatchLeaf,
+    blobUploadFinishLeaf,
+    blobHeadLeaf,
     foldLeaf,
     foldLift,
     containerRunArgs,
@@ -228,6 +232,93 @@ data LiftLeaf
 -- probe value is correct on every provider regardless of host port-forwarding.
 reachLeaf :: String -> LiftLeaf
 reachLeaf url = RawCmd ["curl", "-fsS", "-m", "5", "-o", "/dev/null", url]
+
+{- | Open a blob-upload session and print the response headers.
+
+The registry's upload is deliberately two-step: this @POST@ answers @202@ with a
+@Location@ for the session. A @POST@ carrying @?digest=@ does /not/ complete the
+upload on @registry:2@ — it also answers @202@ and stores nothing, which is a
+silent no-op that a fail-fast check cannot distinguish from success. Verified
+directly against @registry:2@ before this was written.
+
+Headers go to stdout (@-D -@) so the @Location@ is parsed in Haskell rather than
+by a shell pipeline in the guest (§ CC).
+-}
+blobUploadSessionLeaf :: String -> LiftLeaf
+blobUploadSessionLeaf url =
+    RawCmd ["curl", "-sS", "-m", "15", "-o", "/dev/null", "-D", "-", "-X", "POST", url]
+
+{- | Send the blob's bytes into an open upload session and print the response
+headers, which carry the session's next @Location@.
+
+This step is **not** optional, even for a one-byte blob. Skipping it and putting
+the bytes in the final @PUT@ works against a filesystem-backed registry but
+fails against an S3-backed one with
+@InvalidRequest: You must specify at least one part@ — the driver completes a
+multipart upload that has no parts. Verified directly against @registry:2@
+backed by MinIO.
+
+The content type must be @application/octet-stream@; curl's @-d@ otherwise sends
+form encoding and the registry answers @bad Content-Type@. It is written without
+a space after the colon, which HTTP permits, so every argument stays space-free
+for the host->guest quoting path (§ CC).
+-}
+blobUploadPatchLeaf :: String -> String -> LiftLeaf
+blobUploadPatchLeaf payload url =
+    RawCmd
+        [ "curl"
+        , "-sS"
+        , "-m"
+        , "15"
+        , "-o"
+        , "/dev/null"
+        , "-D"
+        , "-"
+        , "-X"
+        , "PATCH"
+        , "-H"
+        , "Content-Type:application/octet-stream"
+        , "-d"
+        , payload
+        , url
+        ]
+
+{- | Complete a blob upload against its session URL, which must already carry
+@&digest=@.
+
+This exists so a blob route can be proved /before/ an image push: a registry
+that has never been written to has no blob to request, and a @404@ is not
+evidence that blob delivery works. Fail-fast (@-f@), because an upload that did
+not happen must not be mistaken for one that did. Every argument is
+space-free, so it survives the host->guest quoting path unchanged (§ CC).
+-}
+blobUploadFinishLeaf :: String -> LiftLeaf
+blobUploadFinishLeaf url =
+    RawCmd ["curl", "-fsS", "-m", "15", "-o", "/dev/null", "-X", "PUT", url]
+
+{- | @HEAD@ one blob and report the status and any @Location@, without following
+it.
+
+Deliberately **not** fail-fast: a @307@ is a perfectly valid HTTP response and is
+exactly the observation that must be classified rather than swallowed. The
+redirect is not followed, because whether this client /could/ follow it is the
+question being asked (§ GG). Stays a single simple command so it survives the
+host->guest quoting path unchanged (§ CC).
+-}
+blobHeadLeaf :: String -> LiftLeaf
+blobHeadLeaf url =
+    RawCmd
+        [ "curl"
+        , "-sS"
+        , "-m"
+        , "10"
+        , "-o"
+        , "/dev/null"
+        , "-I"
+        , "-w"
+        , "%{http_code} %{redirect_url}"
+        , url
+        ]
 
 -- | The argv to run once inside the innermost VM (no remaining layers).
 leafInVMArgv :: LiftLeaf -> [String]

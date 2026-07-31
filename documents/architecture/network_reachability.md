@@ -16,23 +16,30 @@ When a host-local Docker client reaches a NodePort registry backed by cluster-on
 delivery strategy is `ProxyThroughRegistry`, and the renderer necessarily emits
 `storage.redirect.disable: true`.
 
-The implementation is currently weaker: the demo independently renders a NodePort, the internal
-`minio.default.svc` endpoint, and an S3 stanza with Distribution's default redirects enabled. A repeated
-blob `HEAD` receives `307` to the cluster-only MinIO name, which the host Docker client cannot resolve.
-The owning development-plan sprints remain open until the illegal combination is unrepresentable and
-the live route is validated.
-
 ## Current Status
 
-The target types and constructors in this document are normative but not yet implemented.
-`hostbootstrap-demo` currently assembles registry and MinIO manifests from raw strings in
-`demo/src/HostBootstrapDemo/Commands.hs`. The current failure is not an S3 credential, image-size,
-resource-limit, or nvkind defect: Distribution redirects an external client's blob request to
-`http://minio.default.svc:9000`, crossing from host-local scope into cluster-only scope.
+**The generic algebra exists** (`HostBootstrap.Network`, `HostBootstrap.RegistryPlan`). The scope is a
+type index, `Reachability` is a closed GADT with no host-local→cluster-only constructor, the redirecting
+`BlobDelivery` constructor takes that witness, `RegistryPlan` is opaque behind topology-specific
+constructors, and the `storage.redirect` stanza is derived from the delivery rather than chosen beside
+it. Compile-fail fixtures pin the forbidden constructions.
 
-Phase 14 owns the generic reachability/delivery algebra. Phase 13 owns the demo's finalized registry
-plan, renderer, and live proof. Phase 9's opaque readiness and operation-precondition work supplies the
-identity-bound runtime observation consumed by the push operation.
+**The demo has not migrated.** `demo/src/HostBootstrapDemo/Commands.hs` still assembles the NodePort,
+the internal `minio.default.svc` endpoint, and an S3 stanza from raw strings, and that `config.yml`
+carries no `storage.redirect` stanza at all — so the running registry keeps Distribution's redirecting
+default. A repeated blob `HEAD` can therefore still receive `307` to the cluster-only MinIO name, which a
+host Docker client cannot resolve. This is not an S3 credential, image-size, resource-limit, or nvkind
+defect; it is a scope crossing.
+
+Phase 14 owned the generic reachability/delivery algebra and has delivered it. Phase 13 owns the demo's
+finalized registry plan, renderer, and live proof, and remains open. Phase 9's opaque readiness and
+operation-precondition work supplies the identity-bound runtime observation consumed by the push
+operation.
+
+Names differ slightly between this document and the implementation: the shipped scope kind is
+`NetworkScope = HostLocal | VmLocal | ClusterOnly` (no `Public` scope exists yet, and the
+provider-guest scope is spelled `VmLocal`), and the delivery constructors are `proxyThroughRegistry`
+and `redirectToStore`. The invariants below are the ones enforced.
 
 ## Reachability Kinds
 

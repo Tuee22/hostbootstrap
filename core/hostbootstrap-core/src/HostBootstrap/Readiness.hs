@@ -60,7 +60,7 @@ module HostBootstrap.Readiness
     readyGeneration,
     readyPhaseVersion,
     readyObservationVersion,
-    dependencyObservationFromReady,
+    planDependencyProbe,
     awaitPlanReady,
     awaitPlanReadyWith,
   )
@@ -74,7 +74,7 @@ import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Reconcile
   ( ClusterResource,
     ConflictDetail (ConflictDetail),
-    DependencyObservation,
+    DependencyProbe,
     DockerResource,
     DurableShareResource,
     FailureDetail (FailureDetail),
@@ -83,10 +83,10 @@ import HostBootstrap.Reconcile
     PlannedResource,
     ProviderResource,
     ReconcileError (Conflict, Failure),
-    RecoveryDisposition (DoNotRetry),
+    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     ResourceHandle,
     RegistryResource,
-    dependencyObservation,
+    dependencyProbe,
     resourceHandleGeneration,
     resourceHandleKey,
     resourceHandleObservationVersion,
@@ -355,17 +355,45 @@ readyPhaseVersion (Ready _ phaseVersion _) = phaseVersion
 readyObservationVersion :: Ready scope planId id resource dependency -> Word64
 readyObservationVersion (Ready _ _ observationVersion) = observationVersion
 
-{- | Bind readiness to the exact managed dependency snapshot consumed by a
-prepared operation.  The shared indices reject another plan/resource at compile
-time; equality of generation and observation version rejects stale evidence.
+{- | The plan-owned dependency probe for one managed resource (§ CC).
+
+The probe is /not/ run here: it is stored beside the managed handle in the
+plan's dependency snapshot and run by 'HostBootstrap.Reconcile.withOperationPreconditions'
+at prepare time.  Each run polls the real backend and then rechecks the freshly
+minted 'Ready' against the managed handle it is registered for — the shared
+indices reject another plan or resource at compile time, and equality of
+generation and observation version rejects stale evidence.
 -}
-dependencyObservationFromReady ::
+planDependencyProbe ::
+  PollPolicy ->
+  String ->
+  ResourceHandle scope planId id resource Managed phase ->
+  Probe scope planId id resource dependency probeId a ->
+  HostConfig ->
+  DependencyProbe scope planId id resource
+planDependencyProbe policy label handle probe cfg =
+  dependencyProbe $ do
+    outcome <- awaitPlanReady policy label probe cfg
+    pure $ case outcome of
+      Left err ->
+        Left
+          ( Failure
+              ( FailureDetail
+                  ("probe dependency " <> Text.pack label)
+                  (Text.pack (renderPollError err))
+                  ReprobeBeforeRetry
+              )
+          )
+      Right ready -> readyPhaseVersionFor handle ready
+
+{- | Recheck a freshly observed 'Ready' against the managed handle it was
+registered for, and yield the phase version the sealed observation carries.
+-}
+readyPhaseVersionFor ::
   ResourceHandle scope planId id resource Managed phase ->
   Ready scope planId id resource dependency ->
-  Either
-    ReconcileError
-    (DependencyObservation scope planId id resource)
-dependencyObservationFromReady handle ready
+  Either ReconcileError Word64
+readyPhaseVersionFor handle ready
   | readyGeneration ready /= resourceHandleGeneration handle =
       Left
         ( Conflict
@@ -391,7 +419,7 @@ dependencyObservationFromReady handle ready
         ( Failure
             (FailureDetail "bind readiness" "phase version must be positive" DoNotRetry)
         )
-  | otherwise = dependencyObservation handle (readyPhaseVersion ready)
+  | otherwise = Right (readyPhaseVersion ready)
 
 awaitPlanReady ::
   PollPolicy ->

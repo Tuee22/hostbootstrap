@@ -14,8 +14,9 @@
 - It extends the fixed command/parser surface through typed chain steps, config codecs, cases, services,
   and code checks rather than adding top-level verbs.
 - It builds host-native for host execution and derives its project image from the published base.
-- Forward steps are one opaque validated `StepPlan`; frame-context/teardown are checked single-assignment
-  slots. Receipt-driven recursive teardown and harness root isolation remain plan-owned target work.
+- Forward steps and each frame's declared descent are one opaque validated `StepPlan`; teardown is a
+  checked single-assignment slot beside it. Receipt-driven recursive teardown and harness root isolation
+  remain plan-owned target work.
 
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
@@ -59,7 +60,7 @@ The binary extends `hostbootstrap-core`'s command tree rather than re-implementi
 ```haskell
 import HostBootstrap.CLI
   ( addServices, addSteps, finalizeProjectSpec, projectSpec
-  , runHostBootstrapCLI, setFrameContext, setTeardown )
+  , runHostBootstrapCLI )
 
 main :: IO ()
 main = do
@@ -67,10 +68,7 @@ main = do
     ( finalizeProjectSpec
         ( addServices appServices
             ( addSteps appSteps
-                ( setFrameContext appFrameContext
-                    ( setTeardown appTeardown
                         (projectSpec appTestSuite appCheckCode appArtifacts appTestCodec appTestInit appAssemble)
-                    )
                 )
             )
         )
@@ -80,16 +78,21 @@ main = do
 
 `projectSpec` takes the project's test suite, code-check action, schema artifacts, test codec,
 `psTestInit`, and the single scope-aware restricted `psAssemble`. `addSteps`, `addArtifacts`,
-`addAssemblyInputs`, and `addServices` append. `setFrameContext` and `setTeardown` are checked
-single-assignment slots; a second assignment is a construction error. `runHostBootstrapCLI progName spec` composes
+`addAssemblyInputs`, and `addServices` append; an `addSteps` fragment is rank-2 in the admitted
+`CanonicalProjectRoot`, so a step derives its project-relative paths from that one authority. Each frame
+but the innermost declares its descent into the next with `Step.descendsVia`, validated one-per-frame by
+`mkStepPlan`, so the chain carries its own topology. A step that acquires a resource also declares the
+effect that releases it with `Step.reversedBy`; a second declaration on one step, or one on a
+`PreserveOnReverse` step that no projection reaches, is a construction error. There is no lifecycle slot
+beside the plan. `runHostBootstrapCLI progName spec` composes
 the project's chain, test suite, code-check action, and
 the artifact delta onto the inherited tree (`project init|up|down|destroy`, `context`, `test init|run`,
 `service init|schema|run`, `check-code`). The spec is generic: the chain consumes the project's `cfg`, the test suite must
 be non-empty, the `check-code` action is required, duplicate case/artifact names are rejected, and project
 artifacts feed the inherited `context` introspection registry. Finalization and plan projection require
 a non-empty contiguous plan, disjoint unique typed step identities, consistent frame labels, explicit
-reverse policy, unique artifacts/inputs/services/cases, and exactly one frame-context/teardown
-projection. `ConfigArtifact` construction remains codec-backed. The bare `hostbootstrap` binary uses
+reverse policy, exactly one declared descent per frame that has a successor, unique
+artifacts/inputs/services/cases, and exactly one teardown projection. `ConfigArtifact` construction remains codec-backed. The bare `hostbootstrap` binary uses
 `runBareHostBootstrapCLI`; it is the only intentional empty-chain/empty-suite binary. `project init` runs
 without an active local config to write the root `<project>.dhall`; `service init` and `test init` are
 likewise bootstrap writers. Static schema/render/path commands are config-free, `context inspect|show`
@@ -98,7 +101,8 @@ that act on an existing frame load that config and fail fast when it is missing 
 valid for the declared frame. There is
 no Python-owned `hostbootstrap.dhall`; resource, context, and witness settings live in the binary-owned
 root config. In the current demo, child config projection/delivery occurs in composite
-bootstrap/frame-context/deployment actions and the `context-init` row is only an announcer. Under the
+bootstrap, the descent the `context-init` row declares, and deployment actions; that row's action body
+is only an announcement. Under the
 implemented generic project model a project supplies a `ProjectSpec projectId cfg tcfg`; core ships no
 defaults. One restricted `psAssemble` is the structural default source for Production init and Harness
 variant generation, while `psTestInit` constructs the distinct test config. The typed service registry
@@ -112,12 +116,14 @@ Windows `.exe`) and requires it to equal `progName`. The Python build boundary h
 Cabal filename stem, package name, and sole executable name to equal that same artifact identity.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` detects the
-substrate, adds `demoChainFor substrate`, `demoServices`, `demoFrameContext`, and `demoTeardown` to the
+substrate, adds `demoChainFor substrate` and `demoServices` to the
 builder, finalizes it, then calls `runHostBootstrapCLI "hostbootstrap-demo" spec`.
-Its `demoChainFor :: Substrate -> ProjectConfig -> [Step]` contributes the demo's
+Its `demoChainFor :: Substrate -> CanonicalProjectRoot rootScope rootId -> ProjectConfig configScope -> [Step]`
+contributes the demo's
 substrate-selected lift as a single `[Step]`: VM-backed lanes use host→VM→container→cluster (deploy VM,
-build pb + image in the VM, then carry the project-container child config through the
-frame-context/handoff seam), while native Linux GPU uses a two-frame host→direct-container→nvkind path.
+build pb + image in the VM, then carry the project-container child config on the descent the in-VM
+`context-init` step declares), while native Linux GPU uses a two-frame host→direct-container→nvkind
+path.
 Both continue through MinIO, registry, image push, chart, NodePort, and accelerator placement as selected
 for that lane. `project up` interprets the chosen chain to stand up the persistent stack; `context`
 visualizes the composition; and `test run all` **drives that same `project up`**
@@ -147,8 +153,8 @@ The target has the same **parallel extension streams**, one additive merge idiom
 | **service handlers** | `withServices` | append handlers; duplicate variants are rejected |
 
 This table is the current composition rule. Builder fragments append steps, artifacts, assembly inputs,
-and typed services under duplicate checks; frame context and teardown are checked single-assignment
-slots. `Step` and `StepPlan` constructors are opaque. `ConfigArtifact` still has its separate validated
+and typed services under duplicate checks; teardown is a checked single-assignment slot, while each
+frame's descent is declared on its own plan node. `Step` and `StepPlan` constructors are opaque. `ConfigArtifact` still has its separate validated
 codec constructor and registry duplicate checks.
 
 Stream 1 is the workload-extension seam: a project contributes step kinds into the same `StepPlan` the
@@ -183,8 +189,8 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
    container frame skips the build step at runtime — `docker run img project up` enters the chain already
    built. Runtime launchers receive a parent-generated runtime `<project>.dhall` **streamed in-place**
    (over the launch `stdin`, written before dispatch — no config bind-mount). In the current demo the
-   payload is derived by `psFrameContext`, not by the announcing `context-init` action; the target plan
-   unifies projection and delivery.
+   payload is carried by the descent the `context-init` step itself declares, so the announcing row and
+   the delivered bytes cannot disagree; the target plan additionally unifies projection with delivery.
    See [code_check_doctrine.md](code_check_doctrine.md#derived-images) and
    [binary_context_config](../architecture/binary_context_config.md).
 4. **Link executables statically; build libraries with `shared: True`.** Do not pass
@@ -281,8 +287,8 @@ binary entry point in the Dockerfile that may run before the sibling config file
 commands such as `check-code` load that config and refuse commands not valid for the image-build frame. At
 runtime the parent lifecycle **streams** the role-specific `<project>.dhall` into the container
 in-place — piped on the `docker run` `stdin`, written to `/usr/local/bin/<project>.dhall` by the entrypoint
-before dispatch (no config bind-mount). The current payload comes from `psFrameContext`; target
-projection/delivery is one plan node. The container enters the chain with `project up` (a Kubernetes
+before dispatch (no config bind-mount). The current payload comes from the plan's declared descent;
+target projection/delivery is one plan node. The container enters the chain with `project up` (a Kubernetes
 service pod instead receives a ConfigMap override).
 
 ## Current Status
@@ -292,7 +298,8 @@ The implemented binary surface is the `project` chain, and the core command tree
 development plan:
 
 - opaque validated `StepPlan` is recursively interpreted by `project up`. Current `down`/`destroy` perform
-  current-frame cleanup plus a project hook; recursive child-to-parent teardown remains a target.
+  the verb's reverse projection reaching only this frame; recursive child-to-parent teardown remains a
+  target.
 - `context` is read-only introspection: `inspect` renders the lift composition with the current frame
   marked, `show` decodes a selected project-local config, `path` prints its canonical filename, and
   `schema`/`render` expose the separate static `ConfigArtifact` registry. The validated-codec

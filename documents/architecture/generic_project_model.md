@@ -29,10 +29,11 @@
   accelerator timeout are explicit assembled fields preserved through child projection, with no fallback
   literals or duplicated optional service payload.
 - Raw `ProjectSpec`, `Step`, `StepKind`, `ProjectStepId`, role-request, and role-parameter constructors
-  are hidden. Builder contributions append; frame context and teardown are checked single-assignment
-  slots. `mkStepPlan` preserves exact declaration order and rejects empty plans, duplicate typed
-  identities, conflicting frame labels, non-contiguous `A → B → A` returns, and invalid post-handoff
-  placement before any step interpreter is returned.
+  are hidden. Builder contributions append; teardown is a checked single-assignment slot.
+  `mkStepPlan` preserves exact declaration order and rejects empty plans, duplicate typed
+  identities, conflicting frame labels, non-contiguous `A → B → A` returns, invalid post-handoff
+  placement, and any frame that does not declare exactly one descent (none, for the innermost) before
+  any step interpreter is returned.
 - `<project>.test.dhall` is a **thin override**; `TestCfg` validates the executable cases and pure
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
   through the scope-aware restricted assembler, runs the real `project up`, then deletes only matching
@@ -160,11 +161,9 @@ projectSpec
         -> ConfigAssembly scope (cfg scope))
   -> ProjectSpecBuilder projectId cfg tcfg
 
-addSteps       :: (cfg (Production projectId) -> [Step]) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
+addSteps       :: (forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> cfg (Production projectId) -> [Step]) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
 addArtifacts   :: [ConfigArtifact] -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
 addServices    :: ServiceRegistry (cfg (Production projectId)) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
-setFrameContext :: (…) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
-setTeardown     :: (…) -> ProjectSpecBuilder projectId cfg tcfg -> ProjectSpecBuilder projectId cfg tcfg
 
 finalizeProjectSpec
   :: ProjectSpecBuilder projectId cfg tcfg
@@ -184,7 +183,7 @@ order; duplicate identities are structured errors. Frame-context and teardown pr
 single-assignment slots: absence or a second assignment prevents finalization. Each decoded Production
 config is projected to one opaque `StepPlan`; validation preserves exact declaration order or rejects the
 plan before effects. The later lifecycle target replaces the remaining separately supplied
-frame-context/teardown callbacks with the receipt-aware
+teardown callback with the receipt-aware
 `ProjectPlan scope specDigest planId configId cfg` defined in
 [composition methodology](composition_methodology.md#single-representation-the-chain-is-the-representation):
 one non-empty validated step sequence, with topology derived from it and reverse work derived from the

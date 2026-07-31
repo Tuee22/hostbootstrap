@@ -52,7 +52,8 @@ Prepared provider operations and receipt-driven teardown still follow the genera
 ## Lifecycle caveat
 
 The current root teardown does not recursively enter the Incus child and invoke the lifecycle verb before
-stopping/deleting the VM. It invokes current-frame cleanup and then the demo's provider teardown hook.
+stopping/deleting the VM. It runs the verb's reverse projection: current-frame cluster cleanup, then the
+reverse the demo declared on its own `deploy-vm` node.
 Deleting the VM removes nested compute incidentally. See
 [cluster lifecycle](cluster_lifecycle.md).
 

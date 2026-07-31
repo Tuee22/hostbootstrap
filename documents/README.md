@@ -53,8 +53,9 @@ defers to it rather than re-deriving it. The command surface is summarized in
   library levels (L0◄L1◄L2) and the extension streams every level composes additively (lift chain, Dhall
   vocabulary, schema-gen, test seams, service handlers), over a fixed command surface that is never a stream.
 - [architecture/dhall_generation.md](architecture/dhall_generation.md) — `.dhall` as parameters +
-  context + witness, the current child projections produced by composite bootstrap/frame-context
-  actions (the demo's named `context-init` action is only an announcer), the generated Dhall
+  context + witness, the current child projections produced by the composite bootstrap and by the
+  descent the demo's `context-init` node declares (that node's action body is only an
+  announcement), the generated Dhall
   vocabulary, the three-vocabulary layering, and the validated-codec schema surface.
 - [architecture/run_models.md](architecture/run_models.md) — the four execution-shape names
   (`OneShot`, `HostNative`, `HostDaemon`, `Cluster`), the currently unwired selector and exported Dhall
@@ -178,7 +179,8 @@ The fixed core command surface is exactly five user-facing verbs: `project`, `te
 and `check-code`. There are no hidden commands. `ensure` is a reconciler library, not a command.
 `project up` recursively interprets the project's opaque validated `StepPlan`: it runs the current frame and
 hands `pb project up` to the next. Current `project down`/`destroy` do **not** mirror that recursive
-dispatch; they clean the current frame's cluster where applicable and invoke a project hook, which may
+dispatch; they run the verb's reverse projection of the one plan — the current frame's cluster where
+applicable, plus the reverse each acquiring node declared, which may
 stop or remove a provider. Child-to-parent lifecycle interpretation remains a target. Durable host
 `.data` is excluded from cluster removal, but end-to-end persistence is unvalidated (see
 [architecture/durable_state.md](architecture/durable_state.md) and
@@ -187,8 +189,9 @@ stop or remove a provider. Child-to-parent lifecycle interpretation remains a ta
 - **The chain is the current forward representation.** Cluster bring-up runs through `deploy-kind`,
   `deploy-minio`, `deploy-registry`, `push-image`, `deploy-chart`, and port exposure; the
   substrate-specific accelerator daemon then runs in-cluster or on the host. In the current demo,
-  `context-init` is a no-op announcing frame anchor; VM projection/delivery happens inside the composite
-  `build-pb` action and container projection/delivery happens through `psFrameContext` and the handoff.
+  `context-init`'s action body is a no-op announcement; VM projection/delivery happens inside the
+  composite `build-pb` action and container projection/delivery happens through the descent that
+  `context-init` step declares plus the handoff.
   Reconcilers are invoked from larger provider/build actions rather than independent `ensure-*` rows.
   Frame-context and teardown
   callbacks remain independently supplied and can drift; the target is one opaque validated

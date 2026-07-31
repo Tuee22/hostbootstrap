@@ -58,7 +58,7 @@ import HostBootstrap.Config.Schema (
     siblingProjectConfigPath,
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
-    withSiblingProjectConfigRoot,
+    withSiblingValidatedProjectConfigRoot,
     writeProjectConfigFile,
     writeScopedProjectConfigFile,
     writeScopedProjectConfigFileExclusive,
@@ -98,6 +98,7 @@ import HostBootstrap.Harness (
     parseCaseSelector,
     reportCard,
     runSuiteSelection,
+    testDataRoot,
     safetyRefusalMarker,
     selectTestMatrix,
     selectedVariantCaseIds,
@@ -107,9 +108,19 @@ import HostBootstrap.Harness (
     variantDraftId,
     variantIdText,
  )
+import HostBootstrap.Harness.Ownership (protectedRunOwnership)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.Lift (LiftContext, currentSelfRef)
+import HostBootstrap.Lift (currentSelfRef)
+import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, canonicalProjectRootPath)
+import HostBootstrap.Protected (
+    ProtectedSession,
+    ProtectedStore,
+    openProtectedStore,
+    protectedErrorMessage,
+    withProtectedEntry,
+ )
+import HostBootstrap.Reconcile (withLifecyclePlan)
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
     finalizedServiceVariantNames,
@@ -117,11 +128,13 @@ import HostBootstrap.Service (
     serviceRoleSchemaFamilies,
     withSelectedServiceRequest,
  )
-import HostBootstrap.Step (StepFrame (..), StepPlan, StepPlanError, isDeployKindStep, stepsForFrame)
+import HostBootstrap.Step (StepPlan, StepPlanError, isDeployKindStep, stepsForFrame)
+import qualified HostBootstrap.Step as Step
+import qualified HostBootstrap.Teardown as Teardown
 import HostBootstrap.Substrate (detect)
 import Numeric.Natural (Natural)
 import Options.Applicative
-import System.Directory (doesFileExist, withCurrentDirectory)
+import System.Directory (getCurrentDirectory, doesFileExist, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
@@ -170,18 +183,10 @@ coreCommands ::
         (V.Production projectId)
         specDigest
         (cfg (V.Production projectId)) ->
-    (cfg (V.Production projectId) -> Either StepPlanError StepPlan) ->
     ( forall rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
       cfg (V.Production projectId) ->
-      StepFrame ->
-      LiftContext
-    ) ->
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg (V.Production projectId) ->
-      Bool ->
-      IO ()
+      Either StepPlanError StepPlan
     ) ->
     [ConfigInput] ->
     ( forall scope.
@@ -191,9 +196,9 @@ coreCommands ::
     (InitArgs -> IO (cfg (V.Production projectId))) ->
     (InitArgs -> tcfg) ->
     [Mod CommandFields (IO ())]
-coreCommands cfgCodec testCodec progName projectArtifacts suite checkCode services stepPlan frameCtx teardown assemblyInputs assemble initBuilder testInit =
+coreCommands cfgCodec testCodec progName projectArtifacts suite checkCode services stepPlan assemblyInputs assemble initBuilder testInit =
     [ contextCommand @projectId @cfg @(V.Production projectId) cfgCodec progName projectArtifacts initBuilder
-    , projectCommandGroup cfgCodec progName stepPlan frameCtx teardown initBuilder
+    , projectCommandGroup cfgCodec progName stepPlan initBuilder
     , testCommand @projectId @cfg @tcfg cfgCodec testCodec progName suite assemblyInputs assemble testInit
     , serviceCommandGroup cfgCodec progName services initBuilder
     , checkCodeCommand @projectId @cfg @(V.Production projectId) cfgCodec progName checkCode
@@ -337,7 +342,18 @@ testCommand _productionCodec testCodec progName suite assemblyInputs assemble te
                     }
               where
                 draft = selectedVariantDraft selectedVariant
-        outcome <- runSuiteSelection suite (map variantFor selected)
+        -- Exclusive run ownership is taken by the protected-store bracket, not
+        -- by a bare lock directory: an interrupted run leaves a classifiable
+        -- lease the next run's sweep resolves or names for recovery.
+        siblingDirectory <- takeDirectory <$> siblingProjectConfigPath (T.pack progName)
+        stateRoot <- getCurrentDirectory
+        let ownership =
+                protectedRunOwnership
+                    (T.pack progName)
+                    stateRoot
+                    siblingDirectory
+                    testDataRoot
+        outcome <- runSuiteSelection ownership suite (map variantFor selected)
         case outcome of
             Left err -> die err
             Right report -> do
@@ -632,22 +648,14 @@ projectCommandGroup ::
     (ProjectCfg projectId cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
-    (cfg configScope -> Either StepPlanError StepPlan) ->
     ( forall rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
       cfg configScope ->
-      StepFrame ->
-      LiftContext
-    ) ->
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg configScope ->
-      Bool ->
-      IO ()
+      Either StepPlanError StepPlan
     ) ->
     (InitArgs -> IO (cfg configScope)) ->
     Mod CommandFields (IO ())
-projectCommandGroup codec progName projectPlan frameCtx teardown initBuilder =
+projectCommandGroup codec progName projectPlan initBuilder =
     command
         "project"
         ( info
@@ -678,20 +686,31 @@ projectCommandGroup codec progName projectPlan frameCtx teardown initBuilder =
     -- VMOrchestrator / VMProjectContainer) plus the TestHarness kind, and
     -- rejected in the ClusterService / Daemon / OneShotJob / ImageBuildContainer
     -- leaves, where a recursive @project up@ must not run (§ X).
+    --
+    -- The sibling is read and admitted **once** here (§ 15.9). Plan
+    -- construction and every step the plan runs consume that one
+    -- 'ValidatedConfig' snapshot, so replacing @<project>.dhall@ mid-run cannot
+    -- change what the running chain executes.
     runUp dryRun =
-        withSiblingProjectConfigRoot codec (T.pack progName) Context.ClusterLifecycleCommand [] $ \(projectCfg :: cfg configScope) ctx root -> do
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan projectCfg)
+        withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.ClusterLifecycleCommand [] $ \_wire validated ctx root -> do
+            let projectCfg = validatedConfigValue validated :: cfg configScope
+            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
             if dryRun
                 then putStr (renderChain plan)
-                else applyChain plan root projectCfg ctx
+                else
+                    withRootLifecycleAuthority
+                        root
+                        ctx
+                        plan
+                        Authority.ProjectUp
+                        (applyChain plan root ctx)
     applyChain ::
         forall rootScope rootId.
         StepPlan ->
         CanonicalProjectRoot rootScope rootId ->
-        cfg configScope ->
         Context.BinaryContext ->
         IO ()
-    applyChain plan root projectCfg ctx = do
+    applyChain plan root ctx = do
         cfg <- hostConfig
         self <- currentSelfRef ("/usr/local/bin/" ++ progName)
         let current = T.unpack (Context.currentFrame ctx)
@@ -703,36 +722,35 @@ projectCommandGroup codec progName projectPlan frameCtx teardown initBuilder =
         -- alone can reach the VM to delete it and restore `.wslconfig`), and an
         -- uncatchable external kill is handled instead by the idempotent stale-state
         -- reconcile on the next `project up` (phases 5/11).
-        outcome <- try (runChainFromFrame cfg self (frameCtx root projectCfg) current plan)
+        outcome <- try (runChainFromFrame cfg self current plan)
         case outcome of
             Right (Right ()) -> pure ()
             Right (Left err)
                 | safetyRefusalMarker `isInfixOf` err -> die err
-                | otherwise -> failChain plan root cfg projectCfg ctx err
+                | otherwise -> failChain plan root cfg ctx err
             Left (exc :: SomeException) ->
                 case fromException exc of
                     Just (SafetyRefusal reason) -> die (safetyRefusalMarker ++ " " ++ reason)
-                    Nothing -> failChain plan root cfg projectCfg ctx (show exc)
-    -- Run the best-effort `project destroy` teardown at the root frame, then die.
+                    Nothing -> failChain plan root cfg ctx (show exc)
+    {- Run the best-effort `destroy` reverse projection at the root frame, then
+    die. It is the *same* projection `project destroy` runs — one representation
+    (§ W) — so a failed `project up` cannot leak resources a real destroy would
+    have released. Best-effort: the whole unwind must not hinge on one node, and
+    the run is failing already, so a failure here is announced and swallowed
+    rather than replacing the chain's own cause.
+    -}
     failChain ::
         forall rootScope rootId.
         StepPlan ->
         CanonicalProjectRoot rootScope rootId ->
         HostConfig ->
-        cfg configScope ->
         Context.BinaryContext ->
         String ->
         IO ()
-    failChain plan root cfg projectCfg ctx reason = do
+    failChain plan root cfg ctx reason = do
         when (null (Context.parentChain ctx)) $ do
             putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
-            ignoreChainExc
-                ( clusterTeardownForCurrentFrame
-                    plan
-                    ctx
-                    (withCurrentDirectory (canonicalProjectRootPath root) (clusterDelete cfg (planForRoot root ctx)))
-                )
-            ignoreChainExc (teardown root projectCfg True)
+            ignoreChainExc (reverseProjection plan root ctx cfg Teardown.destroyVerb (clusterDelete cfg))
         die reason
     -- Swallow a teardown step's exception (best-effort): the whole teardown must not
     -- hinge on one step succeeding.
@@ -742,60 +760,188 @@ projectCommandGroup codec progName projectPlan frameCtx teardown initBuilder =
             Right () -> pure ()
             Left e -> putStrLn ("  (teardown step skipped: " ++ show e ++ ")")
 
-    -- Teardown runs the cluster-lifecycle reconciler only when this binary's
-    -- current frame owns the chain's @deploy-kind@ step, then the project's
-    -- chain-frame 'teardown' stops (down) or deletes (destroy) the provisioned
-    -- outer frames. Kube tools intentionally live in the cluster-bearing project
-    -- container, not every host frame. A nested cluster is therefore owned by the
-    -- project teardown: stopping/deleting its provider VM takes a VM-backed
-    -- cluster with it, while direct-container projects can use their teardown hook
-    -- to invoke the pinned container toolchain. This distinction lets genuine
-    -- attempted cluster-cleanup failures propagate without treating expected
-    -- host-side tool absence as a failure.
     runDown =
-        withSiblingProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg configScope) ctx root -> do
+        withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
+            let projectCfg = validatedConfigValue validated :: cfg configScope
             cfg <- hostConfig
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan projectCfg)
-            runTeardownAll
-                [
-                    ( "cluster down"
-                    , clusterTeardownForCurrentFrame
-                        plan
-                        ctx
-                        (withCurrentDirectory (canonicalProjectRootPath root) (clusterDown cfg (planForRoot root ctx)))
-                    )
-                , ("project frame teardown", teardown root projectCfg False)
-                ]
+            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
+            withRootLifecycleAuthority root ctx plan Authority.ProjectDown $
+                reverseProjection plan root ctx cfg Teardown.downVerb (clusterDown cfg)
     runDestroy =
-        withSiblingProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \(projectCfg :: cfg configScope) ctx root -> do
+        withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
+            let projectCfg = validatedConfigValue validated :: cfg configScope
             cfg <- hostConfig
-            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan projectCfg)
-            runTeardownAll
-                [
-                    ( "cluster delete"
-                    , clusterTeardownForCurrentFrame
-                        plan
-                        ctx
-                        (withCurrentDirectory (canonicalProjectRootPath root) (clusterDelete cfg (planForRoot root ctx)))
-                    )
-                , ("project frame teardown", teardown root projectCfg True)
-                ]
-    clusterTeardownForCurrentFrame plan ctx effect
-        | currentFrameOwnsCluster ctx plan = effect
-        | otherwise =
-            putStrLn
-                ( "project teardown: cluster is owned by a different chain frame; skipping kind cleanup in "
-                    ++ T.unpack (Context.currentFrame ctx)
-                )
-    runTeardownAll actions = do
-        outcomes <- mapM runOne actions
-        let failures = [label ++ ": " ++ show err | (label, Left err) <- outcomes]
-        unless (null failures) $
-            die ("project teardown attempted every cleanup step but failed:\n" ++ unlines (map ("  - " ++) failures))
+            plan <- either (die . ("project plan: " ++) . show) pure (projectPlan root projectCfg)
+            withRootLifecycleAuthority root ctx plan Authority.ProjectDestroy $
+                reverseProjection plan root ctx cfg Teardown.destroyVerb (clusterDelete cfg)
+
+    {- Run the verb's reverse projection of the same validated plan (§ W).
+
+    @down@ and @destroy@ are not two hand-written cleanup routines: each is
+    'Teardown.teardownPlan' applied to this plan and its verb, driven deepest
+    frame first. Every effect is a node of that plan — the reverse its own step
+    declared with 'Step.reversedBy' — except a @CoreManagedReverse@ node that
+    declared none, which the core's own cluster adapter releases. A
+    @PreserveOnReverse@ step (the durable host root) never enters either
+    projection at all, which is the whole of the never-delete-@.data@ invariant.
+    -}
+    reverseProjection ::
+        forall rootScope rootId verb.
+        StepPlan ->
+        CanonicalProjectRoot rootScope rootId ->
+        Context.BinaryContext ->
+        HostConfig ->
+        Teardown.TeardownVerb verb ->
+        (ClusterPlan -> IO ()) ->
+        IO ()
+    reverseProjection plan root ctx cfg verb clusterEffect =
+        withLifecyclePlan codec plan $ \lifecyclePlan -> do
+            let projection = Teardown.teardownPlan lifecyclePlan verb
+            outcomes <- Teardown.runTeardownProjection projection coreManaged cfg
+            reportReverseOutcomes outcomes
       where
-        runOne (label, effect) = do
-            outcome <- try effect :: IO (Either SomeException ())
-            pure (label, outcome)
+        {- The one resource the core releases itself is the kind cluster, and
+        only from the frame that owns the `deploy-kind` step: the kube tools live
+        in the cluster-bearing project container, not on every host frame. A
+        nested cluster is instead released with its provider frame, or by a
+        reverse the project declares on that node (the direct Linux GPU lane does
+        exactly that). Reporting the other case as retained rather than released
+        keeps the distinction visible instead of treating expected host-side tool
+        absence as cleanup.
+
+        The action selects, not the frame alone: `deploy-chart` and
+        `expose-port` are core-managed too, but they are *inside* the cluster
+        and have no separate backend call — deleting the cluster removes the
+        Helm release and the NodePort with it. Handing them to the cluster
+        adapter would run the cluster teardown once per node.
+        -}
+        coreManaged _key reverseAction = case reverseAction of
+            Step.DeleteCluster
+                | currentFrameOwnsCluster ctx plan -> do
+                    withCurrentDirectory (canonicalProjectRootPath root) (clusterEffect (planForRoot root ctx))
+                    pure Step.TeardownReleased
+                | otherwise ->
+                    pure
+                        ( Step.TeardownForeignRetained
+                            ( "cluster is owned by a different chain frame; skipping kind cleanup in "
+                                ++ T.unpack (Context.currentFrame ctx)
+                            )
+                        )
+            _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
+
+    {- Report every node of the reverse projection, then fail if any attempt
+    failed. Independent nodes all get their turn first (§ Y): a failure or a
+    refusal skips only its own resource. -}
+    reportReverseOutcomes outcomes = do
+        mapM_ announce outcomes
+        let failures = [T.unpack key ++ ": " ++ detail | (key, Just (Step.TeardownFailed detail)) <- outcomes]
+        unless (null failures) $
+            die ("project teardown attempted every reverse step but failed:\n" ++ unlines (map ("  - " ++) failures))
+      where
+        announce (key, outcome) = case outcome of
+            Nothing -> pure ()
+            Just Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
+            Just (Step.TeardownForeignRetained detail) ->
+                putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
+            Just (Step.TeardownRefused detail) ->
+                putStrLn ("project teardown: refused " ++ T.unpack key ++ " — " ++ detail)
+            Just (Step.TeardownFailed detail) ->
+                putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
+
+    {- Run a lifecycle verb behind the independent root gate (Sprint 16.6).
+
+    Before this, @project up|down|destroy@ was authorized by nothing more than
+    the decoded context's command-class membership — self-asserted authority of
+    exactly the kind § X forbids — and 'Authority.withVerifiedRootInvocation' had
+    no production consumer at all, which is why nothing could sign an activation
+    manifest for a runtime role.
+
+    The gate runs only at the **root** frame. A nested frame is reached through
+    the recursive handoff and must receive its authority from the parent's
+    relay, which Sprint 16.6 still owes; gating it here would authorize it from
+    its own config, which is the thing being removed. So a nested frame passes
+    through unchanged and its gating stays explicitly open.
+
+    The store is the project's own @.hostbootstrap/authority@, derived from the
+    canonical root rather than the caller's working directory (§ X). The broker
+    epoch is fresh per invocation, so the one-use invocation record
+    'Authority.authorizeProjectCommand' reserves is fresh per invocation too and
+    a re-run is not mistaken for a replay. It fails closed.
+    -}
+    withRootLifecycleAuthority ::
+        forall rootScope rootId verb.
+        CanonicalProjectRoot rootScope rootId ->
+        Context.BinaryContext ->
+        StepPlan ->
+        Authority.ProjectVerb verb ->
+        IO () ->
+        IO ()
+    withRootLifecycleAuthority root ctx plan verb body
+        | not (null (Context.parentChain ctx)) = body
+        | otherwise = do
+            project <-
+                either (dieAuthority . T.unpack . Authority.authorityErrorMessage) pure
+                    (Authority.installedProjectFor @projectId @cfg (T.pack progName))
+            store <- openAuthorityStore root
+            outcome <-
+                withLifecyclePlan codec plan $ \lifecyclePlan ->
+                    withAuthorityEntry store $ \session -> do
+                        operator <- Authority.verifyOperatorAuthorization session
+                        case operator of
+                            Left failure -> pure (Left failure)
+                            Right authorized ->
+                                Authority.withFreshBrokerEpoch session project $ \epoch ->
+                                    Authority.withVerifiedRootInvocation
+                                        session
+                                        project
+                                        authorized
+                                        epoch
+                                        verb
+                                        ( \rootAuthority ->
+                                            Authority.authorizeProjectCommand
+                                                session
+                                                project
+                                                rootAuthority
+                                                lifecyclePlan
+                                                Authority.Execute
+                                                (Context.currentFrame ctx)
+                                                (\_command -> pure (Right ()))
+                                        )
+            either (dieAuthority . T.unpack . Authority.authorityErrorMessage) pure outcome
+            body
+
+    {- The project's own protected authority store, under the canonical root
+    (§ X) rather than the caller's working directory.
+
+    It is keyed by the **installed project name** as well as the root, because a
+    single project root can legitimately host more than one installed binary —
+    this repository hosts both @hostbootstrap@ and @hostbootstrap-demo@ — and
+    each is a distinct installed project with its own broker generations and
+    invocation records. 'Authority.withVerifiedRootInvocation' still refuses a
+    store whose recorded project is not this one, so a directory copied under
+    another name is caught.
+    -}
+    openAuthorityStore ::
+        forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> IO ProtectedStore
+    openAuthorityStore root = do
+        opened <-
+            openProtectedStore
+                (canonicalProjectRootPath root </> ".hostbootstrap" </> "authority" </> progName)
+        either (dieAuthority . T.unpack . protectedErrorMessage) pure opened
+
+    withAuthorityEntry ::
+        ProtectedStore ->
+        ( forall session.
+          ProtectedSession session ->
+          IO (Either Authority.AuthorityError result)
+        ) ->
+        IO (Either Authority.AuthorityError result)
+    withAuthorityEntry store transaction = do
+        outcome <- withProtectedEntry store (fmap Right . transaction)
+        pure (either (Left . Authority.AuthorityStoreFailure) id outcome)
+
+    dieAuthority :: String -> IO a
+    dieAuthority reason = die ("project: " ++ reason)
 
 -- | Whether the current binary frame owns the chain's cluster lifecycle step.
 currentFrameOwnsCluster :: Context.BinaryContext -> StepPlan -> Bool

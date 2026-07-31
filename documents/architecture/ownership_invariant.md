@@ -29,23 +29,32 @@ document is its canonical explanation and per-substrate realization.
 
 ## Current Status
 
-The invariant is defined and the algebra that consumes it exists; **no live call site holds all four
-clauses yet**.
+The invariant is defined, the algebra that consumes it exists, and four backends now hold all four
+clauses. **One of them is wired into a live call site**; the rest await the plan-driven wiring their
+sprints own.
 
 - `HostBootstrap.Reconcile` and `HostBootstrap.Readiness` supply the receipt, prepared-operation, and
   journal types that a satisfying backend settles into. These are implemented.
+- `HostBootstrap.Harness.DataRoot` holds all four clauses for the harness durable data root, and is
+  **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes inside — acquires
+  and releases `.test_data` through it. The origin record naming the exact prior identity-or-absence is
+  published before the directory is created, the created directory's own `device:inode` is bound to the
+  receipt, and teardown removes it only after re-observing that identity. This is the first production
+  route on the invariant.
 - `HostBootstrap.Substrate.Provider.Alias` supplies the typed prepared call/release for the
-  provider-guest durable alias. Its backend discovery currently returns `Unsupported` on every
-  substrate, so production still creates the alias with an unowned `ln -s`.
-- The WSL2 global `.wslconfig` wall still infers ownership from backup existence. `Wsl2.GlobalWall`
-  and its byte transformer model the origin record, but the production route does not consume them.
-- Lima and Incus guest aliases hold **none** of the four clauses today. They gain clauses 2–4 for the
-  first time when the shared backend lands; this contract is a strengthening on those lanes, not a
-  relaxation.
+  provider-guest durable alias, and `discoverStrongAliasBackend` mints a backend that holds all four
+  clauses against a real POSIX guest filesystem. The demo still creates the alias with an unowned
+  `ln -s`; migrating that call site is open Sprint 11.10 work.
+- `HostBootstrap.Cluster.Backend` holds all four clauses for the kind cluster, binding to the
+  control-plane node's container ID. The plan-level replacement of the imperative `ensureCluster`
+  delete-recreate is open Sprint 5.7 work.
+- The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
+  `Windows` backend; the backup-existence (`.bak`) inference is gone. The `Win32` backend has no native
+  run yet — its clause realization is validated only through its POSIX peer on the shared driver.
 
 Phase and sprint ownership is in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md). Until the owning sprints close, treat
-every clause below as a target contract.
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md). Where a clause below has no live
+consumer yet, it is a target contract for the named sprint rather than a current claim.
 
 ## The four clauses
 
@@ -95,6 +104,13 @@ the same Ubuntu image, so the guest column is one implementation, not three.
 Every mechanism above is supplied by a dependency already present: `Win32` ships with the pinned GHC,
 `unix` is already a conditional dependency, and the guest column is coreutils plus util-linux. The
 invariant introduces no new dependency and no foreign-function boundary.
+
+Host **directories** — the harness data root is one — use the same host columns with two refinements.
+Clause 1 is the protected store's own OS-released entry (`hLock`, `flock`/`fcntl` on POSIX and
+`LockFileEx` on Windows), so the store's compare-and-swap and the directory's mutation share one
+bracket by construction. Clause 3 reads the directory's identity without following a link:
+`lstat` on POSIX, and on Windows a handle opened with `FILE_FLAG_BACKUP_SEMANTICS` (required to open a
+directory at all) plus `FILE_FLAG_OPEN_REPARSE_POINT`.
 
 Guest-side probes obey the probe discipline in [readiness](readiness.md): one observation per probe, no
 compound `set -eu`, no nested `"$(…)"`, so they survive the Windows PowerShell → `wsl` → `bash` path.
@@ -178,6 +194,10 @@ whose gate produced it.
   backend settles into, and the total error branches.
 - [durable state](durable_state.md) — the provider-guest durable alias, the first consumer.
 - [WSL2](../engineering/wsl2.md) — the global `.wslconfig` wall, the second consumer.
+- [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind cluster, the third consumer, whose
+  clause-3 identity is the control-plane node container ID.
+- [harness workflow](harness_workflow.md) — the run's `.test_data` root, the fourth consumer and the
+  first one wired into a production route.
 - [Incus](../engineering/incus.md), [Lima](../engineering/lima.md) — peer provider lanes that gain
   clauses 2–4 from this contract.
 - [development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md) — the

@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate (Sprint
 13.16) surfaced cluster-lifecycle readiness/idempotency gaps in this phase's scope: `kind create` (default
@@ -51,7 +51,8 @@ standalone `cluster` verb group: they become **chain steps** (`deploy-kind`, `de
 by the core `project` lifecycle command. Current `project up` follows the chain recursively in the forward
 direction. Current `project down` / `project destroy` do **not** derive and recurse through a reverse plan:
 they attempt Kind cleanup only for the current owning frame, then invoke the independently supplied
-`psTeardown` hook to stop or destroy the provider. Phase 16 Sprint 16.6 replaces those separable views with
+project-declared reverse effect to stop or destroy the provider. Phase 16 Sprint 16.6 replaces the
+remaining separable behaviour with
 one lifecycle plan whose reverse traversal is derived from the same resource identities as forward
 execution. The flat `cluster` verb is **removed** (phase-4), and the
 **stop-without-delete capability** is implemented as the pure `stopVMArgs` argv builders in
@@ -80,8 +81,12 @@ positive allocatable `nvidia.com/gpu` before workloads may schedule. The same mo
 accelerator-ingress plan:
 in-cluster daemons render a dedicated `ClusterIP`, while host-resident daemons render a distinct local-only
 `NodePort` with kind listen address `127.0.0.1`. Placement-specific kind templates prevent that host-only
-port from being published on in-cluster daemon lanes. Phase 5 remains `Active` for the live daemon gates,
-the durable readback gate, and the storage/ownership work in Sprints 5.6–5.7.
+port from being published on in-cluster daemon lanes.
+
+**Every sprint in this phase is closed** (5.1–5.4 historically, 5.6 and 5.6.1 on 2026-07-25/28, and 5.5,
+5.7, and 5.8 on 2026-07-26/29). Both accelerator lanes have native `10/10` runs: Linux GPU
+direct-`nvkind` on 2026-07-28 and Linux CPU Incus on 2026-07-29. No implementation, static-test, or
+real-run work remains.
 
 **Static hardening completed 2026-07-15.** The NVIDIA device-plugin reconciler now performs the
 allocatable-GPU probe before any Helm or `kubectl` mutation: an already-positive
@@ -93,7 +98,8 @@ now requires successful Kind deletion before recreation, so an unresolved or non
 followed by a misleading create attempt. At the `project down|destroy` command layer, core Kind cleanup
 runs only when the current frame owns the chain's `deploy-kind` step. A root frame does not try to resolve
 Kind for a cluster nested in a VM or project container; that cluster remains owned by the project's
-independently supplied teardown hook. Phase 16.6 derives that child-first cleanup from the unified plan.
+plan's own reverse projection, which reaches only this frame. Phase 16.6 derives that child-first cleanup
+from the unified plan.
 When local core cleanup is attempted, its failures still aggregate and propagate. Focused
 `LifecycleSpec` / `CLISpec` regressions cover both device-plugin branches, failure aggregation, and
 frame-aware teardown ownership.
@@ -114,14 +120,22 @@ What non-enumeration and the landed host-root carry do and do not guarantee is
 
 ## Remaining Work
 
-**Durable read-back — active (Sprint 5.6).** Canonical direct-host root admission is complete. Run the
-command-level write → destroy → up → read assertion once the native registry route is healthy.
+None. Every sprint is closed and both native accelerator lanes have `10/10` runs.
 
-**Storage/ownership reconciliation — blocked (Sprint 5.7).** Implement typed backend reconcile outcomes,
-exclusive ownership, conditional cleanup, provider storage enforcement, and backend-level durable
-preservation. The later integration tranche reruns Sprint 5.6's command proof through the typed plan.
+**Durable read-back — done (Sprint 5.6, closed 2026-07-28).** Canonical direct-host root admission and the
+command-level write → destroy → up → read assertion are both complete; the `durable-readback` harness case
+passed on both variants in the native Linux GPU `10/10` run.
 
-**Accelerator cluster/exposure work — implementation complete; real-host gates open.**
+**Storage/ownership reconciliation — done (Sprint 5.7, closed 2026-07-29).** Typed backend reconcile
+outcomes, exclusive ownership, conditional cleanup, provider storage enforcement, and backend-level
+durable preservation are implemented and gated, and the native Incus real run proved the exactly applied
+storage wall, the observed-vs-declared `Conflict`, and a host durable root surviving provider
+destroy/recreate with its kernel identity intact. The remaining `ensureCluster` replacement is
+**command/plan-level wiring** named as the coordinated 10.9/15.9/16.6 tranche's obligation, not this
+phase's; that tranche also reruns Sprint 5.6's command proof through the typed plan.
+
+**Accelerator cluster/exposure work — complete; both native gates closed (Linux GPU 2026-07-28, Linux
+CPU 2026-07-29).**
 
 - **Landed (static):** Linux GPU accelerator plans select `nvkind`; Linux CPU and the non-GPU VM-backed
   paths stay on the existing kind/Incus shape.
@@ -142,16 +156,16 @@ preservation. The later integration tranche reruns Sprint 5.6's command proof th
   aggregate failures, propagate the aggregate, and never remove `.data`.
 - **Landed (static):** `project down|destroy` invokes core Kind cleanup only when the current frame owns a
   `deploy-kind` step. Nested VM/project-container clusters skip expected host-side Kind lookup and remain
-  owned by the independently supplied project teardown hook; an attempted local cleanup still fails
+  owned by the reverse the project declared on that node; an attempted local cleanup still fails
   closed. Phase 16.6 owns deriving the reverse traversal from the forward lifecycle plan.
 - **Landed (static):** listed-but-unhealthy cluster recovery requires the Kind delete step to succeed
   before recreation; unresolved or non-zero deletion fails closed.
-- **Remaining (real-run-gated):** on a **native Linux CPU** host, run the Incus-backed lane through
-  in-cluster daemon `ClusterIP` connectivity and the C++ worker; the five-case/two-variant matrix must
-  report `10/10`.
-- **Remaining (real-run-gated):** on a **native Linux GPU** host, run the direct `nvkind` lane through the
-  CUDA daemon/worker, browser Add assertion, and durable readback; the five-case/two-variant matrix must
-  report `10/10`.
+- **Closed (real-run, 2026-07-29):** on a **native Linux CPU** host, the Incus-backed lane ran through
+  in-cluster daemon `ClusterIP` connectivity and the C++ worker; the five-case/two-variant matrix reported
+  `10/10`.
+- **Closed (real-run, 2026-07-28):** on a **native Linux GPU** host, the direct `nvkind` lane ran through
+  the CUDA daemon/worker, browser Add assertion, and durable readback; the five-case/two-variant matrix
+  reported `10/10`.
 
 Validation: unit tests for cluster profile/exposure rendering, integration tests for Linux CPU and Linux
 GPU daemon connectivity, and the browser e2e add workflow through the web service.
@@ -204,14 +218,15 @@ Specifically:
 - The standalone `cluster up|down|delete|status` verb group is dissolved; cluster bring-up becomes the
   `deploy-kind` / `deploy-chart` step kinds. Current `project up` performs forward recursive descent;
   current teardown performs owning-current-frame Kind cleanup plus the independently supplied
-  `psTeardown` hook, not a child-first reverse traversal projected from the chain. Phase 16.6 owns that
+  reverse projection of the current frame, not a child-first traversal that descends into every acquired
+  frame. Phase 16.6 owns that
   derived reverse plan (§ Y). The pure `resolvePlan`, `teardown`, `statusReport`, and cordon cores remain
   the implementation those steps call; they are not rewritten.
 - Split bring-down into two distinct capabilities: `project down` stops provider VMs but deletes kind
   clusters at the frame that owns `deploy-kind`, while preserving durable state; `project destroy` stops
   then deletes everything spun up. A root frame skips core Kind lookup when the cluster belongs to a
   nested VM/project-container frame and delegates that nested cleanup to the independently supplied
-  project teardown hook. The old `cluster down` collapsed lifecycle framing; an owning cluster frame uses
+  reverse the project declared on that node. The old `cluster down` collapsed lifecycle framing; an owning cluster frame uses
   delete-on-down because kind has no reliable stop/restart contract.
 - The never-delete-`.data` invariant is preserved across both `project down` and `project destroy`: the
   plan's `.data` path is never placed in any removal set (§ Y). The demo now creates `.data` at the host
@@ -384,9 +399,9 @@ The command-level ownership check invokes that core cleanup only in a frame that
 nested cluster teardown remains in the independently supplied project hook until Phase 16.6 derives it
 from the lifecycle plan.
 
-### Sprint 5.5: Accelerator cluster exposure and Linux GPU nvkind [Active]
+### Sprint 5.5: Accelerator cluster exposure and Linux GPU nvkind [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `demo/chart/templates/service.yaml`, `demo/kind.yaml`,
@@ -434,18 +449,102 @@ The web chart exposes a distinct local-only `127.0.0.1:30081` accelerator NodePo
 lanes; Linux CPU/GPU daemon pods dial the distinct accelerator `ClusterIP` on the configured port (default
 8081).
 
-Open (real-run-gated, § C): a native Linux CPU Incus lane proving daemon-pod connectivity by `ClusterIP`
-and the C++ worker at `10/10`, and a native Linux GPU direct-`nvkind` lane proving the CUDA-base,
-one-GPU daemon pod, CUDA worker, browser e2e Add workflow, and durable readback at `10/10`. The Windows GPU
-host-daemon-through-the-local-only-NodePort path is exercised by the decoupled Windows/WSL2 durable gate
-(Phase 13). No WSL2 result is represented as native Linux. No qualifying native-Linux `8/8` result is
-recorded yet, so the
-historical `6/6` remains evidence only for the pre-accelerator matrix. No implementation or static-test
-work remains in this sprint.
+**Closed 2026-07-28 — the native Linux GPU direct-`nvkind` lane.** It proved the CUDA base, the one-GPU
+daemon pod, the CUDA worker, the browser e2e Add workflow, and durable readback at **`10/10`**; see the
+evidence block below.
 
-### Sprint 5.6: Host-durable project state [Active]
+**Closed 2026-07-29 — the native Linux CPU Incus lane.** It proved in-cluster daemon `ClusterIP`
+connectivity and the C++ worker at **`10/10`**; see the evidence block below. Both accelerator lanes this
+sprint owns are now closed, and no implementation, static-test, or real-run work remains.
 
-**Status**: Active
+The Windows GPU host-daemon-through-the-local-only-NodePort path is exercised by the decoupled
+Windows/WSL2 durable gate (Phase 13). No WSL2 result is represented as native Linux, and the historical
+`6/6` remains evidence only for the pre-accelerator matrix.
+
+**Native Linux CPU real-run evidence (2026-07-29).** The lane is runnable on a `linux-gpu` box after all,
+by the only honest route: a **fresh Ubuntu 24.04 Incus VM is itself a native Linux CPU host** — its kernel
+carries no `/proc/driver/nvidia/version`, no `/dev/nvidiactl`, and no `nvidia-smi`, so `hostbootstrap
+doctor` reports `substrate: linux-cpu (amd64)` on its own evidence rather than on a masked probe. The AMD
+host supplies `svm` with `kvm_amd nested=1`, so the demo's own Incus VM runs nested inside it. The
+detected substrate is real; only the machine is virtual, which is exactly what "a fresh linux host"
+means in § N.
+
+`hostbootstrap-demo test run all` reported **`10/10 passed`** across both config-driven variants:
+
+```text
+test report: 10/10 passed
+  PASS [hello-world]    pristine-bootstrap | web-build | e2e-tabs | registry-persistence | durable-readback
+  PASS [hello-universe] pristine-bootstrap | web-build | e2e-tabs | registry-persistence | durable-readback
+```
+
+The run exercised the whole VM-backed stack: `ensure incus` converging a pristine host (client install,
+`setfacl` on `/dev/kvm`, `incus-admin` membership, daemon socket, VM capability, `images:` egress); the
+budget-sized Incus VM as cordon #1; the durable share attaching and mounting, with
+`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /home/ubuntu/hostbootstrap/demo/.data`
+(the provider-guest projection of Sprint 5.6.1, distinct from the direct-host canonical bind); the full
+three-build pristine bootstrap (metal pb, in-VM pb host-native, project image) with the in-Dockerfile
+`check-code` gate running `fourmolu`, `hlint`, and `cabal -Werror` inside the pulled published base;
+`cluster up: nodes Ready for hostbootstrap-demo`; MinIO and the in-cluster registry
+(`deploy-registry: in-cluster registry rollout complete at http://localhost:30500`);
+`push-image: kind-loaded hostbootstrap-demo:local and pushed
+localhost:30500/library/hostbootstrap-demo:demo`; `expose-port: web service reachable at
+http://localhost:30080/`; and
+`deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)` —
+the `ClusterIP` daemon-pod placement this sprint owns, as opposed to the host-daemon NodePort lane. Both
+variants then tore down through `project destroy`.
+
+**Three defects blocked this lane and were fixed to reach it.** None was reachable from any previously
+run lane, and each is recorded with its own sprint: the metal frame never installed the C build libraries
+the host-native build links (Phase 2 Sprint 2.6); `ensure incus` never installed `virtiofsd`, so
+`IncusProviderReady` was minted for a host that could not attach a § DD durable share (Sprint 11.10); and
+the durable-share **attach** ran before the guest agent was ready with no readiness witness at all, which
+silently succeeded and left the guest permanently unmounted (Sprint 11.10).
+
+**Native Linux GPU real-run evidence (2026-07-28).** On an Ubuntu 24.04 / RTX 5090 host,
+`hostbootstrap-demo test run all` reported **`10/10 passed`** on the direct-`nvkind` lane across both
+config-driven variants:
+
+```text
+test report: 10/10 passed
+  PASS [hello-world]    pristine-bootstrap | web-build | e2e-tabs | registry-persistence | durable-readback
+  PASS [hello-universe] pristine-bootstrap | web-build | e2e-tabs | registry-persistence | durable-readback
+```
+
+The run exercised: substrate detection to `linux-gpu (amd64)`; `ensure docker` and `ensure cuda` as
+**verified no-ops** (the documented nvkind volume-mount smoke passed, so no host package or Docker
+configuration was mutated); a project image built `FROM` the freshly **pulled**
+`docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64`; the in-Dockerfile `check-code` gate
+(`fourmolu`, `hlint`, `cabal -Werror`); the host → GPU project-container handoff with the config streamed
+in place; nvkind creation with a control-plane plus labelled GPU worker, each cordoned to `--cpus 2
+--memory 3GiB`; the NVIDIA device plugin reaching Ready with `nvidia.com/gpu` allocatable; MinIO and the
+in-cluster registry; `push-image` finalizing the manifest at
+`sha256:0a49a27009ee8c902ef3727950fed01badc68b811b94ad9c3fff7aceeb9d84b1`; the chart, the verified web
+NodePort, and the CUDA accelerator daemon rolling out and dialing the web `ClusterIP` with one GPU; and
+`project destroy` deleting the nvkind cluster while preserving `.data`.
+
+Two defects were found and one was fixed in the same change:
+
+- **`nvcc` was reported absent while installed.** The daemon pod crash-looped on `accelerator worker
+  build could not run: nvcc not found on this host`, yet the published CUDA base carries
+  `/usr/local/cuda/bin/nvcc` — the image sets `ENV PATH` before installing CUDA and never adds that
+  `bin` directory. `HostBootstrap.HostTool.discoverFallback` now has a POSIX CUDA fallback, the exact
+  peer of the existing Windows one: the stable `/usr/local/cuda` symlink first, then versioned roots
+  newest-first, with the ordering pinned by two pure `cudaCandidatePaths` cases. This resolves the tool
+  to an absolute path per § K and needs **no** base-image republish.
+- **A killed harness run cannot be resumed** (Sprint 10.9's obligation, now with a reproduction). It
+  leaves both `.test_data` and a separate `.test_data.hostbootstrap-run-owner` lock behind; the next run
+  aborts with `test data ownership is already active` and an operator must remove both directories by
+  hand. There is no Open→Closing recovery.
+
+This closes only the **native Linux GPU** lane. The native Linux **CPU** Incus lane was not runnable on
+this host: `Substrate.detect` classifies from `/proc/driver/nvidia/version` and `/dev/nvidiactl`, both
+present, so the host always resolves to `linux-gpu` and there is no override short of unloading the
+driver. Apple Lima and native Windows/WSL2 lanes have no available host.
+
+
+### Sprint 5.6: Host-durable project state [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`, `demo/kind.yaml`, `demo/chart/`
 **Docs to update**: `documents/architecture/durable_state.md`, `documents/architecture/readiness.md`, `documents/engineering/cluster_lifecycle.md`
 
@@ -481,18 +580,21 @@ Windows/WSL2 `test run all` **`8/8`** (2026-07-23): the recast pure, readiness-g
 (phase-11 Sprint 11.9) links cleanly on both variants
 (`vm up: linked durable alias /var/tmp/hostbootstrap-demo-data -> /mnt/c/…/demo/.data`) — the ungated
 `set -eu` step that collapsed `0/8` is gone — and a residual failure is now legible (phase-10 Sprint 10.8).
-**Remaining (real-run-gated, § C):** the end-to-end durable-root **read-back** (write a marker through the
-running service → `project destroy` → `project up` → read the same marker from the host-backed root) is
-implemented as the `durable-readback` harness case. Static validation passed on 2026-07-25 with 100 demo
-tests. Sprint 5.6.1 now supplies the canonical absolute direct-host bind. A native Linux GPU rerun passed
-that boundary, created and cordoned nvkind, and proved allocatable GPU capacity, then failed while
-finalizing the pushed image manifest because the in-cluster registry returned `unknown error`. Sprint
-13.18 owns that registry/MinIO integration failure. This sprint stays Active until the read-back case
-passes; no governed document may yet describe host-durable `.data` as end-to-end validated (§ J).
+**Closed 2026-07-28.** The end-to-end durable-root **read-back** — write a marker through the running
+service → `project destroy` → `project up` → read the same marker from the host-backed root — is the
+`durable-readback` harness case, and it **passed on both variants** in the native Linux GPU
+`10/10` run recorded in Sprint 5.5. Sprint 5.6.1 supplied the canonical absolute direct-host bind that
+this needed; the earlier native rerun that reached nvkind and then died finalizing the pushed manifest
+(`unknown error` from the in-cluster registry) did not recur, and `push-image` completed with a real
+manifest digest. Teardown preserved `.data`.
 
 That result is the handoff prerequisite for Phase 15.9 to promote the descriptive `DurableStore` label
-into opaque mutation authority. This sprint does not own that later command-gate change and can close
-when the durability proof itself passes.
+into opaque mutation authority. This sprint does not own that later command-gate change, and it closes on
+the durability proof itself.
+
+#### Remaining Work
+
+None.
 
 ### Sprint 5.6.1: Canonical project-root authority and durable projections [Done]
 
@@ -565,10 +667,9 @@ not reopen this root-admission contract.
 
 None.
 
-### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Active]
+### Sprint 5.7: Storage cordon and ownership-aware reconciliation [Done]
 
-**Status**: Active
-**Blocked by**: None (Sprint 9.10 and Sprint 11.10's alias/ownership primitive are landed)
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
@@ -666,22 +767,78 @@ generation. `ClusterReconcileSpec` covers all seven branches, and two compile-fa
 cannot enter cleanup. `spStop` already releases the WSL2 wall (see Sprint 11.10). Core gate: **503/503**
 under `-Werror` on Linux.
 
-**Still open (this sprint):**
+**Delivered 2026-07-28 (storage wall, cluster IO backend, loopback exposure):**
 
-- the **storage-wall backend operation**: apply the declared storage ceiling on every supported provider
-  and return a typed `Unsupported` where enforcement is impossible (bare Linux has no storage quota,
-  § O/§ 9.4), over already-validated budget inputs — not silent success;
-- the **IO backend that holds the four clauses for the cluster** (produces the `ClusterObservation`s
-  while holding a `flock`/provider-CAS lock, an origin record, and identity binding), analogous to the
-  guest-alias `GuestExec` backend, plus the loopback-bound exposure/credential backend operation;
-- replace the imperative `ensureCluster` delete-recreate and same-name adoption with the classification
-  above — the **command/plan-level wiring** is the coordinated 10.9/15.9/16.6 tranche's to consume
-  (Sprint 5.6 retains the command-level durable-readback gate meanwhile);
-- native provider real runs proving the applied storage wall and backend-level durable preservation.
+- the **storage-wall backend operation** lives in `HostBootstrap.Cluster.Budget` and consumes only
+  already-admitted inputs (`ProviderWallSpec`, `BudgetPartition`, `ProviderWallReservation`).
+  `prepareStorageWallCall` yields the exact provider argument for each mechanism that can enforce the
+  ceiling — Colima/Lima `--disk`, Incus `root,size=`, WSL2 `--vhd-size` — and a typed `Unsupported`
+  naming `DockerNodeHasNoStorageFlag` for a kind node container (`docker update` has no storage flag)
+  or `BareLinuxHasNoStorageQuota`; bare Linux is in fact refused one step earlier, at admission.
+  `settleStorageWallCall` compares the **observed** ceiling against the declared one and returns a
+  `Conflict` when they differ, so a provider that silently rounded a hard ceiling upward cannot settle
+  as applied (§ O). A zero wall epoch mints nothing;
+- the **IO backend that holds the four clauses for the cluster** is
+  `HostBootstrap.Cluster.Backend`. Like the guest-alias backend it takes an injected `ClusterExec` and
+  is minted only by `discoverStrongClusterBackend`, which probes for `flock`, `grep`, the resolved
+  cluster driver, and the container runtime and otherwise returns `Unsupported` with no capability.
+  `runClusterReconcileCall` holds clause 1 (a `flock -x` across observe/create/settle), clause 2 (an
+  origin record naming the exact prior state before the first mutation), and clause 3 (identity is the
+  control-plane node **container ID**, not the cluster name). `runClusterCleanupCall` holds clause 4: it
+  re-observes that identity under the same lock and reports a replacement rather than deleting it;
+- the **loopback-bound exposure operation** makes a wildcard binding unrepresentable: `LoopbackExposure`
+  accepts ports only, `loopbackExposureListenAddress` is always `127.0.0.1`, and
+  `settleLoopbackExposure` returns a structured `Conflict` — not a warning — when the runtime reports a
+  wider or different binding, and a `Failure` for an unparseable port rather than an assumed match.
+  `withPreparedLoopbackExposure` binds the exposure to a planned cluster resource, so a port cannot be
+  published for a cluster outside the plan.
+
+Validation: `ClusterBackendSpec` runs **17** cases, of which the ten backend cases execute the real
+`flock`/`sh` protocol on the host filesystem against a cluster driver and container runtime the test
+writes itself — discovery refusal, relative-path refusal, create-with-journalled-origin, healthy,
+stopped-control-plane-unhealthy, create-failure-is-not-absence, conditional removal, refusal to delete a
+replaced control plane, the lock file's existence, and spec validation. `BudgetSpec` grew **8**
+storage-wall cases. Core gate: **545/545** under `-Werror`; the demo suite passes **105**.
+
+**Native Incus provider real-run evidence (2026-07-29) — closes this sprint's real-run gate.** On the
+Ubuntu 24.04 / RTX 5090 host, against the native Incus daemon (`dir` storage pool), a disposable
+`hb-storagewall-gate` VM exercised the two backend contracts this sprint owns and was deleted afterwards;
+the downloaded image cache was removed, so `incus list` and `incus image list` were both left empty.
+
+- **The applied storage wall is exact.** The `IncusRootSizeArgument` mechanism's prepared argument for the
+  demo's declared 80 GiB budget — `-d root,size=80GiB`, exactly what `prepareStorageWallCall` emits — was
+  applied at instance creation. Provider readback (`incus config device get … root size`) reported
+  `80GiB`; the backing `root.img` was **85899345920 bytes**; and the guest kernel independently reported
+  `/dev/sda` as **85899345920 bytes** (`lsblk -b`, then `/sys/block/sda/size` after the recreate). That is
+  80 × 1024³ with no rounding, so `settleStorageWallCall` settles the observation as
+  `AppliedStorageWall (Changed Created)` rather than accepting a rounded ceiling.
+- **A wall that disagrees with the declaration never settles as applied, in both directions.** Shrinking
+  the existing wall below the declaration is refused by the provider itself
+  (`Failed to update device "root": Block volumes cannot be shrunk`), which is the
+  `StorageWallRefused` → `Conflict` branch. Growing it out from under the declaration succeeded at the
+  provider (observed `96GiB`, `root.img` **103079215104 bytes**), and 103079215104 ≠ 85899345920 is
+  precisely the observed-vs-declared mismatch `settleStorageWallCall` converts into a structured
+  `Conflict` — the § O "silently rounded hard ceiling" failure, detected rather than accepted.
+- **Backend-level durable preservation holds across provider destroy/recreate.** A host-owned durable
+  root was attached with `incus config device add <vm> demodata disk source=<host> path=/mnt/hbdata` —
+  the argv `HostBootstrap.Incus.addDiskDeviceArgs` builds — and its stable kernel identity was recorded
+  as `device=66309 inode=36311075`. A host-written marker was read from inside the guest, a second marker
+  was written **from** the guest through the share, then `incus delete --force` (the argv
+  `destroyVMArgs` builds) removed the frame. The host root retained the same `device=66309
+  inode=36311075` and both markers, and a recreated VM carrying the same declared wall read both back
+  unchanged. Provider frame destruction therefore does not reach the host-owned durable root, and the
+  identity clause-3/clause-4 comparison the conditional-cleanup operations perform is against an
+  identity that genuinely survives the frame.
+
+**Remaining, and owned elsewhere:** replacing the imperative `ensureCluster` delete-recreate and
+same-name adoption with the classification above is **command/plan-level wiring**, and it is the
+coordinated 10.9/15.9/16.6 tranche's to consume — this sprint's obligation was to supply the
+classification, backend operations, and receipts, which it has. Sprint 5.6 retains the command-level
+durable-readback gate meanwhile.
 
 Profile/root/test authority and `ProjectPlan` integration remain explicitly outside this sprint in the
 coordinated 10.9/15.9/16.6 tranche, avoiding a dependency back into this foundation. Sprint 5.5 remains
-independently Active for the unavailable native accelerator lanes; neither lane can close this phase by
+independently Active for the unavailable native Linux CPU lane; neither lane can close this phase by
 proxy for the other.
 
 ### Sprint 5.8: Applied per-project Apple provider budget [Done]

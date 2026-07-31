@@ -143,9 +143,23 @@ tests =
                 daemonCfg = projectConfigForRole "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile" demoDefaultResources demoDefaultDeployConfig demoDefaultMessage Daemon
             configuredServiceVariant webCfg @?= Right "web"
             configuredServiceVariant daemonCfg @?= Right "accelerator"
-        , testCase "multi-role host config carries Web parameters but cannot select a service" $ do
-            cfg <- expectRight (demoInit (initArgsFor HostOrchestrator){alsoRoles = [ClusterService]})
-            commandAllowed cfg.context ServiceCommand @?= True
+        , testCase "an orchestrator cannot be given a service role at all (§ 15.9)" $ do
+            -- This configuration used to be constructible and was refused only
+            -- later, at service selection. The role addition itself is now
+            -- refused, so the authority never exists to be checked.
+            case demoInit (initArgsFor HostOrchestrator){alsoRoles = [ClusterService]} of
+                Left refusal ->
+                    assertBool
+                        ("expected a role-addition refusal, got " ++ refusal)
+                        ("may not acquire" `isInfixOfS` refusal)
+                Right cfg ->
+                    assertFailure
+                        ( "an orchestrator must not acquire service authority, but got "
+                            ++ show (commandAllowed cfg.context ServiceCommand)
+                        )
+        , testCase "a plain orchestrator still carries Web parameters and selects no service" $ do
+            cfg <- expectRight (demoInit (initArgsFor HostOrchestrator))
+            commandAllowed cfg.context ServiceCommand @?= False
             cfg.webServiceConfig @?= validWebServiceConfig 8080 8081
             assertBool "an orchestrator is not a service leaf" $
                 case configuredServiceVariant cfg of

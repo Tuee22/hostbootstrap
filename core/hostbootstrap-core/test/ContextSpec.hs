@@ -13,15 +13,12 @@ import HostBootstrap.CLI (
     addSteps,
     finalizeProjectSpec,
     projectSpec,
-    setFrameContext,
-    setTeardown,
  )
 import qualified HostBootstrap.CLI as CLI
 import qualified HostBootstrap.Config.Schema as Schema
 import HostBootstrap.Config.Class (AssemblyRequest (..), pureConfigAssembly)
 import HostBootstrap.Context
 import HostBootstrap.Harness (Case (Case), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
-import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step (StepFrame (StepFrame), deployVMStep)
 import System.Directory (removeFile)
 import System.Environment (withArgs, withProgName)
@@ -49,7 +46,13 @@ sampleContext =
             , TopologyFrame "vm-project-container-2" "vm-orchestrator-1" DockerContainerProvider VMProjectContainer "vm-project-container"
             ]
         , currentFrame = "vm-project-container-2"
-        , runtimeWitnesses = []
+        , -- exactly the set the VM-backed project-container placement requires
+          -- (§ 15.9); an empty list is no longer a context that validates.
+          runtimeWitnesses =
+            [ RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" ""
+            , RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" ""
+            , RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "vm-project-container-2"
+            ]
         , capabilities = [DockerSocket, ContainerRuntime, KindNetwork]
         , allowedCommandClasses = [TestWorkflowCommand, CheckCodeCommand, ConfigGenerationCommand]
         , childContextKinds = [ClusterService]
@@ -76,12 +79,8 @@ fixtureSpec progName =
     either (error . show) id $
         finalizeProjectSpec $
             addSteps
-                (const [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))])
-                ( setFrameContext
-                    (\_ _ _ -> localContext)
-                    ( setTeardown
-                        (\_ _ _ -> pure ())
-                        ( projectSpec
+                (\_ _ -> [deployVMStep "fixture step" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))])
+                    ( projectSpec
                             passingSuite
                             (pure ())
                             []
@@ -99,9 +98,7 @@ fixtureSpec progName =
                                                 HostOrchestrator
                                             )
                             )
-                        )
                     )
-                )
 
 runHostBootstrapCLI ::
     String ->
@@ -173,22 +170,183 @@ tests =
             roleName host @?= "host-orchestrator"
             capabilities host @?= [HostTools, IncusProvider]
             childContextKinds host @?= [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
-        , testCase "addRole grants a second role's authority (multi-role config)" $ do
+        , testCase "a cyclic parent chain is refused instead of diverging" $ do
+            -- The ancestor walk follows topologyParentId with no memory of
+            -- where it has been, so before the total validator a config whose
+            -- frames name each other as parents looped forever. This case is
+            -- the regression guard: it must terminate with a refusal.
+            let cyclic =
+                    sampleContext
+                        { topologyFrames =
+                            [ TopologyFrame "a" "b" HostProvider HostOrchestrator "a"
+                            , TopologyFrame "b" "a" HostProvider VMOrchestrator "b"
+                            ]
+                        , currentFrame = "a"
+                        , contextKind = HostOrchestrator
+                        , parentChain = []
+                        }
+            case validateTopology cyclic of
+                Left (ContextTopologyRootCount 0) -> pure ()
+                Left (ContextTopologyCycle _) -> pure ()
+                other -> assertFailure ("expected a cycle refusal, got " ++ show other)
+        , testCase "a cycle below a real root is refused, not walked forever" $ do
+            let cyclic =
+                    sampleContext
+                        { topologyFrames =
+                            [ TopologyFrame "host-orchestrator-0" "" HostProvider HostOrchestrator "host-orchestrator"
+                            , TopologyFrame "x" "y" LimaVMProvider VMOrchestrator "x"
+                            , TopologyFrame "y" "x" LimaVMProvider VMOrchestrator "y"
+                            ]
+                        , currentFrame = "host-orchestrator-0"
+                        , contextKind = HostOrchestrator
+                        , parentChain = []
+                        }
+            case validateTopology cyclic of
+                Left (ContextTopologyCycle _) -> pure ()
+                Left (ContextTopologyUnreachable _) -> pure ()
+                other -> assertFailure ("expected a cycle refusal, got " ++ show other)
+        , testCase "duplicate frame identifiers are refused" $ do
+            let duplicated =
+                    sampleContext
+                        { topologyFrames =
+                            topologyFrames sampleContext
+                                ++ [TopologyFrame "vm-orchestrator-1" "host-orchestrator-0" LimaVMProvider VMOrchestrator "again"]
+                        }
+            validateTopology duplicated
+                @?= Left (ContextTopologyDuplicateFrame "vm-orchestrator-1")
+        , testCase "an empty frame identifier is refused" $ do
+            let empty =
+                    sampleContext
+                        { topologyFrames =
+                            TopologyFrame "" "host-orchestrator-0" HostProvider VMOrchestrator "blank"
+                                : topologyFrames sampleContext
+                        }
+            validateTopology empty @?= Left ContextTopologyEmptyFrameId
+        , testCase "a topology with two roots is refused" $ do
+            let twoRoots =
+                    sampleContext
+                        { topologyFrames =
+                            topologyFrames sampleContext
+                                ++ [TopologyFrame "other-root" "" HostProvider HostOrchestrator "other"]
+                        }
+            validateTopology twoRoots @?= Left (ContextTopologyRootCount 2)
+        , testCase "an unreachable frame is refused" $ do
+            let orphaned =
+                    sampleContext
+                        { topologyFrames =
+                            topologyFrames sampleContext
+                                ++ [ TopologyFrame "island-a" "island-b" HostProvider ClusterService "a"
+                                   , TopologyFrame "island-b" "island-a" HostProvider ClusterService "b"
+                                   ]
+                        }
+            case validateTopology orphaned of
+                Left (ContextTopologyCycle _) -> pure ()
+                Left (ContextTopologyUnreachable _) -> pure ()
+                other -> assertFailure ("expected an unreachable/cycle refusal, got " ++ show other)
+        , testCase "an illegal child kind is refused" $ do
+            let illegal =
+                    sampleContext
+                        { topologyFrames =
+                            topologyFrames sampleContext
+                                ++ [TopologyFrame "build-3" "vm-project-container-2" DockerContainerProvider ImageBuildContainer "build"]
+                        }
+            validateTopology illegal
+                @?= Left
+                    ( ContextTopologyIllegalChild
+                        "build-3"
+                        VMProjectContainer
+                        ImageBuildContainer
+                    )
+        , testCase "a parentChain that disagrees with the edges is refused" $ do
+            let lying =
+                    sampleContext
+                        { parentChain =
+                            [ContextFrame{frameKind = HostOrchestrator, frameBinary = "demo"}]
+                        }
+            case validateTopology lying of
+                Left (ContextParentChainMismatch declared derived) -> do
+                    declared @?= [HostOrchestrator]
+                    derived @?= [HostOrchestrator, VMOrchestrator]
+                other ->
+                    assertFailure ("expected a parentChain mismatch, got " ++ show other)
+        , testCase "the well-formed demo topology validates" $
+            validateTopology sampleContext @?= Right ()
+        , testCase "a non-leaf primary cannot union service-run authority" $ do
+            -- The former behaviour unioned any role into any primary, so an
+            -- operator could name an extra role and self-grant authority the
+            -- placement cannot hold (§ 15.9).
             let host =
                     hostOrchestratorContext
                         "demo"
                         "demo"
                         "/workspace/demo"
-                dual = addRole ClusterService host
-            -- the primary project (deployment) authority is retained ...
-            commandAllowed dual HostOrchestratorCommand @?= True
-            commandAllowed dual ClusterLifecycleCommand @?= True
-            -- ... and the service authority is granted, so one config runs both
-            -- `project up` and `service run`
-            commandAllowed dual ServiceCommand @?= True
-            -- the primary kind/frame is unchanged; service capabilities are unioned in
-            contextKind dual @?= HostOrchestrator
-            assertBool "service port capability unioned" (ServicePort `elem` capabilities dual)
+            case addRole ClusterService host of
+                Left (ContextRoleAdditionRefused HostOrchestrator ClusterService) -> pure ()
+                other ->
+                    assertFailure
+                        ("expected a refused role addition, got " ++ show (fmap contextKind other))
+        , testCase "a daemon primary cannot union project or host-orchestrator authority" $ do
+            let daemon =
+                    contextForKind "demo" "demo" "/workspace/demo" Daemon
+            case addRole HostOrchestrator daemon of
+                Left (ContextRoleAdditionRefused Daemon HostOrchestrator) -> pure ()
+                other ->
+                    assertFailure
+                        ("expected a refused role addition, got " ++ show (fmap contextKind other))
+            -- and the daemon still cannot run project lifecycle verbs
+            case addRole HostOrchestrator daemon of
+                Right granted ->
+                    assertBool
+                        "a refused addition must not grant ProjectCommand"
+                        (not (commandAllowed granted ProjectCommand))
+                Left _ -> pure ()
+        , testCase "an image-build container cannot union cluster-lifecycle authority" $ do
+            let build =
+                    contextForKind "demo" "demo" "/workspace/demo" ImageBuildContainer
+            case addRole VMProjectContainer build of
+                Left (ContextRoleAdditionRefused ImageBuildContainer VMProjectContainer) -> pure ()
+                other ->
+                    assertFailure
+                        ("expected a refused role addition, got " ++ show (fmap contextKind other))
+        , testCase "a leaf service placement may also serve another service role" $ do
+            let service =
+                    contextForKind "demo" "demo" "/workspace/demo" ClusterService
+            case addRole Daemon service of
+                Right dual -> do
+                    contextKind dual @?= ClusterService
+                    commandAllowed dual ServiceCommand @?= True
+                    commandAllowed dual DaemonCommand @?= True
+                    commandAllowed dual ProjectCommand @?= False
+                Left err ->
+                    assertFailure ("expected a permitted role addition, got " ++ show err)
+        , testCase "adding the primary's own role is an identity" $ do
+            let service =
+                    contextForKind "demo" "demo" "/workspace/demo" ClusterService
+            addRole ClusterService service @?= Right service
+        , testCase "roleAdditionAllowed is closed over every kind pair" $ do
+            let kinds =
+                    [ HostOrchestrator
+                    , VMOrchestrator
+                    , VMProjectContainer
+                    , ImageBuildContainer
+                    , ClusterService
+                    , Daemon
+                    , OneShotJob
+                    , TestHarness
+                    ]
+                permitted =
+                    [ (primary, role)
+                    | primary <- kinds
+                    , role <- kinds
+                    , roleAdditionAllowed primary role
+                    ]
+            -- Exactly the leaf-to-leaf service pairs, and nothing else.
+            permitted
+                @?= [ (ClusterService, ClusterService)
+                    , (ClusterService, Daemon)
+                    , (Daemon, ClusterService)
+                    , (Daemon, Daemon)
+                    ]
         , testCase "deriveContainerContext appends the VM frame without duplicating project resources" $ do
             let host =
                     hostOrchestratorContext
@@ -314,38 +472,107 @@ tests =
                 "direct topology is explicitly marked Linux GPU"
                 (RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu" `elem` runtimeWitnesses direct)
             validateContext testRequirement direct @?= Right direct
-        , testCase "host-backed project-container without Linux GPU witness is rejected" $ do
+        , testCase "host-backed project-container that drops the Linux GPU witness is rejected" $ do
             let host =
                     hostOrchestratorContext
                         "demo"
                         "demo"
                         "/workspace/demo"
                 direct = deriveLinuxGpuContainerContext host "/workspace/demo"
+                gpuWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu"
                 missingExplicitWitness =
-                    direct
-                        { runtimeWitnesses =
-                            filter
-                                (/= RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu")
-                                (runtimeWitnesses direct)
-                        }
+                    direct{runtimeWitnesses = filter (/= gpuWitness) (runtimeWitnesses direct)}
+            -- The placement is structural, so dropping the witness no longer
+            -- changes which lane the frame is in; it makes the declared set
+            -- incomplete for that lane.
             validateContext testRequirement missingExplicitWitness
-                @?= Left (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
-        , testCase "validateRuntimeContext checks declared file witnesses before dispatch" $
+                @?= Left (ContextWitnessSetMismatch [gpuWitness] [])
+        , testCase "declaring the Linux GPU witness cannot fabricate the direct placement" $ do
+            let host =
+                    hostOrchestratorContext
+                        "demo"
+                        "demo"
+                        "/workspace/demo"
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                gpuWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_DIRECT_CONTAINER" "linux-gpu"
+                -- A VM-backed container asserting the direct-lane fact.
+                ctr = deriveContainerContext vm "/workspace/demo"
+                selfAsserted = ctr{runtimeWitnesses = gpuWitness : runtimeWitnesses ctr}
+            isExplicitLinuxGpuContainer selfAsserted @?= False
+            validateContext testRequirement selfAsserted
+                @?= Left (ContextWitnessSetMismatch [] [gpuWitness])
+        , testCase "a placement's required witness set is exact" $ do
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                ctr = deriveContainerContext vm "/workspace/demo"
+                req = contextRequirement "demo" CheckCodeCommand []
+                frameWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame ctr)
+                dockerWitness = RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" ""
+            contextPlacement ctr @?= Right VMBackedProjectContainerPlacement
+            contextRequiredWitnesses ctr @?= Right (runtimeWitnesses ctr)
+            -- omitted
+            validateContext req ctr{runtimeWitnesses = filter (/= dockerWitness) (runtimeWitnesses ctr)}
+                @?= Left (ContextWitnessSetMismatch [dockerWitness] [])
+            -- empty
+            case validateContext req ctr{runtimeWitnesses = []} of
+                Left (ContextWitnessSetMismatch missing []) -> length missing @?= 3
+                other -> assertFailure ("expected a set mismatch, got " ++ show other)
+            -- duplicated
+            validateContext req ctr{runtimeWitnesses = frameWitness : runtimeWitnesses ctr}
+                @?= Left (ContextWitnessDuplicate frameWitness)
+            -- contradictory: the same key required to hold two different values
+            let contradictory =
+                    RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "somewhere-else"
+            validateContext req ctr{runtimeWitnesses = contradictory : runtimeWitnesses ctr}
+                @?= Left (ContextWitnessDuplicate contradictory)
+            -- irrelevant
+            let irrelevant = RuntimeWitness WitnessExecutable "sudo" ""
+            validateContext req ctr{runtimeWitnesses = irrelevant : runtimeWitnesses ctr}
+                @?= Left (ContextWitnessSetMismatch [] [irrelevant])
+        , testCase "a kind its provider cannot own is refused before authorization" $ do
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                svc = deriveServiceContext host "/srv/demo"
+                relabelled =
+                    svc
+                        { topologyFrames =
+                            map
+                                ( \f ->
+                                    if topologyFrameId f == currentFrame svc
+                                        then f{topologyProvider = HostProvider}
+                                        else f
+                                )
+                                (topologyFrames svc)
+                        }
+                req = contextRequirement "demo" ConfigInspectionCommand []
+            validateContext req relabelled
+                @?= Left (ContextTopologyIllegalProvider (currentFrame svc) ClusterService HostProvider)
+        , testCase "validateRuntimeContext verifies the derived witness set, not a declared one" $
             withSystemTempDirectory "hostbootstrap-witness" $ \dir -> do
-                let path = dir </> "marker"
-                    okWitness = RuntimeWitness WitnessFileExists (T.pack path) ""
-                    missingPath = dir </> "missing"
-                    missingWitness = RuntimeWitness WitnessFileExists (T.pack missingPath) ""
-                    host =
-                        hostOrchestratorContext
-                            "demo"
-                            "demo"
-                            "/workspace/demo"
-                    req = contextRequirement "demo" CheckCodeCommand []
-                TIO.writeFile path "ok"
-                validateRuntimeContext req host{runtimeWitnesses = [okWitness]} >>= (@?= Right host{runtimeWitnesses = [okWitness]})
-                validateRuntimeContext req host{runtimeWitnesses = [missingWitness]}
-                    >>= (@?= Left (ContextRuntimeWitnessFailed missingWitness ("missing file " ++ missingPath)))
+                let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                    daemon = deriveHostDaemonContext host "/workspace/daemon"
+                    req = contextRequirement "demo" ServiceCommand []
+                    marker = dir </> "marker"
+                    plantedWitness = RuntimeWitness WitnessFileExists (T.pack marker) ""
+                TIO.writeFile marker "ok"
+                -- A satisfiable witness the placement does not require cannot be
+                -- added to stand in for one it does.
+                validateRuntimeContext req daemon{runtimeWitnesses = [plantedWitness]}
+                    >>= ( @?=
+                            Left
+                                ( ContextWitnessSetMismatch
+                                    (runtimeWitnesses daemon)
+                                    [plantedWitness]
+                                )
+                        )
+                -- With the exact required set declared, the environment decides.
+                result <- validateRuntimeContext req daemon
+                case result of
+                    Left (ContextRuntimeWitnessFailed witness detail) -> do
+                        witness @?= RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame daemon)
+                        assertBool
+                            "reports the unset frame variable"
+                            ("HOSTBOOTSTRAP_CURRENT_FRAME" `isInfixOfS` detail)
+                    other -> assertFailure ("expected a runtime witness failure, got " ++ show other)
         , testCase "writeContextFile writes Dhall that decodes back" $
             withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
                 let path = dir </> "context.dhall"

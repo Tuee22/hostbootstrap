@@ -904,11 +904,14 @@ the exact emitted body including both finite timeouts, that an exact-GiB budget 
 regression guard that neither emitted timeout is negative. `WslGlobalWallConfigBytesSpec` idempotence
 still passes on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new values.
 
-**Remaining (real-run-gated, § C, jointly with Sprint 5.7):** the live Windows observation that
-`project up` followed by `project down` does not leave the shared utility VM resident holding the
-balloon. This sprint supplies the finite body that makes a release meaningful; Sprint 5.7 supplies the
-`spStop` restore-then-shutdown effect that makes it prompt. Neither alone produces the released wall, so
-the observation is recorded once, against both.
+**Remaining (real-run-gated, § C):** the live Windows observation that `project up` followed by
+`project down` does not leave the shared utility VM resident holding the balloon. Both halves of the
+mechanism now exist — this sprint's finite idle-timeout body, and the `spStop` restore-then-shutdown
+effect Sprint 5.7 supplied and closed on 2026-07-29 — so the observation is this sprint's alone. It has
+**no available host**: the observable is Windows-only (the shared WSL2 utility VM), and reconfirmed
+2026-07-29 there is no Windows host in reach. The four-clause global-wall protocol itself is not
+Windows-gated — Sprint 11.10's portable host-wall backend runs it un-gated on Linux — so what is
+outstanding is only the platform-specific memory-release observable, not any untested logic.
 
 #### Gate-enabling defects fixed alongside this sprint
 

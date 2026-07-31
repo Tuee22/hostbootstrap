@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module HarnessSpec (tests) where
+module HarnessSpec (tests, runHarnessAcquireProbe) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -11,7 +12,11 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness
-import System.Directory (doesDirectoryExist, getCurrentDirectory)
+import HostBootstrap.Harness.Ownership (protectedRunOwnership)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory)
+import System.Environment (getExecutablePath)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
+import System.Process (spawnProcess, waitForProcess)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -43,9 +48,12 @@ matrixCases =
         td <- readIORef tornDown
         assertBool "both cases torn down" ("ok" `elem` td && "boom" `elem` td)
         lookup "ok" (reportResults report) @?= Just Pass
+        -- A throwing case *body* is an engine-classified lifecycle break, not the
+        -- project's own assertion verdict, so it is a distinct outcome.
         case lookup "boom" (reportResults report) of
-            Just (Fail msg) -> assertBool ("failure mentions the cause: " ++ msg) ("kaboom" `isInfixOf` msg)
-            other -> assertFailure ("expected boom to Fail, got " ++ show other)
+            Just (LifecycleFailed msg) ->
+                assertBool ("failure mentions the cause: " ++ msg) ("kaboom" `isInfixOf` msg)
+            other -> assertFailure ("expected boom to be LifecycleFailed, got " ++ show other)
         allPassed report @?= False
     , testCase "a throwing setup fails that case without crashing the matrix" $ do
         let seams =
@@ -57,8 +65,9 @@ matrixCases =
                     }
         report <- runMatrix seams [fixtureCase "boom", fixtureCase "ok"]
         case lookup "boom" (reportResults report) of
-            Just (Fail msg) -> assertBool ("setup failure surfaced: " ++ msg) ("setup-kaboom" `isInfixOf` msg)
-            other -> assertFailure ("expected boom to Fail, got " ++ show other)
+            Just (LifecycleFailed msg) ->
+                assertBool ("setup failure surfaced: " ++ msg) ("setup-kaboom" `isInfixOf` msg)
+            other -> assertFailure ("expected boom to be LifecycleFailed, got " ++ show other)
         lookup "ok" (reportResults report) @?= Just Pass
     ]
 
@@ -101,17 +110,45 @@ typedMatrixCases =
 suiteCases :: [TestTree]
 suiteCases =
     [ testCase "emptySuite `all` renders 0/0 passed" $ do
-        outcome <- runSuiteSelection emptySuite []
+        outcome <- runSuiteSelection passthroughOwnership emptySuite []
         case outcome of
             Right report -> assertBool "report card shows 0/0" ("0/0 passed" `isInfixOf` reportCard report)
             Left err -> assertFailure ("expected Right, got Left " ++ err)
+    , testCase "the report card names each outcome distinctly, not one FAIL for all" $ do
+        -- § Y/§ Z: an operator scanning the card must be able to tell a broken
+        -- assertion from a refusal from a lifecycle break from leaked state.
+        let card =
+                reportCard
+                    ( Report
+                        [ ("passing", Pass)
+                        , ("asserted", Fail "the marker was absent")
+                        , ("refused", Refused "a production cluster is running")
+                        , ("broken", LifecycleFailed "kind create cluster failed")
+                        , ("teardown", TeardownFailed "the VM did not stop")
+                        ]
+                    )
+        assertBool ("counts only the pass: " ++ card) ("1/5 passed" `isInfixOf` card)
+        mapM_
+            (\expected -> assertBool ("card contains " ++ expected ++ ":\n" ++ card) (expected `isInfixOf` card))
+            [ "PASS    passing"
+            , "FAIL    asserted — the marker was absent"
+            , "REFUSED refused — a production cluster is running"
+            , "BROKEN  broken — kind create cluster failed"
+            , "LEAKED? teardown — the VM did not stop"
+            ]
+        -- Every non-passing outcome is counted as a failure, and no outcome is
+        -- silently treated as success.
+        map
+            caseResultPassed
+            [Pass, Fail "x", Refused "x", LifecycleFailed "x", TeardownFailed "x"]
+            @?= [True, False, False, False, False]
     , testCase "`all` runs the whole matrix (rows labeled by variant)" $ do
-        outcome <- runSuiteSelection twoCaseSuite [variant ["a", "b"] "v0"]
+        outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [variant ["a", "b"] "v0"]
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] a", "[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
     , testCase "a named case runs only that case" $ do
-        outcome <- runSuiteSelection twoCaseSuite [variant ["b"] "v0"]
+        outcome <- runSuiteSelection passthroughOwnership twoCaseSuite [variant ["b"] "v0"]
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] b"]
             Left err -> assertFailure ("expected Right, got Left " ++ err)
@@ -125,7 +162,7 @@ suiteCases =
                     [fixtureCase "a"]
                     (\ident _ -> record ("assert:" ++ T.unpack (variantIdText ident)) >> pure Pass)
                     (record "down")
-        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
+        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0", variant ["a"] "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
             Right (Report rs) -> map fst rs @?= ["[v0] a", "[v1] a"]
@@ -148,12 +185,13 @@ suiteCases =
                     [fixtureCase "a"]
                     (\label _ -> record ("assert:" ++ T.unpack (variantIdText label)) >> pure Pass)
                     (record "down")
-        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
+        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0", variant ["a"] "v1"]
         seen <- reverse <$> readIORef events
         case outcome of
             Right (Report rs) -> do
                 -- v0's case Fails (bring-up), v1's case Passes — the loop was not aborted.
-                lookup "[v0] a" rs @?= Just (Fail "bring-up failed: user error (project up kaboom)")
+                lookup "[v0] a" rs
+                    @?= Just (LifecycleFailed "bring-up failed: user error (project up kaboom)")
                 lookup "[v1] a" rs @?= Just Pass
             Left err -> assertFailure ("expected Right, got Left " ++ err)
         -- v0 tore down despite its failed bring-up; v1 ran normally.
@@ -171,13 +209,22 @@ suiteCases =
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     tearDown
-        outcome <- runSuiteSelection suite [variant ["a"] "v0", variant ["a"] "v1"]
+        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0", variant ["a"] "v1"]
         case outcome of
             Right (Report rs) -> do
-                case lookup "[v0] a" rs of
-                    Just (Fail msg) -> assertBool "teardown cause is reported" ("destroy left managed state" `isInfixOf` msg)
-                    other -> assertFailure ("expected v0 teardown failure, got " ++ show other)
+                -- The assertions themselves passed; the *teardown* is what broke,
+                -- so the per-case row is preserved and the variant carries a
+                -- distinct TeardownFailed row that makes the report red.
+                lookup "[v0] a" rs @?= Just Pass
+                case lookup "[v0] teardown" rs of
+                    Just (TeardownFailed msg) ->
+                        assertBool
+                            "teardown cause is reported"
+                            ("destroy left managed state" `isInfixOf` msg)
+                    other -> assertFailure ("expected v0 TeardownFailed, got " ++ show other)
                 lookup "[v1] a" rs @?= Just Pass
+                lookup "[v1] teardown" rs @?= Nothing
+                allPassed (Report rs) @?= False
             Left err -> assertFailure ("expected Right, got Left " ++ err)
     , testCase "a safety refusal never tears down state the harness did not own" $ do
         teardownCalls <- newIORef (0 :: Int)
@@ -193,12 +240,12 @@ suiteCases =
             withConfig body = do
                 modifyIORef' configEntries (+ 1)
                 body `finally` modifyIORef' configExits (+ 1)
-        outcome <- runSuiteSelection suite [ConfigVariant (vid "v0") (cid "a" :| []) withConfig]
+        outcome <- runSuiteSelection passthroughOwnership suite [ConfigVariant (vid "v0") (cid "a" :| []) withConfig]
         case outcome of
             Right (Report rs) ->
-                case lookup "[v0] a" rs of
-                    Just (Fail msg) -> assertBool "refusal is visible" ("pre-existing managed VM" `isInfixOf` msg)
-                    other -> assertFailure ("expected safety refusal failure, got " ++ show other)
+                -- A refusal is its own outcome: it is not an assertion failure and
+                -- not a lifecycle break, and it carries the bare reason.
+                lookup "[v0] a" rs @?= Just (Refused "pre-existing managed VM")
             Left err -> assertFailure ("expected Right, got Left " ++ err)
         readIORef teardownCalls >>= (@?= 0)
         readIORef configEntries >>= (@?= 1)
@@ -216,11 +263,11 @@ suiteCases =
                     [fixtureCase "a"]
                     (\_ _ -> pure Pass)
                     (pure ())
-        outcome <- runSuiteSelection suite [variant ["a"] "v0"]
+        outcome <- runSuiteSelection passthroughOwnership suite [variant ["a"] "v0"]
         case outcome of
             Right (Report rs) ->
                 case lookup "[v0] a" rs of
-                    Just (Fail msg) -> do
+                    Just (LifecycleFailed msg) -> do
                         assertBool ("carries the cause: " ++ msg) (cause `isInfixOf` msg)
                         assertBool ("no bare ExitFailure: " ++ msg) (not ("ExitFailure" `isInfixOf` msg))
                         assertBool ("no leaked marker: " ++ msg) (not (lifecycleFailureMarker `isInfixOf` msg))
@@ -240,19 +287,143 @@ suiteCases =
     variant :: [T.Text] -> T.Text -> ConfigVariant
     variant cases label = ConfigVariant (vid label) (nonEmptyCaseIds cases) id
 
+{- | The engine's ownership seam under test: the exclusive-run bracket is
+supplied by the command layer, so these cases exercise selection, isolation, and
+reporting without taking real project-wide ownership of the working directory.
+'protectedRunOwnership' is exercised separately below.
+-}
+passthroughOwnership :: HarnessRunOwnership
+passthroughOwnership = HarnessRunOwnership (fmap Right)
+
+{- | The out-of-process half of the concurrency case: attempt one full harness
+run reservation against the same state root and HOLD it while the body runs, so
+competitors overlap the winner rather than queueing behind it.
+
+Exit 0 when the run was acquired, 3 when it was refused. The refusal reason is
+printed so the racing test can report which exclusion fired.
+-}
+runHarnessAcquireProbe :: FilePath -> FilePath -> IO ()
+runHarnessAcquireProbe stateRoot reasonPath = do
+    let ownership =
+            protectedRunOwnership
+                "hostbootstrap-demo"
+                stateRoot
+                (stateRoot </> "nonexistent-sibling-dir")
+                (stateRoot </> ".test_data")
+    outcome <-
+        runWithOwnedRun ownership $
+            -- Hold the reservation long enough that every competitor's attempt
+            -- overlaps it. A reservation only one process can see at a time is
+            -- not the property under test.
+            threadDelay 3000000
+    case outcome of
+        Right () -> exitSuccess
+        Left reason -> do
+            writeFile reasonPath reason
+            exitWith (ExitFailure 3)
+
 ownershipCases :: [TestTree]
 ownershipCases =
     [ testCase "self-created .test_data is removed; a found one is preserved" $ do
         selfCreatedTestDataRemoval False testDataRoot @?= [testDataRoot]
         selfCreatedTestDataRemoval True testDataRoot @?= []
-    , testCase "self-created test data and its ownership lock are removed after an exception" $
+    , testCase "the owned durable root is a per-run generation under .test_data" $
         withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
-            let path = root </> ".test_data"
-                lockPath = path ++ ".hostbootstrap-run-owner"
-            outcome <- try (withSelfCreatedTestData path (throwIO (userError "seeded failure"))) :: IO (Either SomeException ())
+            let parent = root </> ".test_data"
+                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
+            -- Observed from inside the bracket: the generation only exists while
+            -- the run holds it.
+            observed <-
+                runWithOwnedRun ownership $ do
+                    generations <- listDirectory parent
+                    kinds <-
+                        mapM (\name -> doesDirectoryExist (parent </> name)) generations
+                    pure (generations, kinds)
+            case observed of
+                Left err -> assertFailure ("the run was refused: " ++ err)
+                Right (generations, kinds) -> do
+                    -- Exactly one generation exists while the run holds it, and
+                    -- it is named by the run's generative id, not by `.data` or
+                    -- the shared parent (§ Z).
+                    length generations @?= 1
+                    kinds @?= [True]
+    , testCase "an owned run releases its generation and keeps the .test_data parent" $
+        withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
+            let parent = root </> ".test_data"
+                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
+            outcome <-
+                try (runWithOwnedRun ownership (throwIO (userError "seeded failure"))) ::
+                    IO (Either SomeException (Either String ()))
             assertBool "body exception propagated" (either (const True) (const False) outcome)
-            doesDirectoryExist path >>= (@?= False)
-            doesDirectoryExist lockPath >>= (@?= False)
+            -- The generation is gone; the shared parent is scaffolding the run
+            -- never owned, so it is neither bound to a receipt nor removed.
+            doesDirectoryExist parent >>= (@?= True)
+            listDirectory parent >>= (@?= [])
+    , testCase "a run interrupted mid-body does not block the next run" $
+        withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
+            let parent = root </> ".test_data"
+                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
+            -- The first run dies inside the body: its mode and lease records are
+            -- left behind exactly as a hard kill leaves them.
+            _ <-
+                try (runWithOwnedRun ownership (throwIO (userError "killed"))) ::
+                    IO (Either SomeException (Either String ()))
+            -- The next run's sweep classifies and closes that abandoned lease
+            -- rather than refusing with an unrecoverable lock directory.
+            second <- runWithOwnedRun ownership (pure ("second run" :: String))
+            second @?= Right "second run"
+            -- The abandoned predecessor's generation was reclaimed by that
+            -- sweep, so no orphan generation accumulates across runs.
+            listDirectory parent >>= (@?= [])
+    , testCase "racing harnesses converge on exactly one authoritative acquisition" $
+        withSystemTempDirectory "hostbootstrap-race" $ \root -> do
+            self <- getExecutablePath
+            -- Four real processes, started together, each attempting the whole
+            -- production reservation (sweep -> mode+lease -> data root) against
+            -- one state root.
+            let reasonFile n = root </> ("refusal-" ++ show n)
+            handles <-
+                mapM
+                    ( \n ->
+                        spawnProcess
+                            self
+                            ["--hostbootstrap-harness-acquire-probe", root, reasonFile n]
+                    )
+                    [1 :: Int .. 4]
+            codes <- mapM waitForProcess handles
+            let acquired = length [() | ExitSuccess <- codes]
+                refused = length [() | ExitFailure 3 <- codes]
+                other = [code | code <- codes, code /= ExitSuccess, code /= ExitFailure 3]
+            assertBool ("no probe may fail unexpectedly: " ++ show other) (null other)
+            acquired @?= 1
+            refused @?= 3
+            -- Every loser must be refused by a *stated* exclusion, never by a
+            -- silent failure.
+            reasons <-
+                mapM
+                    ( \n -> do
+                        present <- doesFileExist (reasonFile n)
+                        if present then readFile (reasonFile n) else pure ""
+                    )
+                    [1 :: Int .. 4]
+            length (filter (not . null) reasons) @?= 3
+            -- The winner released everything, so the parent is empty again.
+            listDirectory (root </> ".test_data") >>= (@?= [])
+    , testCase "consecutive runs own disjoint generations" $
+        withSystemTempDirectory "hostbootstrap-test-data" $ \root -> do
+            let parent = root </> ".test_data"
+                ownership = protectedRunOwnership "hostbootstrap-demo" root root parent
+                observe = runWithOwnedRun ownership (listDirectory parent)
+            first <- observe
+            second <- observe
+            case (first, second) of
+                (Right [one], Right [two]) ->
+                    assertBool
+                        "each run names its own generation"
+                        (one /= two)
+                _ ->
+                    assertFailure
+                        ("each run must own exactly one generation: " ++ show (first, second))
     ]
 
 representationCases :: [TestTree]

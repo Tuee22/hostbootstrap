@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE EmptyDataDecls #-}
@@ -11,9 +12,13 @@ The command surface is **fixed** (development_plan_standards § P): the demo add
 extends the core only through the parallel extension streams threaded into its
 @ProjectSpec@ (@app/Main.hs@):
 
-  * the **lift chain** — 'demoChain' (@ProjectConfig -> [Step]@) the core
-    @project up@ interprets recursively (§ Y), with 'demoFrameContext' /
-    'demoTeardown' for per-frame descent and stop\/delete;
+  * the **lift chain** — 'demoChain' the core @project up@ interprets
+    recursively (§ Y). Each frame's descent is declared on the plan node that
+    owns the boundary ('descendsVia'), so the announced handoff and the child
+    config crossing it are one value (§ W). Each node that acquires a resource
+    also declares the effect that releases it ('reversedBy'), so @project down@
+    and @project destroy@ are two verb-indexed projections of that same plan
+    rather than a hook beside it;
   * the **schema-gen registry** — @context render@ / @context schema@ receive
     'demoArtifacts' (registry concatenation, § T);
   * the **test suite** — 'demoTestSuite' drives the real @project up@ under a
@@ -34,9 +39,8 @@ module HostBootstrapDemo.Commands (
     demoChain,
     demoChainFor,
     containerPlan,
-    demoFrameContext,
     demoTestFrameContext,
-    demoTeardown,
+    demoProviderReverse,
     demoArtifacts,
     demoCheckCode,
     demoCases,
@@ -58,6 +62,13 @@ module HostBootstrapDemo.Commands (
     repoRootOfProjectRoot,
     demoServices,
     demoTestSuite,
+    demoRegistryPlan,
+    registryConfigYaml,
+    registryEndpoint,
+    minioClusterEndpoint,
+    parseBlobRouteAnswer,
+    uploadSessionUrl,
+    canaryBlobDigest,
     demoVM,
     demoLimaVM,
     demoManagedVMName,
@@ -68,10 +79,11 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, evaluate, finally, mask, onException, throwIO, try)
 import Control.Monad (unless, when)
+import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, isSpace, toLower)
 import Data.List (dropWhileEnd, intercalate, isInfixOf, isPrefixOf)
-import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Dhall (FromDhall, ToDhall)
@@ -99,9 +111,8 @@ import HostBootstrap.Cluster.Lifecycle (
     resolvePlan,
     resolvePlanWithDriver,
  )
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Fields (LocalContextView, localSourceRoot)
-import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, withSiblingProjectConfigContext, writeProjectConfigFile)
+import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..), Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (CodecWitness, ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
@@ -129,8 +140,18 @@ import HostBootstrap.Harness (
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Tar), toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
+import HostBootstrap.Network (
+    NetworkError,
+    NetworkScope (ClusterOnly, HostLocal),
+    clusterOnlyEndpoint,
+    endpointAuthority,
+    endpointScope,
+    exposurePort,
+    hostLocalClient,
+    loopbackExposure,
+ )
 import HostBootstrap.ProjectRoot (CanonicalHostPath, CanonicalProjectRoot, canonicalDurableHostPath, canonicalProjectRootPath)
 import HostBootstrap.Readiness (
     ObservedReady,
@@ -151,23 +172,41 @@ import HostBootstrap.Readiness (
     withAttempts,
  )
 import HostBootstrap.Registry (RegistryAuth, discoverHostRegistryAuth, dockerAuthStdinWrapper, registryAuthEnvVar, registryConfigPayload)
+import HostBootstrap.RegistryPlan (
+    BlobProbe (BlobHeadProbe),
+    BlobRouteObservation (..),
+    ReadyBlobRoute,
+    RegistryPlan,
+    RegistryPlanError,
+    hostServedRegistryPlan,
+    registryPlanExposure,
+    registryPlanRevision,
+    registryPlanStore,
+    renderStorageRedirect,
+    settleBlobRoute,
+ )
 import HostBootstrap.Service (ServiceRegistry, serviceDefinition, serviceId, serviceRegistry)
 import HostBootstrap.Step (
     ProjectStepId,
     ReversePolicy (..),
     Step,
     StepFrame (..),
+    TeardownAction (DeleteFrame),
+    TeardownOutcome,
     buildImageStep,
     buildPbStep,
     contextInitStep,
     deployChartStep,
     deployKindStep,
     deployVMStep,
+    descendsVia,
     exposePortStep,
     postHandoffStep,
     projectStep,
     projectStepId,
+    reversedBy,
  )
+import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Substrate, SubstrateName (LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu), detect, isAppleSilicon, isLinux, isWindows, renderArch, substrateArch, substrateName)
 import HostBootstrap.Substrate.Provider (
     AliasAction (..),
@@ -188,7 +227,16 @@ import HostBootstrap.Substrate.Provider (
     stageFileEffects,
     vmShellArgs,
  )
-import HostBootstrap.Wsl2 (Wsl2VM (..), mergeWslConfig)
+import HostBootstrap.Wsl2 (Wsl2VM (..))
+import HostBootstrap.Wsl2.GlobalWall (PersistedWallRecord (persistedFenceValue))
+import HostBootstrap.Wsl2.GlobalWall.Host (
+    AppliedWslConfigFile,
+    CurrentUserWallRequest,
+    HostWallError (HostWallNoActiveRecord),
+    appliedWslConfigRecord,
+    mkCurrentUserWallRequest,
+ )
+import HostBootstrap.Wsl2.GlobalWall.Windows (applyCurrentUserGlobalWall, restoreCurrentUserGlobalWall)
 import HostBootstrapDemo.Accelerator (backendName)
 import HostBootstrapDemo.Accelerator.Daemon (acceleratorBackendForSubstrate, serveAcceleratorDaemonWithConfig)
 import HostBootstrapDemo.Config (
@@ -342,21 +390,34 @@ stack (@deploy-kind@ → @deploy-minio@ → @deploy-registry@ → @push-image@ �
 chains differ ONLY in how the accelerator daemon is placed (host-resident vs.
 in-cluster), appended after this stack.
 -}
-demoVmBackedStack :: [Step]
-demoVmBackedStack =
+demoVmBackedStack :: Substrate -> ProjectConfig configScope -> [Step]
+demoVmBackedStack sub cfg =
     -- host-orchestrator-0 (metal): provision the VM, build the pb (#2) + image (#3) in it.
-    [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (const runVmEnsure)
-    , deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const runVmUp)
-    , buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (const runVmBootstrap)
+    -- Every step closes over the one admitted snapshot (§ 15.9); none re-reads
+    -- the sibling config.
+    [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (const (runVmEnsure cfg))
+    , reversedBy
+        (demoProviderReverse cfg)
+        (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (const (runVmUp cfg)))
+    , -- The metal frame's descent into @vm-orchestrator-1@ is declared here, on
+      -- the last step of the segment: the substrate's VM shell (§ U).
+      descendsVia
+        (demoVMFrameContext sub)
+        (buildPbStep "pristine-bootstrap: build the binary host-native, then the project image, in the VM" demoMetalFrame (const (runVmBootstrap cfg)))
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
-      contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce
+      -- The announcement and the delivery are now one plan node: the same step
+      -- that says the child config is prepared carries the payload that crosses
+      -- the boundary (§ W/§ X), so the two can no longer disagree.
+      descendsVia
+        (inContainer (demoDeployImage ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) localContext)
+        (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame contextInitAnnounce)
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
-      deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame deployKindAction
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame deployMinioAction
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame deployRegistryAction
-    , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame pushImageAction
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame deployChartAction
-    , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame exposeAction
+      deployKindStep "deploy the persistent kind cluster (cordon #2, Production profile)" demoContainerFrame (deployKindAction cfg)
+    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (deployMinioAction cfg)
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (deployRegistryAction cfg)
+    , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (pushImageAction cfg)
+    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoContainerFrame (deployChartAction cfg)
+    , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (exposeAction cfg)
     ]
 
 {- | The Apple Silicon / Windows GPU chain: the VM-backed stack plus a HOST-resident
@@ -365,10 +426,13 @@ the in-VM cluster's local-only accelerator ingress because Lima and WSL2 forward
 guest NodePort to the host loopback (Incus does not — hence Linux CPU uses an
 in-cluster pod, 'demoLinuxCpuChain'; accelerator_daemon.md § Cluster Exposure).
 -}
-demoChain :: ProjectConfig configScope -> [Step]
-demoChain _ =
-    demoVmBackedStack
-        ++ [postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame startHostAcceleratorDaemonAction]
+demoChain :: Substrate -> ProjectConfig configScope -> [Step]
+demoChain sub cfg =
+    demoVmBackedStack sub cfg
+        ++ [ reversedBy
+                (demoHostAcceleratorReverse cfg)
+                (postHandoffStep "accelerator-daemon" "start the host-resident accelerator daemon after ingress is reachable" demoMetalFrame (startHostAcceleratorDaemonAction cfg))
+           ]
 
 {- | The Linux CPU chain: the same VM-backed stack, but the accelerator daemon runs
 as an IN-CLUSTER pod that dials the web service over ClusterIP — because Incus does
@@ -376,10 +440,10 @@ not forward the guest NodePort to the host, a host-resident daemon could not rea
 the in-VM cluster. The pod is the CPU-base project image, whose @clang++@ builds the
 C++ worker (accelerator_daemon.md § Substrate Matrix).
 -}
-demoLinuxCpuChain :: ProjectConfig configScope -> [Step]
-demoLinuxCpuChain _ =
-    demoVmBackedStack
-        ++ [demoProjectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame deployAcceleratorDaemonAction]
+demoLinuxCpuChain :: Substrate -> ProjectConfig configScope -> [Step]
+demoLinuxCpuChain sub cfg =
+    demoVmBackedStack sub cfg
+        ++ [demoProjectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame (deployAcceleratorDaemonAction cfg)]
 
 {- | Select the demo's chain. The chain shape must be a pure function of the ROOT
 parameters (§ Y): a WSL2 VM on a Windows GPU host detects @linux-gpu@ through GPU
@@ -394,32 +458,48 @@ providers forwarded in its config — the VM-orchestrator frame's provider
 (Wsl2/Lima ⇒ the host-daemon VM-backed chain, Incus ⇒ the in-cluster Linux CPU
 chain) or, with no VM-orchestrator frame, the direct Linux GPU chain.
 -}
-demoChainFor :: Substrate -> ProjectConfig configScope -> [Step]
-demoChainFor sub cfg
+demoChainFor ::
+    Substrate ->
+    CanonicalProjectRoot rootScope rootId ->
+    ProjectConfig configScope ->
+    [Step]
+demoChainFor sub root cfg
     | not (null (Context.parentChain ctx)) = nestedChain cfg
-    | substrateName sub == LinuxGpu = demoLinuxGpuChain cfg
-    | substrateName sub == LinuxCpu = demoLinuxCpuChain cfg
-    | substrateName sub == WindowsCpu = demoVmBackedStack
-    | otherwise = demoChain cfg
+    | substrateName sub == LinuxGpu = demoLinuxGpuChain root cfg
+    | substrateName sub == LinuxCpu = demoLinuxCpuChain sub cfg
+    | substrateName sub == WindowsCpu = demoVmBackedStack sub cfg
+    | otherwise = demoChain sub cfg
   where
     ctx = context cfg
     providers = map Context.topologyProvider (Context.topologyFrames ctx)
     nestedChain
-        | Context.IncusVMProvider `elem` providers = demoLinuxCpuChain
-        | Context.Wsl2VMProvider `elem` providers || Context.LimaVMProvider `elem` providers = demoChain
-        | otherwise = demoLinuxGpuChain
+        | Context.IncusVMProvider `elem` providers = demoLinuxCpuChain sub
+        | Context.Wsl2VMProvider `elem` providers || Context.LimaVMProvider `elem` providers = demoChain sub
+        | otherwise = demoLinuxGpuChain root
 
-demoLinuxGpuChain :: ProjectConfig configScope -> [Step]
-demoLinuxGpuChain _ =
-    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (const runDirectHostBootstrap)
-    , contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame contextInitDirectAnnounce
-    , deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame deployKindAction
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame deployMinioAction
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame deployRegistryAction
-    , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame pushImageAction
-    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame deployChartAction
-    , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame exposeAction
-    , demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame deployAcceleratorDaemonAction
+demoLinuxGpuChain ::
+    CanonicalProjectRoot rootScope rootId ->
+    ProjectConfig configScope ->
+    [Step]
+demoLinuxGpuChain root cfg =
+    [ buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (const (runDirectHostBootstrap cfg))
+    , -- The direct lane's one descent: metal → the nvkind project container. It
+      -- consumes the admitted canonical root for the durable host mount (§ X).
+      descendsVia
+        ( inContainer
+            (demoDeployImage (CanonicalHostDurable root (canonicalDurableHostPath root)) directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
+            localContext
+        )
+        (contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame contextInitDirectAnnounce)
+    , reversedBy
+        (demoDirectClusterReverse root)
+        (deployKindStep "deploy the persistent nvkind cluster (Production profile)" demoDirectContainerFrame (deployKindAction cfg))
+    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (deployMinioAction cfg)
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (deployRegistryAction cfg)
+    , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (pushImageAction cfg)
+    , deployChartStep "deploy the web service chart pod (NodePort 30080)" demoDirectContainerFrame (deployChartAction cfg)
+    , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame (exposeAction cfg)
+    , demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame (deployAcceleratorDaemonAction cfg)
     ]
 
 demoEnsureVMProviderStep :: ProjectStepId
@@ -443,33 +523,6 @@ demoContainerFrame = StepFrame containerRuntimeFrameId "project-container"
 
 demoDirectContainerFrame :: StepFrame
 demoDirectContainerFrame = StepFrame directContainerRuntimeFrameId "linux-gpu-project-container"
-
-{- | The per-frame lift-context resolver (§ U) assigned with 'setFrameContext':
-how the binary in the CURRENT frame descends ONE level into @next@. The metal
-binary's handoff into @vm-orchestrator-1@ folds to the substrate's VM shell —
-@incus exec \<vm\> -- \<pb\> project up@ on Linux, @limactl shell \<vm\> -- \<pb\>
-project up@ on Apple Silicon — selected by the detected 'Substrate' the demo
-threads in from @main@ (the same selection 'demoProvider' makes). The in-VM
-binary's handoff into @vm-project-container-2@ folds to a local @docker run --rm
-\<image\> project up@ (local because that binary already runs inside the VM, so it
-needs no provider). Each binary only ever hands off to its immediate next frame,
-so a single one-level lift per transition is correct.
--}
-demoFrameContext ::
-    Substrate ->
-    CanonicalProjectRoot rootScope rootId ->
-    ProjectConfig configScope ->
-    StepFrame ->
-    LiftContext
-demoFrameContext sub root cfg next
-    | frameId next == frameId demoVMFrame = demoVMFrameContext sub
-    | frameId next == frameId demoContainerFrame =
-        inContainer (demoDeployImage ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) localContext
-    | frameId next == frameId demoDirectContainerFrame =
-        inContainer
-            (demoDeployImage (CanonicalHostDurable root (canonicalDurableHostPath root)) directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
-            localContext
-    | otherwise = localContext
 
 {- | The narrowed project-container projection rendered to Dhall text (pure): the
 child config the VM→container handoff streams in-place on its @stdin@ (§ X). It
@@ -497,13 +550,13 @@ directContainerConfigPayload cfg =
 
 {- | The lift from the metal/harness frame into the demo's VM frame, selected by
 substrate — @inLimaVM@ on Apple Silicon, @inVM@ (Incus) on Linux. Shared by
-'demoFrameContext' (the @project up@ handoff) and 'demoTestUp' (so the harness's
-reachability probes run inside the VM, where the NodePort is published, on both
-providers — § U).
+the metal frame's declared descent (the @project up@ handoff) and 'demoTestUp'
+(so the harness's reachability probes run inside the VM, where the NodePort is
+published, on both providers — § U).
 -}
 demoVMFrameContext :: Substrate -> LiftContext
 demoVMFrameContext sub =
-    case selectSubstrateProvider sub demoStaticVMHandles of
+    case selectSubstrateProvider sub demoVMHandles of
         Right sp -> LiftContext [spLiftLayer sp]
         Left _ -> localContext
 
@@ -517,15 +570,15 @@ demoTestFrameContext sub
     | otherwise = demoVMFrameContext sub
 
 {- | @context-init@ (the @vm-orchestrator-1@ step): the project-container child
-@<project>.dhall@ is now streamed in-place into the container over the handoff
-@stdin@ ('containerConfigPayload' folded into 'demoDeployImage' by
-'demoFrameContext'), so this step is a frame anchor. Keeping it in the chain is what
-makes @vm-orchestrator-1@ a real frame in the topology (so the metal→VM→container
+@<project>.dhall@ is streamed in-place into the container over the handoff
+@stdin@ — 'containerConfigPayload' folded into 'demoDeployImage' by the
+'descendsVia' this very step declares. Keeping it in the chain is what makes
+@vm-orchestrator-1@ a real frame in the topology (so the metal→VM→container
 descent is three-deep and the recursive interpreter hands off into the container
-rather than folding a local @docker run@ on the metal host). Re-deriving the
-projection here would duplicate the pure computation the frame context already does,
-so the body is a no-op announce (the container's source root @/workspace/demo@ and
-the derivation live in 'containerConfigPayload').
+rather than folding a local @docker run@ on the metal host). The body stays a
+no-op announce because the payload is carried by the step's own descent rather
+than recomputed here; the two cannot disagree, which is exactly what Sprint
+16.6 required of the @context-init@ label (§ W).
 -}
 contextInitAnnounce :: HostConfig -> IO ()
 contextInitAnnounce _ =
@@ -595,8 +648,8 @@ cluster lifecycle and the demo's registry logic. The persistent stack: a cordone
 kind cluster (Production profile) → the in-cluster registry → the image (kind-loaded
 + pushed) → the web chart pod → the verified NodePort.
 -}
-deployKindAction :: HostConfig -> IO ()
-deployKindAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
+deployKindAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployKindAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
     -- full budget — the budget is used once, as the VM wall (cordon #1).
@@ -629,9 +682,54 @@ container frame creates the registry bucket over the same loopback idiom
 minioNodePort :: Int
 minioNodePort = 30900
 
--- | The in-cluster DNS the registry pod reaches MinIO's S3 API on (same namespace).
+{- | The registry's NodePort, published to the frame's loopback by the kind
+config. The chart's Service and the plan's exposure both derive from it.
+-}
+registryNodePort :: Int
+registryNodePort = 30500
+
+{- | The demo's ONE finalized registry plan (§ GG, Sprint 14.7).
+
+Every registry and store address below is a projection of this value, so the
+rendered registry configuration, the endpoint @push-image@ dials, and the
+reachability the delivery strategy assumes cannot disagree — they have one
+source.
+
+The topology is the interesting part: the client is host-local (a Docker client
+dialing a published NodePort) and the blob store is cluster-only. There is **no**
+'HostBootstrap.Network.Reachability' constructor for that pair, because a
+host-local client genuinely cannot resolve @minio.default.svc@. So
+'hostServedRegistryPlan' can only produce 'ProxyBlobs' — proxying is selected by
+construction, not by remembering to set a flag.
+
+That is the defect this replaces. The demo previously wrote a @storage@ stanza
+with **no** @redirect@ key at all, leaving Distribution's default in force: the
+registry answered a blob request with @307 Location: http://minio.default.svc:9000/…@,
+which the host Docker client cannot resolve. It survived every earlier run
+because @push@ and @tags/list@ never fetch blob bytes from the host client.
+-}
+demoRegistryPlan :: RegistryPlan 'HostLocal 'ClusterOnly
+demoRegistryPlan =
+    builtInPlan "demo registry plan" $ do
+        exposure <- first RegistryNetworkError (loopbackExposure registryNodePort)
+        store <- first RegistryNetworkError (clusterOnlyEndpoint "minio.default.svc:9000")
+        first RegistryPlanFailure (hostServedRegistryPlan hostLocalClient exposure store 1)
+
+-- | Construction failures for the demo's own plan assembly.
+data DemoRegistryPlanError
+    = RegistryNetworkError NetworkError
+    | RegistryPlanFailure RegistryPlanError
+    deriving (Show)
+
+builtInPlan :: String -> Either DemoRegistryPlanError a -> a
+builtInPlan label = either (error . (("invalid " ++ label ++ ": ") ++) . show) id
+
+{- | The in-cluster DNS the registry pod reaches MinIO's S3 API on (same
+namespace) — a projection of the plan's store endpoint, never assembled
+separately.
+-}
 minioClusterEndpoint :: String
-minioClusterEndpoint = "minio.default.svc:9000"
+minioClusterEndpoint = T.unpack (endpointAuthority (registryPlanStore demoRegistryPlan))
 
 {- | The bucket the registry stores all its blobs/manifests in. Created idempotently
 by @deploy-minio@ before the registry starts — the s3 driver requires it to
@@ -665,15 +763,20 @@ registryConfigYaml =
     [ "version: 0.1"
     , "storage:"
     , "  cache: { blobdescriptor: inmemory }"
-    , "  s3:"
-    , "    regionendpoint: http://" ++ minioClusterEndpoint
-    , "    region: us-east-1"
-    , "    bucket: " ++ registryBucket
-    , "    forcepathstyle: true"
-    , "    secure: false"
-    , "http: { addr: \":5000\" }"
-    , "health: { storagedriver: { enabled: true, interval: 10s, threshold: 3 } }"
     ]
+        -- Rendered from the plan's delivery strategy, which is `Proxy` by
+        -- construction for this topology. There is no independent redirect flag
+        -- to get wrong: the boolean is output, never input (§ GG).
+        ++ map T.unpack (renderStorageRedirect demoRegistryPlan)
+        ++ [ "  s3:"
+           , "    regionendpoint: http://" ++ minioClusterEndpoint
+           , "    region: us-east-1"
+           , "    bucket: " ++ registryBucket
+           , "    forcepathstyle: true"
+           , "    secure: false"
+           , "http: { addr: \":5000\" }"
+           , "health: { storagedriver: { enabled: true, interval: 10s, threshold: 3 } }"
+           ]
 
 {- | The in-cluster registry manifest: a @registry:2@ Deployment plus a NodePort
 Service on 30500, now S3-backed by MinIO. The registry image stays single-binary
@@ -742,7 +845,7 @@ registryManifest =
                , "  type: NodePort"
                , "  selector: { app: registry }"
                , "  ports:"
-               , "    - { port: 5000, targetPort: 5000, nodePort: 30500 }"
+               , "    - { port: 5000, targetPort: 5000, nodePort: " ++ show registryNodePort ++ " }"
                ]
 
 {- | The in-cluster MinIO (S3) deployment the registry's @s3@ storage driver
@@ -883,8 +986,8 @@ pollRolloutOrDie cfg pol retryNote failMsg probe = do
 create the registry bucket idempotently. The @s3@ driver requires the bucket to
 pre-exist, so this completes fully before the registry pod schedules.
 -}
-deployMinioAction :: HostConfig -> IO ()
-deployMinioAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+deployMinioAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployMinioAction stepCfg _ = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] minioManifest
     minioReady <- waitMinioRollout cfg
@@ -944,8 +1047,8 @@ multi-arch image (its @ctr import --all-platforms@ fails "content digest not
 found"). @registry:2@ is natively multi-arch, so one manifest serves every
 substrate with no component overrides.
 -}
-deployRegistryAction :: HostConfig -> IO ()
-deployRegistryAction _ = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+deployRegistryAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployRegistryAction stepCfg _ = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
     -- Apply the registry Deployment + NodePort and wait for the rollout. The pod
     -- pulls registry:2 from Docker Hub itself — NOT `kind load docker-image`, which
@@ -975,8 +1078,8 @@ waitRegistryRollout cfg =
         "deploy-registry: registry deployment did not become Ready"
         (stdoutProbe Kubectl ["rollout", "status", "deployment/registry", "--timeout=60s"])
 
-pushImageAction :: HostConfig -> IO ()
-pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
+pushImageAction :: ProjectConfig configScope -> HostConfig -> IO ()
+pushImageAction stepCfg _ = demoContext stepCfg Context.ProjectCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
     -- Load the image into the kind nodes (so the web chart pod's IfNotPresent pull
     -- resolves without a registry round-trip), then also push it to the in-cluster
@@ -1001,8 +1104,16 @@ pushImageAction _ = demoContext Context.ProjectCommand [] $ \ctx -> do
             (const (die ("push-image: in-cluster registry did not answer GET /v2/ at " ++ registryEndpoint)))
             pure
             serving
+    -- `/v2/` answering proves the registry PROCESS is listening; it says nothing
+    -- about whether a blob can actually be fetched by THIS client (§ GG). So
+    -- prove the blob route before pushing: upload one canary blob, then HEAD it
+    -- and classify the answer against the plan's delivery strategy. A registry
+    -- that redirects a host-local client to the cluster-only store answers 307
+    -- here and the push is refused, instead of succeeding and leaving an image
+    -- nobody can pull.
+    route <- awaitBlobRoute registryServing cfg
     runOrDie cfg Docker ["tag", demoProjectImage, ref]
-    pushImageBlob registryServing cfg ref
+    pushImageBlob route cfg ref
     putStrLn ("push-image: kind-loaded " ++ demoProjectImage ++ " and pushed " ++ ref)
 
 {- | The transient @docker push@ failure markers a bounded retry safely absorbs:
@@ -1028,14 +1139,170 @@ isTransientPushError s = any (`isInfixOf` s) markers
         , "503 Service Unavailable"
         ]
 
+{- | The canary blob the route proof is taken over: the empty blob, whose digest
+is a constant. Uploading it is idempotent — a registry that already has it
+answers the same way — so a re-run neither accumulates garbage nor needs
+cleanup.
+-}
+canaryBlobDigest :: String
+canaryBlobDigest =
+    "sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+
+{- | The canary's bytes: the single byte @a@, whose digest is
+'canaryBlobDigest'. One byte rather than zero, and a real @PATCH@ rather than a
+body on the final @PUT@, because the S3 driver rejects a multipart upload with
+no parts.
+-}
+canaryBlobPayload :: String
+canaryBlobPayload = "a"
+
+canaryBlobRepository :: String
+canaryBlobRepository = "library/hostbootstrap-demo"
+
+{- | Prove the plan's blob route works from this frame, minting the
+'ReadyBlobRoute' @push-image@ requires.
+
+Consumes the @/v2/@ readiness witness, so the route can never be probed before
+the registry answers at all — but it deliberately does not TRUST it: a listening
+process is not a working delivery path.
+-}
+awaitBlobRoute ::
+    ObservedReady RegistryServing -> HostConfig -> IO (ReadyBlobRoute 'HostLocal 'ClusterOnly)
+awaitBlobRoute _serving cfg = do
+    let base = "http://" ++ registryEndpoint ++ "/v2/" ++ canaryBlobRepository ++ "/blobs/"
+        headUrl = base ++ canaryBlobDigest
+    -- Step 1: open an upload session and read its Location.
+    opened <-
+        pollUntilReadyWith
+            reachPoll
+            ("push-image: opening the canary blob upload at " ++ registryEndpoint)
+            (const (pure ()))
+            (\c -> classifyStdout <$> liftLeaf c localContext (blobUploadSessionLeaf (base ++ "uploads/")))
+            cfg
+    headers <-
+        either
+            (const (die ("push-image: the registry did not open a blob upload at " ++ registryEndpoint)))
+            pure
+            opened
+    session <-
+        maybe
+            (die ("push-image: the blob upload session carried no Location at " ++ registryEndpoint))
+            pure
+            (uploadSessionUrl registryEndpoint headers)
+    -- Step 2: send the bytes. Required even for one byte: without it the S3
+    -- driver completes a multipart upload with no parts.
+    patched <-
+        pollUntilReadyWith
+            reachPoll
+            ("push-image: sending the canary blob bytes at " ++ registryEndpoint)
+            (const (pure ()))
+            (\c -> classifyStdout <$> liftLeaf c localContext (blobUploadPatchLeaf canaryBlobPayload session))
+            cfg
+    patchHeaders <-
+        either
+            (const (die ("push-image: the registry did not accept the canary blob bytes at " ++ registryEndpoint)))
+            pure
+            patched
+    committed <-
+        maybe
+            (die ("push-image: the blob upload carried no next Location at " ++ registryEndpoint))
+            pure
+            (uploadSessionUrl registryEndpoint patchHeaders)
+    -- Step 3: commit with the digest. Idempotent: re-seeding the same blob
+    -- answers 201 again.
+    uploaded <-
+        awaitObservedReady
+            reachPoll
+            ("push-image: seeding the route canary blob at " ++ registryEndpoint)
+            (\c -> classifyExit <$> liftLeaf c localContext (blobUploadFinishLeaf (committed ++ "&digest=" ++ canaryBlobDigest)))
+            cfg
+    _ <-
+        either
+            (const (die ("push-image: could not seed the blob-route canary at " ++ registryEndpoint)))
+            pure
+            uploaded
+    observed <-
+        pollUntilReadyWith
+            reachPoll
+            ("push-image: blob route for " ++ registryEndpoint)
+            (const (pure ()))
+            (\c -> classifyStdout <$> liftLeaf c localContext (blobHeadLeaf headUrl))
+            cfg
+    raw <-
+        either
+            (const (die ("push-image: the registry did not answer a blob HEAD at " ++ registryEndpoint)))
+            pure
+            observed
+    observation <-
+        either
+            (\reason -> die ("push-image: could not read the blob-route answer: " ++ reason))
+            pure
+            (parseBlobRouteAnswer raw)
+    either
+        (\err -> die ("push-image: refusing to push — " ++ show err))
+        pure
+        (settleBlobRoute demoRegistryPlan observation)
+  where
+    classifyExit (Right (ExitSuccess, _, _)) = ProbeReady ()
+    classifyExit _ = NotReady "the canary upload has not succeeded"
+    classifyStdout (Right (ExitSuccess, out, _)) = ProbeReady out
+    classifyStdout _ = NotReady "the blob HEAD has not answered"
+
+{- | Extract the upload session URL from the @POST@ response headers.
+
+@registry:2@ answers with an absolute @Location@, but the registry API permits a
+relative one, so a relative value is resolved against the endpoint this frame
+dialled rather than assumed. Pure, so it is unit-tested.
+-}
+uploadSessionUrl :: String -> String -> Maybe String
+uploadSessionUrl endpoint headers =
+    case [value | line <- lines headers, Just value <- [locationOf line]] of
+        [] -> Nothing
+        (value : _)
+            | "http://" `isPrefixOf` value || "https://" `isPrefixOf` value -> Just value
+            | otherwise -> Just ("http://" ++ endpoint ++ value)
+  where
+    locationOf raw = case words (map toLower raw) of
+        ("location:" : _) -> case words raw of
+            (_ : value : _) -> Just (dropWhileEnd isSpace value)
+            _ -> Nothing
+        _ -> Nothing
+
+{- | Parse @curl -w "%{http_code} %{redirect_url}"@ into the typed observation.
+
+An empty redirect field means the registry served the blob itself; a non-empty
+one is a @Location@, and its scope is the store's, because that is the only
+place this registry can redirect to. Pure, so it is unit-tested.
+-}
+parseBlobRouteAnswer :: String -> Either String BlobRouteObservation
+parseBlobRouteAnswer raw = case words raw of
+    [] -> Left ("empty answer: " ++ show raw)
+    (statusText : rest) -> case reads statusText of
+        [(status, "")] ->
+            Right
+                BlobRouteObservation
+                    { observedProbe = BlobHeadProbe (T.pack canaryBlobDigest)
+                    , observedPort = exposurePort (registryPlanExposure demoRegistryPlan)
+                    , observedStatus = status
+                    , observedRedirect = case filter (not . null) rest of
+                        [] -> Nothing
+                        (location : _) ->
+                            Just (T.pack location, endpointScope (registryPlanStore demoRegistryPlan))
+                    , observedRevision = registryPlanRevision demoRegistryPlan
+                    }
+        _ -> Left ("unparseable status in " ++ show raw)
+
 {- | Retry @docker push@ **only** for the transient registry class
 ('isTransientPushError'); a non-transient failure dies immediately with the
 registry's full diagnostics rather than burning the retry budget on a deterministic
 error. Bounded by @n@ attempts with a five-second backoff; the last attempt is a
 plain 'runOrDie'.
+
+It consumes the 'ReadyBlobRoute', so a push cannot be attempted for a registry
+whose blob delivery has not been proved to work from this client.
 -}
-pushImageBlob :: ObservedReady RegistryServing -> HostConfig -> String -> IO ()
-pushImageBlob _serving cfg ref = do
+pushImageBlob :: ReadyBlobRoute 'HostLocal 'ClusterOnly -> HostConfig -> String -> IO ()
+pushImageBlob _route cfg ref = do
     outcome <- pollUntilReadyWith pushPoll "push-image" backoffNote pushProbe cfg
     either (\e -> dumpPushDiagnostics cfg >> die (renderPollError e)) emitProgress outcome
   where
@@ -1118,8 +1385,8 @@ parent context, then install the chart. The service frame and a stable config
 fingerprint are Helm values so the pod witness is exact and a changed config
 rolls the StatefulSet even though the ConfigMap is applied outside Helm.
 -}
-deployChartAction :: HostConfig -> IO ()
-deployChartAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
+deployChartAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployChartAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     either die pure (validateAcceleratorReplicaCount (haReplicasNat (haReplicas (deploy projectCfg))))
     acceleratorHelmValues <- either die pure (acceleratorHelmValuesForContext projectCfg ctx)
@@ -1145,8 +1412,8 @@ validateAcceleratorReplicaCount actual =
             ++ show actual
         )
 
-exposeAction :: HostConfig -> IO ()
-exposeAction cfg = demoContext Context.ClusterLifecycleCommand [] $ \_ -> do
+exposeAction :: ProjectConfig configScope -> HostConfig -> IO ()
+exposeAction stepCfg cfg = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
     ready <- waitWebReachable cfg localContext "http://localhost:30080/api/budget" 60
     unless ready (die "expose-port: the web NodePort 30080 did not become reachable on the host")
     putStrLn "expose-port: web service reachable at http://localhost:30080/"
@@ -1163,8 +1430,8 @@ container config (§ X / § AA), and @HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ points a
 web ClusterIP accelerator port. Runs in the container frame (where @kubectl@
 resolves), the peer of @deploy-chart@.
 -}
-deployAcceleratorDaemonAction :: HostConfig -> IO ()
-deployAcceleratorDaemonAction _ = demoConfigContext Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
+deployAcceleratorDaemonAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployAcceleratorDaemonAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     WebServiceConfig _ acceleratorServicePort <- either die pure (validatedWebServiceConfigForContext projectCfg ctx)
     let daemonCtx = Context.deriveClusterDaemonContext ctx (Context.sourceRoot ctx)
@@ -1281,10 +1548,10 @@ configMapMountedText value
 indentBlock :: Int -> T.Text -> String
 indentBlock n = unlines . map (replicate n ' ' ++) . lines . T.unpack
 
-startHostAcceleratorDaemonAction :: HostConfig -> IO ()
-startHostAcceleratorDaemonAction cfg
+startHostAcceleratorDaemonAction :: ProjectConfig configScope -> HostConfig -> IO ()
+startHostAcceleratorDaemonAction stepCfg cfg
     | hostAcceleratorSubstrate (hcSubstrate cfg) =
-        demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
+        demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
             withHostAcceleratorDaemonOperation ctx $ do
                 stopHostAcceleratorDaemonUnlocked cfg ctx
                 daemonExe <- installHostAcceleratorDaemonBinary ctx
@@ -1714,22 +1981,44 @@ waitWebReachable cfg frame url n =
             outcome <- pollUntilReady policy url (reachProbe frame url) cfg
             pure (either (const False) (const True) outcome)
 
+{- | Gate a chain step against the config snapshot the lifecycle **already
+admitted**, without reopening @<project>.dhall@ (§ 15.9).
+
+@project up@ reads and validates the sibling exactly once and hands that
+'ValidatedConfig' snapshot to the chain builder, which closes every step over
+it. Each step previously called its own @withSiblingProjectConfigContext@, so a
+ten-step chain re-read the file ten times and a replacement between two steps
+silently split the run across two different configs. The per-step
+command-class/capability and runtime-witness gate is unchanged — it is simply
+applied to the injected value instead of a fresh read.
+-}
 demoConfigContext ::
+    ProjectConfig configScope ->
     Context.CommandClass ->
     [Context.Capability] ->
-    (ProjectConfig (Production DemoProject) -> Context.BinaryContext -> IO a) ->
+    (ProjectConfig configScope -> Context.BinaryContext -> IO a) ->
     IO a
-demoConfigContext cls caps use =
-    withProductionProjectCodec $ \codec ->
-        withSiblingProjectConfigContext codec (T.pack demoProject) cls caps use
+demoConfigContext projectCfg cls caps use = do
+    gated <-
+        Context.validateRuntimeContext
+            (Context.contextRequirement (T.pack demoProject) cls caps)
+            (context projectCfg)
+    case gated of
+        Left err -> die (Context.contextErrorMessage err)
+        Right ctx -> use projectCfg ctx
 
-demoContext :: Context.CommandClass -> [Context.Capability] -> (Context.BinaryContext -> IO a) -> IO a
-demoContext cls caps =
-    demoConfigContext cls caps . const
+demoContext ::
+    ProjectConfig configScope ->
+    Context.CommandClass ->
+    [Context.Capability] ->
+    (Context.BinaryContext -> IO a) ->
+    IO a
+demoContext projectCfg cls caps use =
+    demoConfigContext projectCfg cls caps (const use)
 
-demoAction :: Context.CommandClass -> [Context.Capability] -> IO a -> IO a
-demoAction cls caps body =
-    demoContext cls caps (const body)
+demoAction :: ProjectConfig configScope -> Context.CommandClass -> [Context.Capability] -> IO a -> IO a
+demoAction projectCfg cls caps body =
+    demoContext projectCfg cls caps (const body)
 
 {- | The full demo lifecycle pulls the large base image, builds the project
 image, and duplicates layers through kind. Smaller budgets fail late in
@@ -1945,9 +2234,9 @@ verifyHarnessTeardown = do
             remaining <- substrateExists cfg provider
             when remaining (die ("test teardown: managed VM still exists after project destroy: " ++ spVmId provider))
             when (isWindows (hcSubstrate cfg)) $ do
-                handles <- demoVMHandles
-                backupRemaining <- doesFileExist (vmhWslConfigPath handles ++ ".hostbootstrap-demo.bak")
-                when backupRemaining (die "test teardown: the original .wslconfig backup remains; restoration was not completed")
+                home <- getHomeDirectory
+                journalRemaining <- doesFileExist (home </> ".hostbootstrap" </> "global-wall.record")
+                when journalRemaining (die "test teardown: the global WSL2 wall journal remains; the wall was never released")
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
 up. Every case runs in the **VM frame** (the frame where the NodePort is
@@ -2266,41 +2555,30 @@ resolveHostConfig = do
     detected <- detect
     either die buildHostConfig detected
 
-{- | The demo's VM handles for every substrate: the per-provider VM identities,
-the delete-guard prefix, and the resolved global @.wslconfig@ path (used only on
-Windows). 'demoStaticVMHandles' is the pure form for the lift-layer selection
-('demoVMFrameContext'); 'demoVMHandles' resolves the real @.wslconfig@ path for
-the lifecycle IO.
+{- | The demo's VM handles for every substrate: the per-provider VM identities
+and the delete-guard prefix. It is pure, because the WSL2 wall no longer takes a
+@.wslconfig@ pathname from its caller — the wall backend derives the current
+user's one target itself.
 -}
-mkDemoVMHandles :: FilePath -> VMHandles
-mkDemoVMHandles wslConfigPath =
+demoVMHandles :: VMHandles
+demoVMHandles =
     VMHandles
         { vmhIncus = demoVM
         , vmhLima = demoLimaVM
         , vmhWsl2 = demoWsl2VM
         , vmhGuardPrefix = demoGuardPrefix
-        , vmhWslConfigPath = wslConfigPath
         }
-
-demoStaticVMHandles :: VMHandles
-demoStaticVMHandles = mkDemoVMHandles ""
-
-demoVMHandles :: IO VMHandles
-demoVMHandles = do
-    home <- getHomeDirectory
-    pure (mkDemoVMHandles (home </> ".wslconfig"))
 
 {- | The one pure lift into the current substrate (Lima on Apple Silicon, Incus
 on Linux, WSL2 on Windows), selected once and interpreted generically by the
 lifecycle helpers below ('substrateExists' / 'runLaunch' / 'substrateWait' /
-'stageSource' / 'demoTeardown'). Replaces the former hand-branched
+'stageSource' / 'demoProviderReverse'). Replaces the former hand-branched
 @DemoVMProvider@ with the single pure 'SubstrateProvider' value, so per-substrate
 knowledge lives in one place ('selectSubstrateProvider').
 -}
 demoProvider :: HostConfig -> IO SubstrateProvider
 demoProvider cfg = do
-    handles <- demoVMHandles
-    either die pure (selectSubstrateProvider (hcSubstrate cfg) handles)
+    either die pure (selectSubstrateProvider (hcSubstrate cfg) demoVMHandles)
 
 {- | Stable daemon-host path used at the two Docker boundaries. The provider
 share exposes the project-owned host @.data@ at a substrate-specific guest path;
@@ -2318,8 +2596,9 @@ when absent. Lima declares its mount at create time and WSL2 already exposes the
 Windows drive, so both are no-ops here. Probe failure is ambiguous and therefore
 fails closed.
 -}
-reconcileDurableShare :: HostConfig -> HostPathShare -> IO ()
-reconcileDurableShare cfg share =
+reconcileDurableShare ::
+    ObservedReady VMReady -> HostConfig -> HostPathShare -> IO ()
+reconcileDurableShare _vmReady cfg share =
     case hpsReconcile share of
         Nothing -> pure ()
         Just (ShareReconcile (ExistsProbe tool args _) _ _) -> do
@@ -2415,16 +2694,15 @@ captureInVMStdout cfg provider script =
                 Left err -> Left err
 
 {- | Run a list of pure host effects, dying on the first failure (the launch /
-staging path). 'WriteHostFile' backs up any existing file once (the global
-@.wslconfig@ is a user file); 'RestoreHostFile' is the teardown inverse.
+staging path). The two wall effects acquire and release the current user's one
+global @.wslconfig@ through the identity-owning host-wall backend.
 -}
 runEffects :: HostConfig -> [HostEffect] -> IO ()
 runEffects cfg = mapM_ go
   where
     go (RunHostTool tool args) = runOrDie cfg tool args
-    go (WriteHostFile path content) = writeHostFileWithBackup path content
-    go (MergeWslConfig path body) = mergeWslConfigWithBackup path body
-    go (RestoreHostFile path) = restoreHostFile path
+    go (ApplyGlobalWslWall body) = acquireDemoWslWall body
+    go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
 
 {- | Run teardown effects best-effort under one intent message: a missing or
 already-stopped VM is not a failure for idempotent teardown.
@@ -2433,70 +2711,77 @@ runEffectsBestEffort :: HostConfig -> String -> [HostEffect] -> IO ()
 runEffectsBestEffort cfg intent = mapM_ go
   where
     go (RunHostTool tool args) = bestEffortTool cfg tool args intent
-    go (RestoreHostFile path) = restoreHostFile path
-    go (WriteHostFile path content) = writeHostFileWithBackup path content
-    go (MergeWslConfig path body) = mergeWslConfigWithBackup path body
+    go (ApplyGlobalWslWall body) = acquireDemoWslWall body
+    -- The wall release is NOT best-effort: leaving the shared utility VM
+    -- cordoned, or leaving the operator's original .wslconfig unrestored, is a
+    -- durable global side effect a green teardown must not report.
+    go (ReleaseGlobalWslWall body) = releaseDemoWslWall body
 
-{- | Write @content@ to @path@, first backing up any existing file to
-@<path>.hostbootstrap-demo.bak@ (once), so the global @.wslconfig@ the WSL2
-cordon writes never clobbers a user's own file irretrievably.
--}
-writeHostFileWithBackup :: FilePath -> String -> IO ()
-writeHostFileWithBackup path content = do
-    backupHostFileOnce path
-    writeFile path content
-    putStrLn ("vm up: wrote the WSL2 resource cordon to " ++ path)
+{- | The demo's identity for the one per-user global WSL2 wall.
 
-{- | Merge the WSL2 @[wsl2]@ cordon body into the global @.wslconfig@ **without
-clobbering** the user's other sections (the pure 'mergeWslConfig'), backing up the
-original once so @project down@/@destroy@ can restore it. When a leftover backup is
-found on this @project up@ (a prior run that never restored — a crash-recoverable
-case, § C), the original @.wslconfig@ is preserved as-is (backup-once keeps the
-true original) and the merge re-applies our block idempotently.
+The owner is the project, not the VM: the @.wslconfig@ is a single global file
+shared by every distro, so two concurrent declarations must conflict rather than
+overwrite one another.  The specification identity binds this owner to the exact
+managed body, so @project down@ can only release the wall it applied.
 -}
-mergeWslConfigWithBackup :: FilePath -> [String] -> IO ()
-mergeWslConfigWithBackup path body = do
-    let bak = path ++ ".hostbootstrap-demo.bak"
-    bakExists <- doesFileExist bak
-    when bakExists (putStrLn ("vm up: found leftover " ++ bak ++ " from a prior run; preserving the original and re-applying the cordon"))
-    existing <- do
-        exists <- doesFileExist path
-        if exists then readFile path else pure ""
-    backupHostFileOnce path
-    -- @readFile@ is lazy; force it before the write so we do not truncate the file
-    -- mid-read. 'length' fully evaluates @existing@ (already forced by the backup
-    -- copy above, but explicit here for the no-backup path).
-    length existing `seq` writeFile path (mergeWslConfig existing body)
-    putStrLn ("vm up: merged the WSL2 resource cordon into " ++ path ++ " (other sections preserved)")
+demoWallRequest :: [String] -> IO CurrentUserWallRequest
+demoWallRequest body =
+    case mkCurrentUserWallRequest
+        (BSC.pack demoProject)
+        "hostbootstrap-demo:wsl2-global-wall"
+        "hostbootstrap-demo:wsl2-global-wall:reservation"
+        "hostbootstrap-demo:wsl2-global-wall:receipt"
+        (map BSC.pack body) of
+        Left err ->
+            throwIO
+                ( LifecycleFailure
+                    ("the global WSL2 wall declaration was refused: " ++ show err)
+                )
+        Right request -> pure request
 
-{- | Back up @path@ to @<path>.hostbootstrap-demo.bak@ exactly once — the first
-time we touch a pre-existing global @.wslconfig@ — so the backup always holds the
-user's true original across idempotent re-applies, and never overwrites it with an
-already-cordoned copy from a re-run.
+{- | Acquire the global @.wslconfig@ wall. The backend journals the exact
+original bytes (or their absence) before its first mutation, so a later release
+restores the operator's file from a durable origin record rather than from a
+backup copy whose mere existence used to stand in for ownership.
 -}
-backupHostFileOnce :: FilePath -> IO ()
-backupHostFileOnce path = do
-    let bak = path ++ ".hostbootstrap-demo.bak"
-    exists <- doesFileExist path
-    bakExists <- doesFileExist bak
-    when (exists && not bakExists) (copyFile path bak)
+acquireDemoWslWall :: [String] -> IO ()
+acquireDemoWslWall body = do
+    request <- demoWallRequest body
+    outcome <- applyCurrentUserGlobalWall request
+    case outcome of
+        Left err ->
+            throwIO
+                ( LifecycleFailure
+                    ("vm up: the global WSL2 wall was not acquired: " ++ show err)
+                )
+        Right applied -> putStrLn (acquiredWallMessage applied)
 
-{- | Restore @path@ from its backup (or remove it if there was none). Copy before
-deleting the backup so a failed restore preserves the user's original bytes;
-failures propagate and make teardown non-green.
+acquiredWallMessage :: AppliedWslConfigFile -> String
+acquiredWallMessage applied =
+    "vm up: acquired the global WSL2 wall (fence "
+        ++ show (persistedFenceValue (appliedWslConfigRecord applied))
+        ++ ")"
+
+{- | Release the global @.wslconfig@ wall and restore the exact origin. A wall
+this owner never held is reported and skipped; every other refusal — including a
+foreign replacement of the managed file — propagates, because silently leaving
+the shared utility VM cordoned is precisely the failure @project down@ exists to
+prevent.
 -}
-restoreHostFile :: FilePath -> IO ()
-restoreHostFile path = do
-    let bak = path ++ ".hostbootstrap-demo.bak"
-    bakExists <- doesFileExist bak
-    if bakExists
-        then do
-            copyFile bak path
-            removeFile bak
-            putStrLn ("project destroy: restored " ++ path)
-        else do
-            exists <- doesFileExist path
-            when exists (removeFile path >> putStrLn ("project destroy: removed " ++ path))
+releaseDemoWslWall :: [String] -> IO ()
+releaseDemoWslWall body = do
+    request <- demoWallRequest body
+    outcome <- restoreCurrentUserGlobalWall request
+    case outcome of
+        Right () ->
+            putStrLn "project down: released the global WSL2 wall and restored the original .wslconfig"
+        Left HostWallNoActiveRecord ->
+            putStrLn "project down: no global WSL2 wall was held by this project"
+        Left err ->
+            throwIO
+                ( LifecycleFailure
+                    ("project down: the global WSL2 wall was not released: " ++ show err)
+                )
 
 -- | Probe whether the provider's VM already exists (idempotent reconcile).
 substrateExists :: HostConfig -> SubstrateProvider -> IO Bool
@@ -2522,17 +2807,18 @@ substrateWait cfg sp = do
     probe = case spWait sp of
         WaitProbe tool args -> exitZeroProbe tool args
 
-{- | Keep only the FILE effects of a launch effect list (the WSL2 @.wslconfig@
-merge/restore) — used to re-apply the cordon on the idempotent reconcile path
-without re-running the one-time @wsl --shutdown@/@--install@ tool effects.
+{- | Keep only the WALL effects of a launch effect list (the WSL2 @.wslconfig@
+acquire/release) — used to re-apply the cordon on the idempotent reconcile path
+without re-running the one-time @wsl --shutdown@/@--install@ tool effects. The
+wall's own apply is idempotent: a second acquisition of the same owner and body
+resumes the existing journalled receipt instead of taking a new one.
 -}
-fileEffectsOnly :: [HostEffect] -> [HostEffect]
-fileEffectsOnly = filter isFile
+wallEffectsOnly :: [HostEffect] -> [HostEffect]
+wallEffectsOnly = filter isWall
   where
-    isFile (MergeWslConfig _ _) = True
-    isFile (WriteHostFile _ _) = True
-    isFile (RestoreHostFile _) = True
-    isFile (RunHostTool _ _) = False
+    isWall (ApplyGlobalWslWall _) = True
+    isWall (ReleaseGlobalWslWall _) = True
+    isWall (RunHostTool _ _) = False
 
 {- | Disclose that applying the WSL2 @.wslconfig@ ceiling runs @wsl --shutdown@ — a
 global cross-distro side-effect (the historical @0x80072746@ session-drop surface):
@@ -2692,8 +2978,8 @@ runOrDieStdin cfg tool args input = do
 @ensure-the-VM-provider@ metal step): a Lima VM on Apple Silicon, native Incus on
 Linux. The IO behind the dissolved @vm ensure@ verb.
 -}
-runVmEnsure :: IO ()
-runVmEnsure = demoAction Context.HostOrchestratorCommand [Context.HostTools] $ do
+runVmEnsure :: ProjectConfig configScope -> IO ()
+runVmEnsure stepCfg = demoAction stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ do
     cfg <- resolveHostConfig
     case () of
         _
@@ -2713,8 +2999,8 @@ Silicon (Lima) and Linux (Incus); on Windows it begins by writing the global
 @.wslconfig@ ceiling and @wsl --shutdown@ (the honest WSL2 wall, since WSL2 has no
 per-distro @wsl --memory@/@--cpu@), then registers the distro with its VHDX cap.
 -}
-runVmUp :: IO ()
-runVmUp = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
+runVmUp :: ProjectConfig configScope -> IO ()
+runVmUp stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
     projectRoot <- makeAbsolute =<< getCurrentDirectory
@@ -2747,7 +3033,7 @@ runVmUp = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] 
             -- while a RUNNING one already has it live. Lima/Incus carry no launch file
             -- effects and never idle-stop, so both steps are a no-op there.
             reCordon <- either die pure (spLaunch sp envelope (Just durableShare))
-            runEffects cfg (fileEffectsOnly reCordon)
+            runEffects cfg (wallEffectsOnly reCordon)
             applyReconcileCordon cfg sp
             runEffectsBestEffort cfg ("vm up: starting existing " ++ spVmId sp) (spStartExisting sp)
         else do
@@ -2755,9 +3041,18 @@ runVmUp = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] 
             when (isWindows (hcSubstrate cfg)) discloseWslShutdown
             putStrLn ("vm up: launching " ++ spVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
             runEffects cfg launch
-    reconcileDurableShare cfg durableShare
+    -- The share ATTACH is itself a frame mutation that depends on the guest
+    -- agent (§ CC), because on a provider whose share is a post-create device it
+    -- is the agent that performs the mount. Attaching before the agent answers
+    -- silently succeeds -- `incus config device add` reports
+    -- `Device durable-data added` -- and the guest then never mounts it, so the
+    -- mount probe below can never pass. That is how this step collapsed a native
+    -- Incus lane to `0/10`: the mount and alias steps were readiness-gated, but
+    -- the attach they both depend on was not. So it now runs behind
+    -- 'substrateWait''s witness, whose probe is exactly the agent probe.
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " to answer")
     vmReady <- substrateWait cfg sp
+    reconcileDurableShare vmReady cfg durableShare
     putStrLn ("vm up: waiting for " ++ spVmId sp ++ " network to come up")
     netReady <- waitVMNetwork vmReady cfg sp
     -- The readiness order is type-enforced (§ CC/§ DD): the mount witness consumes
@@ -2867,8 +3162,8 @@ pinned to GHC 9.12.4), @pipx install@ the local hostbootstrap, then run
 and builds the demo binary **host-native** in the VM (**build #2**), then
 installs the built binary (no exec).
 -}
-runVmBootstrap :: IO ()
-runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+runVmBootstrap :: ProjectConfig configScope -> IO ()
+runVmBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     cfg <- resolveHostConfig
     provider <- demoProvider cfg
     -- Discovered on the metal host (the only place the credential lives); forwarded
@@ -2932,8 +3227,8 @@ runVmBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.Host
     buildProjectImage dockerReady cfg provider mAuth buildImageScript
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
 
-runDirectHostBootstrap :: IO ()
-runDirectHostBootstrap = demoConfigContext Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+runDirectHostBootstrap :: ProjectConfig configScope -> IO ()
+runDirectHostBootstrap stepCfg = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
     initialCfg <- resolveHostConfig
     when (substrateName (hcSubstrate initialCfg) /= LinuxGpu) $
         die "direct-linux-gpu-bootstrap: this path is only valid on the linux-gpu substrate"
@@ -3130,58 +3425,91 @@ shellQuote s = "'" ++ concatMap quoteChar s ++ "'"
 dockerCommand :: [String] -> String
 dockerCommand args = unwords (map shellQuote ("docker" : args))
 
-{- | The demo's chain-frame teardown for @project down@ / @project destroy@. The
-metal frame's only provisioned resource is the VM, so @down@ (@False@) /stops/ it
-(the stop-without-delete capability) and @destroy@ (@True@) /deletes/ it
-(guard-prefixed). The core runs this after the recursive cluster teardown — which
-never enumerates the plan's @.data@ path for removal (§ Y) — so the VM is the last
-frame torn down. The project @.data@ root is host-owned and merely shared
-through that VM, so deleting the frame removes the guest mount/alias but not the
-durable target. Best-effort and idempotent: a missing or already-stopped VM is
-reported and skipped, never a hard failure, so a partial stack always tears down.
+{- | The reverse effect of the demo's @deploy-vm@ step (§ W).
+
+It is declared on that step with 'reversedBy', so the node that launched the VM
+is the node that releases it: @down@ projects 'StopFrame' and /stops/ it (the
+stop-without-delete capability), @destroy@ projects 'DeleteFrame' and /deletes/
+it (guard-prefixed). The core drives the whole reverse projection deepest frame
+first, so the VM is the last frame torn down. The project @.data@ root is
+host-owned and merely shared through that VM, so deleting the frame removes the
+guest mount/alias but not the durable target; the @.data@ step preserves on
+reverse and never enters either projection at all (§ Y).
+
+Idempotent: a missing or already-stopped VM is reported and skipped.
 -}
-demoTeardown ::
-    CanonicalProjectRoot rootScope rootId ->
+demoProviderReverse ::
     ProjectConfig configScope ->
-    Bool ->
-    IO ()
-demoTeardown rootAuthority projectCfg destroyVM = do
-    cfg <- resolveHostConfig
-    daemonError <- captureCleanup "host accelerator daemon" (stopHostAcceleratorDaemon cfg (context projectCfg))
-    frameError <- captureCleanup "provider/direct cluster" (teardownFrames cfg)
-    let errors = catMaybes [daemonError, frameError]
-    unless (null errors) $
-        die ("project teardown attempted every cleanup step but failed:\n" ++ unlines (map ("  - " ++) errors))
-  where
-    captureCleanup label action = do
-        outcome <- try action :: IO (Either SomeException ())
-        pure $ case outcome of
-            Right () -> Nothing
-            Left err -> Just (label ++ ": " ++ show err)
-    teardownFrames cfg
-        | substrateName (hcSubstrate cfg) == LinuxGpu = do
-            putStrLn "project teardown: direct Linux GPU lane has no provider VM"
-            unless (toolPresent cfg Docker) $
-                die "project teardown: Docker is unavailable, so absence of the direct nvkind cluster cannot be proven"
-            let root = canonicalProjectRootPath rootAuthority
-            let directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
-            exists <- directClusterExists cfg directPlan
-            when exists $ do
-                putStrLn "project teardown: deleting the direct nvkind cluster through the project image"
-                runOrDie cfg Docker directClusterTeardownArgs
-            remaining <- directClusterExists cfg directPlan
-            when remaining (die "project teardown: direct nvkind node containers remain after deletion")
-        | otherwise = do
-            provider <- demoProvider cfg
-            let name = spVmId provider
-            if destroyVM
-                then case spDestroy provider of
-                    Left err -> die err
-                    Right effs -> do
-                        runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
-                        remaining <- substrateExists cfg provider
-                        when remaining (die ("project destroy: managed VM still exists after deletion: " ++ name))
-                else runEffectsBestEffort cfg ("project down: stopping " ++ name) (spStop provider)
+    HostConfig ->
+    TeardownAction ->
+    IO TeardownOutcome
+demoProviderReverse projectCfg cfg action = do
+    provider <- demoProvider cfg
+    let name = spVmId provider
+        -- Teardown consumes the same envelope the launch did, because a
+        -- substrate whose wall is global must release exactly the wall
+        -- it applied rather than any same-shaped one.
+        envelope = envelopeOfResources (resources projectCfg)
+    case action of
+        DeleteFrame -> case spDestroy provider envelope of
+            Left err -> pure (Step.TeardownFailed err)
+            Right effs -> do
+                runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
+                remaining <- substrateExists cfg provider
+                pure $
+                    if remaining
+                        then Step.TeardownFailed ("managed VM still exists after deletion: " ++ name)
+                        else Step.TeardownReleased
+        _ -> case spStop provider envelope of
+            Left err -> pure (Step.TeardownFailed err)
+            Right effs -> do
+                runEffectsBestEffort cfg ("project down: stopping " ++ name) effs
+                pure Step.TeardownReleased
+
+{- | The reverse effect of the direct Linux GPU lane's @deploy-kind@ step.
+
+The nvkind cluster lives in a frame the metal host has no kube toolchain for, so
+the core's cluster adapter cannot reach it; the project declares this reverse on
+that node instead and executes the image's pinned @kind@ against the host Docker
+socket. Both verbs delete, because kind has no reliable stop contract.
+-}
+demoDirectClusterReverse ::
+    CanonicalProjectRoot rootScope rootId ->
+    HostConfig ->
+    TeardownAction ->
+    IO TeardownOutcome
+demoDirectClusterReverse rootAuthority cfg _action
+    | not (toolPresent cfg Docker) =
+        pure
+            ( Step.TeardownFailed
+                "Docker is unavailable, so absence of the direct nvkind cluster cannot be proven"
+            )
+    | otherwise = do
+        let root = canonicalProjectRootPath rootAuthority
+            directPlan = resolvePlanWithDriver demoProject root Production NvkindDriver
+        exists <- directClusterExists cfg directPlan
+        when exists $ do
+            putStrLn "project teardown: deleting the direct nvkind cluster through the project image"
+            runOrDie cfg Docker directClusterTeardownArgs
+        remaining <- directClusterExists cfg directPlan
+        pure $
+            if remaining
+                then Step.TeardownFailed "direct nvkind node containers remain after deletion"
+                else Step.TeardownReleased
+
+{- | The reverse effect of the host-resident accelerator daemon's post-handoff
+step: stop the daemon this frame started. It runs before the VM node in the
+metal frame's reverse order, because the projection reverses the forward
+sequence within a frame.
+-}
+demoHostAcceleratorReverse ::
+    ProjectConfig configScope ->
+    HostConfig ->
+    TeardownAction ->
+    IO TeardownOutcome
+demoHostAcceleratorReverse projectCfg cfg _action = do
+    stopHostAcceleratorDaemon cfg (context projectCfg)
+    pure Step.TeardownReleased
 
 {- | The direct lane deliberately does not require host-installed kind/nvkind.
 Execute the image's pinned @kind@ against the host Docker socket so teardown
@@ -3216,9 +3544,12 @@ bestEffortTool cfg tool argv intent = do
         Right (ExitFailure _, _, err) -> putStrLn ("  (skipped: " ++ takeWhile (/= '\n') err ++ ")")
         Left err -> putStrLn ("  (skipped: " ++ err ++ ")")
 
--- | The in-cluster registry endpoint (the NodePort the demo publishes registry:2 on).
+{- | The authority @push-image@ dials, projected from the plan's published
+exposure. The plan fixes the loopback authority, so this cannot drift from the
+port the registry Service actually publishes.
+-}
 registryEndpoint :: String
-registryEndpoint = "localhost:30500"
+registryEndpoint = "localhost:" ++ show (exposurePort (registryPlanExposure demoRegistryPlan))
 
 -- | The container frame's topology id (the @vm-project-container-2@ witness).
 containerRuntimeFrameId :: String

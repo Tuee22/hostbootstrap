@@ -25,7 +25,17 @@ tests :: TestTree
 tests =
     testGroup
         "HostToolSpec"
-        [ testGroup "AbsExe" absExeCases
+        [
+      testCase "a CUDA tool prefers the stable symlink, then newest versioned root" $
+        cudaCandidatePaths "nvcc" ["bin", "cuda-12.4", "cuda-13.3", "share"]
+          @?= [ "/usr/local/cuda/bin/nvcc"
+              , "/usr/local/cuda-13.3/bin/nvcc"
+              , "/usr/local/cuda-12.4/bin/nvcc"
+              ],
+      testCase "a prefix with no CUDA install still offers the stable symlink" $
+        cudaCandidatePaths "nvcc" ["bin", "share"]
+          @?= ["/usr/local/cuda/bin/nvcc"],
+ testGroup "AbsExe" absExeCases
         , testGroup "HostTool enumeration" enumCases
         , testGroup "resolution" resolutionCases
         , testGroup "HostPrereqs os-release" osReleaseCases

@@ -99,7 +99,8 @@ type-gated and mostly still consume non-authorizing compatibility observations. 
 return `IO ()`, not the implemented explicit create/adopt/repair/no-op/conflict foundation.
 
 Teardown is also not recursive. Root `project down`/`destroy` cleans the current cluster only when that
-frame owns it and then invokes the project teardown hook. VM deletion or direct-container cleanup handles
+frame owns it, and every other node runs the reverse its own step declared. VM deletion or
+direct-container cleanup handles
 nested resources without dispatching the verb through every child frame first.
 
 The target typed transitions, opaque capabilities, ownership tokens, and validation gates live in

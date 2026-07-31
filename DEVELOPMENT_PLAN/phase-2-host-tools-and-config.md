@@ -13,6 +13,12 @@
 
 **Status**: Done
 
+**Reopened and closed 2026-07-29 for the pre-binary C build libraries (Sprint 2.6).** The first native Linux **CPU**
+lane run on a genuinely pristine Ubuntu 24.04 host proved the metal frame's toolchain bootstrap
+incomplete: it installs GHCup/GHC/Cabal but not the C libraries GHC and the project's dependency closure
+link against, so `hostbootstrap run` died with `Missing (or bad) C library: z`. The fix has landed and is
+validated, and the native Linux CPU lane that consumes it reported `10/10` the same day.
+
 **Reopened 2026-07-24 and closed 2026-07-25.** Sprint 2.5 corrected the confirmed
 host-tool-boundary and pre-binary prerequisite defects.
 
@@ -305,6 +311,77 @@ None. Closed 2026-07-25: the canonical Python check passed; the Python suite pas
 `cabal test all --ghc-options=-Werror` passed from `core/` with 377 tests. The demo sources also compiled
 with `-Werror`; its independent WebSocket runtime tests remain outside this sprint and currently require
 a threaded RTS link.
+
+### Sprint 2.6: Pre-binary C build libraries on Linux [Done]
+
+**Status**: Done
+**Implementation**: `hostbootstrap/bootstrap.py`, `tests/test_bootstrap.py`
+**Docs to update**: `documents/engineering/prerequisites.md`,
+`documents/architecture/python_haskell_boundary.md`
+
+#### Objective
+
+Make the metal frame's toolchain bootstrap install the C build libraries the host-native build links
+against, so a pristine Ubuntu 24.04 host can build the project binary.
+
+#### The defect
+
+Discovered 2026-07-29 by the first native Linux CPU lane run on a genuinely pristine guest.
+`toolchain_ensure_steps` installs GHCup, GHC, and Cabal, but nothing installs the C libraries GHC itself
+links (`gmp`, `ncurses`) or those the project's dependency closure links (`zlib`). On a pristine host the
+build therefore died:
+
+```text
+Configuring library for zlib-0.7.1.1...
+Error: [Cabal-4345]
+Missing dependency on a foreign library:
+* Missing (or bad) C library: z
+```
+
+This is an asymmetry, not merely a missing package. The demo's **in-VM** bootstrap already installs
+exactly this set (`build-essential curl libgmp-dev libtinfo-dev libncurses-dev zlib1g-dev pkg-config git
+ca-certificates`), so the pristine VM frame worked while the metal frame silently assumed a provisioned
+host — precisely the invariant § M states, that the provision → build-the-pb → hand-off shape recurs at
+**every** frame including the metal one. It was invisible on every previous lane because each ran on a
+developer or CI host that already carried the libraries, and because the Windows and Apple toolchain roots
+supply their own C libraries.
+
+Per § L these packages have a supported apt install plan, so the correct behaviour is to **install** them,
+not to add them to the fail-fast floor: the floor stays the irreducible pre-binary minimum (OS version,
+passwordless sudo, `curl`).
+
+#### Deliverables
+
+- `linux_build_library_probe` — one `dpkg-query -s` over the whole set. It is an all-of probe, so a
+  partially provisioned host reinstalls the set instead of being mistaken for a complete one.
+- `linux_build_library_install_commands` — `apt-get update` then `apt-get install -y <set>`. The index
+  refresh is not optional: a cloud image's index is routinely older than its archive, and installing
+  against a stale index 404s on the very packages the step adds.
+- `_ensure_linux_build_libraries`, run **before** the GHCup/GHC/Cabal steps, because GHC itself links
+  `gmp` and `ncurses`. A satisfied host is a verified no-op that installs nothing.
+- An offline build refuses with a message naming the libraries rather than attempting an install.
+
+#### Validation
+
+- Pure argv tests pin the exact probe and both install commands, and assert the set covers the three
+  libraries the observed failure implicated.
+- Sequence tests prove a pristine Linux host runs probe → update → install → GHCup → GHC → Cabal in that
+  order, that a satisfied host runs only the probe, and that Apple's path gains no apt step.
+- Offline tests prove the library refusal on Linux, the unchanged build-tool refusal on Apple, and the
+  build-tool refusal on a Linux host whose libraries are already present.
+- Canonical Python gates: `check_code` (ruff/black/mypy) clean and the suite green at 100% coverage.
+
+#### Remaining Work
+
+Landed and statically validated 2026-07-29: the canonical Python check passed, and the suite passed
+**231** tests at **100%** coverage (`fail_under = 100`). The fix was then proved on the real pristine
+guest, where `dpkg-query -s zlib1g-dev` was absent before the run and the re-run reported
+`Setting up zlib1g-dev:amd64 (1:1.3.dfsg-3.1ubuntu2.1)` and built past `zlib` — the exact package and
+step that failed.
+
+Closed 2026-07-29 by the native Linux CPU lane run that consumes it: `hostbootstrap-demo test run all`
+reported `10/10`, so the fix carries the whole three-build pristine bootstrap (metal pb, in-VM pb
+host-native, project image) and not merely the first build. None remaining.
 
 ## Documentation Requirements
 

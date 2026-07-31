@@ -46,14 +46,11 @@ import Data.List (intercalate, stripPrefix)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import HostBootstrap.Readiness (
-    DurableShareReady,
-    Ready,
-    dependencyObservationFromReady,
- )
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (..),
     ConflictDetail (..),
+    DependencySnapshot,
     DurableAliasResource,
     DurableShareResource,
     FailureDetail (..),
@@ -79,7 +76,8 @@ import HostBootstrap.Reconcile (
     resourceHandleGeneration,
     resourceHandleKey,
     validateOwnershipReceipt,
-    withPreparedSingleDependencyOperation,
+    withOperationPreconditions,
+    withPreparedOperation,
  )
 import HostBootstrap.Substrate.Provider (
     SubstrateProvider,
@@ -149,11 +147,9 @@ withPreparedGuestAliasCall ::
         DurableShareResource
         shareFrame ->
     ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed ->
-    ResourceHandle scope planId shareId DurableShareResource Managed sharePhase ->
-    Ready scope planId shareId DurableShareResource DurableShareReady ->
+    DependencySnapshot scope planId ->
     GuestAliasSpec ->
-    Word64 ->
-    Word64 ->
+    PreparedGate ->
     ( forall operationKey callDigest attempt journalVersion.
       PreparedGuestAliasCall
         scope
@@ -166,29 +162,27 @@ withPreparedGuestAliasCall ::
         journalVersion ->
       result
     ) ->
-    Either ReconcileError result
-withPreparedGuestAliasCall planned edge aliasHandle shareHandle ready spec attempt journalVersion consume = do
-    dependency <- dependencyObservationFromReady shareHandle ready
-    descriptor <-
-        plannedGuestAliasOperation
-            planned
-            edge
-            aliasHandle
-            (aliasCallDigest spec)
-    withPreparedSingleDependencyOperation
-        descriptor
-        dependency
-        attempt
-        journalVersion
-        ( \prepared preconditions ->
-            consume
-                ( PreparedGuestAliasCall
-                    spec
-                    aliasHandle
-                    prepared
-                    preconditions
-                )
-        )
+    IO (Either ReconcileError result)
+withPreparedGuestAliasCall planned edge aliasHandle snapshot spec gate consume =
+    case plannedGuestAliasOperation planned edge aliasHandle (aliasCallDigest spec) of
+        Left err -> pure (Left err)
+        Right descriptor -> do
+            sealed <- withOperationPreconditions descriptor snapshot
+            pure $ do
+                preconditionSet <- sealed
+                withPreparedOperation
+                    descriptor
+                    preconditionSet
+                    gate
+                    ( \prepared preconditions ->
+                        consume
+                            ( PreparedGuestAliasCall
+                                spec
+                                aliasHandle
+                                prepared
+                                preconditions
+                            )
+                    )
 
 {- | Structured result from the protected backend boundary.  Created/repaired
 observations authorize ownership only after settlement against the exact

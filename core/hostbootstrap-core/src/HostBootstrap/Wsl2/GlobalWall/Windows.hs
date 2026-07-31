@@ -1,151 +1,104 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 
-{- | Windows adapter for the per-user WSL global wall.
+{- | Windows backend for the portable host wall
+('HostBootstrap.Wsl2.GlobalWall.Host').
 
-The production entry points deliberately accept no pathname. The target is
-always derived from @FOLDERID_Profile@ and the literal @.wslconfig@ by the
-native shim. All namespace changes and conditional deletions operate through a
-previously identity-verified handle.
+This is the production WSL lane: it is the only substrate on which
+@%UserProfile%\\.wslconfig@ exists.  It supplies platform primitives only — the
+complete recovery driver, the durable record codec, and the ownership
+arithmetic live in the portable module and are exercised on every host by the
+POSIX backend.
 
-Staging uses two links. The first is created with delete-on-close and cannot
-survive an ordinary process death. Its 128-bit FILE_ID plus volume serial is
-flushed to the protected HKCU journal before a no-replace hard link is created
-at the durable stage name. Closing the armed handle removes only its first
-link. This removes the otherwise unavoidable gap between @CREATE_NEW@ and
-durably learning the new file identity.
+The four ownership clauses are held with the @Win32@ package's existing
+bindings; no C shim, no @c-sources@ block, and no threaded-RTS carve-out are
+needed:
+
+* clause 1 — @LockFileEx@ with @LOCKFILE_EXCLUSIVE_LOCK@ on a byte range of a
+  per-user lock file.  A Windows byte-range lock conflicts between handles even
+  inside one process and is released by the kernel when the process dies;
+* clause 2 — the durable origin record is a journal file beside the lock,
+  replaced atomically before the first mutation;
+* clause 3 — identity is @GetFileInformationByHandle@'s volume serial number
+  and file index, encoded volume-word first;
+* clause 4 — every namespace operation re-observes the path's identity under
+  the same lock and refuses a replacement.
+
+Staging still uses a volatile armed link (@FILE_FLAG_DELETE_ON_CLOSE@), so the
+driver keeps the strict Windows reading of an armed object observed before its
+identity was journalled: it cannot be ours, and it is refused rather than
+removed.
 -}
 module HostBootstrap.Wsl2.GlobalWall.Windows
-  ( CurrentUserWallRequest,
-    mkCurrentUserWallRequest,
-    AppliedWslConfigFile,
-    appliedWslConfigRecord,
-    WindowsWallError (..),
-    windowsGlobalWallSupported,
+  ( windowsGlobalWallSupported,
     applyCurrentUserGlobalWall,
     restoreCurrentUserGlobalWall,
   )
 where
 
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as ByteString
-import Data.Word (Word32)
-import HostBootstrap.Wsl2.GlobalWall
-import HostBootstrap.Wsl2.GlobalWall.ConfigBytes
+import HostBootstrap.Wsl2.GlobalWall.Host
 
 #if defined(mingw32_HOST_OS)
-import Control.Concurrent (runInBoundThread)
-import Control.Exception (bracket, mask, onException)
 import Control.Monad (void)
-import Data.Bits ((.|.), shiftL)
+import Data.Bits ((.&.), (.|.))
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
-import Foreign.C.String (peekCWString, withCWString)
-import Foreign.C.Types (CInt (..), CSize (..), CWchar)
+import Data.Word (Word32, Word64)
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek)
-import Data.Word (Word8, Word64)
+import GHC.Clock (getMonotonicTime)
+import Control.Concurrent (threadDelay)
+import Control.Exception (onException)
+import HostBootstrap.Wsl2.GlobalWall
+  ( FileIdentity,
+    WallConflict (TargetReplaced, UnexpectedTargetAbsent, UnexpectedTargetPresent),
+    mkFileIdentity,
+  )
+import System.Directory (createDirectoryIfMissing)
+import System.Environment (lookupEnv)
+import System.FilePath ((</>))
+import System.Win32.File
+  ( BY_HANDLE_FILE_INFORMATION (bhfiFileAttributes, bhfiFileIndex, bhfiSize, bhfiVolumeSerialNumber),
+    OVERLAPPED (OVERLAPPED),
+    cREATE_NEW,
+    dELETE,
+    fILE_ATTRIBUTE_DIRECTORY,
+    fILE_ATTRIBUTE_NORMAL,
+    fILE_ATTRIBUTE_REPARSE_POINT,
+    fILE_BEGIN,
+    fILE_FLAG_DELETE_ON_CLOSE,
+    fILE_FLAG_OPEN_REPARSE_POINT,
+    fILE_SHARE_DELETE,
+    fILE_SHARE_READ,
+    fILE_SHARE_WRITE,
+    gENERIC_READ,
+    gENERIC_WRITE,
+    lOCKFILE_EXCLUSIVE_LOCK,
+    lOCKFILE_FAIL_IMMEDIATELY,
+    oPEN_ALWAYS,
+    oPEN_EXISTING,
+  )
+import System.Win32.File.Internal
+  ( c_CloseHandle,
+    c_CreateFile,
+    c_DeleteFile,
+    c_FlushFileBuffers,
+    c_GetFileInformationByHandle,
+    c_LockFileEx,
+    c_MoveFileEx,
+    c_ReadFile,
+    c_SetFilePointerEx,
+    c_UnlockFileEx,
+    c_WriteFile,
+  )
+import System.Win32.HardLink.Internal (c_CreateHardLink)
+import System.Win32.String (withTString)
+import System.Win32.Types (HANDLE, getLastError, iNVALID_HANDLE_VALUE)
 #endif
-
--- | Identity-only request for the current user's one global wall. No target
--- path is accepted or stored.
-data CurrentUserWallRequest = CurrentUserWallRequest
-  { requestOwnerIdentity :: ByteString,
-    requestSpecIdentity :: ByteString,
-    requestReservationIdentity :: ByteString,
-    requestReceiptIdentity :: ByteString,
-    requestManagedSpec :: ManagedWslConfigSpec
-  }
-  deriving (Eq)
-
-instance Show CurrentUserWallRequest where
-  show request =
-    "CurrentUserWallRequest {owner=<"
-      ++ show (ByteString.length (requestOwnerIdentity request))
-      ++ " bytes>, spec=<"
-      ++ show (ByteString.length (requestSpecIdentity request))
-      ++ " bytes>, reservation=<"
-      ++ show (ByteString.length (requestReservationIdentity request))
-      ++ " bytes>, receipt=<"
-      ++ show (ByteString.length (requestReceiptIdentity request))
-      ++ " bytes>, managed-lines="
-      ++ show (managedSpecLineCount (requestManagedSpec request))
-      ++ "}"
-
-data WindowsWallError
-  = WindowsWallUnsupported String
-  | WindowsWallBusy String
-  | WindowsWallNativeFailure String Word32
-  | WindowsWallConfigurationFailure ConfigBytesError
-  | WindowsWallJournalFailure String
-  | WindowsWallModelFailure WallModelError
-  | WindowsWallConflict WallConflict
-  | WindowsWallNoActiveRecord
-  deriving (Eq, Show)
-
--- | File-scoped proof that the exact managed object and bytes are currently at
--- @.wslconfig@. This does /not/ claim that the WSL runtime has shut down,
--- reloaded the file, or made CPU/memory/swap settings effective.
-newtype AppliedWslConfigFile = AppliedWslConfigFile PersistedWallRecord
-  deriving (Eq, Show)
-
-appliedWslConfigRecord :: AppliedWslConfigFile -> PersistedWallRecord
-appliedWslConfigRecord (AppliedWslConfigFile record) = record
-
--- | Construct a pathname-free request and reject identities that the pure
--- wall model cannot admit. The native shim applies a 16 MiB defensive bound to
--- both Registry records and @.wslconfig@ bytes.
-mkCurrentUserWallRequest ::
-  ByteString ->
-  ByteString ->
-  ByteString ->
-  ByteString ->
-  [ByteString] ->
-  Either WindowsWallError CurrentUserWallRequest
-mkCurrentUserWallRequest owner spec reservation receipt managedBody
-  | ByteString.null owner =
-      invalid "wall owner identity must not be empty"
-  | ByteString.null spec =
-      invalid "wall specification identity must not be empty"
-  | ByteString.null reservation =
-      invalid "wall reservation identity must not be empty"
-  | ByteString.null receipt =
-      invalid "wall receipt identity must not be empty"
-  | any
-      ((> maximumWallBytes) . ByteString.length)
-      [owner, spec, reservation, receipt] =
-      Left
-        ( WindowsWallUnsupported
-            "a wall identity exceeds the 16 MiB Registry-field limit"
-        )
-  | sum (map ByteString.length managedBody) > maximumWallBytes =
-      Left
-        ( WindowsWallUnsupported
-            "the managed .wslconfig body exceeds the 16 MiB adapter limit"
-        )
-  | otherwise = do
-      managedSpec <-
-        either
-          (Left . WindowsWallConfigurationFailure)
-          Right
-          (mkManagedWslConfigSpec managedBody)
-      Right
-        CurrentUserWallRequest
-          { requestOwnerIdentity = owner,
-            requestSpecIdentity = spec,
-            requestReservationIdentity = reservation,
-            requestReceiptIdentity = receipt,
-            requestManagedSpec = managedSpec
-          }
-  where
-    invalid = Left . WindowsWallModelFailure . InvalidWallIdentity
-
-maximumWallBytes :: Int
-maximumWallBytes = 16 * 1024 * 1024
 
 #if !defined(mingw32_HOST_OS)
 
@@ -154,20 +107,20 @@ windowsGlobalWallSupported = False
 
 applyCurrentUserGlobalWall ::
   CurrentUserWallRequest ->
-  IO (Either WindowsWallError AppliedWslConfigFile)
+  IO (Either HostWallError AppliedWslConfigFile)
 applyCurrentUserGlobalWall _ =
   pure
     ( Left
-        (WindowsWallUnsupported "the WSL global wall requires Windows")
+        (HostWallUnsupported "the WSL global wall requires Windows")
     )
 
 restoreCurrentUserGlobalWall ::
   CurrentUserWallRequest ->
-  IO (Either WindowsWallError ())
+  IO (Either HostWallError ())
 restoreCurrentUserGlobalWall _ =
   pure
     ( Left
-        (WindowsWallUnsupported "the WSL global wall requires Windows")
+        (HostWallUnsupported "the WSL global wall requires Windows")
     )
 
 #else
@@ -175,1822 +128,868 @@ restoreCurrentUserGlobalWall _ =
 windowsGlobalWallSupported :: Bool
 windowsGlobalWallSupported = True
 
-foreign import ccall safe "hb_wsl_get_target_path"
-  cGetTargetPath :: Ptr (Ptr CWchar) -> IO Word32
-
-foreign import ccall unsafe "hb_wsl_free"
-  cFree :: Ptr value -> IO ()
-
-foreign import ccall safe "hb_wsl_mutex_acquire"
-  cMutexAcquire :: Ptr (Ptr ()) -> Ptr CInt -> IO Word32
-
-foreign import ccall safe "hb_wsl_mutex_release"
-  cMutexRelease :: Ptr () -> IO Word32
-
-foreign import ccall safe "hb_wsl_open_exclusive"
-  cOpenExclusive ::
-    Ptr CWchar ->
-    Ptr (Ptr ()) ->
-    Ptr Word8 ->
-    Ptr (Ptr Word8) ->
-    Ptr CSize ->
-    Ptr CInt ->
-    IO Word32
-
-foreign import ccall safe "hb_wsl_probe_identity"
-  cProbeIdentity ::
-    Ptr CWchar ->
-    Ptr Word8 ->
-    Ptr CInt ->
-    IO Word32
-
-foreign import ccall safe "hb_wsl_create_stage"
-  cCreateStage ::
-    Ptr CWchar ->
-    Ptr Word8 ->
-    CSize ->
-    Ptr (Ptr ()) ->
-    Ptr Word8 ->
-    IO Word32
-
-foreign import ccall safe "hb_wsl_link_armed_stage"
-  cLinkArmedStage ::
-    Ptr () ->
-    Ptr CWchar ->
-    Ptr CWchar ->
-    IO Word32
-
-foreign import ccall safe "hb_wsl_rename_handle_noreplace"
-  cRenameHandleNoReplace :: Ptr () -> Ptr CWchar -> IO Word32
-
-foreign import ccall safe "hb_wsl_delete_handle"
-  cDeleteHandle :: Ptr () -> IO Word32
-
-foreign import ccall safe "hb_wsl_close_handle"
-  cCloseHandle :: Ptr () -> IO Word32
-
-foreign import ccall safe "hb_wsl_registry_load_active"
-  cRegistryLoadActive ::
-    Ptr (Ptr Word8) ->
-    Ptr CSize ->
-    Ptr CInt ->
-    IO Word32
-
-foreign import ccall safe "hb_wsl_registry_allocate_fence"
-  cRegistryAllocateFence :: Ptr Word64 -> IO Word32
-
-foreign import ccall safe "hb_wsl_registry_store_active"
-  cRegistryStoreActive :: Ptr Word8 -> CSize -> IO Word32
-
-foreign import ccall safe "hb_wsl_registry_delete_active_if_equal"
-  cRegistryDeleteActiveIfEqual ::
-    Ptr Word8 ->
-    CSize ->
-    Ptr CInt ->
-    IO Word32
-
-data OpenFile = OpenFile
-  { openFileHandle :: Ptr (),
-    openFileIdentity :: FileIdentity,
-    openFileBytes :: ByteString
-  }
-
-data ApplyLayout = ApplyLayout
-  { layoutApplyTarget :: Maybe OpenFile,
-    layoutApplyStage :: Maybe OpenFile,
-    layoutApplyRetained :: Maybe OpenFile
-  }
-
-data RestoreLayout = RestoreLayout
-  { layoutRestoreTarget :: Maybe OpenFile,
-    layoutRestoreRetained :: Maybe OpenFile,
-    layoutRestoreRetired :: Maybe OpenFile
-  }
-
-data ApplyRecoveryStep
-  = ApplyRecoveryContinue
-  | ApplyRecoveryDone PersistedWallRecord
-
-data RestoreRecoveryStep ownerId wallSpecId reservationId receiptId fenceId
-  = RestoreRecoverySame
-  | RestoreRecoveryWith
-      (WallReceipt ownerId wallSpecId reservationId receiptId fenceId)
-
-data SomeWallReceipt =
-  forall ownerId wallSpecId reservationId receiptId fenceId.
-  SomeWallReceipt
-    (WallReceipt ownerId wallSpecId reservationId receiptId fenceId)
-
 applyCurrentUserGlobalWall ::
   CurrentUserWallRequest ->
-  IO (Either WindowsWallError AppliedWslConfigFile)
-applyCurrentUserGlobalWall request =
-  withGlobalMutex $ do
-    targetResult <- getCurrentUserTarget
-    case targetResult of
-      Left err -> pure (Left err)
-      Right target -> do
-        activeResult <- loadActiveRecord
-        case activeResult of
-          Left err -> pure (Left err)
-          Right Nothing -> do
-            fenceResult <- allocateFence
-            case fenceResult of
-              Left err -> pure (Left err)
-              Right fenceValue -> do
-                prepared <-
-                  prepareFreshReceipt request target fenceValue
-                case prepared of
-                  Left err -> pure (Left err)
-                  Right (SomeWallReceipt claimed) ->
-                    fmap AppliedWslConfigFile
-                      <$> driveApply target claimed
-          Right (Just active) ->
-            resumeReceipt request active $ \receipt ->
-              fmap AppliedWslConfigFile
-                <$> driveApply target receipt
+  IO (Either HostWallError AppliedWslConfigFile)
+applyCurrentUserGlobalWall request = do
+  prepared <- newWindowsHostWallBackend
+  case prepared of
+    Left err -> pure (Left err)
+    Right backend -> applyGlobalWall backend request
 
 restoreCurrentUserGlobalWall ::
   CurrentUserWallRequest ->
-  IO (Either WindowsWallError ())
-restoreCurrentUserGlobalWall request =
-  withGlobalMutex $ do
-    targetResult <- getCurrentUserTarget
-    case targetResult of
-      Left err -> pure (Left err)
-      Right target -> do
-        activeResult <- loadActiveRecord
-        case activeResult of
-          Left err -> pure (Left err)
-          Right Nothing -> pure (Left WindowsWallNoActiveRecord)
-          Right (Just active) ->
-            resumeReceipt request active (driveRestore target)
-
-prepareFreshReceipt ::
-  CurrentUserWallRequest ->
-  FilePath ->
-  Word64 ->
-  IO (Either WindowsWallError SomeWallReceipt)
-prepareFreshReceipt request target fenceValue =
-  withOpenPath target $ \targetFile -> do
-    let origin =
-          case targetFile of
-            Nothing -> OriginalAbsent
-            Just file ->
-              OriginalPresent
-                (openFileIdentity file)
-                (openFileBytes file)
-    case desiredFromOrigin request origin of
-      Left err -> pure (Left err)
-      Right desired ->
-        withRequestReservation request desired fenceValue $ \reservation ->
-          case claimOrResumeWall reservation Nothing of
-            Left err -> pure (Left (fromModelError err))
-            Right claimed -> do
-              case
-                  recordWallOrigin
-                    (wallReceiptRecord claimed)
-                    claimed
-                    origin
-                of
-                  Left err -> pure (Left (fromModelError err))
-                  Right withOrigin -> do
-                    originStored <- storeReceipt withOrigin
-                    pure
-                      ( originStored
-                          >> Right (SomeWallReceipt withOrigin)
-                      )
-
-resumeReceipt ::
-  CurrentUserWallRequest ->
-  PersistedWallRecord ->
-  ( forall ownerId wallSpecId reservationId receiptId fenceId.
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError result)
-  ) ->
-  IO (Either WindowsWallError result)
-resumeReceipt request active consume = do
-  case precheckActiveRequest request active of
+  IO (Either HostWallError ())
+restoreCurrentUserGlobalWall request = do
+  prepared <- newWindowsHostWallBackend
+  case prepared of
     Left err -> pure (Left err)
-    Right () ->
-      case desiredForActive request active of
-        Left err -> pure (Left err)
-        Right desired ->
-          withRequestReservation
-            request
-            desired
-            (persistedFenceValue active)
-            $ \reservation ->
-              case claimOrResumeWall reservation (Just active) of
-                Left err -> pure (Left (fromModelError err))
-                Right receipt -> consume receipt
+    Right backend -> restoreGlobalWall backend request
 
--- | Reject a foreign owner or effective managed specification before parsing
--- or merging the durable origin.  A caller that does not own an active wall
--- must receive a conflict even when that wall's origin bytes would be invalid
--- under the caller's requested merge.  Reversing this order would leak an
--- unrelated configuration error and, more importantly, obscure the ownership
--- refusal that prevents takeover.
-precheckActiveRequest ::
-  CurrentUserWallRequest ->
-  PersistedWallRecord ->
-  Either WindowsWallError ()
-precheckActiveRequest request active
-  | requestOwnerIdentity request /= persistedOwnerIdentity active =
-      Left
-        ( WindowsWallConflict
-            ( ForeignWallOwner
-                (requestOwnerIdentity request)
-                (persistedOwnerIdentity active)
-            )
-        )
-  | effectiveSpecIdentity request /= persistedSpecIdentity active =
-      Left
-        ( WindowsWallConflict
-            ( IncompatibleWallSpec
-                (effectiveSpecIdentity request)
-                (persistedSpecIdentity active)
-            )
-        )
-  | otherwise = Right ()
+-- | An open Windows object. The path is retained because Windows namespace
+-- operations are path-based; every one of them re-checks the recorded identity
+-- before it acts.
+data WindowsWallHandle = WindowsWallHandle
+  { windowsHandle :: HANDLE,
+    windowsHandlePath :: FilePath
+  }
 
-withGlobalMutex ::
-  IO (Either WindowsWallError result) ->
-  IO (Either WindowsWallError result)
-withGlobalMutex action =
-  -- A Win32 mutex belongs to the OS thread that successfully waited for it,
-  -- not merely to the process or the numeric HANDLE.  A normal lightweight
-  -- Haskell thread may migrate between capabilities around a safe FFI call.
-  -- Keep acquisition, the complete protected action, exception cleanup, and
-  -- normal release inside one bound Haskell thread so ReleaseMutex always
-  -- executes on the acquiring OS thread.
-  runInBoundThread $
-    mask $ \restore ->
-      alloca $ \mutexPointer ->
-        alloca $ \abandonedPointer -> do
-          status <- cMutexAcquire mutexPointer abandonedPointer
-          if status /= 0
-            then
-              pure
-                ( Left
-                    ( if status == errorBusy
-                        then
-                          WindowsWallBusy
-                            "the per-user WSL global-wall mutex was not acquired within 30 seconds"
-                        else
-                          nativeFailure
-                            "acquire the per-user global mutex"
-                            status
-                    )
-                )
-            else do
-              mutex <- peek mutexPointer
-              _ <- peek abandonedPointer
-              result <-
-                restore action
-                  `onException` void (cMutexRelease mutex)
-              releaseStatus <- cMutexRelease mutex
-              pure $
-                if releaseStatus /= 0
-                  then
-                    case result of
-                      Left err -> Left err
-                      Right _ ->
-                        Left
-                          (nativeFailure "release the per-user global mutex" releaseStatus)
-                  else result
+data WindowsWallLocation = WindowsWallLocation
+  { windowsWallTargetPath :: FilePath,
+    windowsWallStateDirectory :: FilePath
+  }
 
-getCurrentUserTarget :: IO (Either WindowsWallError FilePath)
-getCurrentUserTarget =
-  mask $ \_ ->
-    alloca $ \pathPointer -> do
-      status <- cGetTargetPath pathPointer
-      if status /= 0
-        then pure (Left (nativeFailure "derive FOLDERID_Profile\\.wslconfig" status))
-        else do
-          path <- peek pathPointer
-          if path == nullPtr
-            then
-              pure
-                ( Left
-                    (nativeFailure "derive FOLDERID_Profile\\.wslconfig" errorInvalidData)
-                )
-            else
-              bracket
-                (pure path)
-                cFree
-                (fmap Right . peekCWString)
-
-withRequestReservation ::
-  CurrentUserWallRequest ->
-  ByteString ->
-  Word64 ->
-  ( forall ownerId wallSpecId reservationId receiptId fenceId.
-    WallReservation ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError result)
-  ) ->
-  IO (Either WindowsWallError result)
-withRequestReservation request desired fenceValue consume =
-  case
-      joinModel
-        ( withWallOwner (requestOwnerIdentity request) $ \owner ->
-            joinModel
-              ( withWallSpec
-                  (effectiveSpecIdentity request)
-                  desired
-                  $ \spec ->
-                    joinModel
-                      ( withWallFence fenceValue $ \fence ->
-                          withWallReservation
-                            owner
-                            spec
-                            (requestReservationIdentity request)
-                            (requestReceiptIdentity request)
-                            fence
-                            consume
-                      )
-              )
-        )
-    of
-    Left err -> pure (Left (fromModelError err))
-    Right operation -> operation
-
-desiredForActive ::
-  CurrentUserWallRequest ->
-  PersistedWallRecord ->
-  Either WindowsWallError ByteString
-desiredForActive request active =
-  case persistedWallOrigin active of
+-- | Derive @%UserProfile%\\.wslconfig@ and the sibling state directory. No
+-- caller input reaches either path.
+currentUserWallLocation :: IO (Either HostWallError WindowsWallLocation)
+currentUserWallLocation = do
+  profile <- lookupEnv "USERPROFILE"
+  case profile of
     Nothing ->
-      Left
-        ( WindowsWallJournalFailure
-            "an active Windows wall has no durable origin"
-        )
-    Just origin -> do
-      expected <- desiredFromOrigin request origin
-      if expected == persistedDesiredBytes active
-        then Right (persistedDesiredBytes active)
-        else
-          Left
-            ( WindowsWallJournalFailure
-                "managed spec does not reproduce the desired bytes from the durable origin"
+      pure
+        ( Left
+            ( HostWallUnsupported
+                "USERPROFILE is not set, so the per-user .wslconfig cannot be derived"
             )
-
-desiredFromOrigin ::
-  CurrentUserWallRequest ->
-  WslConfigOrigin ->
-  Either WindowsWallError ByteString
-desiredFromOrigin request origin = do
-  let originalBytes =
-        case origin of
-          OriginalAbsent -> ByteString.empty
-          OriginalPresent _ bytes -> bytes
-  desired <-
-    either
-      (Left . fromConfigError)
-      Right
-      (mergeManagedWslConfig originalBytes (requestManagedSpec request))
-  if ByteString.length desired > maximumWallBytes
-    then
-      Left
-        ( WindowsWallUnsupported
-            "merged .wslconfig exceeds the 16 MiB adapter limit"
         )
-    else Right desired
-
-effectiveSpecIdentity :: CurrentUserWallRequest -> ByteString
-effectiveSpecIdentity request =
-  LazyByteString.toStrict . Builder.toLazyByteString $
-    Builder.byteString "HBWSL-MANAGED-SPEC02"
-      <> putSized (requestSpecIdentity request)
-      <> putSized (managedSpecIdentityBytes (requestManagedSpec request))
-
-driveApply ::
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-driveApply target = go (0 :: Int)
-  where
-    go steps receipt
-      | steps > 24 =
+    Just home
+      | null home ->
           pure
             ( Left
-                (WindowsWallJournalFailure "apply recovery exceeded its phase bound")
+                ( HostWallUnsupported
+                    "USERPROFILE is empty, so the per-user .wslconfig cannot be derived"
+                )
             )
-      | otherwise =
-          let active = wallReceiptRecord receipt
-           in case persistedWallPhase active of
-                WallClaimed ->
-                  pure
-                    ( Left
-                        ( WindowsWallJournalFailure
-                            "durable claimed-only records are unsupported; origin must be the first active record"
-                        )
-                    )
-                WallOriginRecorded ->
-                  let candidate = stageCandidate active
-                   in case
-                        beginWallStageCreation
-                          active
-                          receipt
-                          candidate
-                      of
-                        Left err -> pure (Left (fromModelError err))
-                        Right creating -> do
-                          stored <- storeReceipt creating
-                          case stored of
-                            Left err -> pure (Left err)
-                            Right () -> go (steps + 1) creating
-                WallStageCreateOutcomeUnknown ->
-                  driveStage steps go target receipt
-                WallStageBound ->
-                  driveStage steps go target receipt
-                WallApplyOutcomeUnknown ->
-                  driveApplying steps go target receipt
-                WallApplied ->
-                  withApplyLayout target active $ \layout ->
-                    case
-                        settleWallApply
-                          active
-                          receipt
-                          (applyObservation layout)
-                      of
-                        Left err -> pure (Left (fromModelError err))
-                        Right applied -> do
-                          stored <- storeReceipt applied
-                          pure (stored >> Right (wallReceiptRecord applied))
-                phase ->
-                  pure
-                    ( Left
-                        ( WindowsWallModelFailure
-                            ( IllegalWallTransition
-                                phase
-                                "apply cannot take over a wall already in teardown"
-                            )
-                        )
-                    )
+      | otherwise ->
+          pure
+            ( Right
+                WindowsWallLocation
+                  { windowsWallTargetPath = home </> ".wslconfig",
+                    windowsWallStateDirectory = home </> ".hostbootstrap"
+                  }
+            )
 
-driveStage ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError PersistedWallRecord)
-  ) ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-driveStage steps continueApply target receipt =
-  case checkedStagePaths target active of
+newWindowsHostWallBackend ::
+  IO (Either HostWallError (HostWallBackend WindowsWallHandle))
+newWindowsHostWallBackend = do
+  located <- currentUserWallLocation
+  case located of
     Left err -> pure (Left err)
-    Right (boundPath, armedPath) -> do
-      classificationResult <-
-        withOpenPath boundPath $ \boundFile ->
-          pure
-            (Right (classifyWallStageCreation receipt (fileObservation boundFile)))
-      case classificationResult of
-        Left err -> pure (Left err)
-        Right (StageCreateBlocked conflict) ->
-          pure (Left (WindowsWallConflict conflict))
-        Right (StageCreateNotInProgress phase) ->
-          pure
-            ( Left
-                ( WindowsWallModelFailure
-                    ( IllegalWallTransition
-                        phase
-                        "stage recovery was requested outside a stage phase"
-                    )
-                )
-            )
-        Right StageCreateObservedBound ->
-          recoverObservedBound
-            steps
-            continueApply
-            target
-            armedPath
-            receipt
-        Right StageCreateRetry ->
-          recoverMissingBound
-            steps
-            continueApply
-            boundPath
-            armedPath
-            receipt
-  where
-    active = wallReceiptRecord receipt
+    Right location -> do
+      createDirectoryIfMissing True (windowsWallStateDirectory location)
+      pure
+        ( Right
+            HostWallBackend
+              { wallBackendName = "windows",
+                wallTargetPath = pure (Right (windowsWallTargetPath location)),
+                wallWithExclusiveEntry =
+                  windowsExclusiveEntry (lockPath location),
+                wallOpenExclusive = windowsOpenExclusive,
+                wallProbeIdentity = windowsProbeIdentity,
+                wallCreateArmedStage = windowsCreateArmedStage,
+                wallLinkArmedStage = windowsLinkArmedStage,
+                wallRenameNoReplace = windowsRenameNoReplace,
+                wallDeleteObject = windowsDeleteObject,
+                wallCloseObject = windowsCloseObject,
+                wallArmedStageIsVolatile = True,
+                wallIsSharingFailure = windowsIsSharingFailure,
+                wallIsRaceFailure = windowsIsRaceFailure,
+                wallIsHardLinkUnsupported = windowsIsHardLinkUnsupported,
+                wallJournalLoad = windowsJournalLoad (recordPath location),
+                wallJournalAllocateFence =
+                  windowsAllocateFence (fencePath location),
+                wallJournalStore = windowsJournalStore (recordPath location),
+                wallJournalDeleteIfEqual =
+                  windowsJournalDeleteIfEqual (recordPath location)
+              }
+        )
 
-recoverMissingBound ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError PersistedWallRecord)
-  ) ->
-  FilePath ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-recoverMissingBound steps continueApply boundPath armedPath receipt =
-  do
-    recovered <-
-      withOpenPath armedPath $ \armedFile ->
-        case armedFile of
-          Just file ->
-            fmap (True <$)
-              ( recoverDurablyBoundArmed
-                  boundPath
-                  armedPath
-                  receipt
-                  file
-              )
-          Nothing -> pure (Right False)
-    case recovered of
-      Left err -> pure (Left err)
-      Right True -> continueApply (steps + 1) receipt
-      Right False ->
-        createBindAndLink
-          steps
-          continueApply
-          boundPath
-          armedPath
-          receipt
+lockPath :: WindowsWallLocation -> FilePath
+lockPath location = windowsWallStateDirectory location </> "global-wall.lock"
 
-recoverDurablyBoundArmed ::
+recordPath :: WindowsWallLocation -> FilePath
+recordPath location =
+  windowsWallStateDirectory location </> "global-wall.record"
+
+fencePath :: WindowsWallLocation -> FilePath
+fencePath location = windowsWallStateDirectory location </> "global-wall.fence"
+
+-- Clause 1 -------------------------------------------------------------------
+
+lockWaitSeconds :: Double
+lockWaitSeconds = 30
+
+{- | A @LockFileEx@ byte-range lock conflicts between handles even inside one
+process, so it needs no in-process companion mutex, and it is not affine to the
+acquiring OS thread the way a Win32 named mutex is.  That is why the test
+executable no longer needs the threaded RTS.
+-}
+windowsExclusiveEntry ::
   FilePath ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  OpenFile ->
-  IO (Either WindowsWallError ())
-recoverDurablyBoundArmed boundPath armedPath receipt armedFile =
-  case persistedWallPhase active of
-    WallStageCreateOutcomeUnknown ->
+  IO (Either HostWallError result) ->
+  IO (Either HostWallError result)
+windowsExclusiveEntry path action = do
+  opened <-
+    openHandle
+      path
+      (gENERIC_READ .|. gENERIC_WRITE)
+      (fILE_SHARE_READ .|. fILE_SHARE_WRITE)
+      oPEN_ALWAYS
+      fILE_ATTRIBUTE_NORMAL
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing ->
       pure
         ( Left
-            (WindowsWallConflict (UnboundStagePresent (openFileIdentity armedFile)))
-        )
-    WallStageBound
-      | fileObservation (Just armedFile)
-          /= expectedStagedObservation active ->
-          pure
-            ( Left
-                ( stageMismatch
-                    active
-                    (fileObservation (Just armedFile))
-                )
-            )
-      | otherwise -> do
-          linkResult <-
-            linkArmedStage
-              armedFile
-              armedPath
-              boundPath
-          case linkResult of
-            Left err -> pure (Left err)
-            Right () -> do
-              deleteOpenFile armedFile
-    phase ->
-      pure
-        ( Left
-            ( WindowsWallModelFailure
-                (IllegalWallTransition phase "unexpected armed-stage recovery phase")
+            ( HostWallNativeFailure
+                ("open the global wall lock " ++ path)
+                errorFileNotFound
             )
         )
-  where
-    active = wallReceiptRecord receipt
+    Right (Just handle) -> do
+      acquired <- acquireExclusiveRange handle
+      case acquired of
+        Left err -> do
+          void (c_CloseHandle handle)
+          pure (Left err)
+        Right () -> do
+          result <- action `onException` releaseRange handle
+          released <- releaseRange handle
+          pure $
+            case (result, released) of
+              (Left err, _) -> Left err
+              (Right _, Left err) -> Left err
+              (Right value, Right ()) -> Right value
 
-createBindAndLink ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError PersistedWallRecord)
-  ) ->
-  FilePath ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-createBindAndLink steps continueApply boundPath armedPath receipt =
-  mask $ \restore -> do
-    createdResult <-
-      createArmedStage armedPath (persistedDesiredBytes active)
-    case createdResult of
-      Left err -> pure (Left err)
-      Right armedFile -> do
-        operation <-
-          restore (bindAndLink armedFile)
-            `onException` void (closeOpenFile armedFile)
-        closeResult <- closeOpenFile armedFile
-        case (operation, closeResult) of
-          (Left err, _) -> pure (Left err)
-          (Right _, Left err) -> pure (Left err)
-          (Right boundReceipt, Right ()) ->
-            continueApply (steps + 1) boundReceipt
+acquireExclusiveRange :: HANDLE -> IO (Either HostWallError ())
+acquireExclusiveRange handle = do
+  started <- getMonotonicTime
+  go started
   where
-    active = wallReceiptRecord receipt
-    bindAndLink armedFile =
-      case validateStageVolume active (openFileIdentity armedFile) of
-        Left err -> pure (Left err)
-        Right () ->
-          case
-              bindWallStage
-                active
-                receipt
-                ObservedAbsent
-                (openFileIdentity armedFile)
-            of
-              Left err -> pure (Left (fromModelError err))
-              Right boundReceipt -> do
-                stored <- storeReceipt boundReceipt
-                case stored of
-                  Left err -> pure (Left err)
-                  Right () -> do
-                    linked <-
-                      linkArmedStage
-                        armedFile
-                        armedPath
-                        boundPath
-                    case linked of
-                      Left err -> pure (Left err)
-                      Right () ->
-                        pure (Right boundReceipt)
-
-recoverObservedBound ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError PersistedWallRecord)
-  ) ->
-  FilePath ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-recoverObservedBound steps continueApply target armedPath receipt =
-  do
-    cleanupResult <-
-      withOpenPath armedPath $ \armedFile ->
-        case armedFile of
-          Nothing -> pure (Right ())
-          Just file
-            | fileObservation (Just file) == expectedStagedObservation active ->
-                deleteOpenFile file
-            | otherwise ->
+    go started =
+      with (OVERLAPPED 0 0 0 0 nullPtr) $ \overlapped -> do
+        locked <-
+          c_LockFileEx
+            handle
+            (lOCKFILE_EXCLUSIVE_LOCK .|. lOCKFILE_FAIL_IMMEDIATELY)
+            0
+            1
+            0
+            overlapped
+        if locked
+          then pure (Right ())
+          else do
+            status <- getLastError
+            now <- getMonotonicTime
+            if not (windowsIsContendedFailure status)
+              then
                 pure
                   ( Left
-                      (stageMismatch active (fileObservation (Just file)))
-                  )
-    case cleanupResult of
-      Left err -> pure (Left err)
-      Right () -> do
-        intentResult <- bindApplyIntent
-        case intentResult of
-          Left err -> pure (Left err)
-          Right applying -> continueApply (steps + 1) applying
-  where
-    active = wallReceiptRecord receipt
-    bindApplyIntent =
-      withApplyLayout target active $ \layout ->
-        case persistedTargetIdentity active of
-          Nothing ->
-            pure
-              ( Left
-                  (WindowsWallJournalFailure "bound stage has no FILE_ID")
-              )
-          Just stageIdentity ->
-            case
-                beginWallApply
-                  active
-                  receipt
-                  (applyObservation layout)
-                  stageIdentity
-              of
-                Left err -> pure (Left (fromModelError err))
-                Right applying -> do
-                  stored <- storeReceipt applying
-                  pure (stored >> Right applying)
-
-driveApplying ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError PersistedWallRecord)
-  ) ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError PersistedWallRecord)
-driveApplying steps continueApply target receipt =
-  do
-    recoveryStep <-
-      withApplyLayout target active $ \layout ->
-        case classifyWallApply receipt (applyObservation layout) of
-          ApplyObservedDesired ->
-            case settleWallApply active receipt (applyObservation layout) of
-              Left err -> pure (Left (fromModelError err))
-              Right applied -> do
-                stored <- storeReceipt applied
-                pure
-                  ( stored
-                      >> Right
-                        (ApplyRecoveryDone (wallReceiptRecord applied))
-                  )
-          ApplyRetryPublication ->
-            case persistedWallOrigin active of
-              Nothing ->
-                pure
-                  (Left (WindowsWallJournalFailure "applying record has no origin"))
-              Just OriginalAbsent ->
-                publishStage layout
-              Just origin@(OriginalPresent _ _) ->
-                if observesExactOrigin origin (layoutApplyTarget layout)
-                  then retainOrigin layout
-                  else publishStage layout
-          ApplyBlocked conflict ->
-            pure (Left (WindowsWallConflict conflict))
-          classification ->
-            pure
-              ( Left
-                  ( WindowsWallModelFailure
-                      ( IllegalWallTransition
-                          WallApplyOutcomeUnknown
-                          ("unexpected apply recovery classification " ++ show classification)
+                      ( HostWallNativeFailure
+                          "acquire the per-user global wall lock"
+                          status
                       )
                   )
-              )
-    case recoveryStep of
-      Left err -> pure (Left err)
-      Right ApplyRecoveryContinue ->
-        continueApply (steps + 1) receipt
-      Right (ApplyRecoveryDone record) -> pure (Right record)
-  where
-    active = wallReceiptRecord receipt
-    publishStage layout =
-      case layoutApplyStage layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "stage vanished before publication"))
-        Just stage -> do
-          renamed <- renameOpenFile stage target
-          pure (renamed >> Right ApplyRecoveryContinue)
-    retainOrigin layout =
-      case layoutApplyTarget layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "origin vanished before retention"))
-        Just origin -> do
-          renamed <- renameOpenFile origin (retainedPath target active)
-          pure (renamed >> Right ApplyRecoveryContinue)
+              else
+                if now - started >= lockWaitSeconds
+                  then
+                    pure
+                      ( Left
+                          ( HostWallBusy
+                              "the per-user global wall lock was not acquired within 30 seconds"
+                          )
+                      )
+                  else threadDelay 50000 >> go started
 
-driveRestore ::
+releaseRange :: HANDLE -> IO (Either HostWallError ())
+releaseRange handle = do
+  unlocked <-
+    with (OVERLAPPED 0 0 0 0 nullPtr) $ \overlapped ->
+      c_UnlockFileEx handle 0 1 0 overlapped
+  closed <- c_CloseHandle handle
+  pure $
+    if not unlocked
+      then
+        Left
+          ( HostWallNativeFailure
+              "release the per-user global wall lock"
+              errorInvalidData
+          )
+      else
+        if closed
+          then Right ()
+          else
+            Left
+              ( HostWallNativeFailure
+                  "close the per-user global wall lock"
+                  errorInvalidData
+              )
+
+-- Clause 3: exact observation ------------------------------------------------
+
+{- | The observation share mode admits concurrent readers and deletes: mutual
+exclusion is the global lock's job, and @DeleteFile@/@MoveFileEx@ must be able
+to act on a name this process still holds open.
+-}
+observationShareMode :: Word32
+observationShareMode = fILE_SHARE_READ .|. fILE_SHARE_DELETE
+
+windowsOpenExclusive ::
   FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError ())
-driveRestore target = go (0 :: Int)
-  where
-    go steps receipt
-      | steps > 24 =
-          pure
-            ( Left
-                (WindowsWallJournalFailure "restore recovery exceeded its phase bound")
-            )
-      | otherwise =
-          let active = wallReceiptRecord receipt
-           in case persistedWallPhase active of
-                WallApplied ->
-                  do
-                    beginResult <-
-                      withRestoreLayout target active $ \layout ->
-                        runWithAuthority active receipt $ \authority ->
-                          case
-                              beginWallRestore
-                                active
-                                authority
-                                receipt
-                                (restoreObservation layout)
-                            of
-                              Left err -> pure (Left (fromModelError err))
-                              Right restoring -> do
-                                stored <- storeReceipt restoring
-                                pure (stored >> Right restoring)
-                    case beginResult of
-                      Left err -> pure (Left err)
-                      Right restoring -> go (steps + 1) restoring
-                WallRestoreOutcomeUnknown ->
-                  driveRestoring steps go target receipt
-                WallRestored ->
-                  withRestoreLayout target active $ \layout ->
-                    runWithAuthority active receipt $ \authority ->
-                      case
-                          releaseWall
-                            active
-                            authority
-                            receipt
-                            (restoreObservation layout)
-                        of
-                          Left err -> pure (Left (fromModelError err))
-                          Right released -> do
-                            stored <- storeReceipt released
-                            case stored of
-                              Left err -> pure (Left err)
-                              Right () -> clearReleased released
-                WallReleased ->
-                  withRestoreLayout target active $ \layout ->
-                    case
-                        verifyWallReleased
-                          active
-                          receipt
-                          (restoreObservation layout)
-                      of
-                        Left err -> pure (Left (fromModelError err))
-                        Right () -> clearReleased receipt
-                phase ->
-                  pure
-                    ( Left
-                        ( WindowsWallModelFailure
-                            ( IllegalWallTransition
-                                phase
-                                "restore requires a durably applied wall"
-                            )
+  IO (Either HostWallError (Maybe (WallObject WindowsWallHandle)))
+windowsOpenExclusive path = do
+  opened <-
+    openHandle
+      path
+      (gENERIC_READ .|. dELETE)
+      observationShareMode
+      oPEN_EXISTING
+      (fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_OPEN_REPARSE_POINT)
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Right Nothing)
+    Right (Just handle) -> do
+      described <- handleInformation path handle
+      case described of
+        Left err -> do
+          void (c_CloseHandle handle)
+          pure (Left err)
+        Right information
+          | isNonRegular information -> do
+              void (c_CloseHandle handle)
+              pure
+                ( Left
+                    ( HostWallUnsupported
+                        ( "refusing to observe the directory or reparse point at "
+                            ++ path
                         )
                     )
-
-driveRestoring ::
-  Int ->
-  ( Int ->
-    WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError ())
-  ) ->
-  FilePath ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError ())
-driveRestoring steps continueRestore target receipt =
-  do
-    recoveryStep <-
-      withRestoreLayout target active $ \layout ->
-        case classifyWallRestore receipt (restoreObservation layout) of
-          RestoreRetryFromApplied ->
-            case persistedWallOrigin active of
-              Nothing ->
-                pure
-                  (Left (WindowsWallJournalFailure "restoring record has no origin"))
-              Just OriginalAbsent -> deleteManagedTarget layout
-              Just (OriginalPresent _ _) -> retireManagedTarget layout
-          RestoreRetryOriginPublication ->
-            publishOrigin layout
-          RestoreRetryManagedCleanup ->
-            deleteRetiredManaged layout
-          RestoreObservedOrigin ->
-            runWithAuthority active receipt $ \authority ->
-              case
-                  settleWallRestore
-                    active
-                    authority
-                    receipt
-                    (restoreObservation layout)
-                of
-                  Left err -> pure (Left (fromModelError err))
-                  Right restored -> do
-                    stored <- storeReceipt restored
-                    pure (stored >> Right (RestoreRecoveryWith restored))
-          RestoreBlocked conflict ->
-            pure (Left (WindowsWallConflict conflict))
-          classification ->
-            pure
-              ( Left
-                  ( WindowsWallModelFailure
-                      ( IllegalWallTransition
-                          WallRestoreOutcomeUnknown
-                          ("unexpected restore recovery classification " ++ show classification)
-                      )
-                  )
-              )
-    case recoveryStep of
-      Left err -> pure (Left err)
-      Right RestoreRecoverySame ->
-        continueRestore (steps + 1) receipt
-      Right (RestoreRecoveryWith nextReceipt) ->
-        continueRestore (steps + 1) nextReceipt
-  where
-    active = wallReceiptRecord receipt
-    deleteManagedTarget layout =
-      case layoutRestoreTarget layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "managed target vanished before delete"))
-        Just managed -> do
-          deleted <- deleteOpenFile managed
-          pure (deleted >> Right RestoreRecoverySame)
-    retireManagedTarget layout =
-      case layoutRestoreTarget layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "managed target vanished before retirement"))
-        Just managed -> do
-          renamed <- renameOpenFile managed (retiredPath target active)
-          pure (renamed >> Right RestoreRecoverySame)
-    publishOrigin layout =
-      case layoutRestoreRetained layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "retained origin vanished before publication"))
-        Just origin -> do
-          renamed <- renameOpenFile origin target
-          pure (renamed >> Right RestoreRecoverySame)
-    deleteRetiredManaged layout =
-      case layoutRestoreRetired layout of
-        Nothing ->
-          pure
-            (Left (WindowsWallJournalFailure "retired managed object vanished before delete"))
-        Just managed -> do
-          deleted <- deleteOpenFile managed
-          pure (deleted >> Right RestoreRecoverySame)
-
-runWithAuthority ::
-  PersistedWallRecord ->
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  ( WallAuthority ownerId wallSpecId reservationId receiptId fenceId ->
-    IO (Either WindowsWallError result)
-  ) ->
-  IO (Either WindowsWallError result)
-runWithAuthority active receipt consume =
-  case
-      joinModel
-        (withWallAuthority active receipt (Right . consume))
-    of
-    Left err -> pure (Left (fromModelError err))
-    Right operation -> operation
-
-clearReleased ::
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError ())
-clearReleased receipt = do
-  cleared <- deleteActiveIfEqual (wallReceiptRecord receipt)
-  pure $
-    case cleared of
-      Left err -> Left err
-      Right True -> Right ()
-      Right False ->
-        Left
-          ( WindowsWallJournalFailure
-              "released active record changed before conditional clear"
-          )
-
-withApplyLayout ::
-  FilePath ->
-  PersistedWallRecord ->
-  (ApplyLayout -> IO (Either WindowsWallError result)) ->
-  IO (Either WindowsWallError result)
-withApplyLayout target record consume =
-  case checkedStagePaths target record of
-    Left err -> pure (Left err)
-    Right (stage, _) ->
-      withOpenPath target $ \targetFile -> do
-        stageResult <-
-          withOpenPath stage $ \stageFile -> do
-            let retained = retainedPath target record
-            retainedResult <-
-              withOpenPath retained $ \retainedFile ->
-                consume
-                  ApplyLayout
-                    { layoutApplyTarget = targetFile,
-                      layoutApplyStage = stageFile,
-                      layoutApplyRetained = retainedFile
-                    }
-            resolveSharingFailure
-              [targetFile, stageFile]
-              retained
-              retainedResult
-        resolveSharingFailure [targetFile] stage stageResult
-
-withRestoreLayout ::
-  FilePath ->
-  PersistedWallRecord ->
-  (RestoreLayout -> IO (Either WindowsWallError result)) ->
-  IO (Either WindowsWallError result)
-withRestoreLayout target record consume =
-  withOpenPath target $ \targetFile -> do
-    let retained = retainedPath target record
-        retired = retiredPath target record
-    retainedResult <-
-      withOpenPath retained $ \retainedFile -> do
-        retiredResult <-
-          withOpenPath retired $ \retiredFile ->
-            consume
-              RestoreLayout
-                { layoutRestoreTarget = targetFile,
-                  layoutRestoreRetained = retainedFile,
-                  layoutRestoreRetired = retiredFile
-                }
-        resolveSharingFailure
-          [targetFile, retainedFile]
-          retired
-          retiredResult
-    resolveSharingFailure [targetFile] retained retainedResult
-
--- | Re-observe the path with a zero-access metadata probe before classifying a
--- sharing violation.  Opening several recovery names with share mode zero can
--- fail because two names are hard links to the same already-open object.  It
--- can also fail because an unrelated process holds an unrelated file.  The
--- old implementation assigned the first prior FILE_ID to every such failure;
--- that invented identity evidence.  A matching probe now proves the alias,
--- while every non-matching or unstable layout remains a non-mutating Busy
--- refusal.
-resolveSharingFailure ::
-  [Maybe OpenFile] ->
-  FilePath ->
-  Either WindowsWallError result ->
-  IO (Either WindowsWallError result)
-resolveSharingFailure prior path result =
-  case result of
-    Left (WindowsWallNativeFailure _ status)
-      | isSharingStatus status -> do
-          probed <- probePathIdentity path
-          pure $
-            case probed of
-              Right (Just observed)
-                | observed `elem` map openFileIdentity [file | Just file <- prior] ->
-                    Left
-                      ( WindowsWallConflict
-                          (ConflictingWallPathShare observed)
-                      )
-              _ ->
-                Left
-                  ( WindowsWallBusy
-                      ( "could not exclusively observe "
-                          ++ path
-                          ++ " because another handle is active"
-                      )
-                  )
-    _ -> pure result
-
-applyObservation :: ApplyLayout -> ApplyObservation
-applyObservation layout =
-  ApplyObservation
-    { applyTargetObservation = fileObservation (layoutApplyTarget layout),
-      applyStagedObservation = fileObservation (layoutApplyStage layout),
-      applyRetainedOriginObservation =
-        fileObservation (layoutApplyRetained layout)
-    }
-
-restoreObservation :: RestoreLayout -> RestoreObservation
-restoreObservation layout =
-  RestoreObservation
-    { restoreTargetObservation = fileObservation (layoutRestoreTarget layout),
-      restoreRetainedOriginObservation =
-        fileObservation (layoutRestoreRetained layout),
-      restoreRetiredManagedObservation =
-        fileObservation (layoutRestoreRetired layout)
-    }
-
-fileObservation :: Maybe OpenFile -> WallObservation
-fileObservation Nothing = ObservedAbsent
-fileObservation (Just file) =
-  ObservedPresent (openFileIdentity file) (openFileBytes file)
-
-expectedStagedObservation :: PersistedWallRecord -> WallObservation
-expectedStagedObservation record =
-  case persistedTargetIdentity record of
-    Nothing -> ObservedAbsent
-    Just identity -> ObservedPresent identity (persistedDesiredBytes record)
-
-observesExactOrigin :: WslConfigOrigin -> Maybe OpenFile -> Bool
-observesExactOrigin OriginalAbsent Nothing = True
-observesExactOrigin (OriginalPresent identity bytes) (Just file) =
-  identity == openFileIdentity file && bytes == openFileBytes file
-observesExactOrigin _ _ = False
-
-stageMismatch :: PersistedWallRecord -> WallObservation -> WindowsWallError
-stageMismatch record observation =
-  case (persistedTargetIdentity record, observation) of
-    (Just expected, ObservedPresent observed _)
-      | expected /= observed ->
-          WindowsWallConflict (TargetReplaced expected observed)
-      | otherwise ->
-          WindowsWallConflict (TargetAmbiguous expected)
-    (Just expected, ObservedAbsent) ->
-      WindowsWallConflict (UnexpectedTargetAbsent expected)
-    (Nothing, ObservedPresent observed _) ->
-      WindowsWallConflict (UnboundStagePresent observed)
-    (Nothing, ObservedAbsent) ->
-      WindowsWallJournalFailure "stage mismatch has no bound identity"
-
-validateStageVolume ::
-  PersistedWallRecord ->
-  FileIdentity ->
-  Either WindowsWallError ()
-validateStageVolume record stagedIdentity =
-  case persistedWallOrigin record of
-    Just (OriginalPresent originalIdentity _)
-      | identityVolume originalIdentity /= identityVolume stagedIdentity ->
-          Left
-            ( WindowsWallUnsupported
-                "the staged .wslconfig is not on the origin volume"
-            )
-    _ -> Right ()
-
-identityVolume :: FileIdentity -> ByteString
-identityVolume = ByteString.take 8 . fileIdentityBytes
-
-checkedStagePaths ::
-  FilePath ->
-  PersistedWallRecord ->
-  Either WindowsWallError (FilePath, FilePath)
-checkedStagePaths target record =
-  let expected = stageCandidate record
-   in case persistedStageCandidate record of
-        Just observed
-          | observed == expected ->
-              Right
-                ( target ++ ByteStringChar8.unpack observed,
-                  target ++ ByteStringChar8.unpack observed ++ ".armed"
                 )
-          | otherwise ->
-              Left
-                ( WindowsWallJournalFailure
-                    "persisted stage candidate is not the adapter-derived name"
+          | bhfiSize information > fromIntegral maximumWallBytes -> do
+              void (c_CloseHandle handle)
+              pure
+                ( Left
+                    ( HostWallUnsupported
+                        (path ++ " exceeds the 16 MiB adapter limit")
+                    )
                 )
-        Nothing ->
-          Left
-            (WindowsWallJournalFailure "stage phase has no candidate name")
-
-stageCandidate :: PersistedWallRecord -> ByteString
-stageCandidate record =
-  ByteStringChar8.pack
-    ( ".hostbootstrap."
-        ++ show (persistedFenceValue record)
-        ++ ".stage"
-    )
-
-retainedPath :: FilePath -> PersistedWallRecord -> FilePath
-retainedPath target record =
-  target
-    ++ ".hostbootstrap."
-    ++ show (persistedFenceValue record)
-    ++ ".origin"
-
-retiredPath :: FilePath -> PersistedWallRecord -> FilePath
-retiredPath target record =
-  target
-    ++ ".hostbootstrap."
-    ++ show (persistedFenceValue record)
-    ++ ".managed"
-
-withOpenPath ::
-  FilePath ->
-  (Maybe OpenFile -> IO (Either WindowsWallError result)) ->
-  IO (Either WindowsWallError result)
-withOpenPath path consume =
-  mask $ \restore -> do
-    opened <- openPath path
-    case opened of
-      Left err -> pure (Left err)
-      Right Nothing -> restore (consume Nothing)
-      Right (Just file) -> do
-        result <-
-          restore (consume (Just file))
-            `onException` void (closeOpenFile file)
-        closed <- closeOpenFile file
-        pure $
-          case (result, closed) of
-            (Left err, _) -> Left err
-            (Right _, Left err) -> Left err
-            (Right value, Right ()) -> Right value
-
-openPath :: FilePath -> IO (Either WindowsWallError (Maybe OpenFile))
-openPath path =
-  withCWString path $ \widePath ->
-    alloca $ \handlePointer ->
-      allocaBytes 24 $ \identityPointer ->
-        alloca $ \bytesPointer ->
-          alloca $ \lengthPointer ->
-            alloca $ \presentPointer -> do
-              status <-
-                cOpenExclusive
-                  widePath
-                  handlePointer
-                  identityPointer
-                  bytesPointer
-                  lengthPointer
-                  presentPointer
-              if status /= 0
-                then pure (Left (nativeFailure ("open " ++ path) status))
-                else do
-                  CInt present <- peek presentPointer
-                  if present == 0
-                    then pure (Right Nothing)
-                    else do
-                      handle <- peek handlePointer
-                      ( do
-                          identityBytes <-
-                            ByteString.packCStringLen
-                              (castPtr identityPointer, 24)
-                          nativeBytes <- peek bytesPointer
-                          CSize nativeLength <- peek lengthPointer
-                          bytes <-
-                            if nativeLength == 0
-                              then pure ByteString.empty
-                              else
-                                ByteString.packCStringLen
-                                  (castPtr nativeBytes, fromIntegral nativeLength)
-                          if nativeBytes /= nullPtr
-                            then cFree nativeBytes
-                            else pure ()
-                          case mkFileIdentity identityBytes of
-                            Left err -> do
-                              _ <- cCloseHandle handle
-                              pure (Left (fromModelError err))
-                            Right identity ->
-                              pure
-                                ( Right
-                                    ( Just
-                                        OpenFile
-                                          { openFileHandle = handle,
-                                            openFileIdentity = identity,
-                                            openFileBytes = bytes
-                                          }
-                                    )
-                                )
-                        )
-                        `onException` void (cCloseHandle handle)
-
--- | Read only a path's FILE_ID without asking for data or mutation access.
--- This observation never authorizes a filesystem operation: it is used solely
--- to turn no-replace and sharing races into conservative conflicts or Busy
--- results.  The native probe follows neither reparse points nor directories.
-probePathIdentity ::
-  FilePath ->
-  IO (Either WindowsWallError (Maybe FileIdentity))
-probePathIdentity path =
-  withCWString path $ \widePath ->
-    allocaBytes 24 $ \identityPointer ->
-      alloca $ \presentPointer -> do
-        status <- cProbeIdentity widePath identityPointer presentPointer
-        if status /= 0
-          then
-            pure
-              ( Left
-                  ( if status == errorNotSupported
-                      then
-                        WindowsWallUnsupported
-                          ("identity probing refused a directory or reparse point at " ++ path)
-                      else nativeFailure ("probe identity of " ++ path) status
-                  )
-              )
-          else do
-            CInt present <- peek presentPointer
-            if present == 0
-              then pure (Right Nothing)
-              else do
-                identityBytes <-
-                  ByteString.packCStringLen
-                    (castPtr identityPointer, 24)
-                pure
-                  ( either
-                      (Left . fromModelError)
-                      (Right . Just)
-                      (mkFileIdentity identityBytes)
-                  )
-
-createArmedStage ::
-  FilePath ->
-  ByteString ->
-  IO (Either WindowsWallError OpenFile)
-createArmedStage path bytes =
-  withCWString path $ \widePath ->
-    ByteString.useAsCStringLen bytes $ \(bytePointer, byteLength) ->
-      alloca $ \handlePointer ->
-        allocaBytes 24 $ \identityPointer -> do
-          status <-
-            cCreateStage
-              widePath
-              (castPtr bytePointer)
-              (fromIntegral byteLength)
-              handlePointer
-              identityPointer
-          if status /= 0
-            then classifyPrivatePathRace "create armed stage" path status
-            else do
-              handle <- peek handlePointer
-              ( do
-                  identityBytes <-
-                    ByteString.packCStringLen
-                      (castPtr identityPointer, 24)
-                  case mkFileIdentity identityBytes of
+          | otherwise -> do
+              contents <-
+                readWholeHandle path handle (fromIntegral (bhfiSize information))
+              case contents of
+                Left err -> do
+                  void (c_CloseHandle handle)
+                  pure (Left err)
+                Right bytes ->
+                  case identityOf information of
                     Left err -> do
-                      _ <- cCloseHandle handle
-                      pure (Left (fromModelError err))
+                      void (c_CloseHandle handle)
+                      pure (Left err)
                     Right identity ->
                       pure
                         ( Right
-                            OpenFile
-                              { openFileHandle = handle,
-                                openFileIdentity = identity,
-                                openFileBytes = bytes
-                              }
-                        )
-                )
-                `onException` void (cCloseHandle handle)
-
-linkArmedStage ::
-  OpenFile ->
-  FilePath ->
-  FilePath ->
-  IO (Either WindowsWallError ())
-linkArmedStage file armed bound =
-  withCWString armed $ \armedPath ->
-    withCWString bound $ \boundPath -> do
-      status <-
-        cLinkArmedStage
-          (openFileHandle file)
-          armedPath
-          boundPath
-      if status == 0
-        then pure (Right ())
-        else
-          if status `elem` hardLinkUnsupportedStatuses
-            then
-              pure
-                ( Left
-                    ( WindowsWallUnsupported
-                        ( "NTFS hard-link stage handoff is unavailable (Windows error "
-                            ++ show status
-                            ++ ")"
-                        )
-                    )
-                )
-            else do
-              observed <- probePathIdentity bound
-              pure $
-                case observed of
-                  Right (Just identity)
-                    | identity == openFileIdentity file -> Right ()
-                    | otherwise ->
-                        Left
-                          ( WindowsWallConflict
-                              (UnboundStagePresent identity)
-                          )
-                  Right Nothing
-                    | isRaceStatus status ->
-                        Left
-                          ( WindowsWallBusy
-                              "the durable stage destination changed during hard-link publication"
-                          )
-                  Left err
-                    | isRaceStatus status ->
-                        Left
-                          ( WindowsWallBusy
-                              ( "the durable stage destination could not be safely reprobed: "
-                                  ++ show err
-                              )
-                          )
-                  _ ->
-                    Left
-                      (nativeFailure "create the durable stage hard link" status)
-
-renameOpenFile :: OpenFile -> FilePath -> IO (Either WindowsWallError ())
-renameOpenFile file destination =
-  withCWString destination $ \wideDestination -> do
-    status <-
-      cRenameHandleNoReplace
-        (openFileHandle file)
-        wideDestination
-    if status == 0
-      then pure (Right ())
-      else do
-        -- SetFileInformationByHandle does not report destination collisions
-        -- consistently across supported Windows/filesystem combinations.
-        -- Reprobe the no-replace destination for identity evidence instead of
-        -- guessing from one numeric status (or returning a generic native
-        -- failure for ERROR_ALREADY_EXISTS).
-        observed <- probePathIdentity destination
-        pure $
-          case observed of
-            Right (Just identity) ->
-              Left
-                ( WindowsWallConflict
-                    (UnexpectedTargetPresent identity)
-                )
-            Right Nothing
-              | isRaceStatus status ->
-                  Left
-                    ( WindowsWallBusy
-                        ( "the no-replace rename destination changed while reprobed: "
-                            ++ destination
-                        )
-                    )
-            Left err
-              | isRaceStatus status ->
-                  Left
-                    ( WindowsWallBusy
-                        ( "the no-replace rename destination could not be safely reprobed: "
-                            ++ show err
-                        )
-                    )
-            _ -> Left (nativeFailure ("rename to " ++ destination) status)
-
-deleteOpenFile :: OpenFile -> IO (Either WindowsWallError ())
-deleteOpenFile file = do
-  status <- cDeleteHandle (openFileHandle file)
-  pure
-    ( if status == 0
-        then Right ()
-        else Left (nativeFailure "conditionally delete an exact file handle" status)
-    )
-
-closeOpenFile :: OpenFile -> IO (Either WindowsWallError ())
-closeOpenFile file = do
-  status <- cCloseHandle (openFileHandle file)
-  pure
-    ( if status == 0
-        then Right ()
-        else Left (nativeFailure "close an exact file handle" status)
-    )
-
-loadActiveRecord ::
-  IO (Either WindowsWallError (Maybe PersistedWallRecord))
-loadActiveRecord =
-  mask $ \_ ->
-    alloca $ \bytesPointer ->
-      alloca $ \lengthPointer ->
-        alloca $ \presentPointer -> do
-          status <-
-            cRegistryLoadActive
-              bytesPointer
-              lengthPointer
-              presentPointer
-          if status /= 0
-            then pure (Left (nativeFailure "load the active wall record" status))
-            else do
-              CInt present <- peek presentPointer
-              if present == 0
-                then pure (Right Nothing)
-                else do
-                  nativeBytes <- peek bytesPointer
-                  CSize nativeLength <- peek lengthPointer
-                  if nativeBytes == nullPtr || nativeLength == 0
-                    then
-                      pure
-                        ( Left
-                            ( nativeFailure
-                                "load the active wall record"
-                                errorInvalidData
+                            ( Just
+                                WallObject
+                                  { wallObjectHandle =
+                                      WindowsWallHandle
+                                        { windowsHandle = handle,
+                                          windowsHandlePath = path
+                                        },
+                                    wallObjectIdentity = identity,
+                                    wallObjectBytes = bytes
+                                  }
                             )
                         )
-                    else
-                      bracket
-                        (pure nativeBytes)
-                        cFree
-                        ( \ownedBytes -> do
-                            bytes <-
-                              ByteString.packCStringLen
-                                (castPtr ownedBytes, fromIntegral nativeLength)
-                            pure (Just <$> decodeWallRecord bytes)
-                        )
 
-allocateFence :: IO (Either WindowsWallError Word64)
-allocateFence =
-  alloca $ \fencePointer -> do
-    status <- cRegistryAllocateFence fencePointer
-    if status /= 0
-      then pure (Left (nativeFailure "allocate the next wall fence" status))
-      else Right <$> peek fencePointer
+windowsProbeIdentity ::
+  FilePath ->
+  IO (Either HostWallError (Maybe FileIdentity))
+windowsProbeIdentity path = do
+  opened <-
+    openHandle
+      path
+      gENERIC_READ
+      (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
+      oPEN_EXISTING
+      (fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_OPEN_REPARSE_POINT)
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Right Nothing)
+    Right (Just handle) -> do
+      described <- handleInformation path handle
+      void (c_CloseHandle handle)
+      pure $
+        case described of
+          Left err -> Left err
+          Right information
+            | isNonRegular information ->
+                Left
+                  ( HostWallUnsupported
+                      ( "identity probing refused a directory or reparse point at "
+                          ++ path
+                      )
+                  )
+            | otherwise -> Just <$> identityOf information
 
-storeReceipt ::
-  WallReceipt ownerId wallSpecId reservationId receiptId fenceId ->
-  IO (Either WindowsWallError ())
-storeReceipt = storeRecord . wallReceiptRecord
+windowsCreateArmedStage ::
+  FilePath ->
+  ByteString ->
+  IO (Either HostWallError (WallObject WindowsWallHandle))
+windowsCreateArmedStage path bytes = do
+  opened <-
+    openHandle
+      path
+      (gENERIC_READ .|. gENERIC_WRITE .|. dELETE)
+      observationShareMode
+      cREATE_NEW
+      (fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_DELETE_ON_CLOSE)
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing ->
+      pure
+        ( Left
+            ( HostWallNativeFailure
+                ("create armed stage " ++ path)
+                errorFileExists
+            )
+        )
+    Right (Just handle) -> do
+      written <- writeWholeHandle path handle bytes
+      case written of
+        Left err -> do
+          void (c_CloseHandle handle)
+          pure (Left err)
+        Right () -> do
+          described <- handleInformation path handle
+          case described of
+            Left err -> do
+              void (c_CloseHandle handle)
+              pure (Left err)
+            Right information ->
+              case identityOf information of
+                Left err -> do
+                  void (c_CloseHandle handle)
+                  pure (Left err)
+                Right identity ->
+                  pure
+                    ( Right
+                        WallObject
+                          { wallObjectHandle =
+                              WindowsWallHandle
+                                { windowsHandle = handle,
+                                  windowsHandlePath = path
+                                },
+                            wallObjectIdentity = identity,
+                            wallObjectBytes = bytes
+                          }
+                    )
 
-storeRecord :: PersistedWallRecord -> IO (Either WindowsWallError ())
-storeRecord record =
-  let bytes = encodeWallRecord record
-   in if ByteString.length bytes > maximumWallBytes
-        then
+-- Clause 4: identity-conditional namespace operations ------------------------
+
+windowsLinkArmedStage ::
+  WallObject WindowsWallHandle ->
+  FilePath ->
+  FilePath ->
+  IO (Either HostWallError ())
+windowsLinkArmedStage object armed bound = do
+  confirmed <- confirmPathIdentity object armed
+  case confirmed of
+    Left err -> pure (Left err)
+    Right () -> do
+      linked <-
+        withTString bound $ \wideBound ->
+          withTString armed $ \wideArmed ->
+            c_CreateHardLink wideBound wideArmed nullPtr
+      if linked
+        then pure (Right ())
+        else do
+          status <- getLastError
           pure
             ( Left
-                ( WindowsWallUnsupported
-                    "encoded active wall record exceeds the 16 MiB recoverable limit"
+                ( HostWallNativeFailure
+                    ("hard link " ++ armed ++ " to " ++ bound)
+                    status
                 )
             )
-        else
-          ByteString.useAsCStringLen bytes $ \(pointer, encodedLength) -> do
-            status <-
-              cRegistryStoreActive
-                (castPtr pointer)
-                (fromIntegral encodedLength)
-            pure
-              ( if status == 0
-                  then Right ()
-                  else Left (nativeFailure "flush the active wall record" status)
-              )
 
-deleteActiveIfEqual ::
-  PersistedWallRecord ->
-  IO (Either WindowsWallError Bool)
-deleteActiveIfEqual record =
-  let bytes = encodeWallRecord record
-   in ByteString.useAsCStringLen bytes $ \(pointer, encodedLength) ->
-        alloca $ \deletedPointer -> do
-          status <-
-            cRegistryDeleteActiveIfEqual
-              (castPtr pointer)
-              (fromIntegral encodedLength)
-              deletedPointer
-          if status /= 0
-            then
-              pure
-                (Left (nativeFailure "conditionally clear the active wall record" status))
-            else do
-              CInt deleted <- peek deletedPointer
-              pure (Right (deleted /= 0))
-
--- | Conservatively classify a failed CREATE_NEW-style operation.  A present
--- object is exact identity evidence of an unowned private-stage collision.  If
--- a known collision/contention status races with disappearance or prevents a
--- safe probe, callers may retry later but may not adopt or overwrite anything.
-classifyPrivatePathRace ::
-  String ->
+windowsRenameNoReplace ::
+  WallObject WindowsWallHandle ->
   FilePath ->
-  Word32 ->
-  IO (Either WindowsWallError result)
-classifyPrivatePathRace operation path status = do
-  observed <- probePathIdentity path
+  IO (Either HostWallError ())
+windowsRenameNoReplace object destination = do
+  let source = windowsHandlePath (wallObjectHandle object)
+  confirmed <- confirmPathIdentity object source
+  case confirmed of
+    Left err -> pure (Left err)
+    Right () -> do
+      -- No @MOVEFILE_REPLACE_EXISTING@: a present destination must fail rather
+      -- than be overwritten.
+      moved <-
+        withTString source $ \wideSource ->
+          withTString destination $ \wideDestination ->
+            c_MoveFileEx wideSource wideDestination 0
+      if moved
+        then pure (Right ())
+        else do
+          status <- getLastError
+          pure
+            ( Left
+                ( HostWallNativeFailure
+                    ("no-replace rename to " ++ destination)
+                    status
+                )
+            )
+
+windowsDeleteObject ::
+  WallObject WindowsWallHandle ->
+  IO (Either HostWallError ())
+windowsDeleteObject object = do
+  let path = windowsHandlePath (wallObjectHandle object)
+  confirmed <- confirmPathIdentity object path
+  case confirmed of
+    Left err -> pure (Left err)
+    Right () -> do
+      deleted <- withTString path c_DeleteFile
+      if deleted
+        then pure (Right ())
+        else do
+          status <- getLastError
+          pure $
+            if status == errorFileNotFound
+              then Right ()
+              else
+                Left
+                  ( HostWallNativeFailure
+                      ("delete " ++ path)
+                      status
+                  )
+
+windowsCloseObject ::
+  WallObject WindowsWallHandle ->
+  IO (Either HostWallError ())
+windowsCloseObject object = do
+  closed <- c_CloseHandle (windowsHandle (wallObjectHandle object))
+  pure $
+    if closed
+      then Right ()
+      else
+        Left
+          ( HostWallNativeFailure
+              "close an exact file handle"
+              errorInvalidData
+          )
+
+{- | Clause 4 in one place: a namespace operation acts only while the name
+still denotes the exact object that was observed under this lock.
+-}
+confirmPathIdentity ::
+  WallObject WindowsWallHandle ->
+  FilePath ->
+  IO (Either HostWallError ())
+confirmPathIdentity object path = do
+  observed <- windowsProbeIdentity path
   pure $
     case observed of
-      Right (Just identity) ->
+      Left err -> Left err
+      Right Nothing ->
         Left
-          ( WindowsWallConflict
-              (UnboundStagePresent identity)
+          ( HostWallConflict
+              (UnexpectedTargetAbsent (wallObjectIdentity object))
           )
-      Right Nothing
-        | isRaceStatus status ->
+      Right (Just identity)
+        | identity == wallObjectIdentity object -> Right ()
+        | otherwise ->
             Left
-              ( WindowsWallBusy
-                  (operation ++ " raced with a changing destination at " ++ path)
+              ( HostWallConflict
+                  (TargetReplaced (wallObjectIdentity object) identity)
               )
-      Left err
-        | isRaceStatus status ->
-            Left
-              ( WindowsWallBusy
-                  ( operation
-                      ++ " could not safely re-observe its destination: "
-                      ++ show err
-                  )
-              )
-      _ -> Left (nativeFailure (operation ++ " " ++ path) status)
 
-encodeWallRecord :: PersistedWallRecord -> ByteString
-encodeWallRecord record =
-  LazyByteString.toStrict . Builder.toLazyByteString $
-    Builder.byteString wallRecordMagic
-      <> Builder.word8 (phaseTag (persistedWallPhase record))
-      <> Builder.word64LE (persistedFenceValue record)
-      <> putSized (persistedOwnerIdentity record)
-      <> putSized (persistedSpecIdentity record)
-      <> putSized (persistedReservationIdentity record)
-      <> putSized (persistedReceiptIdentity record)
-      <> putSized (persistedDesiredBytes record)
-      <> putOrigin (persistedWallOrigin record)
-      <> putMaybeBytes (persistedStageCandidate record)
-      <> putMaybeIdentity (persistedTargetIdentity record)
+-- Clause 2: the durable journal ----------------------------------------------
 
-wallRecordMagic :: ByteString
-wallRecordMagic = "HBWSLW02"
+windowsJournalLoad :: FilePath -> IO (Either HostWallError (Maybe ByteString))
+windowsJournalLoad path = do
+  loaded <- readFileBytes path
+  pure $
+    case loaded of
+      Left err -> Left err
+      Right Nothing -> Right Nothing
+      Right (Just bytes)
+        | ByteString.null bytes -> Right Nothing
+        | otherwise -> Right (Just bytes)
 
-phaseTag :: WallJournalPhase -> Word8
-phaseTag WallClaimed = 0
-phaseTag WallOriginRecorded = 1
-phaseTag WallStageCreateOutcomeUnknown = 2
-phaseTag WallStageBound = 3
-phaseTag WallApplyOutcomeUnknown = 4
-phaseTag WallApplied = 5
-phaseTag WallRestoreOutcomeUnknown = 6
-phaseTag WallRestored = 7
-phaseTag WallReleased = 8
+windowsJournalStore :: FilePath -> ByteString -> IO (Either HostWallError ())
+windowsJournalStore = replaceFileBytes
 
-putSized :: ByteString -> Builder.Builder
-putSized bytes =
-  Builder.word32LE (fromIntegral (ByteString.length bytes))
-    <> Builder.byteString bytes
+windowsJournalDeleteIfEqual ::
+  FilePath ->
+  ByteString ->
+  IO (Either HostWallError Bool)
+windowsJournalDeleteIfEqual path expected = do
+  loaded <- windowsJournalLoad path
+  case loaded of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Right False)
+    Right (Just bytes)
+      | bytes /= expected -> pure (Right False)
+      | otherwise -> do
+          deleted <- withTString path c_DeleteFile
+          if deleted
+            then pure (Right True)
+            else do
+              status <- getLastError
+              pure $
+                if status == errorFileNotFound
+                  then Right True
+                  else
+                    Left
+                      ( HostWallNativeFailure
+                          ("clear the wall journal " ++ path)
+                          status
+                      )
 
-putMaybeBytes :: Maybe ByteString -> Builder.Builder
-putMaybeBytes Nothing = Builder.word8 0
-putMaybeBytes (Just bytes) = Builder.word8 1 <> putSized bytes
+windowsAllocateFence :: FilePath -> IO (Either HostWallError Word64)
+windowsAllocateFence path = do
+  loaded <- readFileBytes path
+  case loaded of
+    Left err -> pure (Left err)
+    Right existing ->
+      case decodeFence existing of
+        Left err -> pure (Left err)
+        Right current -> do
+          let next = current + 1
+          stored <- replaceFileBytes path (encodeDecimal next)
+          pure (stored >> Right next)
 
-putMaybeIdentity :: Maybe FileIdentity -> Builder.Builder
-putMaybeIdentity Nothing = Builder.word8 0
-putMaybeIdentity (Just identity) =
-  Builder.word8 1 <> putSized (fileIdentityBytes identity)
+encodeDecimal :: Word64 -> ByteString
+encodeDecimal =
+  LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64Dec
 
-putOrigin :: Maybe WslConfigOrigin -> Builder.Builder
-putOrigin Nothing = Builder.word8 0
-putOrigin (Just OriginalAbsent) = Builder.word8 1
-putOrigin (Just (OriginalPresent identity bytes)) =
-  Builder.word8 2
-    <> putSized (fileIdentityBytes identity)
-    <> putSized bytes
+decodeFence :: Maybe ByteString -> Either HostWallError Word64
+decodeFence Nothing = Right 0
+decodeFence (Just bytes)
+  | ByteString.null digits = Right 0
+  | ByteString.all isDigitByte digits =
+      Right (ByteString.foldl' accumulate 0 digits)
+  | otherwise =
+      Left
+        (HostWallJournalFailure "the wall fence counter is not a decimal integer")
+  where
+    digits = ByteString.takeWhile (/= 10) bytes
+    isDigitByte byte = byte >= 48 && byte <= 57
+    accumulate total byte = total * 10 + fromIntegral (byte - 48)
 
-newtype Decoder value = Decoder
-  { runDecoder :: ByteString -> Either String (value, ByteString)
-  }
+readFileBytes :: FilePath -> IO (Either HostWallError (Maybe ByteString))
+readFileBytes path = do
+  opened <-
+    openHandle
+      path
+      gENERIC_READ
+      (fILE_SHARE_READ .|. fILE_SHARE_DELETE)
+      oPEN_EXISTING
+      fILE_ATTRIBUTE_NORMAL
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing -> pure (Right Nothing)
+    Right (Just handle) -> do
+      described <- handleInformation path handle
+      case described of
+        Left err -> do
+          void (c_CloseHandle handle)
+          pure (Left err)
+        Right information
+          | bhfiSize information > fromIntegral maximumWallBytes -> do
+              void (c_CloseHandle handle)
+              pure
+                ( Left
+                    ( HostWallUnsupported
+                        (path ++ " exceeds the 16 MiB adapter limit")
+                    )
+                )
+          | otherwise -> do
+              contents <-
+                readWholeHandle path handle (fromIntegral (bhfiSize information))
+              void (c_CloseHandle handle)
+              pure (Just <$> contents)
 
-instance Functor Decoder where
-  fmap transform (Decoder decode) =
-    Decoder $ \input -> do
-      (value, rest) <- decode input
-      Right (transform value, rest)
+replaceFileBytes :: FilePath -> ByteString -> IO (Either HostWallError ())
+replaceFileBytes path bytes = do
+  let staging = path ++ ".writing"
+  void (withTString staging c_DeleteFile)
+  opened <-
+    openHandle
+      staging
+      (gENERIC_READ .|. gENERIC_WRITE .|. dELETE)
+      (fILE_SHARE_READ .|. fILE_SHARE_DELETE)
+      cREATE_NEW
+      fILE_ATTRIBUTE_NORMAL
+  case opened of
+    Left err -> pure (Left err)
+    Right Nothing ->
+      pure
+        ( Left
+            ( HostWallNativeFailure
+                ("create " ++ staging)
+                errorFileExists
+            )
+        )
+    Right (Just handle) -> do
+      written <- writeWholeHandle staging handle bytes
+      closed <- c_CloseHandle handle
+      case written of
+        Left err -> pure (Left err)
+        Right ()
+          | not closed ->
+              pure
+                ( Left
+                    ( HostWallNativeFailure
+                        ("close " ++ staging)
+                        errorInvalidData
+                    )
+                )
+          | otherwise -> do
+              -- The journal name is ours, so a replacing move is correct here;
+              -- only the .wslconfig namespace requires no-replace semantics.
+              moved <-
+                withTString staging $ \wideStaging ->
+                  withTString path $ \widePath ->
+                    c_MoveFileEx
+                      wideStaging
+                      widePath
+                      (mOVEFILE_REPLACE_EXISTING .|. mOVEFILE_WRITE_THROUGH)
+              if moved
+                then pure (Right ())
+                else do
+                  status <- getLastError
+                  pure
+                    ( Left
+                        ( HostWallNativeFailure
+                            ("publish " ++ path)
+                            status
+                        )
+                    )
 
-instance Applicative Decoder where
-  pure value = Decoder (\input -> Right (value, input))
-  Decoder decodeFunction <*> Decoder decodeValue =
-    Decoder $ \input -> do
-      (function, afterFunction) <- decodeFunction input
-      (value, afterValue) <- decodeValue afterFunction
-      Right (function value, afterValue)
+-- Raw handle helpers ----------------------------------------------------------
 
-instance Monad Decoder where
-  Decoder decodeValue >>= next =
-    Decoder $ \input -> do
-      (value, rest) <- decodeValue input
-      runDecoder (next value) rest
+openHandle ::
+  FilePath ->
+  Word32 ->
+  Word32 ->
+  Word32 ->
+  Word32 ->
+  IO (Either HostWallError (Maybe HANDLE))
+openHandle path access share creation flags = do
+  handle <-
+    withTString path $ \widePath ->
+      c_CreateFile
+        widePath
+        access
+        share
+        nullPtr
+        creation
+        flags
+        nullPtr
+  if handle /= iNVALID_HANDLE_VALUE
+    then pure (Right (Just handle))
+    else do
+      status <- getLastError
+      pure $
+        if status == errorFileNotFound || status == errorPathNotFound
+          then Right Nothing
+          else Left (HostWallNativeFailure ("open " ++ path) status)
 
-decodeWallRecord :: ByteString -> Either WindowsWallError PersistedWallRecord
-decodeWallRecord bytes =
-  case runDecoder wallRecordDecoder bytes of
-    Left err -> Left (WindowsWallJournalFailure err)
-    Right (_, trailing)
-      | not (ByteString.null trailing) ->
-          Left
-            (WindowsWallJournalFailure "active wall record has trailing bytes")
-    Right (record, _) -> Right record
+handleInformation ::
+  FilePath ->
+  HANDLE ->
+  IO (Either HostWallError BY_HANDLE_FILE_INFORMATION)
+handleInformation path handle =
+  alloca $ \buffer -> do
+    described <- c_GetFileInformationByHandle handle buffer
+    if described
+      then Right <$> peek buffer
+      else do
+        status <- getLastError
+        pure (Left (HostWallNativeFailure ("stat " ++ path) status))
 
-wallRecordDecoder :: Decoder PersistedWallRecord
-wallRecordDecoder = do
-  magic <- getBytes (ByteString.length wallRecordMagic)
-  if magic /= wallRecordMagic
-    then decoderFailure "active wall record has an unknown format"
-    else pure ()
-  phase <- getWord8 >>= decodePhase
-  fence <- getWord64LE
-  owner <- getSized
-  spec <- getSized
-  reservation <- getSized
-  receipt <- getSized
-  desired <- getSized
-  origin <- getOrigin
-  candidate <- getMaybeBytes
-  target <- getMaybeIdentity
-  pure
-    PersistedWallRecord
-      { persistedOwnerIdentity = owner,
-        persistedSpecIdentity = spec,
-        persistedReservationIdentity = reservation,
-        persistedReceiptIdentity = receipt,
-        persistedFenceValue = fence,
-        persistedDesiredBytes = desired,
-        persistedWallPhase = phase,
-        persistedWallOrigin = origin,
-        persistedStageCandidate = candidate,
-        persistedTargetIdentity = target
-      }
+isNonRegular :: BY_HANDLE_FILE_INFORMATION -> Bool
+isNonRegular information =
+  bhfiFileAttributes information
+    .&. (fILE_ATTRIBUTE_DIRECTORY .|. fILE_ATTRIBUTE_REPARSE_POINT)
+    /= 0
 
-decodePhase :: Word8 -> Decoder WallJournalPhase
-decodePhase 0 = pure WallClaimed
-decodePhase 1 = pure WallOriginRecorded
-decodePhase 2 = pure WallStageCreateOutcomeUnknown
-decodePhase 3 = pure WallStageBound
-decodePhase 4 = pure WallApplyOutcomeUnknown
-decodePhase 5 = pure WallApplied
-decodePhase 6 = pure WallRestoreOutcomeUnknown
-decodePhase 7 = pure WallRestored
-decodePhase 8 = pure WallReleased
-decodePhase _ = decoderFailure "active wall record has an unknown phase"
+readWholeHandle ::
+  FilePath ->
+  HANDLE ->
+  Int ->
+  IO (Either HostWallError ByteString)
+readWholeHandle _ _ size
+  | size <= 0 = pure (Right ByteString.empty)
+readWholeHandle path handle size = do
+  positioned <-
+    alloca $ \position ->
+      c_SetFilePointerEx handle 0 position fILE_BEGIN
+  if not positioned
+    then do
+      status <- getLastError
+      pure (Left (HostWallNativeFailure ("seek " ++ path) status))
+    else allocaBytes size $ \buffer ->
+      let go offset
+            | offset >= size =
+                Right <$> ByteString.packCStringLen (castPtr buffer, size)
+            | otherwise =
+                alloca $ \counted -> do
+                  ok <-
+                    c_ReadFile
+                      handle
+                      (buffer `plusPtr` offset)
+                      (fromIntegral (size - offset))
+                      counted
+                      nullPtr
+                  if not ok
+                    then do
+                      status <- getLastError
+                      pure
+                        (Left (HostWallNativeFailure ("read " ++ path) status))
+                    else do
+                      read' <- peek counted
+                      if read' == 0
+                        then
+                          Right
+                            <$> ByteString.packCStringLen (castPtr buffer, offset)
+                        else go (offset + fromIntegral read')
+       in go 0
 
-getOrigin :: Decoder (Maybe WslConfigOrigin)
-getOrigin = do
-  tag <- getWord8
-  case tag of
-    0 -> pure Nothing
-    1 -> pure (Just OriginalAbsent)
-    2 -> do
-      identity <- getIdentity
-      bytes <- getSized
-      pure (Just (OriginalPresent identity bytes))
-    _ -> decoderFailure "active wall record has an unknown origin tag"
+writeWholeHandle ::
+  FilePath ->
+  HANDLE ->
+  ByteString ->
+  IO (Either HostWallError ())
+writeWholeHandle path handle bytes =
+  ByteString.useAsCStringLen bytes $ \(pointer, size) ->
+    let go offset
+          | offset >= size = do
+              flushed <- c_FlushFileBuffers handle
+              if flushed
+                then pure (Right ())
+                else do
+                  status <- getLastError
+                  pure (Left (HostWallNativeFailure ("flush " ++ path) status))
+          | otherwise =
+              alloca $ \counted -> do
+                ok <-
+                  c_WriteFile
+                    handle
+                    (castPtr pointer `plusPtr` offset)
+                    (fromIntegral (size - offset))
+                    counted
+                    nullPtr
+                if not ok
+                  then do
+                    status <- getLastError
+                    pure
+                      (Left (HostWallNativeFailure ("write " ++ path) status))
+                  else do
+                    written <- peek counted
+                    if written == 0
+                      then
+                        pure
+                          ( Left
+                              ( HostWallNativeFailure
+                                  ("write " ++ path)
+                                  errorWriteFault
+                              )
+                          )
+                      else go (offset + fromIntegral written)
+     in go 0
 
-getMaybeBytes :: Decoder (Maybe ByteString)
-getMaybeBytes = do
-  tag <- getWord8
-  case tag of
-    0 -> pure Nothing
-    1 -> Just <$> getSized
-    _ -> decoderFailure "active wall record has an unknown optional-bytes tag"
+-- Identity and status classification -----------------------------------------
 
-getMaybeIdentity :: Decoder (Maybe FileIdentity)
-getMaybeIdentity = do
-  tag <- getWord8
-  case tag of
-    0 -> pure Nothing
-    1 -> Just <$> getIdentity
-    _ -> decoderFailure "active wall record has an unknown optional-identity tag"
+{- | The volume serial number first, then the file index, matching the
+volume-first layout the POSIX lane produces so the driver's shared-volume check
+is platform-neutral.
+-}
+identityOf ::
+  BY_HANDLE_FILE_INFORMATION ->
+  Either HostWallError FileIdentity
+identityOf information =
+  case mkFileIdentity encoded of
+    Left err -> Left (HostWallModelFailure err)
+    Right identity -> Right identity
+  where
+    encoded =
+      LazyByteString.toStrict . Builder.toLazyByteString $
+        Builder.word64LE (fromIntegral (bhfiVolumeSerialNumber information))
+          <> Builder.word64LE (bhfiFileIndex information)
 
-getIdentity :: Decoder FileIdentity
-getIdentity = do
-  bytes <- getSized
-  if ByteString.length bytes /= 24
-    then decoderFailure "Windows FILE_ID_INFO evidence must be exactly 24 bytes"
-    else
-      case mkFileIdentity bytes of
-        Left err -> decoderFailure (show err)
-        Right identity -> pure identity
+windowsIsContendedFailure :: Word32 -> Bool
+windowsIsContendedFailure status =
+  status
+    `elem` [ errorLockViolation,
+             errorSharingViolation,
+             errorBusy,
+             errorIoPending
+           ]
 
-getSized :: Decoder ByteString
-getSized = do
-  lengthValue <- getWord32LE
-  if lengthValue > fromIntegral maximumWallBytes
-    then decoderFailure "active wall record field exceeds the 16 MiB limit"
-    else getBytes (fromIntegral lengthValue)
+windowsIsSharingFailure :: Word32 -> Bool
+windowsIsSharingFailure status =
+  status `elem` [errorSharingViolation, errorLockViolation]
 
-getWord8 :: Decoder Word8
-getWord8 = do
-  bytes <- getBytes 1
-  pure (ByteString.index bytes 0)
+windowsIsRaceFailure :: Word32 -> Bool
+windowsIsRaceFailure status =
+  windowsIsSharingFailure status
+    || status
+      `elem` [errorBusy, errorFileExists, errorAlreadyExists, errorFileNotFound]
 
-getWord32LE :: Decoder Word32
-getWord32LE = do
-  bytes <- getBytes 4
-  pure
-    ( fromIntegral (ByteString.index bytes 0)
-        .|. shiftL (fromIntegral (ByteString.index bytes 1)) 8
-        .|. shiftL (fromIntegral (ByteString.index bytes 2)) 16
-        .|. shiftL (fromIntegral (ByteString.index bytes 3)) 24
-    )
+windowsIsHardLinkUnsupported :: Word32 -> Bool
+windowsIsHardLinkUnsupported status =
+  status
+    `elem` [ errorInvalidFunction,
+             errorNotSameDevice,
+             errorNotSupported
+           ]
 
-getWord64LE :: Decoder Word64
-getWord64LE = do
-  bytes <- getBytes 8
-  pure
-    ( fromIntegral (ByteString.index bytes 0)
-        .|. shiftL (fromIntegral (ByteString.index bytes 1)) 8
-        .|. shiftL (fromIntegral (ByteString.index bytes 2)) 16
-        .|. shiftL (fromIntegral (ByteString.index bytes 3)) 24
-        .|. shiftL (fromIntegral (ByteString.index bytes 4)) 32
-        .|. shiftL (fromIntegral (ByteString.index bytes 5)) 40
-        .|. shiftL (fromIntegral (ByteString.index bytes 6)) 48
-        .|. shiftL (fromIntegral (ByteString.index bytes 7)) 56
-    )
+errorInvalidFunction, errorFileNotFound, errorPathNotFound :: Word32
+errorInvalidFunction = 1
+errorFileNotFound = 2
+errorPathNotFound = 3
 
-getBytes :: Int -> Decoder ByteString
-getBytes count =
-  Decoder $ \input ->
-    if count < 0 || ByteString.length input < count
-      then Left "active wall record is truncated"
-      else Right (ByteString.take count input, ByteString.drop count input)
-
-decoderFailure :: String -> Decoder value
-decoderFailure message = Decoder (const (Left message))
-
-nativeFailure :: String -> Word32 -> WindowsWallError
-nativeFailure operation status =
-  WindowsWallNativeFailure operation status
-
-errorBusy :: Word32
-errorBusy = 170
-
-errorInvalidData :: Word32
+errorInvalidData, errorBusy, errorSharingViolation :: Word32
 errorInvalidData = 13
-
-errorNotSupported :: Word32
-errorNotSupported = 50
-
-isSharingStatus :: Word32 -> Bool
-isSharingStatus status =
-  status == errorSharingViolation || status == errorLockViolation
-
-isRaceStatus :: Word32 -> Bool
-isRaceStatus status =
-  isSharingStatus status
-    || status == errorBusy
-    || status == errorFileExists
-    || status == errorAlreadyExists
-
-errorSharingViolation :: Word32
+errorBusy = 170
 errorSharingViolation = 32
 
-errorLockViolation :: Word32
+errorLockViolation, errorNotSameDevice, errorWriteFault :: Word32
 errorLockViolation = 33
+errorNotSameDevice = 17
+errorWriteFault = 29
 
-errorFileExists :: Word32
+errorNotSupported, errorFileExists, errorAlreadyExists, errorIoPending :: Word32
+errorNotSupported = 50
 errorFileExists = 80
-
-errorAlreadyExists :: Word32
 errorAlreadyExists = 183
+errorIoPending = 997
 
-hardLinkUnsupportedStatuses :: [Word32]
-hardLinkUnsupportedStatuses = [1, 17, 50]
-
-fromModelError :: WallModelError -> WindowsWallError
-fromModelError (WallConflictError conflict) = WindowsWallConflict conflict
-fromModelError err = WindowsWallModelFailure err
-
-fromConfigError :: ConfigBytesError -> WindowsWallError
-fromConfigError = WindowsWallConfigurationFailure
-
-joinModel :: Either error (Either error value) -> Either error value
-joinModel = either Left id
+mOVEFILE_REPLACE_EXISTING, mOVEFILE_WRITE_THROUGH :: Word32
+mOVEFILE_REPLACE_EXISTING = 0x1
+mOVEFILE_WRITE_THROUGH = 0x8
 
 #endif

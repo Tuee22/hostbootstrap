@@ -862,10 +862,12 @@ the parent's plan-only fields. The child verifies those exact bytes through the 
 mints a fresh child-local `configId`, and only then obtains opaque role parameters; neither the parent's
 `configId` nor a `ValidatedServiceRequest` is serialized.
 
-Current projection and delivery are split from the named `context-init` row, whose action only announces
-a frame anchor. The VM projection/streaming occurs inside the composite bootstrap action, the container
-projection is selected independently through `psFrameContext` and carried by the lift, and a Kubernetes
-service receives a ConfigMap that overrides the image's baked container config. VM/container projections
+Current projection and delivery are split from the named `context-init` row, whose action body only
+announces a frame anchor. The VM projection/streaming occurs inside the composite bootstrap action; the
+container projection is carried by the descent that same `context-init` row declares, so the row and the
+payload are one plan value even though the projection function is still computed outside the plan's
+delivery operation; and a Kubernetes service receives a ConfigMap that overrides the image's baked
+container config. VM/container projections
 travel on the lift's `stdin` only — never `argv` or an environment variable — and the descending binary
 writes its own executable-sibling `<project>.dhall`; there is no host-side intermediate config file or
 config bind-mount. The target `ProjectPlan` gives projection, authentication, durable preparation, and

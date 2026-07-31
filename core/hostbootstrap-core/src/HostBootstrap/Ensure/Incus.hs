@@ -19,6 +19,8 @@ module HostBootstrap.Ensure.Incus
     IncusProviderStatus (..),
     IncusProviderCapability,
     classifyIncusProviderStatus,
+    virtiofsdCandidatePaths,
+    linuxVmCapabilityProbeScript,
     withIncusProviderCapability,
     probeIncusProviderStatus,
     targetIncusAdminUser,
@@ -27,7 +29,7 @@ module HostBootstrap.Ensure.Incus
 where
 
 import Data.Char (toLower)
-import Data.List (find, isInfixOf)
+import Data.List (find, intercalate, isInfixOf)
 import Data.Maybe (mapMaybe)
 import HostBootstrap.Ensure
   ( InstallStep (..),
@@ -95,6 +97,37 @@ withIncusProviderCapability IncusProviderReady consume =
   Right (consume IncusProviderCapability)
 withIncusProviderCapability status _ =
   Left ("Incus provider is not usable: " ++ show status)
+
+{- | Where Incus looks for @virtiofsd@, in its own search order. Pure so the
+list is pinned by a test rather than restated at a call site.
+-}
+virtiofsdCandidatePaths :: [FilePath]
+virtiofsdCandidatePaths =
+  [ "/usr/libexec/virtiofsd",
+    "/usr/lib/qemu/virtiofsd",
+    "/usr/lib/virtiofsd"
+  ]
+
+{- | The Linux VM-capability probe: the QEMU binary, an OVMF firmware image, and
+a @virtiofsd@ Incus can actually exec.
+
+The @virtiofsd@ conjunct is what makes this probe answer the question § L asks —
+whether the provider is *usable* — rather than merely whether a binary is
+installed. A host with QEMU and OVMF but no @virtiofsd@ can launch a VM and then
+fail every durable-share attach, so reporting it ready is the exact "installed
+but not usable" claim the doctrine forbids.
+-}
+linuxVmCapabilityProbeScript :: String
+linuxVmCapabilityProbeScript =
+  intercalate
+    " && "
+    [ "test -x /usr/bin/qemu-system-x86_64",
+      "(test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/OVMF/OVMF_CODE_4M.fd)",
+      "(" ++ intercalate " || " (map candidate virtiofsdCandidatePaths ++ [onPath]) ++ ")"
+    ]
+  where
+    candidate path = "test -x " ++ path
+    onPath = "command -v virtiofsd >/dev/null 2>&1"
 
 classifyIncusProviderStatus ::
   Bool ->
@@ -180,7 +213,17 @@ reconcileLinuxIncus cfg = do
   installAndVerify "incus client" (\candidate -> pure (toolPresent candidate Incus)) installSteps cfg
   refreshed <- buildHostConfig (hcSubstrate cfg)
   ensureKvmAccess refreshed
-  runRequired refreshed Sudo ["apt-get", "install", "-y", "qemu-system-x86", "ovmf", "acl"]
+  -- @virtiofsd@ is not optional and is not pulled in by @incus@ or
+  -- @qemu-system-x86@. Incus needs it to share a host directory into a *VM*,
+  -- which is exactly the § DD Incus @ShareReconcile@ (a disk device attached
+  -- post-create). Without it a hot-plugged share fails with
+  -- @Failed to start device "...": Virtiofsd isn't running@ -- observed on a
+  -- pristine Ubuntu 24.04 host, where every other part of this convergence
+  -- reported ready.
+  runRequired
+    refreshed
+    Sudo
+    ["apt-get", "install", "-y", "qemu-system-x86", "ovmf", "virtiofsd", "acl"]
   ensureLinuxDaemon refreshed
   runRequired refreshed Sudo ["systemctl", "restart", "incus"]
   ensureIncusAdminGroup refreshed
@@ -217,15 +260,7 @@ probeIncusProviderStatus cfg
         if isAppleSilicon (hcSubstrate cfg)
           then runTool cfg Colima ["status", appleIncusProfile]
           else
-            runTool
-              cfg
-              Sudo
-              [ "sh",
-                "-c",
-                "test -x /usr/bin/qemu-system-x86_64 && "
-                  ++ "(test -f /usr/share/OVMF/OVMF_CODE.fd || "
-                  ++ "test -f /usr/share/OVMF/OVMF_CODE_4M.fd)"
-              ]
+            runTool cfg Sudo ["sh", "-c", linuxVmCapabilityProbeScript]
       egress <- runTool cfg Incus ["image", "info", "images:ubuntu/24.04"]
       pure
         ( classifyIncusProviderStatus

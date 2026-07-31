@@ -474,16 +474,29 @@ failed step's output instead of a message-less `die`. The core `failChain` alrea
 live Windows/WSL2 `test run all` reported **`8/8 passed`**; an intermediate `6/8` run's two failures each
 named their cause legibly. **None remaining.**
 
-### Sprint 10.9: Exclusive test ownership and failure isolation [Blocked]
+### Sprint 10.9: Exclusive test ownership and failure isolation [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprints 5.7, 9.10, 15.9, and 19.7–19.8
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot/Native.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/DataRootSpec.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`,
 `documents/architecture/lifecycle_state_model.md`,
 `documents/engineering/testing.md`, `legacy-tracking-for-deletion.md`
+
+
+**Reproduced 2026-07-28 (native Linux GPU run).** Interrupting a harness run leaves both `.test_data` and
+a separate `.test_data.hostbootstrap-run-owner` lock directory behind. The next run aborts with
+`test data ownership is already active: .test_data`, and because the lock is a bare `createDirectory`
+claim with no Open→Closing phase or owner identity, nothing can distinguish a crashed predecessor from a
+live one — an operator must remove **both** directories by hand. This is the concrete failure this
+sprint's versioned, crash-recoverable reservation replaces.
 
 #### Objective
 
@@ -746,15 +759,283 @@ cleanup cannot delete foreign or concurrently replaced state.
 
 #### Remaining Work
 
-Blocked until Sprints 5.7, 9.10, 15.9, and 19.7–19.8 land the provider/storage receipt primitives, opaque
-state/result algebra, independent root authority, scoped assembler/codec, and finalized plan. This sprint owns the
-fresh and bound-recovery lifecycle mode/profile openers rather than depending on Phase 5 to construct
-them. Then replace
-cooperative/path-based ownership with the four § EE clauses and verified receipts,
-implement the authenticated
-authority-rehydration handoff, thread the structured results through the report card, and run the
-concurrency/failure matrix. Historical `6/6` and `8/8` runs did not exercise these ownership or handoff
-races and do not close the sprint.
+**Delivered 2026-07-29 — project-wide mode, run leases, the fresh profile openers, and the recoverable
+run reservation that replaces the lock directory.**
+
+- `HostBootstrap.Lifecycle.Mode` owns the project-wide exclusion. Production and Harness contend on one
+  protected mode record: Production takes it and **retains** it across a second entry (which is what
+  makes `down` keep the exclusion), a harness run may take it only when it is absent, and a harness run
+  against live Production is `ModeHeldByAnother` rather than an overlap. Harness mode is released only
+  after the run's lease closes, and the lease is always closed before the mode, so a crash between them
+  leaves the mode held and the run recoverable rather than the mode cleared with work outstanding.
+- The **run lease** is durable and classifiable. `withHarnessRoot`/`withProductionRoot` record an
+  `UnboundRunLease` before any plan exists; `bindRunLease` compare-and-swaps it into a
+  `BoundRunLease` naming the exact spec and plan digests, and refuses a second bind. Both composite
+  brackets run the Phase 15 verifier *inside* the protected mode transaction and then release the entry
+  before the continuation, so the transaction is atomic without holding a lock across a 30-minute run.
+- The **fresh Production and Harness `LifecycleProfile` openers** require the exact active mode lease
+  and the still-unbound run lease. `withProductionLifecycleProfile` does not typecheck against a
+  harness lease (`HarnessLeaseAsProduction.hs`), so a test component has no route to Production.
+- The **harness safety precondition verifier derives its sibling-config half from installed project
+  identity** and is re-run inside the same protected entry that takes the mode, so nothing can slip
+  between the check and ownership.
+- `recoverAbandonedHarnessRuns` enumerates every incomplete lease, closes each unbound one behind the
+  protected `verifyUnboundLeaseHasNoEffects` proof (a single effect-shaped record refuses), releases
+  that run's mode, hands each bound one to the caller's fold, and then **rechecks**: a fold that
+  resolved nothing cannot report a vacuous success, and `withHarnessRoot` re-verifies emptiness inside
+  its own entry so racing the sweep cannot bypass unresolved ownership.
+- Production mode release runs only through `releaseProductionMode`, which requires the
+  `ProductionCloseRoot` and the closure evidence to agree: a settled-destroy root paired with
+  pre-effect evidence is `ModeClosureMismatch`.
+- **The reproduced defect is fixed.** `HostBootstrap.Harness.Ownership` is the production run-ownership
+  bracket the command layer now installs: it sweeps abandoned runs, takes mode and lease, records the
+  durable origin of `.test_data` (the exact present/absent observation) *before* creating it, and on
+  exit closes the lease, releases the mode, and removes the directory only when the recorded origin says
+  this run created it. The bare `createDirectory` claim and its
+  `.test_data.hostbootstrap-run-owner` directory are gone, and `HarnessSpec` proves a run killed
+  mid-body does not block the next run.
+- The engine takes ownership through an injected `HarnessRunOwnership` seam, so `runSuiteSelection`
+  keeps owning only selection, isolation, and reporting (§ W).
+
+Validation (2026-07-29): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **619**; the demo workspace passes **106** demo tests plus
+the embedded **619**-test core suite. `AuthoritySpec` contributes **26** cases run against a real
+filesystem and a real kernel lock, including the mode-exclusion, lease-bind, closure-mismatch, and
+abandoned-run cases above, plus cross-process exclusion proved with the production primitive.
+
+**Delivered 2026-07-29 — the four § EE clauses for the data root itself.**
+
+`HostBootstrap.Harness.DataRoot` is the data root's ownership backend, and it is the **first § EE
+backend wired into a production route**: `Harness.Ownership` — the bracket every `test run` executes
+inside — now acquires and releases `.test_data` through it.
+
+- **clause 1** is structural. Every entry point demands the caller's `ProtectedSession`, and the whole
+  observe → record-origin → create → bind-identity sequence runs inside one `withProtectedEntry`. This
+  also fixes a real gap in the 2026-07-29 bracket, where the `createDirectory` ran *after* the protected
+  entry had already been released.
+- **clause 2** publishes the durable origin record before the directory exists, and it names the exact
+  prior state: `origin absent`, or `origin present <identity>` for a directory an operator left behind.
+- **clause 3** binds ownership to the created directory's own stable kernel identity, read by
+  `Harness.DataRoot.Native` — POSIX `lstat` `(device, inode)`, and on Windows
+  `GetFileInformationByHandle` over a handle opened with `FILE_FLAG_BACKUP_SEMANTICS` (required for a
+  directory) and `FILE_FLAG_OPEN_REPARSE_POINT`. The removal decision no longer rests on the recorded
+  origin boolean.
+- **clause 4** re-observes that identity under the same entry and removes the directory only on an exact
+  match. A same-named replacement, or a path that is now absent, is a structured `Conflict`: nothing is
+  removed, the record is retained for the next run's recovery, and a stranger's directory is never
+  deleted. The pure § Z `selfCreatedTestDataRemoval` guard still decides *policy* (a found directory is
+  never in the removal set) with the identity match deciding *authority*.
+- A backend that cannot report a stable identity is `Unsupported` and mints no ownership at all; the
+  directory is not created.
+- **Recovery** treats the record as the authority. An abandoned run whose origin says *absent* has its
+  generated content removed rather than adopted — including the crash window between publishing the
+  origin and binding the identity, where no managed identity was ever recorded. A recorded pre-existing
+  directory is preserved whatever it looks like now. `recoverAbandonedHarnessRuns` grew a **second fold
+  callback** so an unbound run's owned state is reclaimed *before* its lease is closed, while the run is
+  still identifiable.
+
+**Delivered 2026-07-29 — structured report-card outcomes.**
+
+`CaseResult` no longer flattens every non-passing outcome into one `Fail String` with a parseable
+prefix. `Fail` is now exactly the project's own assertion verdict; the engine's classifications are
+distinct constructors it alone produces, so a project assertion cannot label itself a refusal or a
+teardown failure:
+
+- `Refused` — a post-ensure safety probe found pre-existing operator state. Teardown deliberately does
+  **not** run, because a refusal proven to precede acquisition has an empty rollback set (§ Y);
+- `LifecycleFailed` — an attempted lifecycle operation broke (bring-up, a case setup, or a throwing case
+  body), carrying the cause through `displayException` rather than a bare exit code (§ CC);
+- `TeardownFailed` — cleanup broke. This is now an **appended row** rather than an overwrite: the
+  per-case results are preserved and the variant still goes red with the cause named, so "the assertions
+  passed but the stack did not come down" is legible instead of being flattened into one reason per case.
+
+`caseResultPassed`, `caseResultLabel`, and `caseResultReason` are total over the outcome set, so a new
+outcome cannot be silently counted as success, and the report card prints a distinct label per outcome
+(`PASS`/`FAIL`/`REFUSED`/`BROKEN`/`LEAKED?`). The `Conflict` and `Unsupported` rows this bullet also
+names are **not** added yet: nothing produces them until the reconcilers are wired at their call sites
+(Sprints 5.7/16.6), and adding unproducible constructors would be exactly the definition-only surface
+§ T forbids.
+
+Validation (2026-07-29): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **729**; the demo workspace passes **106** demo tests plus
+the embedded **729**-test core suite under `-Werror`. `HarnessSpec` proves each outcome separately: a
+throwing case body and a throwing case setup are `LifecycleFailed` rather than assertion failures, a
+failed bring-up is `LifecycleFailed` and still tears down, a `SafetyRefusal` is `Refused` with teardown
+call count `0`, a failed teardown leaves the passing case row intact and adds a `TeardownFailed` row that
+makes `allPassed` false, and one rendering case asserts all five distinct labels and the pass count.
+
+The earlier data-root validation, re-run after this change: the new `DataRootSpec` contributes **18**
+cases, all of them driving the
+production driver and the production native identity backend against a real filesystem and a real
+kernel — deliberately **not** `os(windows)`-gated, so every substrate the suite runs on proves the same
+clauses. They cover: origin-before-creation for both the absent and the pre-existing case, an unsettled
+same-key record refused rather than overwritten, the record codec and its malformed-input refusal, the
+bound identity equalling the created directory's own, a same-named replacement reading as a different
+object, `Unsupported` minting no ownership and creating nothing, removal of a self-created root,
+preservation of a found root's content, refusal to release a replaced or vanished root with the
+replacement left intact, a receipt refused against another run's record, and the four recovery branches
+(pre-binding crash, post-binding crash, foreign replacement refused, and a recorded pre-existing
+directory preserved).
+
+**Delivered 2026-07-29 — the per-run `.test_data/<runId>` generation.**
+
+A run no longer owns the shared `.test_data` path. `HostBootstrap.Harness.testDataGeneration` derives
+`.test_data/<runId>` from the run's generative identity, and `Harness.Ownership` acquires, releases, and
+reclaims *that* directory. The shared parent is explicitly scaffolding: it is created if missing, is never
+bound to a receipt, and is never removed. Two consequences matter and are both asserted:
+
+- two runs can never contend for the same durable object, because the generation is named by a generative
+  `runId` — so § Z's "each distinct config variant receives a fresh harness `runId`, cluster/data root, and
+  exact plan/config lease" is now true of the data root and not only of the lease;
+- the abandoned-run sweep reclaims the *predecessor's* generation by name as well as by kernel identity,
+  because `reclaimUnboundRun` derives the same `.test_data/<oldRunId>` path from the lease it is settling.
+
+`HarnessSpec` grew four cases: exactly one generation exists while the run holds it (observed from inside
+the bracket); an exception releases the generation and leaves the parent present and empty; a run killed
+mid-body leaves no orphan generation after the next run's sweep; and consecutive runs own directories with
+different names.
+
+**Delivered 2026-07-29 — plan snapshots, the classified lease binding, and bound-Production recovery.**
+
+`bindRunLease` no longer accepts caller-supplied digest strings, and an already-bound lease is no longer an
+error:
+
+- **Plan snapshots are persisted and verified.** `persistPlanSnapshot` writes one run's non-secret
+  revision/spec/plan record; `verifyPlanSnapshot` reads it back and binds its two digest indices inside a
+  rank-2 continuation, yielding the opaque `VerifiedPlanSnapshot projectId specDigest planDigest`.
+  `bindRunLease` consumes *that*, so "the lease is bound to a snapshot that was persisted and verified"
+  is structural rather than a comment (§ EE). A run with no persisted snapshot is `ModeSnapshotMissing`,
+  not a default.
+- **Binding classifies its own outcome.** A still-unbound lease yields
+  `FreshRunLeaseBinding` carrying the `BoundRunLease` plus `NormalActiveRecovery` — the opaque proof that
+  no recovery is owed. An already-bound lease is the abandoned-invocation case and yields
+  `ExistingRunLeaseBinding` carrying the same `BoundRunLease` plus `BoundInvocationRecovery`, so a caller
+  cannot mistake a resumed invocation for a fresh one. A lease bound to *different* digests is
+  `ModeSnapshotMismatch`: that is a snapshot substitution, not a resumption.
+- **The two recovery eliminators are scope-exclusive.** `eliminateProductionBoundRecovery` distinguishes an
+  exact terminal `up`/`down` acknowledgment — which yields only the stable `InvocationCloseKey`, because
+  resuming that same close is the sole legal continuation — from Open operational revision recovery.
+  `eliminateHarnessBoundRecovery` distinguishes an exact persisted Closing epoch from Open. Each **refuses
+  the other's disposition** with `ModeWrongRecoveryScope`, so a Production invocation cannot consume a
+  Harness Closing epoch and a Harness run cannot consume a Production acknowledgment.
+- **The Open branch reports which side of the migration barrier it is on.** `OpenRevisionKind` is
+  `NormalRevision | IncompleteMigration key | CompletedMigration key`, read from a durable record written
+  by `recordOpenRevisionMigration` — so a restart resumes the correct side rather than inferring it from
+  the current config.
+- **`RecoveredProductionLifecycleProfile` is a distinct type from `LifecycleProfile`,** indexed by the
+  exact spec/plan digests and the local `planId` its rebuild is fixed to. There is no function from it to a
+  fresh profile, to Harness scope, or to teardown authority.
+  `withRecoveredProductionLifecycleProfile` requires the exact Production `VerbUp` root, the currently held
+  Production mode under the same broker generation, the bound lease, the verified snapshot, and the **Open**
+  revision branch. Passing a terminal acknowledgment cannot reach it, so an invocation that already
+  finished cannot have a plan quietly rebuilt for it.
+
+`AuthoritySpec` grew seven cases covering each of those refusals and both eliminators, run against the real
+protected store.
+
+Validation (2026-07-29): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **737**; the demo workspace passes **106** demo tests plus the
+embedded **737**-test core suite under the same gate. `DocValidatorSpec` passes.
+
+**Delivered 2026-07-30 — the two close transactions and the `ClosingProject` journal state.**
+
+- **`ClosingProject epoch` is now a journal state**, between Open and Closed.
+  `beginClosingProject` compare-and-swaps Open → Closing against the caller's exact permit, and session
+  opening advances that **same** record version, so a close and a concurrent session-open contend on one
+  version and exactly one wins. Resuming the *same* persisted epoch is idempotent; a *different* one is a
+  second close and is refused. `recordClosedProject` accepts only the exact epoch that authorized it, so an
+  Open journal cannot jump straight to Closed, and the prepare compare-and-swap gained an explicit Closing
+  branch — which is what stops a prepare racing an authorized close.
+- **`verifyAllSessionsClosed` is the completeness proof.** It enumerates the complete session set for a
+  plan at one store version and refuses while any member is Open — including a **zero-operation** Open
+  session, which is exactly what an invocation killed right after opening leaves behind. It is bound to the
+  plan digest it covered, not only to phantom indices, and both consumers compare that digest against the
+  bound lease's; a proof taken over another plan's journal is `ModeSnapshotMismatch`.
+- **The Production invocation close** is distinct from project closure.
+  `completeProductionInvocation` mints `ProductionInvocationCompleted` from the bound lease plus that
+  proof, and `closeCompletedProductionInvocation` records the terminal acknowledgment under a stable
+  `InvocationCloseKey` **before** closing the lease — so an interruption between the two leaves evidence
+  bound recovery classifies as `ProductionTerminalAcknowledgment` and resumes the same key, rather than an
+  ambiguous half-closed lease. An uncertain acknowledgment is its own
+  `ProductionInvocationCloseUnknown` constructor, not an error. It does **not** release the mode, mark the
+  project closed, or release any resource: the test asserts a harness run is *still* refused afterwards,
+  which is what makes `down` retain the exclusion.
+- **The harness terminal close.** `authorizeHarnessClose` requires the exact Harness mode lease for that
+  run, the bound lease, and the completeness proof, then persists the Closing epoch so a crash resumes
+  this close (bound recovery reaches `HarnessPersistedClosing`). `finalizeHarnessClose` closes the lease
+  and releases the Harness mode **last**, so a crash between them leaves the mode held and the run
+  recoverable; the test proves the next run may then start.
+- This also gives `recordProductionInvocationAcknowledgment` and `recordHarnessClosingEpoch` their
+  production consumers, so neither remains a definition-only surface (§ T).
+
+`AuthoritySpec` grew **five** cases against the real protected store, covering each refusal above.
+Validation (2026-07-30): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **743**; the demo workspace passes **106** demo tests plus the
+embedded **743**-test core suite.
+
+**Delivered 2026-07-30 — the deterministic concurrency race, and the ownership defect it found.**
+
+The § Z validation clause "race two harnesses … and prove exactly one authoritative acquisition" was
+written as a real cross-process race: four processes, started together, each attempting the whole
+production reservation (sweep → mode+lease → data root) against one state root, with the winner
+**holding** the run so every competitor overlaps it rather than queueing behind it.
+
+**It failed on the first run: two processes both acquired.** The cause is structural, not a race window.
+`recoverAbandonedHarnessRuns` classifies any incomplete lease as abandoned, and **liveness was never
+established** — so a starting run swept the *live* winner's lease, `releaseModeIfRun` released the
+winner's project-wide mode, and it then took ownership. Two harness runs simultaneously believed they
+owned the project, which is exactly the exclusion § Z exists to provide. Nothing before this could have
+caught it: every prior ownership test is sequential, where the predecessor really is dead, and the
+sequential tests pass either way.
+
+The fix is the § EE clause-1 primitive applied to the **run** rather than to a single transaction. The
+protected store's entry is taken and released per transaction, so it can never answer "is the run that
+owns this project still alive?" — and without that answer the sweep cannot tell a dead predecessor from a
+live peer. `HostBootstrap.Protected.withRunLiveness` takes a named kernel lock (`hTryLock`, which the OS
+releases on process death) and holds it across **the sweep and the whole run**;
+`Harness.Ownership` acquires it first, so:
+
+- a competitor finds the lock held and is refused by a **stated** exclusion — "another test run is already
+  in progress for this project" — instead of silently sweeping a live owner;
+- a genuinely dead predecessor's lock is already released by the kernel, so it never blocks the next run,
+  and the existing killed-mid-body case still passes unchanged;
+- only the lock acquisition is wrapped in `try`. The body's own exceptions propagate unchanged, because
+  the engine classifies them into report-card outcomes; the lock is still released on that path.
+
+`HarnessSpec` now runs that four-process race as a standard case (~3 s), asserting exactly one acquisition,
+three refusals, that every refusal states its cause, and that the winner released its generation.
+
+Validation (2026-07-30): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **744**; the demo workspace passes **106** plus the embedded
+**744**; the Python suite passes **231**; `git diff --check` is clean.
+
+**Closed 2026-07-30 — `verifyDestroySettled` and the settled-destroy closure conversion.**
+
+This was the one part of the terminal-close projection that could not be built here, because it must check
+the **plan-derived destroy forest** Sprint 16.6 owns. That forest landed 2026-07-30
+(`HostBootstrap.Teardown`), and with it:
+
+- `verifyDestroySettled` accepts only a **completed `Destroy`** forest — the type refuses a `Down` one —
+  and additionally refuses a forest that settled fewer nodes than the projection names, so a truncated
+  traversal cannot pass as a settled destroy;
+- `Lifecycle.Mode.destroySettledClosure` is the conversion this sprint owed: it consumes the
+  `BoundRunLease`, `verifyAllSessionsClosed`'s completeness proof, and the `DestroySettled` proof,
+  compares both against the lease's own plan digest, and mints
+  `ProjectClosureEvidence SettledDestroyClose`.
+
+Before this, `verifyNoProjectResourcesAcquired` was the **only** producer of `ProjectClosureEvidence`, so
+the `SettledDestroyClose` branch was uninhabited: a Production project could release its mode after a
+true pre-effect refusal but never after an actual `destroy`. The surrounding Closing/Closed machinery
+delivered above was already complete and waiting for exactly this proof.
+
+**Still open (this sprint):** the authenticated authority-rehydration handoff and the versioned
+session/fence prepare protocol shared with Sprints 15.9 and 16.6;
+the `Conflict` and `Unsupported` report-card rows, which have no producer until the reconcilers are
+wired at their call sites by Sprint 16.6; the receipt-carrying `ManagedResult Unchanged` / `ForeignResult`
+half of the same bullet, which needs the same plan wiring; and the remainder of the concurrency/failure
+matrix, whose kill-point and prepare/handoff clauses are stated against machinery Sprints 15.9 and 16.6
+wire (the reservation-race clause above is now closed). Historical `6/6`, `8/8`, and `10/10` runs did not exercise these ownership or handoff races and do
+not close the sprint.
 
 ### Sprint 10.10: Remove the parallel run-model representation [Done]
 

@@ -24,8 +24,7 @@ distinct test-config initializer.
 A project binary calls 'runHostBootstrapCLI' with an already finalized opaque
 'ProjectSpec'. Finalization validates the extension points (a non-empty test
 suite and step contribution; unique test cases, artifacts, assembly inputs,
-step identities, frames, and services; and exactly one frame-context and
-teardown projection) and then merges
+step identities, frames, and services) and then merges
 the spec into the core command tree ('HostBootstrap.Command.coreCommands'). The
 bare @hostbootstrap@ binary (built like any project binary, not baked into the
 base image) uses the separate 'runBareHostBootstrapCLI'. See
@@ -39,8 +38,6 @@ module HostBootstrap.CLI (
     addArtifacts,
     addAssemblyInputs,
     addSteps,
-    setFrameContext,
-    setTeardown,
     addServices,
     finalizeProjectSpec,
     projectServiceVariantNames,
@@ -51,7 +48,7 @@ module HostBootstrap.CLI (
 )
 where
 
-import Control.Monad (join, unless)
+import Control.Monad (foldM, join, unless)
 import Data.Char (toLower)
 import Data.List (group, sort)
 import Data.Maybe (fromMaybe)
@@ -68,6 +65,7 @@ import HostBootstrap.Config.Class (
     ProjectCfg (..),
     ProjectCodec,
     TestCfg (..),
+    failConfigAssembly,
     pureConfigAssembly,
     runConfigAssembly,
     withProjectCodec,
@@ -84,7 +82,6 @@ import HostBootstrap.Dhall.Gen (
     requireCodecWitness,
  )
 import HostBootstrap.Harness (TestSuite, caseIdText, emptySuite, testSuiteCaseCount, testSuiteCaseIds)
-import HostBootstrap.Lift (LiftContext, localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
@@ -95,7 +92,7 @@ import HostBootstrap.Service (
     serviceVariantNames,
     withFinalizedServiceRegistry,
  )
-import HostBootstrap.Step (Step, StepFrame, StepPlan, StepPlanError (..), mkStepPlan)
+import HostBootstrap.Step (Step, StepPlan, StepPlanError (..), mkStepPlan)
 import Options.Applicative
 import System.Environment (getProgName)
 import System.Exit (die)
@@ -105,10 +102,10 @@ import System.IO (hSetEncoding, stderr, stdout, utf8)
 {- | A derived project's required extension points, generic over the project's
 config type @cfg@ and the project's test-config type @tcfg@. There are no
 per-project commands: the surface is fixed (§ P). A project supplies its runtime
-test suite, code-check action, schema artifact delta, lift chain, per-frame lift
-context, chain-frame teardown, service-handler registry, one scope-aware
-restricted project-config assembler, and its test-config initializer. The bare
-core binary uses 'runBareHostBootstrapCLI' instead.
+test suite, code-check action, schema artifact delta, lift chain (whose steps
+carry their own descent and their own reverse effect, § W), service-handler
+registry, one scope-aware restricted project-config assembler, and its
+test-config initializer. The bare core binary uses 'runBareHostBootstrapCLI' instead.
 -}
 data ProjectSpec projectId cfg tcfg = ProjectSpec
     { psTestSuite :: TestSuite
@@ -117,24 +114,15 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
     , psTestCodec :: CodecWitness tcfg
     , psAssemblyInputs :: [ConfigInput]
     , psServices :: ServiceRegistry (cfg (Production projectId))
-    , psStepPlan :: cfg (Production projectId) -> Either StepPlanError StepPlan
-    , psFrameContext ::
+    , psStepPlan ::
         forall rootScope rootId.
         CanonicalProjectRoot rootScope rootId ->
         cfg (Production projectId) ->
-        StepFrame ->
-        LiftContext
-    , psTeardown ::
-        forall rootScope rootId.
-        CanonicalProjectRoot rootScope rootId ->
-        cfg (Production projectId) ->
-        Bool ->
-        IO ()
-    {- ^ The chain-frame teardown the @project down@ / @project destroy@
-    lifecycle runs after the recursive cluster teardown: stop (@False@) or
-    delete (@True@) the project-provisioned frames (e.g. the VM). Best-effort
-    and idempotent; the never-delete-@.data@ invariant (§ Y) is the cluster
-    teardown's responsibility. Assign once with 'setTeardown'.
+        Either StepPlanError StepPlan
+    {- ^ The one validated plan. It is built under the admitted
+    'CanonicalProjectRoot' (§ X), so every step — its forward action and the
+    descent it declares — derives its project-relative paths from that one
+    authority rather than from @cwd@ or a serialized path.
     -}
     , psTestInit :: InitArgs -> tcfg
     {- ^ Interpret the parsed @init@ flags into the project's test config
@@ -150,27 +138,17 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
     -}
     }
 
-newtype FrameContextProjection projectId cfg = FrameContextProjection
-    { runFrameContextProjection ::
+newtype StepFragment projectId cfg = StepFragment
+    { runStepFragment ::
         forall rootScope rootId.
         CanonicalProjectRoot rootScope rootId ->
         cfg (Production projectId) ->
-        StepFrame ->
-        LiftContext
-    }
-
-newtype TeardownProjection projectId cfg = TeardownProjection
-    { runTeardownProjection ::
-        forall rootScope rootId.
-        CanonicalProjectRoot rootScope rootId ->
-        cfg (Production projectId) ->
-        Bool ->
-        IO ()
+        [Step]
     }
 
 {- | Opaque unfinished project specification. It cannot be dispatched. Step and
-service contributions are additive; frame-context and teardown projections are
-single-assignment slots checked by 'finalizeProjectSpec'.
+service contributions are additive, and each step carries its own descent and
+reverse effect, so there is no lifecycle slot beside the plan.
 -}
 data ProjectSpecBuilder projectId cfg tcfg = ProjectSpecBuilder
     { pbTestSuite :: TestSuite
@@ -178,9 +156,7 @@ data ProjectSpecBuilder projectId cfg tcfg = ProjectSpecBuilder
     , pbArtifacts :: [ConfigArtifact]
     , pbTestCodec :: CodecWitness tcfg
     , pbAssemblyInputs :: [ConfigInput]
-    , pbStepFragments :: [cfg (Production projectId) -> [Step]]
-    , pbFrameContexts :: [FrameContextProjection projectId cfg]
-    , pbTeardowns :: [TeardownProjection projectId cfg]
+    , pbStepFragments :: [StepFragment projectId cfg]
     , pbServiceRegistries :: [ServiceRegistry (cfg (Production projectId))]
     , pbTestInit :: InitArgs -> tcfg
     , pbAssemble ::
@@ -196,16 +172,11 @@ data ProjectSpecError
     | DuplicateProjectArtifacts [String]
     | DuplicateAssemblyInputs [FilePath]
     | MissingStepPlan
-    | MissingFrameContext
-    | DuplicateFrameContextAssignments Int
-    | MissingTeardown
-    | DuplicateTeardownAssignments Int
     | InvalidServiceRegistry ServiceRegistryError
     deriving (Eq, Show)
 
 {- | Start an unfinished project spec from the streams that are intrinsically
-single values. It still needs steps, one frame-context projection, and one
-teardown projection before finalization.
+single values. It still needs steps before finalization.
 -}
 projectSpec ::
     TestSuite ->
@@ -226,8 +197,6 @@ projectSpec suite check arts testCodec testInit assemble =
         , pbTestCodec = testCodec
         , pbAssemblyInputs = []
         , pbStepFragments = []
-        , pbFrameContexts = []
-        , pbTeardowns = []
         , pbServiceRegistries = []
         , pbTestInit = testInit
         , pbAssemble = assemble
@@ -254,43 +223,21 @@ addAssemblyInputs inputs builder =
 {- | Add one ordered step fragment. Repeated calls append rather than replace.
 The combined list is validated into an opaque non-empty 'StepPlan' for each
 decoded Production config before an interpreter can consume it.
+
+The fragment receives the admitted 'CanonicalProjectRoot' so a step can derive
+its project-relative paths — and the descent it declares with
+'HostBootstrap.Step.descendsVia' — from that one authority (§ X).
 -}
 addSteps ::
-    (cfg (Production projectId) -> [Step]) ->
+    ( forall rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg (Production projectId) ->
+      [Step]
+    ) ->
     ProjectSpecBuilder projectId cfg tcfg ->
     ProjectSpecBuilder projectId cfg tcfg
 addSteps fragment builder =
-    builder{pbStepFragments = pbStepFragments builder ++ [fragment]}
-
-{- | Assign the one per-frame lift-context projection. A second assignment is
-retained as a construction conflict and rejected by finalization.
--}
-setFrameContext ::
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg (Production projectId) ->
-      StepFrame ->
-      LiftContext
-    ) ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
-setFrameContext projection builder =
-    builder{pbFrameContexts = pbFrameContexts builder ++ [FrameContextProjection projection]}
-
-{- | Assign the one chain-frame teardown projection. A second assignment is a
-finalization error rather than silent replacement.
--}
-setTeardown ::
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg (Production projectId) ->
-      Bool ->
-      IO ()
-    ) ->
-    ProjectSpecBuilder projectId cfg tcfg ->
-    ProjectSpecBuilder projectId cfg tcfg
-setTeardown teardown builder =
-    builder{pbTeardowns = pbTeardowns builder ++ [TeardownProjection teardown]}
+    builder{pbStepFragments = pbStepFragments builder ++ [StepFragment fragment]}
 
 {- | Add a checked typed service registry. Repeated calls compose in declaration
 order; duplicate identities are rejected by finalization.
@@ -307,8 +254,6 @@ finalizeProjectSpec ::
     Either ProjectSpecError (ProjectSpec projectId cfg tcfg)
 finalizeProjectSpec builder = do
     validateBase
-    frameContextProjection <- exactlyOneFrameContext
-    teardownProjection <- exactlyOneTeardown
     services <- foldServices
     pure
         ProjectSpec
@@ -318,10 +263,9 @@ finalizeProjectSpec builder = do
             , psTestCodec = pbTestCodec builder
             , psAssemblyInputs = pbAssemblyInputs builder
             , psServices = services
-            , psStepPlan = \cfg ->
-                mkStepPlan (concatMap (\fragment -> fragment cfg) (pbStepFragments builder))
-            , psFrameContext = runFrameContextProjection frameContextProjection
-            , psTeardown = runTeardownProjection teardownProjection
+            , psStepPlan = \root cfg ->
+                mkStepPlan
+                    (concatMap (\fragment -> runStepFragment fragment root cfg) (pbStepFragments builder))
             , psTestInit = pbTestInit builder
             , psAssemble = pbAssemble builder
             }
@@ -342,16 +286,6 @@ finalizeProjectSpec builder = do
     shadowedArtifacts = filter (`elem` coreArtifactNames) artifactNames
     duplicateArtifacts = duplicates artifactNames
     duplicateInputs = duplicates (map configInputPath (pbAssemblyInputs builder))
-    exactlyOneFrameContext =
-        case pbFrameContexts builder of
-            [] -> Left MissingFrameContext
-            [projection] -> Right projection
-            projections -> Left (DuplicateFrameContextAssignments (length projections))
-    exactlyOneTeardown =
-        case pbTeardowns builder of
-            [] -> Left MissingTeardown
-            [teardown] -> Right teardown
-            teardowns -> Left (DuplicateTeardownAssignments (length teardowns))
     foldServices =
         foldl merge (Right emptyServiceRegistry) (pbServiceRegistries builder)
     merge accumulated next =
@@ -369,6 +303,7 @@ projectArtifactNames = map artifactName . psArtifacts
 -- 'StepPlan'.
 projectStepPlan ::
     ProjectSpec projectId cfg tcfg ->
+    CanonicalProjectRoot rootScope rootId ->
     cfg (Production projectId) ->
     Either StepPlanError StepPlan
 projectStepPlan = psStepPlan
@@ -407,8 +342,6 @@ runHostBootstrapCLI progName spec = do
                     (psCheckCode spec)
                     services
                     (psStepPlan spec)
-                    (psFrameContext spec)
-                    (psTeardown spec)
                     (psAssemblyInputs spec)
                     (psAssemble spec)
                     initBuilder
@@ -479,12 +412,10 @@ runBareHostBootstrapCLI progName = do
                     emptySuite
                     (putStrLn "check-code: bare core binary has no project checks")
                     services
-                    (const (Left EmptyStepPlan))
-                    (\_ _ _ -> localContext)
-                    (\_ _ _ -> pure ())
+                    (\_ _ -> Left EmptyStepPlan)
                     []
                     bareAssemble
-                    (pure . bareInit)
+                    (either fail pure . bareInit)
                     (const ())
             )
   where
@@ -493,9 +424,9 @@ runBareHostBootstrapCLI progName = do
         AssemblyRequest BareProject () () scope ->
         ConfigAssembly scope (BareConfig scope)
     bareAssemble (ProductionAssembly args) =
-        pureConfigAssembly (bareInit args)
+        either failConfigAssembly pureConfigAssembly (bareInit args)
     bareAssemble (HarnessAssembly _ _ _) =
-        pureConfigAssembly (bareInit defaultBareArgs)
+        either failConfigAssembly pureConfigAssembly (bareInit defaultBareArgs)
     defaultBareArgs =
         InitArgs
             { role = Context.HostOrchestrator
@@ -510,7 +441,9 @@ runBareHostBootstrapCLI progName = do
             , force = False
             , ifMissing = False
             }
-    bareInit :: InitArgs -> BareConfig scope
+    -- A refused extra role stops assembly: @--also-role@ is operator input, and
+    -- silently dropping it would produce a config that looks authorized.
+    bareInit :: InitArgs -> Either String (BareConfig scope)
     bareInit args =
         let baseCtx =
                 Context.contextForKind
@@ -518,7 +451,9 @@ runBareHostBootstrapCLI progName = do
                     (T.pack progName)
                     (T.pack (fromMaybe "." (sourceRoot args)))
                     (role args)
-         in BareConfig (foldr Context.addRole baseCtx (alsoRoles args))
+         in case foldM (flip Context.addRole) baseCtx (alsoRoles args) of
+                Left err -> Left (Context.contextErrorMessage err)
+                Right ctx -> Right (BareConfig ctx)
 
 configureUtf8Output :: IO ()
 configureUtf8Output = do
@@ -538,18 +473,10 @@ runCLI ::
         (Production projectId)
         specDigest
         (cfg (Production projectId)) ->
-    (cfg (Production projectId) -> Either StepPlanError StepPlan) ->
     ( forall rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
       cfg (Production projectId) ->
-      StepFrame ->
-      LiftContext
-    ) ->
-    ( forall rootScope rootId.
-      CanonicalProjectRoot rootScope rootId ->
-      cfg (Production projectId) ->
-      Bool ->
-      IO ()
+      Either StepPlanError StepPlan
     ) ->
     [ConfigInput] ->
     ( forall scope.
@@ -559,7 +486,7 @@ runCLI ::
     (InitArgs -> IO (cfg (Production projectId))) ->
     (InitArgs -> tcfg) ->
     IO ()
-runCLI cfgCodec testCodec progName projectArtifacts testSuite checkCode services stepPlan frameCtx teardown assemblyInputs assemble initBuilder testInit =
+runCLI cfgCodec testCodec progName projectArtifacts testSuite checkCode services stepPlan assemblyInputs assemble initBuilder testInit =
     join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
@@ -572,8 +499,6 @@ runCLI cfgCodec testCodec progName projectArtifacts testSuite checkCode services
             checkCode
             services
             stepPlan
-            frameCtx
-            teardown
             assemblyInputs
             assemble
             initBuilder

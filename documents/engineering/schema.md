@@ -325,9 +325,9 @@ consume one plan-owned validated snapshot, so that wider guarantee remains targe
 
 Allowed writes are explicit and narrow: `project init` (re-run with `--force` to overwrite),
 user-requested config-edit commands, and parent commands generating child configs. The canonical example of a parent generating a
-child config is project-container handoff inside `project up`: the current demo's `psFrameContext`
-derives the payload and the lift streams it, while the named `context-init` action only announces that
-boundary. The target gives projection and delivery one plan operation. Runtime status, discovered endpoints, locks, leader
+child config is project-container handoff inside `project up`: the descent the demo's `context-init`
+step declares carries the payload and the lift streams it, while that step's action body only announces
+the boundary. The target gives projection and delivery one plan operation. Runtime status, discovered endpoints, locks, leader
 election, build IDs, and secrets live in state stores or mounted secrets, not by silently mutating the
 active config.
 

@@ -19,8 +19,14 @@
   exposure values, proof-gated `BlobDelivery`, one finalized registry plan whose renderer derives
   `storage.redirect.disable`, and an exact revision-/registry-/store-indexed `ReadyBlobRoute` required
   before push. Delete raw endpoint/redirect assembly and tests that treat initial push or `/v2/` as
-  persistence proof. Owning sprints: 9.10 (plan-owned readiness/preconditions), 14.7 (generic algebra),
-  and 13.20 (demo migration/live proof).
+  persistence proof. **Sprint 14.7's generic algebra landed 2026-07-29**: scope is a type index,
+  `Reachability` has no host-local→cluster-only constructor, the redirecting `BlobDelivery` constructor
+  consumes that witness, `RegistryPlan` is opaque behind topology-specific constructors,
+  `storage.redirect` is derived from the delivery, and `ReadyBlobRoute` is minted only from a real blob
+  probe on the plan's exact exposure and revision. What remains is the demo's own assembly — the
+  NodePort, `minio.default.svc`, and a `registryConfigYaml` with no `storage.redirect` stanza at all —
+  plus the live route proof. Owning sprints: 9.10 (plan-owned readiness/preconditions, closed), 14.7
+  (generic algebra, closed), and 13.20 (demo migration/live proof, open).
 - **Provider-guest durable compatibility alias and remaining raw root reconstruction**
   (`core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
@@ -29,49 +35,34 @@
   context, and makes direct-host Docker consume only the matching canonical absolute host `.data`.
   `/var/tmp/hostbootstrap-demo-data` remains a guest-local projection for VM-backed Docker daemons, and
   other lifecycle adapters still accept raw path values while the final opaque `ProjectPlan` is open.
-  `HostBootstrap.Substrate.Provider.Alias` now supplies the typed prepared call/release and
-  receipt-shaped foundation, but its backend is definition-only and the ordinary guest pathname
-  instantiates none of the four § EE ownership clauses. Replacement: one portable backend holding all
-  four — `flock` for exclusive entry, a host-side origin record, `stat -c '%d %i'` for identity binding,
-  and compare-before-`unlink` release — consuming that typed projection. All three provider guests run
-  the same Linux image, so this closes WSL2, Lima and Incus together rather than per-provider. Then make
-  the finalized plan derive and retain distinct guest, container, kind-node, and
-  pod projections. Delete the remaining alias-fact bypasses and raw adapter inputs that allow path-kind
-  substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
+  `HostBootstrap.Substrate.Provider.Alias` now supplies both the typed prepared call/release algebra
+  and a real `StrongAliasBackend` holding all four clauses in the guest (`flock -x` across the bracket,
+  a guest origin record, a `stat` `device:inode` identity guard, and compare-before-`unlink` release).
+  All three provider guests run the same Linux image, so that one backend covers WSL2, Lima and Incus
+  together. What remains is **production consumption**: the demo still mints the alias with a bare
+  `ln -s` over `classifyAlias`/`planAliasEnsure` facts, which mints no receipt. Replacement: route
+  `mintDurableAlias` through the plan-owned prepared operation over that backend, building its
+  `GuestExec` from the provider lift, and then make the finalized plan derive and retain distinct guest,
+  container, kind-node, and pod projections. Delete the remaining alias-fact bypasses and raw adapter
+  inputs that allow path-kind substitution. Owning sprints: 11.10 (provider guest alias consolidation), 15.9
   (root/config binding), 16.6 (recursive plan consumption), and 19.8 (finalized plan projections).
-- **Unowned global WSL `.wslconfig` merge/restore**
-  (`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
-  `demo/src/HostBootstrapDemo/Commands.hs`) — the selected `wsl --install` route is singular, but its
-  production utility-VM wall still merges a global user file after checking only a cooperative backup
-  pathname, which records no *absent* original. `HostBootstrap.Wsl2.GlobalWall` and `.ConfigBytes`
-  supply the exact-origin crash model and the byte transformer; both are portable and are retained.
-  Replacement: the same portable backend as the alias entry above, realized on Windows through
-  `createFile` share-mode `0` for exclusive entry, a journalled origin record naming exact bytes or
-  absence, and `getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair for identity
-  binding. Retry and restore revalidate that identity; a non-NTFS profile volume returns `Unsupported`
-  rather than assuming a unique file index. After production consumes it, delete the backup-existence
-  route. Owning sprints: Phase 11 Sprint 11.10 and Phase 5 Sprint 5.7.
-- **Superseded native Windows wall shim and its FFI surface**
-  (`core/hostbootstrap-core/cbits/wsl_global_wall.c`,
-  `core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Windows.hs`,
-  `core/hostbootstrap-core/hostbootstrap-core.cabal`,
-  `core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`) — written against the superseded
-  platform-primitive ownership rule, which demanded `FILE_ID_INFO`, no-replace
-  `SetFileInformationByHandle`, and a per-SID named mutex because no Haskell binding exposed them. The
-  restated § EE clauses do not need those: `Win32` (GHC-bundled) already binds
-  `getFileInformationByHandle`, whose `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair is the direct
-  analogue of POSIX `(st_dev, st_ino)` and is unique and stable on NTFS. Delete the `.c` file, the
-  `if os(windows)` `c-sources` and `extra-libraries: advapi32, ole32, shell32` block, the test-suite
-  `-threaded` carve-out (present solely for the named mutex's OS-thread affinity), and the seven
-  `hb_wsl_*` `foreign import`s inside `#if defined(mingw32_HOST_OS)`. No `.c` is retained in the
-  repository. Rewrite the Windows wall spec against the portable interface and **un-gate** it: the
-  ownership suite runs on every substrate, because a uniform invariant needs a uniform gate.
-  Replacement: the portable backend above. Owning sprint: Phase 11 Sprint 11.10.
 - **Definition-only public `HostBootstrap.RoleLifecycle` callback engine**
   (`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Service.hs`) — `runRole` is consumed only by its test module
-  after the demo `HostBootstrapDemo.Role` consumer and appended role verbs were removed. Its arbitrary
-  callback/CPS shape can also throw after receiving live resources without constructively reaching Drain.
+  `core/hostbootstrap-core/src/HostBootstrap/Service.hs`) — **the callback bag itself was deleted
+  2026-07-30 by Sprint 14.6**: `RoleSpec`, `roleAcquire`, `roleServe`, `roleDrain`, and `runRole` no
+  longer exist, and their removal is recorded under **Removed Surfaces**. The opaque
+  `RolePlan`/`RoleCursor`/`VerifiedServicePlacement` engine, the pre-cursor draft/admission gate chain,
+  the derived lease requirement, and the masked run-to-Exit operation described below all landed with it.
+  What remains open in this entry is the **production consumption** half: `HostBootstrap.Service` /
+  `service run` still calls the registry-selected action directly rather than entering through the
+  activation package and the engine, because nothing in production can yet produce a
+  `RootInvocationAuthority` to sign an `ActivationManifest` (see
+  [phase-14-composition-methodology.md](phase-14-composition-methodology.md) Sprint 14.6 `Remaining
+  Work`). The predecessor-manifest recovery, `ServiceLeaseTransferBarrier`, and
+  `resumeRoleLifecycleAdmission` clauses below likewise remain open. Historical description of the
+  removed shape: `runRole` was consumed only by its test module
+  after the demo `HostBootstrapDemo.Role` consumer and appended role verbs were removed, and its arbitrary
+  callback/CPS shape could throw after receiving live resources without constructively reaching Drain.
   Replacement: one opaque
   `RolePlan scope specDigest planId configId secretDigest frame revision instanceId` and
   `RoleCursor scope planId frame instanceId phase` consumed only inside
@@ -389,14 +380,18 @@
   implemented, but the demo's two message drafts still live in Haskell rather than decoded
   `<project>.test.dhall`. Replacement: Phase 20's typed config-driven variant mapping, including proof
   that a config-only third variant runs without a Haskell edit. Owning phase: Phase 20 Sprint 20.5.
-- **Independent `StepPlan` / frame-context / teardown lifecycle views**
-  (`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — Sprint 19.8 now validates the exact forward
-  sequence, identities, frame contiguity, dependencies, operation keys, and per-step reverse policies,
-  but frame-context and teardown contributions remain separate checked single-assignment slots. They can
-  still disagree with the resource topology despite the single-representation doctrine. Replacement:
-  one typed lifecycle plan whose topology, forward traversal, acquisition ledger,
-  and reverse teardown are projections of the same resource identities. Its destroy forest exposes a
+- **Frame-local teardown that does not descend into the frames it acquired**
+  (`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — **narrowed 2026-07-30 (Sprint 16.6).** The
+  three formerly independent lifecycle views are gone: Sprint 19.8 validates the exact forward
+  sequence, identities, frame contiguity, dependencies, operation keys, and per-step reverse policies;
+  the per-frame descent is declared on its own plan node (`descendsVia`); and the reverse effect is
+  declared on the acquiring node (`reversedBy`), with both teardown verbs driven as projections of that
+  one plan. What remains is that `project down`/`project destroy` clean only the frames the current
+  binary can reach — they do not hand the verb into each descendant frame first — so the landed
+  `TeardownForest` has no production call site and deeper nodes are released with their parent rather
+  than visited. Replacement: the recursive child-first unwind, after which the acquisition ledger and
+  reverse teardown are projections of the same resource identities in every frame. Its destroy forest exposes a
   separate pre-descent reachability step for an exact stopped provider before retained children, then
   exposes the ordinary provider stop/delete step only after those children settle; the two orders cannot
   be conflated. Owning phase: Phase 16 Sprint 16.6.
@@ -448,10 +443,13 @@
   backend mints no receipt. Owning phases: Phase 5 Sprint 5.7 and Phase 9 Sprint 9.10.
 - **No-op `context-init` step separated from the child-config delivery operation**
   (`demo/src/HostBootstrapDemo/Commands.hs`, `contextInitAnnounce`,
-  `contextInitDirectAnnounce`, `demoFrameContext`, and `containerConfigPayload`;
-  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — the named step only prints an announcement;
-  projection and delivery happen independently during the later lift handoff. The plan can therefore
-  describe a config-init operation that did not create or authorize the delivered config. Replacement:
+  `contextInitDirectAnnounce`, and `containerConfigPayload`;
+  `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`) — the named step's body only prints an
+  announcement. **Narrowed 2026-07-30 (Sprint 16.6):** the delivery is no longer *independent* of the
+  row — the payload rides the `descendsVia` that same step declares, which `mkStepPlan` requires
+  exactly one of per frame — so the plan can no longer describe a boundary whose config came from
+  somewhere else. What remains is that the step's own action does not perform or authorize the
+  projection. Replacement:
   one plan node owns child projection, fresh child config identity, authenticated delivery, durable
   operation state, the exact `ConfigHandoff` grant consumed by the receiver, and the target/operation/
   precondition-set/call-digest/journal-indexed `PreparedOperation` plus matching
@@ -663,8 +661,103 @@ These surfaces are intentionally present and are not cleanup obligations.
 
 ## Removed Surfaces
 
+### The public role-lifecycle callback bag (removed 2026-07-30, Sprint 14.6)
+
+`HostBootstrap.RoleLifecycle` no longer exports `RoleSpec`, its `roleAcquire` / `roleServe` /
+`roleDrain` fields, or `runRole`. A caller could previously assemble any phase sequence it liked, receive
+the acquired environment directly, and — because the driver was one `finally` — throw out of Serve while
+still holding live resources. They must stay absent: the replacement is the opaque
+`RolePlan`/`RoleCursor` engine reached only through a verified activation, a verified role-plan draft,
+and a one-use lifecycle admission, whose per-resource callbacks never see a cursor, a receipt, or the
+generation lease. `ForgeRoleCursor.hs` pins nine of those constructors as unreachable. The descriptive
+`RolePhase` enum (including the historical `Load` label) and `rolePhases` are **retained** for reporting;
+they carry no authority.
+
+### The whole-project teardown hook (removed 2026-07-30, Sprint 16.6)
+
+`HostBootstrap.CLI` no longer exports `setTeardown`, no longer carries a `psTeardown` field, and
+`ProjectSpecError` no longer has `MissingTeardown` or `DuplicateTeardownAssignments`; the demo's
+`demoTeardown` is gone. One `root -> cfg -> Bool -> IO ()` function stood for the reverse of the
+**entire** project, with a `Bool` choosing stop-or-delete and the implementation re-deriving the
+substrate and branching internally. Nothing tied it to the plan node that acquired anything, so a step
+could acquire what the hook never released and the hook could release what no step acquired — neither
+visible at construction. They must stay absent: the replacement is `HostBootstrap.Step.reversedBy`,
+which attaches `HostConfig -> TeardownAction -> IO TeardownOutcome` to the acquiring node, plus
+`Command.reverseProjection`, which drives `Teardown.teardownPlan` for the verb — so `project down`,
+`project destroy`, and a failed `project up`'s unwind are three projections of one plan (§ W). The
+verb-derived `TeardownAction` replaces the `Bool`, and outcomes are structured per operation key
+(§ Y). `mkStepPlan` rejects a second reverse on one step and a reverse on a `PreserveOnReverse` step,
+which no projection reaches. Owning phase: phase-16.
+
+### The independently supplied per-frame lift-context resolver (removed 2026-07-30, Sprint 16.6)
+
+`HostBootstrap.CLI` no longer exports `setFrameContext`, no longer carries a `psFrameContext` field, and
+`ProjectSpecError` no longer has `MissingFrameContext` or `DuplicateFrameContextAssignments`;
+`HostBootstrap.Chain.runChainFromFrame` no longer takes a `StepFrame -> LiftContext` argument, and the
+demo's `demoFrameContext` is gone. A project previously assigned one resolver *beside* its chain, so the
+frame the validated plan announced and the context the interpreter descended through were two
+independently supplied values — visible by name in the demo, whose `context-init` step announced a child
+config that a different value actually delivered. They must stay absent: the replacement is
+`HostBootstrap.Step.descendsVia`, which attaches the boundary's `LiftContext` — provider dispatch and
+the child config streamed on the handoff `stdin` — to the plan node that owns it, read back by
+`frameDescent`. `mkStepPlan` requires exactly one descent per frame with a successor, none from the
+innermost frame, and none on a post-handoff hook, so the pairing is validated rather than conventional
+(§ W, § X). Owning phase: phase-16.
+
+### Caller-assembled operation dependency observations (removed 2026-07-30, Sprint 16.6)
+
+`HostBootstrap.Reconcile` no longer exports `DependencyObservation`, `dependencyObservation`, or
+`withPreparedSingleDependencyOperation`, and `HostBootstrap.Readiness` no longer exports
+`dependencyObservationFromReady`. `withPreparedOperation` previously took a caller-built
+`[SomeDependencyObservation]`, so the caller chose which edges to present and could present an
+observation taken arbitrarily earlier in the bring-up. They must stay absent: the replacement is the
+plan-owned dependency-snapshot traversal (`withOperationPreconditions`), the sole producer of the sealed
+`OperationPreconditionSet` the prepare now consumes, plus the explicitly-refusing
+`zeroDependencyPreconditions` branch for descriptors that declare no edges (§ CC).
+`ForgePreconditionSet.hs` pins the sealed set and the snapshot as unconstructible.
+
+### Raw registry/store endpoint assembly (removed 2026-07-30, Sprint 13.20)
+
+The demo no longer assembles registry or object-store addresses independently. `minioClusterEndpoint`,
+`registryEndpoint`, and the registry chart's NodePort are projections of the one `demoRegistryPlan`, and
+the `storage.redirect` stanza is rendered from that plan's delivery strategy. The previously hand-written
+`storage` stanza carried **no** `redirect` key, which left Distribution's redirect-to-store default in
+force; there is now no independent redirect flag to set or omit, because the boolean is output (§ GG).
+
+
 These surfaces are not part of the current repository state. Reintroducing one is a regression unless
 a plan update creates a new current owner for it.
+
+- **The per-step sibling-config reload** (`HostBootstrap.Config.Schema.requireSiblingProjectConfig`, the
+  public `withSiblingProjectConfigRoot` export, and the demo's reloading `demoConfigContext`) — every
+  chain step independently reopened and re-decoded `<project>.dhall`, so one `project up` ran across as
+  many separately-decoded configs as it had steps and a file replaced between two steps silently split
+  the run. `requireSiblingProjectConfig` additionally had no consumer at all. Removed 2026-07-29; owner:
+  Phase 15 Sprint 15.9. Replacement:
+  `HostBootstrap.Config.Schema.withSiblingValidatedProjectConfigRoot` admits the sibling once and the
+  chain builder closes every step over that one `ValidatedConfig` snapshot; the demo's
+  `demoConfigContext` now gates the **injected** snapshot instead of reading the file. Regression:
+  `CLISpec` "chain steps see the snapshot admitted at project up, not a replaced sibling".
+
+- **The two parallel runtime-witness tables** (`HostBootstrap.Context.runtimeWitnessesForKind` plus the
+  inline witness lists in `childDaemonContext` and `deriveLinuxGpuContainerContext`, and the
+  witness-list parameter of `childContextWith`) — the generated set and the validated set were written
+  twice and could drift, and validation honored whatever the decoded config declared, so an empty list
+  verified nothing. Removed 2026-07-29; owner: Phase 15 Sprint 15.9. Replacement: the single closed
+  `HostBootstrap.Context.placementFor`/`requiredWitnesses` relation, projected by the child-context
+  constructors and re-derived for exact comparison by `validateContext` (see
+  [binary_context_config](../documents/architecture/binary_context_config.md)).
+
+- **`HostBootstrap.Harness.withSelfCreatedTestData` and the `.test_data.hostbootstrap-run-owner` lock
+  directory** — the harness's cooperative ownership claim was a bare `createDirectory`. It bound a
+  pathname, recorded no owner identity and no phase, and satisfied none of the four § EE clauses, so a
+  crashed run left both `.test_data` and the lock directory behind and the next run refused with
+  `test data ownership is already active` until an operator removed both by hand (reproduced on the
+  native Linux GPU run, 2026-07-28). Removed 2026-07-29; owner: Phase 10 Sprint 10.9.
+  Replacement: `HostBootstrap.Harness.Ownership.protectedRunOwnership` over
+  `HostBootstrap.Lifecycle.Mode` — a protected, versioned mode/lease record plus a durable data-root
+  origin recorded before the first write, swept and closed by `recoverAbandonedHarnessRuns`. The pure
+  `selfCreatedTestDataRemoval` guard is retained and still decides the removal set.
 
 - **Root-level ownership/host-collision analysis scratch files** (`DO_WE_NEED_C_CODE.md`,
   `HD2_GAMEGUARD_ISSUE.md`) — two ungoverned root documents that carried the analysis behind the
@@ -975,9 +1068,9 @@ a plan update creates a new current owner for it.
   `project destroy`; the `clusterDown` / `clusterDelete` reconcilers remain, invoked by the lifecycle
   command. Owning phase: phase-4.
 - **`context create vm|container|service` mutation verb** — removed in favor of internal `project up`
-  child-projection/delivery work. Current effects live in the composite VM bootstrap,
-  `psFrameContext`, and the lift, separately from the announcing `context-init` row; Sprint 16.6 owns
-  their unification in one plan operation. The `context` command is now read-only introspection
+  child-projection/delivery work. Current effects live in the composite VM bootstrap and in the descent
+  the plan's own `context-init` node declares, carried by the lift; Sprint 16.6 owns the remaining
+  unification in one plan operation. The `context` command is now read-only introspection
   (`inspect` / `show` / `schema` / `render` / `path`), absorbing the former
   `config show|schema|render` inspection surfaces. Owning phase: phase-4.
 - **Standalone `ensure <tool>` top-level command** — removed by the
@@ -1094,11 +1187,36 @@ a plan update creates a new current owner for it.
   Apple/Linux `PosixFreeStorage` read plan).
 - **The full-file `WriteHostFile` clobber of the global `.wslconfig`** (the WSL2 launch effect in
   `HostBootstrap.Substrate.Provider` and its `writeHostFileWithBackup` interpreter overwriting the whole
-  `.wslconfig`) — removed for the WSL2 cordon. Replacement: the `MergeWslConfig` effect + pure
-  `HostBootstrap.Wsl2.mergeWslConfig`, which drops only the old `[wsl2]` section and appends ours, preserving
-  the user's other sections (never-clobber-user-state). Owning phase: phase-9 (reopened 2026-07-05);
-  validated by `cabal test all` (`Wsl2Spec` merge cases, `ProviderSpec` launch effect list). `WriteHostFile`
-  itself is retained for any future whole-file host write.
+  `.wslconfig`) — removed for the WSL2 cordon. Its first replacement, the `MergeWslConfig` effect over
+  pure `HostBootstrap.Wsl2.mergeWslConfig`, stopped the clobber but still inferred ownership from a
+  backup pathname; it is itself removed by the entry below. Owning phase: phase-9 (reopened 2026-07-05).
+- **The backup-existence global WSL wall: `WriteHostFile`, `MergeWslConfig`, `RestoreHostFile`,
+  `HostBootstrap.Wsl2.mergeWslConfig`, `VMHandles.vmhWslConfigPath`, and the demo's
+  `.hostbootstrap-demo.bak` interpreter** (`writeHostFileWithBackup`, `mergeWslConfigWithBackup`,
+  `backupHostFileOnce`, `restoreHostFile`) — the production utility-VM wall merged a global user file
+  after checking only a cooperative backup pathname, which records no *absent* original, admits no
+  identity evidence, and lets a second run adopt the first run's state. Replacement: the pathname-free
+  `ApplyGlobalWslWall`/`ReleaseGlobalWslWall` effects interpreted by
+  `HostBootstrap.Wsl2.GlobalWall.Windows` over the portable host-wall backend, which journals an exact
+  origin record (bytes **or** absence) before its first mutation and conditions release on re-observing
+  the same kernel identity. `spStop`/`spDestroy` now take the same `ResourceEnvelope` as `spLaunch`, so
+  teardown releases exactly the wall bring-up applied. The byte-exact
+  `HostBootstrap.Wsl2.GlobalWall.ConfigBytes` merge supersedes the line-oriented `String` merge.
+  Removed 2026-07-28; owner: Phase 11 Sprint 11.10. Validated by `cabal test all` (core **520**,
+  `ProviderSpec` wall-effect and release-body cases; demo **105**).
+- **The native Windows wall C shim and its FFI surface** (`core/hostbootstrap-core/cbits/wsl_global_wall.c`,
+  the `if os(windows)` `c-sources`/`extra-libraries: advapi32, ole32, shell32` block, the test-suite
+  `-threaded` carve-out, the seven `hb_wsl_*` `foreign import`s, and the Windows-gated
+  `test/WslGlobalWallWindowsSpec.hs`) — written against the superseded platform-primitive ownership
+  rule. The restated § EE clauses need none of it. Replacement:
+  `HostBootstrap.Wsl2.GlobalWall.Host` (the portable driver, record codec, and `HostWallBackend` seam),
+  `HostBootstrap.Wsl2.GlobalWall.Posix` (`fcntl` exclusive entry, a journal file, `device:inode`
+  identity), and a rewritten `HostBootstrap.Wsl2.GlobalWall.Windows` over `Win32`'s `LockFileEx`,
+  `getFileInformationByHandle`, `MoveFileEx`, and `CreateHardLinkW`. `LockFileEx` is not affine to the
+  acquiring OS thread, which is why the threaded-RTS carve-out could go. No `.c` remains in the
+  repository. The wall spec is **un-gated**: `test/WslGlobalWallHostSpec.hs` runs the complete driver —
+  every phase, conflict, and crash-resume branch — on every substrate the suite runs on. Removed
+  2026-07-28; owner: Phase 11 Sprint 11.10. The `Win32` backend still owes a native-Windows gate.
 
 ## Rules
 

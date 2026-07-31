@@ -52,6 +52,13 @@ not yet enforce the complete model end to end:
 - `LifecyclePlan` is derived from the finalized project codec and `StepPlan`. Opaque planned resources
   and edges validate exact keys and dependencies; operation preparation validates the complete declared
   dependency list and pairs an opaque `PreparedOperation` with matching `PreparedPreconditions`.
+- Neither half of the prepared pair is reachable from caller-supplied values any more. The plan-owned
+  dependency-snapshot traversal seals the exact ordered edge set and runs each member's probe itself,
+  and the attempt and journal version come from an unforgeable `PreparedGate`
+  (`HostBootstrap.Lifecycle.Prepared`) whose sole producer performs the compare-and-swap that publishes
+  the operation's durable unknown phase. The gate carries the plan digest and operation key it was
+  recorded under, and preparation refuses one recorded elsewhere. What remains open is driving that
+  sequence from the live lifecycle call sites rather than from adapter fixtures.
 - Reconcile outcomes distinguish created, repaired, adopted, unchanged, and foreign observations.
   Explicit verified-origin adoption is the only way a foreign resource becomes managed. Named phase
   transitions produce indexed handles, and the persisted journal admits only legal acquisition,

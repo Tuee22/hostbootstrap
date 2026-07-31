@@ -22,9 +22,9 @@
   [binary_context_config](binary_context_config.md).
 - The root `<project>.dhall` is the fresh-root default of the config-free `project init` writer; explicit
   role/output/policy flags also support other current init uses. In the demo, the named
-  **context-init** action is only a no-op announcer/frame anchor: VM projection and streaming occur in
-  the composite `build-pb` action, container projection is computed by `psFrameContext` and carried by
-  the handoff, and service/daemon projection occurs in deployment actions. The target plan makes
+  **context-init** action body is only a no-op announcement: VM projection and streaming occur in
+  the composite `build-pb` action, container projection is carried by the descent that same step
+  declares and delivered by the handoff, and service/daemon projection occurs in deployment actions. The target plan makes
   projection plus delivery one typed operation.
 - The binary-generated tiers are composed from **three vocabulary layers** — `Core.dhall` (L0),
   `Daemon.dhall` (L1), `App.dhall` (L2) — each embedding the one below (`let C = ./Core.dhall`).
@@ -62,7 +62,7 @@ configuration model.
 | Role | File | Produced by | Read by |
 |------|------|-------------|---------|
 | Root runtime config | `<project>.dhall` | the default `project init` invocation, then user-edited for host-level settings | existing-frame project-binary commands |
-| Child runtime config | `<project>.dhall` at the child executable location | current demo: composite VM bootstrap, `psFrameContext`/handoff, or workload deployment action; target: one plan operation that owns projection and delivery | existing-frame child-binary commands |
+| Child runtime config | `<project>.dhall` at the child executable location | current demo: composite VM bootstrap, the plan-declared descent plus handoff, or workload deployment action; target: one plan operation that owns projection and delivery | existing-frame child-binary commands |
 | Binary-generated | static registry examples plus standalone typed artifacts | the project binary, from the reusable vocabulary | the project binary / test harness |
 
 Python has no Dhall-facing role. The local config declares where the already-built binary is running and
@@ -126,10 +126,11 @@ by the `Web` service.
 Child configs are **projections, not copies**, but the current demo does not give their projection and
 delivery to its named `context-init` action. That action prints an announcement and keeps a frame in the
 chain. The metal frame's composite `build-pb`/pristine-bootstrap action derives and streams the
-VM-orchestrator config; `psFrameContext` derives the project-container payload and the recursive handoff
-streams it over `stdin`; chart and accelerator deployment actions render ConfigMaps for service/daemon
-children. The target `ProjectPlan` creates a single operation node whose permit covers both projection
-and delivery, so a no-op step cannot drift from the independent callback that performs the real effect.
+VM-orchestrator config; the descent the `context-init` step declares carries the project-container
+payload and the recursive handoff streams it over `stdin`; chart and accelerator deployment actions
+render ConfigMaps for service/daemon children. Because that descent is a node of the same validated
+plan, the announcing step and the container payload can no longer drift apart. The target `ProjectPlan`
+additionally creates a single operation node whose permit covers both projection and delivery.
 
 The current projection helpers derive a narrower context for the child frame and include supplied child
 witnesses, but they retain the demo's full `ProjectConfig` parameter shape and copy the parent's entire
@@ -228,9 +229,9 @@ The built binary exposes the Dhall surface through the `project` chain. The defa
 invocation renders a fresh root config from the project's Production assembly defaults (core ships none); its
 current `--role` / repeatable `--also-role` / `--output` / `--force` / `--if-missing` surface supports
 explicit role and write-policy modes pending the typed replacement. Child projection is implemented, but
-its current operation ownership is split: composite bootstrap owns the VM config,
-`psFrameContext`/handoff owns the container payload, and deployment actions own service/daemon ConfigMaps;
-the named `context-init` action only announces the handoff. Dockerfiles separately bake the narrow
+its current operation ownership is split: composite bootstrap owns the VM config, the plan-declared
+descent plus handoff owns the container payload, and deployment actions own service/daemon ConfigMaps;
+the `context-init` action body only announces the handoff. Dockerfiles separately bake the narrow
 `image-build-container` config for build-time commands. On the read-only `context` surface, `inspect` reads the
 sibling `.dhall`, `show` reads its selected/default file, and `path`/`schema`/`render` are static and
 config-free; `service schema` is likewise static. The three-layer vocabulary and standalone budget

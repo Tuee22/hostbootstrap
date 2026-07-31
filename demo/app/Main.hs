@@ -4,16 +4,16 @@ It calls 'runHostBootstrapCLI' with the demo's project spec, so the demo binary
 surfaces exactly the fixed core command tree (@project@ / @test@ / @service@ /
 @context@ / @check-code@) — it adds no verbs. The demo extends the core only
 through the extension streams threaded into its opaque project builder: its
-ordered steps ('addSteps'), per-frame lift context ('setFrameContext'), chain-frame teardown
-('setTeardown'), typed service registry ('addServices'), test suite, schema
+ordered steps ('addSteps', each carrying its own frame descent and its own
+reverse effect), typed service registry ('addServices'), test suite, schema
 artifacts, and @check-code@ action. See @documents/operations/demo_runbook.md@.
 -}
 module Main (main) where
 
-import HostBootstrap.CLI (addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI, setFrameContext, setTeardown)
+import HostBootstrap.CLI (addServices, addSteps, finalizeProjectSpec, projectSpec, runHostBootstrapCLI)
 import HostBootstrap.Registry (withForwardedRegistryAuth)
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoServices, demoTestSuite)
 import HostBootstrapDemo.Config (demoAssemble, demoTestInit, testConfigCodec)
 import System.Exit (die)
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
@@ -31,22 +31,16 @@ main = do
     -- a no-op on the host and when there is no host login. See
     -- "HostBootstrap.Registry".
     withForwardedRegistryAuth $ do
-        -- Detect the host substrate once so the per-frame resolver folds the
-        -- metal→VM handoff to the right provider shell (Incus on Linux, Lima on
+        -- Detect the host substrate once so the chain's declared metal→VM
+        -- descent folds to the right provider shell (Incus on Linux, Lima on
         -- Apple Silicon).
         substrate <- detect >>= either die pure
         let builder =
                 addSteps
                     (demoChainFor substrate)
-                    ( setFrameContext
-                        (demoFrameContext substrate)
-                        ( setTeardown
-                            demoTeardown
-                            ( addServices
-                                demoServices
-                                (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
-                            )
-                        )
+                    ( addServices
+                        demoServices
+                        (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
                     )
         spec <- either (die . show) pure (finalizeProjectSpec builder)
         runHostBootstrapCLI "hostbootstrap-demo" spec

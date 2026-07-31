@@ -13,11 +13,10 @@ module HostBootstrap.Wsl2
     wslTerminateArgs,
     wslUnregisterArgs,
     wslShutdownArgs,
-    mergeWslConfig,
   )
 where
 
-import Data.Char (isSpace, toLower)
+import Data.Char (toLower)
 import Data.List (isInfixOf, isPrefixOf)
 import System.Exit (ExitCode (..))
 
@@ -96,35 +95,3 @@ wslUnregisterArgs prefix distro
 wslShutdownArgs :: [String]
 wslShutdownArgs =
   ["--shutdown"]
-
--- | Merge the demo-managed @.wslconfig@ body (as
--- 'HostBootstrap.Cluster.Cordon.wsl2SizingArgs' emits — now @[general]@ +
--- @[wsl2]@) into an existing @.wslconfig@, **preserving every other section** the
--- user set. The managed sections are exactly those the @body@ declares, so the
--- merge drops each old managed section (its header and keys up to the next section
--- header) and appends the new body; a user's @[experimental]@ / @[user]@ /
--- @[network]@ blocks survive untouched. The @.wslconfig@ is a /global/ user file,
--- so the whole file is backed up on first write and restored on teardown. Pure, so
--- the never-clobber-other-sections merge is unit-tested. Idempotent: re-merging a
--- body into a file that already carries our sections replaces them in place.
-mergeWslConfig :: String -> [String] -> String
-mergeWslConfig existing body =
-  let managed = [sectionName l | l <- body, isSectionHeader l]
-      kept = dropManaged managed (lines existing)
-      keptTrimmed = reverse (dropWhile blank (reverse kept))
-      separator = if null keptTrimmed then [] else keptTrimmed ++ [""]
-   in unlines (separator ++ body)
-  where
-    blank = all isSpace
-    dropManaged managed = go
-      where
-        go [] = []
-        go (l : ls)
-          | isSectionHeader l && sectionName l `elem` managed =
-              go (dropWhile (not . isSectionHeader) ls)
-          | otherwise = l : go ls
-    isSectionHeader s = case trim s of
-      ('[' : rest) -> not (null rest) && last (trim s) == ']'
-      _ -> False
-    sectionName s = map toLower (takeWhile (/= ']') (drop 1 (trim s)))
-    trim = dropWhile isSpace

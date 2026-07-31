@@ -6,7 +6,7 @@
 module CLISpec (runSchemaFixture, tests) where
 
 import Control.Exception (finally, throwIO, try)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Fixture
@@ -23,8 +23,6 @@ import HostBootstrap.CLI (
     projectArtifactNames,
     projectStepPlan,
     projectSpec,
-    setFrameContext,
-    setTeardown,
  )
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Command (coreCommandNames)
@@ -32,10 +30,11 @@ import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, Project
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
-import HostBootstrap.Context (ContextKind (ClusterService, HostOrchestrator))
+import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Harness (
     Case (Case),
     CaseId,
@@ -44,7 +43,6 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     mkCaseId,
  )
-import HostBootstrap.Lift (localContext)
 import HostBootstrap.Service (
     ServiceRegistry,
     ServiceRegistryError (..),
@@ -55,7 +53,7 @@ import HostBootstrap.Service (
     serviceRegistry,
     withFinalizedServiceRegistry,
  )
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepPlanError (DuplicateStepIdentities), deployVMStep, projectStep, projectStepId, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs, withProgName)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
@@ -83,14 +81,7 @@ specWith ::
     [ConfigArtifact] ->
     ProjectSpec Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig
 specWith suite check arts =
-    finalized
-        ( addSteps
-            sampleChain
-            ( setFrameContext
-                (\_ _ _ -> localContext)
-                (setTeardown (\_ _ _ -> pure ()) (builderWith suite check arts))
-            )
-        )
+    finalized (addSteps sampleChain (builderWith suite check arts))
 
 finalized ::
     ProjectSpecBuilder Fixture.FixtureProject Fixture.ProjectConfig Fixture.TestConfig ->
@@ -124,13 +115,7 @@ tests =
         "CLISpec"
         [ testCase "project specs reject an empty test suite before dispatch" $
             case finalizeProjectSpec
-                ( addSteps
-                    sampleChain
-                    ( setFrameContext
-                        (\_ _ _ -> localContext)
-                        (setTeardown (\_ _ _ -> pure ()) (builderWith emptySuiteFixture (pure ()) []))
-                    )
-                ) of
+                (addSteps sampleChain (builderWith emptySuiteFixture (pure ()) [])) of
                 Left EmptyProjectTestSuite -> pure ()
                 other -> assertFailure ("expected EmptyProjectTestSuite, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "runtime executable identity must match the declared project" $ do
@@ -151,8 +136,6 @@ tests =
                     addServices web $
                         addServices web $
                             addSteps sampleChain $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown (\_ _ _ -> pure ()) $
                                         builderWith passingSuite (pure ()) []
             case finalizeProjectSpec builder of
                 Left (InvalidServiceRegistry (DuplicateServiceIds _)) -> pure ()
@@ -165,8 +148,6 @@ tests =
                             ( addServices
                                 (fixtureServiceRegistry Nothing [("web", pure ())])
                                 ( addSteps sampleChain $
-                                    setFrameContext (\_ _ _ -> localContext) $
-                                        setTeardown (\_ _ _ -> pure ()) $
                                             builderWith passingSuite (pure ()) []
                                 )
                             )
@@ -181,32 +162,29 @@ tests =
                             (\_ registry -> serviceRoleSchemaFamilies registry)
             assertBool "Production empty family is explicit" ("service schema family Production:\n  services = []\n  schemas = []" `T.isInfixOf` schemas)
             assertBool "Harness empty family is explicit" ("service schema family Harness:\n  services = []\n  schemas = []" `T.isInfixOf` schemas)
-        , testCase "single-assignment projections reject missing and duplicate values" $ do
-            case finalizeProjectSpec (addSteps sampleChain (builderWith passingSuite (pure ()) [])) of
-                Left MissingFrameContext -> pure ()
-                other -> assertFailure ("expected MissingFrameContext, got " ++ either show (const "Right ProjectSpec") other)
-            let duplicated =
-                    setFrameContext (\_ _ _ -> localContext) $
-                        setFrameContext (\_ _ _ -> localContext) $
-                            setTeardown (\_ _ _ -> pure ()) $
-                                addSteps sampleChain (builderWith passingSuite (pure ()) [])
-            case finalizeProjectSpec duplicated of
-                Left (DuplicateFrameContextAssignments 2) -> pure ()
-                other -> assertFailure ("expected duplicate frame-context rejection, got " ++ either show (const "Right ProjectSpec") other)
+        , -- There is no lifecycle slot left beside the plan: a spec with no steps
+          -- is the only remaining structural gap, and the reverse effect lives on
+          -- the step that acquires the resource.
+          testCase "a spec with no step contribution cannot be finalized" $
+            case finalizeProjectSpec (builderWith passingSuite (pure ()) []) of
+                Left MissingStepPlan -> pure ()
+                other -> assertFailure ("expected MissingStepPlan, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "independent step fragments append in exact declaration order" $ do
-            let first _ =
+            let first :: FixtureFragment
+                first _ _ =
                     [projectStep (fixtureProjectStepId "first-fragment") ProjectManagedReverse "first" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
-                second _ =
+                second :: FixtureFragment
+                second _ _ =
                     [projectStep (fixtureProjectStepId "second-fragment") ProjectManagedReverse "second" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
                 spec =
                     finalized $
                         addSteps second $
                             addSteps first $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown (\_ _ _ -> pure ()) $
                                         builderWith passingSuite (pure ()) []
                 cfg = Fixture.defaultProjectConfig "cli-fragments" "." HostOrchestrator
-            plan <- either (assertFailure . show) pure (projectStepPlan spec cfg)
+            plan <-
+                Fixture.withFixtureProjectRoot $ \root ->
+                    either (assertFailure . show) pure (projectStepPlan spec root cfg)
             map stepLabel (stepPlanSteps plan) @?= ["first", "second"]
         , testCase "artifact fragments compose associatively without erasure" $ do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
@@ -215,8 +193,7 @@ tests =
                 finish builder =
                     finalized $
                         addSteps sampleChain $
-                            setFrameContext (\_ _ _ -> localContext) $
-                                setTeardown (\_ _ _ -> pure ()) builder
+                                builder
                 separately =
                     finish $
                         addArtifacts [secondArtifact] $
@@ -234,24 +211,22 @@ tests =
                     addAssemblyInputs [input] $
                         addAssemblyInputs [input] $
                             addSteps sampleChain $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown (\_ _ _ -> pure ()) $
                                         builderWith passingSuite (pure ()) []
             case finalizeProjectSpec builder of
                 Left (DuplicateAssemblyInputs ["settings.dhall"]) -> pure ()
                 other -> assertFailure ("expected duplicate assembly-input rejection, got " ++ either show (const "validated") other)
         , testCase "duplicate identities across additive fragments fail before interpretation" $ do
-            let duplicate _ =
+            let duplicate :: FixtureFragment
+                duplicate _ _ =
                     [projectStep (fixtureProjectStepId "shared") ProjectManagedReverse "duplicate" (StepFrame "host-orchestrator-0" "host") (const (pure ()))]
                 spec =
                     finalized $
                         addSteps duplicate $
                             addSteps duplicate $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown (\_ _ _ -> pure ()) $
                                         addArtifacts [] (builderWith passingSuite (pure ()) [])
                 cfg = Fixture.defaultProjectConfig "cli-duplicates" "." HostOrchestrator
-            case projectStepPlan spec cfg of
+            outcome <- Fixture.withFixtureProjectRoot (\root -> pure (projectStepPlan spec root cfg))
+            case outcome of
                 Left (DuplicateStepIdentities _) -> pure ()
                 other -> assertFailure ("expected duplicate step rejection, got " ++ either show (const "validated") other)
         , testCase "check-code runs the project-supplied hook" $ do
@@ -339,7 +314,7 @@ tests =
                     try (withArgs ["service", "run"] (runHostBootstrapCLI "cli-svc-role" spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
-        , testCase "service run rejects a multi-role orchestrator even when ServiceCommand is granted" $
+        , testCase "service run rejects a forged multi-role orchestrator even when ServiceCommand is granted" $
             withMultiRoleHostServiceConfig "cli-svc-multirole" $ do
                 handlerRan <- newIORef False
                 let spec = specWithServices (Just "web") [("web", writeIORef handlerRan True)]
@@ -421,41 +396,112 @@ tests =
             withProjectConfig "cli-project-safety" $ do
                 teardownCalls <- newIORef (0 :: Int)
                 let frame = StepFrame "host-orchestrator-0" "metal"
-                    refusingChain _ =
-                        [ projectStep
-                            (fixtureProjectStepId "safety-refusal")
-                            ProjectManagedReverse
-                            "probe ownership"
-                            frame
-                            (\_ -> throwIO (SafetyRefusal "pre-existing state"))
+                    refusingChain :: FixtureFragment
+                    refusingChain _ _ =
+                        [ reversedBy
+                            (\_ _ -> writeIORef teardownCalls 1 >> pure TeardownReleased)
+                            ( projectStep
+                                (fixtureProjectStepId "safety-refusal")
+                                ProjectManagedReverse
+                                "probe ownership"
+                                frame
+                                (\_ -> throwIO (SafetyRefusal "pre-existing state"))
+                            )
                         ]
-                    spec =
-                        finalized $
-                            addSteps refusingChain $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown
-                                        (\_ _ _ -> writeIORef teardownCalls 1)
-                                        (builderWith passingSuite (pure ()) [])
+                    spec = finalized (addSteps refusingChain (builderWith passingSuite (pure ()) []))
                 result <-
                     try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-safety" spec)) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
                 readIORef teardownCalls >>= (@?= 0)
-        , testCase "project down skips host kind cleanup when deploy-kind belongs to no current-frame step" $
-            withProjectConfig "cli-project-down-nested" $ do
-                teardownCalls <- newIORef (0 :: Int)
+        , testCase "project up runs behind the independent root gate, not context class membership" $
+            withProjectConfig "cli-project-rootgate" $ do
                 let spec =
                         finalized $
                             addSteps sampleChain $
-                                setFrameContext (\_ _ _ -> localContext) $
-                                    setTeardown
-                                        (\_ _ _ -> writeIORef teardownCalls 1)
-                                        (builderWith passingSuite (pure ()) [])
+                                    builderWith passingSuite (pure ()) []
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-rootgate" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                -- The gate is observable: it opens the project's own protected
+                -- authority store under the canonical root and reserves a one-use
+                -- invocation record there. Before Sprint 16.6 wired it, nothing in
+                -- production reached `Authority.withVerifiedRootInvocation` at all.
+                configPath <- Schema.siblingProjectConfigPath "cli-project-rootgate"
+                let storeRoot =
+                        takeDirectory configPath
+                            </> ".hostbootstrap"
+                            </> "authority"
+                            </> "cli-project-rootgate"
+                present <- doesDirectoryExist storeRoot
+                assertBool ("the authority store was not created at " ++ storeRoot) present
+        , -- `project down` is the plan's own reverse projection, so the effect it
+          -- runs is the one the acquiring step declared — not a whole-project
+          -- hook beside the plan (§ W). The chain here owns no `deploy-kind`, so
+          -- the core cluster adapter contributes nothing and only this node runs.
+          testCase "project down runs the reverse the acquiring step declared" $
+            withProjectConfig "cli-project-down-nested" $ do
+                observed <- newIORef ([] :: [TeardownAction])
+                let reversedChain :: FixtureFragment
+                    reversedChain _ _ =
+                        [ reversedBy
+                            (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure ())))
+                        ]
+                    spec = finalized (addSteps reversedChain (builderWith passingSuite (pure ()) []))
                 result <-
                     try (withArgs ["project", "down"] (runHostBootstrapCLI "cli-project-down-nested" spec)) ::
                         IO (Either ExitCode ())
                 result @?= Right ()
-                readIORef teardownCalls >>= (@?= 1)
+                -- `down` stops a provider frame; `destroy` deletes it. That one
+                -- difference is the whole of the verb indexing.
+                readIORef observed >>= (@?= [StopFrame])
+                writeIORef observed []
+                destroyResult <-
+                    try (withArgs ["project", "destroy"] (runHostBootstrapCLI "cli-project-down-nested" spec)) ::
+                        IO (Either ExitCode ())
+                destroyResult @?= Right ()
+                readIORef observed >>= (@?= [DeleteFrame])
+        , testCase "chain steps see the snapshot admitted at project up, not a replaced sibling" $
+            withProjectConfig "cli-project-toctou" $ do
+                path <- Schema.siblingProjectConfigPath "cli-project-toctou"
+                seen <- newIORef ([] :: [(T.Text, T.Text)])
+                let frame = StepFrame "host-orchestrator-0" "metal"
+                    admitted = Fixture.defaultProjectConfig "cli-project-toctou" "." HostOrchestrator
+                    replaced = admitted{Fixture.dockerfile = "replaced-mid-run.Dockerfile"}
+                    -- Step one replaces @<project>.dhall@ underneath the running
+                    -- chain; step two records both what its injected snapshot
+                    -- says and what a fresh read of the file would have said.
+                    toctouChain :: FixtureFragment
+                    toctouChain _ cfg =
+                        [ projectStep
+                            (fixtureProjectStepId "replace-sibling")
+                            ProjectManagedReverse
+                            "replace the sibling config mid-run"
+                            frame
+                            (\_ -> Schema.writeProjectConfigFile Fixture.projectConfigCodec path replaced)
+                        , projectStep
+                            (fixtureProjectStepId "observe-config")
+                            ProjectManagedReverse
+                            "record the config this step runs against"
+                            frame
+                            ( \_ -> do
+                                onDisk <- Fixture.decodeProjectConfigFile path
+                                modifyIORef' seen ((Fixture.dockerfile cfg, Fixture.dockerfile onDisk) :)
+                            )
+                        ]
+                    spec =
+                        finalized $
+                            addSteps toctouChain (builderWith passingSuite (pure ()) [])
+                result <-
+                    try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-toctou" spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+                -- The step kept the admitted snapshot even though a reload at
+                -- that same instant would have returned different bytes.
+                readIORef seen
+                    >>= (@?= [(Fixture.dockerfile admitted, "replaced-mid-run.Dockerfile")])
         , testCase "project up fails fast without a sibling context" $ do
             result <-
                 try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI "cli-project-nocfg" (specWith passingSuite (pure ()) []))) ::
@@ -472,8 +518,6 @@ specWithServices selected handlers =
         addServices
             (fixtureServiceRegistry selected handlers)
             ( addSteps sampleChain $
-                setFrameContext (\_ _ _ -> localContext) $
-                    setTeardown (\_ _ _ -> pure ()) $
                         builderWith passingSuite (pure ()) []
             )
 
@@ -491,9 +535,18 @@ fixtureServiceRegistry selected handlers =
             | (name, handler) <- handlers
             ]
 
+{- | One additive step fragment. Rank-2 in the admitted root, so a fragment can
+derive project-relative paths from it without ever seeing its phantoms.
+-}
+type FixtureFragment =
+    forall rootScope rootId.
+    CanonicalProjectRoot rootScope rootId ->
+    Fixture.ProjectConfig (V.Production Fixture.FixtureProject) ->
+    [Step]
+
 -- A one-step demo-shaped chain used to prove `project up --dry-run` renders.
-sampleChain :: Fixture.ProjectConfig scope -> [Step]
-sampleChain _ =
+sampleChain :: FixtureFragment
+sampleChain _ _ =
     [deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (const (pure ()))]
 
 fixtureProjectStepId :: String -> ProjectStepId
@@ -537,11 +590,28 @@ withProjectConfig rawProjectName action = do
     let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
     (Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg >> action) `finally` removeFile path
 
+{- | A host-orchestrator config whose command classes have been widened with
+@ServiceCommand@ *directly*, bypassing 'Context.addRole'.
+
+Since § 15.9 'Context.addRole' refuses this pair outright, the only way such a
+config exists is a hand-edited or forged @<project>.dhall@ — which is precisely
+what this fixture models. The test it feeds proves the second line of defence:
+even when the class is present, the leaf-placement gate still refuses
+@service run@ on a non-leaf primary.
+-}
 withMultiRoleHostServiceConfig :: String -> IO () -> IO ()
 withMultiRoleHostServiceConfig rawProjectName action = do
     let projectName = T.pack rawProjectName
         baseCfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
-        cfg = baseCfg{Fixture.context = Context.addRole ClusterService (Fixture.context baseCfg)}
+        forged =
+            (Fixture.context baseCfg)
+                { Context.allowedCommandClasses =
+                    Context.allowedCommandClasses (Fixture.context baseCfg)
+                        ++ [Context.ServiceCommand]
+                , Context.capabilities =
+                    Context.capabilities (Fixture.context baseCfg) ++ [Context.ServicePort]
+                }
+        cfg = baseCfg{Fixture.context = forged}
     path <- Schema.siblingProjectConfigPath projectName
     (Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg >> action) `finally` removeFile path
 

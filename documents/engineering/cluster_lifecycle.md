@@ -54,14 +54,33 @@ not the stronger typed contract.
 The target result and ownership algebra is defined once in
 [lifecycle state model](../architecture/lifecycle_state_model.md).
 
-Cluster identity is currently name-only. `ensureCluster` treats any healthy cluster with
-`clusterName plan` as the desired cluster without checking an ownership receipt. If that same-name
-cluster is unhealthy, it deletes and recreates it. `clusterDown`/`clusterDelete` likewise issue
-`kind delete cluster --name <name>` without first proving that this plan created or adopted the
-resource. A foreign same-name cluster can therefore be adopted or destroyed. The target classifier
-distinguishes absent, receipt-owned, compatible foreign, incompatible/conflicting, and unsupported
-states; ordinary `project up` cannot turn a foreign observation into `Managed`, and teardown requires
-the verified receipt (or an explicit separately journaled adoption operation).
+### The ownership backend
+
+The typed replacement exists and is exercised, but the imperative path still runs.
+
+`HostBootstrap.Cluster.Reconcile` owns the total classification: an absent cluster created is
+`Changed Created`; a healthy same-named cluster with a matching committed proof is `Unchanged`, and
+**without** proof is a `ForeignResult` that is never adopted; an unhealthy or unverifiable same-named
+cluster is a structured `Conflict` that is **never** auto-deleted; a probe fault is a typed `Failure`,
+never a false absence. Conditional cleanup requires a `Managed` handle plus a matching receipt.
+
+`HostBootstrap.Cluster.Backend` supplies the IO that feeds it while holding the four
+[ownership invariant](../architecture/ownership_invariant.md) clauses: a `flock -x` across the whole
+observe/create/settle bracket, an origin record naming the exact prior state before the first mutation,
+identity bound to the control-plane node **container ID** rather than the cluster name, and deletion
+conditioned on re-observing that identity. A host missing `flock`, the driver, or the container runtime
+is `Unsupported` and mints no capability. Its command runner is injected, so the protocol is executed
+against a real filesystem under test rather than modelled.
+
+Alongside it, `HostBootstrap.Cluster.Backend` makes a wildcard exposure unrepresentable: a
+`LoopbackExposure` accepts ports only, always renders `127.0.0.1`, and settles a live binding that is
+wider or different as a `Conflict`.
+
+What remains is the wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
+the desired cluster without checking a receipt, and still deletes and recreates an unhealthy same-name
+cluster; `clusterDown`/`clusterDelete` still issue `kind delete cluster --name <name>` without proving
+this plan created or adopted the resource. Replacing those call sites belongs to the recursive-plan
+tranche, not to the backend.
 
 ## Current teardown
 
@@ -73,7 +92,7 @@ frame owns a `deploy-kind` step:
 
 - an owning frame invokes `clusterDown`/`clusterDelete`;
 - a non-owning frame skips core kind cleanup;
-- the project teardown hook then stops or deletes provider/direct resources.
+- the reverse each acquiring node declared then stops or deletes provider/direct resources.
 
 The interpreter does **not** recursively dispatch the lifecycle verb through every child frame before
 unwinding. On VM-backed paths, stopping or deleting the provider VM incidentally stops or removes the

@@ -37,12 +37,22 @@ validation, matching prepared-operation/precondition pairs, phase-indexed handle
 and a legal persisted-journal transition graph. This makes forged readiness and cross-plan/resource use
 unrepresentable at the new boundary.
 
+Sprint 16.6 added the plan-owned dependency-snapshot traversal itself. An operation descriptor's edge set
+is the exact ordered **resource-bearing** prefix of the validated plan — a step that owns no plan resource
+has no managed handle to observe, so it contributes no edge — and the sealed `OperationPreconditionSet`
+the prepare consumes has one producer, `withOperationPreconditions`, which iterates that edge set, looks
+each member up in the plan's `DependencySnapshot` of managed resources, and runs the member's registered
+probe at prepare time. A caller supplies no observation, so selecting, omitting, or retaining one is not
+expressible; `zeroDependencyPreconditions` serves only descriptors that declare no edges and refuses any
+that do. `planDependencyProbe` registers a probe rather than binding a retained `Ready`, and rechecks the
+freshly observed generation and observation version against the managed handle on every run.
+
 The repository does not yet enforce that boundary end to end:
 
 - several provider, staging, cluster, chart, NVIDIA, and teardown effects still use compatibility waits
-  or return `IO ()` rather than consuming a prepared operation;
-- dependent operations fail closed until the downstream interpreter owns complete ordered dependency
-  traversal and fresh re-observation immediately before preparation;
+  or return `IO ()` rather than consuming a prepared operation. A chain step's action is
+  `HostConfig -> IO ()`, so it holds no lifecycle plan and cannot enter the traversal above; replacing
+  that result-free signature is Sprint 16.6's single-`ProjectPlan` item;
 - provider adapters still need identity-bound conditional effects and recovery paths — a backend holding
   the four [ownership_invariant](ownership_invariant.md) clauses; and
 - structured `LifecycleFailure` is not yet the universal subprocess boundary.

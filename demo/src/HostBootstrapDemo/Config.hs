@@ -90,6 +90,8 @@ module HostBootstrapDemo.Config (
 )
 where
 
+import Control.Monad (foldM)
+import Data.Bifunctor (first)
 import Data.Either (fromRight)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -646,7 +648,12 @@ demoInitWithMessage cfgMessage args = do
                 cfgDeploy
                 cfgMessage
                 args.role
-        finalContext = foldr Context.addRole baseCfg.context args.alsoRoles
+    -- A refused extra role stops assembly (§ 15.9): `--also-role` is operator
+    -- input, so a placement that cannot hold a role must fail rather than
+    -- silently produce a config that reads as authorized.
+    finalContext <-
+        first Context.contextErrorMessage $
+            foldM (flip Context.addRole) baseCfg.context args.alsoRoles
     pure baseCfg{context = finalContext}
 
 {- | The demo's @test init@ builder: a 'TestConfig' seeded from the demo's default

@@ -23,9 +23,11 @@
   noun verb: the core ships host-management step kinds and the project contributes its own step kinds
   into the same ordered `[Step]`, and registers service handlers behind the fixed `service` verb.
 - `addSteps`, `addArtifacts`, `addAssemblyInputs`, and `addServices` append without erasure.
-  `setFrameContext` and `setTeardown` are explicit single-assignment slots whose absence or duplicate
-  assignment prevents finalization. Raw `ProjectSpec`/`Step` constructors are hidden; plan validation
-  enforces disjoint core/project identities, exact contiguous frame order, and explicit reverse policy.
+  There is no lifecycle slot beside the plan: an acquiring step declares the effect that releases it
+  with `reversedBy`. Raw `ProjectSpec`/`Step` constructors are hidden; plan validation
+  enforces disjoint core/project identities, exact contiguous frame order, explicit reverse policy,
+  exactly one declared descent per frame that has a successor, and at most one runnable reverse effect
+  per step.
 - The chain shape is the canonical model owned by
   [composition_methodology](composition_methodology.md); this document defers to it for the chain and
   the recursive `project up` interpreter and describes only how the streams layer.
@@ -55,8 +57,8 @@ generic project `ENTRYPOINT`. The command surface itself is fixed and is never a
 ## The Extension Streams
 
 A level is intended to compose on the level below through five parallel streams. Each target stream has
-one additive merge idiom. Additive streams append; frame-context and teardown are named checked
-single-assignment slots. The sections below state current enforcement.
+one additive merge idiom. Additive streams append; teardown is a named checked single-assignment slot,
+while each frame's descent is declared on the plan node that owns the boundary. The sections below state current enforcement.
 
 ### Stream 1 — The Lift Chain
 
@@ -79,9 +81,10 @@ runHostBootstrapCLI progName projectSpec
 The core command surface (`project init|up|down|destroy`, `test init|run`, `service init|schema|run`,
 `context`, `check-code`) shares one parser and dispatch shape between the bare `hostbootstrap` binary and
 project binaries. Behavior is intentionally different: the bare entrypoint supplies minimal empty/no-op
-project behavior. A project entrypoint must finalize a non-empty test suite and step contribution, one
-frame-context projection, and one teardown projection; artifacts, inputs, typed step identities, and
-services are duplicate-checked. See
+project behavior. A project entrypoint must finalize a non-empty test suite and step contribution and
+one teardown projection; artifacts, inputs, typed step identities, and
+services are duplicate-checked, and the plan must declare exactly one descent per frame that has a
+successor. See
 [hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project can
 never add or shadow a core top-level verb or typed core step identity; presentation labels do not select
 behavior.
@@ -129,8 +132,8 @@ The read-only `context` surface then prints the transitive union of the in-scope
 materializes static example renders from the same registry. `ConfigArtifact` construction is opaque:
 each entry requires one admitted codec that owns both its schema and render. The project-local `cfg`
 schema remains the separate `service schema` surface. Runtime child projection/delivery is separate from
-this registry and is currently split among
-bootstrap/frame-context/deployment seams. See
+this registry and is currently split among the composite bootstrap, the plan-declared descent, and
+deployment seams. See
 [config_generation](../engineering/config_generation.md).
 
 - **WRONG**: a project passes `coreArtifacts ++ projectArtifacts` as its `ProjectSpec` argument. This
@@ -192,8 +195,9 @@ describes, exercised end-to-end on real hardware:
   persistent stack — deploy-kind → deploy-minio → deploy-registry → push-image → deploy-chart →
   expose-port, followed by the selected accelerator-daemon placement. Current native validation status
   belongs in the development plan. Its public representation rejects empty/noncontiguous plans and
-  duplicate identities; frame context and teardown are checked single-assignment slots, while later
-  receipt-driven reverse traversal remains Phase 16.6.
+  duplicate identities, and requires exactly one declared descent per frame that has a successor;
+  teardown is still a checked single-assignment slot, and receipt-driven reverse traversal remains
+  Phase 16.6.
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
   `coreArtifacts` registry concatenation, and the standardized test-harness `Seams`. Stream 3's
   static renders surface through the read-only `context` command; child runtime projection is not a

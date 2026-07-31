@@ -58,6 +58,17 @@ module HostBootstrap.Cluster.Budget
     LiveProviderWall,
     settleProviderWallCall,
     withLiveProviderWall,
+    StorageWallMechanism (..),
+    StorageWallUnsupported (..),
+    PreparedStorageWallCall,
+    prepareStorageWallCall,
+    storageWallCallArgs,
+    storageWallCallMechanism,
+    storageWallCeilingBytes,
+    StorageWallObservation (..),
+    AppliedStorageWall,
+    appliedStorageWallChange,
+    settleStorageWallCall,
   )
 where
 
@@ -82,6 +93,7 @@ import HostBootstrap.Reconcile
     LifecyclePlan,
     ReconcileError (..),
     RecoveryDisposition (..),
+    UnsupportedDetail (..),
   )
 import Numeric.Natural (Natural)
 
@@ -609,3 +621,214 @@ withLiveProviderWall live ordinary wsl =
       ordinary authority change
     LiveWslProviderWall authority lease _receipt change ->
       wsl authority lease change
+
+-- The storage wall ------------------------------------------------------------
+
+{- | The concrete mechanism that enforces a declared storage ceiling. Each one
+is a real provider argument, not a preflight check: a mechanism named here
+/applies/ the ceiling.
+-}
+data StorageWallMechanism
+  = ColimaDiskArgument
+  | LimaDiskArgument
+  | IncusRootSizeArgument
+  | Wsl2VhdSizeArgument
+  deriving (Eq, Show)
+
+{- | Why a provider cannot enforce the declared ceiling. These are the honest
+gaps: @docker update@ has no storage flag, so a kind node container cannot be
+capped after creation, and bare Linux has neither a quota'd project path nor an
+image-GC wall (§ O, Sprint 9.4).
+-}
+data StorageWallUnsupported
+  = DockerNodeHasNoStorageFlag
+  | BareLinuxHasNoStorageQuota
+  deriving (Eq, Show)
+
+{- | An opaque prepared storage-wall call. It exists only for a provider whose
+mechanism can actually apply the ceiling, and it carries the exact declared
+byte value the observation must match.
+-}
+data PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence =
+  PreparedStorageWallCall StorageWallMechanism [String] Integer Word64
+
+{- | Prepare the storage-wall call from already-validated budget inputs: the
+admitted wall spec, the proved partition, and the journaled reservation. A
+provider that cannot enforce the ceiling returns a typed 'Unsupported' rather
+than a silent success — the whole point of this operation is that "we did not
+apply your storage ceiling" is never indistinguishable from "applied".
+-}
+prepareStorageWallCall ::
+  String ->
+  ProviderWallSpec scope planId budgetId provider capabilityId wallSpecId ->
+  BudgetPartition scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+  ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  Either
+    ReconcileError
+    (PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
+prepareStorageWallCall
+  name
+  (ProviderWallSpec providerKey budget)
+  _partition
+  (ProviderWallReservation fenceValue) =
+    case providerKey of
+      ColimaProviderKey ->
+        exactStorageWall
+          ColimaDiskArgument
+          ["start", "--profile", name, "--disk", show storageGiB]
+          storageBytes
+          fenceValue
+      LimaProviderKey ->
+        exactStorageWall
+          LimaDiskArgument
+          ["--disk", show storageGiB]
+          storageBytes
+          fenceValue
+      IncusProviderKey ->
+        exactStorageWall
+          IncusRootSizeArgument
+          ["-d", "root,size=" ++ show storageGiB ++ "GiB"]
+          storageBytes
+          fenceValue
+      Wsl2ProviderKey ->
+        exactStorageWall
+          Wsl2VhdSizeArgument
+          ["--vhd-size", show storageGiB ++ "GB"]
+          storageBytes
+          fenceValue
+      DockerNodeProviderKey ->
+        unsupportedStorageWall DockerNodeBackend DockerNodeHasNoStorageFlag
+      BareLinuxProviderKey ->
+        unsupportedStorageWall BareLinuxBackend BareLinuxHasNoStorageQuota
+    where
+      storageBytes = budgetStorageBytes budget
+      storageGiB = storageBytes `div` storageGibibyte
+
+storageGibibyte :: Integer
+storageGibibyte = 1024 ^ (3 :: Integer)
+
+-- | A supported mechanism still refuses a ceiling it cannot represent exactly,
+-- because rounding a hard ceiling upward is the failure § O forbids.
+exactStorageWall ::
+  StorageWallMechanism ->
+  [String] ->
+  Integer ->
+  Word64 ->
+  Either
+    ReconcileError
+    (PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
+exactStorageWall mechanism args storageBytes fenceValue
+  | (storageBytes `div` storageGibibyte) * storageGibibyte /= storageBytes =
+      Left
+        ( Failure
+            ( FailureDetail
+                "apply storage wall"
+                ( "the declared storage ceiling is not exactly representable in whole GiB: "
+                    <> Text.pack (show storageBytes)
+                )
+                DoNotRetry
+            )
+        )
+  | otherwise =
+      Right (PreparedStorageWallCall mechanism args storageBytes fenceValue)
+
+unsupportedStorageWall ::
+  ProviderBackend ->
+  StorageWallUnsupported ->
+  Either ReconcileError result
+unsupportedStorageWall backend reason =
+  Left
+    ( Unsupported
+        ( UnsupportedDetail
+            "apply storage wall"
+            ( "the "
+                <> Text.pack (show backend)
+                <> " backend cannot enforce a storage ceiling ("
+                <> Text.pack (show reason)
+                <> ")"
+            )
+        )
+    )
+
+storageWallCallArgs ::
+  PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  [String]
+storageWallCallArgs (PreparedStorageWallCall _ args _ _) = args
+
+storageWallCallMechanism ::
+  PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  StorageWallMechanism
+storageWallCallMechanism (PreparedStorageWallCall mechanism _ _ _) = mechanism
+
+-- | The exact declared ceiling in bytes the observation must reproduce.
+storageWallCeilingBytes ::
+  PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  Integer
+storageWallCeilingBytes (PreparedStorageWallCall _ _ ceiling_ _) = ceiling_
+
+{- | What the provider reported after the storage-wall call. The observed
+ceiling is carried explicitly so settlement can reject a value the provider
+rounded rather than accepting any success.
+-}
+data StorageWallObservation
+  = StorageWallApplied Word64 Integer
+  | StorageWallAlreadyExact Word64 Integer
+  | StorageWallRefused ConflictDetail
+  | StorageWallFailed FailureDetail
+  | StorageWallUncertain String
+  deriving (Eq, Show)
+
+{- | Proof that the exact declared storage ceiling is in force, with the change
+view that produced it.
+-}
+data AppliedStorageWall scope planId provider wallSpecId wallEpoch fence =
+  AppliedStorageWall ChangeView
+
+appliedStorageWallChange ::
+  AppliedStorageWall scope planId provider wallSpecId wallEpoch fence ->
+  ChangeView
+appliedStorageWallChange (AppliedStorageWall change) = change
+
+{- | Settle the storage-wall call. An observed ceiling that differs from the
+declared one is a 'Conflict' even when the provider reported success: a
+silently rounded hard ceiling is exactly the failure this operation exists to
+make impossible (§ O).
+-}
+settleStorageWallCall ::
+  PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+  StorageWallObservation ->
+  ( forall wallEpoch.
+    AppliedStorageWall scope planId provider wallSpecId wallEpoch fence ->
+    result
+  ) ->
+  Either ReconcileError result
+settleStorageWallCall prepared observation consume =
+  case observation of
+    StorageWallApplied epoch observed -> settled epoch observed (Changed Created)
+    StorageWallAlreadyExact epoch observed -> settled epoch observed Unchanged
+    StorageWallRefused detail -> Left (Conflict detail)
+    StorageWallFailed detail -> Left (Failure detail)
+    StorageWallUncertain detail ->
+      Left
+        ( Failure
+            (FailureDetail "apply storage wall" (Text.pack detail) ReprobeBeforeRetry)
+        )
+  where
+    declared = storageWallCeilingBytes prepared
+    settled epoch observed change
+      | epoch == 0 =
+          Left
+            ( Failure
+                (FailureDetail "apply storage wall" "wall epoch must be positive" DoNotRetry)
+            )
+      | observed /= declared =
+          Left
+            ( Conflict
+                ( ConflictDetail
+                    "storage-wall"
+                    (Text.pack (show declared) <> " bytes")
+                    (Text.pack (show observed) <> " bytes")
+                    "the provider did not apply the declared storage ceiling exactly; a rounded hard ceiling is never accepted"
+                )
+            )
+      | otherwise = Right (consume (AppliedStorageWall change))

@@ -17,7 +17,8 @@
   `cfg -> [Step]` fragments; final projection runs `mkStepPlan`, and `project up --dry-run` renders that
   opaque plan. Validation preserves the exact order or rejects empty/duplicate/conflicting plans,
   including a non-contiguous `A1, B1, A2` return and misplaced post-handoff work, before effects. The
-  frame-context and teardown single-assignment slots remain separate. The later receipt-aware
+  Each frame that has a successor declares exactly one descent on its own plan node, so topology is
+  part of the same value; the teardown single-assignment slot remains separate. The later receipt-aware
   `ProjectPlan scope specDigest planId configId cfg` rejects those shapes and derives every view from one
   representation (§ W).
 - **`project up` is a recursive, fractal interpreter.** It runs the current frame's steps, then hands off
@@ -106,7 +107,7 @@ create/repair/no-op/conflict result, so typed idempotence is not yet enforced. `
 resolves and renders the same `StepPlan` without effects.
 `project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
 VMs use provider stop, while kind clusters use `kind delete cluster`. `project destroy` invokes
-current-frame cleanup plus the project teardown hook. It does **not** recursively dispatch the verb into
+the verb's reverse projection of the one plan. It does **not** recursively dispatch the verb into
 every child frame before stopping/deleting the parent. Cleanup is best-effort and aggregates failures,
 and neither verb places the plan's data path in its cluster-teardown removal set — `down`'s
 removal set is empty and `destroy`'s holds only derived paths. The demo creates host
@@ -262,9 +263,9 @@ still the chain and context graph, not a second hidden accelerator path; see
 A project must have exactly **one lifecycle representation** (§ W). Forward order is now one opaque
 `StepPlan`: typed core/project identities are disjoint, operation keys and dependency prefixes derive
 from that plan, frame segments are exact and contiguous, and render/apply/frame traversal consume the
-same value. The implementation has not fully reached the receipt-aware lifecycle target:
-frame-context and teardown remain checked single-assignment functions beside the plan, and current
-teardown is a current-frame hook rather than a reverse interpretation.
+same value, and each frame's descent is a node of that same plan. The implementation has not fully
+reached the receipt-aware lifecycle target: teardown remains a checked single-assignment function beside
+the plan, and current teardown is a current-frame hook rather than a reverse interpretation.
 
 The target replaces those independent inputs with one **opaque** validated plan from which forward steps,
 frame topology, and reverse transitions are derived:
@@ -680,7 +681,7 @@ so it and finalization have exactly one winner; no mode-cleared partial state ex
 partial teardown cannot be relabeled as settled destroy.
 
 - `project up` interprets the current forward chain to bring up a **persistent stack**; current
-  `project down`/`project destroy` use current-frame cleanup plus a project hook rather than recursively
+  `project down`/`project destroy` run the verb's reverse projection of the one plan rather than recursively
   interpreting the whole plan. `--dry-run` renders the forward chain; `context` currently introspects
   projected frame data (see
   [§ Current Status](#current-status)).
@@ -727,19 +728,21 @@ preserved exactly and an invalid `A, B, A` shape is rejected rather than regroup
 descend the 3-frame topology
 (`host-orchestrator-0`, `vm-orchestrator-1`, `vm-project-container-2`); the direct native Linux GPU branch
 uses a 2-frame metal → direct-project-container chain with no VM frame. `project down`/`destroy` are not
-the same recursive interpretation: they clean the owning current frame and invoke a project hook.
-The finalized `ProjectSpec` still carries its one frame-context and teardown projections beside the plan,
-so receipt-bound child-first reverse traversal remains open; Phase 16.6 owns that consolidation.
+the same recursive interpretation: they run the verb's reverse projection, reaching only the frames this
+binary can touch.
+The finalized `ProjectSpec` still carries its one teardown projection beside the plan, so receipt-bound
+child-first reverse traversal remains open; Phase 16.6 owns that consolidation.
 
 `context` is read-only introspection (`inspect`/`path`/`show`/
 `schema`/`render`), and `test init` writes `<project>.test.dhall` while `test run <case-id>|all` runs the
 standardized harness.
 
-The current `context-init` action only announces a frame anchor. VM projection/streaming happens inside
-the composite bootstrap action, container projection is supplied independently through `psFrameContext`
-at the lift boundary, and service config uses a ConfigMap. The target plan makes projection,
-authentication, durable preparation, and delivery one operation so the named step cannot disagree with
-the bytes the child receives. `deploy-kind`/`deploy-chart`
+The current `context-init` action body only announces a frame anchor. VM projection/streaming happens
+inside the composite bootstrap action; the container projection is carried by the descent that same
+`context-init` step declares (`descendsVia`), so the announcing node and the bytes the child receives
+are one plan value rather than two independently supplied ones; and service config uses a ConfigMap. The
+target plan additionally makes projection, authentication, durable preparation, and delivery one
+operation. `deploy-kind`/`deploy-chart`
 bring up the cluster and workload; `deploy-minio` creates registry backing before
 `deploy-registry`/`push-image` install the in-cluster registry and push
 the project image; `context inspect` renders the topology with the current frame marked.

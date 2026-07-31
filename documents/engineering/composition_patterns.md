@@ -108,9 +108,9 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 | Project (workload) | `deploy-minio`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
 
 The current demo does not use `ensureStep`; it calls `runEnsure` inside composite
-provider/build/accelerator actions. Its `context-init` action is also a no-op announcer: VM config
-delivery is inside the composite bootstrap, container projection/delivery is in
-`psFrameContext`/handoff, and service projections are in deployment actions. The target plan gives each
+provider/build/accelerator actions. Its `context-init` action body is also a no-op announcement: VM
+config delivery is inside the composite bootstrap, container projection/delivery is in the descent that
+same `context-init` step declares plus the handoff, and service projections are in deployment actions. The target plan gives each
 effect an explicit operation identity and prevents those labels from drifting from the work.
 
 The canonical taxonomy of step semantics — converge / context-lift / one-shot action / control-loop /
@@ -121,9 +121,12 @@ those kinds across the topologies above. Which layer contributes which kind is
 
 ## Single Representation: The Chain Is The Representation
 
-One operation must have one representation. Current forward ordering is the `[Step]` returned by
-`chain`, and `project up` is its interpreter, but independently supplied `psFrameContext` and
-`psTeardown` mean the complete lifecycle does not yet meet that rule. The target opaque
+One operation must have one representation. Forward ordering is the `[Step]` returned by
+`chain`, `project up` is its interpreter, each frame's descent is a node of the same plan
+(`descendsVia`), and each acquiring node declares the effect that releases it (`reversedBy`), which
+`project down`/`project destroy` drive as two verb-indexed projections of that plan. What the lifecycle
+still lacks for the rule is the recursive child-first unwind: each verb cleans the frames the current
+binary can reach rather than descending into every frame it acquired. The target opaque
 `ProjectPlan scope specDigest planId configId cfg`
 accepts one non-empty validated step sequence, derives topology, and derives child-first reverse work
 from the receipts acquired during forward interpretation. The canonical home is
@@ -133,8 +136,8 @@ summary for shape 2:
 
 - The shape-2 chain stands up a persistent stack as one descent: `project up` interprets it across the
   composed frame stack — the metal frame provisions the VM and rebuilds the binary + project image in
-  it, the in-VM frame reaches an announcing `context-init` anchor and hands off the
-  `psFrameContext`-derived project-container config, and the in-container frame
+  it, the in-VM frame reaches its `context-init` anchor and hands off the project-container config that
+  same step's declared descent carries, and the in-container frame
   runs deploy-kind → deploy-minio → deploy-registry → push-image → deploy-chart → expose-port and places
   the accelerator daemon. The chain ends at a live web service.
 - The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
@@ -215,7 +218,8 @@ algebra, and workload-contributed step kinds compose the current forward path en
 `project up` on Incus/Linux stands up the live persistent stack — a
 cordoned kind cluster, the in-cluster registry, the project image pushed to that registry, and
 the web chart pod serving `localhost:30080`. Current `project down`/`project destroy` perform owning
-current-frame cluster cleanup plus a project hook; they do not recursively traverse the chain and must
+the verb's reverse projection of the one plan, reaching only the frames this binary can touch; they do
+not recursively traverse the chain and must
 not be described as fractal teardown. The
 demo's status is tracked in
 [Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the

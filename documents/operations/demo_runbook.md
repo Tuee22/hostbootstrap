@@ -13,10 +13,11 @@
   substrate-selected `chain :: ProjectConfig -> [Step]`. There is no base-image LABEL/ENTRYPOINT
   integration mode.
 - `project up` recursively descends the chain. Current `project down`/`destroy` do not recursively invoke
-  the lifecycle verb in every child; they perform current-frame cleanup plus a project hook.
+  the lifecycle verb in every child; they run the verb's reverse projection of the one plan, which
+  reaches only the frames this binary can touch.
 - The chain includes MinIO before the registry and places the accelerator daemon after the workload.
 - Host `.data` is carried through the stable `/var/tmp/hostbootstrap-demo-data` Linux alias into
-  kind/nvkind and the pod. The live destroy/up/readback proof is still missing.
+  kind/nvkind and the pod. The live destroy/up/readback proof passed on the native Linux GPU lane.
 - `test run <case-id>|all` selects compiled cases. The parser does not enforce the documented root gate,
   and the demo currently selects Production/`.data`; use the long gate only on a disposable host with no
   production demo state.
@@ -33,7 +34,6 @@ Open operator-significant defects are:
 - opaque plan/resource-indexed readiness exists, but live mutation gating is incomplete;
 - teardown is not recursive and ownership receipts are not universal;
 - the demo harness resolves the Production profile and `.data`;
-- no live gate proves workload write → destroy → up → host-and-workload readback;
 - bare Linux has no runtime storage quota or image-GC wall.
 - the registry may redirect a repeated host-client blob request to cluster-only
   `minio.default.svc`; `/v2/` and Deployment readiness do not prove the blob route.
@@ -58,9 +58,9 @@ hostbootstrap-demo project init
 Normal commands load that sibling `hostbootstrap-demo.dhall`. Current child configs adjust context but
 retain the full demo project record and raw parent envelope; they are not least-privilege parameter
 types. Their ownership is also split: the composite pristine-bootstrap derives/streams the VM config,
-`psFrameContext` derives the container payload that the handoff streams, and deployment actions render
-service/daemon ConfigMaps. The named `context-init` action only announces the container handoff and
-anchors that frame. VM/container payloads are written at the child's executable-sibling path before
+the descent the `context-init` step declares carries the container payload that the handoff streams, and
+deployment actions render service/daemon ConfigMaps. That step's action body only announces the
+container handoff and anchors the frame. VM/container payloads are written at the child's executable-sibling path before
 dispatch; there is no config bind-mount. The target plan owns projection/delivery as one operation and
 emits a role-specific payload.
 
@@ -122,11 +122,13 @@ The current data path is:
 
 `/var/tmp/hostbootstrap-demo-data` is a provider-guest Docker-visible projection, not the canonical
 store. WSL2, Incus, and Lima use it after carrying the canonical host root into their guest. Direct
-Linux must instead bind the canonical absolute host `.data` path; current code still selects the alias,
-and Sprint 5.6.1 is open because Docker rejected that symlink as a host bind.
+Linux instead binds the canonical absolute host `.data` path (Sprint 5.6.1); the guest alias remains a
+provider-local projection for VM-backed lanes only.
 
-Cluster teardown omits the configured data path from its removal set. That narrow fact does not prove
-end-to-end durability; see [durable state](../architecture/durable_state.md).
+Cluster teardown omits the configured data path from its removal set, and the `durable-readback` harness
+case proves the end-to-end path on the native Linux GPU lane: a marker written through the running
+service survives `project destroy` and is read back after `project up`. That is one lane, not every
+provider; see [durable state](../architecture/durable_state.md).
 
 ## Down and Destroy
 
@@ -135,21 +137,23 @@ hostbootstrap-demo project down
 hostbootstrap-demo project destroy
 ```
 
-Current commands perform cluster cleanup only in an owning current frame and then call the project's
-teardown hook. The hook may stop or remove the provider, but the command does not first dispatch the same
-verb through every reachable child. Cleanup is best-effort and aggregates some failures, but it does not
+Each verb is a projection of the same validated plan: cluster cleanup runs only in an owning current
+frame, and every other node runs the reverse effect its own step declared. Those may stop or remove the
+provider, but the command does not first dispatch the same verb through every reachable child. Cleanup is best-effort and aggregates some failures, but it does not
 yet carry verified ownership receipts for every resource and cannot promise orphan-free recovery after a
 hard kill.
 
 On Apple and Linux, `project down` also returns the VM's CPU and memory to the host. **On Windows it
-does not**: the distro is terminated and `.wslconfig` restored, but the managed body pins the WSL2 idle
-timeouts to `-1`, so the shared utility VM stays resident holding the full memory balloon. Run
-`wsl --shutdown` to reclaim it — non-destructive, and already part of the provider's disclosed
-lifecycle. See [wsl2](../engineering/wsl2.md) § Wall release.
+does not do so promptly**: the distro is terminated and `.wslconfig` restored, but teardown does not
+shut the shared utility VM down, so it stays resident holding the full memory balloon until the managed
+finite idle timeouts expire (Sprint 9.11 replaced the former `-1` pins with six hours). Run
+`wsl --shutdown` to reclaim it immediately — non-destructive, and already part of the provider's
+disclosed lifecycle. See [wsl2](../engineering/wsl2.md) § Wall release.
 
 The provider disk may be removed by `destroy`; host `<project-root>/.data` is shared from outside that
-disk and is not intentionally included in cluster removal. Do not infer successful reattachment until
-the destroy/up/readback gate passes.
+disk and is not intentionally included in cluster removal. Reattachment is proved by the
+`durable-readback` case on the direct Linux lane; do not infer it for a provider lane that has not run
+that case.
 
 ## Demo Harness
 

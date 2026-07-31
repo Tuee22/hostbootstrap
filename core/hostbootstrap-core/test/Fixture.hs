@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -40,9 +41,11 @@ module Fixture (
     projectConfigForRole,
     initArgsFor,
     projectInit,
+    withFixtureProjectRoot,
 )
 where
 
+import Control.Monad (foldM)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -69,7 +72,10 @@ import HostBootstrap.Dhall.Gen (
     requireCodecWitness,
  )
 import HostBootstrap.Harness (VariantId, mkTestMatrix, mkVariantId, variantDraft)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import Numeric.Natural (Natural)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 
 data Resources = Resources
     { cpu :: Natural
@@ -325,7 +331,9 @@ projectInit projectName args =
                 cfgResources
                 cfgDeploy
                 args.role
-     in baseCfg{context = foldr Context.addRole baseCfg.context args.alsoRoles}
+     in case foldM (flip Context.addRole) baseCfg.context args.alsoRoles of
+            Left err -> error (Context.contextErrorMessage err)
+            Right ctx -> baseCfg{context = ctx}
 
 -- | A defaultless 'InitArgs' for a chosen role (used by the spec builders).
 initArgsFor :: Context.ContextKind -> InitArgs
@@ -343,3 +351,16 @@ initArgsFor kind =
         , force = False
         , ifMissing = False
         }
+
+{- | Admit a throwaway 'CanonicalProjectRoot' for tests that need the root the
+plan is built under (§ X). It goes through the production
+'withCanonicalProjectRoot' bracket against a real directory rather than
+fabricating the opaque value, which the type does not permit anyway.
+-}
+withFixtureProjectRoot ::
+    (forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> IO a) ->
+    IO a
+withFixtureProjectRoot action =
+    withSystemTempDirectory "hostbootstrap-fixture-root" $ \dir -> do
+        outcome <- withCanonicalProjectRoot (dir </> "fixture.dhall") "." action
+        either (fail . show) pure outcome

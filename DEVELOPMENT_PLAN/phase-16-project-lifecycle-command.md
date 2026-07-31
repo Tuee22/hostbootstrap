@@ -5,17 +5,31 @@
 **Referenced by**: [00-overview.md](00-overview.md), [README.md](README.md)
 
 > **Purpose**: Build the `Step` algebra, recursive/fractal chain interpreter, and
-> `project init|up|down|destroy` lifecycle command, then replace the current independent
-> `psChain`/`psFrameContext`/`psTeardown` views with one opaque lifecycle plan (§ W, § Y).
+> `project init|up|down|destroy` lifecycle command, then replace the remaining independent
+> lifecycle views with one opaque lifecycle plan (§ W, § Y).
 
 ## Phase Status
 
 **Status**: Active
 
-The target is one typed lifecycle plan, but the current extension contract still supplies `psChain`,
-`psFrameContext`, and `psTeardown` independently. Forward execution is chain-driven while topology lookup
-and reverse cleanup can disagree with it. Sprint 16.6 owns the unification as well as receipt-driven
-recursive teardown; the pure `[Step]` single-representation claim is therefore not yet fully enforced.
+**Sprint 16.6 is unblocked and started 2026-07-30.** Its verb-indexed reverse projection and teardown
+forest (`HostBootstrap.Teardown`) landed, which also gave Sprint 10.9's `verifyDestroySettled` its first
+producer. It is now the single root the remaining repair tranche hangs off: Sprints 11.10, 14.6, 17.4,
+and 10.9's reconciler-produced report rows each wait on one of its still-open items, listed in the
+sprint's `Remaining Work`.
+
+The target is one typed lifecycle plan. Two of the three formerly independent contributions are now
+nodes of the validated plan: forward execution always was, and **the per-frame descent joined it
+2026-07-30** — a step declares with `descendsVia` how its frame reaches the next one, so topology can no
+longer disagree with the forward traversal, and the announced child config and the payload that crosses
+the boundary are one value. **The reverse contribution joined it the same day**: an acquiring step
+declares the effect that releases it with `reversedBy`, and `project down`/`project destroy` are two
+verb-indexed projections of that one plan rather than a hook beside it. All three formerly independent
+lifecycle views are therefore nodes of the same validated value. What the single-representation claim
+still lacks is the **recursive child-first unwind**: each verb cleans the frames the current binary can
+reach rather than descending into every frame it acquired, so the landed teardown forest — whose
+child-first ordering and destroy-only pre-descent step only become truthful with that recursion — has
+no production call site yet. Sprint 16.6 owns it, along with receipt-driven teardown.
 
 **Reopened then closed (2026-07-05, cross-substrate reliability hardening).** The demo real-run gate surfaced
 lifecycle-interpreter gaps in this phase's scope: `applyChain` has no `bracket`/`finally`, so a chain
@@ -61,7 +75,7 @@ old `deploy` / `harbor` / `role` verbs + the Op-based `HostBootstrapDemo.Chain` 
 tree carries only `coreCommandNames` = `context` / `project` / `test` / `service` / `check-code`; `ensure`
 is a reconciler library composed through `ensure-*` steps, not a verb. The flat `cluster`, `config init`,
 `config show|schema|render`, and `context create` verbs are removed; the demo contributes
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` + `demoFrameContext` + `demoTeardown`, with its old per-project
+`demoChainFor`, with its old per-project
 Harbor names retained here only as historical run evidence and its removed verbs recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The current demo uses registry/MinIO
 steps; Phase 13.18/21.4 remove stale Harbor metadata. Sprint 16.6 reopens lifecycle closure for
@@ -117,6 +131,18 @@ local-only NodePort, prove the native Linux CPU/GPU daemon Deployments connect t
 the implemented browser Add assertion as part of the four-case/two-variant `8/8` gate. The dated Windows
 GPU/WSL2 `8/8` accepted by Phase 18 proves that host-daemon lane; it does not exercise Phase 16.6's
 future typed recursive teardown or close the remaining native Linux and Apple lanes.
+
+**Native Linux CPU lane closed 2026-07-29.** `hostbootstrap-demo test run all` reported **`10/10 passed`**
+on a genuinely `linux-cpu`-detecting host (a fresh Ubuntu 24.04 Incus VM, whose kernel carries no NVIDIA
+markers and no `nvidia-smi`, with the demo's own Incus VM nested inside it). The run brought up the
+VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registry, `push-image`,
+`expose-port: web service reachable at http://localhost:30080/`, and
+`deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)`,
+with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
+`durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
+that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
+**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+
 
 **Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
 
@@ -537,19 +563,40 @@ workload dialing the distinct accelerator `ClusterIP`, and requests one GPU on t
 roll subPath-mounted pods. The Windows worker path resolves the generated `.exe`, and build-#3 failures
 stream their captured output. Dated static evidence is recorded above; no mutable current count is claimed.
 
-Open only for real-run closure (§ C): execute the host-daemon lifecycle through the local-only NodePort,
-execute the native Linux CPU/GPU in-cluster deployments, and run the implemented browser Add assertion in
-the full four-case/two-variant harness. The accepted Windows GPU/WSL2 `8/8` closes its host-daemon lane,
-but unavailable native Linux and Apple lanes still prevent this sprint's cross-substrate closure. That
-run also predates and cannot close Sprint 16.6's typed plan/journal teardown contract.
+Open only for real-run closure (§ C).
 
-### Sprint 16.6: Ownership-preserving recursive teardown [Blocked]
+**Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
+across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
+recorded once with
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
 
-**Status**: Blocked
-**Blocked by**: Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+That run executed the native Linux **GPU** in-cluster deployment and the implemented browser Add
+assertion across the full five-case/two-variant harness. The accepted Windows GPU/WSL2 `8/8` closes its
+host-daemon lane. The native Linux **CPU** in-cluster deployment and the Apple host-daemon lifecycle
+through the local-only NodePort remain, so this sprint has not reached cross-substrate closure. Neither
+run closes Sprint 16.6's typed plan/journal teardown contract, which they both predate.
+
+### Sprint 16.6: Ownership-preserving recursive teardown [Active]
+
+**Status**: Active
+
+**Unblocked and started 2026-07-30.** Every named prerequisite has landed — Sprints 5.7, 9.10, 10.9,
+15.9, and 19.7–19.8 — so the `Blocked by` line is removed. The first deliverable, the verb-indexed
+reverse projection and its teardown forest, landed 2026-07-30; the rest is listed under `Remaining Work`.
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/test/TeardownSpec.hs`,
+`core/hostbootstrap-core/test/PrepareFixture.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeTeardownForest.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgePreparedGate.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`,
@@ -582,7 +629,7 @@ without reconstructing ownership or deleting foreign state.
   continuation. `authorizeChildProject` consumes only that narrow authority. A sibling config or
   descriptive context alone cannot recreate authority, and a child never receives root/harness-root or
   signing authority. Every edge, including teardown, receives a fresh token.
-- Replace independently supplied `psChain`, `psFrameContext`, and `psTeardown` interpretations with one
+- Replace independently supplied chain, frame-context, and teardown interpretations with one
   typed lifecycle plan that derives topology, forward execution, and reverse teardown from the same
   structure, including the child config projection/handoff action, so a no-op `context-init` label cannot
   disagree with independently delivered config.
@@ -865,13 +912,320 @@ without reconstructing ownership or deleting foreign state.
 
 #### Remaining Work
 
-Blocked until Sprints 5.7, 9.10, 10.9, 15.9, and 19.7–19.8 land the
-ownership/result algebra, profile
-opener, independent root/command authority, scoped codec, and finalized plan. Then replace best-effort
-root-only reconstruction with the scope-retaining typed
-acquisition journal, authenticated one-time handoff consumption, and recursive unwind; integrate the
-ownership conflict semantics and complete interruption gates. Sprint 16.5 remains Active only for native
-accelerator lifecycle validation.
+**Delivered 2026-07-30 — the verb-indexed reverse projection and the teardown forest
+(`HostBootstrap.Teardown`).**
+
+This is the deliverable that begins "Derive distinct reverse projections for `down` and `destroy`", and
+it is also the one Sprint 10.9 has been waiting on: `verifyDestroySettled` had no producer, so the
+`SettledDestroyClose` branch of `ProjectClosureEvidence` was uninhabited and a Production project could
+be closed after a true pre-effect refusal but never after an actual `destroy`.
+
+- **The two projections are one plan, structurally.** `teardownPlan` takes only a `LifecyclePlan` and a
+  verb; it reads the validated `StepPlan` out of the plan itself through the new
+  `Reconcile.lifecyclePlanSteps` rather than accepting one from the caller, so the forward traversal and
+  the reverse teardown cannot name different resources. A test asserts both verbs project the **same**
+  identities and that they are exactly the forward plan's operation keys.
+- **The verbs differ in exactly one place.** A `deploy-vm` step is `StopFrame` under `down` and
+  `DeleteFrame` under `destroy`; `deploy-kind` is `DeleteCluster` under **both**, because kind has no
+  reliable stop/restart contract. `TeardownPlan scope planId verb` is verb-indexed, so a `Down`
+  projection, live forest, or completed proof cannot be substituted for a `Destroy` one — proved by the
+  new `ForgeTeardownForest.hs` fixture.
+- **`PreserveOnReverse` is honoured by construction.** Such a step never enters either projection, which
+  is how the host-root `.data` stays inside the one plan with an explicit preserve policy instead of
+  being excluded by a special case at the call site. A plan whose every step preserves projects nothing
+  and cannot open a forest at all.
+- **`openTeardownForest` is the sole initial producer**, and the forest enforces child-first recursion: a
+  frame's own step is not offered until every deeper node has settled. For `destroy`, a provider node
+  first offers a **pre-descent reachability** step — after a `down` the provider is stopped and its
+  retained children are unreachable — and only that step's success exposes the children, whose
+  settlement in turn exposes the ordinary delete. The observed order on the demo's own three-frame shape
+  is asserted exactly.
+- **The authorization point's private eliminator** exposes either the destroy-only pre-descent step or
+  the settled-child proof paired with the ordinary cursor. `SettledChildren`, `PreDescentStep`,
+  `TeardownCursor`, `TeardownAuthorizationPoint`, `CompletedTeardownForest`, `TeardownForest`,
+  `TeardownProgress`, and `DestroySettled` all hide their constructors, so a caller cannot claim children
+  settled when they are not, invent a reachability step for a `down`, or start a forest mid-traversal.
+- **Failure is constructive.** Every attempt returns a successor forest, including on failure. A failed
+  node keeps its exact parent blocked while unrelated siblings stay schedulable — implemented as two
+  scheduling passes, fresh work then retries, because a single depth-first pass re-offers the first
+  failure forever and starves its siblings. A permanently failing node therefore keeps the forest from
+  ever completing, which is asserted directly.
+- **Foreign and refused observations are not failures** (§ Y): both settle their node without touching
+  the object and are recorded separately from failures, so a `SafetyRefusal` or `Conflict` skips only
+  that resource rather than aborting the run's other owned cleanup.
+- **`verifyDestroySettled` accepts only a completed `Destroy` forest** and additionally refuses one that
+  settled fewer nodes than the projection names, so a truncated traversal cannot pass as a settled
+  destroy. `Lifecycle.Mode.destroySettledClosure` is the new conversion: it takes the `BoundRunLease`,
+  `verifyAllSessionsClosed`'s completeness proof, and `DestroySettled`, compares both proofs against the
+  lease's own plan digest, and mints `ProjectClosureEvidence SettledDestroyClose`.
+
+**Deviation from the sprint text, recorded deliberately.** The deliverable says `openTeardownForest`
+binds "the exact snapshot/active revision/Open-state/permit version". It currently binds the
+`LifecyclePlan` only. Those other values live in `HostBootstrap.Lifecycle.Mode`, and `Mode` must import
+`Teardown` to supply `destroySettledClosure`; binding them inside `openTeardownForest` would be an import
+cycle. The binding is therefore made at the conversion instead — which is where it decides anything —
+and moving it into the opener is part of the plan-snapshot work below.
+
+Validation (2026-07-30): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **786** (up from 769). `TeardownSpec` contributes **16**
+cases over the demo's own three-frame plan shape; `ForgeTeardownForest.hs` pins ten constructors and
+three verb substitutions as unreachable, and `CompileFailSpec` now runs **32** fixtures.
+
+**Delivered 2026-07-30 — the independent root gate on `project up|down|destroy`.**
+
+Before this, the three lifecycle verbs were authorized by nothing more than the decoded context's
+command-class membership — self-asserted authority of exactly the kind § X forbids — and
+`Authority.withVerifiedRootInvocation` had **no production consumer at all**, which is the concrete
+reason nothing could sign a runtime-role activation manifest (Sprint 14.6) and why Sprint 15.9's wiring
+list named this first.
+
+- `withRootLifecycleAuthority` in `HostBootstrap.Command` now runs each verb behind
+  `verifyOperatorAuthorization` → `withFreshBrokerEpoch` → `withVerifiedRootInvocation` →
+  `authorizeProjectCommand`, over the `LifecyclePlan` built from the same admitted config snapshot the
+  chain executes. It fails closed. `ProjectUp`, `ProjectDown`, and `ProjectDestroy` each pass their own
+  closed `ProjectVerb`, so an `up` grant cannot authorize a `destroy`.
+- The broker epoch is fresh per invocation, so the one-use invocation record
+  `authorizeProjectCommand` reserves is fresh per invocation and an ordinary re-run is not misread as a
+  replay.
+- **The gate runs at the root frame only.** A nested frame is reached through the recursive handoff and
+  must take its authority from the parent's relay, which item 3 below still owes; gating it from its own
+  sibling config would re-assert exactly what is being removed. That restriction is explicit in the code
+  and is not silent.
+- The store is the project's own `.hostbootstrap/authority/<project>` under the **canonical** root
+  (§ X), never the caller's working directory. It is keyed by installed project name as well as root,
+  because one project root can legitimately host more than one installed binary — this repository hosts
+  both `hostbootstrap` and `hostbootstrap-demo`. `withVerifiedRootInvocation` still refuses a store whose
+  recorded project is not this one, so a directory copied under another name is caught. `.gitignore`
+  already covers `.hostbootstrap/`.
+
+`CLISpec` grew a case asserting the gate is observable rather than inert: after `project up`, the
+project's authority store exists at that exact path. Validation (2026-07-30): `cabal build all` and
+`cabal test all --ghc-options=-Werror` pass from `core/` at **787**; the demo workspace passes **110**
+plus the embedded **787**. This is static-gated only — it changes the live `project up` path, so the
+native demo lane should be re-run before Phase 16 closes.
+
+**Delivered 2026-07-30 — the plan-owned dependency-snapshot traversal (§ CC).**
+
+This is the first half of open item 1, and it removes the exact obstruction Sprint 11.10's dependency
+finding recorded: a descriptor's dependency set was the whole preceding step prefix, so any plan whose
+prefix contained a step with no plan resource — which is every real project chain, because a project's
+own `ensure` fragment precedes the provider — demanded an observation that was **unconstructible**.
+
+- **The edge set is now the exact ordered *resource-bearing* prefix.** `plannedKindKey` is the single
+  closed table naming which operation key each planned resource family owns, and both
+  `plannedKindAccepts` and the new `plannedResourceFamilyKeys` read it, so a family cannot be admitted to
+  one and omitted from the other. `plannedOperation` filters `stepDependencies` through that table. A step
+  that owns no plan resource has no managed handle to observe, so including it made the set unsatisfiable
+  rather than stricter. `ReconcileSpec` proves that on a demo-shaped plan
+  (`project:ensure-vm-provider` → `core:deploy-vm` → `core:copy-source`) the durable share's edge set is
+  exactly `["core:deploy-vm"]`, and that the traversal then seals it.
+- **The caller no longer supplies observations.** `withPreparedOperation` took a caller-built
+  `[SomeDependencyObservation]`; it now takes a sealed `OperationPreconditionSet` whose sole producer is
+  `withOperationPreconditions`. That traversal iterates the *descriptor's* edge set — not the snapshot —
+  looks each member up in the `DependencySnapshot` of managed resources, and runs that member's
+  plan-owned probe **at prepare time**. A member the snapshot does not carry refuses
+  (`ReprobeBeforeRetry`, naming the unmanaged key); a member carried twice is a `Conflict` rather than a
+  silent first-wins; a probe that does not observe readiness returns its own typed failure. Selecting or
+  omitting a member is therefore not expressible.
+- **The snapshot cannot hold an unowned resource.** An entry pairs a `Managed` handle — which only
+  `completeReconcile` / `completePreparedUnchanged` mint — with a `DependencyProbe`.
+  `Readiness.planDependencyProbe` builds that probe from the plan-indexed `Probe`, and rechecks the
+  freshly minted `Ready` against the handle's generation and observation version on **every** run, which
+  is what `dependencyObservationFromReady` used to do once against a retained value.
+- **The zero-dependency branch is explicit and refusing.** `zeroDependencyPreconditions` serves
+  descriptors that declare no edges (§ CC's private zero-dependency branch) and refuses any descriptor
+  that names one, so it is not a route around the snapshot.
+- `ForgePreconditionSet.hs` pins the sealed set and the snapshot constructor as unreachable, and
+  `CompileFailSpec` now runs **33** fixtures.
+
+Validation (2026-07-30): `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **794** (up from 787); the demo workspace passes **110** demo
+tests plus the embedded **794**-test core suite under the same gate; `poetry run python -m
+hostbootstrap.check_code` is clean and `poetry run python -m hostbootstrap.test_all` passes **231**;
+`git diff --check` is clean. The seven new cases are the three `ReconcileSpec` edge-set/seal/zero-branch
+cases, the three `ClusterReconcileSpec` traversal-refusal cases (unmanaged dependency, duplicate entry,
+failing probe), and the new compile-fail fixture.
+
+**Delivered 2026-07-30 — the prepare gate in front of the adapter pair (§ EE).**
+
+This closes the journal-version half of the weakness the traversal above left open. It is the item's
+own scoping note carried out: rather than adding a bridge that leaves the raw arguments exported, the
+evidence moved to a shared lower module both sides can name.
+
+- **`HostBootstrap.Lifecycle.Prepared` is that module.** It imports only `HostBootstrap.Protected`, so
+  it sits below both `Lifecycle.Session` and `Reconcile` and breaks the
+  `Session -> Authority -> Reconcile` layering problem without inverting anything.
+- **`PreparedGate` hides its constructor and has exactly one producer.** `recordDurableUnknown`
+  *performs* the compare-and-swap that publishes the operation's unknown phase and mints the gate from
+  the version that write returned, so the value cannot exist unless that durable write landed. It
+  requires a `ProtectedSession`, which exists only inside an exclusive protected entry (§ EE clause 1).
+  Because it also writes the exact four-field record layout the recovery classifier reads back, the
+  bytes on disk and the indices on the gate cannot disagree. `ForgePreparedGate.hs` pins both the
+  constructor and a record update as unreachable.
+- **`Reconcile.withPreparedOperation` no longer takes an attempt and a journal version.** It takes the
+  gate, and reads both off it. `Cluster.Reconcile.withPreparedClusterReconcile` and
+  `Provider.Alias.withPreparedGuestAliasCall` — the two adapters — thread it through, so no route to a
+  prepared pair accepts a `Word64` any more.
+- **The gate is bound to its plan and its operation, and both are checked.** `PlannedResource` and
+  `OperationDescriptor` now carry the plan digest they were resolved from, and the prepare refuses a
+  gate recorded under a different plan digest or a different operation key. That is deliberately a
+  *value* check rather than a phantom index: a phantom parameter on the gate would be freely
+  instantiable by whoever holds the value, so it would record the binding without enforcing it. Two new
+  `ReconcileSpec` cases prove each refusal.
+- **The specs mint the gate the way production does.** There is no test-only constructor to reach for
+  (§ EE forbids exporting one), so `PrepareFixture` opens a real protected store in a temporary
+  directory and records a real unknown phase inside a real exclusive entry. Every prepared-operation
+  spec — `ReconcileSpec`, `ClusterReconcileSpec`, `ProviderAliasSpec` — now runs against that.
+
+Validation (2026-07-30): `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **797** (up from 794); the demo workspace passes **110**
+demo tests plus the embedded **797**-test core suite under the same gate. `CompileFailSpec` now runs
+**34** fixtures.
+
+**Delivered 2026-07-30 — the plan-owned frame descent, and the root-bound plan (§ W/§ X).**
+
+This is the first half of open item 3. The chain was already one validated forward ordering, but the
+**descent** beside it was not: `psFrameContext` was a separately assigned `StepFrame -> LiftContext`
+resolver, so the frame the plan announced and the context the interpreter dispatched into were two
+independently supplied values. In the demo that gap was visible by name — the `context-init` step's body
+was a `putStrLn` announcing a child config it did not carry, while the payload that actually crossed the
+boundary was folded in by `demoFrameContext` somewhere else entirely. That is exactly the disagreement
+this deliverable names.
+
+- **A step declares its own descent.** `HostBootstrap.Step.descendsVia` attaches the boundary's
+  `LiftContext` — provider dispatch *and* the child config streamed on the handoff `stdin` (§ X) — to the
+  plan node that owns it. `frameDescent` reads it back, and `Chain.runChainFromFrame` no longer takes a
+  resolver argument at all: it looks the context up in the plan it is already interpreting. There is no
+  second value to drift.
+- **Validation makes the pairing total, not conventional.** `mkStepPlan` requires **exactly one** descent
+  per frame that has a successor (`MissingFrameDescent` / `DuplicateFrameDescent`), **none** from the
+  innermost frame (`DescentFromInnermostFrame`), and none on a post-handoff hook
+  (`DescentOnPostHandoffStep`, which runs *after* the descent). `descendsVia` appends rather than
+  replaces, so a second declaration on one step is retained as a construction conflict and rejected too.
+  Because the descent is checked at plan construction, `--dry-run` and `project up` are still the same
+  value.
+- **`setFrameContext` / `psFrameContext` are deleted**, along with `MissingFrameContext` and
+  `DuplicateFrameContextAssignments`. There is no remaining API through which a project can supply a
+  frame context that the plan does not contain; the removal is recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **The plan is built under the canonical root.** `addSteps` fragments are now rank-2 in
+  `CanonicalProjectRoot`, so a step derives project-relative paths — and the descent it declares — from
+  the one admitted authority rather than from `cwd` or a serialized path (§ X). That is what let the
+  demo's Linux GPU descent keep its `CanonicalHostDurable` mount after the resolver was removed; nothing
+  reconstructs a host root at the boundary.
+- **The demo's two lanes each declare their descents on the honest node.** The VM-backed stack declares
+  metal → `vm-orchestrator-1` on its `build-pb` step (the substrate's VM shell) and
+  `vm-orchestrator-1` → `vm-project-container-2` on the very `context-init` step whose label announces
+  the child config. The direct Linux GPU lane declares its single metal → container descent on its own
+  `context-init`. `demoFrameContext` is gone.
+
+Validation (2026-07-30): `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **801** (up from 797); the demo workspace passes **110** demo
+tests plus the embedded **801**-test core suite under the same gate; `poetry run python -m
+hostbootstrap.check_code` is clean and `poetry run python -m hostbootstrap.test_all` passes **231**;
+`git diff --check` is clean. The four new cases are two `ChainSpec` cases proving the dispatched handoff
+argv is derived from the plan's own descent node (and that the innermost frame declares none) and two
+`StepSpec` cases pinning each of the four new validation refusals. `CommandsSpec`'s
+direct-versus-VM-backed handoff case now reads both contexts out of the two demo plans rather than out
+of the deleted resolver, so it proves the same `--gpus=all` / durable-mount distinction *and* that the
+contexts are plan nodes.
+
+**Delivered 2026-07-30 — the plan-owned reverse effect; `psTeardown` is gone.**
+
+This is the second half of open item 3, and it removes the last lifecycle contribution supplied
+independently of the plan. `psTeardown` was one `root -> cfg -> Bool -> IO ()` hook for the **whole
+project**: a `Bool` chose stop-or-delete, the demo's implementation re-derived the substrate and
+branched on it internally, and nothing tied any of it to the plan node that had acquired the resource.
+A step could therefore acquire something the hook never released, or the hook could release something no
+step ever acquired, and neither would be visible at construction.
+
+- **The acquiring node declares the releasing effect.** `HostBootstrap.Step.reversedBy` attaches
+  `HostConfig -> TeardownAction -> IO TeardownOutcome` to a step. The `Bool` is gone: the verb-indexed
+  `TeardownAction` the projection already derived (`StopFrame` for `down`, `DeleteFrame` for `destroy`,
+  `DeleteCluster` for both) is what the effect receives, so a node cannot decide for itself which verb
+  it is running under.
+- **`Command.reverseProjection` is the one driver, and both verbs go through it.**
+  `project down` runs `teardownPlan lifecyclePlan downVerb`, `project destroy` runs the `destroyVerb`
+  projection of the *same* plan, and a failed `project up` runs the destroy projection as its
+  best-effort unwind — so the three cleanup paths are one representation, not three. Nodes run deepest
+  frame first and, within a frame, in exact reverse of the forward sequence, which is what puts the
+  host-daemon post-handoff hook ahead of the provider frame it ran beside.
+- **A `PreserveOnReverse` step still never enters either projection**, which is now the entire mechanism
+  of the never-delete-`.data` invariant at the call site: there is no longer a hook that could reach it.
+- **Outcomes are per node and structured.** `TeardownReleased` / `TeardownForeignRetained` /
+  `TeardownRefused` / `TeardownFailed` are reported per operation key, a throwing effect is captured as
+  `TeardownFailed` rather than aborting the traversal, and the command fails only after every
+  independent node has had its turn — § Y's rule that a refusal or a failure skips only its own
+  resource. The former behaviour aggregated two coarse labels ("cluster down", "project frame
+  teardown").
+- **The core keeps the kind cluster, and a project may override it.** A `CoreManagedReverse` node that
+  declares nothing is handed to the core's cluster adapter, which still runs only from the frame that
+  owns `deploy-kind` and now reports the other case as an explicit retained outcome instead of a bare
+  `putStrLn`. A node that *does* declare a reverse takes precedence, which is what the demo's direct
+  Linux GPU lane needs: its nvkind cluster lives in a frame the metal host has no kube toolchain for,
+  and is reached through the project image.
+- **The core adapter dispatches on the node's action, not on the frame alone** — a defect found and
+  fixed during this sprint's own review. `deploy-chart` and `expose-port` are core-managed as well, but
+  they live *inside* the cluster and have no separate backend call; handing every core-managed node to
+  the cluster adapter would have run the whole cluster teardown once per node. Only `DeleteCluster`
+  reaches it; the others report as released with the cluster that contains them. A `TeardownSpec` case
+  asserts the adapter sees exactly `[("core:deploy-kind", DeleteCluster)]` on the demo-shaped plan.
+- **The demo's monolithic `demoTeardown` is replaced by three node-local effects** —
+  `demoProviderReverse` on `deploy-vm`, `demoDirectClusterReverse` on the direct lane's `deploy-kind`,
+  and `demoHostAcceleratorReverse` on the host-daemon post-handoff step. Each is now attached to the
+  step that created the thing it removes, and the substrate branch inside the old hook is gone: the
+  chain already selected the lane, so only the nodes that lane contains carry reverses.
+
+**Deliberate scope note.** This drives the pure **reverse projection**, not the `TeardownForest`. The
+forest's child-first ordering and destroy-only pre-descent reachability step only become *truthful* once
+the verb recurses into each descendant frame; driving it from one frame would let a `destroy` mint
+`DestroySettled` for deeper nodes it never visited, which is exactly the false proof § Y exists to
+prevent. The recursion is the remaining part of item 3 and is recorded as such below.
+
+Validation (2026-07-30): `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **807** (up from 801); the demo workspace passes **110** demo
+tests plus the embedded **807**-test core suite; `poetry run python -m hostbootstrap.check_code` is clean
+and `poetry run python -m hostbootstrap.test_all` passes **231**; `git diff --check` is clean. The six new
+cases are five `TeardownSpec` driver cases
+(the declared effects run deepest-frame-first; the verb reaches the effect as `StopFrame` versus
+`DeleteFrame`; a node that declared none is skipped rather than reported released, while a core-managed
+one reaches the core adapter; the adapter receives each node's own action; and a throwing effect becomes
+a captured failure with later nodes still running) and one `StepSpec` case pinning the two new refusals
+plus the permitted core-managed override.
+`CLISpec`'s former teardown-hook call-count case is now the plan case: `project down` runs the reverse
+the acquiring step declared and observes `StopFrame`, then `project destroy` on the same spec observes
+`DeleteFrame`.
+
+**Still open (this sprint), in the order they unblock other work:**
+
+1. **The `copy-source` plan node at the demo call site.** The core half above is landed, but the demo's
+   adoption is **ordering-blocked behind item 3, not behind item 1** — a discovery of this work. A step
+   action is `HostConfig -> IO ()` (`Step.runStep`), so it receives no `LifecyclePlan`; minting the
+   `Managed` durable-share handle that `withPreparedGuestAliasCall` requires is therefore impossible
+   inside a step until item 3 replaces that result-free signature with the plan-minted descriptor § U
+   already specifies. Sprint 11.10's `Blocked by` edge for its demo alias migration stands, and now names
+   item 3 rather than item 1.
+2. **The internal handoff receiver and duplex root relay** replacing `Lift.ConfigDelivery`'s shell
+   writer — which is also what lets the root gate above extend past the root frame — and the build-image
+   coordinator channel that makes `check-code` require `BuildInvocationAuthority`.
+3. **The recursive child-first unwind**, the remainder of the single `ProjectPlan` representation. All
+   three contributions — forward ordering, per-frame descent, and the reverse effect — are now nodes of
+   the one validated plan, and both teardown verbs are projections of it. What remains is that each verb
+   cleans only the frames the current binary can reach: `project destroy` at the root does not hand
+   `project destroy` into the VM and then the container before running its own reverse steps, so the
+   deeper frames are released with their parent rather than visited. Until it does, the landed
+   `TeardownForest` has no production call site — its child-first ordering and destroy-only pre-descent
+   step would otherwise let a one-frame run mint `DestroySettled` for nodes it never touched. The same
+   work carries the `Conflict`/`Unsupported` report-card rows and the receipt-carrying
+   `ManagedResult Unchanged` / `ForeignResult` half that Sprint 10.9 is waiting on, and it still owes
+   § U's replacement of the result-free `HostConfig -> IO ()` step signature with the plan-minted
+   descriptor — which is the exact thing Sprint 11.10's demo alias migration is blocked on. It changes
+   live teardown ordering on every provider lane, so it is real-run-gated (§ C), not closable by the
+   static gate alone.
+4. **The migration/recovery gates** (`withProjectUpMigrationProfile` through `activateMigratedPlan`) and
+   the native interruption runs.
+
+Sprint 16.5 remains Active only for native accelerator lifecycle validation.
 
 ## Documentation Requirements
 

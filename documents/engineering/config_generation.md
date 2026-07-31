@@ -30,9 +30,11 @@
 - The no-flag `project init` invocation writes the **fresh root** `<project>.dhall` — the
   host-orchestrator config with no parent frame, carrying resource budget and deploy knobs. The current
   writer also supports explicit role/output/write-policy flags. In the current demo,
-  `context-init` is a no-op announcing frame anchor: the VM config is projected/delivered by the
-  composite `build-pb` action, the container config by `psFrameContext` plus the handoff, and service
-  configs by deployment actions. The target gives projection and delivery one plan operation.
+  `context-init`'s action body is a no-op announcement: the VM config is projected/delivered by the
+  composite `build-pb` action, the container config by the descent that same `context-init` step
+  declares (`descendsVia`) plus the handoff, and service configs by deployment actions. The announcing
+  row and the container payload are therefore one plan node; the target gives projection and delivery
+  one plan operation.
 - `deployConfigText` renders a standalone numeric budget/pod artifact carrying a Dhall `fitsWithin`
   assertion. It is not the runtime `<project>.dhall`: that config has text quantities and no resolved pod
   set. Current decode/validation uses private scalar constructors and one project-owned resource value;
@@ -169,8 +171,9 @@ provides facts for the current mismatch checks. The demo currently produces thos
 different operational seams:
 
 - the composite `build-pb`/pristine-bootstrap action derives and streams the VM-orchestrator config;
-- `psFrameContext` derives the project-container config, and the recursive handoff streams it over
-  `stdin` for the descending binary to write beside itself before dispatch; and
+- the descent the in-VM `context-init` step declares carries the project-container config, and the
+  recursive handoff streams it over `stdin` for the descending binary to write beside itself before
+  dispatch; and
 - chart/accelerator deployment actions render service/daemon projections into ConfigMaps, whose mounted
   bytes are rollout-hashed.
 
@@ -226,8 +229,8 @@ executable-sibling `<project>.dhall`; `context show [FILE]` reads the selected/d
 `context path`, `context schema`, and `context render` use static binary-owned information and need no
 project config. None applies a mutating command-authority gate or writes a file — minting child configs is
 an internal lifecycle responsibility, not a user verb. The current demo splits that work across the
-composite bootstrap, frame-context/handoff, and deployment seams described above; the target assigns it
-to one plan operation.
+composite bootstrap, the plan-declared descent plus handoff, and the deployment seams described above;
+the target assigns it to one plan operation.
 
 The registry surface `context schema` prints is the transitive union of the in-scope artifacts' schemas
 (`coreArtifacts ++ project artifacts`), each labelled by name — the validated project-local
@@ -310,9 +313,9 @@ hand-written functions remain under evaluation tests.
 The surface that drives them is the recursive lifecycle command: the default `project init` invocation
 writes a fresh root host-orchestrator config and refuses an existing output, while
 `--role`/`--also-role`/`--output` plus `--force` or `--if-missing` select the current explicit writer
-modes. Parent-to-child projection is currently split among composite bootstrap,
-`psFrameContext`/handoff, and workload deployment actions; the chain's `context-init` action is only an
-announcing anchor. `context schema`/`context render` are ungated
+modes. Parent-to-child projection is currently split among composite bootstrap, the plan-declared
+descent plus handoff, and workload deployment actions; the chain's `context-init` action body is only an
+announcement, though it is now the node that carries the container descent. `context schema`/`context render` are ungated
 static inspection verbs; `context inspect` and `context show` perform the decode-only reads described
 above. VM/container child-config delivery uses in-place streaming over the relevant bootstrap/handoff
 `stdin` channel (see

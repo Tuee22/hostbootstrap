@@ -12,25 +12,31 @@
 ## Phase Status
 
 **Status**: Active
-**Blocked by**: Sprint 15.9 for Sprint 14.6; Sprint 14.7 is dependency-ready
+**Blocked by**: Sprint 16.6 for Sprint 14.6's remaining `service run` call-site adoption; Sprint 14.7 is
+closed
 
 **Extended 2026-07-25.** Sprint 14.7 reopens the generic network-planning boundary: raw endpoint text
 and an independently serialized redirect default currently permit a host-local registry client to be
 redirected to a cluster-only object store. The target makes delivery a reachability-proof-gated part of
 the same finalized plan.
 
-**Reopened 2026-07-24.** The methodology documents remain valid, but the L0 `RoleLifecycle` skeleton has
-no production consumer after the demo `Role` module and appended role verbs were removed. Sprint 14.6
-owns integration into the fixed `service run` path with phase-indexed state; a definition-only public
-callback engine cannot remain as a second lifecycle representation.
+**Reopened 2026-07-24; the engine landed 2026-07-30.** The methodology documents remain valid. The L0
+`RoleLifecycle` skeleton had no production consumer after the demo `Role` module and appended role verbs
+were removed, and a definition-only public callback engine could not remain as a second lifecycle
+representation. Sprint 14.6 deleted it and replaced it with the phase-indexed engine; what is still open
+there is the `service run` call-site adoption, which waits on Sprint 16.6's root-authorized `project up`
+gate, because until that lands nothing in production can sign an activation manifest.
 
 **Earlier reopening (2026-06-19) and closure (2026-06-20):** the methodology removed a parallel harness bring-up
 graph: the standardized test harness **reuses the chain** (drives `project up`) rather than expressing
 deployment through a second seam path. `composition_methodology.md` records `project up` as the
 recursive/fractal interpreter, the Python bootstrapper as the metal-frame instance, and the
 harness-drives-`project up` rule. The dated `3/3` runs are historical evidence for that narrower result.
-The later audit found that `psChain`, `psFrameContext`, and `psTeardown` are still independent lifecycle
-views; Phase 16.6, not this completed methodology phase, owns their replacement with one opaque plan.
+The later audit found that the chain, the per-frame context, and the teardown were three independent
+lifecycle views; Phase 16.6, not this completed methodology phase, owns their replacement with one opaque
+plan. All three were unified 2026-07-30: forward execution always was, the per-frame descent is declared
+with `descendsVia`, and the reverse effect with `reversedBy`. What remains of Phase 16.6's ownership is
+the recursive child-first unwind that drives the reverse projection into every acquired frame.
 
 The composition methodology is documented and the foundational primitive is `HostBootstrap.Lift` (Phase
 11). This phase owns the operation taxonomy, the deploy = business-logic unification, the foundational
@@ -271,15 +277,29 @@ the transport's temporary `DOCKER_CONFIG` remained a bracketed effect rather tha
 
 None.
 
-### Sprint 14.6: One phase-indexed role lifecycle consumer [Blocked]
+### Sprint 14.6: One phase-indexed role lifecycle consumer [Active]
 
-**Status**: Blocked
-**Blocked by**: Sprint 15.9 (Sprints 9.10 and 19.7–19.8 are complete)
+**Status**: Active
+**Blocked by (remaining item only)**: Sprint 16.6
+
+**Unblocked 2026-07-30.** Its prerequisite was the activation package Sprint 15.9 owns, and that landed
+2026-07-29: `HostBootstrap.Activation` supplies `VerifiedRuntimeRoleActivation` (with its revision,
+instance, service, permitted effects, and secret channel) and the one-use `reserveLifecycleAdmission`.
+Sprint 15.9's own remaining work names **this** sprint as the owner of wiring activation into its live
+call site, so continuing to mark 14.6 `Blocked by` 15.9 was circular.
+
+**The engine landed 2026-07-30.** `HostBootstrap.RoleLifecycle` is no longer the definition-only
+`RoleSpec` callback bag; it is the phase-indexed engine described under `Remaining Work`. The one item
+still open is the `service run` call-site adoption, which is `Blocked by` Sprint 16.6 for the reason
+recorded there.
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Activation.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeRoleCursor.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/Spec.hs`
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/run_models.md`, `documents/architecture/hostbootstrap_core_library.md`,
@@ -374,14 +394,89 @@ definition-only public callback skeleton.
 
 #### Remaining Work
 
-Blocked until Sprint 15.9 lands the signed rollout-revision plus measured-instance activation
-authority. The shared reconcile, scoped codec, and finalized plan contracts are complete. Then integrate the
-role phase machine into `service run`,
-hide/remove the definition-only surface, and migrate the unit tests to the opaque phase API.
+**Delivered 2026-07-30 — the phase machine, the pre-cursor gate chain, and the removal of the callback
+bag.**
 
-### Sprint 14.7: Scope-indexed endpoints and registry blob delivery [Active]
+`HostBootstrap.RoleLifecycle` no longer exports `RoleSpec`, `roleAcquire`, `roleServe`, `roleDrain`, or
+`runRole`. What replaced them:
 
-**Status**: Active
+- **The gate chain runs before a cursor exists.** `verifyRolePlanDraft` compares the project's own
+  non-empty draft against the manifest's signed `rolePlanDigest` with **no durable mutation**, then
+  `withRoleLifecycleAdmission` atomically reserves the instance's one-use admission, then
+  `withRuntimeRolePlan` compare-and-swaps that exact reservation Reserved→Consumed and mints the
+  `RolePlan`, `RolePlanDigestBinding`, `VerifiedServicePlacement`, and the sole initial cursor — `Prereq`
+  — together inside one rank-2 continuation. `Load` survives only as a descriptive label, exactly as this
+  sprint's deliverable states.
+- **The admission is genuinely one-use.** The key binds the signed parent plan digest, frame, immutable
+  rollout revision, and the **measured** instance, so a real restart (a different container restart
+  count, or a fresh host invocation nonce) gets its own admission while a replayed activation does not.
+  An existing record is `RoleAdmissionRecoveryRequired` carrying the predecessor's own bytes — never
+  silently overwritten — and a lost write is its own `RoleAdmissionUnknown` rather than an error. A
+  second `withRuntimeRolePlan` against the same reservation is `RoleAdmissionAlreadyConsumed`, because
+  the compare-and-swap names the exact version the reservation was observed at.
+- **The lease requirement is derived, not chosen.** `RoleEffect` is a closed vocabulary
+  (`network-listen`, `network-connect`, `durable-store`, `process`); an effect the signed ceiling names
+  but core does not recognise is `RoleEffectUnsupported` rather than assumed harmless. `durable-store`
+  and `process` are the exclusive ones, and a draft that declares an exclusive resource under a ceiling
+  permitting none is refused at verification — so the two cannot disagree silently and a mutating role
+  cannot appear on the no-lease branch.
+- **The exclusive branch takes a real kernel lock.** When the ceiling requires a generation lease, the
+  whole Acquire→Drain bracket runs inside `Protected.withRunLiveness` — the § EE clause-1 primitive the
+  OS releases on process death. A live exclusive peer is refused **before** its first acquisition, so its
+  refusal legitimately carries `VerifiedNoRoleResources`; a dead predecessor never blocks, because the
+  kernel already released the lock.
+- **Failure branches carry their only legal successor.** `exitWithNoRoleResources` is the sole route to
+  an empty rollback set and it *demands* the `VerifiedNoRoleResources` proof, which only the engine can
+  produce and only where nothing was acquired. Every other turn-around — a failed acquisition, an
+  **unknown** acquisition, a readiness failure, a serve failure, a catchable shutdown — reaches Exit only
+  through Drain, and Drain carries every owned resource and every unknown one. An unknown acquisition is
+  retained rather than dropped, and it makes the exit unclean.
+- **Nothing escapes to project code.** `RoleCursor`, `RolePlan`, `VerifiedServicePlacement`,
+  `ReservedRoleAdmission`, `VerifiedRolePlanDraft`, `ReadyRoleHandles`, `RolePlanDigestBinding`, and
+  `VerifiedNoRoleResources` all hide their constructors. The engine's callbacks are per-resource or take
+  only `ReadyRoleHandles`, whose names come solely from resources Acquire created and Ready probed — so
+  there is no serve-time bind/spawn hatch. The one public result is `RoleExitReport`. Because `mask`
+  hands back a rank-2 `restore`, the phase functions thread it through a `Restore` newtype rather than
+  letting it monomorphise, so each project callback is individually restored and a callback that throws
+  is converted to that callback's typed branch instead of escaping between Acquire and Drain.
+
+Validation (2026-07-30): `cabal build all --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **769** (up from 744). `RoleLifecycleSpec` contributes **27**
+cases against a real protected store, real Ed25519 grants signed by a real root invocation, and a real
+kernel lock — covering the draft rules and its length-prefixed digest, all four verification refusals,
+reserve/recovery-owed/consume-once, both lease requirements, and every engine branch above including the
+live-exclusive-peer refusal. The new `ForgeRoleCursor.hs` compile-fail fixture proves all nine of those
+constructors are unreachable; `CompileFailSpec` now runs **31** fixtures. The demo workspace passes its
+own **110** tests plus the embedded **769**-test core suite under the same gate, and the Python suite
+passes **231**.
+
+**Still open (this sprint): the `service run` call-site adoption — `Blocked by` Sprint 16.6.**
+
+This is a structural dependency, not a scheduling preference. `service run` can require the activation
+package only if something in production can *produce* one, and today nothing can: a signed
+`ActivationManifest` needs an `ActivationBroker`, which `withActivationBroker` mints only from a
+`RootInvocationAuthority`. Repository search finds `Authority.withVerifiedRootInvocation` has **no
+production consumer** — `project up` still uses the class-membership gate. Sprint 15.9's own remaining
+work assigns that replacement ("replace the class-membership-only `project up` gate with
+`authorizeProjectCommand` at the command layer") to Sprint 16.6. Until it lands there is no live root
+authority at `deploy-chart` time to sign the pod-template revision's manifest, so gating `service run` on
+one would make every runtime role unstartable rather than more authorized.
+
+What remains here, once 16.6 supplies the root-authorized `project up`:
+
+- have the `deploy-chart` step sign one `ActivationManifest` per pod-template revision and install the
+  immutable digest-addressed ConfigMap, Secret, and manifest objects (the Secret being the sole
+  secret-bearing object), with the host-daemon lane switching one revision directory/pointer and minting
+  a fresh invocation nonce;
+- have `service run` measure its own binary, mounted role-wire, and private-bundle digests plus its
+  instance identity, verify the activation against the independently installed project key, and enter the
+  chain above instead of calling the selected action directly;
+- pass the registry-selected action to the engine as `engineServe`, which Sprint 18.6 then narrows to the
+  effect-indexed `ServiceProgram`.
+
+### Sprint 14.7: Scope-indexed endpoints and registry blob delivery [Done]
+
+**Status**: Done
 **Blocked by**: None (Sprints 9.10 and 19.8 are complete)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
@@ -418,9 +513,43 @@ client's verified network scope.
 
 #### Remaining Work
 
-The opaque finalized-plan identity and plan-owned readiness/precondition foundations are complete.
-Implement the algebra and migrate the demo through Sprint 13.20; do not add a temporary raw redirect
-flag.
+**Delivered 2026-07-29 — the generic algebra.**
+
+- `HostBootstrap.Network` makes the network scope a **type index**. `Endpoint scope`,
+  `NetworkClient scope`, and `Exposure scope` are opaque and minted only by scope-specific smart
+  constructors that reject a scheme, a path, whitespace, or an empty authority, so no raw hostname,
+  `localhost`, or `.svc` convention can mint reachability. `Reachability client endpoint` is a closed
+  GADT enumerating every legal pair — and it deliberately has **no**
+  `Reachability 'HostLocal 'ClusterOnly` constructor. `loopbackExposure` fixes the authority to
+  `127.0.0.1`, so a wildcard publication of a project-local service is unrepresentable.
+- `HostBootstrap.RegistryPlan` carries no redirect boolean. `BlobDelivery client` has a proxying
+  constructor that needs no proof and a redirecting constructor that **takes** the `Reachability`
+  witness, so a host-local client and a cluster-only store admit no redirecting delivery at all.
+  `RegistryPlan client store` is opaque with topology-specific constructors only
+  (`hostServedRegistryPlan`, `inClusterRegistryPlan`), so a registry endpoint and a store endpoint
+  cannot be assembled independently and paired by convention.
+- `renderStorageRedirect` **derives** the Distribution `storage.redirect` stanza from the delivery: a
+  proxying plan renders `disable: true`, a redirecting plan renders nothing. Because the delivery is the
+  only input, the rendered configuration and the reachability proof cannot disagree.
+- `settleBlobRoute` mints `ReadyBlobRoute client store` only from an observation that is a real blob
+  request (an `ApiVersionProbe` — `/v2/` answering — is refused outright as
+  `BlobRouteNotABlobProbe`), on the plan's current revision, dialling the plan's exact published
+  exposure port, with an outcome matching the planned delivery. A replacement revision yields
+  `BlobRouteStaleRevision`, so a witness cannot be reused across one.
+
+Validation: `RegistryPlanSpec` runs **22** cases — the reachability relation enumerated over all nine
+scope pairs and pinned to exactly four, authority rejection, loopback fixing, both plan topologies, the
+golden delivery→rendering pairing, and every route-refusal branch including the live defect (a proxying
+plan observed issuing a `307` to `minio.default.svc:9000`). Four compile-fail fixtures reject the
+host-local→cluster-only redirect, endpoint-scope substitution, a raw `RegistryPlan`, and a forged
+`ReadyBlobRoute`. Core gate **587/587**, demo **106**, Python **227**, all under `-Werror`.
+
+**Still open:** the demo migration. `demo/src/HostBootstrapDemo/Commands.hs` still assembles
+`minioClusterEndpoint`, `registryEndpoint`, and `registryConfigYaml` independently, and that
+`config.yml` carries **no** `storage.redirect` stanza at all — so the running registry keeps
+Distribution's redirecting default while a host client pushes to it. Migrating those call sites onto this
+plan, and proving the route live, is Sprint 13.20's work; this sprint deliberately added no temporary raw
+redirect flag for it to consume.
 
 ## Documentation Requirements
 

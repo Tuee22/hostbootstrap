@@ -76,7 +76,7 @@ additive; this phase's validated shape is unchanged.
 
 The earlier chain-is-the-project migration remains real-run-validated end-to-end (2026-06-18): the
 demo's deploy is the contributed chain stream, now substrate-selected by
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` (plus `demoFrameContext` / `demoTeardown`) and
+`demoChainFor` (plus the historical `demoFrameContext` / `demoTeardown`) and
 interpreted by the core `project up`, which stood up the full live persistent stack — the
 3-frame recursive descent → `deploy-kind` → the 8-pod production Harbor → the 20GB image push → the web chart
 pod → `localhost:30080` serving HTTP 200 — and tore it down with `project down` / `project destroy`
@@ -90,7 +90,8 @@ to the current implementation.
 `hostbootstrap-core` directly via `runHostBootstrapCLI "hostbootstrap-demo" projectSpec`, exercising the
 extension streams: the substrate-selected lift chain (`demoChainFor`), schema-registry concat (`demoArtifacts`), Dhall
 vocabulary use, the service-handler registry (`demoServices`), and the stack-driven `demoTestSuite`. Its
-`ProjectSpec` supplies `demoChainFor substrate` / `demoFrameContext` / `demoTeardown`, `demoCheckCode`, `demoArtifacts`,
+`ProjectSpec` supplies `demoChainFor substrate` (whose steps declare their own frame descents) /
+`demoCheckCode`, `demoArtifacts`,
 `demoServices`, and the non-empty `demoTestSuite` — no project verbs (the surface is fixed, § P).
 
 Historical note: this phase was previously reopened for the **"the chain is the project"** migration (§ Y,
@@ -202,6 +203,18 @@ The dated 2026-07-15 static counts remain sprint evidence. The Windows GPU host-
 an accepted `8/8` run; Apple Silicon and native Linux CPU/GPU lanes remain open. Sprint 13.18 also owns
 Production-plan/TestComponent, base-digest, and registry/MinIO implementation repairs, so phase remaining
 work is not live-only.
+
+**Native Linux CPU lane closed 2026-07-29.** `hostbootstrap-demo test run all` reported **`10/10 passed`**
+on a genuinely `linux-cpu`-detecting host (a fresh Ubuntu 24.04 Incus VM, whose kernel carries no NVIDIA
+markers and no `nvidia-smi`, with the demo's own Incus VM nested inside it). The run brought up the
+VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registry, `push-image`,
+`expose-port: web service reachable at http://localhost:30080/`, and
+`deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)`,
+with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
+`durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
+that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
+**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+
 
 **Durable root end-to-end proof — OPEN.** The demo now creates host project-root `.data` and carries it
 through provider share/alias, container, kind node, and pod. The remaining gate is the dedicated
@@ -1140,7 +1153,16 @@ Implementation and static validation are complete:
 
 The accelerator implementation has dated static evidence, but current work is not limited to live closure:
 Sprint 13.18 also owns the typed Production plan/TestComponent, freshly pulled rolling base, and
-registry/MinIO metadata/provenance repair. Native Apple/Linux accelerator gates remain open separately.
+registry/MinIO metadata/provenance repair.
+
+**Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
+across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
+recorded once with
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
+
+The daemon Deployment rolled out, dialed the accelerator `ClusterIP`, and the Playwright `e2e-tabs` case
+asserted the daemon-returned sum on both variants. The native **Apple** host-daemon lane and the native
+Linux **CPU** in-cluster lane remain open.
 
 ### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
 
@@ -1247,10 +1269,9 @@ module.
 
 None.
 
-### Sprint 13.20: Reachability-safe registry route and persistence proof [Blocked]
+### Sprint 13.20: Reachability-safe registry route and persistence proof [Done]
 
-**Status**: Blocked
-**Blocked by**: Sprint 14.7
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/test/RegistrySpec.hs`,
 `demo/test/HarnessSpec.hs`
@@ -1283,9 +1304,61 @@ redirect default with one reachability-safe finalized registry plan.
 
 #### Remaining Work
 
-Blocked until Sprint 14.7 supplies the generic algebra. The concrete failure is reproduced: repeated
-blob `HEAD` is redirected to `http://minio.default.svc:9000`, which the host Docker client cannot
-resolve. Do not close this sprint with `/v2/` readiness or an initial push alone.
+None. Completed 2026-07-30.
+
+**One plan, and the redirect is output.** `demoRegistryPlan` is the demo's single finalized registry
+plan, built through Sprint 14.7's API from a host-local client, the loopback NodePort exposure, and the
+cluster-only MinIO endpoint. That topology admits **no** `Reachability` constructor, so
+`hostServedRegistryPlan` can only produce `ProxyBlobs` — proxy delivery is selected by construction rather
+than by policy. `registryConfigYaml` renders its `storage.redirect` stanza from
+`renderStorageRedirect`, and `minioClusterEndpoint`, `registryEndpoint`, and the chart's NodePort are all
+projections of the same plan, so the rendered configuration and the dialled endpoint cannot disagree.
+
+The defect this replaces was concrete: the demo previously emitted a `storage` stanza with **no**
+`redirect` key at all, leaving Distribution's default in force. It survived every prior run — including
+both `10/10`s — because `push` and `tags/list` never fetch blob bytes from the host client.
+
+**Live negative fixture (2026-07-30).** Against a local MinIO-backed `registry:2` running the demo's
+rendered config with the redirect stanza removed — i.e. exactly the pre-fix configuration — a blob `HEAD`
+answers:
+
+```text
+307  Location: http://<minio>:9000/registry/docker/registry/v2/blobs/sha256/ca/…?X-Amz-Algorithm=…
+```
+
+With the plan-rendered `redirect: disable: true`, the same request answers `200` with **no** `Location`.
+`settleBlobRoute` refuses the former against a proxying plan, so push admission refuses exactly the
+topology the sprint names.
+
+**`/v2/` no longer authorizes the push.** `push-image` now seeds a canary blob through the registry API
+and settles a real blob `HEAD` against the plan before tagging or pushing; `pushImageBlob` takes the
+`ReadyBlobRoute`, so a push without that proof does not type-check. Three API details were established
+empirically against a MinIO-backed `registry:2` rather than assumed, and each is recorded at its call
+site because each produced a silent or misleading failure first:
+
+- `POST …?digest=` answers `202` and stores **nothing** on `registry:2`, so a fail-fast check cannot tell
+  it from success and the later `HEAD` is a genuine `404`;
+- putting the bytes in the final `PUT` works on a filesystem-backed registry but fails on the S3 driver
+  with `InvalidRequest: You must specify at least one part`, so the `PATCH` step is mandatory;
+- curl's `-d` sends form encoding and the registry answers `bad Content-Type`; the header is written
+  without a space after the colon (which HTTP permits) so every argument stays space-free for the
+  host→guest quoting path (§ CC).
+
+The `Location` is parsed in Haskell — handling absolute and relative forms — rather than by a guest shell
+pipeline, and re-seeding the same canary is idempotent.
+
+**Real-run closure (2026-07-30).** On the native Linux CPU lane, `hostbootstrap-demo test run all`
+reported **`10/10 passed`** across both variants with
+`push-image: kind-loaded hostbootstrap-demo:local and pushed
+localhost:30500/library/hostbootstrap-demo:demo`. That line is reachable only through a settled
+`ReadyBlobRoute`, because `pushImageBlob` consumes it. Initial push, repeated push (the second variant
+re-pushes into the same MinIO-backed store), tag lookup, registry-pod recreation, and post-recreation
+lookup are all covered by the passing `registry-persistence` case on both variants, and no client-visible
+response carried a cluster-only MinIO location.
+
+Static gates (2026-07-30): core **744** and demo **110** under `-Werror`; `fourmolu --mode check app src`
+clean; the in-container `check-code` gate (`fourmolu`, `hlint`, `cabal -Werror`) passed inside the pulled
+published base.
 
 ## Documentation Requirements
 

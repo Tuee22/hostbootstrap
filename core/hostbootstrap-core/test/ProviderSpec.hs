@@ -28,7 +28,6 @@ handles =
         , vmhLima = LimaVM "demo-vm"
         , vmhWsl2 = Wsl2VM "demo-vm"
         , vmhGuardPrefix = "demo"
-        , vmhWslConfigPath = "C:\\Users\\me\\.wslconfig"
         }
 
 {- | Handles whose VM names do not carry the guard prefix, to prove a destroy is
@@ -124,21 +123,20 @@ launchCases =
                     , "root,size=80GiB"
                     ]
                 ]
-    , testCase "wsl2 launch merges the .wslconfig ceiling (+swap), shuts down, then installs with the VHDX cap" $
+    , testCase "wsl2 launch acquires the global wall (+swap), shuts down, then installs with the VHDX cap" $
         spLaunch windows env (Just windowsShare)
             @?= Right
-                [ MergeWslConfig
-                    "C:\\Users\\me\\.wslconfig"
+                [ ApplyGlobalWslWall
                     ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
                 , RunHostTool Wsl ["--shutdown"]
                 , RunHostTool
                     Wsl
                     ["--install", "-d", "Ubuntu-24.04", "--name", "demo-vm", "--no-launch", "--vhd-size", "80GB"]
                 ]
-    , testCase "lima/incus do not write any host file at launch; wsl2 merges .wslconfig" $ do
-        fmap (any isWrite) (spLaunch apple env (Just appleShare)) @?= Right False
-        fmap (any isWrite) (spLaunch linux env (Just linuxShare)) @?= Right False
-        fmap (any isWrite) (spLaunch windows env (Just windowsShare)) @?= Right True
+    , testCase "lima/incus acquire no global wall at launch; only wsl2 does" $ do
+        fmap (any isWall) (spLaunch apple env (Just appleShare)) @?= Right False
+        fmap (any isWall) (spLaunch linux env (Just linuxShare)) @?= Right False
+        fmap (any isWall) (spLaunch windows env (Just windowsShare)) @?= Right True
     , testCase "an omitted optional share preserves the former Lima launch argv" $
         spLaunch apple env Nothing
             @?= Right
@@ -168,11 +166,11 @@ launchCases =
         spStartExisting linux @?= [RunHostTool Incus ["start", "demo-vm"]]
     ]
   where
-    -- the WSL2 wall is a merge into the user's .wslconfig (never a clobber), so a
-    -- .wslconfig merge counts as a host-file write here.
-    isWrite (WriteHostFile _ _) = True
-    isWrite (MergeWslConfig _ _) = True
-    isWrite _ = False
+    -- Lima and Incus own per-VM walls, so their launch touches no global user
+    -- state; WSL2's only memory/CPU wall is the shared utility VM's .wslconfig.
+    isWall (ApplyGlobalWslWall _) = True
+    isWall (ReleaseGlobalWslWall _) = True
+    isWall _ = False
 
 shareCases :: [TestTree]
 shareCases =
@@ -227,34 +225,45 @@ shareCases =
 
 teardownCases :: [TestTree]
 teardownCases =
-    [ testCase "stop releases the wall per substrate (wsl2 restores .wslconfig first, then wsl --shutdown)" $ do
-        spStop apple @?= [RunHostTool Lima ["stop", "demo-vm"]]
-        spStop linux @?= [RunHostTool Incus ["stop", "demo-vm"]]
+    [ testCase "stop releases the wall per substrate (wsl2 releases .wslconfig first, then wsl --shutdown)" $ do
+        spStop apple env @?= Right [RunHostTool Lima ["stop", "demo-vm"]]
+        spStop linux env @?= Right [RunHostTool Incus ["stop", "demo-vm"]]
         -- WSL2 releases its global wall on `project down` like Lima/Incus: the
-        -- order is load-bearing (restore the uncordoned .wslconfig FIRST, then
+        -- order is load-bearing (release the uncordoned .wslconfig FIRST, then
         -- `wsl --shutdown` so the utility VM re-reads it on next cold boot), and
         -- it is `--shutdown` (whole utility VM, releases the wall) rather than
         -- `--terminate <distro>` (one distro, leaves the balloon pinned).
-        spStop windows
-            @?= [ RestoreHostFile "C:\\Users\\me\\.wslconfig"
+        spStop windows env
+            @?= Right
+                [ ReleaseGlobalWslWall
+                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
                 , RunHostTool Wsl ["--shutdown"]
                 ]
-    , testCase "guarded destroy emits the delete argv (and wsl2 restores .wslconfig)" $ do
-        spDestroy apple @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
-        spDestroy linux @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]
-        spDestroy windows
+    , testCase "the released wall names exactly the body the launch applied" $
+        fmap (filter isWall) (spStop windows env)
+            @?= fmap (map released . filter isWall) (spLaunch windows env (Just windowsShare))
+    , testCase "guarded destroy emits the delete argv (and wsl2 releases its wall)" $ do
+        spDestroy apple env @?= Right [RunHostTool Lima ["delete", "demo-vm", "--force"]]
+        spDestroy linux env @?= Right [RunHostTool Incus ["delete", "demo-vm", "--force"]]
+        spDestroy windows env
             @?= Right
                 [ RunHostTool Wsl ["--unregister", "demo-vm"]
-                , RestoreHostFile "C:\\Users\\me\\.wslconfig"
+                , ReleaseGlobalWslWall
+                    ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "memory=10GB", "swap=10GB", "vmIdleTimeout=21600000"]
                 ]
     , testCase "destroy refuses a VM name outside the guard prefix" $
         case selectSubstrateProvider (Substrate WindowsCpu Amd64) unguardedHandles of
             Left err -> assertBool ("expected a provider, got: " ++ err) False
-            Right sp -> assertBool "expected a guard refusal" (isLeft (spDestroy sp))
+            Right sp -> assertBool "expected a guard refusal" (isLeft (spDestroy sp env))
     ]
   where
     isLeft (Left _) = True
     isLeft _ = False
+    isWall (ApplyGlobalWslWall _) = True
+    isWall (ReleaseGlobalWslWall _) = True
+    isWall _ = False
+    released (ApplyGlobalWslWall body) = ReleaseGlobalWslWall body
+    released effect = effect
 
 probeCases :: [TestTree]
 probeCases =

@@ -17,6 +17,7 @@ module HostBootstrap.Context
     CommandClass (..),
     ContextFrame (..),
     ContextKind (..),
+    ContextPlacement (..),
     ContextRequirement (..),
     ProviderKind (..),
     ResourceEnvelope (..),
@@ -27,6 +28,12 @@ module HostBootstrap.Context
     defaultRoleName,
     contextForKind,
     addRole,
+    roleAdditionAllowed,
+    validateTopology,
+    placementFor,
+    contextPlacement,
+    requiredWitnesses,
+    contextRequiredWitnesses,
     hostOrchestratorContext,
     deriveVMContextWithProvider,
     deriveVMContext,
@@ -60,6 +67,7 @@ module HostBootstrap.Context
 where
 
 import Control.Exception (SomeException, try)
+import Data.Foldable (traverse_)
 import Data.List (find, union)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -242,25 +250,71 @@ contextForKind projectName binaryName root kind =
             }
         ],
       currentFrame = frameId,
-      runtimeWitnesses = runtimeWitnessesForKind kind frameId,
+      runtimeWitnesses = witnessesForFrame kind (providerForKind kind) Nothing frameId,
       capabilities = capabilitiesForKind kind,
       allowedCommandClasses = commandClassesForKind kind,
       childContextKinds = childKindsForKind kind
     }
 
--- | Grant a secondary role's authority to a context, so a single @<project>.dhall@
--- can declare **more than one role** (development_plan_standards § X) — e.g. a
--- project (deployment) authority that is also a @service@ authority. The primary
--- 'contextKind' and topology frame are unchanged; only the allowed command
--- classes and the local capabilities are unioned with the added role's, so each
--- command's gate ('commandAllowed') sees the capability it needs. Pure and
--- order-insensitive (idempotent when the role is already present).
-addRole :: ContextKind -> BinaryContext -> BinaryContext
-addRole role ctx =
-  ctx
-    { allowedCommandClasses = allowedCommandClasses ctx `union` commandClassesForKind role,
-      capabilities = capabilities ctx `union` capabilitiesForKind role
-    }
+{- | Grant a secondary role's authority to a context, so a single
+@<project>.dhall@ can declare **more than one runtime role**
+(development_plan_standards § X) — e.g. a cluster service that is also the
+project's daemon.
+
+This is a validating smart constructor, not a union. @alsoRoles@ reaches it from
+operator input, so an unchecked union would let a caller self-assert authority
+its placement cannot hold: a @Daemon@ primary could acquire
+@HostOrchestratorCommand@ and @ProjectCommand@ merely by naming
+@host-orchestrator@ as an extra role. 'roleAdditionAllowed' is the closed
+relation that forbids exactly that (§ 15.9).
+
+The primary 'contextKind' and topology frame are unchanged; only the allowed
+command classes and local capabilities are unioned, and only for a permitted
+pair. Pure and order-insensitive, and idempotent when the role is already the
+primary.
+-}
+addRole :: ContextKind -> BinaryContext -> Either BinaryContextError BinaryContext
+addRole role ctx
+  | role == contextKind ctx = Right ctx
+  | not (roleAdditionAllowed (contextKind ctx) role) =
+      Left (ContextRoleAdditionRefused (contextKind ctx) role)
+  | otherwise =
+      Right
+        ctx
+          { allowedCommandClasses = allowedCommandClasses ctx `union` commandClassesForKind role,
+            capabilities = capabilities ctx `union` capabilitiesForKind role
+          }
+
+{- | The closed relation of permitted (primary, additional) role pairs.
+
+Two rules, both from § 15.9's deliverable:
+
+* a **non-leaf** primary — one that can own child frames — cannot acquire
+  service-run authority, because a frame that orchestrates children is not the
+  leaf a service role is served from;
+* a role may not contribute a command class the primary's own placement does not
+  already justify. That is what stops @Daemon@ and @ImageBuildContainer@
+  primaries from becoming project/lifecycle authorities by unioning
+  @ClusterLifecycleCommand@ or @HostOrchestratorCommand@.
+
+The surviving legal case is therefore leaf-to-leaf: a service placement may also
+serve another service role in the same frame.
+-}
+roleAdditionAllowed :: ContextKind -> ContextKind -> Bool
+roleAdditionAllowed primary role =
+  isLeafPlacement primary
+    && isServiceRole role
+    && isServiceRole primary
+
+-- | A placement that owns no child frames.
+isLeafPlacement :: ContextKind -> Bool
+isLeafPlacement = null . childKindsForKind
+
+-- | A role whose authority is served from a leaf frame.
+isServiceRole :: ContextKind -> Bool
+isServiceRole ClusterService = True
+isServiceRole Daemon = True
+isServiceRole _ = False
 
 -- | Construct a host-orchestrator context.
 hostOrchestratorContext :: Text -> Text -> Text -> BinaryContext
@@ -301,23 +355,15 @@ deriveContainerContext parent root =
 -- VM-backed runtime containers still require a VM ancestor.
 deriveLinuxGpuContainerContext :: BinaryContext -> Text -> BinaryContext
 deriveLinuxGpuContainerContext parent root =
-  let frameId = generatedFrameId VMProjectContainer (length (topologyFrames parent))
-      role = "linux-gpu-project-container"
-      witnesses =
-        [ RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" "",
-          RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId,
-          directLinuxGpuWitness
-        ]
-   in childContextWith
-        parent
-        root
-        VMProjectContainer
-        DockerContainerProvider
-        role
-        witnesses
-        (capabilitiesForKind VMProjectContainer)
-        (commandClassesForKind VMProjectContainer)
-        (childKindsForKind VMProjectContainer)
+  childContextWith
+    parent
+    root
+    VMProjectContainer
+    DockerContainerProvider
+    "linux-gpu-project-container"
+    (capabilitiesForKind VMProjectContainer)
+    (commandClassesForKind VMProjectContainer)
+    (childKindsForKind VMProjectContainer)
 
 -- | Derive a cluster-service context from its parent.
 deriveServiceContext :: BinaryContext -> Text -> BinaryContext
@@ -396,33 +442,24 @@ childContext ::
   [ContextKind] ->
   BinaryContext
 childContext parent root kind provider caps classes childKinds =
-  childContextWith
-    parent
-    root
-    kind
-    provider
-    (defaultRoleName kind)
-    (runtimeWitnessesForKind kind frameId)
-    caps
-    classes
-    childKinds
-  where
-    frameId = generatedFrameId kind (length (topologyFrames parent))
+  childContextWith parent root kind provider (defaultRoleName kind) caps classes childKinds
 
+-- | Derive a child context, projecting the required-witness set for the child's
+-- own placement (§ 15.9) rather than accepting a caller-supplied witness list.
 childContextWith ::
   BinaryContext ->
   Text ->
   ContextKind ->
   ProviderKind ->
   Text ->
-  [RuntimeWitness] ->
   [Capability] ->
   [CommandClass] ->
   [ContextKind] ->
   BinaryContext
-childContextWith parent root kind provider role witnesses caps classes childKinds =
+childContextWith parent root kind provider role caps classes childKinds =
   let frameId = generatedFrameId kind (length (topologyFrames parent))
       parentFrame = currentFrame parent
+      witnesses = witnessesForFrame kind provider (Just (contextKind parent)) frameId
    in
   BinaryContext
     { project = project parent,
@@ -450,25 +487,15 @@ childContextWith parent root kind provider role witnesses caps classes childKind
 
 childDaemonContext :: BinaryContext -> Text -> ProviderKind -> BinaryContext
 childDaemonContext parent root provider =
-  let frameId = generatedFrameId Daemon (length (topologyFrames parent))
-      witnesses =
-        case provider of
-          KubernetesProvider ->
-            [ RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" "",
-              RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId
-            ]
-          _ ->
-            [RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId]
-   in childContextWith
-        parent
-        root
-        Daemon
-        provider
-        (defaultRoleName Daemon)
-        witnesses
-        (capabilitiesForKind Daemon)
-        (commandClassesForKind Daemon)
-        (childKindsForKind Daemon)
+  childContextWith
+    parent
+    root
+    Daemon
+    provider
+    (defaultRoleName Daemon)
+    (capabilitiesForKind Daemon)
+    (commandClassesForKind Daemon)
+    (childKindsForKind Daemon)
 
 capabilitiesForKind :: ContextKind -> [Capability]
 capabilitiesForKind HostOrchestrator = [HostTools, IncusProvider]
@@ -549,19 +576,106 @@ providerForKind Daemon = HostProvider
 providerForKind OneShotJob = DockerContainerProvider
 providerForKind TestHarness = DockerContainerProvider
 
-runtimeWitnessesForKind :: ContextKind -> Text -> [RuntimeWitness]
-runtimeWitnessesForKind VMOrchestrator _ =
-  [RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" ""]
-runtimeWitnessesForKind VMProjectContainer frameId =
-  [ RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" "",
-    RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" "",
-    RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId
-  ]
-runtimeWitnessesForKind ClusterService _ =
-  [RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""]
-runtimeWitnessesForKind Daemon frameId =
-  [RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" frameId]
-runtimeWitnessesForKind _ _ = []
+{- | The closed placement discriminator the required-witness relation is indexed
+by (§ 15.9).
+
+A placement is not a 'ContextKind'. It is the exact (primary kind, owning
+provider, structural position) triple that determines which local runtime facts
+must hold, so two frames that share a kind but sit in different substrates —
+a Kubernetes daemon pod versus a host-resident daemon, a VM-backed project
+container versus the direct Linux GPU one — are separate placements with
+separate required sets.
+
+It is derived from the *validated topology graph*, never from the declared
+witness list, so a config cannot select a weaker placement by editing the facts
+it claims.
+-}
+data ContextPlacement
+  = HostOrchestratorPlacement
+  | -- | indexed by the VM provider that owns the frame
+    VMOrchestratorPlacement ProviderKind
+  | VMBackedProjectContainerPlacement
+  | -- | @host -> docker project container -> nvkind@, with no VM between
+    DirectLinuxGpuContainerPlacement
+  | ImageBuildContainerPlacement
+  | ClusterServicePlacement
+  | ClusterDaemonPlacement
+  | HostDaemonPlacement
+  | OneShotJobPlacement
+  | TestHarnessPlacement
+  deriving (Eq, Show)
+
+{- | The closed (kind, provider, parent kind) → placement relation.
+
+'Nothing' means the pair is not a legal placement at all — for example a
+@ClusterService@ frame claiming @HostProvider@ — and 'validateTopology' refuses
+such a frame with 'ContextTopologyIllegalProvider' rather than guessing a
+required set for it.
+
+The parent kind discriminates only where it must: a Docker project container
+whose parent is the host orchestrator is the explicit direct Linux GPU lane,
+while one under a VM orchestrator is the ordinary VM-backed container. A
+standalone container with no parent is treated as VM-backed and then refused by
+'requiredAncestorError'.
+-}
+placementFor :: ContextKind -> ProviderKind -> Maybe ContextKind -> Maybe ContextPlacement
+placementFor kind provider parentKind = case (kind, provider) of
+  (HostOrchestrator, HostProvider) -> Just HostOrchestratorPlacement
+  (VMOrchestrator, IncusVMProvider) -> Just (VMOrchestratorPlacement IncusVMProvider)
+  (VMOrchestrator, LimaVMProvider) -> Just (VMOrchestratorPlacement LimaVMProvider)
+  (VMOrchestrator, Wsl2VMProvider) -> Just (VMOrchestratorPlacement Wsl2VMProvider)
+  (VMProjectContainer, DockerContainerProvider)
+    | parentKind == Just HostOrchestrator -> Just DirectLinuxGpuContainerPlacement
+    | otherwise -> Just VMBackedProjectContainerPlacement
+  (ImageBuildContainer, DockerContainerProvider) -> Just ImageBuildContainerPlacement
+  (ClusterService, KubernetesProvider) -> Just ClusterServicePlacement
+  (Daemon, KubernetesProvider) -> Just ClusterDaemonPlacement
+  (Daemon, HostProvider) -> Just HostDaemonPlacement
+  (OneShotJob, DockerContainerProvider) -> Just OneShotJobPlacement
+  (TestHarness, DockerContainerProvider) -> Just TestHarnessPlacement
+  _ -> Nothing
+
+{- | The exact set of locally checkable runtime facts a placement requires.
+
+This is the single definition of the relation: the child-context constructors
+project it into the generated config, and 'validateContext' re-derives it from
+the topology and requires the declared list to equal it exactly. There is no
+second hand-written witness table.
+-}
+requiredWitnesses :: ContextPlacement -> Text -> [RuntimeWitness]
+requiredWitnesses HostOrchestratorPlacement _ = []
+requiredWitnesses (VMOrchestratorPlacement _) _ = [vmProviderWitness]
+requiredWitnesses VMBackedProjectContainerPlacement frameId =
+  [dockerSocketWitness, vmProviderWitness, currentFrameWitness frameId]
+requiredWitnesses DirectLinuxGpuContainerPlacement frameId =
+  [dockerSocketWitness, currentFrameWitness frameId, directLinuxGpuWitness]
+requiredWitnesses ImageBuildContainerPlacement _ = []
+requiredWitnesses ClusterServicePlacement _ = [serviceAccountWitness]
+requiredWitnesses ClusterDaemonPlacement frameId =
+  [serviceAccountWitness, currentFrameWitness frameId]
+requiredWitnesses HostDaemonPlacement frameId = [currentFrameWitness frameId]
+requiredWitnesses OneShotJobPlacement _ = []
+requiredWitnesses TestHarnessPlacement _ = []
+
+-- | The required set for a frame described by its kind, provider, parent kind
+-- and identifier. An illegal pair contributes no witnesses; 'validateTopology'
+-- refuses the frame itself.
+witnessesForFrame :: ContextKind -> ProviderKind -> Maybe ContextKind -> Text -> [RuntimeWitness]
+witnessesForFrame kind provider parentKind frameId =
+  maybe [] (`requiredWitnesses` frameId) (placementFor kind provider parentKind)
+
+vmProviderWitness :: RuntimeWitness
+vmProviderWitness = RuntimeWitness WitnessFileExists "/run/hostbootstrap/vm-provider" ""
+
+dockerSocketWitness :: RuntimeWitness
+dockerSocketWitness = RuntimeWitness WitnessUnixSocket "/var/run/docker.sock" ""
+
+serviceAccountWitness :: RuntimeWitness
+serviceAccountWitness =
+  RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""
+
+currentFrameWitness :: Text -> RuntimeWitness
+currentFrameWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME"
 
 directLinuxGpuWitness :: RuntimeWitness
 directLinuxGpuWitness =
@@ -600,6 +714,30 @@ data BinaryContextError
   | ContextCommandNotAllowed CommandClass ContextKind
   | ContextCapabilityMissing Capability
   | ContextRuntimeWitnessFailed RuntimeWitness String
+  | -- | two topology frames declare the same identifier
+    ContextTopologyDuplicateFrame Text
+  | -- | a frame identifier is empty
+    ContextTopologyEmptyFrameId
+  | -- | the topology has no root frame, or more than one
+    ContextTopologyRootCount Int
+  | -- | following parents from this frame revisits it
+    ContextTopologyCycle Text
+  | -- | a frame is not reachable from the root
+    ContextTopologyUnreachable Text
+  | -- | a child frame's kind is not a legal child of its parent's kind
+    ContextTopologyIllegalChild Text ContextKind ContextKind
+  | -- | the declared @parentChain@ disagrees with the edge-derived ancestry
+    ContextParentChainMismatch [ContextKind] [ContextKind]
+  | -- | this primary kind may not union that role's authority
+    ContextRoleAdditionRefused ContextKind ContextKind
+  | -- | a frame's kind cannot be owned by the provider it declares
+    ContextTopologyIllegalProvider Text ContextKind ProviderKind
+  | -- | the declared witness list is not the exact set this placement requires:
+    -- @missing@ then @unexpected@
+    ContextWitnessSetMismatch [RuntimeWitness] [RuntimeWitness]
+  | -- | two declared witnesses share a kind and name, so the list is duplicated
+    -- or self-contradictory
+    ContextWitnessDuplicate RuntimeWitness
   deriving (Eq, Show)
 
 -- | Decode a context from Dhall source text. Throws a Dhall exception on
@@ -661,7 +799,11 @@ validateContext req ctx
   | Just frame <- currentTopologyFrame ctx,
     topologyKind frame /= contextKind ctx =
       Left (ContextCurrentFrameKindMismatch (currentFrame ctx) (contextKind ctx) (topologyKind frame))
+  | Left err <- validateTopology ctx =
+      Left err
   | Left err <- ancestorKinds ctx =
+      Left err
+  | Left err <- checkWitnessSet ctx =
       Left err
   | not (commandAllowed ctx (requiredCommandClass req)) =
       Left (ContextCommandNotAllowed (requiredCommandClass req) (contextKind ctx))
@@ -672,9 +814,205 @@ validateContext req ctx
       Left err
   | otherwise = Right ctx
 
+{- | The one total graph validator every decoded topology passes before any
+command is authorized (§ 15.9).
+
+A decoded @<project>.dhall@ is untrusted input, so the frame list is checked as
+a graph rather than trusted as one: identifiers are non-empty and unique, every
+non-root frame resolves to exactly one declared parent, there is exactly one
+root, no parent walk revisits a frame, every frame is reachable from the root,
+each child's kind is a legal child of its parent's kind, and the declared
+@parentChain@ agrees with the ancestry the edges actually describe.
+
+The cycle check is load-bearing rather than defensive: the ancestor walk follows
+@topologyParentId@ with no memory of where it has been, so a topology whose
+frames name each other as parents would loop forever. A hand-edited or
+maliciously supplied config could reach it. Here every traversal carries a
+visited set and terminates.
+-}
+validateTopology :: BinaryContext -> Either BinaryContextError ()
+validateTopology ctx = do
+  traverse_ requireFrameId frames
+  traverse_ requireUniqueId ids
+  root <- requireSingleRoot
+  traverse_ requireResolvableParent frames
+  traverse_ (requireAcyclic []) frames
+  reachable <- Right (descendantsOf root)
+  traverse_ (requireReachable reachable) ids
+  traverse_ requireLegalChild frames
+  traverse_ requireLegalProvider frames
+  requireParentChainAgrees
+  where
+    frames = topologyFrames ctx
+    ids = map topologyFrameId frames
+
+    requireFrameId frame
+      | T.null (topologyFrameId frame) = Left ContextTopologyEmptyFrameId
+      | otherwise = Right ()
+
+    requireUniqueId frameId
+      | length (filter (== frameId) ids) > 1 =
+          Left (ContextTopologyDuplicateFrame frameId)
+      | otherwise = Right ()
+
+    roots = [frame | frame <- frames, T.null (topologyParentId frame)]
+
+    requireSingleRoot = case roots of
+      [root] -> Right root
+      other -> Left (ContextTopologyRootCount (length other))
+
+    frameById frameId = find ((== frameId) . topologyFrameId) frames
+
+    requireResolvableParent frame
+      | T.null (topologyParentId frame) = Right ()
+      | Just _ <- frameById (topologyParentId frame) = Right ()
+      | otherwise =
+          Left
+            ( ContextTopologyParentMissing
+                (topologyFrameId frame)
+                (topologyParentId frame)
+            )
+
+    -- Walk to the root carrying every frame already seen, so a cycle is a
+    -- structured refusal instead of a hang.
+    requireAcyclic seen frame
+      | topologyFrameId frame `elem` seen =
+          Left (ContextTopologyCycle (topologyFrameId frame))
+      | T.null (topologyParentId frame) = Right ()
+      | otherwise =
+          case frameById (topologyParentId frame) of
+            Nothing -> Right ()
+            Just parent -> requireAcyclic (topologyFrameId frame : seen) parent
+
+    descendantsOf root = go [] [topologyFrameId root]
+      where
+        go acc [] = acc
+        go acc (frameId : rest)
+          | frameId `elem` acc = go acc rest
+          | otherwise =
+              let children =
+                    [ topologyFrameId child
+                    | child <- frames
+                    , topologyParentId child == frameId
+                    ]
+               in go (frameId : acc) (children ++ rest)
+
+    requireReachable reachable frameId
+      | frameId `elem` reachable = Right ()
+      | otherwise = Left (ContextTopologyUnreachable frameId)
+
+    requireLegalChild frame
+      | T.null (topologyParentId frame) = Right ()
+      | otherwise =
+          case frameById (topologyParentId frame) of
+            Nothing -> Right ()
+            Just parent
+              | topologyKind frame `elem` childKindsForKind (topologyKind parent) ->
+                  Right ()
+              -- The direct Linux GPU lane really does hang a project container
+              -- off the host orchestrator with no VM between them. That edge is
+              -- structurally permitted here and policed by
+              -- 'requiredAncestorError', which refuses it unless the explicit
+              -- direct-container witness is present — so the refusal keeps its
+              -- specific diagnostic instead of being masked by a generic
+              -- illegal-child error.
+              | topologyKind parent == HostOrchestrator
+              , topologyKind frame == VMProjectContainer ->
+                  Right ()
+              | otherwise ->
+                  Left
+                    ( ContextTopologyIllegalChild
+                        (topologyFrameId frame)
+                        (topologyKind parent)
+                        (topologyKind frame)
+                    )
+
+    -- A frame's provider is part of its placement (§ 15.9), so a kind the
+    -- provider cannot own — a cluster service claiming @HostProvider@, say — is
+    -- refused here rather than silently receiving some other placement's
+    -- required-witness set.
+    requireLegalProvider frame
+      | Just _ <- placementFor (topologyKind frame) (topologyProvider frame) parentKind =
+          Right ()
+      | otherwise =
+          Left
+            ( ContextTopologyIllegalProvider
+                (topologyFrameId frame)
+                (topologyKind frame)
+                (topologyProvider frame)
+            )
+      where
+        parentKind = topologyKind <$> frameById (topologyParentId frame)
+
+    requireParentChainAgrees =
+      case ancestorKinds ctx of
+        Left err -> Left err
+        Right derived
+          | declared == derived -> Right ()
+          | otherwise -> Left (ContextParentChainMismatch declared derived)
+      where
+        declared = map frameKind (parentChain ctx)
+
 currentTopologyFrame :: BinaryContext -> Maybe TopologyFrame
 currentTopologyFrame ctx =
   find ((== currentFrame ctx) . topologyFrameId) (topologyFrames ctx)
+
+parentFrameOf :: BinaryContext -> TopologyFrame -> Maybe TopologyFrame
+parentFrameOf ctx frame =
+  find ((== topologyParentId frame) . topologyFrameId) (topologyFrames ctx)
+
+-- | The placement the current frame occupies, derived from the topology graph
+-- alone. A frame whose kind and provider are not a legal pair has no placement.
+contextPlacement :: BinaryContext -> Either BinaryContextError ContextPlacement
+contextPlacement ctx = do
+  frame <-
+    maybe (Left (ContextCurrentFrameMissing (currentFrame ctx))) Right (currentTopologyFrame ctx)
+  let parentKind = topologyKind <$> parentFrameOf ctx frame
+  maybe
+    ( Left
+        ( ContextTopologyIllegalProvider
+            (topologyFrameId frame)
+            (topologyKind frame)
+            (topologyProvider frame)
+        )
+    )
+    Right
+    (placementFor (topologyKind frame) (topologyProvider frame) parentKind)
+
+-- | The exact runtime-witness set the current frame's placement requires.
+contextRequiredWitnesses :: BinaryContext -> Either BinaryContextError [RuntimeWitness]
+contextRequiredWitnesses ctx =
+  (\placement -> requiredWitnesses placement (currentFrame ctx)) <$> contextPlacement ctx
+
+{- | Require the declared witness list to be exactly the set this placement
+demands (§ 15.9).
+
+Before this check the declared list was the only authority: validation verified
+whatever a decoded @<project>.dhall@ happened to claim, so an **empty** or
+trimmed list verified nothing and still authorized the command. The required set
+is now re-derived from the validated topology and compared exactly, so a
+missing, extra, irrelevant, duplicated, or self-contradictory entry refuses the
+context instead of weakening it.
+
+Duplicates are keyed on (kind, name) rather than the whole witness, which is
+what makes a *contradictory* pair — the same environment variable required to
+equal two different values — a refusal rather than a list one of whose members
+happens to hold.
+-}
+checkWitnessSet :: BinaryContext -> Either BinaryContextError ()
+checkWitnessSet ctx = do
+  required <- contextRequiredWitnesses ctx
+  let declared = runtimeWitnesses ctx
+      key w = (witnessKind w, witnessName w)
+      duplicated = filter (\w -> length (filter ((== key w) . key) declared) > 1) declared
+      missing = filter (`notElem` declared) required
+      unexpected = filter (`notElem` required) declared
+  case duplicated of
+    (w : _) -> Left (ContextWitnessDuplicate w)
+    [] ->
+      if null missing && null unexpected
+        then Right ()
+        else Left (ContextWitnessSetMismatch missing unexpected)
 
 ancestorKinds :: BinaryContext -> Either BinaryContextError [ContextKind]
 ancestorKinds ctx =
@@ -698,26 +1036,36 @@ requiredAncestorError ctx ancestors =
       | otherwise -> Just (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
     _ -> Nothing
 
+{- | Whether the current frame is the explicit direct Linux GPU project
+container — the one lane that legitimately hangs a container off the host
+orchestrator with no VM between them.
+
+This is a **structural** question about the validated topology, not a claim the
+config makes. It previously required @directLinuxGpuWitness@ to appear in the
+declared 'runtimeWitnesses', which meant a hand-edited config could opt out of
+the VM-ancestor requirement simply by listing that witness. The placement is now
+derived from the graph, and the witness is instead *required* by that placement
+('requiredWitnesses') and verified against the real environment by
+'validateRuntimeContext'.
+-}
 isExplicitLinuxGpuContainer :: BinaryContext -> Bool
 isExplicitLinuxGpuContainer ctx =
-  directLinuxGpuWitness `elem` runtimeWitnesses ctx
-    && case currentTopologyFrame ctx of
-      Just frame
-        | topologyKind frame == VMProjectContainer,
-          topologyProvider frame == DockerContainerProvider ->
-            case find ((== topologyParentId frame) . topologyFrameId) (topologyFrames ctx) of
-              Just parent -> topologyKind parent == HostOrchestrator
-              Nothing -> False
-      _ -> False
+  contextPlacement ctx == Right DirectLinuxGpuContainerPlacement
 
--- | Validate both the pure context structure and the locally checkable runtime
--- witnesses in the decoded context.
+{- | Validate the pure context structure, then verify every member of the
+required-witness set against the real local environment.
+
+The set checked here is the one 'contextRequiredWitnesses' derives from the
+placement, not the list the config declares. 'validateContext' has already
+proved the two are equal, so this is the same set — but deriving it keeps the
+authority on the closed relation rather than on untrusted input.
+-}
 validateRuntimeContext :: ContextRequirement -> BinaryContext -> IO (Either BinaryContextError BinaryContext)
 validateRuntimeContext req ctx =
-  case validateContext req ctx of
+  case validateContext req ctx >>= \ok -> (,) ok <$> contextRequiredWitnesses ok of
     Left err -> pure (Left err)
-    Right ok -> do
-      witnessResults <- traverse checkRuntimeWitness (runtimeWitnesses ok)
+    Right (ok, required) -> do
+      witnessResults <- traverse checkRuntimeWitness required
       pure $ case findLeft witnessResults of
         Just err -> Left err
         Nothing -> Right ok
@@ -817,12 +1165,60 @@ contextErrorMessage err =
       "binary context: topology frame " ++ txt child ++ " references missing parent " ++ txt parent
     ContextRequiredAncestorMissing kind required ->
       "binary context: " ++ show kind ++ " requires ancestor " ++ show required
+    ContextTopologyDuplicateFrame frame ->
+      "binary context: topology declares frame " ++ txt frame ++ " more than once"
+    ContextTopologyEmptyFrameId ->
+      "binary context: a topology frame has an empty identifier"
+    ContextTopologyRootCount count ->
+      "binary context: topology must have exactly one root frame, found "
+        ++ show count
+    ContextTopologyCycle frame ->
+      "binary context: topology parent chain revisits frame " ++ txt frame
+    ContextTopologyUnreachable frame ->
+      "binary context: topology frame " ++ txt frame ++ " is not reachable from the root"
+    ContextTopologyIllegalChild frame parent child ->
+      "binary context: topology frame "
+        ++ txt frame
+        ++ " declares kind "
+        ++ show child
+        ++ ", which is not a legal child of "
+        ++ show parent
+    ContextParentChainMismatch declared derived ->
+      "binary context: declared parentChain "
+        ++ show declared
+        ++ " disagrees with the topology edges "
+        ++ show derived
+    ContextRoleAdditionRefused primary role ->
+      "binary context: a "
+        ++ show primary
+        ++ " placement may not acquire "
+        ++ show role
+        ++ " authority"
     ContextCommandNotAllowed cls kind ->
       "binary context: command " ++ show cls ++ " is not allowed in " ++ show kind
     ContextCapabilityMissing cap ->
       "binary context: missing capability " ++ show cap
     ContextRuntimeWitnessFailed witness detail ->
       "binary context: runtime witness " ++ show (witnessKind witness) ++ " failed for " ++ txt (witnessName witness) ++ ": " ++ detail
+    ContextTopologyIllegalProvider frame kind provider ->
+      "binary context: topology frame "
+        ++ txt frame
+        ++ " declares kind "
+        ++ show kind
+        ++ ", which cannot be owned by "
+        ++ show provider
+    ContextWitnessSetMismatch missing unexpected ->
+      "binary context: declared runtimeWitnesses are not this placement's required set"
+        ++ describe "missing" missing
+        ++ describe "unexpected" unexpected
+    ContextWitnessDuplicate witness ->
+      "binary context: runtimeWitnesses declare "
+        ++ show (witnessKind witness)
+        ++ " "
+        ++ txt (witnessName witness)
+        ++ " more than once"
   where
+    describe _ [] = ""
+    describe label ws = "; " ++ label ++ " " ++ show (map witnessName ws)
     txt = T.unpack
     firstLine = takeWhile (/= '\n')

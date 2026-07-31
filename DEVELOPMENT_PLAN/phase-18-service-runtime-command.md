@@ -83,6 +83,21 @@ The Windows GPU host-daemon lane is closed by the dated 2026-07-23 Windows/WSL2 
 the host worker, CBOR WebSocket path, browser result, and backend/artifact metadata. Windows is not part of
 this phase's remaining work.
 
+**Native Linux CPU lane closed 2026-07-29.** `hostbootstrap-demo test run all` reported **`10/10 passed`**
+on a genuinely `linux-cpu`-detecting host (a fresh Ubuntu 24.04 Incus VM, whose kernel carries no NVIDIA
+markers and no `nvidia-smi`, with the demo's own Incus VM nested inside it). The run brought up the
+VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registry, `push-image`,
+`expose-port: web service reachable at http://localhost:30080/`, and
+`deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)`,
+with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
+`durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
+that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
+**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+
+The lane requirement above is stated as `8/8` (four cases across two variants); the matrix has since grown
+to five cases, so `10/10` is that same requirement at the current matrix size, not a different gate.
+
+
 **Validated service dispatch — blocked (Sprint 18.6).** Replace arbitrary string selection and
 double-read handlers with a config/frame/registry-indexed existential `SelectedService` package, exact
 service authority, one immutable config-derived role payload, and command-specific missing-config
@@ -310,6 +325,15 @@ Historical local-worker evidence is retained: on 2026-07-10 the guarded `Acceler
 the CUDA worker on the RTX 3090 with `nvcc -ccbin <msvc>` and returned `Right 3.75` (the then-current gate
 reported 46 demo tests). That proves the native worker path used in that run; it is not a live daemon
 socket, lifecycle, or browser-matrix result.
+
+**Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
+across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
+recorded once with
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
+
+That run is the first live native Linux GPU daemon result: the daemon rolled out in-cluster, built its
+CUDA worker, and served the browser Add workflow over the private listener on both variants. The native
+Apple Silicon and native Linux **CPU** accelerator lanes remain open.
 
 The phase remains Active only for native Apple Silicon host-daemon and Linux CPU/GPU in-cluster real
 socket/browser closure. The Windows GPU host-daemon lane closed on the dated 2026-07-23 `8/8` run; that

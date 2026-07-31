@@ -57,8 +57,8 @@
    extends the chain and the step vocabulary (the lift-chain stream of the extension-stream contract; see
    [library_hierarchy](../architecture/library_hierarchy.md)).
 4. **Let the interpreter cross boundaries.** Each descent is fractal bootstrap: provision the frame, build
-   or install the binary in it, then hand off `pb project up` into the next frame. The consumer attaches a
-   per-frame lift-context resolver once with `setFrameContext`; the core lift folds the self-invocation
+   or install the binary in it, then hand off `pb project up` into the next frame. The consumer declares
+   each boundary on the step that owns it with `Step.descendsVia`; the core lift folds the self-invocation
    (`incus exec <vm> -- <pb> project up` into the VM, then a local `docker run --rm <image> project up`
    into the container). Each binary hands off only to its immediate next frame, so one one-level lift per
    transition stands up the whole stack. See
@@ -83,9 +83,9 @@
    to `projectSpec`; core concatenates `coreArtifacts` exactly once. Prefer `artifactOf`, but recognize
    that the current public `ConfigArtifact` constructor can still pair arbitrary schema/render text and
    carries no decoder proof. Embed `Core.dhall` for any new step parameters, provider kinds, or witness
-   kinds the chain introduces. In the current demo `contextInitStep` is an announcing frame anchor;
-   composite bootstrap, `psFrameContext`/handoff, and deployment actions perform child
-   projection/delivery. The target assigns those effects to one plan operation. See
+   kinds the chain introduces. In the current demo `contextInitStep`'s action body only announces its
+   frame anchor, while the descent it declares carries the container payload; composite bootstrap, that
+   declared descent plus the handoff, and deployment actions perform child projection/delivery. The target assigns those effects to one plan operation. See
    [config_generation](config_generation.md) and
    [dhall_topology](dhall_topology.md).
 
@@ -112,8 +112,8 @@ accelerator     selected frame                     -- after ingress: host post-h
 
 The metal binary's `buildPbStep` runs `pristine-bootstrap`: it stages the source into the VM, builds the
 demo binary host-native (build #2), and builds the project image FROM the published base (build #3), all
-in the VM. `psFrameContext` derives the project-container child `<project>.dhall`, the handoff streams
-it, and the current `contextInitStep` action only announces that boundary. The container steps
+in the VM. The descent `contextInitStep` declares carries the project-container child
+`<project>.dhall`, the handoff streams it, and that step's action body only announces the boundary. The container steps
 stand up the persistent stack: `deployKindStep` brings up the cordoned kind cluster on the VM's Docker,
 `projectStep "deploy-minio"` establishes registry backing, and `projectStep "deploy-registry"` /
 `projectStep "push-image"` are the demo's own workload kinds in the same
@@ -126,7 +126,8 @@ selected accelerator step run: a host-frame `postHandoffStep` on Apple/Windows, 
 stronger typed restart/idempotence guarantee remains target work.
 
 Current `project down`/`destroy` do not walk the same chain recursively. They perform owning
-current-frame cluster cleanup and invoke a project teardown hook, which may stop or delete the provider.
+the verb's reverse projection of the one plan: current-frame cluster cleanup plus the reverse each
+acquiring node declared, which may stop or delete the provider.
 Cluster teardown never places the plan's data path in its removal set. The demo's `.data` is a host
 directory carried into the provider, not guest-only disk state, but destroy/up/readback has not yet been
 validated. Typed idempotence, child-to-parent teardown, and ownership-receipt cleanup are targets. See
@@ -154,9 +155,11 @@ teardown leaves the plan's `.data` path out of its removal set (see
 ## Current Status
 
 `hostbootstrap-core` exposes exactly `project`, `test`, `service`, `context`, and `check-code`. The
-consumer's contribution is additive `cfg -> [Step]` fragments plus project step actions; the demo supplies
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]` in `demo/src/HostBootstrapDemo/Commands.hs`, wired
-into the builder with `addSteps`, `setFrameContext`, `setTeardown`, and `finalizeProjectSpec`.
+consumer's contribution is additive root-bound `CanonicalProjectRoot -> cfg -> [Step]` fragments plus
+project step actions; the demo supplies
+`demoChainFor :: Substrate -> CanonicalProjectRoot rootScope rootId -> ProjectConfig configScope -> [Step]`
+in `demo/src/HostBootstrapDemo/Commands.hs`, wired into the builder with `addSteps` and
+`finalizeProjectSpec`.
 `project up` is recursive; `down`/`destroy` are current-frame cleanup plus a hook. The read-only `context` introspection
 (`inspect`/`path`/`show`/`schema`/`render`, where `inspect` renders the lift composition with the current
 frame marked), and the `test init` / `test run <case-id>|all` split are implemented. Current live
@@ -173,8 +176,8 @@ same `project up`** under a test config rather than standing up a separate per-c
 Under
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md) a project supplies
 the generic `ProjectSpec projectId cfg tcfg` seams — one restricted `psAssemble`, separate
-`psTestInit`, typed service registry, and one per-frame lift-context resolver
-over `cfg (Production projectId)`. The
+`psTestInit`, and a typed service registry over `cfg (Production projectId)`. Each frame's lift context
+is not one of those seams: it is declared on the plan node that owns the boundary. The
 matching teardown seam receives the same opaque root authority, so direct-host adapters do not reconstruct
 it from descriptive `sourceRoot`. The demo's assembler carries its own defaults, including `message =
 "Hello, world!"`, on the demo's OWN scope-indexed config family — core owns no project-specific field and

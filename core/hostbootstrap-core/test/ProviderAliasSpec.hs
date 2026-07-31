@@ -13,7 +13,9 @@ import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Readiness
+import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Reconcile
+import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (Substrate), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider
@@ -24,6 +26,7 @@ import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
+import PrepareFixture (gateFor)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -410,33 +413,53 @@ withPreparedAliasFixtureFor ::
       Either ReconcileError summary
     ) ->
     IO (Either ReconcileError summary)
-withPreparedAliasFixtureFor spec shareObservationVersion consume =
-    case fixtureAction of
-        Left err -> pure (Left err)
-        Right action -> action
+withPreparedAliasFixtureFor spec shareObservationVersion consume = do
+    providerGate <- gateFor testPlanDigest "core:deploy-vm"
+    shareGate <- gateFor testPlanDigest "core:copy-source"
+    aliasGate <- gateFor testPlanDigest "core:deploy-vm/core:copy-source/guest-alias"
+    joinIO (fixtureAction providerGate shareGate aliasGate)
   where
-    fixtureAction =
+    fixtureAction providerGate shareGate aliasGate =
         withTestLifecyclePlan $ \plan ->
             joinReconcile $
                 withPlannedResourceOfKind plan ProviderResourceKind "core:deploy-vm" $ \provider ->
                     joinReconcile $
                         withPlannedResourceOfKind plan DurableShareResourceKind "core:copy-source" $ \share ->
                             joinReconcile $
-                                withManagedProvider plan provider $ \managedProvider ->
-                                    joinReconcile $
-                                        withManagedShare plan share managedProvider $ \managedShare ->
-                                            joinReconcile $
-                                                withProviderGuestAliasProjection plan provider share $ \alias edge ->
-                                                    withObservedPlannedResource plan alias 23 29 $ \aliasHandle ->
-                                                        runReadyProbe
-                                                            plan
-                                                            share
-                                                            alias
-                                                            edge
-                                                            aliasHandle
-                                                            managedShare
+                                withManagedProvider providerGate plan provider $ \managedProvider ->
+                                    Right
+                                        ( aliasAction
+                                            shareGate
+                                            aliasGate
+                                            plan
+                                            provider
+                                            share
+                                            managedProvider
+                                        )
 
-    runReadyProbe plan share alias edge aliasHandle managedShare =
+    aliasAction shareGate aliasGate plan provider share managedProvider =
+        withManagedShare shareGate plan share managedProvider $ \managedShare ->
+            joinIO $
+                withProviderGuestAliasProjection plan provider share $ \alias edge ->
+                    joinIO $
+                        withObservedPlannedResource plan alias 23 29 $ \aliasHandle ->
+                            case shareSnapshot share managedShare of
+                                Left err -> pure (Left err)
+                                Right snapshot ->
+                                    flattenIO $
+                                        withPreparedGuestAliasCall
+                                            alias
+                                            edge
+                                            aliasHandle
+                                            snapshot
+                                            spec
+                                            aliasGate
+                                            (consume plan aliasHandle)
+
+    -- The plan's dependency snapshot for the alias operation: the managed
+    -- durable share, registered with the plan-owned readiness probe the
+    -- traversal runs at prepare time.
+    shareSnapshot share managedShare =
         case withBackendProbe
             DurableShareProbe
             share
@@ -444,50 +467,28 @@ withPreparedAliasFixtureFor spec shareObservationVersion consume =
             19
             shareObservationVersion
             (const (pure (ProbeReady ())))
-            ( \probe -> do
-                readyResult <-
-                    awaitPlanReady
-                        rolloutPoll
-                        "durable share"
-                        probe
-                        (error "the injected probe does not inspect HostConfig" :: HostConfig)
-                pure $ case readyResult of
-                    Left pollError ->
-                        Left
-                            ( Failure
-                                ( FailureDetail
-                                    "await durable share"
-                                    (Text.pack (renderPollError pollError))
-                                    DoNotRetry
-                                )
-                            )
-                    Right ready ->
-                        joinReconcile $
-                            withPreparedGuestAliasCall
-                                alias
-                                edge
-                                aliasHandle
-                                managedShare
-                                ready
-                                spec
-                                1
-                                37
-                                (consume plan aliasHandle)
+            ( \probe ->
+                withDependencySnapshotEntry
+                    managedShare
+                    (planDependencyProbe rolloutPoll "durable share" managedShare probe stubHostConfig)
+                    emptyDependencySnapshot
             ) of
             Left constructionError ->
-                pure
-                    ( Left
-                        ( Failure
-                            ( FailureDetail
-                                "construct durable-share probe"
-                                (Text.pack (show constructionError))
-                                DoNotRetry
-                            )
+                Left
+                    ( Failure
+                        ( FailureDetail
+                            "construct durable-share probe"
+                            (Text.pack (show constructionError))
+                            DoNotRetry
                         )
                     )
-            Right action -> action
+            Right snapshot -> Right snapshot
+
+stubHostConfig :: HostConfig
+stubHostConfig = error "the injected probe does not inspect HostConfig"
 
 withManagedProvider ::
+    PreparedGate ->
     LifecyclePlan FixtureScope planId ->
     PlannedResource FixtureScope planId providerId ProviderResource providerFrame ->
     ( ResourceHandle
@@ -500,12 +501,13 @@ withManagedProvider ::
       result
     ) ->
     Either ReconcileError result
-withManagedProvider plan planned consume =
+withManagedProvider gate plan planned consume =
     joinReconcile $
         withObservedPlannedResource plan planned 5 7 $ \observed -> do
             descriptor <- plannedOperation plan planned observed "provider:create"
+            preconditionSet <- zeroDependencyPreconditions descriptor
             joinReconcile $
-                withPreparedOperation descriptor [] 1 3 $ \prepared preconditions -> do
+                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
                     reconciled <-
                         completeReconcile
                             observed
@@ -518,6 +520,7 @@ withManagedProvider plan planned consume =
                         (\_ _ -> Left (Failure (FailureDetail "test provider" "unexpected foreign provider" DoNotRetry)))
 
 withManagedShare ::
+    PreparedGate ->
     LifecyclePlan FixtureScope planId ->
     PlannedResource FixtureScope planId shareId DurableShareResource shareFrame ->
     ResourceHandle
@@ -534,32 +537,35 @@ withManagedShare ::
         DurableShareResource
         Managed
         Provisioned ->
-      result
+      IO (Either ReconcileError result)
     ) ->
-    Either ReconcileError result
-withManagedShare plan planned managedProvider consume =
-    joinReconcile $
-        withObservedPlannedResource plan planned 11 13 $ \observed -> do
-            descriptor <- plannedOperation plan planned observed "share:mount"
-            providerObservation <- dependencyObservation managedProvider 17
-            joinReconcile $
-                withPreparedSingleDependencyOperation
-                    descriptor
-                    providerObservation
-                    1
-                    9
-                    ( \prepared preconditions -> do
-                        reconciled <-
-                            completeReconcile
-                                observed
-                                prepared
-                                preconditions
-                                (BackendCreated 11)
-                        withReconcileResult
-                            reconciled
-                            (\managed _ _ -> Right (consume managed))
-                            (\_ _ -> Left (Failure (FailureDetail "test durable share" "unexpected foreign share" DoNotRetry)))
-                    )
+    IO (Either ReconcileError result)
+withManagedShare gate plan planned managedProvider consume =
+    joinIO $
+        withObservedPlannedResource plan planned 11 13 $ \observed ->
+            case plannedOperation plan planned observed "share:mount" of
+                Left err -> pure (Left err)
+                Right descriptor -> do
+                    sealed <- withOperationPreconditions descriptor providerSnapshot
+                    case sealed of
+                        Left err -> pure (Left err)
+                        Right preconditionSet ->
+                            joinIO $
+                                withPreparedOperation descriptor preconditionSet gate $
+                                    \prepared preconditions ->
+                                        case completeReconcile observed prepared preconditions (BackendCreated 11) of
+                                            Left err -> pure (Left err)
+                                            Right reconciled ->
+                                                withReconcileResult
+                                                    reconciled
+                                                    (\managed _ _ -> consume managed)
+                                                    (\_ _ -> pure (Left (Failure (FailureDetail "test durable share" "unexpected foreign share" DoNotRetry))))
+  where
+    providerSnapshot =
+        withDependencySnapshotEntry
+            managedProvider
+            (dependencyProbe (pure (Right 17)))
+            emptyDependencySnapshot
 
 testPlan :: StepPlan
 testPlan =
@@ -567,10 +573,13 @@ testPlan =
         (error . show)
         id
         ( mkStepPlan
-            [ deployVMStep "provider" (StepFrame "host" "Host") (const (pure ()))
+            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure ())))
             , copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure ()))
             ]
         )
+
+testPlanDigest :: Text.Text
+testPlanDigest = withTestLifecyclePlan lifecyclePlanDigest
 
 withTestLifecyclePlan ::
     (forall planId. LifecyclePlan FixtureScope planId -> result) ->
@@ -591,12 +600,19 @@ testProvider =
                 , vmhLima = LimaVM "test-vm"
                 , vmhWsl2 = Wsl2VM "test-vm"
                 , vmhGuardPrefix = "test"
-                , vmhWslConfigPath = "C:\\Users\\test\\.wslconfig"
                 }
         )
 
 joinReconcile :: Either ReconcileError (Either ReconcileError value) -> Either ReconcileError value
 joinReconcile = either Left id
+
+joinIO :: Either ReconcileError (IO (Either ReconcileError value)) -> IO (Either ReconcileError value)
+joinIO = either (pure . Left) id
+
+flattenIO ::
+    IO (Either ReconcileError (Either ReconcileError value)) ->
+    IO (Either ReconcileError value)
+flattenIO = fmap joinReconcile
 
 isLeft :: Either left right -> Bool
 isLeft = either (const True) (const False)

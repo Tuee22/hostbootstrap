@@ -1,5 +1,10 @@
 module Main (main) where
 
+import qualified AuthoritySpec
+import qualified HandoffSpec
+import qualified SessionSpec
+import qualified BuildAuthoritySpec
+import qualified ActivationSpec
 import qualified CLISpec
 import qualified BudgetSpec
 import qualified ChainSpec
@@ -17,13 +22,17 @@ import qualified LifecycleSpec
 import qualified LiftSpec
 import qualified LimaSpec
 import qualified ProjectRootSpec
+import qualified ClusterBackendSpec
+import qualified DataRootSpec
 import qualified ClusterReconcileSpec
 import qualified ProviderSpec
 import qualified ProviderAliasSpec
 import qualified ReadinessSpec
 import qualified ReconcileSpec
+import qualified RegistryPlanSpec
 import qualified RegistrySpec
 import qualified RoleLifecycleSpec
+import qualified TeardownSpec
 import qualified SchemaSpec
 import qualified StepSpec
 import qualified SubstrateSpec
@@ -33,7 +42,7 @@ import Test.Tasty.Runners (NumThreads (..))
 import qualified Wsl2Spec
 import qualified WslGlobalWallConfigBytesSpec
 import qualified WslGlobalWallSpec
-import qualified WslGlobalWallWindowsSpec
+import qualified WslGlobalWallHostSpec
 
 main :: IO ()
 main = do
@@ -41,6 +50,14 @@ main = do
     case args of
         ["--hostbootstrap-schema-fixture", fixture] ->
             CLISpec.runSchemaFixture fixture
+        -- A separate process attempting the protected store's exclusive entry,
+        -- so cross-process exclusion is proved with the production primitive.
+        ["--hostbootstrap-protected-entry-probe", storeRoot] ->
+            AuthoritySpec.runEntryProbe storeRoot
+        -- A separate process attempting a whole harness run reservation, so the
+        -- concurrency matrix races real competitors rather than threads.
+        ["--hostbootstrap-harness-acquire-probe", stateRoot, reasonPath] ->
+            HarnessSpec.runHarnessAcquireProbe stateRoot reasonPath
         _ -> do
             docTests <- DocValidatorSpec.tests
             -- The suite runs single-threaded because several groups drive
@@ -61,7 +78,12 @@ main = do
                 localOption (NumThreads 1) $
                     testGroup
                         "hostbootstrap-core"
-                        [ CLISpec.tests
+                        [ AuthoritySpec.tests
+                        , HandoffSpec.tests
+                        , SessionSpec.tests
+                        , BuildAuthoritySpec.tests
+                        , ActivationSpec.tests
+                        , CLISpec.tests
                         , BudgetSpec.tests
                         , CompileFailSpec.tests
                         , SubstrateSpec.tests
@@ -74,6 +96,8 @@ main = do
                         , ProviderSpec.tests
                         , ProviderAliasSpec.tests
                         , ClusterReconcileSpec.tests
+                        , ClusterBackendSpec.tests
+                        , DataRootSpec.tests
                         , ProjectRootSpec.tests
                         , ContextSpec.tests
                         , LifecycleSpec.tests
@@ -83,13 +107,15 @@ main = do
                         , Wsl2Spec.tests
                         , WslGlobalWallSpec.tests
                         , WslGlobalWallConfigBytesSpec.tests
-                        , WslGlobalWallWindowsSpec.tests
+                        , WslGlobalWallHostSpec.tests
                         , LiftSpec.tests
                         , StepSpec.tests
                         , ChainSpec.tests
                         , ReadinessSpec.tests
                         , ReconcileSpec.tests
                         , RegistrySpec.tests
+                        , RegistryPlanSpec.tests
                         , RoleLifecycleSpec.tests
+                        , TeardownSpec.tests
                         , docTests
                         ]

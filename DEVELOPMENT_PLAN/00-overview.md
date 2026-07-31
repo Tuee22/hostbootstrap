@@ -201,26 +201,56 @@ that the README phase table is the only cross-phase status roll-up.
 Sprint `Blocked by` metadata is the execution authority. Phase ownership above explains where contracts
 live; it does not make every cross-phase reference a start dependency. The strict landing order is:
 
-1. Sprints 2.5, 5.6.1, 5.8, 6.7, 8.7, 9.4, 9.10, 10.10, 12.4, 13.19, and 19.6–19.8 are closed.
-   Sprint 11.10 is the next phase-ordered dependency root; Sprint 14.7 is also dependency-ready.
+1. Sprints 2.5, 2.6, 5.5, 5.6, 5.6.1, 5.7, 5.8, 6.7, 8.7, 9.4, 9.10, 10.10, 12.4, 13.19, 14.7, and
+   19.6–19.8 are closed, so **Phase 5 is closed** and Phase 2 returned to closed. Sprint 13.20 is now
+   dependency-ready. **Corrected 2026-07-30:** Sprint 11.10's remaining demo alias migration is *not* a
+   dependency root. Adopting the landed alias backend at the demo call site requires a `Managed`
+   durable-share handle, which requires the plan-owned dependency-snapshot traversal (§ CC) and a
+   `copy-source` plan node that Sprint 16.6 owns; the derivation is recorded in
+   [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). Sprint 14.6 is the next executable
+   root.
+   The 2026-07-29 native Linux CPU `10/10` run additionally closed the Linux CPU lane in Sprints 13.17,
+   15.8, 16.5, and 18.5, leaving those four Active only for the hostless Apple lane.
 2. Closed Sprints 8.7 and 19.6 enabled Sprint 19.7; closed Sprint 19.7 enabled Sprint 19.8. Closed
    Sprints 19.7–19.8 enabled Sprint 9.10, whose opaque capabilities are now minted only from the scoped
    codec and finalized plan.
-3. Closed Sprint 5.6.1 enables Sprint 5.6's direct-host durability gate. Closed Sprint 9.10 enabled
-   closed Sprint 5.8 and enables Sprint 11.10. Sprint 11.10 then enables Sprint 5.7's
-   all-provider storage/ownership gate.
-4. After Sprint 5.7 and Sprints 9.10 and 19.7–19.8 close, Sprint 15.9 supplies the independent root/command
-   authority. Sprint 10.9 consumes it with the mode/lease state to implement fresh and bound-recovery
-   profile openers; Sprint 16.6 then consumes both in the recursive interpreter. They remain one
+3. Closed Sprint 5.6.1 enabled Sprint 5.6's direct-host durability gate. Closed Sprint 9.10 enabled
+   closed Sprint 5.8 and enables Sprint 11.10. Sprint 11.10's alias/ownership primitive enabled
+   Sprint 5.7's all-provider storage/ownership gate, which closed 2026-07-29 on a native Incus run; the
+   `ensureCluster` replacement it supplies is consumed by the tranche in item 3, not by Sprint 5.7.
+4. Sprint 15.9 supplies the independent root/command authority; its protected store and root/command
+   authority landed 2026-07-29. Sprint 10.9 consumes it with the mode/lease state to implement fresh
+   and bound-recovery profile openers; its fresh openers, project-wide exclusion, and abandoned-run
+   sweep landed with it. Sprint 16.6 then consumes both in the recursive interpreter. They remain one
    coordinated integration tranche, but the explicit 15.9 → 10.9 → 16.6 order prevents a circular
-   prerequisite.
-5. Sprints 14.6 and 17.4 are separate downstream branches once their own blockers close: Sprint 14.6
-   consumes lifecycle admission plus signed-revision/measured-instance activation authority, while
-   Sprint 17.4 consumes typed cases, command authority, and structured harness outcomes. Sprint 18.6
-   joins Sprints 14.6, 15.9, 17.4, and 19.8 for validated service dispatch. Sprint 20.5 then consumes
+   prerequisite. **Sprint 16.6 started 2026-07-30** with the verb-indexed reverse projection and
+   teardown forest, which closed 10.9's `verifyDestroySettled` item by giving the settled-destroy branch
+   of `ProjectClosureEvidence` its first producer. Its plan-owned dependency-snapshot traversal landed the
+   same day, making an operation's edge set the exact ordered resource-bearing prefix and giving the
+   sealed precondition set a single producer. Its plan-owned frame descent and plan-owned reverse effect
+   landed the same day, folding the other two of the three independent lifecycle views into the one
+   validated plan: a step declares its own boundary, so topology cannot disagree with the forward
+   traversal and the announcing `context-init` row carries the child config; and an acquiring step
+   declares the effect that releases it, so both teardown verbs are projections of that same plan rather
+   than a hook beside it. 16.6 is now the single root the
+   remaining tranche hangs off: Sprints 11.10 (demo alias), 14.6 (`service run` adoption), 10.9's
+   reconciler-produced report rows, and 17.4 all wait on one of its still-open items.
+   **Corrected 2026-07-30:** Sprint 11.10's demo alias migration waits on the *remaining* part of open
+   item 3 — the recursive child-first unwind — not on the traversal, the descent, or the reverse effect.
+   A chain step's action still receives no plan, so no `Managed` share handle can be minted inside one
+   until that work replaces the result-free step signature (§ U).
+5. Sprints 14.6 and 17.4 are separate downstream branches once their own blockers close. **Sprint 14.6's
+   engine landed 2026-07-30**: the opaque role plan/cursor phase machine, the verified-draft and one-use
+   admission gate chain, and the derived lease requirement all exist and are gated. Its one remaining
+   item — making `service run` enter through the activation package — is `Blocked by` Sprint 16.6,
+   because `Authority.withVerifiedRootInvocation` still has no production consumer and therefore nothing
+   can sign an `ActivationManifest`. Sprint 17.4 consumes typed cases, command authority, and structured
+   harness outcomes. Sprint 18.6 joins Sprints 14.6, 15.9, 17.4, and 19.8 for validated service dispatch;
+   it consumes 14.6's landed `RolePlan`/`VerifiedServicePlacement` foundation. Sprint 20.5 then consumes
    Sprints 10.9, 18.6, and 19.7–19.8 for scoped config and harness-indexed execution.
-6. Closed Sprints 9.10 and 19.8 enable Sprint 14.7's generic reachability/delivery algebra; Sprint 14.7
-   enables Sprint 13.20's concrete demo renderer and live blob-route proof.
+6. Closed Sprints 9.10 and 19.8 enabled Sprint 14.7's generic reachability/delivery algebra; closed
+   Sprint 14.7 enabled **Sprint 13.20, which closed 2026-07-30** with its concrete demo renderer and live
+   blob-route proof.
 7. Sprint 13.18 lands only after Sprints 5.7, 10.9, 13.20, 14.6, 15.9, 16.6, 17.4, and 20.5.
    It is the worked-demo integration gate, not a foundation for those APIs.
 8. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.

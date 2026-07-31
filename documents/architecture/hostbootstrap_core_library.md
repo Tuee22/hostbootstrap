@@ -114,8 +114,8 @@ on; the canonical inventory is tracked in
 | `HostBootstrap.Wsl2` | WSL2 helper argv builders plus readiness classification. The sole registration builder uses `wsl --install ... --name ... --vhd-size`; the provider enters with `wsl -d <distro> --`, terminates for `down`, and guards `unregister` for destroy. The unused `wsl --import` builder has been removed. See [wsl2](../engineering/wsl2.md). |
 | `HostBootstrap.Lift` | The self-reference compositional lift: run a subcommand of the binary in a nested context (`Local`/provider VM/`InContainer`) by invoking the binary again there. The `StepPlan` interpreter lifts `pb project up` across each frame boundary through this seam. `canonicalHostMount` admits only a root/path pair carrying identical private indices. The pure argv fold is unit-tested. See [composition_methodology](composition_methodology.md). |
 | `HostBootstrap.Harness` | The standardized test engine — `runMatrix` over the harness-built `Seams` wired from the project's compiled `TestSuite`. It generates config variants and drives the real `project up`; successful bring-up runs assertions and `project destroy` through `finally`, and ordinary bring-up failures also attempt destroy. Its caught `SafetyRefusal` branch skips teardown. Preconditions and the generated-file delete guard reduce collision risk, but they do not establish production isolation: the demo currently selects the Production plan and `.data`, and lifecycle resources lack complete ownership receipts. See [harness_workflow](harness_workflow.md). |
-| `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. `project down|destroy` invokes core Kind cleanup only when the current frame owns `deploy-kind`; nested VM/project-container clusters remain with the project teardown hook, while attempted cleanup failures aggregate. No per-project verbs. |
-| `HostBootstrap.CLI` | Opaque generic `ProjectSpec projectId cfg tcfg`, unfinished `ProjectSpecBuilder`, checked additive operations, explicit frame-context/teardown single-assignment, `finalizeProjectSpec`, and the two entrypoints. Finalization validates suite/case/artifact/input/service contributions; per-config plan projection validates the exact non-empty `StepPlan` before interpretation. One restricted `psAssemble` supplies Production/Harness configs and `psTestInit` supplies `tcfg`. |
+| `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. `project down|destroy` are two verb-indexed projections of the one plan: core Kind cleanup runs only when the current frame owns `deploy-kind`, every other node runs the reverse its own step declared, and per-node outcomes are structured with failures aggregated after every independent node has run. No per-project verbs. |
+| `HostBootstrap.CLI` | Opaque generic `ProjectSpec projectId cfg tcfg`, unfinished `ProjectSpecBuilder`, checked additive operations (step fragments rank-2 in the admitted canonical root), explicit teardown single-assignment, `finalizeProjectSpec`, and the two entrypoints. Finalization validates suite/case/artifact/input/service contributions; per-config plan projection validates the exact non-empty `StepPlan` before interpretation. One restricted `psAssemble` supplies Production/Harness configs and `psTestInit` supplies `tcfg`. |
 | `HostBootstrap.DocValidator` | The mechanical documentation validator run through the code-check. See [documentation_standards](../documentation_standards.md). |
 
 ## Host-Tool Resolution And Substrate Ownership
@@ -149,7 +149,8 @@ composable unit the recursive interpreter runs and reports. `hostbootstrap-core`
   does not exist yet);
 - `build-image` — build the project container image;
 - `context-init` — a frame-anchor kind intended to own child projection and delivery; its current demo
-  action only announces because those effects are split across composite bootstrap/frame-context actions;
+  action body only announces, though for the container boundary it is the node that declares the descent
+  carrying the payload, while the VM projection stays inside the composite bootstrap action;
 - `deploy-kind` / `deploy-chart` — cluster and Helm-release lifecycle leaves;
 - `expose-port` — expose an in-cluster `NodePort` to the host.
 
@@ -161,10 +162,11 @@ workload-extension seam.
 A project's current forward ordering is an opaque `StepPlan`. Its source fragments are pure functions of
 project parameters. Optional structural variation (for example, skip the VM frame and go straight to
 Docker) is a flag in the root `<project>.dhall`. `mkStepPlan` rejects empty/duplicate/conflicting plans,
-non-contiguous frame returns, and invalid post-handoff placement while preserving every accepted source
+non-contiguous frame returns, invalid post-handoff placement, and any frame that does not declare
+exactly one descent, while preserving every accepted source
 order exactly. Raw `Step`, identity, and plan constructors are hidden. It is not yet the complete
-lifecycle representation because frame-context and teardown functions are supplied separately as checked
-single-assignment slots. The target resource-indexed plan is described in
+lifecycle representation because the teardown function is still supplied separately as a checked
+single-assignment slot. The target resource-indexed plan is described in
 [composition_methodology](composition_methodology.md); `project up --dry-run` renders the same validated
 plan without executing it.
 
@@ -219,8 +221,10 @@ assembles one already-validated draft; it cannot return an empty list or invent/
 - `projectSpec` starts the unfinished builder from the `TestSuite`, project `check-code` action,
   `ConfigArtifact` delta, and project-owned
   init/test-config builders. `addSteps`, `addArtifacts`, `addAssemblyInputs`, and `addServices` append
-  without erasure. `setFrameContext` and `setTeardown` are checked single-assignment slots and receive
-  separately admitted canonical-root authority. Service definitions inseparably bind identity, typed
+  without erasure, and an `addSteps` fragment receives the admitted canonical-root authority so its
+  steps — including the descent each frame declares with `Step.descendsVia` — derive project-relative
+  paths from it, and each acquiring step declares the effect that releases it with `Step.reversedBy`.
+  Service definitions inseparably bind identity, typed
   projection, role codec, and handler; no separate selector exists.
   The bare core binary uses a separate
   entrypoint (`runBareHostBootstrapCLI`).
@@ -237,27 +241,23 @@ attaches the chain (interleaving core and project step kinds) to the spec and ha
 ```haskell
 import HostBootstrap.CLI
   ( addServices, addSteps, finalizeProjectSpec, projectSpec
-  , runHostBootstrapCLI, setFrameContext, setTeardown )
+  , runHostBootstrapCLI )
 import HostBootstrap.Substrate (detect)
-import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoFrameContext, demoServices, demoTeardown, demoTestSuite)
+import HostBootstrapDemo.Commands (demoArtifacts, demoChainFor, demoCheckCode, demoServices, demoTestSuite)
 import HostBootstrapDemo.Config (demoAssemble, demoTestInit, testConfigCodec)
 import System.Exit (die)
 
 main :: IO ()
 main = do
-  -- Detect the host substrate once so the per-frame lift context folds each
-  -- metal→VM handoff to the right provider shell (Incus on Linux CPU, Lima on Apple Silicon).
+  -- Detect the host substrate once so the chain's declared metal→VM descent folds
+  -- to the right provider shell (Incus on Linux CPU, Lima on Apple Silicon).
   -- Linux GPU has no VM frame; its direct handoff is a GPU-enabled container lift.
   substrate <- detect >>= either die pure
   spec <- either (die . show) pure
     ( finalizeProjectSpec
         ( addServices demoServices
             ( addSteps (demoChainFor substrate)
-                ( setFrameContext (demoFrameContext substrate)
-                    ( setTeardown demoTeardown
                         (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
-                    )
-                )
             )
         )
     )
@@ -285,7 +285,7 @@ validation beyond the exact step sequence remains the downstream target describe
 | `context` | Read-only introspection: `path`/`schema`/`render` are static and config-free; `inspect` reads the sibling `.dhall`, while `show [FILE]` reads the selected or default file. |
 | `project init` | Config-free initializer. Its no-flag default writes the root host-orchestrator config; the current parser also accepts role additions, an output path, `--force`/`--if-missing`, and resource/deploy overrides interpreted by `psAssemble (ProductionAssembly args)`. Opaque role-specific init requests remain target work. |
 | `project up` | Resolve and recursively interpret the opaque `StepPlan` from the current frame; `--dry-run` renders that same plan. Stands up deploy-kind/nvkind → deploy-minio → deploy-registry → push-image → deploy-chart → expose-port, plus the topology-selected accelerator daemon. Most reconcilers still return `IO ()`, so typed idempotence is open. |
-| `project down` | Remove the current frame's owned Kind cluster because Kind has no stopped state, preserve durable roots/provider frames, then invoke the project teardown hook in stop mode. It does not recursively dispatch `down` through each child frame. See [durable_state](durable_state.md). |
+| `project down` | Remove the current frame's owned Kind cluster because Kind has no stopped state, preserve durable roots/provider frames, and run each acquiring node's declared reverse with the `StopFrame` action. It does not recursively dispatch `down` through each child frame. See [durable_state](durable_state.md). |
 | `project destroy` | Perform current-frame cleanup and invoke the project destroy hook, which may remove a provider. It does not yet prove child-to-parent recursive interpretation or complete ownership. Host `.data` is carried outside provider disks, but destroy/up/readback remains unvalidated. |
 | `test init` | Needs **no** pre-existing `<project>.dhall`; writes `<project>.test.dhall`. In the demo it contains a suite-name list plus resource overrides; compiled Haskell, not this file, owns case bodies and variants. |
 | `test run <case-id>\|all` | Needs `<project>.test.dhall`; `all` runs the compiled matrix and a case id selects one compiled case. Help describes the surface as root-only, but the parser does not currently enforce a context root gate. Each variant is assembled as `cfg (Harness projectId runId)` under fresh authority and its matching codec, then drives the real `project up`, asserts, and calls `project destroy`. The demo lifecycle planner still incorrectly selects the Production profile/`.data`; full Harness resource isolation remains open. |

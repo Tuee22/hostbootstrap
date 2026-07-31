@@ -49,15 +49,14 @@ mkStepPlan :: [Step] -> Either StepPlanError StepPlan
 
 The plan's rows determine:
 
-- exact contiguous frame segments and descent order (while provider handoff details remain in the
-  independently supplied `psFrameContext`);
+- exact contiguous frame segments, descent order, and each frame's declared descent context (provider
+  handoff plus child-config payload);
 - whether work is host-native, containerized, daemonized, or clustered;
 - the order in which those operations run.
 
 A current `Step` carries no resource envelope. General lifecycle actions may reload or close over
-config/context values, while
-`psFrameContext` and resource slicing are separately supplied, so step identity and applied budget can
-disagree. The target opaque `ProjectPlan` derives each operation's exact `ResourceSlice` alongside its
+config/context values, while resource slicing is separately supplied, so step identity and applied
+budget can disagree. The target opaque `ProjectPlan` derives each operation's exact `ResourceSlice` alongside its
 frame/dependencies/effect set; only then does the single representation determine resources.
 
 A second configurable execution selector could contradict those facts. For example, a Dhall value

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 module CommandsSpec (tests) where
@@ -20,8 +21,8 @@ import HostBootstrap.Config.Fields (
     frameworkScopeKind,
     frameworkSpecDigest,
     frameworkWireKind,
-    inspectLocalContext,
     inspectFullConfig,
+    inspectLocalContext,
     renderValidatedServiceRequest,
     requestFrameworkValidation,
     requestVerifiedDigest,
@@ -32,7 +33,13 @@ import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
-import HostBootstrap.ProjectRoot (withCanonicalProjectRoot)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
+import HostBootstrap.RegistryPlan (
+    BlobProbe (ApiVersionProbe),
+    BlobRouteObservation (..),
+    registryPlanRevision,
+    settleBlobRoute,
+ )
 import HostBootstrap.Service (
     serviceIdText,
     serviceRoleSchemaFamilies,
@@ -40,17 +47,17 @@ import HostBootstrap.Service (
     withFinalizedServiceRegistry,
     withSelectedServiceRequest,
  )
-import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameId, mkStepPlan, postHandoffStepsForFrame, stepKind, stepKindName, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (Step, StepFrame (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, stepKind, stepKindName, stepLabel, stepPlanSteps)
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
     acceleratorHelmValuesForContext,
     containerPlan,
-    demoBaseImageFor,
     demoArtifacts,
+    demoBaseImageFor,
     demoChainFor,
-    demoFrameContext,
+    demoRegistryPlan,
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
@@ -60,9 +67,14 @@ import HostBootstrapDemo.Commands (
     hostAcceleratorSubstrate,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
+    minioClusterEndpoint,
+    parseBlobRouteAnswer,
     readHostAcceleratorDaemonPid,
-    repoRootOfProjectRoot,
+    registryConfigYaml,
+    registryEndpoint,
+    uploadSessionUrl,
     renderServiceConfigForContext,
+    repoRootOfProjectRoot,
     serviceConfigMapManifest,
     validateAcceleratorReplicaCount,
  )
@@ -78,8 +90,8 @@ import HostBootstrapDemo.Config (
     mkPort,
     projectConfigForRole,
  )
-import Numeric.Natural (Natural)
 import HostBootstrapDemo.Web.Bridge (writeBridge)
+import Numeric.Natural (Natural)
 import System.Directory (canonicalizePath, createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, (</>))
@@ -92,16 +104,96 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 expectPlan :: [Step] -> StepPlan
 expectPlan = either (error . show) id . mkStepPlan
 
+{- | Admit the demo's own canonical project root. The chain is built under it
+(§ X), so a test that inspects the plan must go through the same bracket
+production does.
+-}
+withDemoRoot ::
+    (forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> IO a) ->
+    IO a
+withDemoRoot action = do
+    outcome <- withCanonicalProjectRoot ".build/hostbootstrap-demo.dhall" "." action
+    either (assertFailure . show) pure outcome
+
 validPort :: Natural -> Port
 validPort = either (error . ("invalid test port: " ++)) id . mkPort
+
+{- | A @\/v2\/@ answer dressed up as an observation: the status is fine and the
+port is right, but the probe was liveness, not a blob request.
+-}
+apiVersionAnswer :: BlobRouteObservation
+apiVersionAnswer =
+    BlobRouteObservation
+        { observedProbe = ApiVersionProbe
+        , observedPort = 30500
+        , observedStatus = 200
+        , observedRedirect = Nothing
+        , observedRevision = registryPlanRevision demoRegistryPlan
+        }
 
 tests :: TestTree
 tests =
     testGroup
         "CommandsSpec"
-        [ testCase "linux-gpu selects the direct host-to-container nvkind chain" $ do
-            let plan = expectPlan (demoChainFor (Substrate LinuxGpu Amd64) hostCfg)
-                steps = stepPlanSteps plan
+        [ testCase "the registry config renders proxy delivery from the plan, not a flag" $ do
+            -- § GG: the boolean is OUTPUT. The topology (host-local client,
+            -- cluster-only store) admits no reachability witness, so the plan
+            -- can only be `Proxy`, and proxy delivery must disable redirects.
+            let rendered = registryConfigYaml
+            assertBool
+                ("the redirect stanza is rendered:\n" ++ unlines rendered)
+                ("  redirect:" `elem` rendered && "    disable: true" `elem` rendered)
+            -- Everything addressable comes from the one plan.
+            assertBool
+                ("the s3 endpoint is the plan's store: " ++ unlines rendered)
+                (any (("    regionendpoint: http://" ++ minioClusterEndpoint) ==) rendered)
+            minioClusterEndpoint @?= "minio.default.svc:9000"
+            registryEndpoint @?= "localhost:30500"
+        , testCase "a served blob settles the route; a redirect to the store refuses" $ do
+            -- Proxy delivery: 200 with no Location.
+            served <- either assertFailure pure (parseBlobRouteAnswer "200 ")
+            case settleBlobRoute demoRegistryPlan served of
+                Right _ -> pure ()
+                other -> assertFailure ("a served blob must settle, got " ++ show other)
+            -- The reproduced defect: the registry redirects a host-local client
+            -- to the cluster-only store, which it cannot resolve.
+            redirected <-
+                either
+                    assertFailure
+                    pure
+                    (parseBlobRouteAnswer "307 http://minio.default.svc:9000/registry/blob")
+            case settleBlobRoute demoRegistryPlan redirected of
+                Left _ -> pure ()
+                other ->
+                    assertFailure ("a redirect to the store must refuse, got " ++ show other)
+        , testCase "a /v2/ answer is not a blob route, and a bad status is not a match" $ do
+            -- Liveness is not readiness: only a blob request can settle a route.
+            case settleBlobRoute demoRegistryPlan apiVersionAnswer of
+                Left _ -> pure ()
+                other -> assertFailure ("a /v2/ probe must refuse, got " ++ show other)
+            missing <- either assertFailure pure (parseBlobRouteAnswer "404 ")
+            case settleBlobRoute demoRegistryPlan missing of
+                Left _ -> pure ()
+                other -> assertFailure ("a 404 must refuse, got " ++ show other)
+            assertBool
+                "an unparseable answer is an error, never a default"
+                (either (const True) (const False) (parseBlobRouteAnswer "not-a-status"))
+        , testCase "the upload session Location is resolved absolute or relative" $ do
+            -- registry:2 answers absolute, but the API permits relative, so a
+            -- relative Location is resolved against the dialled endpoint.
+            uploadSessionUrl
+                "localhost:30500"
+                "HTTP/1.1 202 Accepted\nLocation: http://localhost:30500/v2/x/blobs/uploads/abc?_state=q\n"
+                @?= Just "http://localhost:30500/v2/x/blobs/uploads/abc?_state=q"
+            uploadSessionUrl
+                "localhost:30500"
+                "HTTP/1.1 202 Accepted\nlocation: /v2/x/blobs/uploads/abc?_state=q\n"
+                @?= Just "http://localhost:30500/v2/x/blobs/uploads/abc?_state=q"
+            -- No Location is an explicit failure, never a guessed URL.
+            uploadSessionUrl "localhost:30500" "HTTP/1.1 202 Accepted\n" @?= Nothing
+        , testCase "linux-gpu selects the direct host-to-container nvkind chain" $ do
+            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
+            let steps = stepPlanSteps plan
             map frameId (chainFrames plan) @?= ["host-orchestrator-0", "vm-project-container-1"]
             map (stepKindName . stepKind) steps
                 @?= [ "build-image"
@@ -146,7 +238,8 @@ tests =
             let customWebConfig = WebServiceConfig (validPort 9090) (validPort 9091)
                 customPorts =
                     hostCfg
-                        {webServiceConfig = customWebConfig}
+                        { webServiceConfig = customWebConfig
+                        }
             acceleratorHelmValuesForContext customPorts directCtx
                 @?= Right
                     [ ("service.port", "9090")
@@ -219,14 +312,17 @@ tests =
                 @?= "docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64"
         , testCase "direct project-container handoff passes the GPU and normal handoff does not" $ do
             canonicalDemo <- canonicalizePath "."
+            -- Both descents are read off the plan itself: the direct lane's is
+            -- declared by its metal @context-init@ node, the VM-backed lane's by
+            -- the in-VM @context-init@ node (§ W).
             result <-
-                withCanonicalProjectRoot ".build/hostbootstrap-demo.dhall" "." $ \root ->
+                withDemoRoot $ \root ->
                     pure
-                        ( demoFrameContext (Substrate LinuxGpu Amd64) root hostCfg (StepFrame "vm-project-container-1" "linux-gpu-project-container")
-                        , demoFrameContext (Substrate LinuxCpu Amd64) root hostCfg (StepFrame "vm-project-container-2" "project-container")
+                        ( frameDescent "host-orchestrator-0" (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg))
+                        , frameDescent "vm-orchestrator-1" (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg))
                         )
             case result of
-                Right (LiftContext [ViaContainer directLift], LiftContext [ViaContainer ordinaryLift]) -> do
+                (Just (LiftContext [ViaContainer directLift]), Just (LiftContext [ViaContainer ordinaryLift])) -> do
                     let directArgs = clExtraArgs directLift
                         ordinaryArgs = clExtraArgs ordinaryLift
                         durableMount = Mount (T.pack (canonicalDemo </> ".data")) "/workspace/demo/.data" False
@@ -278,8 +374,8 @@ tests =
                     Left _ -> True
                     Right _ -> False
         , testCase "linux-cpu runs the accelerator daemon as an in-cluster pod (no host hook)" $ do
-            let plan = expectPlan (demoChainFor (Substrate LinuxCpu Amd64) hostCfg)
-                steps = stepPlanSteps plan
+            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            let steps = stepPlanSteps plan
             map frameId (chainFrames plan) @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
             -- Incus does not forward the guest NodePort to the host, so the Linux CPU
             -- accelerator daemon is an in-cluster pod (dialing the web ClusterIP), NOT a
@@ -287,13 +383,13 @@ tests =
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
             stepKindName (stepKind (last steps)) @?= "deploy-accelerator-daemon"
         , testCase "apple/windows keep the host-resident accelerator daemon post-handoff hook" $ do
-            let plan = expectPlan (demoChainFor (Substrate AppleSilicon Arm64) hostCfg)
+            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate AppleSilicon Arm64) root hostCfg)))
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan)
                 @?= ["start the host-resident accelerator daemon after ingress is reachable"]
             hostAcceleratorSubstrate (Substrate AppleSilicon Arm64) @?= True
             hostAcceleratorSubstrate (Substrate WindowsGpu Amd64) @?= True
         , testCase "windows-cpu has no accelerator worker or host-daemon hook" $ do
-            let plan = expectPlan (demoChainFor (Substrate WindowsCpu Amd64) hostCfg)
+            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate WindowsCpu Amd64) root hostCfg)))
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
             hostAcceleratorSubstrate (Substrate WindowsCpu Amd64) @?= False
         , testCase "host accelerator daemon cannot inherit the project-up capture pipe" $ do

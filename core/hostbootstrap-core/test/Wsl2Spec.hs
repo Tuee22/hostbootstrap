@@ -26,33 +26,6 @@ tests =
           @?= Right ["--unregister", "hostbootstrap-demo-wsl"]
         assertBool "refuses to unregister unmanaged distro" (isLeft (wslUnregisterArgs "hostbootstrap-demo-" "personal-ubuntu"))
         wslShutdownArgs @?= ["--shutdown"],
-      testCase "mergeWslConfig preserves other sections and replaces [wsl2]" $ do
-        let body = ["[wsl2]", "processors=6", "memory=10GB", "swap=10GB"]
-        -- an empty/absent .wslconfig yields just our block
-        mergeWslConfig "" body @?= "[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\n"
-        -- a user's other sections survive; the old [wsl2] block is replaced, not duplicated
-        let existing = "[experimental]\nsparseVhd=true\n\n[wsl2]\nmemory=4GB\nprocessors=2\n"
-            merged = mergeWslConfig existing body
-        assertBool "keeps [experimental]" ("[experimental]" `elemLine` merged)
-        assertBool "keeps the user's experimental key" ("sparseVhd=true" `elemLine` merged)
-        assertBool "applies our processors" ("processors=6" `elemLine` merged)
-        assertBool "drops the old memory value" (not ("memory=4GB" `elemLine` merged))
-        assertBool "exactly one [wsl2] header" (length (filter (== "[wsl2]") (lines merged)) == 1)
-        -- idempotent: re-merging our own output replaces [wsl2] in place, not appends
-        assertBool "idempotent [wsl2]" (length (filter (== "[wsl2]") (lines (mergeWslConfig merged body))) == 1),
-      testCase "mergeWslConfig manages both [general] and [wsl2], preserving unrelated sections" $ do
-        let body = ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=6", "vmIdleTimeout=21600000"]
-        -- both managed sections are written from an empty file
-        mergeWslConfig "" body @?= "[general]\ninstanceIdleTimeout=21600000\n[wsl2]\nprocessors=6\nvmIdleTimeout=21600000\n"
-        -- an unrelated user section survives; the user's own [general]/[wsl2] keys are replaced
-        let existing = "[experimental]\nsparseVhd=true\n\n[general]\ndistro=old\n\n[wsl2]\nmemory=4GB\n"
-            merged = mergeWslConfig existing body
-        assertBool "keeps unrelated [experimental] key" ("sparseVhd=true" `elemLine` merged)
-        assertBool "applies instanceIdleTimeout" ("instanceIdleTimeout=21600000" `elemLine` merged)
-        assertBool "replaces the user's [general] key" (not ("distro=old" `elemLine` merged))
-        assertBool "replaces the user's [wsl2] key" (not ("memory=4GB" `elemLine` merged))
-        assertBool "exactly one [general] header" (length (filter (== "[general]") (lines merged)) == 1)
-        assertBool "exactly one [wsl2] header" (length (filter (== "[wsl2]") (lines merged)) == 1),
       testCase "wsl -l -v parsers: distro states + running filter (UTF-16 NUL, * marker, header)" $ do
         let raw = utf16ish "  NAME                     STATE           VERSION\n* hostbootstrap-demo-vm    Running         2\nUbuntu                     Stopped         2\n"
         wslDistroStates raw @?= [("hostbootstrap-demo-vm", "running"), ("Ubuntu", "stopped")]
@@ -60,9 +33,6 @@ tests =
         -- a stopped managed distro is NOT reported running (the killed-run case the fix targets)
         wslRunningDistros (utf16ish "  NAME                     STATE      VERSION\n* hostbootstrap-demo-vm    Stopped    2\n") @?= []
     ]
-
-elemLine :: String -> String -> Bool
-elemLine needle = elem needle . lines
 
 utf16ish :: String -> String
 utf16ish =

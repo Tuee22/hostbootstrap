@@ -45,9 +45,9 @@ demoSteps :: [Step]
 demoSteps =
     [ deployVMStep "launch the VM" metal noop
     , copySourceStep "stage source into the VM" metal noop
-    , buildPbStep "build the binary in the VM" metal noop
+    , descendsVia (inVM vm localContext) (buildPbStep "build the binary in the VM" metal noop)
     , contextInitStep "mint the container config" vmFrame noop
-    , buildImageStep "build the project image" vmFrame noop
+    , descendsVia (inContainer container localContext) (buildImageStep "build the project image" vmFrame noop)
     , deployKindStep "bring up kind" ctrFrame noop
     , projectStep (fixtureProjectStepId "deploy-harbor") ProjectManagedReverse "install harbor" ctrFrame noop
     , exposePortStep "expose the NodePort" ctrFrame noop
@@ -91,6 +91,28 @@ nextFrameCases =
         nextFrameAfter "vm-project-container-2" demoPlan @?= Nothing
     , testCase "a frame the chain never enters has no next frame" $
         nextFrameAfter "no-such-frame" demoPlan @?= Nothing
+    , -- The descent the interpreter dispatches is read off the plan, not from a
+      -- separately supplied per-frame resolver (§ W), so this is the same value
+      -- 'handoffCases' asserts the argv of.
+      testCase "each frame's handoff context is a node of the same plan" $ do
+        fmap (handoffDispatch self) (frameDescent "host-orchestrator-0" demoPlan)
+            @?= Just (DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "project", "up"])
+        fmap (handoffDispatch self) (frameDescent "vm-orchestrator-1" demoPlan)
+            @?= Just
+                ( DispatchTool
+                    Docker
+                    [ "run"
+                    , "--rm"
+                    , "-v"
+                    , "/var/run/docker.sock:/var/run/docker.sock"
+                    , "--network=host"
+                    , "demo:local"
+                    , "project"
+                    , "up"
+                    ]
+                )
+    , testCase "the innermost frame declares no descent" $
+        fmap (handoffDispatch self) (frameDescent "vm-project-container-2" demoPlan) @?= Nothing
     ]
 
 handoffCases :: [TestTree]

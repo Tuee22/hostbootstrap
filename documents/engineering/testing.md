@@ -103,10 +103,12 @@ The following statements are false for the current implementation:
 - “The parser root-gates `test init` and `test run`.” It does not apply the context root gate.
 - “The demo always uses `TestCase`/`.test_data/<caseId>`.” Its `containerPlan` call selects `Production`, so its real
   provider, cluster, and mounts use `.data` and the production cluster identity.
-- “A passing harness run proves resources are owned.” Most lifecycle mutations return `IO ()`, and
-  generated-file ownership does not establish VM/cluster/alias/daemon ownership.
+- “A passing harness run proves resources are owned.” The run's `.test_data` root **is** owned under all
+  four [ownership_invariant](../architecture/ownership_invariant.md) clauses — kernel-identity binding and
+  identity-conditional release included — but most other lifecycle mutations still return `IO ()`, and
+  neither the data root nor generated-file ownership establishes VM/cluster/alias/daemon ownership.
 - “Teardown recursively visits every child.” The current command performs current-frame cluster cleanup
-  plus a project hook.
+  plus the reverse effects the plan's own nodes declare.
 
 Until profile isolation is implemented and live-gated, run the long demo suite only on a disposable
 machine with no production demo state.

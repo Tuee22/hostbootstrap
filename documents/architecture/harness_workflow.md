@@ -86,17 +86,43 @@ under another config revision.
 
 The reusable engine aggregates `CaseResult`s into a `Report` and supports more than one generated config
 variant. Reports use stable `VariantId`s, not assertion values masquerading as labels. Successful
-bring-up puts assertions under `finally`, and a caught non-`SafetyRefusal` bring-up
-failure also runs teardown under `finally`. A caught `SafetyRefusal` takes the direct no-teardown branch
-described below; a hard kill also bypasses the handler. Durable recovery is target work. The demo
-currently generates two message variants and runs the compiled cases for each.
+bring-up puts assertions under a guaranteed teardown, and a caught non-`SafetyRefusal` bring-up failure
+runs the same teardown. A caught `SafetyRefusal` takes the direct no-teardown branch described below,
+because a refusal proven to precede acquisition has an empty rollback set; a hard kill also bypasses the
+handler. Durable recovery is target work. The demo currently generates two message variants and runs the
+compiled cases for each.
 
-Generated project config uses a cooperative sidecar collision guard plus compare-before-delete behavior.
-Those are useful safeguards, but the guard takes no OS-released exclusive lock, records no durable
-origin, and compares a pathname rather than the destination object's identity; most lifecycle resources
-still return `IO ()`, and the runner does not receive opaque ownership receipts for the config, VM,
-cluster, alias, daemon, or data root. The clauses this must satisfy are in
-[ownership_invariant](ownership_invariant.md); the transitions that consume the resulting receipt are in
+Non-passing outcomes are **distinct**, not one flattened failure string. `Fail` is the project's own
+assertion verdict; `Refused`, `LifecycleFailed`, and `TeardownFailed` are the engine's classifications
+and have no project-side constructor, so an assertion cannot label itself a refusal. The report card
+prints a distinct label per outcome (`PASS`/`FAIL`/`REFUSED`/`BROKEN`/`LEAKED?`), and
+`caseResultPassed`/`caseResultLabel`/`caseResultReason` are total, so a new outcome cannot be silently
+counted as success. A failed teardown adds its own row rather than overwriting the case results: the
+variant goes red with the cause named while "the assertions passed but the stack did not come down"
+stays legible. The `Conflict` and `Unsupported` rows the target also names have no producer until the
+reconcilers are wired at their call sites, so they are not yet constructors.
+
+The run's **durable data root** holds all four
+[ownership_invariant](ownership_invariant.md) clauses. `HostBootstrap.Harness.Ownership` acquires and
+releases `.test_data` through `HostBootstrap.Harness.DataRoot` inside the protected store's OS-released
+exclusive entry (clause 1). Before the directory is created, a durable origin record names the exact
+prior state — the identity of a directory that was already there, or explicit absence (clause 2). The
+created directory's own `device:inode` is then bound to the receipt (clause 3), and teardown removes it
+only after re-observing that exact identity (clause 4). A directory the run merely found is never in the
+removal set; a directory that was *replaced* under the run is a structured conflict and is left intact
+rather than deleted. A host that cannot report a stable identity is `Unsupported` and the run takes no
+ownership at all.
+
+The same record drives recovery. Because the origin is published before the first mutation, an abandoned
+run whose record says *absent* has its generated content removed rather than adopted — including the
+crash window between publishing the origin and binding the identity, where no managed identity was ever
+recorded. The sweep reclaims each abandoned unbound run's data root before closing its lease.
+
+Generated project config is not yet on the invariant: it uses a cooperative sidecar collision guard plus
+compare-before-delete behavior, which takes no OS-released exclusive lock, records no durable origin, and
+compares a pathname rather than the destination object's identity. Most lifecycle resources still return
+`IO ()`, and the runner does not receive opaque ownership receipts for the config, VM, cluster, alias, or
+daemon. The transitions that consume a satisfying receipt are in
 [lifecycle_state_model](lifecycle_state_model.md).
 
 Some current safety checks are late. VM bring-up can run provider ensure, create the durable path, and
@@ -270,7 +296,8 @@ orchestration, not sealed cross-process scope. The full protocol is specified in
 
 ## Teardown
 
-The current root command performs current-frame cluster cleanup and invokes a project teardown hook.
+The current root command runs the verb's reverse projection of the one plan: current-frame cluster
+cleanup plus the reverse each acquiring node declared.
 It does not recursively dispatch `project down`/`project destroy` through the child frames before
 unwinding. Deleting a provider VM can remove the nested compute incidentally, but that is not recursive
 lifecycle interpretation and cannot establish that child cleanup ran.

@@ -29,6 +29,23 @@ tests =
         , rejects "CrossAliasReceipt.hs"
         , rejects "ForeignClusterCleanup.hs"
         , rejects "CrossClusterReceipt.hs"
+        , rejects "HostLocalClusterRedirect.hs"
+        , rejects "EndpointScopeSubstitution.hs"
+        , rejects "RawRegistryPlan.hs"
+        , rejects "ForgeReadyBlobRoute.hs"
+        , rejects "ForgeCommandAuthority.hs"
+        , rejects "WrongVerbCloseRoot.hs"
+        , rejects "HarnessLeaseAsProduction.hs"
+        , rejects "ForgeRunLease.hs"
+        , rejects "ForgeProtectedSession.hs"
+        , rejects "ForgeVerifiedHandoff.hs"
+        , rejects "ForgeSessionPermit.hs"
+        , rejects "ForgeBuildAuthority.hs"
+        , rejects "ForgeRuntimeActivation.hs"
+        , rejects "ForgeRoleCursor.hs"
+        , rejects "ForgeTeardownForest.hs"
+        , rejects "ForgePreconditionSet.hs"
+        , rejects "ForgePreparedGate.hs"
         ]
 
 rejects :: FilePath -> TestTree

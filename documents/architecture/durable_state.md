@@ -5,7 +5,7 @@
 **Referenced by**: [readiness](readiness.md), [cluster lifecycle](../engineering/cluster_lifecycle.md), [WSL2](../engineering/wsl2.md), [Lima](../engineering/lima.md), [Incus](../engineering/incus.md), [documents index](../README.md)
 
 > **Purpose**: Define canonical host-root authority and its typed durable-path projections, explain the
-> current compatibility alias, and state what remains before destroy/up/readback is proved.
+> current compatibility alias, and record how far destroy/up/readback is proved.
 
 ## TL;DR
 
@@ -13,8 +13,9 @@ Root-config admission now resolves descriptive `sourceRoot` once into opaque
 `CanonicalProjectRoot scope rootId` authority without rewriting the descriptive context. Direct-host
 Docker binds the matching typed canonical `.data` projection; provider lanes continue to use
 `/var/tmp/hostbootstrap-demo-data` only as a guest-local projection. The final opaque plan still has to
-carry all guest, container, kind-node, and pod projections, and end-to-end durability remains
-unvalidated until the destroy/up/readback gate passes.
+carry all guest, container, kind-node, and pod projections. End-to-end durability is **proved on the
+native Linux GPU direct lane** by the `durable-readback` harness case; every other provider lane remains
+unvalidated.
 
 ## Current Status
 
@@ -65,8 +66,9 @@ code created it.
 
 The carry is not yet a delivered durability guarantee:
 
-- The current `ProjectSpec` still keeps forward chain, frame context, and teardown as separate
-  representations. The final `ProjectPlan` must retain the canonical authority and derive every
+- The current `ProjectSpec` still keeps teardown as a representation separate from the plan (the
+  forward chain and each frame's descent are now one plan value).
+  The final `ProjectPlan` must retain the canonical authority and derive every
   provider-guest/container/kind-node/pod projection rather than letting remaining adapters accept raw
   path values.
 - VM-shell and direct observations do not yet share one total, typed probe result at the IO boundary.
@@ -81,13 +83,15 @@ The carry is not yet a delivered durability guarantee:
   not prove durable placement.
 - The demo test harness currently resolves `containerPlan` with the `Production` profile. It creates and
   mounts `.data`; the nominal `.test_data` lifecycle is not what the live demo cluster uses.
-- No live gate writes through the pod path, runs `project destroy`, runs `project up`, and reads the same
-  bytes back from both host and pod.
+- The `durable-readback` case does write through the pod path, run `project destroy`, run `project up`,
+  and read the same bytes back — but only the native Linux GPU direct lane has run it. Lima, Incus, and
+  WSL2 have no such result.
 - Teardown is not a recursive child-to-parent interpretation. A provider VM can be stopped or removed by
-  the project hook without first running the lifecycle verb in each child frame.
+  the plan's reverse projection without first running the lifecycle verb in each child frame.
 
-Until the destroy/up/readback gate passes, documentation must describe the mechanism as **durable carry
-implemented, end-to-end persistence unvalidated**.
+Documentation must therefore describe the mechanism as **durable carry implemented, end-to-end
+persistence proved on the direct Linux lane only**. A statement covering another provider needs that
+provider's own run.
 
 ## Root authority and alias target
 
