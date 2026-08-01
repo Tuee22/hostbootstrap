@@ -909,7 +909,8 @@ still passes on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new values.
 mechanism now exist — this sprint's finite idle-timeout body, and the `spStop` restore-then-shutdown
 effect Sprint 5.7 supplied and closed on 2026-07-29 — so the observation is this sprint's alone. It has
 **no available host**: the observable is Windows-only (the shared WSL2 utility VM), and reconfirmed
-2026-07-29 there is no Windows host in reach. The four-clause global-wall protocol itself is not
+2026-07-31 from the Linux development host: neither a local Windows/WSL2 toolchain nor a configured
+Docker or Incus Windows remote is in reach. The four-clause global-wall protocol itself is not
 Windows-gated — Sprint 11.10's portable host-wall backend runs it un-gated on Linux — so what is
 outstanding is only the platform-specific memory-release observable, not any untested logic.
 
