@@ -27,6 +27,7 @@ import Control.Exception (IOException, catch)
 import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import Data.List (isPrefixOf, sort)
 import System.FilePath (isAbsolute, (</>))
+import qualified System.FilePath.Posix as Posix
 #ifdef mingw32_HOST_OS
 import System.Exit (ExitCode (ExitSuccess))
 import System.Process (readProcessWithExitCode)
@@ -233,10 +234,10 @@ from whichever toolkit a particular host happens to carry.
 -}
 cudaCandidatePaths :: String -> [FilePath] -> [FilePath]
 cudaCandidatePaths name entries =
-  [ root </> "bin" </> name
+  [ root Posix.</> "bin" Posix.</> name
   | root <-
-      (cudaPrefix </> "cuda")
-        : [ cudaPrefix </> entry
+      (cudaPrefix Posix.</> "cuda")
+        : [ cudaPrefix Posix.</> entry
           | entry <- reverse (sort entries)
           , "cuda-" `isPrefixOf` entry
           ]

@@ -41,7 +41,15 @@ module HostBootstrap.Config.Schema (
     ValidatedConfig,
     validatedConfigValue,
     withValidatedConfig,
+    ConfigWireAdmissionError (..),
+    configWireAdmissionErrorMessage,
+    withAuthenticatedConfigWire,
     withAssembledHarnessConfig,
+    SiblingConfigInstallResult (..),
+    SiblingConfigInstallError (..),
+    siblingConfigInstallErrorMessage,
+    installAuthenticatedProductionSiblingConfig,
+    installAuthenticatedHarnessSiblingConfig,
 
     -- * Validation
     validateProjectConfigForProject,
@@ -53,6 +61,7 @@ module HostBootstrap.Config.Schema (
 )
 where
 
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeAsyncException, SomeException, finally, fromException, mask, onException, tryJust)
 import Control.Monad (when)
 import Data.Bits (xor)
@@ -64,6 +73,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
+import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock)
+import HostBootstrap.Authority (InstalledProject, installedProjectName)
 import HostBootstrap.Config.Class (
     ConfigAssembly,
     ConfigInput,
@@ -73,12 +84,18 @@ import HostBootstrap.Config.Class (
     renderProjectCodecHoisted,
     runConfigAssembly,
  )
-import HostBootstrap.Config.Vocab (Harness, HarnessAuthority)
+import HostBootstrap.Config.Vocab (Harness, HarnessAuthority, Production)
 import HostBootstrap.Context (BinaryContext)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     renderHoistedValue,
+ )
+import HostBootstrap.Handoff (
+    AuthenticatedConfigPayload,
+    authenticatedConfigBytes,
+    authenticatedConfigDigest,
+    childConfigDigest,
  )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
@@ -86,11 +103,33 @@ import HostBootstrap.ProjectRoot (
     withCanonicalProjectRoot,
  )
 import Numeric (showHex)
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, doesPathExist, removeDirectory, removeFile, renameFile)
+import System.Directory (
+    createDirectory,
+    createFileLink,
+    doesDirectoryExist,
+    doesFileExist,
+    doesPathExist,
+    pathIsSymbolicLink,
+    removeDirectory,
+    removeFile,
+    renameFile,
+ )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), die, exitWith)
 import System.FilePath (takeDirectory, (</>))
-import System.IO (hPutStrLn, stderr)
+import System.IO (
+    IOMode (AppendMode, ReadMode),
+    hClose,
+    hFileSize,
+    hFlush,
+    hPutStrLn,
+    openBinaryFile,
+    openBinaryTempFile,
+    stderr,
+    withBinaryFile,
+ )
+import System.IO.Error (catchIOError)
+import System.IO.Unsafe (unsafePerformIO)
 
 {- | User-facing role names accepted by @project init --role@ / @service init
 --role@.
@@ -355,7 +394,7 @@ withValidatedConfig ::
 withValidatedConfig projectCodec value use = do
     let payload = renderScopedProjectConfigBytes projectCodec value
         rendered = TE.decodeUtf8 payload
-        digest = projectConfigSnapshotHashBytes payload
+        digest = childConfigDigest payload
     decoded <-
         trySynchronous
             ( decodeProjectCodecWithSettings
@@ -392,6 +431,222 @@ mintValidatedConfig ::
     result
 mintValidatedConfig digest value use =
     use (VerifiedConfigWire digest) (ValidatedConfig value)
+
+-- | Failures while turning authenticated transport bytes into a local config.
+-- No constructor retains or renders the payload, a signature, or a token.
+data ConfigWireAdmissionError
+    = ConfigWireDigestMismatch
+    | ConfigWireInvalidUtf8
+    | ConfigWireCodecRejected
+    | ConfigWireNonCanonical
+    deriving (Eq, Show)
+
+configWireAdmissionErrorMessage :: ConfigWireAdmissionError -> Text
+configWireAdmissionErrorMessage failure = case failure of
+    ConfigWireDigestMismatch ->
+        "authenticated config bytes do not match the signed digest"
+    ConfigWireInvalidUtf8 ->
+        "authenticated config bytes are not valid UTF-8"
+    ConfigWireCodecRejected ->
+        "the installed project codec rejected the authenticated config"
+    ConfigWireNonCanonical ->
+        "the authenticated config is not the codec's exact canonical rendering"
+
+{- | Admit the exact config bytes authenticated by a verified handoff.
+
+The digest is checked before parsing.  The bytes are then strictly decoded
+through the scope-correct installed 'ProjectCodec' and must render back
+byte-for-byte.  Only that conjunction mints a fresh local config identity; the
+wire's parent-side identity is never reused in this process.
+-}
+withAuthenticatedConfigWire ::
+    ProjectCodec scope specDigest cfg ->
+    AuthenticatedConfigPayload scope brokerGeneration ->
+    ( forall configDigest configId.
+      VerifiedConfigWire scope configDigest configId ->
+      ValidatedConfig scope specDigest configId (cfg scope) ->
+      IO result
+    ) ->
+    IO (Either ConfigWireAdmissionError result)
+withAuthenticatedConfigWire projectCodec authenticated use
+    | childConfigDigest payload /= authenticatedConfigDigest authenticated =
+        pure (Left ConfigWireDigestMismatch)
+    | otherwise = case TE.decodeUtf8' payload of
+        Left _ -> pure (Left ConfigWireInvalidUtf8)
+        Right source -> do
+            decoded <-
+                trySynchronous
+                    ( decodeProjectCodecWithSettings
+                        projectCodec
+                        Dhall.defaultInputSettings
+                        source
+                    )
+            case decoded of
+                Left _ -> pure (Left ConfigWireCodecRejected)
+                Right value
+                    | renderScopedProjectConfigBytes projectCodec value /= payload ->
+                        pure (Left ConfigWireNonCanonical)
+                    | otherwise ->
+                        Right
+                            <$> mintValidatedConfig
+                                (authenticatedConfigDigest authenticated)
+                                value
+                                use
+  where
+    payload = authenticatedConfigBytes authenticated
+
+-- | Result of installing authenticated bytes at the current binary's sibling
+-- config path.  An identical incumbent is a successful idempotent replay of
+-- installation, not permission to overwrite it.
+data SiblingConfigInstallResult
+    = SiblingConfigInstalled
+    | SiblingConfigAlreadyPresent
+    deriving (Eq, Show)
+
+-- | Fail-closed sibling installation errors.  Payload bytes and OS exception
+-- text are deliberately absent from this vocabulary.
+data SiblingConfigInstallError
+    = SiblingConfigUnsafeDestination FilePath
+    | SiblingConfigConflict FilePath
+    | SiblingConfigInstallFailed FilePath
+    deriving (Eq, Show)
+
+siblingConfigInstallErrorMessage :: SiblingConfigInstallError -> Text
+siblingConfigInstallErrorMessage failure = case failure of
+    SiblingConfigUnsafeDestination path ->
+        "refusing non-regular or linked sibling config destination: " <> T.pack path
+    SiblingConfigConflict path ->
+        "refusing to replace a differing sibling config: " <> T.pack path
+    SiblingConfigInstallFailed path ->
+        "failed to install the authenticated sibling config: " <> T.pack path
+
+-- | Production scopes can install only beside the exact installed project
+-- whose generative identity appears in the payload scope.
+installAuthenticatedProductionSiblingConfig ::
+    InstalledProject projectId ->
+    AuthenticatedConfigPayload (Production projectId) brokerGeneration ->
+    IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
+installAuthenticatedProductionSiblingConfig project =
+    installAuthenticatedSiblingConfig project . authenticatedConfigBytes
+
+-- | Harness scopes preserve the same project identity and their exact run
+-- identity while deriving the destination solely from the installed project
+-- and the current executable.
+installAuthenticatedHarnessSiblingConfig ::
+    InstalledProject projectId ->
+    AuthenticatedConfigPayload (Harness projectId runId) brokerGeneration ->
+    IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
+installAuthenticatedHarnessSiblingConfig project =
+    installAuthenticatedSiblingConfig project . authenticatedConfigBytes
+
+installAuthenticatedSiblingConfig ::
+    InstalledProject projectId ->
+    BS.ByteString ->
+    IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
+installAuthenticatedSiblingConfig project payload = do
+    path <- siblingProjectConfigPath (installedProjectName project)
+    attempted <-
+        trySynchronous
+            ( withSiblingConfigInstallLock path $ do
+                existing <- inspectSiblingConfig path payload
+                case existing of
+                    SiblingMissing -> createSiblingConfig path payload
+                    SiblingIdentical -> pure (Right SiblingConfigAlreadyPresent)
+                    SiblingUnsafe -> pure (Left (SiblingConfigUnsafeDestination path))
+                    SiblingDifferent -> pure (Left (SiblingConfigConflict path))
+            )
+    pure $ case attempted of
+        Left _ -> Left (SiblingConfigInstallFailed path)
+        Right result -> result
+
+data ExistingSibling
+    = SiblingMissing
+    | SiblingIdentical
+    | SiblingDifferent
+    | SiblingUnsafe
+
+inspectSiblingConfig :: FilePath -> BS.ByteString -> IO ExistingSibling
+inspectSiblingConfig path expected = do
+    linked <- pathIsSymbolicLinkIfPresent path
+    if linked
+        then pure SiblingUnsafe
+        else do
+            present <- doesPathExist path
+            if not present
+                then pure SiblingMissing
+                else do
+                    regular <- doesFileExist path
+                    if not regular
+                        then pure SiblingUnsafe
+                        else
+                            withBinaryFile path ReadMode $ \handle -> do
+                                size <- hFileSize handle
+                                if size /= fromIntegral (BS.length expected)
+                                    then pure SiblingDifferent
+                                    else do
+                                        actual <- BS.hGet handle (BS.length expected + 1)
+                                        pure
+                                            ( if actual == expected
+                                                then SiblingIdentical
+                                                else SiblingDifferent
+                                            )
+
+createSiblingConfig ::
+    FilePath ->
+    BS.ByteString ->
+    IO (Either SiblingConfigInstallError SiblingConfigInstallResult)
+createSiblingConfig path payload =
+    mask $ \restore -> do
+        (temporary, handle) <- openBinaryTempFile (takeDirectory path) ".hostbootstrap-config.tmp"
+        let removeTemporary = do
+                present <- doesFileExist temporary
+                when present (removeFile temporary)
+            closeAndRemove = hClose handle `finally` removeTemporary
+        restore (BS.hPut handle payload >> hFlush handle)
+            `onException` closeAndRemove
+        hClose handle `onException` removeTemporary
+        linked <- trySynchronous (restore (createFileLink temporary path))
+        result <- case linked of
+            Right () -> do
+                installed <- inspectSiblingConfig path payload
+                pure $ case installed of
+                    SiblingIdentical -> Right SiblingConfigInstalled
+                    SiblingDifferent -> Left (SiblingConfigConflict path)
+                    _ -> Left (SiblingConfigUnsafeDestination path)
+            Left _ -> do
+                raced <- inspectSiblingConfig path payload
+                pure $ case raced of
+                    SiblingIdentical -> Right SiblingConfigAlreadyPresent
+                    SiblingDifferent -> Left (SiblingConfigConflict path)
+                    SiblingUnsafe -> Left (SiblingConfigUnsafeDestination path)
+                    SiblingMissing -> Left (SiblingConfigInstallFailed path)
+        removeTemporary
+        pure result
+
+-- A process-wide guard complements the kernel lock because POSIX record locks
+-- are process-scoped rather than thread-scoped.  The path-level create-if-
+-- absent operation remains the authority against non-cooperating actors.
+{-# NOINLINE siblingConfigInstallMutex #-}
+siblingConfigInstallMutex :: MVar ()
+siblingConfigInstallMutex = unsafePerformIO (newMVar ())
+
+withSiblingConfigInstallLock :: FilePath -> IO result -> IO result
+withSiblingConfigInstallLock path action =
+    withMVar siblingConfigInstallMutex $ \_ ->
+        mask $ \restore -> do
+            let lockPath = path <> ".hostbootstrap-handoff.lock"
+            linked <- pathIsSymbolicLinkIfPresent lockPath
+            when linked (ioError (userError "sibling config lock path is linked"))
+            lockHandle <- openBinaryFile lockPath AppendMode
+            relinked <- pathIsSymbolicLinkIfPresent lockPath
+            when relinked (hClose lockHandle >> ioError (userError "sibling config lock path changed identity"))
+            restore (hLock lockHandle ExclusiveLock)
+                `onException` hClose lockHandle
+            restore action `finally` hClose lockHandle
+
+pathIsSymbolicLinkIfPresent :: FilePath -> IO Bool
+pathIsSymbolicLinkIfPresent path =
+    pathIsSymbolicLink path `catchIOError` const (pure False)
 
 {- | Interpret one restricted harness assembly and admit its result with the
 codec carrying the exact same project/run scope. The authority is consumed only

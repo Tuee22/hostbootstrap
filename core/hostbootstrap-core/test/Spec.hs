@@ -1,6 +1,9 @@
+{-# LANGUAGE CPP #-}
+
 module Main (main) where
 
 import qualified AuthoritySpec
+import qualified HandoffProtocolSpec
 import qualified HandoffSpec
 import qualified SessionSpec
 import qualified BuildAuthoritySpec
@@ -42,7 +45,11 @@ import Test.Tasty.Runners (NumThreads (..))
 import qualified Wsl2Spec
 import qualified WslGlobalWallConfigBytesSpec
 import qualified WslGlobalWallSpec
+#if defined(mingw32_HOST_OS)
+import qualified WslGlobalWallWindowsSpec
+#else
 import qualified WslGlobalWallHostSpec
+#endif
 
 main :: IO ()
 main = do
@@ -79,6 +86,7 @@ main = do
                     testGroup
                         "hostbootstrap-core"
                         [ AuthoritySpec.tests
+                        , HandoffProtocolSpec.tests
                         , HandoffSpec.tests
                         , SessionSpec.tests
                         , BuildAuthoritySpec.tests
@@ -107,7 +115,11 @@ main = do
                         , Wsl2Spec.tests
                         , WslGlobalWallSpec.tests
                         , WslGlobalWallConfigBytesSpec.tests
+#if defined(mingw32_HOST_OS)
+                        , WslGlobalWallWindowsSpec.tests
+#else
                         , WslGlobalWallHostSpec.tests
+#endif
                         , LiftSpec.tests
                         , StepSpec.tests
                         , ChainSpec.tests

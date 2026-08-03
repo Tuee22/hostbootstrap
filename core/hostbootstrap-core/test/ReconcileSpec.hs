@@ -4,23 +4,83 @@
 
 module ReconcileSpec (tests) where
 
+import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Fixture
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
+import HostBootstrap.Config.Schema (verifiedConfigDigest, withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
+import qualified HostBootstrap.Config.Vocab as Vocab
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import HostBootstrap.Lift
+    ( ConfigDelivery (..)
+    , ContainerLift (..)
+    , inContainer
+    , inVM
+    , localContext
+    )
 import HostBootstrap.Reconcile
-import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
 import PrepareFixture (gateFor)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 tests :: TestTree
 tests =
   testGroup
     "ReconcileSpec"
-    [ testCase "observed resources require stable positive identity versions" $
+    [ testGroup
+        "canonical lifecycle plan snapshot"
+        [ testCase "is deterministic for the same closed plan vocabulary" $ do
+            first <- canonicalSummary "config-a" canonicalFixturePlan
+            second <- canonicalSummary "config-a" canonicalFixturePlan
+            first @?= second
+        , testCase "length framing separates delimiter-shaped field boundaries" $ do
+            first <- canonicalSummary "config-a" (singleStepPlan "a|b:c" "frame|one" "label:two")
+            second <- canonicalSummary "config-a" (singleStepPlan "a" "frame|one" "b:c|label:two")
+            assertBool "distinct framed labels collapsed" (first /= second)
+        , testCase "step order and its derived dependency topology are digest material" $ do
+            ordered <- canonicalSummary "config-a" orderedCanonicalPlan
+            reordered <- canonicalSummary "config-a" reorderedCanonicalPlan
+            assertBool
+                "a reordered plan retained the same snapshot"
+                (ordered /= reordered)
+        , testCase "provider and explicit implementation/adapter revisions change the snapshot" $ do
+            ubuntu <- canonicalSummary "config-a" (providerCanonicalPlan "images:ubuntu/24.04")
+            debian <- canonicalSummary "config-a" (providerCanonicalPlan "images:debian/13")
+            assertBool
+                "an Incus image substitution retained the same snapshot"
+                (ubuntu /= debian)
+            defaultImplementation <- canonicalSummary "config-a" defaultReversePlan
+            revisedImplementation <- canonicalSummary "config-a" revisedImplementationPlan
+            assertBool
+                "a forward implementation revision retained the same snapshot"
+                (defaultImplementation /= revisedImplementation)
+            defaultAdapter <- canonicalSummary "config-a" declaredReversePlan
+            revisedAdapter <- canonicalSummary "config-a" revisedReverseAdapterPlan
+            assertBool
+                "a reverse-adapter revision retained the same snapshot"
+                (defaultAdapter /= revisedAdapter)
+        , testCase "the exact admitted config digest is substitution-sensitive" $ do
+            first <- canonicalSummary "config-a" canonicalFixturePlan
+            second <- canonicalSummary "config-b" canonicalFixturePlan
+            assertBool
+                "a config digest substitution retained the same snapshot"
+                (first /= second)
+        , testCase "child config contributes only its digest, never payload bytes" $ do
+            let secret = "fixture-secret-payload"
+            first <- canonicalSummary "config-a" (containerCanonicalPlan secret)
+            second <- canonicalSummary "config-a" (containerCanonicalPlan "replacement-payload")
+            let firstBytes = fst first
+            assertBool
+                "the raw child config entered the canonical snapshot"
+                (not (TextEncoding.encodeUtf8 secret `ByteString.isInfixOf` firstBytes))
+            assertBool "a child config substitution retained the same snapshot" (first /= second)
+        ]
+    , testCase "observed resources require stable positive identity versions" $
         withTestLifecyclePlan
           ( \plan ->
               joinReconcile $
@@ -92,6 +152,108 @@ tests =
           Left (SafetyRefusal _) -> pure ()
           other -> fail ("expected illegal-transition refusal, got " ++ show other)
     ]
+
+canonicalSummary :: Text.Text -> StepPlan -> IO (ByteString.ByteString, Text.Text)
+canonicalSummary configRoot plan =
+  withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+    do
+      admitted <-
+        withValidatedConfig
+          codec
+          (Fixture.defaultProjectConfig "hostbootstrap-demo" configRoot Context.HostOrchestrator)
+          ( \wire _ ->
+              pure
+                ( withLifecyclePlanForConfig codec (verifiedConfigDigest wire) plan $ \lifecycle ->
+                    (lifecyclePlanSnapshotBytes lifecycle, lifecyclePlanDigest lifecycle)
+                )
+          )
+      either fail pure admitted
+
+canonicalFixturePlan :: StepPlan
+canonicalFixturePlan = singleStepPlan "context" "host" "Host"
+
+singleStepPlan :: String -> String -> String -> StepPlan
+singleStepPlan label fid frameName =
+  either
+    (error . show)
+    id
+    (mkStepPlan [contextInitStep label (StepFrame fid frameName) (const (pure ()))])
+
+orderedCanonicalPlan :: StepPlan
+orderedCanonicalPlan =
+  planFrom
+    [ ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure ()))
+    , contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))
+    ]
+
+reorderedCanonicalPlan :: StepPlan
+reorderedCanonicalPlan =
+  planFrom
+    [ contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))
+    , ensureStep "ghc" "ensure" (StepFrame "host" "Host") (const (pure ()))
+    ]
+
+providerCanonicalPlan :: String -> StepPlan
+providerCanonicalPlan image =
+  planFrom
+    [ descendsVia
+        (inVM (IncusVM "fixture-vm" image) localContext)
+        (deployVMStep "vm" (StepFrame "host" "Host") (const (pure ())))
+    , contextInitStep "context" (StepFrame "vm" "VM") (const (pure ()))
+    ]
+
+defaultReversePlan :: StepPlan
+defaultReversePlan =
+  singleStepCore (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+
+declaredReversePlan :: StepPlan
+declaredReversePlan =
+  singleStepCore
+    ( reversedBy
+        (\_ _ -> pure TeardownReleased)
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+    )
+
+revisedImplementationPlan :: StepPlan
+revisedImplementationPlan =
+  singleStepCore
+    ( implementedAt
+        (either error id (mkStepImplementationRevision 2))
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+    )
+
+revisedReverseAdapterPlan :: StepPlan
+revisedReverseAdapterPlan =
+  singleStepCore
+    ( reversedByAt
+        (either error id (mkStepReverseAdapterRevision 2))
+        (\_ _ -> pure TeardownReleased)
+        (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure ())))
+    )
+
+containerCanonicalPlan :: Text.Text -> StepPlan
+containerCanonicalPlan payload =
+  planFrom
+    [ descendsVia
+        (inContainer container localContext)
+        (buildImageStep "image" (StepFrame "host" "Host") (const (pure ())))
+    , contextInitStep "context" (StepFrame "container" "Container") (const (pure ()))
+    ]
+  where
+    container =
+      ContainerLift
+        { clImage = "fixture:latest"
+        , clMounts = [Vocab.Mount "/host" "/guest" True]
+        , clExtraArgs = ["--network=host"]
+        , clRemoveAfter = True
+        , clConfigDelivery = Just (ConfigDelivery "/app/config.dhall" "/app/pb" payload)
+        }
+
+singleStepCore :: Step -> StepPlan
+singleStepCore step = planFrom [step]
+
+planFrom :: [Step] -> StepPlan
+planFrom = either (error . show) id . mkStepPlan
 
 testPlan :: StepPlan
 testPlan =

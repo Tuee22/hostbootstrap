@@ -143,12 +143,15 @@ provider, but the command does not first dispatch the same verb through every re
 yet carry verified ownership receipts for every resource and cannot promise orphan-free recovery after a
 hard kill.
 
-On Apple and Linux, `project down` also returns the VM's CPU and memory to the host. **On Windows it
-does not do so promptly**: the distro is terminated and `.wslconfig` restored, but teardown does not
-shut the shared utility VM down, so it stays resident holding the full memory balloon until the managed
-finite idle timeouts expire (Sprint 9.11 replaced the former `-1` pins with six hours). Run
-`wsl --shutdown` to reclaim it immediately — non-destructive, and already part of the provider's
-disclosed lifecycle. See [wsl2](../engineering/wsl2.md) § Wall release.
+On Apple and Linux, `project down` returns the provider VM's CPU and memory to the host. On Windows it
+first restores the journalled `.wslconfig` origin, including an absent origin, and then invokes the
+global `wsl --shutdown`. That ordering makes the next cold boot read the restored configuration; the
+shutdown stops every distro and releases the shared utility VM's memory balloon. The current Windows
+gate proves this wall-release observable, not the broader recursive-teardown or durable-readback work.
+
+The managed six-hour idle timeouts are a backstop only when a run is interrupted before teardown. In
+that case an operator can run `wsl --shutdown` manually, after accounting for its disclosed effect on
+every WSL distro. See [wsl2](../engineering/wsl2.md) § Wall release.
 
 The provider disk may be removed by `destroy`; host `<project-root>/.data` is shared from outside that
 disk and is not intentionally included in cluster removal. Reattachment is proved by the

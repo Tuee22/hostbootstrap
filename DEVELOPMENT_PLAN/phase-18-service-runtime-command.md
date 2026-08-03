@@ -58,7 +58,7 @@ is not a live validation claim for the current four-lane accelerator gate.
 
 **Reopened 2026-07-09 for the accelerator daemon runtime.** The protocol, concrete socket path, dynamic
 configuration, two-listener web boundary, and persistent real-worker supervision are implemented and
-covered by static/local tests. The cross-substrate live gates below remain open, so the phase stays Active.
+covered by static/local tests. The Apple Silicon live gate below remains open, so the phase stays Active.
 
 **Reopened 2026-07-24 for validated service selection and immutable dispatch.** Sprints 8.7 and 19.8 now
 provide a canonically verified full-config snapshot, typed registry/role codecs under one
@@ -69,15 +69,15 @@ remains blocked by Sprints 14.6, 15.9, and 17.4; Sprint 19.8 is closed.
 
 ## Remaining Work
 
-**Accelerator daemon live-runtime closure — open.** Static and local validation, including the browser
-workflow specification and guarded real-worker cases, is implemented. Completion still requires:
+**Accelerator daemon live-runtime closure — open only for Apple Silicon.** Static and local validation,
+including the browser workflow specification and guarded real-worker cases, is implemented. Completion
+still requires on that lane:
 
 - real socket integration through the in-cluster `ClusterIP` and host-daemon local-only `NodePort` paths;
 - the browser Add workflow against those live deployments, proving the result and metadata came from the
   selected JIT-built worker rather than from the web process; and
-- the three still-open native substrate/placement lanes: Apple Silicon host daemon, Linux CPU
-  in-cluster daemon, and Linux GPU direct nvkind/in-cluster daemon. On each lane the harness runs four
-  cases across two message variants, so the required result is `8/8`.
+- the Apple Silicon host-daemon placement. The Windows GPU and native Linux GPU/CPU placements have
+  dated accepted evidence below and are not open lanes.
 
 The Windows GPU host-daemon lane is closed by the dated 2026-07-23 Windows/WSL2 `8/8` run, which exercised
 the host worker, CBOR WebSocket path, browser result, and backend/artifact metadata. Windows is not part of
@@ -332,17 +332,18 @@ recorded once with
 [Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
 
 That run is the first live native Linux GPU daemon result: the daemon rolled out in-cluster, built its
-CUDA worker, and served the browser Add workflow over the private listener on both variants. The native
-Apple Silicon and native Linux **CPU** accelerator lanes remain open.
+CUDA worker, and served the browser Add workflow over the private listener on both variants. The later
+2026-07-29 native Linux **CPU** run closed that lane; only Apple Silicon remains open.
 
-The phase remains Active only for native Apple Silicon host-daemon and Linux CPU/GPU in-cluster real
-socket/browser closure. The Windows GPU host-daemon lane closed on the dated 2026-07-23 `8/8` run; that
-result does not stand in for any of the three remaining native lanes.
+Sprint 18.5 remains Active only for native Apple Silicon host-daemon real socket/browser closure. The
+Windows GPU host-daemon and native Linux GPU/CPU in-cluster lanes are closed by their dated accepted
+runs; none stands in for the Apple lane.
 
 ### Sprint 18.6: Typed selected-service package and immutable handler input [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 14.6, 15.9, 17.4, and 19.8
+**Blocked by**: Sprints 14.6, 15.9, and 17.4
+**Satisfied prerequisite**: Sprint 19.8
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,

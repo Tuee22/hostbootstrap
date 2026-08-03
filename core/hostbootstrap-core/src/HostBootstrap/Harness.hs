@@ -64,6 +64,7 @@ module HostBootstrap.Harness (
     testDataRoot,
     testDataGeneration,
     selfCreatedTestDataRemoval,
+    HarnessRunCleanupFailure (..),
     HarnessRunOwnership (..),
     runMatrix,
     reportCard,
@@ -313,14 +314,17 @@ data CaseResult
     = Pass
     | -- | The case's own assertion said no.
       Fail String
-    | -- | A post-ensure safety probe found pre-existing operator state. Nothing
-      -- was acquired, so nothing is torn down and no foreign state is touched.
+    | {- | A post-ensure safety probe found pre-existing operator state. Nothing
+      was acquired, so nothing is torn down and no foreign state is touched.
+      -}
       Refused String
-    | -- | An attempted lifecycle operation failed. The run's owned state is torn
-      -- down; the cause is the reason, never a bare exit code (§ CC).
+    | {- | An attempted lifecycle operation failed. The run's owned state is torn
+      down; the cause is the reason, never a bare exit code (§ CC).
+      -}
       LifecycleFailed String
-    | -- | Cleanup failed. The variant is red rather than green with leaked
-      -- state, and the reason names what could not be released.
+    | {- | Cleanup failed. The variant is red rather than green with leaked
+      state, and the reason names what could not be released.
+      -}
       TeardownFailed String
     deriving (Eq, Show)
 
@@ -409,8 +413,26 @@ project the binary *is*. The engine only requires that *some* bracket takes
 ownership before a variant runs and releases it afterwards, and that a refusal
 is a 'Left' rather than an exception.
 -}
-newtype HarnessRunOwnership = HarnessRunOwnership
-    {runWithOwnedRun :: forall result. IO result -> IO (Either String result)}
+data HarnessRunCleanupFailure
+    = -- | The run's exact generated data-root identity could not be released.
+      HarnessDataRootCleanupFailed String
+    | -- | The run lease and project-wide Harness mode could not be closed.
+      HarnessModeCloseFailed String
+    deriving (Eq, Show)
+
+newtype HarnessRunOwnership authority = HarnessRunOwnership
+    { runWithOwnedRun ::
+        forall result.
+        -- The value is supplied only after the ownership bracket acquires the
+        -- generative root. Production uses an opaque typed root; unit seams may
+        -- use a simpler witness while exercising engine behavior.
+        (authority -> IO result) ->
+        -- Acquisition refusals are the outer 'Left'. Once the body completes,
+        -- its result is retained even when the finalizer reports that ownership
+        -- remains unresolved; the engine renders that failure as teardown and
+        -- must not start a later variant.
+        IO (Either String (result, Maybe HarnessRunCleanupFailure))
+    }
 
 {- | Drive the case matrix: per case run setup → body → teardown, guaranteeing
 teardown via 'finally' (the body's exception is recorded as a 'Fail', not
@@ -498,10 +520,10 @@ allCasesSelector = "all"
 the rank-2 bracket that writes that variant's generated @<project>.dhall@ before
 bring-up and removes it after teardown.
 -}
-data ConfigVariant = ConfigVariant
+data ConfigVariant authority = ConfigVariant
     { variantId :: VariantId
     , variantCaseIds :: NonEmpty CaseId
-    , variantWithConfig :: forall a. IO a -> IO a
+    , variantWithConfig :: forall a. authority -> IO a -> IO a
     }
 
 {- | A post-ensure safety probe discovered pre-existing operator state. Cleanup
@@ -584,43 +606,80 @@ the per-variant reports are aggregated into one 'Report', each row identified by
 its stable variant ID.
 -}
 runSuiteSelection ::
-    HarnessRunOwnership ->
+    HarnessRunOwnership authority ->
     TestSuite ->
-    [ConfigVariant] ->
+    [ConfigVariant authority] ->
     IO (Either String Report)
 runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown) variants = do
     safe <- safety
     case safe of
         Left reason -> pure (Left ("test run refused: " ++ reason))
-        -- The engine owns the run's `.test_data` lifecycle (§ Z): create it under
-        -- the self-created-only delete-guard, so the run's durable storage is
-        -- isolated and a `.test_data` (or `.data`) the run did not create is never
-        -- removed. Each variant's run config is generated inside its
-        -- `withGeneratedConfig` (after safety, removed on exit), then the stack is
-        -- brought up against it; the variant reports are concatenated.
-        Right () ->
-            runWithOwnedRun ownership $ do
-                variantReports <- mapM safeRunVariant variants
-                pure (Report (concatMap reportResults variantReports))
+        -- Every distinct config variant receives its own generative run lease
+        -- and `.test_data/<runId>` lifetime (§ Z). Cases sharing a variant share
+        -- that stack; the next variant cannot start until the preceding ownership
+        -- bracket has resolved. Each variant's generated config and lifecycle are
+        -- nested inside that bracket, and the resulting reports are concatenated.
+        Right () -> do
+            variantReports <- runVariants variants
+            pure (Right (Report (concatMap reportResults variantReports)))
   where
-    -- A whole variant is isolated: an unexpected exception anywhere in it (the
-    -- config bracket, an escaped teardown) fails only that variant's cases and the
-    -- loop moves on to the next variant, rather than aborting the run.
+    runVariants [] = pure []
+    runVariants (cv : rest) = do
+        (report, cleanupFailure) <- safeRunVariant cv
+        case cleanupFailure of
+            Nothing -> (report :) <$> runVariants rest
+            Just failure ->
+                -- A failed finalizer has not proved the prior lease closed. Do
+                -- not even enter another ownership bracket; preserve a total
+                -- report by refusing every still-unstarted variant.
+                pure (report : map (blockedByCleanup failure) rest)
+    -- A whole variant is isolated, including its ownership acquisition. An
+    -- ownership refusal is a structured refusal for that variant; an unexpected
+    -- exception anywhere in the bracket/config/lifecycle fails only that variant.
+    -- In both cases the loop can continue only after the ownership bracket has
+    -- returned, so no two variants overlap one project-wide mode lease.
     safeRunVariant cv@(ConfigVariant ident selected _) = do
         let chosen = casesFor selected
-        e <- trySynchronousIO (runVariant chosen cv)
+        e <-
+            trySynchronousIO
+                ( runWithOwnedRun ownership $ \ownedAuthority ->
+                    runVariant chosen cv ownedAuthority
+                )
         pure $ case e of
-            Right report -> report
+            Right (Right (report, Nothing)) -> (report, Nothing)
+            Right (Right (report, Just failure)) ->
+                ( addRows report (reportResults (labelReport ident (Report [cleanupFailureRow failure])))
+                , Just failure
+                )
+            Right (Left reason) ->
+                ( labelReport
+                    ident
+                    (allOutcomes chosen (Refused ("ownership refused: " ++ reason)))
+                , Nothing
+                )
             Left err ->
-                labelReport
+                ( labelReport
                     ident
                     (allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err)))
+                , Nothing
+                )
+    blockedByCleanup failure (ConfigVariant ident selected _) =
+        labelReport
+            ident
+            ( allOutcomes
+                (casesFor selected)
+                ( Refused
+                    ( "prior variant ownership cleanup is unresolved; refusing to start this variant: "
+                        ++ cleanupFailureReason failure
+                    )
+                )
+            )
     -- Bring-up is **inside** the guaranteed teardown: a failed @project up@ runs
     -- the same @project destroy@ and turns into a per-case 'LifecycleFailed' for
     -- this variant. 'safeRunVariant' still catches anything that escapes, so
     -- later variants can run.
-    runVariant chosen (ConfigVariant ident _ withGeneratedConfig) =
-        labelReport ident <$> withGeneratedConfig (runFrame chosen ident)
+    runVariant chosen (ConfigVariant ident _ withGeneratedConfig) ownedAuthority =
+        labelReport ident <$> withGeneratedConfig ownedAuthority (runFrame chosen ident)
     runFrame chosen ident = do
         eenv <- trySynchronousIO (bringUp ident)
         case eenv of
@@ -646,7 +705,7 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
                             )
             Right env -> withTeardown chosen (runMatrix (assertSeams env) chosen)
     {- Teardown always runs after acquisition, and its own failure is a
-    *distinct* outcome appended to the variant's rows: cleanup that broke makes
+    \*distinct* outcome appended to the variant's rows: cleanup that broke makes
     the variant red with the cause named, rather than a green report hiding
     leaked state (§ Z). The per-case results are preserved, because "the
     assertions passed but the stack did not come down" is exactly what an
@@ -663,6 +722,14 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
     variantBroke chosen err =
         allOutcomes chosen (LifecycleFailed ("variant failed: " ++ displayException err))
     teardownRow err = ("teardown", TeardownFailed (displayException err))
+    cleanupFailureRow failure = case failure of
+        HarnessDataRootCleanupFailed reason ->
+            ("data-root cleanup", TeardownFailed reason)
+        HarnessModeCloseFailed reason ->
+            ("mode close", TeardownFailed reason)
+    cleanupFailureReason failure = case failure of
+        HarnessDataRootCleanupFailed reason -> "data-root cleanup failed: " ++ reason
+        HarnessModeCloseFailed reason -> "mode close failed: " ++ reason
     addRows (Report rs) extra = Report (rs ++ extra)
     -- Every chosen case carries one engine-classified outcome (the bring-up or
     -- variant failure), so the whole variant reports the same structured reason.

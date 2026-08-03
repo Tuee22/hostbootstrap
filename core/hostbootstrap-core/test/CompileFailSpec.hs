@@ -1,5 +1,6 @@
 module CompileFailSpec (tests) where
 
+import Data.List (isInfixOf)
 import HostBootstrap.DocValidator (findRepoRoot)
 import System.Directory (getCurrentDirectory, withCurrentDirectory)
 import System.Exit (ExitCode (ExitFailure))
@@ -35,21 +36,59 @@ tests =
         , rejects "ForgeReadyBlobRoute.hs"
         , rejects "ForgeCommandAuthority.hs"
         , rejects "WrongVerbCloseRoot.hs"
+        , rejectsWith
+            "ForgeHarnessAuthority.hs"
+            ["does not export any children"]
+        , rejectsWith
+            "OpenHarnessAuthorityFromText.hs"
+            ["does not export", "withHarnessAuthority"]
+        , rejectsWith
+            "HarnessConfigAsProduction.hs"
+            ["Expected: SecretRef (Production Project)"]
+        , rejectsWith
+            "CrossRunPlaintext.hs"
+            [ "Expected: HarnessConfigAuthority Project runB"
+            , "Actual: HarnessConfigAuthority Project runA"
+            ]
+        , rejectsWith
+            "ProductionPlaintext.hs"
+            ["Expected: SecretRef (Production Project)"]
         , rejects "HarnessLeaseAsProduction.hs"
         , rejects "ForgeRunLease.hs"
         , rejects "ForgeProtectedSession.hs"
         , rejects "ForgeVerifiedHandoff.hs"
+        , rejects "CrossScopeHandoff.hs"
+        , rejectsWith
+            "SignHandoffWithoutRootStore.hs"
+            ["Variable not in scope: signHandoffGrant"]
         , rejects "ForgeSessionPermit.hs"
+        , rejectsWith
+            "ClosingPermitAsOpen.hs"
+            [ "Couldn't match expected type: ProjectPermit"
+            , "with actual type: ClosingProjectPermit"
+            ]
+        , rejectsWith
+            "ConstructTransactionInterrupted.hs"
+            ["Illegal term-level use of the type constructor"]
         , rejects "ForgeBuildAuthority.hs"
         , rejects "ForgeRuntimeActivation.hs"
         , rejects "ForgeRoleCursor.hs"
         , rejects "ForgeTeardownForest.hs"
         , rejects "ForgePreconditionSet.hs"
         , rejects "ForgePreparedGate.hs"
+        , rejectsWith
+            "ForgeStepExecution.hs"
+            [ "Illegal term-level use of the type constructor"
+            , "StepExecution"
+            , "ExecutionNode"
+            ]
         ]
 
 rejects :: FilePath -> TestTree
-rejects fixture =
+rejects fixture = rejectsWith fixture []
+
+rejectsWith :: FilePath -> [String] -> TestTree
+rejectsWith fixture expectedDiagnostics =
     testCase fixture $ do
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
@@ -62,8 +101,21 @@ rejects fixture =
                     ["exec", "--", "ghc", "-fno-code", "-package", "hostbootstrap-core", fixturePath]
                     ""
         case code of
-            ExitFailure _ ->
+            ExitFailure _ -> do
                 assertBool
                     ("compile-fail fixture produced no diagnostic: " ++ fixture)
                     (not (null err))
+                mapM_
+                    ( \expected ->
+                        assertBool
+                            ( "compile-fail fixture produced the wrong diagnostic: "
+                                ++ fixture
+                                ++ "; expected to find "
+                                ++ show expected
+                                ++ " in:\n"
+                                ++ err
+                            )
+                            (expected `isInfixOf` err)
+                    )
+                    expectedDiagnostics
             _ -> assertFailure ("compile-fail fixture unexpectedly compiled: " ++ fixture)

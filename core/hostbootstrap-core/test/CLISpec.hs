@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -6,6 +7,7 @@
 module CLISpec (runSchemaFixture, tests) where
 
 import Control.Exception (finally, throwIO, try)
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -19,10 +21,10 @@ import HostBootstrap.CLI (
     addServices,
     addSteps,
     finalizeProjectSpec,
-    projectServiceVariantNames,
     projectArtifactNames,
-    projectStepPlan,
+    projectServiceVariantNames,
     projectSpec,
+    projectStepPlan,
  )
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Command (coreCommandNames)
@@ -34,7 +36,6 @@ import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Harness (
     Case (Case),
     CaseId,
@@ -43,14 +44,27 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     mkCaseId,
  )
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
+import HostBootstrap.Protected (
+    ProtectedRecord (protectedRecordBytes),
+    ProtectedSession,
+    RecordKey,
+    listProtectedRecords,
+    mkRecordKey,
+    openProtectedStore,
+    protectedErrorMessage,
+    readProtectedRecord,
+    recordKeyText,
+    tryProtectedEntry,
+ )
 import HostBootstrap.Service (
     ServiceRegistry,
     ServiceRegistryError (..),
     emptyServiceRegistry,
-    serviceRoleSchemaFamilies,
     serviceDefinition,
     serviceId,
     serviceRegistry,
+    serviceRoleSchemaFamilies,
     withFinalizedServiceRegistry,
  )
 import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
@@ -136,7 +150,7 @@ tests =
                     addServices web $
                         addServices web $
                             addSteps sampleChain $
-                                        builderWith passingSuite (pure ()) []
+                                builderWith passingSuite (pure ()) []
             case finalizeProjectSpec builder of
                 Left (InvalidServiceRegistry (DuplicateServiceIds _)) -> pure ()
                 other -> assertFailure ("expected duplicate service rejection, got " ++ either show (const "Right ProjectSpec") other)
@@ -148,7 +162,7 @@ tests =
                             ( addServices
                                 (fixtureServiceRegistry Nothing [("web", pure ())])
                                 ( addSteps sampleChain $
-                                            builderWith passingSuite (pure ()) []
+                                    builderWith passingSuite (pure ()) []
                                 )
                             )
             projectServiceVariantNames layered @?= ["web", "accelerator"]
@@ -180,12 +194,20 @@ tests =
                     finalized $
                         addSteps second $
                             addSteps first $
-                                        builderWith passingSuite (pure ()) []
+                                builderWith passingSuite (pure ()) []
                 cfg = Fixture.defaultProjectConfig "cli-fragments" "." HostOrchestrator
             plan <-
                 Fixture.withFixtureProjectRoot $ \root ->
                     either (assertFailure . show) pure (projectStepPlan spec root cfg)
             map stepLabel (stepPlanSteps plan) @?= ["first", "second"]
+        , testCase "the finalized step planner accepts the exact Harness config scope" $ do
+            let spec = finalized (addSteps sampleChain (builderWith passingSuite (pure ()) []))
+                harnessCfg :: Fixture.ProjectConfig (V.Harness Fixture.FixtureProject HarnessPlanRun)
+                harnessCfg = Fixture.defaultProjectConfig "cli-harness-plan" "." HostOrchestrator
+            plan <-
+                Fixture.withFixtureProjectRoot $ \root ->
+                    either (assertFailure . show) pure (projectStepPlan spec root harnessCfg)
+            map stepLabel (stepPlanSteps plan) @?= ["launch the VM"]
         , testCase "artifact fragments compose associatively without erasure" $ do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
                 firstArtifact = artifactOf "fragmentA" budgetCodec (V.Budget 1 2 3)
@@ -193,7 +215,7 @@ tests =
                 finish builder =
                     finalized $
                         addSteps sampleChain $
-                                builder
+                            builder
                 separately =
                     finish $
                         addArtifacts [secondArtifact] $
@@ -211,7 +233,7 @@ tests =
                     addAssemblyInputs [input] $
                         addAssemblyInputs [input] $
                             addSteps sampleChain $
-                                        builderWith passingSuite (pure ()) []
+                                builderWith passingSuite (pure ()) []
             case finalizeProjectSpec builder of
                 Left (DuplicateAssemblyInputs ["settings.dhall"]) -> pure ()
                 other -> assertFailure ("expected duplicate assembly-input rejection, got " ++ either show (const "validated") other)
@@ -223,7 +245,7 @@ tests =
                     finalized $
                         addSteps duplicate $
                             addSteps duplicate $
-                                        addArtifacts [] (builderWith passingSuite (pure ()) [])
+                                addArtifacts [] (builderWith passingSuite (pure ()) [])
                 cfg = Fixture.defaultProjectConfig "cli-duplicates" "." HostOrchestrator
             outcome <- Fixture.withFixtureProjectRoot (\root -> pure (projectStepPlan spec root cfg))
             case outcome of
@@ -272,6 +294,53 @@ tests =
                     result @?= Left (ExitFailure 1)
                     doesFileExist cfgPath >>= (@?= False)
                     doesDirectoryExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
+                )
+                `finally` removeFile testPath
+        , testCase "test run binds the exact Harness plan snapshot before entering the live body" $ do
+            cfgPath <- Schema.siblingProjectConfigPath "cli-test-bound-plan"
+            stateRoot <- getCurrentDirectory
+            let testPath = takeDirectory cfgPath </> "cli-test-bound-plan.test.dhall"
+                storeRoot =
+                    stateRoot
+                        </> ".hostbootstrap"
+                        </> "authority"
+                        </> "cli-test-bound-plan"
+            observed <- newIORef Nothing
+            let suite =
+                    TestSuite
+                        (pure (Right ()))
+                        ( \_ -> do
+                            generatedConfigPresent <- doesFileExist cfgPath
+                            records <- observeBoundHarnessPlan storeRoot "cli-test-bound-plan"
+                            writeIORef observed (Just (generatedConfigPresent, records))
+                            pure ()
+                        )
+                        [Case (fixtureCaseId "ok") 1 False]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+                spec = specWith suite (pure ()) []
+            ( do
+                    initialized <-
+                        try (withArgs ["test", "init"] (runHostBootstrapCLI "cli-test-bound-plan" spec)) ::
+                            IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    ran <-
+                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI "cli-test-bound-plan" spec)) ::
+                            IO (Either ExitCode ())
+                    ran @?= Right ()
+                    readIORef observed >>= \case
+                        Just (True, Right (runName, specDigest, planDigest)) -> do
+                            assertBool
+                                "the bound lease uses the acquired generative run"
+                                ("run-" `T.isPrefixOf` runName)
+                            assertBool "the snapshot carries a spec digest" (not (T.null specDigest))
+                            assertBool
+                                "the lifecycle plan digest is derived from the spec and step plan"
+                                (specDigest `T.isPrefixOf` planDigest)
+                        other ->
+                            assertFailure
+                                ("the live body did not observe a generated config plus bound snapshot: " ++ show other)
+                    doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "test run refuses to overwrite an existing sibling project config" $ do
@@ -419,7 +488,7 @@ tests =
                 let spec =
                         finalized $
                             addSteps sampleChain $
-                                    builderWith passingSuite (pure ()) []
+                                builderWith passingSuite (pure ()) []
                 result <-
                     try (withArgs ["project", "up"] (runHostBootstrapCLI "cli-project-rootgate" spec)) ::
                         IO (Either ExitCode ())
@@ -518,7 +587,7 @@ specWithServices selected handlers =
         addServices
             (fixtureServiceRegistry selected handlers)
             ( addSteps sampleChain $
-                        builderWith passingSuite (pure ()) []
+                builderWith passingSuite (pure ()) []
             )
 
 fixtureServiceRegistry ::
@@ -539,10 +608,14 @@ fixtureServiceRegistry selected handlers =
 derive project-relative paths from it without ever seeing its phantoms.
 -}
 type FixtureFragment =
-    forall rootScope rootId.
+    forall configScope rootScope rootId.
     CanonicalProjectRoot rootScope rootId ->
-    Fixture.ProjectConfig (V.Production Fixture.FixtureProject) ->
+    Fixture.ProjectConfig configScope ->
     [Step]
+
+-- A compile-time-only generative run index for the scope-polymorphic planner
+-- case above. No authority is minted from this descriptive fixture type.
+data HarnessPlanRun
 
 -- A one-step demo-shaped chain used to prove `project up --dry-run` renders.
 sampleChain :: FixtureFragment
@@ -551,6 +624,104 @@ sampleChain _ _ =
 
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId
+
+{- | Inspect the protected records from inside the suite body. At this point the
+production command path must already have written one immutable revision-1
+snapshot and bound the exact acquired run lease to those same digests.
+-}
+observeBoundHarnessPlan ::
+    FilePath ->
+    T.Text ->
+    IO (Either String (T.Text, T.Text, T.Text))
+observeBoundHarnessPlan storeRoot projectName = do
+    opened <- openProtectedStore storeRoot
+    case opened of
+        Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
+        Right store -> do
+            entered <-
+                tryProtectedEntry store $ \session ->
+                    Right <$> inspect session
+            pure $ case entered of
+                Left failure -> Left (T.unpack (protectedErrorMessage failure))
+                Right Nothing -> Left "the plan-binding transaction was still holding the protected entry"
+                Right (Just result) -> result
+  where
+    inspect ::
+        ProtectedSession session ->
+        IO (Either String (T.Text, T.Text, T.Text))
+    inspect session = do
+        listed <- listProtectedRecords session
+        case listed of
+            Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
+            Right keys -> do
+                let leasePrefix = "lease." <> projectName <> "."
+                    leaseKeys =
+                        filter
+                            ((leasePrefix `T.isPrefixOf`) . recordKeyText)
+                            keys
+                leases <- mapM (readLease session leasePrefix) leaseKeys
+                case sequence leases of
+                    Left failure -> pure (Left failure)
+                    Right observed ->
+                        case [bound | Just bound <- observed] of
+                            [(runName, specDigest, planDigest)] ->
+                                inspectSnapshot session runName specDigest planDigest
+                            other ->
+                                pure
+                                    ( Left
+                                        ( "expected exactly one bound Harness lease, observed "
+                                            ++ show other
+                                        )
+                                    )
+    readLease ::
+        ProtectedSession session ->
+        T.Text ->
+        RecordKey ->
+        IO (Either String (Maybe (T.Text, T.Text, T.Text)))
+    readLease session leasePrefix key = do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (T.unpack (protectedErrorMessage failure))
+            Right Nothing -> Left ("lease record disappeared: " ++ T.unpack (recordKeyText key))
+            Right (Just record) -> case recordFields record of
+                ["bound", _epoch, specDigest, planDigest] ->
+                    Right
+                        ( Just
+                            ( T.drop (T.length leasePrefix) (recordKeyText key)
+                            , specDigest
+                            , planDigest
+                            )
+                        )
+                _ -> Right Nothing
+    inspectSnapshot ::
+        ProtectedSession session ->
+        T.Text ->
+        T.Text ->
+        T.Text ->
+        IO (Either String (T.Text, T.Text, T.Text))
+    inspectSnapshot session runName specDigest planDigest =
+        case mkRecordKey ("snapshot." <> projectName <> "." <> runName) of
+            Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
+            Right key -> do
+                observed <- readProtectedRecord session key
+                pure $ case observed of
+                    Left failure -> Left (T.unpack (protectedErrorMessage failure))
+                    Right Nothing -> Left "the bound run has no persisted snapshot"
+                    Right (Just record) -> case recordFields record of
+                        ["1", recordedSpec, recordedPlan]
+                            | recordedSpec == specDigest
+                            , recordedPlan == planDigest ->
+                                Right (runName, specDigest, planDigest)
+                        fields ->
+                            Left
+                                ( "the bound lease and revision-1 snapshot disagree: "
+                                    ++ show fields
+                                )
+    recordFields :: ProtectedRecord -> [T.Text]
+    recordFields =
+        map (T.pack . ByteStringChar8.unpack)
+            . ByteStringChar8.split '\t'
+            . protectedRecordBytes
 
 -- | A stack-driven suite with a trivial bring-up and a single passing assertion.
 passingSuite :: TestSuite

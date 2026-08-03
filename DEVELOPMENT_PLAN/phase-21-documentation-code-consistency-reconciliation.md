@@ -11,8 +11,9 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.5–5.8, 9.10, 10.9, 11.10, 13.17–13.18, 13.20, 14.6,
-15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.7–19.8, and 20.5
+**Blocked by**: Sprints 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
+18.5–18.6, and 20.5
+**Satisfied prerequisites**: Sprints 5.5–5.8, 9.10, 13.20, and 19.7–19.8
 
 **Reopened 2026-07-24.** Sprint 21.4 owns the new repo-wide reconciliation after the confirmed code/docs
 defects close in their implementation phases. The 2026-07-23 closure below is retained only as historical
@@ -168,8 +169,10 @@ canonical homes.
   authority (standards § DD).
 - Historical claims about legible failure, an attached render-time `Budget/fitsWithin` assertion, and the
   then-undelivered alias were corrected. Later landed alias/share transport must now be documented as
-  implemented, while its readback validation remains open. The old `ExitFailure 1`, never-attached assert,
-  and ad-hoc alias are recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+  implemented, and the later Phase 5 Sprint 5.6 readback evidence must be described as closed without
+  conflating it with Sprint 10.9's still-open exclusive ownership work. The old `ExitFailure 1`,
+  never-attached assert, and ad-hoc alias are recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 #### Validation
 
@@ -188,8 +191,9 @@ now-implemented host-share/carry mechanism without claiming the still-open readb
 ### Sprint 21.4: Current code/documentation reconciliation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.5–5.8, 9.10, 10.9, 11.10, 13.17–13.18, 13.20, 14.6,
-15.8–15.9, 16.5–16.6, 17.4, 18.5–18.6, 19.7–19.8, and 20.5
+**Blocked by**: Sprints 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
+18.5–18.6, and 20.5
+**Satisfied prerequisites**: Sprints 5.5–5.8, 9.10, 13.20, and 19.7–19.8
 **Implementation**: governed documentation, source comments/help text, mechanical documentation checks
 **Docs to update**: `README.md`, `AGENTS.md`, `documents/`, `DEVELOPMENT_PLAN/`
 

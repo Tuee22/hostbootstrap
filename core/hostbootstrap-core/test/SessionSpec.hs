@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -12,15 +13,22 @@ and then reopening the store, exactly as an interrupted invocation leaves it.
 -}
 module SessionSpec (tests) where
 
+import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (try)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Authority (BrokerEpoch, withFreshBrokerEpoch)
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Lifecycle.Session
+import HostBootstrap.Lifecycle.Session.Testing
 import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
     ProtectedSession,
     ProtectedStore,
+    compareAndSwapProtectedRecord,
+    listProtectedRecords,
+    mkRecordKey,
     openProtectedStore,
     protectedStoreRoot,
     withProtectedEntry,
@@ -43,6 +51,7 @@ tests =
         , testGroup "phase classification" classificationTests
         , testGroup "the prepare compare-and-swap" prepareTests
         , testGroup "recovery" recoveryTests
+        , testGroup "transaction recovery" transactionRecoveryTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -314,14 +323,25 @@ prepareTests =
             withOpenSession s $ \epoch sess permit -> do
                 fence <- expect' =<< establishInitialFence s plan 1
                 afterIntent <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
-                -- `permit` is now two versions behind `afterIntent`.
+                -- `permit` was consumed by intent registration and is now stale.
                 blocked <-
                     withPreparedGate s sess epoch fence "op-1" "EffectOutcomeUnknown" permit $
                         \_ _ -> pure (Right ())
                 case blocked of
                     Left (SessionStaleProjectPermit _) -> pure ()
                     other -> assertFailure ("expected a stale-permit refusal, got " <> show other)
-                afterIntent `seq` pure (Right ())
+                -- The refusal happened before any operation mutation. The live
+                -- successor can still prepare the original IntentRecorded
+                -- phase, and this is its first attempt. Before the permit
+                -- precheck this second call observed EffectOutcomeUnknown and
+                -- refused, exposing the stale call's partial write.
+                allowed <-
+                    withPreparedGate s sess epoch fence "op-1" "EffectOutcomeUnknown" afterIntent $
+                        \gate next -> do
+                            preparedGateAttemptIs gate 1
+                            pure (Right next)
+                _ <- expect' allowed
+                pure (Right ())
     , testCase "an operation at an unrecognised phase blocks rather than proceeding" $
         withStore $ \store -> runEntry store $ \s ->
             withPrepared s $ \epoch sess fence gate permit -> do
@@ -337,15 +357,23 @@ prepareTests =
                             phase @?= "SomeFuturePhase"
                         other -> assertFailure ("expected an unclassified refusal, got " <> show other)
                 pure (Right ())
-    , testCase "a closed project refuses every prepare" $
+    , testCase "a terminally closed project refuses every prepare" $
         withStore $ \store -> runEntry store $ \s ->
-            withPrepared s $ \_ sess fence gate permit -> do
+            withPrepared s $ \epoch sess fence gate permit -> do
                 advance <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
                 next <- withOperationAdvance advance (\() p -> pure p)
-                closed <- expect' =<< closeOperationSession s sess next
+                afterSession <- expect' =<< closeOperationSession s sess next
+                closing <- expect' =<< beginClosingProject s plan 7 afterSession
+                closed <- expect' =<< recordClosedProject s plan 7 closing
                 state <- expect' =<< readProjectJournalState s plan
-                state @?= OpenProject
-                closed `seq` fence `seq` pure (Right ())
+                state @?= ClosedProject
+                blocked <-
+                    withPreparedGate s sess epoch fence "op-1" "EffectOutcomeUnknown" afterSession $
+                        \_ _ -> pure (Right ())
+                case blocked of
+                    Left (SessionProjectClosed closedPlan) -> closedPlan @?= plan
+                    other -> assertFailure ("expected a closed-project refusal, got " <> show other)
+                closed `seq` pure (Right ())
     ]
 
 -- ---------------------------------------------------------------------------
@@ -395,6 +423,345 @@ recoveryTests =
             recovered <- expect swept
             recoveredSessionCount recovered @?= 0
     ]
+
+-- ---------------------------------------------------------------------------
+-- Recoverable lifecycle transactions
+
+transactionRecoveryTests :: [TestTree]
+transactionRecoveryTests =
+    concat
+        [ map openProjectRecoveryCase oneTargetFailpoints
+        , map openSessionRecoveryCase oneTargetFailpoints
+        , map registerIntentRecoveryCase registerIntentFailpoints
+        , map prepareRecoveryCase oneTargetFailpoints
+        , map acknowledgeRecoveryCase oneTargetFailpoints
+        , map closeSessionRecoveryCase oneTargetFailpoints
+        , map beginProjectCloseRecoveryCase oneTargetFailpoints
+        , map recordProjectClosedRecoveryCase oneTargetFailpoints
+        ]
+        <> [ testCase "exact session membership ignores an unregistered prefix-shaped record" exactMembershipCase
+           , testCase "a prepare/session-close race yields exactly one successor permit" prepareCloseRaceCase
+           , testCase "the failpoint bracket alone cannot mutate protected records" inertFailpointCase
+           ]
+
+oneTargetFailpoints :: [TransactionFailpoint]
+oneTargetFailpoints =
+    [ TransactionAfterApplying
+    , TransactionAfterTarget 1
+    , TransactionBeforeCommit
+    ]
+
+registerIntentFailpoints :: [TransactionFailpoint]
+registerIntentFailpoints =
+    [ TransactionAfterApplying
+    , TransactionAfterTarget 1
+    , TransactionAfterTarget 2
+    , TransactionBeforeCommit
+    ]
+
+openProjectRecoveryCase :: TransactionFailpoint -> TestTree
+openProjectRecoveryCase point =
+    testCase ("open project recovers after " <> show point) $
+        withStore $ \store -> do
+            expectInterrupted point $
+                inEntry store $ \session ->
+                    withTransactionFailpoint point $
+                        fmap (fmap (const ())) (openProjectJournal session plan)
+            reopened <- reopenStore store
+            permit <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
+            assertBool "recovery returns the committed successor permit" (projectPermitVersion permit > 0)
+            state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
+            state @?= OpenProject
+
+openSessionRecoveryCase :: TransactionFailpoint -> TestTree
+openSessionRecoveryCase point =
+    testCase ("open session recovers after " <> show point) $
+        withStore $ \store -> do
+            expectInterrupted point $
+                inEntry store $ \session -> do
+                    permit <- openProjectJournal session plan
+                    case permit of
+                        Left failure -> pure (Left failure)
+                        Right current ->
+                            withEpoch session $ \epoch ->
+                                withTransactionFailpoint point $
+                                    fmap (fmap (const ()))
+                                        (openOperationSession session epoch plan "session-a" current)
+            reopened <- reopenStore store
+            swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
+            recovered <- expect swept
+            recoveredSessionCount recovered @?= 1
+            recoveredContinuableCount recovered @?= 0
+
+registerIntentRecoveryCase :: TransactionFailpoint -> TestTree
+registerIntentRecoveryCase point =
+    testCase ("register intent recovers after " <> show point) $
+        withStore $ \store -> do
+            SomeOpenSession sess oldPermit <- openSessionFixture store
+            expectInterrupted point $
+                inEntry store $ \session ->
+                    withTransactionFailpoint point $
+                        fmap (fmap (const ()))
+                            (registerOperationIntent session sess "op-1" NoHistory oldPermit)
+
+            reopened <- reopenStore store
+            current <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
+
+            -- Recovery committed exactly one successor. The consumed permit
+            -- cannot add another member, while the recovered successor can.
+            stale <-
+                inEntry reopened $ \session ->
+                    registerOperationIntent session sess "stale-op" NoHistory oldPermit
+            case stale of
+                Left (SessionStaleProjectPermit _) -> pure ()
+                other -> assertFailure ("expected the pre-crash permit to be stale, got " <> show other)
+
+            successor <-
+                inEntry reopened $ \session ->
+                    registerOperationIntent session sess "op-2" NoHistory current
+            _ <- expect successor
+
+            -- The recovery sweep reads the exact durable membership rather
+            -- than inferring it from the operation-key prefix. Both the
+            -- interrupted member and the successor member must be present.
+            swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
+            recovered <- expect swept
+            recoveredSessionCount recovered @?= 1
+            recoveredContinuableCount recovered @?= 2
+
+prepareRecoveryCase :: TransactionFailpoint -> TestTree
+prepareRecoveryCase point =
+    testCase ("prepare recovers after " <> show point) $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            expectInterrupted point $
+                inEntry store $ \session ->
+                    withTransactionFailpoint point $
+                        withPreparedGate
+                            session
+                            sess
+                            epoch
+                            fence
+                            "op-1"
+                            "EffectOutcomeUnknown"
+                            permit
+                            (\_ _ -> pure (Right ()))
+            reopened <- reopenStore store
+            swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
+            case swept of
+                Left (SessionUnclassifiedPhase opKey phase) -> do
+                    opKey @?= "op-1"
+                    phase @?= "EffectOutcomeUnknown"
+                other -> assertFailure ("expected the recovered durable unknown phase, got " <> show other)
+
+acknowledgeRecoveryCase :: TransactionFailpoint -> TestTree
+acknowledgeRecoveryCase point =
+    testCase ("acknowledgment recovers after " <> show point) $
+        withStore $ \store -> do
+            expectInterrupted point $
+                inEntry store $ \session ->
+                    withPrepared session $ \_ sess _ gate permit ->
+                        withTransactionFailpoint point $
+                            fmap (fmap (const ()))
+                                (acknowledgeOutcome session sess gate "Committed" () permit)
+            reopened <- reopenStore store
+            swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
+            recovered <- expect swept
+            recoveredSessionCount recovered @?= 1
+            recoveredContinuableCount recovered @?= 0
+
+closeSessionRecoveryCase :: TransactionFailpoint -> TestTree
+closeSessionRecoveryCase point =
+    testCase ("session close recovers after " <> show point) $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- openSessionFixture store
+            expectInterrupted point $
+                inEntry store $ \session ->
+                    withTransactionFailpoint point $
+                        fmap (fmap (const ()))
+                            (closeOperationSession session sess permit)
+            reopened <- reopenStore store
+            verified <- inEntry reopened (\session -> verifyAllSessionsClosed session plan)
+            proof <- expect verified
+            allSessionsClosedCount proof @?= 1
+
+beginProjectCloseRecoveryCase :: TransactionFailpoint -> TestTree
+beginProjectCloseRecoveryCase point =
+    testCase ("begin project close recovers after " <> show point) $
+        withStore $ \store -> do
+            expectInterrupted point $
+                inEntry store $ \session -> do
+                    permit <- openProjectJournal session plan
+                    case permit of
+                        Left failure -> pure (Left failure)
+                        Right current ->
+                            withTransactionFailpoint point $
+                                fmap (fmap (const ()))
+                                    (beginClosingProject session plan 7 current)
+            reopened <- reopenStore store
+            state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
+            state @?= ClosingProject 7
+
+recordProjectClosedRecoveryCase :: TransactionFailpoint -> TestTree
+recordProjectClosedRecoveryCase point =
+    testCase ("record project closed recovers after " <> show point) $
+        withStore $ \store -> do
+            expectInterrupted point $
+                inEntry store $ \session -> do
+                    permit <- openProjectJournal session plan
+                    case permit of
+                        Left failure -> pure (Left failure)
+                        Right current -> do
+                            closing <- beginClosingProject session plan 7 current
+                            case closing of
+                                Left failure -> pure (Left failure)
+                                Right closePermit ->
+                                    withTransactionFailpoint point $
+                                        fmap (fmap (const ()))
+                                            (recordClosedProject session plan 7 closePermit)
+            reopened <- reopenStore store
+            state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
+            state @?= ClosedProject
+
+exactMembershipCase :: IO ()
+exactMembershipCase =
+    withStore $ \store -> do
+        SomeOpenSession sess permit <- openSessionFixture store
+        injected <- inEntry store $ \session -> do
+            key <-
+                pure
+                    ( either
+                        (Left . SessionStoreFailure)
+                        Right
+                        (mkRecordKey ("op." <> plan <> ".session-a.stray"))
+                    )
+            case key of
+                Left failure -> pure (Left failure)
+                Right operationKey -> do
+                    written <-
+                        compareAndSwapProtectedRecord
+                            session
+                            operationKey
+                            ExpectAbsent
+                            "IntentRecorded\tsession-a\t0"
+                    pure (either (Left . SessionStoreFailure) (const (Right ())) written)
+        _ <- expect injected
+        closed <- inEntry store (\session -> closeOperationSession session sess permit)
+        _ <- expect closed
+        verified <- inEntry store (\session -> verifyAllSessionsClosed session plan)
+        proof <- expect verified
+        allSessionsClosedCount proof @?= 1
+
+prepareCloseRaceCase :: IO ()
+prepareCloseRaceCase =
+    withStore $ \store -> do
+        SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+        start <- newEmptyMVar
+        prepareResult <- newEmptyMVar
+        closeResult <- newEmptyMVar
+
+        _ <-
+            forkFinally
+                ( do
+                    takeMVar start
+                    inEntry store $ \session ->
+                        withPreparedGate
+                            session
+                            sess
+                            epoch
+                            fence
+                            "op-1"
+                            "EffectOutcomeUnknown"
+                            permit
+                            (\_ _ -> pure (Right ()))
+                )
+                (putMVar prepareResult)
+        _ <-
+            forkFinally
+                ( do
+                    takeMVar start
+                    inEntry store $ \session ->
+                        fmap (fmap (const ())) (closeOperationSession session sess permit)
+                )
+                (putMVar closeResult)
+
+        putMVar start ()
+        putMVar start ()
+        preparedThread <- takeMVar prepareResult
+        closedThread <- takeMVar closeResult
+        prepared <- either (assertFailure . show) pure preparedThread
+        closed <- either (assertFailure . show) pure closedThread
+        assertBool
+            ("expected exactly one successor permit, got prepare=" <> show prepared <> ", close=" <> show closed)
+            (isRight prepared /= isRight closed)
+        assertBool "the registered continuable operation lets prepare win" (isRight prepared)
+
+        reopened <- reopenStore store
+        current <- inEntry reopened (\session -> openProjectJournal session plan)
+        assertBool "reopening observes the committed successor" (isRight current)
+
+inertFailpointCase :: IO ()
+inertFailpointCase =
+    withStore $ \store -> do
+        before <- expect =<< inEntry store protectedKeys
+        withTransactionFailpoint TransactionAfterApplying (pure ())
+        after <- expect =<< inEntry store protectedKeys
+        after @?= before
+  where
+    protectedKeys session = do
+        listed <- listProtectedRecords session
+        pure (either (Left . SessionStoreFailure) Right listed)
+
+data SomeOpenSession where
+    SomeOpenSession ::
+        OperationSession scope planId ->
+        ProjectPermit scope planId ->
+        SomeOpenSession
+
+data SomePrepareInput where
+    SomePrepareInput ::
+        BrokerEpoch brokerGeneration ->
+        OperationSession scope planId ->
+        FenceEpoch scope planId ->
+        ProjectPermit scope planId ->
+        SomePrepareInput
+
+openSessionFixture :: ProtectedStore -> IO SomeOpenSession
+openSessionFixture store = do
+    opened <- inEntry store $ \session ->
+        withOpenSession session $ \_ sess permit ->
+            pure (Right (SomeOpenSession sess permit))
+    expect opened
+
+prepareInputFixture :: ProtectedStore -> IO SomePrepareInput
+prepareInputFixture store = do
+    prepared <- inEntry store $ \session ->
+        withOpenSession session $ \epoch sess permit -> do
+            fence <- establishInitialFence session plan 1
+            case fence of
+                Left failure -> pure (Left failure)
+                Right liveFence -> do
+                    registered <- registerOperationIntent session sess "op-1" NoHistory permit
+                    pure
+                        ( fmap
+                            (SomePrepareInput epoch sess liveFence)
+                            registered
+                        )
+    expect prepared
+
+expectInterrupted :: TransactionFailpoint -> IO result -> IO ()
+expectInterrupted point action = do
+    outcome <- try @TransactionInterrupted action
+    case outcome of
+        Left _ -> pure ()
+        Right _ -> assertFailure ("expected transaction interruption at " <> show point)
+
+reopenStore :: ProtectedStore -> IO ProtectedStore
+reopenStore store = do
+    reopened <- openProtectedStore (protectedStoreRoot store)
+    case reopened of
+        Left failure -> assertFailure (show failure)
+        Right store' -> pure store'
 
 -- ---------------------------------------------------------------------------
 -- Harness

@@ -33,8 +33,10 @@ library
       HostBootstrap.Activation
       HostBootstrap.Build
       HostBootstrap.Handoff
+      HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
+      HostBootstrap.Lifecycle.Session.Testing
       HostBootstrap.Protected
       HostBootstrap.Readiness
       HostBootstrap.Reconcile
@@ -89,7 +91,13 @@ library
       HostBootstrap.Service
       HostBootstrap.DocValidator
   other-modules:
+      HostBootstrap.Config.Authority.Internal
       HostBootstrap.Config.Fields.Internal
+      HostBootstrap.Handoff.Protocol
+      HostBootstrap.Lifecycle.Execution.Internal
+      HostBootstrap.Lifecycle.Plan
+      HostBootstrap.Lifecycle.Prepared.Internal
+      HostBootstrap.Lifecycle.Transaction
   build-depends:
       aeson
     , base >=4.18 && <5
@@ -130,6 +138,7 @@ test-suite hostbootstrap-core-test
       Fixture
       PrepareFixture
       AuthoritySpec
+      HandoffProtocolSpec
       HandoffSpec
       SessionSpec
       BuildAuthoritySpec
@@ -159,7 +168,6 @@ test-suite hostbootstrap-core-test
       Wsl2Spec
       WslGlobalWallSpec
       WslGlobalWallConfigBytesSpec
-      WslGlobalWallHostSpec
       LiftSpec
       StepSpec
       ChainSpec
@@ -169,6 +177,12 @@ test-suite hostbootstrap-core-test
       RoleLifecycleSpec
       TeardownSpec
       DocValidatorSpec
+  if os(windows)
+    other-modules:
+        WslGlobalWallWindowsSpec
+  else
+    other-modules:
+        WslGlobalWallHostSpec
   build-depends:
       base >=4.18 && <5
     , bytestring

@@ -115,22 +115,12 @@ policy.
 
 ## Remaining Work
 
-**Capability/context authority — open (Sprint 15.9).** Make capabilities and role-specific command
-authorities opaque, mint them only through validated lifecycle transitions, replace unchecked `addRole`
-widening with compatibility-enforcing smart constructors, narrow child authority, and require the durable
-capability at its actual mutation sites. A command gate must consume handed-off authority; it must never
-infer authority from descriptive Dhall fields. The same sprint owns total topology-graph validation,
-mandatory provider/kind witness sets, exact root gating for every project lifecycle verb, and one
-immutable validated config snapshot threaded into plan steps and typed service-request selection rather
-than later sibling-file reloads. Phase 18.6 ensures only the resulting role parameters, not the full
-config, reach a service handler. The cross-frame transport target is a length-delimited
-private duplex broker session carrying the narrowed config wire plus an opaque `HandoffToken` issued
-under the plan-digest-bound `BoundRunLease` (never the pre-plan `UnboundRunLease`). The binary receiver
-returns a fresh challenge; the broker atomically consumes
-the nonce and authenticates an edge-/config-hash-bound grant before dispatch. Recorded transcripts,
-broker loss, and replay fail; each later invocation receives a fresh token. Authority is never serialized
-into Dhall or passed through `argv`/environment. This work coordinates with Sprints 10.9 and 16.6 for run
-ownership and recursive lifecycle state.
+**Capability/context authority — active (Sprint 15.9).** The opaque authority, topology-validation,
+validated-snapshot, handoff, prepare, build-authority, and activation producer foundations are landed and
+gated. Sprint 15.9 remains co-active with Sprints 10.9 and 16.6 until the production receiver/root relay,
+live prepared-adapter gates, build coordinator channel, and the corresponding schema/golden/negative
+checks consume those foundations without a descriptive-config bypass. Sprint 14.6 and Sprint 18.6 are
+downstream activation/service consumers; they are not prerequisites for Sprint 15.9 to close.
 
 **Accelerator daemon context work — implementation complete; live integration open.**
 
@@ -144,9 +134,9 @@ ownership and recursive lifecycle state.
 - Done statically: Phase 16 places and rollout-waits the Linux CPU/GPU daemon Deployments, while the
   Apple/Windows host path writes the host-daemon projection beside the host-native daemon binary. Phase 18
   dispatches the config-selected service variant through the concrete WebSocket runtime.
-- Remaining (real-run-gated, § C): prove on the native substrate lanes that every daemon reads the
-  delivered projection and connects through the intended ingress. No context implementation or static-test
-  work remains.
+- Remaining (real-run-gated, § C): prove on native Apple Silicon that the host daemon reads the delivered
+  projection and connects through the intended ingress. The Windows and native Linux GPU/CPU lanes are
+  closed; no context implementation or static-test work remains for Sprint 15.8.
 
 **`Capability.DurableStore` is inconsistently and self-assertedly required — open.**
 `capabilitiesForKind` grants `DurableStore` to the `ClusterService` and `Daemon` context kinds. Initial
@@ -157,9 +147,10 @@ placement authority, and selection and execution can observe different files. Th
 therefore **partial and descriptive, not enforcing**, and must not be read as backing any `.data`
 durability guarantee — see
 [durable_state](../documents/architecture/durable_state.md) for what the invariant does and does not say.
-Promoting it to a real gate is sequenced after
-[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 lands a durable-state surface,
-and is tracked in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`. Gate: a
+The durable-state surface from
+[phase-5](phase-5-cluster-lifecycle-and-resource-cordoning.md) Sprint 5.6 is landed; promoting this
+capability to a real gate is part of Sprint 15.9's co-active production call-site work and is tracked in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending`. Gate: a
 command gating on durable placement refuses before dispatch unless it carries the matching opaque,
 verified capability; a decoded declaration is not sufficient.
 
@@ -634,7 +625,7 @@ gate, and connected. The full evidence is recorded once with
 [Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). Only the unavailable **Apple**
 host-daemon lane remains. The dated Windows GPU/WSL2 `8/8`
 accepted by Phase 18 already covers the Windows host-daemon delivery/connect path; it does not stand in
-for those remaining native lanes. No config implementation or static-test work remains.
+for the remaining Apple lane. No config implementation or static-test work remains.
 
 ### Sprint 15.9: Opaque capability and context authority [Active]
 
@@ -1220,10 +1211,11 @@ The context-validation half (2026-07-28), the protected-store/root/command-autho
 the closed required-witness relation (2026-07-29), `ValidatedConfig`-injected plan construction
 (2026-07-29), the authenticated handoff transport (2026-07-29), and the protected session/fence prepare
 protocol (2026-07-29), `BuildInvocationAuthority` (2026-07-29), and `VerifiedRuntimeRoleActivation`
-(2026-07-29) are landed and gated: **every mechanism this sprint owns now exists and is proved.**
+(2026-07-29) are landed and gated as producer foundations. They do not by themselves close the sprint:
+the production call-site consumption and corresponding gates below remain co-active with Sprint 16.6.
 
-What remains is **wiring**, and it is deliberately not this sprint's to do alone — each remaining item
-is a call site owned by a named downstream sprint:
+Sprint 15.9 remains **co-active** for producer-side call-site consumption and proof. The following work
+is shared with the current Sprint 16.6 producer root rather than blocked on a downstream consumer:
 
 - ~~replace the class-membership-only `project up` gate with `authorizeProjectCommand` at the command
   layer~~ — **landed 2026-07-30** by Sprint 16.6: `Command.withRootLifecycleAuthority` runs all three
@@ -1239,12 +1231,13 @@ is a call site owned by a named downstream sprint:
   Sprint 16.6's;
 - make the chain's build-image step the coordinator and deliver a channel into the image build, so
   `check-code` requires `BuildInvocationAuthority` rather than the baked config (Sprint 16.6);
-- make `service run` require the activation package (Sprints 14.6 and 18.6);
 - update schema/golden tests once those call sites move. Coordinate
 lease/token acquisition, consumption, and unwind with
 [Sprint 10.9](phase-10-standardized-test-harness.md) and
 [Sprint 16.6](phase-16-project-lifecycle-command.md), which own exclusive run ownership and recursive
-lifecycle state. Sprint 15.8 remains Active only for native accelerator-lane validation.
+lifecycle state. Sprint 14.6 and Sprint 18.6 consume the completed activation contract after Sprint 15.9
+closes; neither is a reverse prerequisite for 15.9. Sprint 15.8 remains Active only for the Apple
+accelerator lane.
 
 ## Documentation Requirements
 

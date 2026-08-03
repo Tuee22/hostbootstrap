@@ -21,12 +21,13 @@
   its one shared utility-VM ceiling is protected by the four
   [ownership invariant](../architecture/ownership_invariant.md) clauses, while the VHDX is a separate
   per-distro slice; a foreign or incompatible concurrent declaration returns `Conflict` rather than
-  overwriting `.wslconfig`. WSL2 is also the one substrate that does not yet **release** its wall on
-  `project down` — see [wsl2](wsl2.md) § Wall release. The pure algebra now rejects
-  backend-inexact byte quantities rather than rounding them upward and represents WSL live authority
-  only with its global lease. Current Lima/Incus sizing is creation-only, WSL rewrites global settings
-  without resizing an existing VHDX, and live adapters have not yet adopted the authority. The budget is
-  never added to itself — see
+  overwriting `.wslconfig`. On `project down`, WSL restores the journalled origin and then performs a
+  global shutdown, promptly releasing the utility VM's wall; its finite idle timeouts are an interrupted-run
+  backstop. See [wsl2](wsl2.md) § Wall release. The pure algebra now rejects backend-inexact byte
+  quantities rather than rounding them upward and represents WSL live authority only with its global
+  lease. Current Lima/Incus sizing is creation-only, WSL rewrites global settings without resizing an
+  existing VHDX, and provider integrations have not uniformly adopted the authority. The budget is never
+  added to itself — see
   [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
   [wsl2](wsl2.md), and [applied_cordon](applied_cordon.md).
 - A test config may override the budget. The demo projects that resource override into its generated
@@ -102,8 +103,9 @@ Phase 9.10 implements pure provider-capability admission: it either rejects an i
 mints one `ProviderWallSpec` and equal `EffectiveBudget`. Constructive `BudgetPartition` then mints exact
 per-plan, per-frame slices before any wall acquisition. A journal-before-call reservation and matching
 prepared call are required before provider arguments are exposed; only successful observation mints
-live wall authority, and uncertain acquisition mints none. The actual provider journal/CAS and adapters
-remain downstream work; raw config text or an independently recomputed floor is never an effect input.
+live wall authority, and uncertain acquisition mints none. WSL supplies the durable shared-wall
+journal/CAS backend; uniform provider consumption of this authority remains downstream work. Raw config
+text or an independently recomputed floor is never an effect input.
 
 ## The Budget Field
 
@@ -236,7 +238,9 @@ pass on transient free RAM. On Apple, `sysctl` is invoked through the resolved `
 preserving the host-tool absolute-path rule. The cluster-slice preflight runs inside `clusterCreate`
 before cluster creation, but only after the outer provider/container path and its prerequisite work have
 already been reached. The separate metal preflight occurs before VM launch, not before provider
-reconciliation or every lifecycle effect. See [applied_cordon](applied_cordon.md) for the capacity ring and
+reconciliation or every lifecycle effect. Current Windows evidence closes the shared-wall release
+observable only; broader lifecycle closure belongs in the development plan. See
+[applied_cordon](applied_cordon.md) for the capacity ring and
 [cluster_lifecycle](cluster_lifecycle.md) for where it runs.
 
 The demo has implemented a top-level decode ring: below-floor `Resources`, malformed-unit `Quantity`,
@@ -259,7 +263,7 @@ below only in the stated places; the project binary applies them, never the Pyth
 | `apple-silicon` | For the pristine demo environment, a newly created dedicated Lima VM is sized only after exact whole-GiB admission; an existing VM's sizing is not compared or reconciled. Direct Apple Docker has a prepared project-profile Colima adapter that observes/reconciles exact CPU, memory, disk, and Docker runtime state and uses the named Docker context without global activation. Recursive command integration and conditional cleanup remain downstream. |
 | `linux-cpu` | A newly created Incus VM receives CPU/memory/storage limits only for exact admitted quantities; existing VM sizing is not reconciled. The later kind-node CPU/memory cap is applied during cluster bring-up. Storage has no runtime cap if a path runs directly on bare Linux. |
 | `linux-gpu` | The outer host-native build and project-container handoff are direct and uncapped. The later nvkind cluster envelope is split across `control-plane` and GPU `worker`, and `docker update --cpus --memory --memory-swap` is applied fail-closed to both nodes. Bare-Linux storage is not capped. |
-| `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The file is reapplied on reconcile, but a running distro is not necessarily shut down and an existing VHDX is not resized. Original-file restoration is reliable only when an original file produced a backup; absent-original crash recovery lacks a durable origin record. The wall is also not released promptly on `project down` — teardown does not shut the utility VM down, so it stays resident with its full balloon until the managed finite idle timeouts expire (Sprint 9.11 replaced the former `-1` pins; Sprint 5.7 owns the restore-then-shutdown teardown effect). See [wsl2](wsl2.md). |
+| `windows-cpu` / `windows-gpu` | WSL2 memory/CPU use the **global** `%UserProfile%\.wslconfig` `[wsl2]` ceiling; storage is a per-distro VHDX cap applied only at registration. The backend journal records exact original bytes or absence and refuses foreign replacement. `project down` restores that origin and then performs global `wsl --shutdown`, releasing the utility VM balloon; finite idle timeouts backstop an interrupted run. A running distro is not necessarily shut down during reconcile, and an existing VHDX is not resized. See [wsl2](wsl2.md). |
 
 On Apple the pristine demo cordon is the Lima VM, while direct Docker workflows have the prepared
 per-project Colima wall adapter; on Linux the cluster-side cordon is applied after kind/nvkind create and before workload

@@ -49,8 +49,10 @@ sprints own.
   control-plane node's container ID. The plan-level replacement of the imperative `ensureCluster`
   delete-recreate is open Sprint 5.7 work.
 - The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
-  `Windows` backend; the backup-existence (`.bak`) inference is gone. The `Win32` backend has no native
-  run yet — its clause realization is validated only through its POSIX peer on the shared driver.
+  `Windows` backend; the backup-existence (`.bak`) inference is gone. On 2026-08-01 the Windows-gated
+  suite exercised the production entrypoint against a temporary `USERPROFILE` and passed all four
+  native apply/restore/origin/replacement cases. This is focused adapter evidence, not the full WSL2
+  provider lifecycle gate.
 
 Phase and sprint ownership is in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md). Where a clause below has no live
@@ -96,14 +98,16 @@ the same Ubuntu image, so the guest column is one implementation, not three.
 
 | Clause | Windows host | POSIX host | Linux guest (WSL2, Lima, Incus) |
 |---|---|---|---|
-| 1 — exclusive entry | `createFile` with share-mode `0` | `flock` via `unix` | `flock(1)` |
+| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | `flock(1)` |
 | 2 — durable origin record | journal under the project state directory: write-temp, fsync, rename | same | same, recorded host-side |
 | 3 — identity binding | `getFileInformationByHandle` → `bhfiVolumeSerialNumber` + `bhfiFileIndex` | `deviceID` / `fileID` from `getFileStatus` | `stat -c '%d %i'` |
 | 4 — conditional release | re-observe through the retained handle, compare, act | same | `stat`, compare, `unlink` |
 
-Every mechanism above is supplied by a dependency already present: `Win32` ships with the pinned GHC,
-`unix` is already a conditional dependency, and the guest column is coreutils plus util-linux. The
-invariant introduces no new dependency and no foreign-function boundary.
+Every mechanism above uses a dependency or platform API already present. `Win32` ships with the pinned
+GHC; the Windows host backend supplements its public surface with a narrow direct `kernel32` FFI where
+exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`;
+`unix` remains the existing conditional POSIX dependency, and the guest column remains coreutils plus
+util-linux.
 
 Host **directories** — the harness data root is one — use the same host columns with two refinements.
 Clause 1 is the protected store's own OS-released entry (`hLock`, `flock`/`fcntl` on POSIX and

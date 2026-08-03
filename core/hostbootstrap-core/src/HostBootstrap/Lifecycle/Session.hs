@@ -45,6 +45,8 @@ module HostBootstrap.Lifecycle.Session (
     -- * The project journal
     ProjectJournalState (..),
     ProjectPermit,
+    ClosingProjectPermit,
+    ClosedProjectPermit,
     projectPermitVersion,
     openProjectJournal,
     readProjectJournalState,
@@ -123,7 +125,27 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateJournalVersion,
     preparedGateOperation,
     preparedGatePlan,
-    recordDurableUnknown,
+    preparedGateSession,
+ )
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    mintPreparedGate,
+ )
+import HostBootstrap.Lifecycle.Transaction (
+    TransactionError (..),
+    TransactionPermit,
+    TransactionRecord,
+    TransactionTarget,
+    TxnKind (..),
+    ensureTransactionCoordinator,
+    operationTransactionTarget,
+    projectTransactionTarget,
+    readTransactionRecord,
+    runLifecycleTransaction,
+    sessionTransactionTarget,
+    transactionErrorMessage,
+    transactionPermitVersion,
+    transactionRecordPayload,
+    transactionRecordVersion,
  )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -157,27 +179,71 @@ data ProjectJournalState
     | ClosedProject
     deriving (Eq, Show)
 
-{- | The sole successor permit for one project-journal version.
+{- | The sole successor permit for one Open project-journal version.
 
 Every operation that advances the journal returns exactly one of these, and the
 version inside it is the version the *next* operation must present. A retained
 older permit therefore cannot authorize a second advance — the compare-and-swap
 against its version fails.
 -}
-newtype ProjectPermit scope planId = ProjectPermit RecordVersion
+newtype ProjectPermit scope planId = ProjectPermit TransactionPermit
 
 instance Show (ProjectPermit scope planId) where
-    show (ProjectPermit version) = "ProjectPermit " <> show (recordVersionWord version)
+    show (ProjectPermit permit) = "ProjectPermit " <> show (transactionPermitVersion permit)
+
+{- | The sole permit for a project journal in its terminal Closing epoch.
+
+This is deliberately a different type from 'ProjectPermit': close recovery may
+resume with it, but no Open-state operation accepts it and therefore it cannot
+reopen the project journal.
+-}
+newtype ClosingProjectPermit scope planId = ClosingProjectPermit TransactionPermit
+
+instance Show (ClosingProjectPermit scope planId) where
+    show (ClosingProjectPermit permit) =
+        "ClosingProjectPermit " <> show (transactionPermitVersion permit)
+
+-- | Proof that the project journal reached its terminal Closed state.
+newtype ClosedProjectPermit scope planId = ClosedProjectPermit TransactionPermit
+
+instance Show (ClosedProjectPermit scope planId) where
+    show (ClosedProjectPermit permit) =
+        "ClosedProjectPermit " <> show (transactionPermitVersion permit)
 
 -- | The journal version this permit authorizes the next transition against.
 projectPermitVersion :: ProjectPermit scope planId -> Word64
-projectPermitVersion (ProjectPermit version) = recordVersionWord version
+projectPermitVersion (ProjectPermit permit) = transactionPermitVersion permit
 
 projectKey :: Text -> Either SessionError RecordKey
 projectKey planDigest = keyFor ("project." <> planDigest)
 
 keyFor :: Text -> Either SessionError RecordKey
 keyFor raw = either (Left . SessionStoreFailure) Right (mkRecordKey raw)
+
+transactionFailure :: TransactionError -> SessionError
+transactionFailure failure = case failure of
+    TransactionStoreFailure storeFailure -> SessionStoreFailure storeFailure
+    TransactionStalePermit version -> SessionStaleProjectPermit version
+    _ -> SessionTransactionFailure (transactionErrorMessage failure)
+
+ensureCoordinator ::
+    ProtectedSession session ->
+    Text ->
+    IO (Either SessionError TransactionPermit)
+ensureCoordinator session planDigest =
+    fmap (either (Left . transactionFailure) Right) (ensureTransactionCoordinator session planDigest)
+
+runTransaction ::
+    ProtectedSession session ->
+    Text ->
+    TransactionPermit ->
+    TxnKind ->
+    [TransactionTarget] ->
+    IO (Either SessionError TransactionPermit)
+runTransaction session planDigest permit kind targets =
+    fmap
+        (either (Left . transactionFailure) Right)
+        (runLifecycleTransaction session planDigest permit kind targets)
 
 {- | Open (or resume) the plan's project journal, returning the permit for its
 current version. Idempotent: an already-open journal is observed, not
@@ -193,22 +259,30 @@ openProjectJournal session planDigest =
     case projectKey planDigest of
         Left failure -> pure (Left failure)
         Right key -> do
-            observed <- readProtectedRecord session key
-            case observed of
-                Left failure -> pure (Left (SessionStoreFailure failure))
-                Right (Just record) -> case decodeJournalState (protectedRecordBytes record) of
-                    Just OpenProject -> pure (Right (ProjectPermit (protectedRecordVersion record)))
-                    -- A closing or closed project accepts no new work: the
-                    -- distinction matters to recovery, not to this opener.
-                    Just (ClosingProject _) -> pure (Left (SessionProjectClosing planDigest))
-                    Just ClosedProject -> pure (Left (SessionProjectClosed planDigest))
-                    Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
-                Right Nothing -> do
-                    written <-
-                        compareAndSwapProtectedRecord session key ExpectAbsent (encodeFields ["open"])
-                    pure $ case written of
-                        Left failure -> Left (SessionStoreFailure failure)
-                        Right version -> Right (ProjectPermit version)
+            coordinator <- ensureCoordinator session planDigest
+            case coordinator of
+                Left failure -> pure (Left failure)
+                Right permit -> do
+                    observed <- readTransactionRecord session key
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right (Just record) -> case decodeJournalState (transactionRecordPayload record) of
+                            Just OpenProject -> pure (Right (ProjectPermit permit))
+                            -- A closing or closed project accepts no new work:
+                            -- the distinction matters to recovery, not to this
+                            -- opener.
+                            Just (ClosingProject _) -> pure (Left (SessionProjectClosing planDigest))
+                            Just ClosedProject -> pure (Left (SessionProjectClosed planDigest))
+                            Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
+                        Right Nothing -> do
+                            advanced <-
+                                runTransaction
+                                    session
+                                    planDigest
+                                    permit
+                                    TxnOpenProject
+                                    [projectTransactionTarget key Nothing (encodeJournalState OpenProject)]
+                            pure (ProjectPermit <$> advanced)
 
 -- | Read the journal state without advancing it.
 readProjectJournalState ::
@@ -219,15 +293,60 @@ readProjectJournalState session planDigest =
     case projectKey planDigest of
         Left failure -> pure (Left failure)
         Right key -> do
-            observed <- readProtectedRecord session key
-            pure $ case observed of
-                Left failure -> Left (SessionStoreFailure failure)
-                Right Nothing -> Left (SessionProjectMissing planDigest)
-                Right (Just record) ->
-                    maybe
-                        (Left (SessionRecordCorrupt "project journal"))
-                        Right
-                        (decodeJournalState (protectedRecordBytes record))
+            coordinator <- ensureCoordinator session planDigest
+            case coordinator of
+                Left failure -> pure (Left failure)
+                Right _ -> do
+                    observed <- readTransactionRecord session key
+                    pure $ case observed of
+                        Left failure -> Left (transactionFailure failure)
+                        Right Nothing -> Left (SessionProjectMissing planDigest)
+                        Right (Just record) ->
+                            maybe
+                                (Left (SessionRecordCorrupt "project journal"))
+                                Right
+                                (decodeJournalState (transactionRecordPayload record))
+
+{- | Revalidate an Open-state permit before mutating any operation or session
+record.
+
+The protected entry excludes other store holders for the lifetime of the
+caller, so this read establishes that the later operation-record write is not
+being driven by an already-consumed or Closing permit. In particular, a stale
+prepare returns before 'recordDurableUnknown' can change the operation phase.
+-}
+withCurrentOpenPermit ::
+    ProtectedSession session ->
+    Text ->
+    TransactionPermit ->
+    IO (Either SessionError result) ->
+    IO (Either SessionError result)
+withCurrentOpenPermit session planDigest presented action =
+    case projectKey planDigest of
+        Left failure -> pure (Left failure)
+        Right key -> do
+            coordinator <- ensureCoordinator session planDigest
+            case coordinator of
+                Left failure -> pure (Left failure)
+                Right live -> do
+                    observed <- readTransactionRecord session key
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right Nothing -> pure (Left (SessionProjectMissing planDigest))
+                        Right (Just record) ->
+                            case decodeJournalState (transactionRecordPayload record) of
+                                Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
+                                Just ClosedProject -> pure (Left (SessionProjectClosed planDigest))
+                                Just (ClosingProject _) -> pure (Left (SessionProjectClosing planDigest))
+                                Just OpenProject
+                                    | transactionPermitVersion live /= transactionPermitVersion presented ->
+                                        pure
+                                            ( Left
+                                                ( SessionStaleProjectPermit
+                                                    (transactionPermitVersion presented)
+                                                )
+                                            )
+                                    | otherwise -> action
 
 encodeJournalState :: ProjectJournalState -> ByteString
 encodeJournalState state = case state of
@@ -259,36 +378,44 @@ beginClosingProject ::
     -- | the closing epoch; must be positive
     Word64 ->
     ProjectPermit scope planId ->
-    IO (Either SessionError (ProjectPermit scope planId))
-beginClosingProject session planDigest epoch (ProjectPermit permitVersion)
+    IO (Either SessionError (ClosingProjectPermit scope planId))
+beginClosingProject session planDigest epoch (ProjectPermit presented)
     | epoch == 0 = pure (Left (SessionRecordCorrupt "closing epoch must be positive"))
     | otherwise = case projectKey planDigest of
         Left failure -> pure (Left failure)
         Right key -> do
-            observed <- readProtectedRecord session key
-            case observed of
-                Left failure -> pure (Left (SessionStoreFailure failure))
-                Right Nothing -> pure (Left (SessionProjectMissing planDigest))
-                Right (Just record) -> case decodeJournalState (protectedRecordBytes record) of
-                    Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
-                    Just ClosedProject -> pure (Left (SessionProjectClosed planDigest))
-                    -- Resuming the same persisted Closing epoch is idempotent;
-                    -- a different one is a second close and is refused.
-                    Just (ClosingProject persisted)
-                        | persisted == epoch ->
-                            pure (Right (ProjectPermit (protectedRecordVersion record)))
-                        | otherwise -> pure (Left (SessionProjectClosing planDigest))
-                    Just OpenProject -> do
-                        written <-
-                            compareAndSwapProtectedRecord
-                                session
-                                key
-                                (ExpectVersion permitVersion)
-                                (encodeJournalState (ClosingProject epoch))
-                        pure $ case written of
-                            Left _ ->
-                                Left (SessionStaleProjectPermit (recordVersionWord permitVersion))
-                            Right nextVersion -> Right (ProjectPermit nextVersion)
+            coordinator <- ensureCoordinator session planDigest
+            case coordinator of
+                Left failure -> pure (Left failure)
+                Right live -> do
+                    observed <- readTransactionRecord session key
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right Nothing -> pure (Left (SessionProjectMissing planDigest))
+                        Right (Just record) -> case decodeJournalState (transactionRecordPayload record) of
+                            Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
+                            Just ClosedProject -> pure (Left (SessionProjectClosed planDigest))
+                            -- Resuming the same persisted Closing epoch is
+                            -- idempotent; a different one is a second close.
+                            Just (ClosingProject persisted)
+                                | persisted == epoch -> pure (Right (ClosingProjectPermit live))
+                                | otherwise -> pure (Left (SessionProjectClosing planDigest))
+                            Just OpenProject
+                                | transactionPermitVersion live /= transactionPermitVersion presented ->
+                                    pure (Left (SessionStaleProjectPermit (transactionPermitVersion presented)))
+                                | otherwise -> do
+                                    advanced <-
+                                        runTransaction
+                                            session
+                                            planDigest
+                                            presented
+                                            TxnBeginProjectClose
+                                            [ projectTransactionTarget
+                                                key
+                                                (Just record)
+                                                (encodeJournalState (ClosingProject epoch))
+                                            ]
+                                    pure (ClosingProjectPermit <$> advanced)
 
 {- | Record the terminal @ClosedProject@ state, only from the exact Closing
 epoch that authorized it. An Open journal cannot jump straight to Closed.
@@ -298,37 +425,41 @@ recordClosedProject ::
     Text ->
     -- | the closing epoch recorded by 'beginClosingProject'
     Word64 ->
-    ProjectPermit scope planId ->
-    IO (Either SessionError ())
-recordClosedProject session planDigest epoch (ProjectPermit permitVersion) =
+    ClosingProjectPermit scope planId ->
+    IO (Either SessionError (ClosedProjectPermit scope planId))
+recordClosedProject session planDigest epoch (ClosingProjectPermit presented) =
     case projectKey planDigest of
         Left failure -> pure (Left failure)
         Right key -> do
-            observed <- readProtectedRecord session key
-            case observed of
-                Left failure -> pure (Left (SessionStoreFailure failure))
-                Right Nothing -> pure (Left (SessionProjectMissing planDigest))
-                Right (Just record) -> case decodeJournalState (protectedRecordBytes record) of
-                    Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
-                    Just ClosedProject -> pure (Right ())
-                    Just OpenProject -> pure (Left (SessionRecordCorrupt "project is not closing"))
-                    Just (ClosingProject persisted)
-                        | persisted /= epoch ->
-                            pure (Left (SessionProjectClosing planDigest))
-                        | otherwise -> do
-                            written <-
-                                compareAndSwapProtectedRecord
-                                    session
-                                    key
-                                    (ExpectVersion permitVersion)
-                                    (encodeJournalState ClosedProject)
-                            pure $ case written of
-                                Left _ ->
-                                    Left
-                                        ( SessionStaleProjectPermit
-                                            (recordVersionWord permitVersion)
-                                        )
-                                Right _ -> Right ()
+            coordinator <- ensureCoordinator session planDigest
+            case coordinator of
+                Left failure -> pure (Left failure)
+                Right live -> do
+                    observed <- readTransactionRecord session key
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right Nothing -> pure (Left (SessionProjectMissing planDigest))
+                        Right (Just record) -> case decodeJournalState (transactionRecordPayload record) of
+                            Nothing -> pure (Left (SessionRecordCorrupt "project journal"))
+                            Just ClosedProject -> pure (Right (ClosedProjectPermit live))
+                            Just OpenProject -> pure (Left (SessionRecordCorrupt "project is not closing"))
+                            Just (ClosingProject persisted)
+                                | persisted /= epoch -> pure (Left (SessionProjectClosing planDigest))
+                                | transactionPermitVersion live /= transactionPermitVersion presented ->
+                                    pure (Left (SessionStaleProjectPermit (transactionPermitVersion presented)))
+                                | otherwise -> do
+                                    advanced <-
+                                        runTransaction
+                                            session
+                                            planDigest
+                                            presented
+                                            TxnRecordProjectClosed
+                                            [ projectTransactionTarget
+                                                key
+                                                (Just record)
+                                                (encodeJournalState ClosedProject)
+                                            ]
+                                    pure (ClosedProjectPermit <$> advanced)
 
 {- | Proof that every session for a plan was observed Closed at one store
 version, with the count it covered.
@@ -361,21 +492,25 @@ verifyAllSessionsClosed ::
     Text ->
     IO (Either SessionError (VerifiedAllSessionsClosed scope planId))
 verifyAllSessionsClosed session planDigest = do
-    listed <- listProtectedRecords session
-    case listed of
-        Left failure -> pure (Left (SessionStoreFailure failure))
-        Right keys -> do
-            let prefix = sessionKeyPrefix planDigest
-                members =
-                    [ SessionId (Text.drop (Text.length prefix) raw)
-                    | raw <- map recordKeyText keys
-                    , prefix `Text.isPrefixOf` raw
-                    ]
-            open <- foldM step (Right []) members
-            pure $ case open of
-                Left failure -> Left failure
-                Right (still : _) -> Left (SessionStillOpen still)
-                Right [] -> Right (VerifiedAllSessionsClosed planDigest (length members))
+    coordinator <- ensureCoordinator session planDigest
+    case coordinator of
+        Left failure -> pure (Left failure)
+        Right _ -> do
+            listed <- listProtectedRecords session
+            case listed of
+                Left failure -> pure (Left (SessionStoreFailure failure))
+                Right keys -> do
+                    let prefix = sessionKeyPrefix planDigest
+                        members =
+                            [ SessionId (Text.drop (Text.length prefix) raw)
+                            | raw <- map recordKeyText keys
+                            , prefix `Text.isPrefixOf` raw
+                            ]
+                    open <- foldM step (Right []) members
+                    pure $ case open of
+                        Left failure -> Left failure
+                        Right (still : _) -> Left (SessionStillOpen still)
+                        Right [] -> Right (VerifiedAllSessionsClosed planDigest (length members))
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) sid = do
@@ -384,9 +519,6 @@ verifyAllSessionsClosed session planDigest = do
             Left failure -> Left failure
             Right True -> Right (sid : acc)
             Right False -> Right acc
-
-versionOf :: ProtectedRecord -> Word64
-versionOf = recordVersionWord . protectedRecordVersion
 
 -- ---------------------------------------------------------------------------
 -- Sessions
@@ -420,6 +552,92 @@ sessionKey planDigest (SessionId sid) = keyFor ("session." <> planDigest <> "." 
 sessionKeyPrefix :: Text -> Text
 sessionKeyPrefix planDigest = "session." <> planDigest <> "."
 
+data SessionRecordState = SessionRecordState
+    { sessionRecordIsOpen :: Bool
+    , sessionRecordMarker :: Text
+    , sessionRecordMembers :: [Text]
+    , sessionRecordHasExactMembership :: Bool
+    }
+    deriving (Eq, Show)
+
+encodeSessionRecord :: Bool -> Text -> [Text] -> ByteString
+encodeSessionRecord isOpen marker members =
+    encodeFields
+        ( (if isOpen then "open" else "closed")
+            : marker
+            : "members"
+            : sort members
+        )
+
+decodeSessionRecord :: ByteString -> Maybe SessionRecordState
+decodeSessionRecord raw = case decodeFields raw of
+    [phase, marker]
+        | phase == "open" || phase == "closed" ->
+            Just
+                SessionRecordState
+                    { sessionRecordIsOpen = phase == "open"
+                    , sessionRecordMarker = marker
+                    , sessionRecordMembers = []
+                    , sessionRecordHasExactMembership = False
+                    }
+    (phase : marker : "members" : members)
+        | phase == "open" || phase == "closed" ->
+            Just
+                SessionRecordState
+                    { sessionRecordIsOpen = phase == "open"
+                    , sessionRecordMarker = marker
+                    , sessionRecordMembers = sort members
+                    , sessionRecordHasExactMembership = True
+                    }
+    _ -> Nothing
+
+readSessionRecord ::
+    ProtectedSession session ->
+    Text ->
+    SessionId ->
+    IO (Either SessionError (Maybe (TransactionRecord, SessionRecordState)))
+readSessionRecord session planDigest sid =
+    case sessionKey planDigest sid of
+        Left failure -> pure (Left failure)
+        Right key -> do
+            observed <- readTransactionRecord session key
+            pure $ case observed of
+                Left failure -> Left (transactionFailure failure)
+                Right Nothing -> Right Nothing
+                Right (Just record) ->
+                    case decodeSessionRecord (transactionRecordPayload record) of
+                        Nothing -> Left (SessionRecordCorrupt "session")
+                        Just state -> Right (Just (record, state))
+
+legacyOperationNames ::
+    ProtectedSession session ->
+    Text ->
+    SessionId ->
+    IO (Either SessionError [Text])
+legacyOperationNames session planDigest sid = do
+    listed <- listProtectedRecords session
+    pure $ case listed of
+        Left failure -> Left (SessionStoreFailure failure)
+        Right keys ->
+            let prefix = operationPrefix planDigest sid
+             in Right
+                    ( sort
+                        [ Text.drop (Text.length prefix) raw
+                        | raw <- map recordKeyText keys
+                        , prefix `Text.isPrefixOf` raw
+                        ]
+                    )
+
+sessionOperationNames ::
+    ProtectedSession session ->
+    Text ->
+    SessionId ->
+    SessionRecordState ->
+    IO (Either SessionError [Text])
+sessionOperationNames session planDigest sid state
+    | sessionRecordHasExactMembership state = pure (Right (sessionRecordMembers state))
+    | otherwise = legacyOperationNames session planDigest sid
+
 {- | Open a session for this plan against the live broker generation.
 
 Refuses when the project journal is closed, when the caller's permit is not the
@@ -437,44 +655,50 @@ openOperationSession ::
     Text ->
     ProjectPermit scope planId ->
     IO (Either SessionError (OperationSession scope planId, ProjectPermit scope planId))
-openOperationSession session epoch planDigest rawSessionId (ProjectPermit permitVersion) = do
+openOperationSession session epoch planDigest rawSessionId (ProjectPermit presented) = do
     let sid = SessionId rawSessionId
-    stale <- openSessionsFor session planDigest
-    case stale of
+    recovered <- ensureCoordinator session planDigest
+    case recovered of
         Left failure -> pure (Left failure)
-        Right (older : _) -> pure (Left (SessionOlderStillOpen older))
-        Right [] -> case (projectKey planDigest, sessionKey planDigest sid) of
-            (Left failure, _) -> pure (Left failure)
-            (_, Left failure) -> pure (Left failure)
-            (Right pKey, Right sKey) -> do
-                -- Advance the shared journal first: if another holder already
-                -- advanced it, this open never publishes a session record.
-                advanced <-
-                    compareAndSwapProtectedRecord
-                        session
-                        pKey
-                        (ExpectVersion permitVersion)
-                        (encodeFields ["open"])
-                case advanced of
-                    Left _ -> pure (Left (SessionStaleProjectPermit (recordVersionWord permitVersion)))
-                    Right nextVersion -> do
-                        written <-
-                            compareAndSwapProtectedRecord
-                                session
-                                sKey
-                                ExpectAbsent
-                                (encodeFields ["open", Text.pack (show (brokerEpochWord epoch))])
-                        pure $ case written of
-                            Left failure -> Left (SessionStoreFailure failure)
-                            Right _ ->
-                                Right
-                                    ( OperationSession
-                                        { sessionRecordId = sid
-                                        , sessionPlanDigest = planDigest
-                                        , sessionBrokerGeneration = brokerEpochWord epoch
-                                        }
-                                    , ProjectPermit nextVersion
-                                    )
+        Right _ -> do
+            stale <- openSessionsFor session planDigest
+            case stale of
+                Left failure -> pure (Left failure)
+                Right (older : _) -> pure (Left (SessionOlderStillOpen older))
+                Right [] -> case sessionKey planDigest sid of
+                    Left failure -> pure (Left failure)
+                    Right sKey ->
+                        withCurrentOpenPermit session planDigest presented $ do
+                            observed <- readTransactionRecord session sKey
+                            case observed of
+                                Left failure -> pure (Left (transactionFailure failure))
+                                Right (Just _) -> pure (Left (SessionNotOpen sid))
+                                Right Nothing -> do
+                                    advanced <-
+                                        runTransaction
+                                            session
+                                            planDigest
+                                            presented
+                                            TxnOpenSession
+                                            [ sessionTransactionTarget
+                                                sKey
+                                                Nothing
+                                                ( encodeSessionRecord
+                                                    True
+                                                    (Text.pack (show (brokerEpochWord epoch)))
+                                                    []
+                                                )
+                                            ]
+                                    pure $ do
+                                        next <- advanced
+                                        Right
+                                            ( OperationSession
+                                                { sessionRecordId = sid
+                                                , sessionPlanDigest = planDigest
+                                                , sessionBrokerGeneration = brokerEpochWord epoch
+                                                }
+                                            , ProjectPermit next
+                                            )
 
 -- | Every session record for this plan that is still Open.
 openSessionsFor ::
@@ -508,17 +732,9 @@ readSessionState ::
     SessionId ->
     IO (Either SessionError Bool)
 readSessionState session planDigest sid =
-    case sessionKey planDigest sid of
-        Left failure -> pure (Left failure)
-        Right key -> do
-            observed <- readProtectedRecord session key
-            pure $ case observed of
-                Left failure -> Left (SessionStoreFailure failure)
-                Right Nothing -> Right False
-                Right (Just record) -> case decodeFields (protectedRecordBytes record) of
-                    ("open" : _) -> Right True
-                    ("closed" : _) -> Right False
-                    _ -> Left (SessionRecordCorrupt "session")
+    fmap
+        (fmap (maybe False (sessionRecordIsOpen . snd)))
+        (readSessionRecord session planDigest sid)
 
 {- | Close a session, proving first that every operation it registered has
 settled.
@@ -532,38 +748,44 @@ closeOperationSession ::
     OperationSession scope planId ->
     ProjectPermit scope planId ->
     IO (Either SessionError (ProjectPermit scope planId))
-closeOperationSession session sess (ProjectPermit permitVersion) = do
-    unsettled <- unsettledOperations session sess
-    case unsettled of
-        Left failure -> pure (Left failure)
-        Right (pending : _) -> pure (Left (SessionOperationUnsettled pending))
-        Right [] -> case (projectKey (sessionPlanDigest sess), sessionKey (sessionPlanDigest sess) (sessionRecordId sess)) of
-            (Left failure, _) -> pure (Left failure)
-            (_, Left failure) -> pure (Left failure)
-            (Right pKey, Right sKey) -> do
-                observed <- readProtectedRecord session sKey
-                case observed of
-                    Left failure -> pure (Left (SessionStoreFailure failure))
-                    Right Nothing -> pure (Left (SessionUnknown (sessionRecordId sess)))
-                    Right (Just record) -> do
-                        closed <-
-                            compareAndSwapProtectedRecord
-                                session
-                                sKey
-                                (ExpectVersion (protectedRecordVersion record))
-                                (encodeFields ["closed", Text.pack (show (sessionBrokerGeneration sess))])
-                        case closed of
-                            Left failure -> pure (Left (SessionStoreFailure failure))
-                            Right _ -> do
-                                advanced <-
-                                    compareAndSwapProtectedRecord
+closeOperationSession session sess (ProjectPermit presented) =
+    withCurrentOpenPermit session (sessionPlanDigest sess) presented $ do
+        unsettled <- unsettledOperations session sess
+        case unsettled of
+            Left failure -> pure (Left failure)
+            Right (pending : _) -> pure (Left (SessionOperationUnsettled pending))
+            Right [] -> case sessionKey (sessionPlanDigest sess) (sessionRecordId sess) of
+                Left failure -> pure (Left failure)
+                Right sKey -> do
+                    observed <- readSessionRecord session (sessionPlanDigest sess) (sessionRecordId sess)
+                    case observed of
+                        Left failure -> pure (Left failure)
+                        Right Nothing -> pure (Left (SessionUnknown (sessionRecordId sess)))
+                        Right (Just (record, state))
+                            | not (sessionRecordIsOpen state) ->
+                                pure (Left (SessionNotOpen (sessionRecordId sess)))
+                            | otherwise -> do
+                                members <-
+                                    sessionOperationNames
                                         session
-                                        pKey
-                                        (ExpectVersion permitVersion)
-                                        (encodeFields ["open"])
-                                pure $ case advanced of
-                                    Left _ -> Left (SessionStaleProjectPermit (recordVersionWord permitVersion))
-                                    Right nextVersion -> Right (ProjectPermit nextVersion)
+                                        (sessionPlanDigest sess)
+                                        (sessionRecordId sess)
+                                        state
+                                case members of
+                                    Left failure -> pure (Left failure)
+                                    Right names -> do
+                                        advanced <-
+                                            runTransaction
+                                                session
+                                                (sessionPlanDigest sess)
+                                                presented
+                                                TxnCloseSession
+                                                [ sessionTransactionTarget
+                                                    sKey
+                                                    (Just record)
+                                                    (encodeSessionRecord False (sessionRecordMarker state) names)
+                                                ]
+                                        pure (ProjectPermit <$> advanced)
 
 -- ---------------------------------------------------------------------------
 -- Operation records
@@ -602,58 +824,77 @@ registerOperationIntent ::
     IntentOrigin ->
     ProjectPermit scope planId ->
     IO (Either SessionError (ProjectPermit scope planId))
-registerOperationIntent session sess opKey origin (ProjectPermit permitVersion) =
-    case (operationKeyFor plan (sessionRecordId sess) opKey, projectKey plan) of
+registerOperationIntent session sess opKey origin (ProjectPermit presented) =
+    case (operationKeyFor plan (sessionRecordId sess) opKey, sessionKey plan (sessionRecordId sess)) of
         (Left failure, _) -> pure (Left failure)
         (_, Left failure) -> pure (Left failure)
-        (Right oKey, Right pKey) -> do
-            live <- readSessionState session plan (sessionRecordId sess)
-            case live of
-                Left failure -> pure (Left failure)
-                Right False -> pure (Left (SessionNotOpen (sessionRecordId sess)))
-                Right True -> do
-                    observed <- readProtectedRecord session oKey
-                    case observed of
-                        Left failure -> pure (Left (SessionStoreFailure failure))
-                        Right (Just record)
-                            | origin == NoHistory ->
-                                pure
-                                    ( Left
-                                        ( SessionIntentAlreadyRecorded
-                                            opKey
-                                            (phaseTextOf (protectedRecordBytes record))
+        (Right oKey, Right sKey) ->
+            withCurrentOpenPermit session plan presented $ do
+                sessionObserved <- readSessionRecord session plan (sessionRecordId sess)
+                case sessionObserved of
+                    Left failure -> pure (Left failure)
+                    Right Nothing -> pure (Left (SessionUnknown (sessionRecordId sess)))
+                    Right (Just (_, state))
+                        | not (sessionRecordIsOpen state) ->
+                            pure (Left (SessionNotOpen (sessionRecordId sess)))
+                    Right (Just (sessionRecord, state)) -> do
+                        observed <- readTransactionRecord session oKey
+                        case observed of
+                            Left failure -> pure (Left (transactionFailure failure))
+                            Right (Just record)
+                                | origin == NoHistory ->
+                                    pure
+                                        ( Left
+                                            ( SessionIntentAlreadyRecorded
+                                                opKey
+                                                (phaseTextOf (transactionRecordPayload record))
+                                            )
                                         )
-                                    )
-                            | phaseTextOf (protectedRecordBytes record) /= "Released" ->
-                                pure
-                                    ( Left
-                                        ( SessionIntentOriginRefused
-                                            opKey
-                                            (phaseTextOf (protectedRecordBytes record))
+                                | phaseTextOf (transactionRecordPayload record) /= "Released" ->
+                                    pure
+                                        ( Left
+                                            ( SessionIntentOriginRefused
+                                                opKey
+                                                (phaseTextOf (transactionRecordPayload record))
+                                            )
                                         )
-                                    )
-                        _ -> do
-                            let expectation = case observed of
-                                    Right (Just record) -> ExpectVersion (protectedRecordVersion record)
-                                    _ -> ExpectAbsent
-                            written <-
-                                compareAndSwapProtectedRecord
-                                    session
-                                    oKey
-                                    expectation
-                                    (encodeFields ["IntentRecorded", sessionIdText (sessionRecordId sess), "0"])
-                            case written of
-                                Left failure -> pure (Left (SessionStoreFailure failure))
-                                Right _ -> do
-                                    advanced <-
-                                        compareAndSwapProtectedRecord
-                                            session
-                                            pKey
-                                            (ExpectVersion permitVersion)
-                                            (encodeFields ["open"])
-                                    pure $ case advanced of
-                                        Left _ -> Left (SessionStaleProjectPermit (recordVersionWord permitVersion))
-                                        Right nextVersion -> Right (ProjectPermit nextVersion)
+                            Right operationRecord -> do
+                                existingMembers <-
+                                    sessionOperationNames session plan (sessionRecordId sess) state
+                                case existingMembers of
+                                    Left failure -> pure (Left failure)
+                                    Right members -> do
+                                        let exactMembers =
+                                                sort
+                                                    ( if opKey `elem` members
+                                                        then members
+                                                        else opKey : members
+                                                    )
+                                        advanced <-
+                                            runTransaction
+                                                session
+                                                plan
+                                                presented
+                                                TxnRegisterIntent
+                                                [ operationTransactionTarget
+                                                    oKey
+                                                    operationRecord
+                                                    ( encodeFields
+                                                        [ "IntentRecorded"
+                                                        , sessionIdText (sessionRecordId sess)
+                                                        , "0"
+                                                        ]
+                                                    )
+                                                , sessionTransactionTarget
+                                                    sKey
+                                                    (Just sessionRecord)
+                                                    ( encodeSessionRecord
+                                                        True
+                                                        (sessionRecordMarker state)
+                                                        exactMembers
+                                                    )
+                                                ]
+                                        pure (ProjectPermit <$> advanced)
   where
     plan = sessionPlanDigest sess
 
@@ -680,25 +921,32 @@ unsettledOperations ::
     OperationSession scope planId ->
     IO (Either SessionError [Text])
 unsettledOperations session sess = do
-    listed <- listProtectedRecords session
-    case listed of
-        Left failure -> pure (Left (SessionStoreFailure failure))
-        Right keys -> do
-            let prefix = operationPrefix (sessionPlanDigest sess) (sessionRecordId sess)
-                names = [Text.drop (Text.length prefix) raw | raw <- map recordKeyText keys, prefix `Text.isPrefixOf` raw]
-            foldM step (Right []) names
+    sessionObserved <- readSessionRecord session (sessionPlanDigest sess) (sessionRecordId sess)
+    case sessionObserved of
+        Left failure -> pure (Left failure)
+        Right Nothing -> pure (Left (SessionUnknown (sessionRecordId sess)))
+        Right (Just (_, state)) -> do
+            names <-
+                sessionOperationNames
+                    session
+                    (sessionPlanDigest sess)
+                    (sessionRecordId sess)
+                    state
+            case names of
+                Left failure -> pure (Left failure)
+                Right operationNames -> foldM step (Right []) operationNames
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) name =
         case operationKeyFor (sessionPlanDigest sess) (sessionRecordId sess) name of
             Left failure -> pure (Left failure)
             Right key -> do
-                observed <- readProtectedRecord session key
+                observed <- readTransactionRecord session key
                 pure $ case observed of
-                    Left failure -> Left (SessionStoreFailure failure)
+                    Left failure -> Left (transactionFailure failure)
                     Right Nothing -> Right acc
                     Right (Just record) ->
-                        case classifyRecordedPhase (phaseTextOf (protectedRecordBytes record)) of
+                        case classifyRecordedPhase (phaseTextOf (transactionRecordPayload record)) of
                             Settled -> Right acc
                             TerminalDisposition -> Right acc
                             _ -> Right (name : acc)
@@ -975,39 +1223,63 @@ recoverAbandonedSessions ::
     Text ->
     IO (Either SessionError RecoveredSessions)
 recoverAbandonedSessions session planDigest = do
-    listed <- openSessionsFor session planDigest
-    case listed of
+    coordinator <- ensureCoordinator session planDigest
+    case coordinator of
         Left failure -> pure (Left failure)
-        Right sessions -> foldM step (Right (RecoveredSessions 0 0)) (sort sessions)
+        Right initialPermit -> do
+            listed <- openSessionsFor session planDigest
+            case listed of
+                Left failure -> pure (Left failure)
+                Right sessions -> do
+                    recovered <-
+                        foldM
+                            step
+                            (Right (RecoveredSessions 0 0, initialPermit))
+                            (sort sessions)
+                    pure (fst <$> recovered)
   where
     step (Left failure) _ = pure (Left failure)
-    step (Right acc) sid = do
+    step (Right (acc, permit)) sid = do
         counted <- classifySessionOperations session planDigest sid
         case counted of
             Left failure -> pure (Left failure)
             Right continuable -> case sessionKey planDigest sid of
                 Left failure -> pure (Left failure)
                 Right key -> do
-                    observed <- readProtectedRecord session key
+                    observed <- readSessionRecord session planDigest sid
                     case observed of
-                        Left failure -> pure (Left (SessionStoreFailure failure))
-                        Right Nothing -> pure (Right acc)
-                        Right (Just record) -> do
-                            closed <-
-                                compareAndSwapProtectedRecord
-                                    session
-                                    key
-                                    (ExpectVersion (protectedRecordVersion record))
-                                    (encodeFields ["closed", "recovered"])
-                            pure $ case closed of
-                                Left failure -> Left (SessionStoreFailure failure)
-                                Right _ ->
-                                    Right
-                                        RecoveredSessions
-                                            { recoveredSessionCount = recoveredSessionCount acc + 1
-                                            , recoveredContinuableCount =
-                                                recoveredContinuableCount acc + continuable
-                                            }
+                        Left failure -> pure (Left failure)
+                        Right Nothing -> pure (Right (acc, permit))
+                        Right (Just (record, state))
+                            | not (sessionRecordIsOpen state) -> pure (Right (acc, permit))
+                            | otherwise -> do
+                                members <- sessionOperationNames session planDigest sid state
+                                case members of
+                                    Left failure -> pure (Left failure)
+                                    Right names -> do
+                                        closed <-
+                                            runTransaction
+                                                session
+                                                planDigest
+                                                permit
+                                                TxnCloseSession
+                                                [ sessionTransactionTarget
+                                                    key
+                                                    (Just record)
+                                                    (encodeSessionRecord False "recovered" names)
+                                                ]
+                                        pure $ case closed of
+                                            Left failure -> Left failure
+                                            Right nextPermit ->
+                                                Right
+                                                    ( RecoveredSessions
+                                                        { recoveredSessionCount =
+                                                            recoveredSessionCount acc + 1
+                                                        , recoveredContinuableCount =
+                                                            recoveredContinuableCount acc + continuable
+                                                        }
+                                                    , nextPermit
+                                                    )
 
 classifySessionOperations ::
     ProtectedSession session ->
@@ -1015,25 +1287,32 @@ classifySessionOperations ::
     SessionId ->
     IO (Either SessionError Int)
 classifySessionOperations session planDigest sid = do
-    listed <- listProtectedRecords session
-    case listed of
-        Left failure -> pure (Left (SessionStoreFailure failure))
-        Right keys -> do
-            let prefix = operationPrefix planDigest sid
-                names = [Text.drop (Text.length prefix) raw | raw <- map recordKeyText keys, prefix `Text.isPrefixOf` raw]
-            foldM step (Right 0) names
+    observedSession <- readSessionRecord session planDigest sid
+    case observedSession of
+        Left failure -> pure (Left failure)
+        Right Nothing -> pure (Right 0)
+        Right (Just (_, state)) -> do
+            names <- sessionOperationNames session planDigest sid state
+            case names of
+                Left failure -> pure (Left failure)
+                Right operationNames -> foldM step (Right 0) operationNames
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) name = case operationKeyFor planDigest sid name of
         Left failure -> pure (Left failure)
         Right key -> do
-            observed <- readProtectedRecord session key
+            observed <- readTransactionRecord session key
             pure $ case observed of
-                Left failure -> Left (SessionStoreFailure failure)
+                Left failure -> Left (transactionFailure failure)
                 Right Nothing -> Right acc
                 Right (Just record) ->
-                    case classifyRecordedPhase (phaseTextOf (protectedRecordBytes record)) of
-                        UnknownDisposition -> Left (SessionUnclassifiedPhase name (phaseTextOf (protectedRecordBytes record)))
+                    case classifyRecordedPhase (phaseTextOf (transactionRecordPayload record)) of
+                        UnknownDisposition ->
+                            Left
+                                ( SessionUnclassifiedPhase
+                                    name
+                                    (phaseTextOf (transactionRecordPayload record))
+                                )
                         Continuable -> Right (acc + 1)
                         _ -> Right acc
 
@@ -1069,7 +1348,7 @@ withPreparedGate ::
       IO (Either SessionError result)
     ) ->
     IO (Either SessionError result)
-withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit permitVersion) use
+withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit presented) use
     | brokerEpochWord epoch /= sessionBrokerGeneration sess =
         pure
             ( Left
@@ -1078,41 +1357,42 @@ withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit perm
                     (brokerEpochWord epoch)
                 )
             )
-    | otherwise = do
-        projectState <- readProjectJournalState session plan
-        case projectState of
+    | otherwise = withCurrentOpenPermit session plan presented $ do
+        live <- readSessionRecord session plan (sessionRecordId sess)
+        case live of
             Left failure -> pure (Left failure)
-            Right ClosedProject -> pure (Left (SessionProjectClosed plan))
-            -- Terminal close has been authorized, so no further operation may be
-            -- prepared: this is the branch that stops a prepare racing a close.
-            Right (ClosingProject _) -> pure (Left (SessionProjectClosing plan))
-            Right OpenProject -> do
-                live <- readSessionState session plan (sessionRecordId sess)
-                case live of
-                    Left failure -> pure (Left failure)
-                    Right False -> pure (Left (SessionNotOpen (sessionRecordId sess)))
-                    Right True -> do
-                        observedFence <- currentFence session plan
-                        case observedFence of
-                            Left failure -> pure (Left failure)
-                            Right (FenceEpoch liveEpoch)
-                                | liveEpoch /= fenceEpochWord fence ->
-                                    pure (Left (SessionFenceSuperseded (fenceEpochWord fence) liveEpoch))
-                                | otherwise -> gateOperation liveEpoch
+            Right Nothing -> pure (Left (SessionNotOpen (sessionRecordId sess)))
+            Right (Just (_, state))
+                | not (sessionRecordIsOpen state) ->
+                    pure (Left (SessionNotOpen (sessionRecordId sess)))
+                | otherwise -> do
+                    members <- sessionOperationNames session plan (sessionRecordId sess) state
+                    case members of
+                        Left failure -> pure (Left failure)
+                        Right names
+                            | opKey `notElem` names ->
+                                pure (Left (SessionOperationUnregistered opKey))
+                            | otherwise -> do
+                                observedFence <- currentFence session plan
+                                case observedFence of
+                                    Left failure -> pure (Left failure)
+                                    Right (FenceEpoch liveEpoch)
+                                        | liveEpoch /= fenceEpochWord fence ->
+                                            pure (Left (SessionFenceSuperseded (fenceEpochWord fence) liveEpoch))
+                                        | otherwise -> gateOperation liveEpoch
   where
     plan = sessionPlanDigest sess
 
-    gateOperation liveEpoch = case (operationKeyFor plan (sessionRecordId sess) opKey, projectKey plan) of
-        (Left failure, _) -> pure (Left failure)
-        (_, Left failure) -> pure (Left failure)
-        (Right oKey, Right pKey) -> do
-            observed <- readProtectedRecord session oKey
+    gateOperation liveEpoch = case operationKeyFor plan (sessionRecordId sess) opKey of
+        Left failure -> pure (Left failure)
+        Right oKey -> do
+            observed <- readTransactionRecord session oKey
             case observed of
-                Left failure -> pure (Left (SessionStoreFailure failure))
+                Left failure -> pure (Left (transactionFailure failure))
                 Right Nothing -> pure (Left (SessionOperationUnregistered opKey))
                 Right (Just record) -> do
-                    let recorded = phaseTextOf (protectedRecordBytes record)
-                        priorFence = recordedFenceOf (protectedRecordBytes record)
+                    let recorded = phaseTextOf (transactionRecordPayload record)
+                        priorFence = recordedFenceOf (transactionRecordPayload record)
                     case classifyRecordedPhase recorded of
                         UnknownDisposition -> pure (Left (SessionUnclassifiedPhase opKey recorded))
                         Settled -> pure (Left (SessionOperationSettled opKey recorded))
@@ -1120,38 +1400,46 @@ withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit perm
                         FencedRetryable
                             | priorFence >= liveEpoch ->
                                 pure (Left (SessionRetryNeedsFreshFence opKey priorFence liveEpoch))
-                            | otherwise -> advance oKey pKey record liveEpoch
-                        Continuable -> advance oKey pKey record liveEpoch
+                            | otherwise -> advance oKey record liveEpoch
+                        Continuable -> advance oKey record liveEpoch
 
-    advance oKey pKey record liveEpoch = do
-        let attempt = recordedAttempt (protectedRecordBytes record) + 1
-        -- Durably record the unknown phase BEFORE the adapter can be called.
-        -- 'recordDurableUnknown' is the sole 'PreparedGate' producer, so the
-        -- attempt and journal version an adapter is later prepared against are
-        -- the ones this write established.
-        marked <-
-            recordDurableUnknown
+    advance oKey record liveEpoch = do
+        let attempt = recordedAttempt (transactionRecordPayload record) + 1
+            desired =
+                encodeFields
+                    [ unknownPhase
+                    , sessionIdText (sessionRecordId sess)
+                    , Text.pack (show liveEpoch)
+                    , Text.pack (show attempt)
+                    ]
+        advanced <-
+            runTransaction
                 session
-                oKey
-                (ExpectVersion (protectedRecordVersion record))
-                unknownPhase
                 plan
-                opKey
-                (sessionIdText (sessionRecordId sess))
-                liveEpoch
-                attempt
-        case marked of
-            Left failure -> pure (Left (SessionStoreFailure failure))
-            Right gate -> do
-                advanced <-
-                    compareAndSwapProtectedRecord
-                        session
-                        pKey
-                        (ExpectVersion permitVersion)
-                        (encodeFields ["open"])
-                case advanced of
-                    Left _ -> pure (Left (SessionStaleProjectPermit (recordVersionWord permitVersion)))
-                    Right nextVersion -> use gate (ProjectPermit nextVersion)
+                presented
+                TxnPrepareOperation
+                [operationTransactionTarget oKey (Just record) desired]
+        case advanced of
+            Left failure -> pure (Left failure)
+            Right next -> do
+                committed <- readTransactionRecord session oKey
+                case committed of
+                    Left failure -> pure (Left (transactionFailure failure))
+                    Right Nothing -> pure (Left (SessionOperationUnregistered opKey))
+                    Right (Just durable)
+                        | transactionRecordPayload durable /= desired ->
+                            pure (Left (SessionRecordCorrupt "prepared operation"))
+                        | otherwise ->
+                            use
+                                ( mintPreparedGate
+                                    plan
+                                    opKey
+                                    (sessionIdText (sessionRecordId sess))
+                                    liveEpoch
+                                    attempt
+                                    (recordVersionWord (transactionRecordVersion durable))
+                                )
+                                (ProjectPermit next)
 
 recordedAttempt :: ByteString -> Word64
 recordedAttempt raw = case decodeFields raw of
@@ -1185,58 +1473,66 @@ acknowledgeOutcome ::
     result ->
     ProjectPermit scope planId ->
     IO (Either SessionError (OperationAdvance scope planId result))
-acknowledgeOutcome session sess gate observedPhase result (ProjectPermit permitVersion) =
-    case ( operationKeyFor plan (sessionRecordId sess) (preparedGateOperation gate)
-         , projectKey plan
-         ) of
-        (Left failure, _) -> pure (Left failure)
-        (_, Left failure) -> pure (Left failure)
-        (Right oKey, Right pKey) -> do
-            observed <- readProtectedRecord session oKey
-            case observed of
-                Left failure -> pure (Left (SessionStoreFailure failure))
-                Right Nothing -> pure (Left (SessionOperationUnregistered (preparedGateOperation gate)))
-                Right (Just record)
-                    | versionOf record /= preparedGateJournalVersion gate ->
-                        pure
-                            ( Left
-                                ( SessionStaleJournalVersion
-                                    (preparedGateJournalVersion gate)
-                                    (versionOf record)
-                                )
-                            )
-                    | otherwise -> do
-                        settled <-
-                            compareAndSwapProtectedRecord
-                                session
-                                oKey
-                                (ExpectVersion (protectedRecordVersion record))
-                                ( encodeFields
-                                    [ observedPhase
-                                    , sessionIdText (sessionRecordId sess)
-                                    , Text.pack (show (preparedGateFence gate))
-                                    , Text.pack (show (preparedGateAttempt gate))
-                                    ]
-                                )
-                        case settled of
-                            Left failure -> pure (Left (SessionStoreFailure failure))
-                            Right _ -> do
+acknowledgeOutcome session sess gate observedPhase result (ProjectPermit presented)
+    | preparedGatePlan gate /= plan =
+        pure (Left (SessionPreparedGateMismatch "plan"))
+    | preparedGateSession gate /= sessionIdText (sessionRecordId sess) =
+        pure (Left (SessionPreparedGateMismatch "session"))
+    | otherwise =
+        withCurrentOpenPermit session plan presented $
+            case operationKeyFor plan (sessionRecordId sess) (preparedGateOperation gate) of
+                Left failure -> pure (Left failure)
+                Right oKey -> do
+                    observed <- readTransactionRecord session oKey
+                    case observed of
+                        Left failure -> pure (Left (transactionFailure failure))
+                        Right Nothing -> pure (Left (SessionOperationUnregistered (preparedGateOperation gate)))
+                        Right (Just record)
+                            | transactionVersionOf record /= preparedGateJournalVersion gate ->
+                                pure
+                                    ( Left
+                                        ( SessionStaleJournalVersion
+                                            (preparedGateJournalVersion gate)
+                                            (transactionVersionOf record)
+                                        )
+                                    )
+                            | not (gateMatchesRecord sess gate (transactionRecordPayload record)) ->
+                                pure (Left (SessionPreparedGateMismatch "durable operation"))
+                            | otherwise -> do
                                 advanced <-
-                                    compareAndSwapProtectedRecord
+                                    runTransaction
                                         session
-                                        pKey
-                                        (ExpectVersion permitVersion)
-                                        (encodeFields ["open"])
-                                pure $ case advanced of
-                                    Left _ -> Left (SessionStaleProjectPermit (recordVersionWord permitVersion))
-                                    Right nextVersion ->
-                                        Right
-                                            ( OperationAdvance
-                                                result
-                                                (ProjectPermit nextVersion)
+                                        plan
+                                        presented
+                                        TxnAcknowledgeOutcome
+                                        [ operationTransactionTarget
+                                            oKey
+                                            (Just record)
+                                            ( encodeFields
+                                                [ observedPhase
+                                                , sessionIdText (sessionRecordId sess)
+                                                , Text.pack (show (preparedGateFence gate))
+                                                , Text.pack (show (preparedGateAttempt gate))
+                                                ]
                                             )
+                                        ]
+                                pure
+                                    ( OperationAdvance result . ProjectPermit
+                                        <$> advanced
+                                    )
   where
     plan = sessionPlanDigest sess
+
+transactionVersionOf :: TransactionRecord -> Word64
+transactionVersionOf = recordVersionWord . transactionRecordVersion
+
+gateMatchesRecord :: OperationSession scope planId -> PreparedGate -> ByteString -> Bool
+gateMatchesRecord sess gate raw = case decodeFields raw of
+    [_phase, recordedSession, fence, attempt] ->
+        recordedSession == sessionIdText (sessionRecordId sess)
+            && readWord fence == Just (preparedGateFence gate)
+            && readWord attempt == Just (preparedGateAttempt gate)
+    _ -> False
 
 -- | Eliminate an advance: the result is available only with its successor permit.
 withOperationAdvance ::
@@ -1250,6 +1546,7 @@ withOperationAdvance (OperationAdvance result permit) use = use result permit
 
 data SessionError
     = SessionStoreFailure ProtectedError
+    | SessionTransactionFailure Text
     | SessionRecordCorrupt Text
     | SessionProjectMissing Text
     | SessionProjectClosed Text
@@ -1275,6 +1572,7 @@ data SessionError
     | SessionOperationUnsettled Text
     | SessionRetryNeedsFreshFence Text Word64 Word64
     | SessionUnclassifiedPhase Text Text
+    | SessionPreparedGateMismatch Text
     | -- | consumed version, then the version actually on the record
       SessionStaleJournalVersion Word64 Word64
     deriving (Eq, Show)
@@ -1282,6 +1580,7 @@ data SessionError
 sessionErrorMessage :: SessionError -> String
 sessionErrorMessage err = case err of
     SessionStoreFailure failure -> "session: " <> Text.unpack (protectedErrorMessage failure)
+    SessionTransactionFailure failure -> "session: " <> Text.unpack failure
     SessionRecordCorrupt what -> "session: the " <> Text.unpack what <> " record is unreadable"
     SessionProjectMissing plan -> "session: no project journal for plan " <> Text.unpack plan
     SessionProjectClosed plan -> "session: the project journal for " <> Text.unpack plan <> " is closed"
@@ -1325,5 +1624,7 @@ sessionErrorMessage err = case err of
             <> show live
     SessionUnclassifiedPhase opKey phase ->
         "session: operation " <> Text.unpack opKey <> " is at unrecognised phase " <> Text.unpack phase
+    SessionPreparedGateMismatch field ->
+        "session: the prepared gate does not match the " <> Text.unpack field
     SessionStaleJournalVersion consumed actual ->
         "session: journal version " <> show consumed <> " was superseded by " <> show actual

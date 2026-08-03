@@ -1,10 +1,12 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoMonoLocalBinds #-}
@@ -42,6 +44,7 @@ module Fixture (
     initArgsFor,
     projectInit,
     withFixtureProjectRoot,
+    withFixtureHarnessAuthority,
 )
 where
 
@@ -51,12 +54,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
+import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Config.Class (
     InitArgs (..),
     ProjectCfg (..),
     TestCfg (..),
-    withProjectCodec,
     withMappedProjectCodec,
+    withProjectCodec,
  )
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (BinaryContext)
@@ -71,11 +75,53 @@ import HostBootstrap.Dhall.Gen (
     renderValue,
     requireCodecWitness,
  )
-import HostBootstrap.Harness (VariantId, mkTestMatrix, mkVariantId, variantDraft)
+import HostBootstrap.Harness (VariantId, mkTestMatrix, mkVariantId, runWithOwnedRun, variantDraft)
+import HostBootstrap.Harness.Ownership (
+    protectedProjectRunOwnership,
+    withOwnedHarnessRoot,
+ )
+import HostBootstrap.Lifecycle.Mode (harnessRootHarnessAuthority)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import Numeric.Natural (Natural)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+
+{- | Acquire a real protected generative Harness root for authority-sensitive
+tests. The helper fails if acquisition or finalization does not settle; it never
+mints authority from a caller-selected run name.
+-}
+withFixtureHarnessAuthority ::
+    forall projectId cfg result.
+    (ProjectCfg projectId cfg) =>
+    Text ->
+    (forall runId. V.HarnessAuthority projectId runId -> IO result) ->
+    IO result
+withFixtureHarnessAuthority projectName use =
+    withSystemTempDirectory "hostbootstrap-harness-authority" $ \root -> do
+        project <-
+            either
+                (ioError . userError . T.unpack . Authority.authorityErrorMessage)
+                pure
+                (Authority.installedProjectFor @projectId @cfg projectName)
+        rooted <-
+            withCanonicalProjectRoot root root $ \canonicalRoot ->
+                runWithOwnedRun
+                    ( protectedProjectRunOwnership
+                        project
+                        canonicalRoot
+                        root
+                        (root </> ".test_data")
+                    )
+                    ( \owned ->
+                        withOwnedHarnessRoot owned $ \_store _project harnessRoot ->
+                            use (harnessRootHarnessAuthority harnessRoot)
+                    )
+        outcome <- either (ioError . userError . show) pure rooted
+        case outcome of
+            Left reason -> ioError (userError reason)
+            Right (result, Nothing) -> pure result
+            Right (_, Just failure) ->
+                ioError (userError ("harness authority cleanup failed: " ++ show failure))
 
 data Resources = Resources
     { cpu :: Natural

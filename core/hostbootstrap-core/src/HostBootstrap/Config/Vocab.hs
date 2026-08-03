@@ -2,8 +2,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | Haskell mirrors of the reusable @Core.dhall@ vocabulary record types.
@@ -30,7 +30,6 @@ module HostBootstrap.Config.Vocab (
     Harness,
     HarnessAuthority,
     HarnessConfigAuthority,
-    withHarnessAuthority,
     harnessConfigAuthority,
     harnessRunName,
     TestSecret (..),
@@ -53,9 +52,16 @@ where
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Dhall
 import Dhall (FromDhall, ToDhall)
+import qualified Dhall
 import GHC.Generics (Generic)
+import HostBootstrap.Config.Authority.Internal (
+    HarnessAuthority,
+    HarnessConfigAuthority,
+    harnessConfigAuthority,
+    harnessConfigRunName,
+    harnessRunName,
+ )
 import Numeric.Natural (Natural)
 
 -- | Text-quantity resource envelope exported by @Core.dhall@.
@@ -139,31 +145,6 @@ data Production projectId
 -- | Harness config scope for one installed project and one generative run.
 data Harness projectId runId
 
--- | Opaque authority for one harness run. Its constructor is module-private.
-newtype HarnessAuthority projectId runId = HarnessAuthority Text
-
--- | Opaque authority allowed to introduce fixture plaintext for that exact run.
-newtype HarnessConfigAuthority projectId runId = HarnessConfigAuthority Text
-
-{- | Open a fresh type identity for one harness run. The rank-2 @runId@ cannot
-escape or be confused with another invocation.
--}
-withHarnessAuthority ::
-    Text ->
-    (forall runId. HarnessAuthority projectId runId -> result) ->
-    result
-withHarnessAuthority runName use = use (HarnessAuthority runName)
-
--- | Narrow run authority to config-assembly authority.
-harnessConfigAuthority ::
-    HarnessAuthority projectId runId ->
-    HarnessConfigAuthority projectId runId
-harnessConfigAuthority (HarnessAuthority runName) = HarnessConfigAuthority runName
-
--- | Descriptive run name; this does not expose or recreate authority.
-harnessRunName :: HarnessAuthority projectId runId -> Text
-harnessRunName (HarnessAuthority runName) = runName
-
 -- | Explicit fixture material. It can enter a scoped secret only with authority.
 newtype TestSecret = TestSecret Text
     deriving stock (Eq, Show)
@@ -197,7 +178,7 @@ testPlaintextSecret ::
     HarnessConfigAuthority projectId runId ->
     TestSecret ->
     SecretRef (Harness projectId runId)
-testPlaintextSecret (HarnessConfigAuthority runName) = ScopedTestPlaintext runName
+testPlaintextSecret authority = ScopedTestPlaintext (harnessConfigRunName authority)
 
 -- | Scope-erased, display-only view. It carries no constructor authority.
 data SecretRefView

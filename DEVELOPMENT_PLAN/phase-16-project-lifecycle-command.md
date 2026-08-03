@@ -14,9 +14,12 @@
 
 **Sprint 16.6 is unblocked and started 2026-07-30.** Its verb-indexed reverse projection and teardown
 forest (`HostBootstrap.Teardown`) landed, which also gave Sprint 10.9's `verifyDestroySettled` its first
-producer. It is now the single root the remaining repair tranche hangs off: Sprints 11.10, 14.6, 17.4,
-and 10.9's reconciler-produced report rows each wait on one of its still-open items, listed in the
-sprint's `Remaining Work`.
+producer. It is now the current co-active producer root for the remaining repair tranche: Sprints 10.9
+and 15.9 retain their harness/authority contract ownership while this sprint supplies their production
+interpreter, handoff, reconciliation, and recursive-teardown consumers. Sprints 11.10 and 14.6, plus
+Sprint 10.9's reconciler-produced report rows, wait directly on its still-open items; Sprint 17.4 remains
+blocked by 10.9/15.9 and therefore waits transitively. The producer work is listed in the sprint's
+`Remaining Work`.
 
 The target is one typed lifecycle plan. Two of the three formerly independent contributions are now
 nodes of the validated plan: forward execution always was, and **the per-frame descent joined it
@@ -67,8 +70,8 @@ image #3) → `vm-orchestrator-1` (`incus exec` handoff, mint the child config) 
 (the webservice serving HTTP 200 on `localhost:30080`), then `project down` / `project destroy` tore it down
 with the plan's `.data` path outside both teardown removal sets (§ Y). That dated run proved the removal-set
 invariant, not the later durable-share transport. The demo now creates `.data` at the host project root
-and carries it through the provider share/alias and nested mounts, outside the provider disk; only the
-dedicated destroy → up → read-back proof remains open in Phase 5 Sprint 5.6. The `Step` algebra (16.1), the
+and carries it through the provider share/alias and nested mounts, outside the provider disk. The later
+destroy → up → read-back proof closed with the evidence recorded in Phase 5 Sprint 5.6. The `Step` algebra (16.1), the
 recursive interpreter + multi-frame descent (16.2), the `project init|up|down|destroy` command (16.3),
 and the demo chain migration incl. dissolving the
 old `deploy` / `harbor` / `role` verbs + the Op-based `HostBootstrapDemo.Chain` (16.4) all landed. The core
@@ -127,10 +130,9 @@ Dated validation evidence (2026-07-15): `cabal build all --ghc-options=-Werror` 
 `core/` (364 tests); the demo `-Werror` build and test run pass with 87 demo tests plus the embedded
 364-core suite. That is dated accelerator evidence. Sprint 16.6 additionally owns typed recursive
 teardown; accelerator-lane work still must prove the host daemon connects through the
-local-only NodePort, prove the native Linux CPU/GPU daemon Deployments connect through `ClusterIP`, and run
-the implemented browser Add assertion as part of the four-case/two-variant `8/8` gate. The dated Windows
-GPU/WSL2 `8/8` accepted by Phase 18 proves that host-daemon lane; it does not exercise Phase 16.6's
-future typed recursive teardown or close the remaining native Linux and Apple lanes.
+local-only NodePort and run the implemented browser Add assertion. The dated Windows GPU/WSL2 `8/8` and
+the later native Linux GPU/CPU `10/10` runs close those accelerator lanes; they do not exercise Phase
+16.6's later typed recursive teardown. Only the Apple host-daemon lane remains open in Sprint 16.5.
 
 **Native Linux CPU lane closed 2026-07-29.** `hostbootstrap-demo test run all` reported **`10/10 passed`**
 on a genuinely `linux-cpu`-detecting host (a fresh Ubuntu 24.04 Incus VM, whose kernel carries no NVIDIA
@@ -367,8 +369,8 @@ drive the chain interpreter from it.
   `project down` route first. The demo now creates
   `.data` at the host project root and carries it through the provider share/alias and nested mounts, so
   the durable root is outside that provider disk as well as absent from every teardown removal set. The
-  transport is implemented; Phase 5 Sprint 5.6's live destroy → up → read-back assertion is the only open
-  durability proof — see [durable_state](../documents/architecture/durable_state.md).
+  transport and Phase 5 Sprint 5.6's live destroy → up → read-back proof are implemented and closed —
+  see [durable_state](../documents/architecture/durable_state.md).
 - Command gating: within the `project` group, `project init` is the config-free writer and every other
   project verb gates through the sibling `<project>.dhall`. The other command groups' config-free
   writers/static routes and file readers follow the exact § X matrix; “read-only `context`” does not mean
@@ -572,17 +574,20 @@ recorded once with
 
 That run executed the native Linux **GPU** in-cluster deployment and the implemented browser Add
 assertion across the full five-case/two-variant harness. The accepted Windows GPU/WSL2 `8/8` closes its
-host-daemon lane. The native Linux **CPU** in-cluster deployment and the Apple host-daemon lifecycle
-through the local-only NodePort remain, so this sprint has not reached cross-substrate closure. Neither
-run closes Sprint 16.6's typed plan/journal teardown contract, which they both predate.
+host-daemon lane. The later native Linux **CPU** `10/10` run closes the CPU deployment; only the Apple
+host-daemon lifecycle through the local-only NodePort remains. Those runs do not close Sprint 16.6's
+typed plan/journal teardown contract, which they predate.
 
 ### Sprint 16.6: Ownership-preserving recursive teardown [Active]
 
 **Status**: Active
 
-**Unblocked and started 2026-07-30.** Every named prerequisite has landed — Sprints 5.7, 9.10, 10.9,
-15.9, and 19.7–19.8 — so the `Blocked by` line is removed. The first deliverable, the verb-indexed
-reverse projection and its teardown forest, landed 2026-07-30; the rest is listed under `Remaining Work`.
+**Unblocked and started 2026-07-30.** Closed Sprints 5.7, 9.10, and 19.7–19.8 and the required producer
+foundations from active Sprints 10.9 and 15.9 have landed. Sprints 10.9, 15.9, and 16.6 are now one
+co-active integration tranche: 10.9 owns the harness authority/close/report contracts, 15.9 owns the
+opaque authority/handoff/prepare contracts, and 16.6 supplies their production interpreter, handoff,
+reconciliation, and recursive-teardown producers. The first deliverable, the verb-indexed reverse
+projection and its teardown forest, landed 2026-07-30; the rest is listed under `Remaining Work`.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs`,
@@ -1196,7 +1201,13 @@ plus the permitted core-managed override.
 the acquiring step declared and observes `StopFrame`, then `project destroy` on the same spec observes
 `DeleteFrame`.
 
-**Still open (this sprint), in the order they unblock other work:**
+**Still open (this sprint), grouped by contract; dependencies are stated on each item:**
+
+**Integrated 2026-08-01 with the active Sprint 10.9 tranche:** the live harness loop now acquires a
+fresh run per config variant, threads that acquired run identity into the config bracket, and uses
+`withAssembledHarnessConfig` rather than the raw assembly runner. Focused `HarnessSpec` validation passes
+23/23 with `-Werror`. This establishes the run→config edge that items 1–3 consume; it does not yet bind
+the lifecycle profile/snapshot/plan or replace the independently callable authority opener.
 
 1. **The `copy-source` plan node at the demo call site.** The core half above is landed, but the demo's
    adoption is **ordering-blocked behind item 3, not behind item 1** — a discovery of this work. A step
@@ -1246,7 +1257,7 @@ Sprint 16.5 remains Active only for native accelerator lifecycle validation.
   and the implemented host-root carry guarantee for `project down` / `project destroy`: `down` may delete
   ephemeral Kind because Kind has no stop operation but deletes neither durable roots nor provider
   frames/disks; `destroy` may delete owned provider frames/disks while host-root `.data` stays outside
-  them. Phase 5 Sprint 5.6 owns the sole open live destroy → up → read-back proof.
+  them. Include the closed Phase 5 Sprint 5.6 live destroy → up → read-back evidence.
 
 **Engineering docs to create/update:**
 - `documents/engineering/composition_patterns.md` - the chain/`Step` pattern plus the recursive interpreter

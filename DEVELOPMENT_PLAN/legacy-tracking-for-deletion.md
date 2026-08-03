@@ -1206,17 +1206,19 @@ a plan update creates a new current owner for it.
   `ProviderSpec` wall-effect and release-body cases; demo **105**).
 - **The native Windows wall C shim and its FFI surface** (`core/hostbootstrap-core/cbits/wsl_global_wall.c`,
   the `if os(windows)` `c-sources`/`extra-libraries: advapi32, ole32, shell32` block, the test-suite
-  `-threaded` carve-out, the seven `hb_wsl_*` `foreign import`s, and the Windows-gated
-  `test/WslGlobalWallWindowsSpec.hs`) — written against the superseded platform-primitive ownership
-  rule. The restated § EE clauses need none of it. Replacement:
+  `-threaded` carve-out, and the seven `hb_wsl_*` wrapper `foreign import`s) — written against the
+  superseded platform-primitive ownership rule. The removed surface is specifically the C shim and
+  those wrapper imports. Replacement:
   `HostBootstrap.Wsl2.GlobalWall.Host` (the portable driver, record codec, and `HostWallBackend` seam),
   `HostBootstrap.Wsl2.GlobalWall.Posix` (`fcntl` exclusive entry, a journal file, `device:inode`
-  identity), and a rewritten `HostBootstrap.Wsl2.GlobalWall.Windows` over `Win32`'s `LockFileEx`,
-  `getFileInformationByHandle`, `MoveFileEx`, and `CreateHardLinkW`. `LockFileEx` is not affine to the
-  acquiring OS thread, which is why the threaded-RTS carve-out could go. No `.c` remains in the
-  repository. The wall spec is **un-gated**: `test/WslGlobalWallHostSpec.hs` runs the complete driver —
-  every phase, conflict, and crash-resume branch — on every substrate the suite runs on. Removed
-  2026-07-28; owner: Phase 11 Sprint 11.10. The `Win32` backend still owes a native-Windows gate.
+  identity), and a rewritten `HostBootstrap.Wsl2.GlobalWall.Windows` using public `Win32` APIs plus a
+  narrow direct `kernel32` FFI where exact status is required. The replacement has no C source, Cabal
+  `c-sources`, or private `Win32` dependency. `LockFileEx` is not affine to the acquiring OS thread,
+  which is why the threaded-RTS carve-out could go. No `.c` remains in the repository. On non-Windows,
+  `test/WslGlobalWallHostSpec.hs` runs the complete driver against the POSIX backend and a real kernel;
+  on Windows, the current `test/WslGlobalWallWindowsSpec.hs` gates the production entrypoint and native
+  identity/apply/restore/conflict behavior. Removed 2026-07-28; owner: Phase 11 Sprint 11.10. Focused
+  native Windows evidence: 4/4 cases passed 2026-08-01.
 
 ## Rules
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -21,11 +22,13 @@ import HostBootstrap.Substrate (Arch (Amd64), Substrate (Substrate), SubstrateNa
 import HostBootstrap.Substrate.Provider
 import HostBootstrap.Substrate.Provider.Alias
 import HostBootstrap.Wsl2 (Wsl2VM (..))
+#ifndef mingw32_HOST_OS
 import System.Directory (createDirectory, doesPathExist, pathIsSymbolicLink)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
+#endif
 import PrepareFixture (gateFor)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -36,9 +39,12 @@ tests :: TestTree
 tests =
     testGroup
         "ProviderAliasSpec"
-        [ testCase "guest alias specs require distinct absolute POSIX paths" $ do
+        ( [ testCase "guest alias specs require distinct absolute POSIX paths" $ do
             assertBool "relative alias rejected" (isLeft (mkGuestAliasSpec "tmp/alias" "/srv/data"))
             assertBool "relative target rejected" (isLeft (mkGuestAliasSpec "/tmp/alias" "srv/data"))
+            assertBool
+                "an absolute Windows host path is not a POSIX guest path"
+                (isLeft (mkGuestAliasSpec "C:\\hostbootstrap\\alias" "/srv/data"))
             assertBool "same normalized path rejected" (isLeft (mkGuestAliasSpec "/srv/data/" "/srv/data"))
             fmap guestAliasPath (mkGuestAliasSpec "/var/tmp/project-data" "/srv/project/data")
                 @?= Right "/var/tmp/project-data"
@@ -135,48 +141,60 @@ tests =
                 Left other -> assertFailure ("expected Unsupported, got " ++ show other)
                 Right _ -> assertFailure "a guest without the tools must not mint a backend"
         , testCase "backend discovery mints a capability when the guest holds the tools" $ do
-            discovered <- discoverStrongAliasBackend testProvider localGuestExec
+            discovered <- discoverStrongAliasBackend testProvider capabilityGuestExec
             case discovered of
                 Right _ -> pure ()
                 Left err -> assertFailure ("expected a strong backend, got " ++ show err)
-        , testCase "the guest backend creates, owns, and conditionally releases the alias" $
-            withRealAlias $ \spec dir backend -> do
-                outcome <- createOwnRelease spec backend
-                case outcome of
-                    Right () -> do
-                        stillThere <- doesPathExist (dir </> "alias")
-                        assertBool "the released alias is unlinked" (not stillThere)
-                    Left err -> assertFailure ("expected create then release, got " ++ show err)
-        , testCase "release refuses a foreign-replaced alias and leaves it intact" $
-            withRealAlias $ \spec dir backend -> do
-                -- Create + own the alias, then repoint it at a foreign target between
-                -- ownership and release.  Clause 4 re-observes and must refuse the
-                -- unlink, returning a structured conflict and leaving the alias alone.
-                createDirectory (dir </> "other")
-                released <-
-                    createThen
-                        spec
-                        backend
-                        (tamperRepoint (dir </> "alias") (dir </> "other"))
-                case released of
-                    Left (Conflict _) -> do
-                        stillLink <- pathIsSymbolicLink (dir </> "alias")
-                        assertBool "the foreign-replaced alias is left intact" stillLink
-                    other -> assertFailure ("expected a release conflict, got " ++ show other)
-        , testCase "an occupying non-symlink is reported foreign, never adopted" $
-            withRealAlias $ \spec dir backend -> do
-                writeFile (dir </> "alias") "not our link\n"
-                observation <- reconcileOnce spec backend
-                case observation of
-                    AliasCallForeign _ foreignState ->
-                        foreignIdentity foreignState @?= Text.pack (dir </> "alias")
-                    other -> assertFailure ("expected a foreign observation, got " ++ show other)
         ]
+            ++ posixFilesystemCases
+        )
 
-{- | A guest command runner that executes the argv against the test host's real
-POSIX filesystem, so the four-clause protocol is exercised for real on every
-substrate this suite runs on.
+posixFilesystemCases :: [TestTree]
+#ifdef mingw32_HOST_OS
+posixFilesystemCases = []
+#else
+posixFilesystemCases =
+    [ testCase "the guest backend creates, owns, and conditionally releases the alias" $
+        withRealAlias $ \spec dir backend -> do
+            outcome <- createOwnRelease spec backend
+            case outcome of
+                Right () -> do
+                    stillThere <- doesPathExist (dir </> "alias")
+                    assertBool "the released alias is unlinked" (not stillThere)
+                Left err -> assertFailure ("expected create then release, got " ++ show err)
+    , testCase "release refuses a foreign-replaced alias and leaves it intact" $
+        withRealAlias $ \spec dir backend -> do
+            -- Create + own the alias, then repoint it at a foreign target between
+            -- ownership and release.  Clause 4 re-observes and must refuse the
+            -- unlink, returning a structured conflict and leaving the alias alone.
+            createDirectory (dir </> "other")
+            released <-
+                createThen
+                    spec
+                    backend
+                    (tamperRepoint (dir </> "alias") (dir </> "other"))
+            case released of
+                Left (Conflict _) -> do
+                    stillLink <- pathIsSymbolicLink (dir </> "alias")
+                    assertBool "the foreign-replaced alias is left intact" stillLink
+                other -> assertFailure ("expected a release conflict, got " ++ show other)
+    , testCase "an occupying non-symlink is reported foreign, never adopted" $
+        withRealAlias $ \spec dir backend -> do
+            writeFile (dir </> "alias") "not our link\n"
+            observation <- reconcileOnce spec backend
+            case observation of
+                AliasCallForeign _ foreignState ->
+                    foreignIdentity foreignState @?= Text.pack (dir </> "alias")
+                other -> assertFailure ("expected a foreign observation, got " ++ show other)
+    ]
+#endif
+
+{- | A guest command runner that executes the argv against a POSIX test host's
+real filesystem.  A Windows host path is not a provider guest path, so Windows
+keeps the portable algebra/probe cases while native POSIX hosts exercise the
+four-clause filesystem protocol here.
 -}
+#ifndef mingw32_HOST_OS
 localGuestExec :: GuestExec
 localGuestExec = GuestExec runLocal
   where
@@ -184,6 +202,20 @@ localGuestExec = GuestExec runLocal
     runLocal (cmd : args) = do
         (code, out, err) <- readProcessWithExitCode cmd args ""
         pure (GuestCommandResult (code == ExitSuccess) out err)
+#endif
+
+{- | Preserve the real ownership-tool discovery probe on POSIX.  Windows has no
+POSIX guest filesystem in this unit-test process, so its capability-mint branch
+uses a deterministic successful guest boundary; native provider gates exercise
+the probe inside the actual guest.
+-}
+capabilityGuestExec :: GuestExec
+#ifdef mingw32_HOST_OS
+capabilityGuestExec =
+    GuestExec (\_ -> pure (GuestCommandResult True "" ""))
+#else
+capabilityGuestExec = localGuestExec
+#endif
 
 {- | A guest that reports every command as failed, standing in for a guest that
 lacks the ownership tools.
@@ -195,6 +227,7 @@ toollessGuestExec =
 {- | Set up a real temp directory with a share, a valid alias spec pointing into
 it, and a discovered backend over 'localGuestExec'.
 -}
+#ifndef mingw32_HOST_OS
 withRealAlias ::
     (GuestAliasSpec -> FilePath -> StrongAliasBackend -> IO a) ->
     IO a
@@ -283,6 +316,7 @@ tamperRepoint alias foreignTarget = do
             ["-c", "rm -f \"$1\" && ln -s \"$2\" \"$1\"", "hb", alias, foreignTarget]
             ""
     pure ()
+#endif
 
 aliasSpec :: GuestAliasSpec
 aliasSpec =

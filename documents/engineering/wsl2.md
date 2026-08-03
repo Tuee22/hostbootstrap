@@ -19,8 +19,8 @@ wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>
 
 It then enters the distro with `wsl -d <distro> -- ...`, stages source, builds/installs the Linux project
 binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
-container frame. `project down` uses per-distro termination; `project destroy` uses guarded
-`wsl --unregister`.
+container frame. `project down` restores the journalled global-wall origin and then runs global
+`wsl --shutdown`; `project destroy` additionally uses guarded `wsl --unregister`.
 
 The unused `wslImportArgs`/cached-rootfs builder was deleted. `wslInstallArgs` is now the sole
 registration builder and has both a production consumer and tests.
@@ -80,18 +80,23 @@ The implementation is split so that the ownership logic is not Windows-only:
 | `HostBootstrap.Wsl2.GlobalWall.Windows` | the production Win32 backend |
 | `HostBootstrap.Wsl2.GlobalWall.Posix` | the POSIX backend the ungated suite runs the driver against |
 
-On Windows the clauses are realized without a foreign-function boundary, using `Win32`'s existing
-bindings: `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` on a per-user lock file for exclusive entry, a
-journalled origin record naming exact bytes or absence under `%UserProfile%\.hostbootstrap`, and
-`getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair for identity binding. The
-64-bit file index is unique and stable on NTFS; a non-NTFS profile volume returns `Unsupported` rather
-than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the adapter needs
-neither a named mutex nor the threaded RTS.
+On Windows the clauses are realized by a small Haskell adapter over the platform ABI. It uses public
+`Win32` types and wrappers where they preserve the required semantics, and a narrow direct `kernel32`
+FFI for status-sensitive calls whose public `Win32-2.14.2.1` wrappers do not expose the exact
+`GetLastError` result. The boundary has no C shim, Cabal `c-sources`, or private `Win32` import.
+`LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` on a per-user lock file supplies exclusive entry; a
+journalled origin record under `%UserProfile%\.hostbootstrap` names exact bytes or absence; and
+`getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair supplies identity binding.
+The 64-bit file index is unique and stable on NTFS; a non-NTFS profile volume returns `Unsupported`
+rather than assuming it. A byte-range lock is not affine to the acquiring OS thread, so the adapter
+needs neither a named mutex nor the threaded RTS.
 
 Because the driver is backend-parametric, every phase, conflict, and crash-resume branch is executed
-against a real kernel on any POSIX host through the second backend — `fcntl` exclusive entry, a journal
-file, and `device:inode` identity. A uniform invariant gets a uniform gate. The Win32 backend still owes
-a native-Windows run.
+against a real kernel on POSIX through the second backend — `fcntl` exclusive entry, a journal file,
+and `device:inode` identity. The shared pure model and codec suites remain platform-neutral. On
+Windows-gated validation exercised the production entrypoint directly against a temporary
+`USERPROFILE`; its native apply/restore/origin/replacement cases passed. The broader WSL2 provider
+lifecycle matrix remains separate from this focused adapter evidence.
 
 Shutdown affects the shared WSL utility VM and stops every distro, so it is a global side effect rather
 than a project-local wall.
@@ -104,29 +109,26 @@ effective-wall reconciliation. Windows capacity preflight includes system-drive 
 ## Wall release
 
 Lima and Incus release their walls when the project stops: `limactl stop` and `incus stop` return the VM's
-CPU and memory to the host. WSL2 does not yet do so at teardown, and the release depends on two separate
-changes.
+CPU and memory to the host. WSL2 now releases its shared utility-VM wall through two coordinated teardown
+effects.
 
-**Landed (Sprint 9.11): the managed body no longer pins the wall open.** Both idle timeouts previously
-carried `-1`, so the shared utility VM stayed resident holding the full memory balloon indefinitely — a
-`project down` that looked complete could leave the entire budget committed until the next reboot or a
-manual `wsl --shutdown`. `-1` was adopted to stop the distro instance idle-stopping mid-run; a generous
-**finite** duration prevents that just as well while guaranteeing the host eventually recovers the memory.
-The managed body now emits six hours in milliseconds for both `[general] instanceIdleTimeout` and
-`[wsl2] vmIdleTimeout`, derived from a single `managedWslIdleTimeoutHours` constant in
-`HostBootstrap.Cluster.Cordon` rather than a literal at either call site. Six hours is an order of
-magnitude beyond the longest lifecycle this project runs, so no run can be idle-stopped in the gaps
-between its `wsl -d` steps.
+The managed body no longer pins the wall open. Both idle timeouts previously carried `-1`; they now emit
+six hours in milliseconds for `[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`, derived from
+the single `managedWslIdleTimeoutHours` constant in `HostBootstrap.Cluster.Cordon`. Six hours is an order
+of magnitude beyond the longest lifecycle this project runs, so no run can be idle-stopped in the gaps
+between its `wsl -d` steps. These finite timeouts are an interrupted-run backstop: normal teardown does
+not wait for either timeout to expire.
 
-**Landed (Sprints 11.10/5.7): teardown releases the wall.** `project down` now emits
-`ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing — the utility VM re-reads
-the file on its next cold boot, so releasing *after* the shutdown would publish the managed body one more
-time. The shutdown is the same disclosed global side effect already performed on bring-up. Release
-restores the exact origin bytes, or their absence, from the journalled origin record; a foreign
-replacement of the managed file is refused as a `Conflict` and left intact rather than deleted.
+`project down` emits `ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing: the
+utility VM re-reads the file on its next cold boot, so releasing *after* shutdown would publish the
+managed body one more time. Release restores the exact origin bytes, or their absence, from the
+journalled origin record; a foreign replacement of the managed file is refused as a `Conflict` and left
+intact rather than deleted. Shutdown is the same disclosed global side effect already performed on
+bring-up, stops every WSL distro, and returns the utility VM's CPU and memory to the host.
 
-An operator who needs the memory back outside a `project down` can still run `wsl --shutdown` by hand; it
-is non-destructive and the utility VM restarts on next use. See
+If a run is interrupted before `project down` reaches these effects, an operator can still run
+`wsl --shutdown` by hand; it is non-destructive, stops every distro, and the utility VM restarts on next
+use. See
 [durable Windows runs](durable_windows_runs.md) for why a finished-looking session may still be holding
 the wall.
 
@@ -149,10 +151,14 @@ should remain outside it; that outcome is not yet live-gated.
 
 ## Validation
 
-Historical Windows runs are evidence, not present-tense closure. The current code has changed since those
-runs and the demo profile/durable-readback defects remain open. Closure requires a current Windows run
-covering platform reconcile, install/no-op, project up, daemon placement, host durable write,
-destroy/up/readback, recursive teardown, and restoration of `.wslconfig`.
+The current Windows `project up`/`project down` gate closed the Phase 9 wall-release observable: the
+managed wall was active during bring-up, teardown restored an absent `.wslconfig` origin exactly, and
+the following global shutdown left neither a running distro nor a resident utility VM. Dated command
+and test detail belongs in the Phase 9 development plan.
+
+That result does not close the broader WSL2 provider lifecycle. The demo profile/durable-readback defects,
+prepared-operation adoption, recursive teardown, existing-VHDX reconciliation, and the remaining native
+provider matrix stay open in their owning phases.
 
 Phase status belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

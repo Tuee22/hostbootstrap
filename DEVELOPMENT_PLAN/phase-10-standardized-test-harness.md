@@ -16,8 +16,9 @@
 **Reopened 2026-07-24.** Sprints 10.9–10.10 supersede the earlier Done assessment because path/cooperative locks
 do not provide exclusive identity-bearing ownership and the complete concurrency/failure matrix is not
 validated, while a detached Haskell selector and Dhall union formed an unconsumed parallel model beside
-the chain. Sprint 10.10 removed that parallel surface on 2026-07-25; Sprint 10.9 remains blocked.
-Historical run counts below do not close the ownership/concurrency gap.
+the chain. Sprint 10.10 removed that parallel surface on 2026-07-25. Sprint 10.9's prerequisites have all
+landed; its remaining work is the production consumption and validation tranche shared with Sprint 16.6.
+Historical run counts below do not close that ownership/concurrency gap.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — legible lifecycle failure.** The harness owned the report
 card, and it collapsed a bring-up failure to a message-less `ExitFailure 1`: `runSuiteSelection` rendered
@@ -69,11 +70,14 @@ closure.
 
 ## Remaining Work
 
-**Current:** Sprint 10.9 is Blocked by Sprints 5.7, 9.10, 15.9, and 19.7–19.8, then owns
-§ EE clause-holding reservations/ownership, per-variant failure isolation, structured cleanup
-outcomes, and authenticated cross-process harness-authority handoff. The dated
-closure record below does not cover concurrent acquisition, identity-bearing teardown, or authority
-rehydration in the self-invoked `project up`.
+**Current:** Sprint 10.9 is active. Sprints 5.7, 9.10, and 19.7–19.8 are complete, and Sprint 15.9's
+prerequisite producer foundations have landed. Per-variant generative ownership, exact root/config
+authority, immutable snapshot binding, close-failure propagation, and the crash-consistent
+project/session transaction coordinator have landed. The remaining tranche owns
+authenticated cross-process child admission, receipt-producing reconciler report rows, the live prepared
+effect/terminal-close and abandoned-run recovery paths, and the corresponding concurrency/recovery matrix.
+Sprint 16.6 supplies the production call-site producers this phase consumes. The dated closure records
+below do not cover those remaining integration or race contracts.
 
 **Completed 2026-07-25:** Sprint 10.10 removed the detached selector/type, Dhall union/codec, and all
 audited definition/test-only helpers with no plan consumer. The structural regression test, exact Dhall
@@ -796,6 +800,97 @@ run reservation that replaces the lock directory.**
   mid-body does not block the next run.
 - The engine takes ownership through an injected `HarnessRunOwnership` seam, so `runSuiteSelection`
   keeps owning only selection, isolation, and reporting (§ W).
+
+**Delivered 2026-08-01 — per-variant ownership and exact run identity at config assembly.**
+
+- `runSuiteSelection` now opens and resolves `HarnessRunOwnership` separately for every distinct
+  `ConfigVariant`. Cases sharing a variant still share one stack, but variant N+1 cannot acquire until
+  variant N's ownership bracket returns. An acquisition refusal is recorded against only that variant,
+  and the matrix proceeds after the refusal without running its lifecycle.
+- The ownership bracket now supplies the stable textual identity of the generative run it actually
+  acquired. `ConfigVariant` threads that identity into the generated-config bracket, and `Command`
+  derives `HarnessAuthority` from it instead of from the reusable `VariantId` label.
+- The live command path now runs project assembly through `withAssembledHarnessConfig`, jointly checking
+  the scope-correct codec/wire identity and yielding `ValidatedConfig` before the exclusive generated
+  config is installed. It no longer calls `runConfigAssembly` directly.
+- `HarnessSpec` pins the full acquire → exact-run config → up/assert/down → release ordering for two
+  distinct run identities and proves one ownership refusal does not suppress a later variant.
+
+Focused validation (2026-08-01): `cabal test hostbootstrap-core-test --test-options="-p HarnessSpec"
+--ghc-options=-Werror` passes all **23** cases on Windows. This is the first live per-variant seam, not
+Sprint 10.9 closure: the authority opener remains independently callable, and bound profile/plan,
+terminal-close, recovery, authenticated handoff, reconciler producers, and the full race matrix remain.
+
+**Validated 2026-08-01 — the four previously unregistered authority fixtures now run.**
+`CompileFailSpec` registers `ForgeHarnessAuthority.hs`, `HarnessConfigAsProduction.hs`,
+`CrossRunPlaintext.hs`, and `ProductionPlaintext.hs`, and checks each fixture's intended diagnostic so an
+unrelated compiler failure cannot satisfy the gate. `ClosingPermitAsOpen.hs` subsequently joined the
+same registry and pins the Open/Closing permit boundary. The focused public-boundary group passes
+**39/39** with `-Werror`; Fourmolu, `git diff --check`, and the LF check pass for the changed registry.
+
+**Delivered 2026-08-01 — ownership finalizer failures are no longer discarded.**
+
+- A completed ownership bracket returns its body result together with a typed optional close failure:
+  `HarnessDataRootCleanupFailed` or `HarnessModeCloseFailed`. The production bracket uses
+  `generalBracket`, so synchronous and asynchronous exits still run finalization, and it propagates
+  data-root release, protected-entry, no-effects proof, and lease/mode-close failures.
+- A cleanup failure preserves the variant's assertion rows and appends a labeled `TeardownFailed` row.
+  Because the prior lease is unresolved, every later unstarted variant is refused without entering its
+  ownership/config/lifecycle bracket. An ordinary acquisition refusal remains isolated and permits a
+  later variant to acquire.
+- Native identity-replacement coverage proves a replaced data-root generation is retained, its lease is
+  not falsely closed, and the failure reaches the report. A real `ThreadKilled` case proves the
+  asynchronous bracket releases cleanly and admits a successor.
+
+**Delivered 2026-08-01 — project journal phase permits are type-distinct.** `ProjectPermit` is Open-only;
+`beginClosingProject` consumes it and returns `ClosingProjectPermit`, and only that type can enter
+`recordClosedProject`, which returns `ClosedProjectPermit`. Session/operation mutations now revalidate
+the exact Open state and project version before touching their secondary record. The stale-prepare test
+then uses the live successor to perform attempt 1, proving the rejected stale call did not first rewrite
+`IntentRecorded`; the former nominal "closed" test now performs a real Open → Closing → Closed
+transition and proves prepare is refused. This closes the reopen/type-confusion and stale-prepare
+pre-mutation defects, but the remaining multi-record transitions still require one crash-consistent
+aggregate transaction before Sprint 10.9 can close.
+
+Integrated validation (2026-08-01): the complete Windows core suite passes **792/792** with
+`cabal test hostbootstrap-core-test --ghc-options=-Werror`. `HarnessSpec` contributes **27** cases,
+`SessionSpec` **30**, and `AuthoritySpec` **54**; the public compile-fail boundary contributes **39**.
+
+**Delivered 2026-08-01 — one exact owned root and an immutable live plan binding.**
+
+- `HarnessRunOwnership` and `ConfigVariant` carry the exact authority acquired for that generative run.
+  The public arbitrary-text harness-authority opener is gone; `HarnessRoot` retains the internally minted
+  authority, and `OwnedHarnessRoot` retains that exact authority together with the exact protected store,
+  installed project, and canonical root. Production derives its authority directory from that same
+  installed-project/root pair. Compile-fail coverage rejects opening harness authority from text.
+- The CLI planner is scope-polymorphic through the live harness path. After the scope-correct profile is
+  opened, the command builds the plan once, persists revision 1, verifies the persisted snapshot, and
+  binds the lease before generated config or suite effects. Only `FreshRunLeaseBinding` proceeds;
+  an existing binding is recovery-required rather than silently reused.
+- Snapshot persistence is immutable. Byte-identical persistence is an idempotent no-op that does not
+  advance the protected record version, while any revision/spec/plan substitution is refused and leaves
+  the original record unchanged. Focused tests also prove a Production/Harness mode mismatch cannot reach
+  the planner or snapshot and that the live CLI body observes its matching bound snapshot.
+
+**Delivered 2026-08-01 — crash-consistent project/session journal transactions.**
+
+- `HostBootstrap.Lifecycle.Transaction` coordinates every Session-owned multi-record transition with a
+  durable redo descriptor: `Idle` or `Applying`, a stable sequence, and exact stamped target records.
+  Recovery deterministically completes an `Applying` transaction before any Session authority read.
+- Project/session opening, atomic initial-intent plus exact session membership, prepare, outcome
+  acknowledgement, session close, Open→Closing, and Closing→Closed now commit through that coordinator.
+  The project permit is the coordinator's sole successor permit, and exact recorded membership replaces
+  prefix discovery for current-format sessions (the prefix scan remains only for legacy records).
+- Failure injection after `Applying`, after every target boundary, and immediately before commit proves
+  restart convergence for every Session-owned transaction kind. The split intent/membership boundary,
+  stale-permit behavior, a stray prefix-shaped record, and prepare versus session/project close races are
+  covered. A compile-fail fixture rejects construction of the private interruption exception; merely
+  installing the scoped test failpoint changes no durable record.
+
+Integrated validation (2026-08-01): a clean external-build-directory gate passes the complete Windows
+core suite at **826/826** under `-Werror`; the demo workspace passes **110/110** plus the embedded
+**826/826** core suite under the same gate. `SessionSpec` contributes **57** cases and the public
+compile-fail boundary contributes **40**.
 
 Validation (2026-07-29): `cabal build all --ghc-options=-Werror` and `cabal test all
 --ghc-options=-Werror` pass from `core/` at **619**; the demo workspace passes **106** demo tests plus

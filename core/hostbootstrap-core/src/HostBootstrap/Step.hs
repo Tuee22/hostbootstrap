@@ -33,6 +33,18 @@ module HostBootstrap.Step (
     projectStepId,
     StepIdentity (..),
     ReversePolicy (..),
+    StepImplementationRevision,
+    mkStepImplementationRevision,
+    stepImplementationRevisionNumber,
+    initialStepImplementationRevision,
+    implementedAt,
+    stepImplementationRevision,
+    StepReverseAdapterRevision,
+    mkStepReverseAdapterRevision,
+    stepReverseAdapterRevisionNumber,
+    initialStepReverseAdapterRevision,
+    reverseAdapterAt,
+    stepReverseAdapterRevision,
     OperationKey,
     operationKeyText,
 
@@ -60,6 +72,7 @@ module HostBootstrap.Step (
     TeardownAction (..),
     TeardownOutcome (..),
     reversedBy,
+    reversedByAt,
     stepReverses,
     stepReverse,
 
@@ -93,6 +106,7 @@ module HostBootstrap.Step (
 where
 
 import Data.List (group, sort)
+import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lift (LiftContext)
 
@@ -184,6 +198,39 @@ data ReversePolicy
     | ProjectManagedReverse
     deriving (Eq, Ord, Show)
 
+{- | Explicit revision of the forward implementation attached to a closed step
+identity. The callback itself is opaque @IO@ and is never rendered or hashed;
+changing its durable semantics therefore requires a new positive revision.
+-}
+newtype StepImplementationRevision = StepImplementationRevision Word64
+    deriving (Eq, Ord, Show)
+
+mkStepImplementationRevision :: Word64 -> Either String StepImplementationRevision
+mkStepImplementationRevision 0 = Left "a step implementation revision must be positive"
+mkStepImplementationRevision revision = Right (StepImplementationRevision revision)
+
+stepImplementationRevisionNumber :: StepImplementationRevision -> Word64
+stepImplementationRevisionNumber (StepImplementationRevision revision) = revision
+
+initialStepImplementationRevision :: StepImplementationRevision
+initialStepImplementationRevision = StepImplementationRevision 1
+
+{- | Explicit revision of the reverse adapter selected for a step. It covers
+both a core/project policy adapter and a callback attached with 'reversedBy'.
+-}
+newtype StepReverseAdapterRevision = StepReverseAdapterRevision Word64
+    deriving (Eq, Ord, Show)
+
+mkStepReverseAdapterRevision :: Word64 -> Either String StepReverseAdapterRevision
+mkStepReverseAdapterRevision 0 = Left "a step reverse-adapter revision must be positive"
+mkStepReverseAdapterRevision revision = Right (StepReverseAdapterRevision revision)
+
+stepReverseAdapterRevisionNumber :: StepReverseAdapterRevision -> Word64
+stepReverseAdapterRevisionNumber (StepReverseAdapterRevision revision) = revision
+
+initialStepReverseAdapterRevision :: StepReverseAdapterRevision
+initialStepReverseAdapterRevision = StepReverseAdapterRevision 1
+
 -- | Stable namespaced operation key derived only from the typed identity.
 newtype OperationKey = OperationKey String
     deriving (Eq, Ord, Show)
@@ -203,6 +250,8 @@ data Step = Step
     , internalStepFrame :: StepFrame
     , internalStepKind :: StepKind
     , internalStepReversePolicy :: ReversePolicy
+    , internalStepImplementationRevision :: StepImplementationRevision
+    , internalStepReverseAdapterRevision :: StepReverseAdapterRevision
     , internalStepRun :: HostConfig -> IO ()
     , internalStepDescent :: [LiftContext]
     -- ^ The descent this step declares out of its own frame. A list rather than
@@ -230,6 +279,21 @@ stepIdentity step =
 
 stepReversePolicy :: Step -> ReversePolicy
 stepReversePolicy = internalStepReversePolicy
+
+-- | Replace the explicit forward-implementation revision for this step.
+implementedAt :: StepImplementationRevision -> Step -> Step
+implementedAt revision step = step{internalStepImplementationRevision = revision}
+
+stepImplementationRevision :: Step -> StepImplementationRevision
+stepImplementationRevision = internalStepImplementationRevision
+
+-- | Replace the explicit reverse-adapter revision for this step. This applies
+-- whether the adapter is policy-provided or attached with 'reversedBy'.
+reverseAdapterAt :: StepReverseAdapterRevision -> Step -> Step
+reverseAdapterAt revision step = step{internalStepReverseAdapterRevision = revision}
+
+stepReverseAdapterRevision :: Step -> StepReverseAdapterRevision
+stepReverseAdapterRevision = internalStepReverseAdapterRevision
 
 stepOperationKey :: Step -> OperationKey
 stepOperationKey step =
@@ -284,8 +348,19 @@ reversedBy ::
     (HostConfig -> TeardownAction -> IO TeardownOutcome) ->
     Step ->
     Step
-reversedBy action step =
-    step{internalStepReverse = internalStepReverse step ++ [action]}
+reversedBy = reversedByAt initialStepReverseAdapterRevision
+
+-- | Attach a reverse effect under an explicit stable adapter revision.
+reversedByAt ::
+    StepReverseAdapterRevision ->
+    (HostConfig -> TeardownAction -> IO TeardownOutcome) ->
+    Step ->
+    Step
+reversedByAt revision action step =
+    step
+        { internalStepReverseAdapterRevision = revision
+        , internalStepReverse = internalStepReverse step ++ [action]
+        }
 
 {- | The reverse effects this step declares. More than one is a construction
 conflict.
@@ -548,7 +623,16 @@ coreStep ::
     (HostConfig -> IO ()) ->
     Step
 coreStep identity reversePolicy label frame action =
-    Step label frame (CoreKind identity) reversePolicy action [] []
+    Step
+        label
+        frame
+        (CoreKind identity)
+        reversePolicy
+        initialStepImplementationRevision
+        initialStepReverseAdapterRevision
+        action
+        []
+        []
 
 deployVMStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
@@ -588,4 +672,13 @@ projectStep ::
     (HostConfig -> IO ()) ->
     Step
 projectStep identity reversePolicy label frame action =
-    Step label frame (ProjectKind identity) reversePolicy action [] []
+    Step
+        label
+        frame
+        (ProjectKind identity)
+        reversePolicy
+        initialStepImplementationRevision
+        initialStepReverseAdapterRevision
+        action
+        []
+        []

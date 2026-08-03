@@ -45,10 +45,10 @@ import Control.Exception.Safe (bracket)
 import Data.Bits ((.|.))
 import System.Win32.File (
     BY_HANDLE_FILE_INFORMATION (bhfiFileIndex, bhfiVolumeSerialNumber),
+    FileAttributeOrFlag,
     closeHandle,
     createFile,
     fILE_FLAG_BACKUP_SEMANTICS,
-    fILE_FLAG_OPEN_REPARSE_POINT,
     fILE_SHARE_DELETE,
     fILE_SHARE_READ,
     fILE_SHARE_WRITE,
@@ -58,6 +58,13 @@ import System.Win32.File (
  )
 #else
 import System.Posix.Files (deviceID, fileID, getSymbolicLinkStatus)
+#endif
+
+#if defined(mingw32_HOST_OS)
+-- The public @Win32@ API does not expose this SDK flag even though 'createFile'
+-- still accepts the complete @dwFlagsAndAttributes@ bit field.
+fileFlagOpenReparsePoint :: FileAttributeOrFlag
+fileFlagOpenReparsePoint = 0x00200000
 #endif
 
 -- | The identity backend for the host this binary was built for.
@@ -110,7 +117,7 @@ readObjectIdentity path =
             (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
             Nothing
             oPEN_EXISTING
-            (fILE_FLAG_BACKUP_SEMANTICS .|. fILE_FLAG_OPEN_REPARSE_POINT)
+            (fILE_FLAG_BACKUP_SEMANTICS .|. fileFlagOpenReparsePoint)
             Nothing
 #else
 readObjectIdentity path = do

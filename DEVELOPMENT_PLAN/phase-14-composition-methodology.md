@@ -12,20 +12,22 @@
 ## Phase Status
 
 **Status**: Active
-**Blocked by**: Sprint 16.6 for Sprint 14.6's remaining `service run` call-site adoption; Sprint 14.7 is
-closed
+**Blocked by (remaining item only)**: Sprint 16.6 for Sprint 14.6's remaining `service run` call-site
+adoption
+**Satisfied sprint**: Sprint 14.7
 
-**Extended 2026-07-25.** Sprint 14.7 reopens the generic network-planning boundary: raw endpoint text
-and an independently serialized redirect default currently permit a host-local registry client to be
-redirected to a cluster-only object store. The target makes delivery a reachability-proof-gated part of
-the same finalized plan.
+**Extended 2026-07-25; closed 2026-07-29.** Sprint 14.7 reopened the generic network-planning boundary
+after raw endpoint text and an independently serialized redirect default permitted a host-local registry
+client to be redirected to a cluster-only object store. Its completed replacement makes delivery a
+reachability-proof-gated part of the same finalized plan.
 
 **Reopened 2026-07-24; the engine landed 2026-07-30.** The methodology documents remain valid. The L0
 `RoleLifecycle` skeleton had no production consumer after the demo `Role` module and appended role verbs
 were removed, and a definition-only public callback engine could not remain as a second lifecycle
-representation. Sprint 14.6 deleted it and replaced it with the phase-indexed engine; what is still open
-there is the `service run` call-site adoption, which waits on Sprint 16.6's root-authorized `project up`
-gate, because until that lands nothing in production can sign an activation manifest.
+representation. Sprint 14.6 deleted it and replaced it with the phase-indexed engine. The root-frame
+authority gate has since landed in Sprint 16.6; what remains open is carrying that authority through
+16.6's internal receiver/root relay to the nested deploy call site and adopting the engine at
+`service run`.
 
 **Earlier reopening (2026-06-19) and closure (2026-06-20):** the methodology removed a parallel harness bring-up
 graph: the standardized test harness **reuses the chain** (drives `project up`) rather than expressing
@@ -47,9 +49,10 @@ now supplies typed transition descriptors and `ReconcileResult`, while this phas
 role-lifecycle and network-plan consumers.
 
 The single-representation doctrine is part of the methodology: one operation has one representation.
-Today opaque validated `StepPlan` is the one **forward ordering** and the harness adds no second
-deployment graph; it is not yet the complete lifecycle representation because frame context and
-teardown are separate checked contributions. `composition_methodology.md` (the canonical home) and
+Today opaque validated `StepPlan` is the one lifecycle representation and the harness adds no second
+deployment graph. Forward ordering, plan-owned frame descent, and plan-owned reverse effects are nodes
+of that value; Sprint 16.6 still owes their recursive child-first production interpretation.
+`composition_methodology.md` (the canonical home) and
 `composition_patterns.md` present `project up` as the recursive/fractal interpreter of that plan, the
 target resource-indexed lifecycle plan, and the
 Python bootstrapper as the metal-frame instance of the fractal bootstrap. The interpreter primitive
@@ -60,9 +63,9 @@ The topology-aware composition path has dated real-demo evidence: Dhall expresse
 frame, and runtime witnesses needed for a binary to fail fast outside its legal execution context.
 Sprint 14.4 records the 2026-06-16 run that lifted the then-current `test all` workflow into a Lima VM.
 That historical command shape is not the current single-representation doctrine: today the project-owned
-`[Step]` value is the sole forward-order input, `project up` interprets it, and the harness reuses that
-command per variant. Frame context and teardown remain independent callbacks; Sprints 19.8 and 16.6 own
-the one validated lifecycle representation.
+plan supplies forward order, frame descent, and reverse effects, `project up` interprets it, and the
+harness reuses that command per variant. Sprint 16.6 still owns the recursive child-first production
+interpretation of that one validated lifecycle representation.
 
 Forward-pointer: the **composition pattern #7** re-anchor — from a build-only VM to the **headless host
 build** (build on the bare host, stage the artifact into the cluster, never run the workload in a build VM),
@@ -72,10 +75,10 @@ whose first worked instance is the Windows `ensure cudawin` CUDA host build — 
 
 ## Remaining Work
 
-Sprint 14.6 integrates the definition-only role skeleton into the fixed service runtime with the same
-plan/phase authority model. Sprint 14.7 adds scope-indexed endpoints and proof-gated blob delivery.
-Open ownership, profile-isolation, and recursive-teardown defects remain owned by Phases 9, 10, 13,
-and 16.
+Sprint 14.6's role engine and Sprint 14.7's scope-indexed endpoint/blob-delivery algebra are implemented.
+Sprint 14.6 remains Active only for fixed `service run` call-site adoption after Sprint 16.6 carries the
+root-authorized activation path into the nested frame. Open ownership, profile-isolation, and
+recursive-teardown defects remain owned by Phases 10, 13, and 16.
 
 ## Phase Objective
 
@@ -452,17 +455,15 @@ passes **231**.
 
 **Still open (this sprint): the `service run` call-site adoption — `Blocked by` Sprint 16.6.**
 
-This is a structural dependency, not a scheduling preference. `service run` can require the activation
-package only if something in production can *produce* one, and today nothing can: a signed
-`ActivationManifest` needs an `ActivationBroker`, which `withActivationBroker` mints only from a
-`RootInvocationAuthority`. Repository search finds `Authority.withVerifiedRootInvocation` has **no
-production consumer** — `project up` still uses the class-membership gate. Sprint 15.9's own remaining
-work assigns that replacement ("replace the class-membership-only `project up` gate with
-`authorizeProjectCommand` at the command layer") to Sprint 16.6. Until it lands there is no live root
-authority at `deploy-chart` time to sign the pod-template revision's manifest, so gating `service run` on
-one would make every runtime role unstartable rather than more authorized.
+This is a structural dependency, not a scheduling preference. The root-frame
+`Authority.withVerifiedRootInvocation` production consumer landed in Sprint 16.6, but a signed
+`ActivationManifest` still needs an `ActivationBroker` at the nested deploy call site. The current
+root-only gate does not cross the internal handoff, and the shell-writer path carries no duplex root
+relay. Sprint 16.6 therefore remains the producer dependency for that relay and the plan-owned operation
+descriptor; adopting the engine before they land would make every runtime role unstartable rather than
+more authorized.
 
-What remains here, once 16.6 supplies the root-authorized `project up`:
+What remains here, once 16.6 carries the landed root authority through the recursive handoff:
 
 - have the `deploy-chart` step sign one `ActivationManifest` per pod-template revision and install the
   immutable digest-addressed ConfigMap, Secret, and manifest objects (the Secret being the sole

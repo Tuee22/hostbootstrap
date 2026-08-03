@@ -12,7 +12,8 @@
 ## Phase Status
 
 **Status**: Active
-**Blocked by**: None (Sprint 9.10 is complete)
+**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 and Apple/Lima live lanes
+are independently executable when those hosts are available
 
 **Updated 2026-07-27 — the ownership invariant was restated and this sprint's target changed shape.**
 Sprint 11.10 removed the parallel `HostTarget`/Provider boundary, unused provider
@@ -38,12 +39,21 @@ with dependencies already present. Two consequences for this sprint:
 **Updated 2026-07-28 — the global WSL wall half is closed.** The portable host-wall driver, its POSIX and
 `Win32` backends, and the deletion of the C shim landed together with production integration: the
 lifecycle's WSL effects are now pathname-free wall acquire/release over a journalled origin record, and
-the backup-existence route is removed. The ownership suite is un-gated and runs on every substrate.
+the backup-existence route is removed. The portable model/codec suites remain un-gated; the real-kernel
+driver and native-adapter gates are platform-specific.
 
 Production still uses the historical guest **alias** path (`ln -s` over alias facts, minting no receipt).
-That production migration and the native provider gates remain open; the `Win32` backend in particular has
-no native run yet. The Windows `8/8` result below is dated evidence for the earlier implementation, not
-current closure.
+That production migration and the remaining provider lifecycle gates remain open. The Windows `8/8`
+result below is dated evidence for the earlier implementation, not current closure.
+
+**Updated 2026-08-01 — the production Win32 adapter is natively gated.** Building against the pinned
+`Win32-2.14.2.1` exposed references to one unexported SDK flag and hidden `.Internal` modules. The SDK
+flag is now defined locally, ordinary operations use public `Win32` APIs, and a narrow direct
+`kernel32` FFI preserves exact error statuses for classification-sensitive handle/namespace calls;
+there is still no C shim, Cabal `c-sources`, private-module import, or threaded-RTS carve-out. The
+Windows production-entrypoint suite passes 4/4 against a temporary `USERPROFILE`, and the complete
+Windows core gate passes 782/782. This closes the native adapter obligation, not the guest-alias demo
+call-site migration or a full current WSL2 provider lifecycle lane.
 
 **Reopened 2026-07-21, CLOSED `Done` 2026-07-23 — the guest-side durable alias as pure, readiness-gated
 provider data.** The 2026-07-19 host-path share primitive (Sprint 11.8) delivered only the **host-side** half
@@ -123,17 +133,14 @@ ceiling applied.
 
 **Current:** Sprint 11.10 is partially delivered. `SubstrateProvider`/`Lift` is the sole dispatch; dead
 provider APIs are removed; Incus has one total capability/egress transition; and the direct-host lane
-creates no alias. The typed guest-alias API is in place but its backend discovery returns `Unsupported`
-on every substrate, so the production provider path still creates the alias with an unowned `ln -s`. The
-WSL foundation models exact present/absent origin, durable unknown phases, apply/restore classification,
-and strict UTF-8/UTF-16 config transformation; its byte transformer is portable and is retained
-unchanged. The native Windows shim and its FFI are superseded by the portable backend and are tracked for
-deletion in the ledger. Production still uses backup-existence inference. The unavailable native Windows
-and Linux gates, plus a current disposable Lima lifecycle gate, remain required.
-
-WSL2 also does not release its wall on `project down` while Lima and Incus do; the `spStop` effect list
-is this lane's, and the teardown ordering is Sprint 5.7's deliverable with the managed-body change in
-Sprint 9.11.
+creates no alias. The clause-holding guest-alias backend exists, but the demo still creates its guest
+alias through the historical non-authorizing action because a step action cannot yet obtain the
+plan-owned prepared `Managed` share handle. That call-site migration remains blocked by Sprint 16.6
+item 3. The production WSL host wall uses the portable driver and POSIX/Windows backends; the `.bak`
+route and C shim are gone. Windows uses public `Win32` APIs plus a narrow direct `kernel32` FFI where
+exact status preservation is required. `spStop` restores the wall and then performs the disclosed
+global `wsl --shutdown` effect. The current WSL2 lifecycle observation and Apple/Lima lifecycle lane,
+plus the guest-alias production migration, are the genuinely open obligations.
 
 **Historical closure (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
 (`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
@@ -720,7 +727,8 @@ readiness.
 ### Sprint 11.10: One provider/lift path and guest durable projections [Active]
 
 **Status**: Active
-**Blocked by**: None (Sprint 9.10 is complete)
+**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 and Apple/Lima live lanes
+are independently executable when those hosts are available
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
@@ -810,9 +818,11 @@ projection primitive without treating them as direct-host path authority.
   **retained unchanged** by the work below;
 - added a Windows-only interpreter and narrow C shim exercising the Win32 primitives directly.
   **Superseded 2026-07-27:** the shim was written against the platform-primitive rule, and the restated
-  invariant is satisfiable through `Win32`'s existing bindings, so the shim and its FFI are tracked for
-  deletion in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Its crash model
-  survives in the pure state machine above.
+  invariant removed the need for a C intermediary, so the shim and its seven `hb_wsl_*` wrapper imports
+  were deleted and recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The
+  2026-08-01 native gate later established that the pinned public `Win32` surface does not retain every
+  exact-status primitive, so the retained backend uses a narrow direct `kernel32` FFI rather than a C
+  shim or private `Win32` modules. Its crash model survives in the pure state machine above.
 
 **Delivered 2026-07-27 (guest-alias ownership backend + WSL2 wall release):**
 
@@ -838,18 +848,20 @@ projection primitive without treating them as direct-host path authority.
 - the WSL2 global `.wslconfig` **host** wall is now a portable driver over an injected backend.
   `HostBootstrap.Wsl2.GlobalWall.Host` owns the complete recovery driver, the durable record codec, and
   the `HostWallBackend` seam; `HostBootstrap.Wsl2.GlobalWall.Posix` is an `fcntl`/journal-file/
-  `device:inode` backend; `HostBootstrap.Wsl2.GlobalWall.Windows` is the production backend over
-  `Win32`'s `LockFileEx`, `getFileInformationByHandle`, `MoveFileEx`, and `CreateHardLinkW`. Because a
-  byte-range lock is not affine to the acquiring OS thread, `cbits/wsl_global_wall.c`, the
-  `if os(windows)` `c-sources`/`extra-libraries` block, the seven `hb_wsl_*` foreign imports, and the
-  test-suite `-threaded` carve-out are all deleted. No `.c` remains in the repository;
-- the wall spec is **un-gated**. `test/WslGlobalWallWindowsSpec.hs` (Windows-only, `5/5` native subset)
-  is replaced by `test/WslGlobalWallHostSpec.hs`, which runs the production driver against a real kernel
-  on every substrate the suite runs on: publication and restored absence, exact origin retention and
+  `device:inode` backend; `HostBootstrap.Wsl2.GlobalWall.Windows` is the production backend over public
+  `Win32` types/wrappers plus a narrow direct `kernel32` FFI for exact-status handle and namespace
+  operations. Because a byte-range lock is not affine to the acquiring OS thread, the old
+  `cbits/wsl_global_wall.c`, its `c-sources`/`extra-libraries` block, seven `hb_wsl_*` wrapper imports,
+  and test-suite `-threaded` carve-out are all deleted. No `.c` remains in the repository;
+- the pure wall/model/config suites remain un-gated. On non-Windows,
+  `test/WslGlobalWallHostSpec.hs` runs the production driver against the POSIX backend and a real kernel:
+  publication and restored absence, exact origin retention and
   byte-identical republication, recovery-name and journal cleanliness, idempotent re-apply, strictly
   monotonic fences, clause-1 serialisation of concurrent entries, symlink refusal, foreign-owner and
   incompatible-spec conflicts, clause-4 refusal to delete a replaced managed target, interrupted-publish
-  and interrupted-restore resume, durable armed-leftover reclamation, and the record codec;
+  and interrupted-restore resume, durable armed-leftover reclamation, and the record codec. On Windows,
+  `test/WslGlobalWallWindowsSpec.hs` gates the production entrypoint and native object-identity,
+  apply/restore, and replacement-conflict behavior;
 - the backup-existence (`.bak`) route is gone. `HostEffect` now carries pathname-free
   `ApplyGlobalWslWall`/`ReleaseGlobalWslWall`; `spStop`/`spDestroy` take the same `ResourceEnvelope` as
   `spLaunch`, so teardown releases exactly the wall bring-up applied; `VMHandles.vmhWslConfigPath`,
@@ -934,10 +946,10 @@ Gates: demo **106** and core **738** under `-Werror`; demo `fourmolu --mode chec
   plan-owned prepared operation over the backend (building the production `GuestExec` from the provider
   lift), and remove the alias-fact bypass — coordinated with the plan-driven wiring shared with Sprints
   5.7 and 16.6;
-- run current native WSL2 and disposable Lima gates, and the native Incus/direct-Linux gate. The Windows
-  `8/8` snapshot validates the historical WSL lane only and a macOS run cannot close a Linux or Windows
-  lane. The `Win32` backend specifically has **no** native run yet: its clause realization is validated
-  only by its POSIX peer through the shared driver.
+- run the current WSL2 provider lifecycle observation and disposable Lima lane. The Windows `8/8`
+  snapshot validates the historical WSL lane only, while the 2026-08-01 4/4 result validates the native
+  Win32 adapter rather than the whole provider lifecycle. The native Incus/direct-Linux gate closed
+  2026-07-29 as recorded above.
 
 **Validation evidence (2026-07-26):** `cabal build all --ghc-options=-Werror` and the complete **448**
 core tests passed; the demo `-Werror` build plus **105** demo and embedded **448** core tests passed; the
@@ -981,8 +993,20 @@ a non-symlink occupant reported foreign — all through the real `flock`/`stat`/
 host filesystem. The five alias compile-fail fixtures still reject the forged
 backend/prepared-call/observed-only/foreign-handle/cross-receipt constructions. `fourmolu`/`hlint` validate
 only in the container `check-code` on this host (the host `fourmolu` is a non-canonical version). This does
-**not** close the sprint: the WSL2 host `.wslconfig` wall Win32 port and C-shim retirement, the demo
-`ln -s` / `.bak` production migration, and the native WSL2/Lima gates remain open.
+**not** close the sprint: the demo guest-alias call-site adoption and the current WSL2 and Apple/Lima
+provider lifecycle lanes remain open. The later native Windows evidence below closes the Win32 adapter,
+not those obligations.
+
+**Validation evidence (2026-08-01, native Windows adapter):**
+`cabal build all --enable-tests --ghc-options=-Werror` passed from `core/`, and the focused
+`WslGlobalWallWindowsSpec` passed **4/4** through the production entrypoints against a temporary
+`USERPROFILE`: absent-origin apply/restore, byte-exact present-origin restoration, and identity-bound
+foreign-replacement refusal/preservation. The complete Windows core gate passed **782/782**; the demo
+workspace passed **110/110** plus its embedded **782/782** core suite. Windows intentionally omits the
+real POSIX `flock` guest-filesystem fixtures while retaining their portable validation/probe cases; the
+POSIX host suite remains the complete real-kernel recovery-driver gate. This evidence closes the native
+Win32 adapter obligation only. The current WSL2 lifecycle and guest-alias call-site obligations remain
+separate.
 
 **Dependency finding 2026-07-30 — the demo `ln -s` migration is Sprint 16.6-gated, and this is
 structural rather than a scheduling preference.** `00-overview.md` item 1 named this migration the next

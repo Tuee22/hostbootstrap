@@ -30,6 +30,7 @@ import Control.Exception.Safe (finally, try)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf)
 import qualified Data.Text as T
+import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Chain (renderChain, runChainFromFrame)
 import HostBootstrap.Cluster.Lifecycle (
     ClusterPlan,
@@ -48,24 +49,25 @@ import HostBootstrap.Config.Class (
     TestCfg (..),
     decodeProjectCodecFile,
     projectCodecSchemaText,
-    runConfigAssembly,
+    projectCodecSpecDigest,
  )
+import HostBootstrap.Config.Fields (inspectLocalContext)
 import HostBootstrap.Config.Schema (
     configRoleNames,
     parseConfigRole,
     projectConfigFileName,
     removeProjectConfigFileIfOwned,
     siblingProjectConfigPath,
+    validatedConfigValue,
+    verifiedConfigDigest,
+    withAssembledHarnessConfig,
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
     withSiblingValidatedProjectConfigRoot,
     writeProjectConfigFile,
     writeScopedProjectConfigFile,
     writeScopedProjectConfigFileExclusive,
-    validatedConfigValue,
-    verifiedConfigDigest,
  )
-import HostBootstrap.Config.Fields (inspectLocalContext)
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
@@ -98,21 +100,42 @@ import HostBootstrap.Harness (
     parseCaseSelector,
     reportCard,
     runSuiteSelection,
-    testDataRoot,
     safetyRefusalMarker,
     selectTestMatrix,
     selectedVariantCaseIds,
     selectedVariantDraft,
+    testDataRoot,
     testMatrixCaseIds,
     testSuiteCaseIds,
     variantDraftId,
     variantIdText,
  )
-import HostBootstrap.Harness.Ownership (protectedRunOwnership)
+import HostBootstrap.Harness.Ownership (
+    protectedProjectRunOwnership,
+    withOwnedHarnessRoot,
+ )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
+import HostBootstrap.Lifecycle.Mode (
+    LifecycleProfile,
+    ModeError (ModeRecoveryRequired),
+    RunLeaseBinding (ExistingRunLeaseBinding, FreshRunLeaseBinding),
+    bindRunLease,
+    harnessRootHarnessAuthority,
+    harnessRootModeLease,
+    harnessRootRunId,
+    harnessRootUnboundLease,
+    modeErrorMessage,
+    persistPlanSnapshot,
+    runIdText,
+    verifyPlanSnapshot,
+    withHarnessLifecycleProfile,
+ )
 import HostBootstrap.Lift (currentSelfRef)
-import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.ProjectRoot (CanonicalProjectRoot, canonicalProjectRootPath)
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+    withCanonicalProjectRoot,
+ )
 import HostBootstrap.Protected (
     ProtectedSession,
     ProtectedStore,
@@ -120,7 +143,7 @@ import HostBootstrap.Protected (
     protectedErrorMessage,
     withProtectedEntry,
  )
-import HostBootstrap.Reconcile (withLifecyclePlan)
+import HostBootstrap.Reconcile (LifecyclePlan, lifecyclePlanDigest, withLifecyclePlan)
 import HostBootstrap.Service (
     FinalizedServiceRegistry,
     finalizedServiceVariantNames,
@@ -130,11 +153,11 @@ import HostBootstrap.Service (
  )
 import HostBootstrap.Step (StepPlan, StepPlanError, isDeployKindStep, stepsForFrame)
 import qualified HostBootstrap.Step as Step
-import qualified HostBootstrap.Teardown as Teardown
 import HostBootstrap.Substrate (detect)
+import qualified HostBootstrap.Teardown as Teardown
 import Numeric.Natural (Natural)
 import Options.Applicative
-import System.Directory (getCurrentDirectory, doesFileExist, withCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory, withCurrentDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (die)
 import System.FilePath (takeDirectory, (</>))
@@ -163,6 +186,19 @@ extend behavior through the 'ProjectSpec' streams, not new verbs.
 coreCommandNames :: [String]
 coreCommandNames = ["context", "project", "test", "service", "check-code"]
 
+{- | Module-private live-plan opener. Requiring the scope-matched lifecycle
+profile here makes the plan-opening call structurally depend on the exact
+active-mode/unbound-lease gate without adding a public construction route.
+-}
+withProfiledLifecyclePlan ::
+    LifecycleProfile scope ->
+    ProjectCodec scope specDigest cfg ->
+    StepPlan ->
+    (forall planId. LifecyclePlan scope planId -> result) ->
+    result
+withProfiledLifecyclePlan profile codec plan use =
+    profile `seq` withLifecyclePlan codec plan use
+
 {- | The core subcommands every @hostbootstrap@-derived binary exposes. The
 project's 'TestSuite' is threaded into the inherited @test@ verb so a project's
 cases run under @test@ (not a per-noun subcommand). The project's config seams
@@ -183,9 +219,9 @@ coreCommands ::
         (V.Production projectId)
         specDigest
         (cfg (V.Production projectId)) ->
-    ( forall rootScope rootId.
+    ( forall configScope rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
-      cfg (V.Production projectId) ->
+      cfg configScope ->
       Either StepPlanError StepPlan
     ) ->
     [ConfigInput] ->
@@ -199,7 +235,7 @@ coreCommands ::
 coreCommands cfgCodec testCodec progName projectArtifacts suite checkCode services stepPlan assemblyInputs assemble initBuilder testInit =
     [ contextCommand @projectId @cfg @(V.Production projectId) cfgCodec progName projectArtifacts initBuilder
     , projectCommandGroup cfgCodec progName stepPlan initBuilder
-    , testCommand @projectId @cfg @tcfg cfgCodec testCodec progName suite assemblyInputs assemble testInit
+    , testCommand @projectId @cfg @tcfg cfgCodec testCodec progName suite stepPlan assemblyInputs assemble testInit
     , serviceCommandGroup cfgCodec progName services initBuilder
     , checkCodeCommand @projectId @cfg @(V.Production projectId) cfgCodec progName checkCode
     ]
@@ -237,6 +273,11 @@ testCommand ::
     CodecWitness tcfg ->
     String ->
     TestSuite ->
+    ( forall configScope rootScope rootId.
+      CanonicalProjectRoot rootScope rootId ->
+      cfg configScope ->
+      Either StepPlanError StepPlan
+    ) ->
     [ConfigInput] ->
     ( forall scope.
       AssemblyRequest projectId tcfg (TestVariant tcfg) scope ->
@@ -244,7 +285,7 @@ testCommand ::
     ) ->
     (InitArgs -> tcfg) ->
     Mod CommandFields (IO ())
-testCommand _productionCodec testCodec progName suite assemblyInputs assemble testInit =
+testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs assemble testInit =
     command
         "test"
         ( info
@@ -304,56 +345,116 @@ testCommand _productionCodec testCodec progName suite assemblyInputs assemble te
                 (die . selectionError matrix)
                 pure
                 (selectTestMatrix selector matrix)
-        let variantFor selectedVariant =
-                ConfigVariant
-                    { variantId = variantDraftId draft
-                    , variantCaseIds = selectedVariantCaseIds selectedVariant
-                    , variantWithConfig = \body ->
-                        mask $ \restore -> do
-                            V.withHarnessAuthority
-                                (variantIdText (variantDraftId draft))
-                                ( \(authority :: V.HarnessAuthority projectId runId) -> do
-                                    assembled <-
-                                        restore
-                                            ( runConfigAssembly
-                                                assemblyInputs
-                                                (assemble (HarnessAssembly authority tc draft))
-                                            )
-                                    cfg <- either die pure assembled
-                                    withHarnessProjectCodec
-                                        @projectId
-                                        @cfg
-                                        (V.harnessConfigAuthority authority)
-                                        ( \harnessCodec -> do
-                                            ownedPayload <-
-                                                restore
-                                                    ( writeScopedProjectConfigFileExclusive
-                                                        harnessCodec
-                                                        cfgPath
-                                                        cfg
-                                                    )
-                                            restore
-                                                ( putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack (variantIdText (variantDraftId draft)) ++ ")")
-                                                    >> body
-                                                )
-                                                `finally` removeGeneratedConfig cfgPath ownedPayload
-                                        )
-                                )
-                    }
-              where
-                draft = selectedVariantDraft selectedVariant
+        project <-
+            either
+                (die . ("test run: " ++) . T.unpack . Authority.authorityErrorMessage)
+                pure
+                (Authority.installedProjectFor @projectId @cfg (T.pack progName))
         -- Exclusive run ownership is taken by the protected-store bracket, not
         -- by a bare lock directory: an interrupted run leaves a classifiable
         -- lease the next run's sweep resolves or names for recovery.
         siblingDirectory <- takeDirectory <$> siblingProjectConfigPath (T.pack progName)
         stateRoot <- getCurrentDirectory
-        let ownership =
-                protectedRunOwnership
-                    (T.pack progName)
-                    stateRoot
-                    siblingDirectory
-                    testDataRoot
-        outcome <- runSuiteSelection ownership suite (map variantFor selected)
+        resolved <-
+            withCanonicalProjectRoot cfgPath stateRoot $ \canonicalRoot -> do
+                let variantFor selectedVariant =
+                        ConfigVariant
+                            { variantId = variantDraftId draft
+                            , variantCaseIds = selectedVariantCaseIds selectedVariant
+                            , variantWithConfig = \ownedRoot body ->
+                                withOwnedHarnessRoot ownedRoot $ \store ownedProject root -> do
+                                    let authority = harnessRootHarnessAuthority root
+                                        runName = V.harnessRunName authority
+                                    mask $ \restore -> do
+                                        withHarnessProjectCodec
+                                            @projectId
+                                            @cfg
+                                            (V.harnessConfigAuthority authority)
+                                            ( \harnessCodec -> do
+                                                assembled <-
+                                                    restore
+                                                        ( withAssembledHarnessConfig
+                                                            assemblyInputs
+                                                            authority
+                                                            harnessCodec
+                                                            (assemble (HarnessAssembly authority tc draft))
+                                                            ( \_wire validated -> do
+                                                                case withHarnessLifecycleProfile
+                                                                    (harnessRootModeLease root)
+                                                                    (harnessRootUnboundLease root) of
+                                                                    Left failure ->
+                                                                        die (T.unpack (modeErrorMessage failure))
+                                                                    Right profile ->
+                                                                        case projectPlan canonicalRoot (validatedConfigValue validated) of
+                                                                            Left failure ->
+                                                                                die ("project plan: " ++ show failure)
+                                                                            Right stepPlan ->
+                                                                                -- This exact mode/unbound-lease profile gates the
+                                                                                -- scope-correct lifecycle plan before any config
+                                                                                -- bytes or suite body become live.
+                                                                                withProfiledLifecyclePlan profile harnessCodec stepPlan $ \lifecyclePlan -> do
+                                                                                    entered <-
+                                                                                        withProtectedEntry store $ \session -> do
+                                                                                                persisted <-
+                                                                                                    persistPlanSnapshot
+                                                                                                        session
+                                                                                                        ownedProject
+                                                                                                        (harnessRootRunId root)
+                                                                                                        1
+                                                                                                        (projectCodecSpecDigest harnessCodec)
+                                                                                                        (lifecyclePlanDigest lifecyclePlan)
+                                                                                                bound <- case persisted of
+                                                                                                    Left failure -> pure (Left failure)
+                                                                                                    Right () ->
+                                                                                                        verifyPlanSnapshot session ownedProject (harnessRootRunId root) $ \snapshot ->
+                                                                                                            bindRunLease
+                                                                                                                session
+                                                                                                                ownedProject
+                                                                                                                (harnessRootUnboundLease root)
+                                                                                                                snapshot
+                                                                                                                ( \binding ->
+                                                                                                                    pure $ case binding of
+                                                                                                                        FreshRunLeaseBinding _ _ -> Right ()
+                                                                                                                        ExistingRunLeaseBinding _ _ ->
+                                                                                                                            Left
+                                                                                                                                ( ModeRecoveryRequired
+                                                                                                                                    (runIdText (harnessRootRunId root))
+                                                                                                                                )
+                                                                                                                )
+                                                                                                pure (Right bound)
+                                                                                    case entered of
+                                                                                        Left failure -> die (T.unpack (protectedErrorMessage failure))
+                                                                                        Right (Left failure) -> die (T.unpack (modeErrorMessage failure))
+                                                                                        Right (Right ()) -> pure ()
+                                                                ownedPayload <-
+                                                                    writeScopedProjectConfigFileExclusive
+                                                                        harnessCodec
+                                                                        cfgPath
+                                                                        (validatedConfigValue validated)
+                                                                restore
+                                                                    ( putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack (variantIdText (variantDraftId draft)) ++ ", run " ++ T.unpack runName ++ ")")
+                                                                        >> body
+                                                                    )
+                                                                    `finally` removeGeneratedConfig cfgPath ownedPayload
+                                                            )
+                                                        )
+                                                either die pure assembled
+                                            )
+                            }
+                      where
+                        draft = selectedVariantDraft selectedVariant
+                    ownership =
+                        protectedProjectRunOwnership
+                            project
+                            canonicalRoot
+                            siblingDirectory
+                            (canonicalProjectRootPath canonicalRoot </> testDataRoot)
+                runSuiteSelection ownership suite (map variantFor selected)
+        outcome <-
+            either
+                (die . ("test run: invalid project root: " ++) . show)
+                pure
+                resolved
         case outcome of
             Left err -> die err
             Right report -> do
@@ -880,7 +981,9 @@ projectCommandGroup codec progName projectPlan initBuilder =
         | not (null (Context.parentChain ctx)) = body
         | otherwise = do
             project <-
-                either (dieAuthority . T.unpack . Authority.authorityErrorMessage) pure
+                either
+                    (dieAuthority . T.unpack . Authority.authorityErrorMessage)
+                    pure
                     (Authority.installedProjectFor @projectId @cfg (T.pack progName))
             store <- openAuthorityStore root
             outcome <-

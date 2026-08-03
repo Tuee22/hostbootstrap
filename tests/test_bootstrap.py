@@ -288,12 +288,14 @@ async def test_verified_ghcup_download_installs_only_matching_digest(
 ) -> None:
     payload = b"pinned ghcup"
     digest = hashlib.sha256(payload).hexdigest()
+    chmod_modes: list[int] = []
     monkeypatch.setitem(
         bootstrap._GHCUP_DOWNLOADS,
         ("linux", "amd64"),
         ("https://downloads.haskell.org/ghcup/pinned", digest),
     )
     monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap.Path, "chmod", lambda _path, mode: chmod_modes.append(mode))
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
@@ -305,7 +307,7 @@ async def test_verified_ghcup_download_installs_only_matching_digest(
 
     installed = tmp_path / ".ghcup/bin/ghcup"
     assert installed.read_bytes() == payload
-    assert installed.stat().st_mode & 0o111
+    assert chmod_modes == [0o755]
 
 
 async def test_verified_ghcup_download_rejects_digest_mismatch(

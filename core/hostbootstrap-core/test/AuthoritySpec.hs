@@ -14,6 +14,8 @@ actually leaves behind.
 -}
 module AuthoritySpec (tests, runEntryProbe) where
 
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Fixture
@@ -33,7 +35,16 @@ import HostBootstrap.Lifecycle.Session (
     verifyAllSessionsClosed,
  )
 import HostBootstrap.Protected
-import HostBootstrap.Reconcile (LifecyclePlan, withLifecyclePlan)
+import HostBootstrap.Reconcile (
+    CanonicalPlanSnapshot,
+    LifecyclePlan,
+    canonicalPlanSnapshotBytes,
+    canonicalPlanSnapshotDigest,
+    canonicalPlanSnapshotSpecDigest,
+    lifecyclePlanSnapshot,
+    withLifecyclePlan,
+    withLifecyclePlanForConfig,
+ )
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step (
     StepFrame (..),
@@ -331,11 +342,12 @@ modeCases =
                     withProductionRoot store project ProjectDown $ \root ->
                         pure (Right (projectModeLeaseMode (productionRootModeLease root)))
                 again @?= Right ProductionMode
-    , testCase "a harness run cannot take the mode while production holds it" $
+    , testCase "a mismatched mode cannot reach the harness planner or snapshot write" $
         withStore $ \store ->
             withProject "hostbootstrap-demo" $ \project -> do
-                _ <-
+                production <-
                     withProductionRoot store project ProjectUp $ \_ -> pure (Right ())
+                production @?= Right ()
                 swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
                 case swept of
                     Left failure -> assertFailure (show failure)
@@ -347,7 +359,10 @@ modeCases =
                                 ProjectUp
                                 (satisfiedPreconditions project)
                                 proof
-                                (\_ -> pure (Right ()))
+                                ( \_ ->
+                                    assertFailure "the mismatched mode reached the harness planner" ::
+                                        IO (Either ModeError ())
+                                )
                         case outcome of
                             Left (ModeHeldByAnother held requested) -> do
                                 held @?= "production"
@@ -356,6 +371,20 @@ modeCases =
                                     ("harness:" `isPrefix` requested)
                             other ->
                                 assertFailure ("expected a mode conflict, got " <> show other)
+                        snapshots <-
+                            withProtectedEntry' store $ \session -> do
+                                records <- listProtectedRecords session
+                                pure $ case records of
+                                    Left failure -> Left (ModeStoreFailure failure)
+                                    Right keys ->
+                                        Right
+                                            ( filter
+                                                ( ("snapshot.hostbootstrap-demo." `Text.isPrefixOf`)
+                                                    . recordKeyText
+                                                )
+                                                keys
+                                            )
+                        snapshots @?= Right []
     , testCase "the harness bracket refuses when a production config exists" $
         withStore $ \store ->
             withProject "hostbootstrap-demo" $ \project ->
@@ -443,41 +472,190 @@ modeCases =
                                             assertFailure "the second binding must not be fresh"
                                     )
                 outcome @?= Right ()
-    , testCase "a lease bound to different digests refuses rather than resuming" $
+    , testCase "a plan snapshot is byte-identically idempotent and immutable" $
         withStore $ \store ->
             withProject "hostbootstrap-demo" $ \project -> do
                 outcome <-
                     withProductionRoot store project ProjectUp $ \root ->
                         withProtectedEntry' store $ \session -> do
                             let run = unboundRunLeaseRun (productionRootUnboundLease root)
+                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
                             _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
-                            _ <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease
-                                        session
-                                        project
-                                        (productionRootUnboundLease root)
-                                        snapshot
-                                        (\_ -> pure (Right ()))
-                            -- A substituted snapshot under the same run is a
-                            -- snapshot swap, not a resumption.
-                            _ <- expectRight =<< persistPlanSnapshot session project run 2 "spec-1" "plan-2"
-                            again <-
-                                verifyPlanSnapshot session project run $ \snapshot ->
-                                    bindRunLease
-                                        session
-                                        project
-                                        (productionRootUnboundLease root)
-                                        snapshot
-                                        (\_ -> pure (Right ()))
-                            case again of
+                            firstObserved <- expectRight =<< readProtectedRecord session key
+                            first <-
+                                maybe
+                                    (assertFailure "the first snapshot write was absent")
+                                    pure
+                                    firstObserved
+                            -- Repeating the exact bytes is success without a
+                            -- replacement write or record-version advance.
+                            _ <- expectRight =<< persistPlanSnapshot session project run 1 "spec-1" "plan-1"
+                            identicalObserved <- expectRight =<< readProtectedRecord session key
+                            identical <-
+                                maybe
+                                    (assertFailure "the idempotent snapshot disappeared")
+                                    pure
+                                    identicalObserved
+                            protectedRecordVersion identical @?= protectedRecordVersion first
+                            protectedRecordBytes identical @?= protectedRecordBytes first
+                            -- A differing revision/digest is rejected at
+                            -- persistence, before lease binding can reinterpret
+                            -- the same run as a replacement plan.
+                            substituted <-
+                                persistPlanSnapshot session project run 2 "spec-1" "plan-2"
+                            case substituted of
                                 Left (ModeSnapshotMismatch expected observed) -> do
-                                    expected @?= "plan-2"
-                                    observed @?= "plan-1"
+                                    expected @?= "revision 2, spec spec-1, plan plan-2"
+                                    observed @?= "revision 1, spec spec-1, plan plan-1"
+                                other ->
+                                    assertFailure
+                                        ("expected immutable snapshot refusal, got " <> show other)
+                            unchangedObserved <- expectRight =<< readProtectedRecord session key
+                            unchanged <-
+                                maybe
+                                    (assertFailure "the refused snapshot disappeared")
+                                    pure
+                                    unchangedObserved
+                            protectedRecordVersion unchanged @?= protectedRecordVersion first
+                            protectedRecordBytes unchanged @?= protectedRecordBytes first
+                            verified <-
+                                verifyPlanSnapshot session project run $ \snapshot ->
+                                    pure
+                                        ( Right
+                                            ( planSnapshotRevision snapshot
+                                            , planSnapshotSpecDigest snapshot
+                                            , planSnapshotPlanDigest snapshot
+                                            )
+                                        )
+                            verified @?= Right (1, "spec-1", "plan-1")
+                            pure (Right ())
+                outcome @?= Right ()
+    , testCase "a canonical snapshot persists exact bytes and refuses config/topology substitution" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        withProtectedEntry' store $ \session -> do
+                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
+                                firstSnapshot = canonicalTestSnapshot "config-a"
+                                configReplacement = canonicalTestSnapshot "config-b"
+                                topologyReplacement =
+                                    canonicalTestSnapshotFor "config-a" alternateTestStepPlan
+                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
+                            _ <-
+                                expectRight
+                                    =<< persistCanonicalPlanSnapshot
+                                        session
+                                        project
+                                        run
+                                        1
+                                        firstSnapshot
+                            firstObserved <- expectRight =<< readProtectedRecord session key
+                            firstRecord <-
+                                maybe
+                                    (assertFailure "the canonical snapshot write was absent")
+                                    pure
+                                    firstObserved
+                            _ <-
+                                expectRight
+                                    =<< persistCanonicalPlanSnapshot
+                                        session
+                                        project
+                                        run
+                                        1
+                                        firstSnapshot
+                            identicalObserved <- expectRight =<< readProtectedRecord session key
+                            identicalRecord <-
+                                maybe
+                                    (assertFailure "the idempotent canonical snapshot disappeared")
+                                    pure
+                                    identicalObserved
+                            protectedRecordVersion identicalRecord @?= protectedRecordVersion firstRecord
+                            protectedRecordBytes identicalRecord @?= protectedRecordBytes firstRecord
+                            substituted <-
+                                persistCanonicalPlanSnapshot
+                                    session
+                                    project
+                                    run
+                                    1
+                                    configReplacement
+                            case substituted of
+                                Left (ModeSnapshotMismatch _ _) -> pure ()
+                                other ->
+                                    assertFailure
+                                        ("expected canonical substitution refusal, got " <> show other)
+                            topologySubstituted <-
+                                persistCanonicalPlanSnapshot
+                                    session
+                                    project
+                                    run
+                                    1
+                                    topologyReplacement
+                            case topologySubstituted of
+                                Left (ModeSnapshotMismatch _ _) -> pure ()
+                                other ->
+                                    assertFailure
+                                        ("expected topology substitution refusal, got " <> show other)
+                            verified <-
+                                verifyPlanSnapshot session project run $ \snapshot ->
+                                    pure
+                                        ( Right
+                                            ( planSnapshotSpecDigest snapshot
+                                            , planSnapshotPlanDigest snapshot
+                                            , planSnapshotConfigDigest snapshot
+                                            , planSnapshotCanonicalBytes snapshot
+                                            )
+                                        )
+                            verified
+                                @?= Right
+                                    ( canonicalPlanSnapshotSpecDigest firstSnapshot
+                                    , canonicalPlanSnapshotDigest firstSnapshot
+                                    , Just "config-a"
+                                    , Just (canonicalPlanSnapshotBytes firstSnapshot)
+                                    )
+                            unchangedObserved <- expectRight =<< readProtectedRecord session key
+                            unchangedRecord <-
+                                maybe
+                                    (assertFailure "the refused canonical snapshot disappeared")
+                                    pure
+                                    unchangedObserved
+                            protectedRecordVersion unchangedRecord @?= protectedRecordVersion firstRecord
+                            protectedRecordBytes unchangedRecord @?= protectedRecordBytes firstRecord
+                            pure (Right ())
+                outcome @?= Right ()
+    , testCase "a hostile canonical frame length is rejected before allocation" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \root ->
+                        withProtectedEntry' store $ \session -> do
+                            let run = unboundRunLeaseRun (productionRootUnboundLease root)
+                                hostile =
+                                    LazyByteString.toStrict
+                                        ( Builder.toLazyByteString
+                                            ( Builder.byteString "HOSTBOOTSTRAP-SNAPSHOT"
+                                                <> Builder.word64BE 1
+                                                <> Builder.word64BE 1
+                                                <> Builder.word64BE maxBound
+                                            )
+                                        )
+                            key <- expectKey ("snapshot.hostbootstrap-demo." <> runIdText run)
+                            _ <-
+                                expectRight
+                                    =<< compareAndSwapProtectedRecord
+                                        session
+                                        key
+                                        ExpectAbsent
+                                        hostile
+                            decoded <-
+                                verifyPlanSnapshot session project run (\_ -> pure (Right ()))
+                            case decoded of
+                                Left (ModeMalformedRecord malformedKey) -> do
+                                    malformedKey @?= recordKeyText key
                                     pure (Right ())
                                 other ->
                                     assertFailure
-                                        ("expected a snapshot mismatch, got " <> show other)
+                                        ("expected bounded malformed-record refusal, got " <> show other)
                 outcome @?= Right ()
     , testCase "each scope's recovery eliminator refuses the other's disposition" $
         withStore $ \store ->
@@ -780,12 +958,15 @@ closeCases =
         withStore $ \store -> do
             outcome <- withProtectedEntry store $ \session -> do
                 permit <- expectRight =<< openProjectJournal session closePlanDigest
-                closing <- expectRight =<< beginClosingProject session closePlanDigest 7 permit
+                _closing <- expectRight =<< beginClosingProject session closePlanDigest 7 permit
                 state <- expectRight =<< readProjectJournalState session closePlanDigest
                 state @?= ClosingProject 7
-                resumed <- beginClosingProject session closePlanDigest 7 closing
+                -- Retaining the pre-close Open permit is harmless: it can only
+                -- resume the exact persisted closing epoch and the result is a
+                -- type-distinct Closing permit.
+                resumed <- beginClosingProject session closePlanDigest 7 permit
                 assertBool "the same closing epoch resumes idempotently" (not (isLeft resumed))
-                second <- beginClosingProject session closePlanDigest 9 closing
+                second <- beginClosingProject session closePlanDigest 9 permit
                 case second of
                     Left (SessionProjectClosing _) -> pure ()
                     other ->
@@ -797,22 +978,20 @@ closeCases =
                         assertFailure
                             ("a closing project must refuse a new session, got " <> show other)
             outcome @?= Right ()
-    , testCase "an open project cannot jump straight to closed" $
+    , testCase "only the matching closing epoch can become closed" $
         withStore $ \store -> do
             outcome <- withProtectedEntry store $ \session -> do
                 permit <- expectRight =<< openProjectJournal session closePlanDigest
-                straight <- recordClosedProject session closePlanDigest 7 permit
-                assertBool "Open cannot become Closed directly" (isLeft straight)
                 closing <- expectRight =<< beginClosingProject session closePlanDigest 7 permit
                 wrong <- recordClosedProject session closePlanDigest 8 closing
                 case wrong of
                     Left (SessionProjectClosing _) -> pure ()
                     other ->
                         assertFailure ("a foreign closing epoch must refuse, got " <> show other)
-                _ <- expectRight =<< recordClosedProject session closePlanDigest 7 closing
+                closed <- expectRight =<< recordClosedProject session closePlanDigest 7 closing
                 state <- expectRight =<< readProjectJournalState session closePlanDigest
                 state @?= ClosedProject
-                pure (Right ())
+                closed `seq` pure (Right ())
             outcome @?= Right ()
     , testCase "closing a production invocation retains production mode" $
         withStore $ \store ->
@@ -1015,6 +1194,15 @@ withTestPlan use =
     withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
         withLifecyclePlan codec testStepPlan use
 
+canonicalTestSnapshot :: Text -> CanonicalPlanSnapshot
+canonicalTestSnapshot configDigest =
+    canonicalTestSnapshotFor configDigest testStepPlan
+
+canonicalTestSnapshotFor :: Text -> StepPlan -> CanonicalPlanSnapshot
+canonicalTestSnapshotFor configDigest plan =
+    withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+        withLifecyclePlanForConfig codec configDigest plan lifecyclePlanSnapshot
+
 testStepPlan :: StepPlan
 testStepPlan =
     either
@@ -1025,6 +1213,13 @@ testStepPlan =
             , contextInitStep "context" (StepFrame "vm" "VM") (const (pure ()))
             ]
         )
+
+alternateTestStepPlan :: StepPlan
+alternateTestStepPlan =
+    either
+        (error . show)
+        id
+        (mkStepPlan [contextInitStep "context" (StepFrame "host" "Host") (const (pure ()))])
 
 satisfiedPreconditions :: InstalledProject projectId -> HarnessPreconditions
 satisfiedPreconditions project =

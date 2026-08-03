@@ -12,7 +12,8 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 15.9, and 19.8
+**Blocked by**: Sprints 10.9 and 15.9
+**Satisfied prerequisite**: Sprint 19.8
 
 **Reopened 2026-07-24.** Sprint 17.4 owns discrepancies between the documented and parsed init-writer,
 `test`, and `context` semantics. Earlier positive real runs do not validate the negative parser/gate or
@@ -62,7 +63,7 @@ requested role combination may mint command authority.
 
 ## Remaining Work
 
-**Current:** Sprint 17.4 is Blocked by Sprints 10.9, 15.9, and 19.8. It then owns exact writer
+**Current:** Sprint 17.4 is Blocked by Sprints 10.9 and 15.9; Sprint 19.8 is closed. It then owns exact writer
 request/overwrite behavior, parser/gate semantics for `test init`, `test run <case-id>|all`, and
 input-specific read-only `context`.
 
@@ -291,7 +292,8 @@ surface; Sprint 16.6 owns the target unified plan node.
 ### Sprint 17.4: Exact init/test/context command semantics [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 15.9, and 19.8
+**Blocked by**: Sprints 10.9 and 15.9
+**Satisfied prerequisite**: Sprint 19.8
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,

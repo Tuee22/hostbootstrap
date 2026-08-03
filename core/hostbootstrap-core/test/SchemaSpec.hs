@@ -26,6 +26,7 @@ import Fixture (
     projectConfigCodec,
     renderProjectConfig,
     renderTestConfig,
+    withFixtureHarnessAuthority,
  )
 import HostBootstrap.Config.Class (
     ProjectCfg (..),
@@ -38,12 +39,12 @@ import HostBootstrap.Config.Class (
     runConfigAssembly,
  )
 import HostBootstrap.Config.Schema (
-    validatedConfigValue,
     parseConfigRole,
     projectConfigSnapshotHash,
     removeProjectConfigFileIfOwned,
     renderProjectConfigSnapshotLog,
     validateProjectConfigForProject,
+    validatedConfigValue,
     verifiedConfigDigest,
     withAssembledHarnessConfig,
     withValidatedConfig,
@@ -275,13 +276,16 @@ tests =
                         withValidatedConfig codec cfg $ \verified validated -> do
                             assertBool
                                 "production verification carries a digest"
-                                ("fnv64:" `T.isPrefixOf` verifiedConfigDigest verified)
+                                (isSha256Digest (verifiedConfigDigest verified))
                             validatedConfigValue validated @?= cfg
                     admission @?= Right ()
-                    let injected =
-                            V.withHarnessAuthority
-                                "injected-run"
-                                ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                    injected <-
+                        withFixtureHarnessAuthority
+                            @SecretFixtureProject
+                            @SecretProjectConfig
+                            "secret-fixture"
+                            ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
+                                pure $
                                     withHarnessProjectCodec
                                         @SecretFixtureProject
                                         @SecretProjectConfig
@@ -297,7 +301,7 @@ tests =
                                                     )
                                                 )
                                         )
-                                )
+                            )
                     result <-
                         try
                             ( decodeProjectCodecWithSettings
@@ -317,8 +321,10 @@ tests =
                         (isLeft result)
                 )
         , testCase "matching harness authority admits plaintext and mints verified scoped config" $
-            V.withHarnessAuthority
-                "fixture-run"
+            withFixtureHarnessAuthority
+                @SecretFixtureProject
+                @SecretProjectConfig
+                "secret-fixture"
                 ( \(authority :: V.HarnessAuthority SecretFixtureProject runId) ->
                     withHarnessProjectCodec
                         @SecretFixtureProject
@@ -344,7 +350,7 @@ tests =
                                     ( \verified validated -> do
                                         assertBool
                                             "verified canonical bytes carry a digest"
-                                            ("fnv64:" `T.isPrefixOf` verifiedConfigDigest verified)
+                                            (isSha256Digest (verifiedConfigDigest verified))
                                         let SecretProjectConfig _ admitted =
                                                 validatedConfigValue validated
                                         pure (V.secretRefView admitted)
@@ -418,6 +424,11 @@ toText = T.pack
 
 isLeft :: Either a b -> Bool
 isLeft = either (const True) (const False)
+
+isSha256Digest :: T.Text -> Bool
+isSha256Digest digest =
+    T.length digest == 64
+        && T.all (`elem` ("0123456789abcdef" :: String)) digest
 
 expectRight :: Either String a -> IO a
 expectRight result =

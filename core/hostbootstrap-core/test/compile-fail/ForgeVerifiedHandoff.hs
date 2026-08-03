@@ -2,10 +2,13 @@ module ForgeVerifiedHandoff where
 
 import HostBootstrap.Handoff
 
-sampleBinding :: HandoffBinding
+sampleBinding :: HandoffBinding scope brokerGeneration
 sampleBinding =
     HandoffBinding
-        { handoffScope = "Production"
+        { handoffInstalledProject = "hostbootstrap-demo"
+        , handoffSpecDigest = "spec-1"
+        , handoffPayloadKind = NarrowedProjectConfig
+        , handoffScope = "Production"
         , handoffPlanRevision = "rev-1"
         , handoffBrokerGeneration = 1
         , handoffParentFrame = "vm-orchestrator-1"
@@ -13,6 +16,7 @@ sampleBinding =
         , handoffChildConfigDigest = "0"
         , handoffVerb = "up"
         , handoffPhase = "execute"
+        , handoffTokenCommitment = "0"
         }
 
 -- Raw wire cannot be promoted: a verified handoff exists only as the result of
@@ -35,7 +39,7 @@ forgedRelay :: BrokerRelay scope brokerGeneration
 forgedRelay = BrokerRelay sampleBinding
 
 -- A grant is not constructible from bytes that were never signed.
-forgedGrant :: HandoffGrant
+forgedGrant :: HandoffGrant scope brokerGeneration
 forgedGrant = HandoffGrant "not a signature"
 
 -- A challenge must be freshly minted by the receiver, not chosen by the sender.
@@ -45,3 +49,20 @@ chosenChallenge = HandoffChallenge "predictable"
 -- The installed verification key cannot be built from arbitrary bytes.
 forgedKey :: ProjectVerificationKey
 forgedKey = ProjectVerificationKey "attacker key"
+
+-- The root's long-lived signer cannot be asserted from arbitrary secret bytes.
+forgedSigningKey :: ProjectSigningKey
+forgedSigningKey = ProjectSigningKey "attacker secret"
+
+-- A sender cannot choose a predictable token or build an offer around raw
+-- token/payload bytes without the checked smart constructors.
+chosenToken :: HandoffToken
+chosenToken = HandoffToken "predictable"
+
+forgedOffer :: HandoffOffer scope brokerGeneration
+forgedOffer = HandoffOffer sampleBinding "attacker config" chosenToken
+
+-- Config.Schema receives only the witness minted from a verified config
+-- handoff; raw config bytes cannot be promoted into it.
+forgedConfig :: AuthenticatedConfigPayload scope brokerGeneration
+forgedConfig = AuthenticatedConfigPayload sampleBinding "attacker config"

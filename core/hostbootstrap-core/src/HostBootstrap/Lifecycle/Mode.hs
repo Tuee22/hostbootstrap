@@ -48,7 +48,10 @@ module HostBootstrap.Lifecycle.Mode (
     planSnapshotRevision,
     planSnapshotSpecDigest,
     planSnapshotPlanDigest,
+    planSnapshotConfigDigest,
+    planSnapshotCanonicalBytes,
     persistPlanSnapshot,
+    persistCanonicalPlanSnapshot,
     verifyPlanSnapshot,
 
     -- * Run leases
@@ -102,6 +105,7 @@ module HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
     HarnessRoot,
     harnessRootAuthority,
+    harnessRootHarnessAuthority,
     harnessRootRunId,
     harnessRootModeLease,
     harnessRootUnboundLease,
@@ -155,12 +159,17 @@ module HostBootstrap.Lifecycle.Mode (
     modeErrorMessage,
 ) where
 
+import Control.Applicative ((<|>))
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (isAlphaNum)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import HostBootstrap.Authority (
@@ -182,18 +191,23 @@ import HostBootstrap.Authority (
     withFreshBrokerEpoch,
     withVerifiedRootInvocation,
  )
+import HostBootstrap.Config.Authority.Internal (
+    HarnessAuthority,
+    mintHarnessAuthority,
+ )
 import HostBootstrap.Config.Vocab (Harness, Production)
+import HostBootstrap.Lifecycle.Plan (
+    CanonicalPlanSnapshot,
+    canonicalPlanSnapshotBytes,
+    canonicalPlanSnapshotConfigDigest,
+    canonicalPlanSnapshotDigest,
+    canonicalPlanSnapshotSpecDigest,
+ )
 import HostBootstrap.Lifecycle.Session (
     VerifiedAllSessionsClosed,
     allSessionsClosedCount,
     allSessionsClosedPlanDigest,
  )
-import HostBootstrap.Teardown (
-    DestroySettled,
-    destroySettledPlanDigest,
- )
-import System.Directory (doesFileExist)
-import System.FilePath ((<.>), (</>))
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -210,6 +224,12 @@ import HostBootstrap.Protected (
     recordKeyText,
     withProtectedEntry,
  )
+import HostBootstrap.Teardown (
+    DestroySettled,
+    destroySettledPlanDigest,
+ )
+import System.Directory (doesFileExist)
+import System.FilePath ((<.>), (</>))
 
 -- Run identity -----------------------------------------------------------------
 
@@ -289,14 +309,16 @@ digests it merely believes are current. This is the value 'bindRunLease'
 consumes, which is how "the lease is bound to a persisted, verified snapshot"
 becomes a type-level fact instead of a comment.
 
-The snapshot deliberately carries no secret and no plan /shape/ — only the
-identity a configless teardown or recovery needs (§ EE).
+The canonical branch carries the exact non-secret stable plan bytes and config
+digest needed by configless teardown or recovery. Legacy digest-only records
+remain readable while callers migrate; they expose 'Nothing' through the two
+canonical accessors and cannot be mistaken for a reconstructible snapshot.
 -}
 data VerifiedPlanSnapshot projectId specDigest planDigest
-    = VerifiedPlanSnapshot RunId Word64 Text Text
+    = VerifiedPlanSnapshot RunId Word64 Text Text (Maybe Text) (Maybe ByteString)
 
 instance Show (VerifiedPlanSnapshot projectId specDigest planDigest) where
-    show (VerifiedPlanSnapshot run revision spec plan) =
+    show (VerifiedPlanSnapshot run revision spec plan config canonicalBytes) =
         "VerifiedPlanSnapshot "
             <> show run
             <> " "
@@ -305,22 +327,60 @@ instance Show (VerifiedPlanSnapshot projectId specDigest planDigest) where
             <> show spec
             <> " "
             <> show plan
+            <> maybe " <digest-only>" (const " <canonical>") config
+            <> maybe "" (\bytes -> " <" <> show (ByteString.length bytes) <> " bytes>") canonicalBytes
 
 planSnapshotRun :: VerifiedPlanSnapshot projectId specDigest planDigest -> RunId
-planSnapshotRun (VerifiedPlanSnapshot run _ _ _) = run
+planSnapshotRun (VerifiedPlanSnapshot run _ _ _ _ _) = run
 
 -- | The active plan revision. Positive by construction.
 planSnapshotRevision :: VerifiedPlanSnapshot projectId specDigest planDigest -> Word64
-planSnapshotRevision (VerifiedPlanSnapshot _ revision _ _) = revision
+planSnapshotRevision (VerifiedPlanSnapshot _ revision _ _ _ _) = revision
 
 planSnapshotSpecDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Text
-planSnapshotSpecDigest (VerifiedPlanSnapshot _ _ spec _) = spec
+planSnapshotSpecDigest (VerifiedPlanSnapshot _ _ spec _ _ _) = spec
 
 planSnapshotPlanDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Text
-planSnapshotPlanDigest (VerifiedPlanSnapshot _ _ _ plan) = plan
+planSnapshotPlanDigest (VerifiedPlanSnapshot _ _ _ plan _ _) = plan
 
-{- | Persist one run\'s plan snapshot. This must happen before the lease can be
-bound, so a bound lease always names a snapshot that exists durably.
+-- | The exact admitted config digest, present only on a canonical snapshot.
+planSnapshotConfigDigest :: VerifiedPlanSnapshot projectId specDigest planDigest -> Maybe Text
+planSnapshotConfigDigest (VerifiedPlanSnapshot _ _ _ _ config _) = config
+
+-- | The exact stable plan bytes, present only on a canonical snapshot.
+planSnapshotCanonicalBytes :: VerifiedPlanSnapshot projectId specDigest planDigest -> Maybe ByteString
+planSnapshotCanonicalBytes (VerifiedPlanSnapshot _ _ _ _ _ bytes) = bytes
+
+data PlanSnapshotRecord = PlanSnapshotRecord
+    { snapshotRecordRevision :: Word64
+    , snapshotRecordSpecDigest :: Text
+    , snapshotRecordPlanDigest :: Text
+    , snapshotRecordConfigDigest :: Maybe Text
+    , snapshotRecordCanonicalBytes :: Maybe ByteString
+    }
+
+snapshotRecordVersion :: Word64
+snapshotRecordVersion = 1
+
+snapshotRecordMagic :: ByteString
+snapshotRecordMagic = "HOSTBOOTSTRAP-SNAPSHOT"
+
+-- Decoder and persistence ceilings are part of the wire contract. In
+-- particular, an attacker-controlled 64-bit frame length is rejected before
+-- it reaches 'ByteString.splitAt' or text decoding.
+maxSnapshotRecordBytes :: Int
+maxSnapshotRecordBytes = 32 * 1024 * 1024
+
+maxSnapshotTextBytes :: Int
+maxSnapshotTextBytes = 1024 * 1024
+
+maxCanonicalPlanBytes :: Int
+maxCanonicalPlanBytes = 16 * 1024 * 1024
+
+{- | Persist one run\'s immutable plan snapshot. This must happen before the
+lease can be bound, so a bound lease always names a snapshot that exists
+durably. Repeating the exact bytes is idempotent and does not advance the record
+version; any attempted replacement is refused.
 -}
 persistPlanSnapshot ::
     ProtectedSession session ->
@@ -338,20 +398,101 @@ persistPlanSnapshot session project run revision spec plan
         pure (Left (ModeInvalidIdentity "a plan revision must be positive"))
     | Text.null spec || Text.null plan =
         pure (Left (ModeInvalidIdentity "a plan snapshot needs both digests"))
-    | otherwise = withRecordKey (snapshotKey project run) $ \key -> do
+    | not (snapshotTextWithinBound spec) || not (snapshotTextWithinBound plan) =
+        pure (Left (ModeInvalidIdentity "a plan snapshot digest exceeds the wire bound"))
+    | otherwise =
+        persistSnapshotRecord
+            session
+            project
+            run
+            (PlanSnapshotRecord revision spec plan Nothing Nothing)
+
+{- | Persist the exact canonical plan bytes together with their revision and
+spec/config/plan digests. Every identity is derived from the opaque canonical
+snapshot rather than accepted as an independently supplied string.
+-}
+persistCanonicalPlanSnapshot ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    Word64 ->
+    CanonicalPlanSnapshot ->
+    IO (Either ModeError ())
+persistCanonicalPlanSnapshot session project run revision snapshot
+    | revision == 0 =
+        pure (Left (ModeInvalidIdentity "a plan revision must be positive"))
+    | Text.null spec || Text.null config || Text.null plan || ByteString.null canonicalBytes =
+        pure (Left (ModeInvalidIdentity "a canonical plan snapshot needs non-empty identities and bytes"))
+    | any (not . snapshotTextWithinBound) [spec, config, plan] =
+        pure (Left (ModeInvalidIdentity "a canonical plan snapshot identity exceeds the wire bound"))
+    | ByteString.length canonicalBytes > maxCanonicalPlanBytes =
+        pure (Left (ModeInvalidIdentity "a canonical plan snapshot exceeds the wire bound"))
+    | otherwise =
+        persistSnapshotRecord
+            session
+            project
+            run
+            (PlanSnapshotRecord revision spec plan (Just config) (Just canonicalBytes))
+  where
+    spec = canonicalPlanSnapshotSpecDigest snapshot
+    config = canonicalPlanSnapshotConfigDigest snapshot
+    plan = canonicalPlanSnapshotDigest snapshot
+    canonicalBytes = canonicalPlanSnapshotBytes snapshot
+
+persistSnapshotRecord ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    PlanSnapshotRecord ->
+    IO (Either ModeError ())
+persistSnapshotRecord session project run proposed =
+    withRecordKey (snapshotKey project run) $ \key -> do
+        let payload = encodePlanSnapshotRecord proposed
         observed <- readProtectedRecord session key
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
-            Right existing -> do
-                let expectation =
-                        maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) existing
+            Right (Just existing) -> pure (checkExistingSnapshot key proposed payload existing)
+            Right Nothing -> do
                 written <-
                     compareAndSwapProtectedRecord
                         session
                         key
-                        expectation
-                        (encodeFields [showWord revision, spec, plan])
-                pure (either (Left . ModeStoreFailure) (const (Right ())) written)
+                        ExpectAbsent
+                        payload
+                case written of
+                    Right _ -> pure (Right ())
+                    Left failure -> do
+                        -- A competing identical creator is still the same
+                        -- idempotent snapshot. A different winner is immutable
+                        -- substitution, while a vanished/failed write retains
+                        -- the protected-store error that caused this CAS to lose.
+                        raced <- readProtectedRecord session key
+                        pure $ case raced of
+                            Left readFailure -> Left (ModeStoreFailure readFailure)
+                            Right (Just existing) ->
+                                checkExistingSnapshot key proposed payload existing
+                            Right Nothing -> Left (ModeStoreFailure failure)
+  where
+    checkExistingSnapshot key candidate payload existing
+        | protectedRecordBytes existing == payload = Right ()
+        | otherwise = case decodePlanSnapshotRecord (protectedRecordBytes existing) of
+            Just recorded ->
+                Left
+                    ( ModeSnapshotMismatch
+                        (snapshotDescription candidate)
+                        (snapshotDescription recorded)
+                    )
+            _ -> Left (ModeMalformedRecord (recordKeyText key))
+
+snapshotDescription :: PlanSnapshotRecord -> Text
+snapshotDescription record =
+    "revision "
+        <> showWord (snapshotRecordRevision record)
+        <> ", spec "
+        <> snapshotRecordSpecDigest record
+        <> ", plan "
+        <> snapshotRecordPlanDigest record
+        <> maybe "" (", config " <>) (snapshotRecordConfigDigest record)
 
 {- | Read a run\'s persisted plan snapshot back and bind its digests. A missing
 snapshot is refused rather than defaulted: without one there is nothing a lease
@@ -372,14 +513,127 @@ verifyPlanSnapshot session project run use =
         case observed of
             Left failure -> pure (Left (ModeStoreFailure failure))
             Right Nothing -> pure (Left (ModeSnapshotMissing (runIdText run)))
-            Right (Just record) -> case decodeFields (protectedRecordBytes record) of
-                [rawRevision, spec, plan]
-                    | Just revision <- readWord rawRevision
-                    , revision > 0
-                    , not (Text.null spec)
-                    , not (Text.null plan) ->
-                        use (VerifiedPlanSnapshot run revision spec plan)
-                _ -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+            Right (Just record) -> case decodePlanSnapshotRecord (protectedRecordBytes record) of
+                Just snapshot ->
+                    use
+                        ( VerifiedPlanSnapshot
+                            run
+                            (snapshotRecordRevision snapshot)
+                            (snapshotRecordSpecDigest snapshot)
+                            (snapshotRecordPlanDigest snapshot)
+                            (snapshotRecordConfigDigest snapshot)
+                            (snapshotRecordCanonicalBytes snapshot)
+                        )
+                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+
+encodePlanSnapshotRecord :: PlanSnapshotRecord -> ByteString
+encodePlanSnapshotRecord record =
+    LazyByteString.toStrict
+        ( Builder.toLazyByteString
+            ( Builder.byteString snapshotRecordMagic
+                <> Builder.word64BE snapshotRecordVersion
+                <> Builder.word64BE (snapshotRecordRevision record)
+                <> encodeSnapshotText (snapshotRecordSpecDigest record)
+                <> encodeSnapshotText (snapshotRecordPlanDigest record)
+                <> case
+                    ( snapshotRecordConfigDigest record
+                    , snapshotRecordCanonicalBytes record
+                    )
+                  of
+                    (Nothing, Nothing) -> Builder.word8 0
+                    (Just config, Just canonicalBytes) ->
+                        Builder.word8 1
+                            <> encodeSnapshotText config
+                            <> encodeSnapshotBytes canonicalBytes
+                    _ -> Builder.word8 2
+            )
+        )
+
+decodePlanSnapshotRecord :: ByteString -> Maybe PlanSnapshotRecord
+decodePlanSnapshotRecord payload
+    | ByteString.length payload > maxSnapshotRecordBytes = Nothing
+    | otherwise =
+        decodeCanonicalSnapshotRecord payload <|> decodeLegacySnapshotRecord payload
+
+decodeCanonicalSnapshotRecord :: ByteString -> Maybe PlanSnapshotRecord
+decodeCanonicalSnapshotRecord payload = do
+    remainingAfterMagic <- ByteString.stripPrefix snapshotRecordMagic payload
+    (version, afterVersion) <- takeSnapshotWord remainingAfterMagic
+    if version /= snapshotRecordVersion then Nothing else pure ()
+    (revision, afterRevision) <- takeSnapshotWord afterVersion
+    (spec, afterSpec) <- takeSnapshotText afterRevision
+    (plan, afterPlan) <- takeSnapshotText afterSpec
+    (canonicalTag, afterTag) <- ByteString.uncons afterPlan
+    (config, canonicalBytes, trailing) <-
+        case canonicalTag of
+            0 -> pure (Nothing, Nothing, afterTag)
+            1 -> do
+                (configDigest, afterConfig) <- takeSnapshotText afterTag
+                (bytes, afterBytes) <- takeSnapshotBytesBounded maxCanonicalPlanBytes afterConfig
+                pure (Just configDigest, Just bytes, afterBytes)
+            _ -> Nothing
+    if revision == 0
+        || Text.null spec
+        || Text.null plan
+        || maybe False Text.null config
+        || maybe False ByteString.null canonicalBytes
+        || not (ByteString.null trailing)
+        then Nothing
+        else
+            Just
+                (PlanSnapshotRecord revision spec plan config canonicalBytes)
+
+decodeLegacySnapshotRecord :: ByteString -> Maybe PlanSnapshotRecord
+decodeLegacySnapshotRecord payload =
+    case decodeFields payload of
+        [rawRevision, spec, plan]
+            | Just revision <- readWord rawRevision
+            , revision > 0
+            , not (Text.null spec)
+            , not (Text.null plan) ->
+                Just (PlanSnapshotRecord revision spec plan Nothing Nothing)
+        _ -> Nothing
+
+encodeSnapshotText :: Text -> Builder.Builder
+encodeSnapshotText = encodeSnapshotBytes . TextEncoding.encodeUtf8
+
+encodeSnapshotBytes :: ByteString -> Builder.Builder
+encodeSnapshotBytes bytes =
+    Builder.word64BE (fromIntegral (ByteString.length bytes))
+        <> Builder.byteString bytes
+
+takeSnapshotText :: ByteString -> Maybe (Text, ByteString)
+takeSnapshotText input = do
+    (bytes, remaining) <- takeSnapshotBytesBounded maxSnapshotTextBytes input
+    value <- either (const Nothing) Just (TextEncoding.decodeUtf8' bytes)
+    pure (value, remaining)
+
+takeSnapshotBytesBounded :: Int -> ByteString -> Maybe (ByteString, ByteString)
+takeSnapshotBytesBounded limit input = do
+    (rawLength, remaining) <- takeSnapshotWord input
+    if rawLength > fromIntegral limit
+        then Nothing
+        else do
+            let requested = fromIntegral rawLength
+                (value, trailing) = ByteString.splitAt requested remaining
+            if ByteString.length value == requested
+                then Just (value, trailing)
+                else Nothing
+
+takeSnapshotWord :: ByteString -> Maybe (Word64, ByteString)
+takeSnapshotWord input =
+    let (rawWord, remaining) = ByteString.splitAt 8 input
+     in if ByteString.length rawWord /= 8
+            then Nothing
+            else
+                Just
+                    ( ByteString.foldl' (\value byte -> value * 256 + fromIntegral byte) 0 rawWord
+                    , remaining
+                    )
+
+snapshotTextWithinBound :: Text -> Bool
+snapshotTextWithinBound =
+    (<= maxSnapshotTextBytes) . ByteString.length . TextEncoding.encodeUtf8
 
 -- Run leases ---------------------------------------------------------------------
 
@@ -430,13 +684,15 @@ recovery authority, so a caller cannot treat an abandoned invocation as a fresh
 one (§ EE).
 -}
 data RunLeaseBinding projectId scope specDigest planDigest brokerGeneration
-    = -- | The lease was still unbound: this invocation bound it, and there is
-      -- no prior invocation to recover.
+    = {- | The lease was still unbound: this invocation bound it, and there is
+      no prior invocation to recover.
+      -}
       FreshRunLeaseBinding
         (BoundRunLease scope specDigest planDigest brokerGeneration)
         (NormalActiveRecovery scope)
-    | -- | The lease was already bound to this exact snapshot: a previous
-      -- invocation reached a plan and did not settle.
+    | {- | The lease was already bound to this exact snapshot: a previous
+      invocation reached a plan and did not settle.
+      -}
       ExistingRunLeaseBinding
         (BoundRunLease scope specDigest planDigest brokerGeneration)
         (BoundInvocationRecovery projectId)
@@ -578,8 +834,9 @@ default, because an absent record is itself the definite Open observation.
 data InvocationDisposition
     = -- | No terminal record: the invocation was still operating.
       InvocationOpen
-    | -- | An ordinary Production @up@\/@down@ recorded its terminal
-      -- acknowledgment and did not finish closing its lease.
+    | {- | An ordinary Production @up@\/@down@ recorded its terminal
+      acknowledgment and did not finish closing its lease.
+      -}
       InvocationAcknowledged InvocationCloseKey
     | -- | A Harness run persisted its Closing epoch and did not finish.
       InvocationClosing Word64
@@ -1055,8 +1312,9 @@ withProductionRoot store project verb use = do
         Left failure -> pure (Left failure)
         Right (SomeProductionRoot root) -> use root
 
--- | A production root whose broker generation index is hidden, so the
--- transaction that mints it can complete before the continuation runs.
+{- | A production root whose broker generation index is hidden, so the
+transaction that mints it can complete before the continuation runs.
+-}
 data SomeProductionRoot projectId verb
     = forall brokerGeneration. SomeProductionRoot (ProductionRoot projectId brokerGeneration verb)
 
@@ -1070,6 +1328,7 @@ productionRunId = RunId "production"
 data HarnessRoot projectId runId brokerGeneration verb = HarnessRoot
     { harnessRootAuthority ::
         RootInvocationAuthority (Harness projectId runId) brokerGeneration verb
+    , harnessRootHarnessAuthority :: HarnessAuthority projectId runId
     , harnessRootRunId :: RunId
     , harnessRootModeLease :: ProjectModeLease projectId brokerGeneration
     , harnessRootUnboundLease ::
@@ -1127,7 +1386,13 @@ withHarnessRoot store project verb preconditions swept use = do
                                                             pure
                                                                 ( Right
                                                                     ( SomeHarnessRoot
-                                                                        (HarnessRoot root run modeLease unbound)
+                                                                        ( HarnessRoot
+                                                                            root
+                                                                            (mintHarnessAuthority (runIdText run))
+                                                                            run
+                                                                            modeLease
+                                                                            unbound
+                                                                        )
                                                                     )
                                                                 )
     case prepared of
@@ -1296,9 +1561,7 @@ true-pre-effect refusal can release the mode, and neither goes through here.
 data ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration
     = ProductionInvocationCompleted RunId Int
 
-instance
-    Show (ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration)
-    where
+instance Show (ProductionInvocationCompleted projectId specDigest planDigest brokerGeneration) where
     show (ProductionInvocationCompleted run sessions) =
         "ProductionInvocationCompleted " <> show run <> " " <> show sessions
 
@@ -1490,7 +1753,8 @@ authorizeHarnessClose session project modeLease bound closed epoch
     run = boundRunLeaseRun bound
 
 {- | Proof that a harness run reached terminal @ClosedProject@ and gave its mode
-back. -}
+back.
+-}
 data ClosedHarnessProject projectId runId = ClosedHarnessProject RunId
 
 instance Show (ClosedHarnessProject projectId runId) where
@@ -1961,7 +2225,9 @@ isLeaseKey project key = leasePrefix project `Text.isPrefixOf` recordKeyText key
 
 runOfLeaseKey :: InstalledProject projectId -> RecordKey -> Maybe RunId
 runOfLeaseKey project key =
-    either (const Nothing) Just
+    either
+        (const Nothing)
+        Just
         (mkRunId (Text.drop (Text.length (leasePrefix project)) (recordKeyText key)))
 
 {- | Effect-shaped records for a run. Every durable record a lifecycle effect

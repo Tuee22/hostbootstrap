@@ -240,9 +240,11 @@ Current safety checks refuse an existing sibling project config or detected prod
 demo planner still resolves Production/`.data`, some provider/Docker preparation precedes refusal, and
 ownership receipts/recursive teardown are incomplete. Run the long gate only on a
 disposable host with no production demo state. On Windows the gate also holds the project's full
-CPU/memory budget until the shared WSL2 utility VM is shut down — `project down` does not yet release it
-(see [documents/engineering/wsl2.md](documents/engineering/wsl2.md)). Its Playwright case executes the already-built project
-image with `--network host` in the VM frame and points `BASE_URL` at that VM's localhost NodePort.
+CPU/memory budget in the shared WSL2 utility VM while it runs; normal `project down` restores the
+journalled `.wslconfig` origin and then shuts that VM down globally to release the wall (see
+[documents/engineering/wsl2.md](documents/engineering/wsl2.md)). Its Playwright case executes the
+already-built project image with `--network host` in the VM frame and points `BASE_URL` at that VM's
+localhost NodePort.
 Authoritative current evidence and remaining live substrates are in the
 [development-plan index](DEVELOPMENT_PLAN/README.md).
 

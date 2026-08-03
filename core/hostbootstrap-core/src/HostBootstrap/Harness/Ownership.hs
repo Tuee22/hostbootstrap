@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -42,21 +43,29 @@ In order, a run now:
    /replaced/ under the run is reported as a conflict and left intact (§ Z).
 -}
 module HostBootstrap.Harness.Ownership (
+    OwnedHarnessRoot,
+    withOwnedHarnessRoot,
+    protectedProjectRunOwnership,
     protectedRunOwnership,
     harnessAuthorityStoreDirectory,
 ) where
 
-import Control.Exception.Safe (finally)
+import Control.Exception.Safe (generalBracket)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Authority (
     InstalledProject,
     ProjectVerb (ProjectUp),
+    VerbUp,
     authorityErrorMessage,
     installedProjectName,
     withInstalledProject,
  )
-import HostBootstrap.Harness (HarnessRunOwnership (..), testDataGeneration)
+import HostBootstrap.Harness (
+    HarnessRunCleanupFailure (..),
+    HarnessRunOwnership (..),
+    testDataGeneration,
+ )
 import HostBootstrap.Harness.DataRoot (
     DataRootError (DataRootStoreFailure),
     DataRootIdentityBackend,
@@ -68,6 +77,7 @@ import HostBootstrap.Harness.DataRoot (
  )
 import HostBootstrap.Harness.DataRoot.Native (nativeDataRootIdentityBackend)
 import HostBootstrap.Lifecycle.Mode (
+    HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
     ModeError (ModeOwnershipUnresolved),
     RunId,
@@ -83,9 +93,12 @@ import HostBootstrap.Lifecycle.Mode (
     verifyNoProjectResourcesAcquired,
     withHarnessRoot,
  )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+ )
 import HostBootstrap.Protected (
     ProtectedError,
-    withRunLiveness,
     ProtectedSession,
     ProtectedStore,
     RecordKey,
@@ -93,6 +106,7 @@ import HostBootstrap.Protected (
     openProtectedStore,
     protectedErrorMessage,
     withProtectedEntry,
+    withRunLiveness,
  )
 import System.FilePath ((</>))
 
@@ -102,8 +116,52 @@ harnessAuthorityStoreDirectory = ".hostbootstrap" </> "authority"
 
 {- | Build the run-ownership bracket for one project.
 
-The project name and both directories are derived by the command layer from the
-project the binary *is*; nothing here is an operator argument.
+The typed constructor is the production boundary: its project identity is the
+one installed by the project config family, and the value supplied to the body
+contains the exact generative root acquired by 'withHarnessRoot'.
+-}
+data OwnedHarnessRoot projectId where
+    OwnedHarnessRoot ::
+        ProtectedStore ->
+        InstalledProject projectId ->
+        HarnessRoot projectId runId brokerGeneration VerbUp ->
+        OwnedHarnessRoot projectId
+
+withOwnedHarnessRoot ::
+    OwnedHarnessRoot projectId ->
+    ( forall runId brokerGeneration.
+      ProtectedStore ->
+      InstalledProject projectId ->
+      HarnessRoot projectId runId brokerGeneration VerbUp ->
+      result
+    ) ->
+    result
+withOwnedHarnessRoot (OwnedHarnessRoot store project root) use =
+    use store project root
+
+protectedProjectRunOwnership ::
+    InstalledProject projectId ->
+    CanonicalProjectRoot rootScope rootId ->
+    -- | the directory a sibling production config would occupy
+    FilePath ->
+    -- | the shared @.test_data@ parent the run's generation sits under
+    FilePath ->
+    HarnessRunOwnership (OwnedHarnessRoot projectId)
+protectedProjectRunOwnership project stateRoot siblingDirectory dataParent =
+    HarnessRunOwnership
+        ( ownProjectRun
+            project
+            ( canonicalProjectRootPath stateRoot
+                </> harnessAuthorityStoreDirectory
+                </> Text.unpack (installedProjectName project)
+            )
+            siblingDirectory
+            dataParent
+        )
+
+{- | Text-only compatibility wrapper for low-level ownership tests. It still
+acquires a real typed root and exposes only that root's descriptive run name;
+it cannot mint config authority and is not used by the command path.
 -}
 protectedRunOwnership ::
     -- | the installed project name
@@ -114,7 +172,7 @@ protectedRunOwnership ::
     FilePath ->
     -- | the shared @.test_data@ parent the run's generation sits under
     FilePath ->
-    HarnessRunOwnership
+    HarnessRunOwnership Text
 protectedRunOwnership projectName stateRoot siblingDirectory dataParent =
     HarnessRunOwnership (ownRun projectName stateRoot siblingDirectory dataParent)
 
@@ -124,31 +182,49 @@ ownRun ::
     FilePath ->
     FilePath ->
     FilePath ->
-    IO result ->
-    IO (Either String result)
+    (Text -> IO result) ->
+    IO (Either String (result, Maybe HarnessRunCleanupFailure))
 ownRun projectName stateRoot siblingDirectory dataParent body =
-    case withInstalledProject projectName owned of
+    case withInstalledProject projectName $ \project ->
+        ownProjectRun
+            project
+            (stateRoot </> harnessAuthorityStoreDirectory)
+            siblingDirectory
+            dataParent
+            ( \owned ->
+                withOwnedHarnessRoot owned $ \_store _project root ->
+                    body (runIdText (harnessRootRunId root))
+            ) of
         Left failure -> pure (Left (refused (authorityErrorMessage failure)))
         Right action -> action
-  where
-    owned :: InstalledProject projectId -> IO (Either String result)
-    owned project = do
-        opened <- openProtectedStore (stateRoot </> harnessAuthorityStoreDirectory)
-        case opened of
-            Left failure -> pure (Left (storeRefused failure))
-            Right store -> do
-                -- Held across the sweep AND the whole run: the sweep may only
-                -- reclaim leases whose owners are dead, and this lock is the
-                -- only thing that can tell it so.
-                held <-
-                    withRunLiveness store (installedProjectName project) (owning store project)
-                pure $ case held of
-                    Left failure -> Left (storeRefused failure)
-                    Right Nothing -> Left (refused liveRunHoldsProject)
-                    Right (Just inner) -> inner
 
-    owning :: ProtectedStore -> InstalledProject projectId -> IO (Either String result)
-    owning store project = do
+ownProjectRun ::
+    forall projectId result.
+    InstalledProject projectId ->
+    FilePath ->
+    FilePath ->
+    FilePath ->
+    (OwnedHarnessRoot projectId -> IO result) ->
+    IO (Either String (result, Maybe HarnessRunCleanupFailure))
+ownProjectRun project storeRoot siblingDirectory dataParent body = do
+    opened <- openProtectedStore storeRoot
+    case opened of
+        Left failure -> pure (Left (storeRefused failure))
+        Right store -> do
+            -- Held across the sweep AND the whole run: the sweep may only
+            -- reclaim leases whose owners are dead, and this lock is the
+            -- only thing that can tell it so.
+            held <-
+                withRunLiveness store (installedProjectName project) (owning store)
+            pure $ case held of
+                Left failure -> Left (storeRefused failure)
+                Right Nothing -> Left (refused liveRunHoldsProject)
+                Right (Just inner) -> inner
+  where
+    owning ::
+        ProtectedStore ->
+        IO (Either String (result, Maybe HarnessRunCleanupFailure))
+    owning store = do
         swept <-
             recoverAbandonedHarnessRuns
                 store
@@ -168,36 +244,62 @@ ownRun projectName stateRoot siblingDirectory dataParent body =
                         -- config inside the same entry that takes the mode.
                         (harnessPreconditions project siblingDirectory (pure False))
                         proof
-                        (runOwned store project)
+                        (runOwned store)
                 pure (either (Left . modeRefused) Right outcome)
-    runOwned store project root = do
+    runOwned ::
+        forall runId brokerGeneration.
+        ProtectedStore ->
+        HarnessRoot projectId runId brokerGeneration VerbUp ->
+        IO (Either ModeError (result, Maybe HarnessRunCleanupFailure))
+    runOwned store root = do
         let run = harnessRootRunId root
             -- § Z: the run owns @.test_data/<runId>@, not the shared parent.
             generation = testDataGeneration dataParent (runIdText run)
-        started <- takeDataRoot store project run generation
-        case started of
+        (outcome, cleanupFailure) <-
+            generalBracket
+                (takeDataRoot store project run generation)
+                ( \started _ -> case started of
+                    Left _ -> pure Nothing
+                    Right receipt -> releaseRun store run receipt
+                )
+                ( \started -> case started of
+                    Left failure ->
+                        pure
+                            ( Left
+                                ( ModeOwnershipUnresolved
+                                    (runIdText run)
+                                    (dataRootErrorMessage failure)
+                                )
+                            )
+                    Right _ -> Right <$> body (OwnedHarnessRoot store project root)
+                )
+        pure (fmap (\result -> (result, cleanupFailure)) outcome)
+    releaseRun store run receipt = do
+        released <- giveUpDataRoot store project run receipt
+        case released of
             Left failure ->
                 pure
-                    ( Left
-                        ( ModeOwnershipUnresolved
-                            (runIdText run)
-                            (dataRootErrorMessage failure)
-                        )
+                    ( Just
+                        (HarnessDataRootCleanupFailed (Text.unpack (dataRootErrorMessage failure)))
                     )
-            Right receipt ->
-                (Right <$> body)
-                    `finally` releaseRun store project run receipt
-    releaseRun store project run receipt = do
-        _ <- giveUpDataRoot store project run receipt
-        _ <-
+            Right () -> do
+                closed <- closeRun store run
+                pure $ case closed of
+                    Left reason -> Just (HarnessModeCloseFailed reason)
+                    Right () -> Nothing
+    closeRun store run = do
+        closed <-
             withProtectedEntry store $ \session -> do
                 evidence <- verifyNoProjectResourcesAcquired session project run
                 case evidence of
-                    Left _ -> pure (Right ())
+                    Left failure -> pure (Right (Left failure))
                     Right proof -> do
-                        _ <- closeHarnessRun session project run proof
-                        pure (Right ())
-        pure ()
+                        outcome <- closeHarnessRun session project run proof
+                        pure (Right outcome)
+        pure $ case closed of
+            Left failure -> Left (Text.unpack (protectedErrorMessage failure))
+            Right (Left failure) -> Left (Text.unpack (modeErrorMessage failure))
+            Right (Right ()) -> Right ()
 
 {- | Reclaim an abandoned unbound run's data root before the sweep closes its
 lease. The recorded origin is the authority: a generation that run created is

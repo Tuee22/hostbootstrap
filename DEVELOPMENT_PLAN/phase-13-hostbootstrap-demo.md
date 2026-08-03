@@ -170,9 +170,9 @@ stack-driven `TestSuite` drives the real `project up` under generated configs an
 plan/`TestComponent`, consume freshly pulled rolling bases, and reconcile MinIO/registry metadata and
 persistence assertions.
 
-**Registry route repair — open (Sprint 13.20).** Replace the raw host-client/cluster-only-backend
-combination with the Phase 14.7 finalized plan, then prove initial and repeated push, pull, and
-registry-pod recreation. `/v2/` readiness and the historical initial-push run do not close this route.
+**Registry route repair — closed (Sprint 13.20, 2026-07-30).** The Phase 14.7 finalized plan and the
+initial/repeated push, pull, registry-pod recreation, and negative redirect evidence are recorded in the
+completed sprint below; this is no longer phase remaining work.
 
 **Accelerator daemon demo — implementation complete; honest live gates open.**
 
@@ -200,7 +200,8 @@ registry-pod recreation. `/v2/` readiness and the historical initial-push run do
   authority.
 
 The dated 2026-07-15 static counts remain sprint evidence. The Windows GPU host-daemon lane later produced
-an accepted `8/8` run; Apple Silicon and native Linux CPU/GPU lanes remain open. Sprint 13.18 also owns
+an accepted `8/8` run, and the native Linux GPU and CPU lanes closed on 2026-07-28 and 2026-07-29. Only
+the Apple Silicon lane remains open. Sprint 13.18 also owns
 Production-plan/TestComponent, base-digest, and registry/MinIO implementation repairs, so phase remaining
 work is not live-only.
 
@@ -403,7 +404,8 @@ deletes the provisioned VM **and its disk**, while the demo's `.data` lives at t
 is carried into the guest/container/Kind/pod path outside that disk. This is happy-path evidence, not a
 claim that every created resource is released: current teardown is not derived as a recursive inverse,
 not every resource carries an identity-bearing ownership receipt, and interruption can leave work for
-recovery. The dedicated write→destroy→up→read-back proof remains open. Dependencies in (a)–(f) with
+recovery. The dedicated write→destroy→up→read-back proof later closed with the Phase 5 Sprint 5.6
+evidence. Dependencies in (a)–(f) with
 supported install plans are driven through the `ensure` suite rather than documented as manual host
 prerequisites.
 
@@ -1161,13 +1163,14 @@ recorded once with
 [Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes only that lane.
 
 The daemon Deployment rolled out, dialed the accelerator `ClusterIP`, and the Playwright `e2e-tabs` case
-asserted the daemon-returned sum on both variants. The native **Apple** host-daemon lane and the native
-Linux **CPU** in-cluster lane remain open.
+asserted the daemon-returned sum on both variants. The later 2026-07-29 Linux CPU run closed the CPU
+in-cluster lane; only the native **Apple** host-daemon lane remains open.
 
 ### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 5.7, 10.9, 13.20, 14.6, 15.9, 16.6, 17.4, and 20.5
+**Blocked by**: Sprints 10.9, 14.6, 15.9, 16.6, 17.4, and 20.5
+**Satisfied prerequisites**: Sprints 5.7 and 13.20
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/app/Main.hs`, `demo/docker/Dockerfile`,
 `demo/kind*.yaml`, `demo/nvkind-in-cluster.yaml`

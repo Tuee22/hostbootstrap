@@ -248,11 +248,13 @@ storage quota, and existing Incus sizing is not reconciled.
 
 Capacity reads, the shared parser, and CPU/memory arg builders are implemented. Provider disk walls are
 initial-create behavior for Lima/Incus/WSL2; direct Colima has an exact observed project-profile adapter;
-bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing resource sizing is not uniformly compared or
-reconciled. WSL2's global `.wslconfig` mechanism has historical runtime evidence only for its ordinary
-cordon mechanics, not the four ownership clauses, absent-original crash recovery, immutable budget
-identity, current durability, or test-profile closure. Native-lane status and exact dated test evidence
-belong in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+bare Linux has no runtime storage cordon, and direct Linux GPU outer effects are uncapped. Existing
+resource sizing is not uniformly compared or reconciled. WSL2's production global-wall backend has
+current Windows evidence for its ownership adapter and the live restore-then-shutdown wall-release
+observable. That evidence does not close universal prepared-authority consumption, running-distro wall
+migration, existing-VHDX reconciliation, recursive teardown, durable readback, or test-profile closure.
+Native-lane status and exact dated test evidence belong in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## See Also
 

@@ -45,6 +45,16 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    PreparedGate,
+    mintPreparedGate,
+    preparedGateAttempt,
+    preparedGateFence,
+    preparedGateJournalVersion,
+    preparedGateOperation,
+    preparedGatePlan,
+    preparedGateSession,
+ )
 import HostBootstrap.Protected (
     Expectation,
     ProtectedError,
@@ -67,32 +77,6 @@ encodeFields = ByteStringChar8.pack . Text.unpack . Text.intercalate "\t"
 
 decodeFields :: ByteString -> [Text]
 decodeFields = Text.splitOn "\t" . Text.pack . ByteStringChar8.unpack
-
--- ---------------------------------------------------------------------------
--- The gate
-
-{- | Proof that one operation's unknown phase was durably recorded before its
-backend call, carrying the exact identities and indices that write established.
-
-The constructor is private and no accessor rebuilds it, so the plan, operation,
-fence epoch, attempt, and journal version an adapter is prepared against are the
-store's, never literals at the call site.
--}
-data PreparedGate = PreparedGate
-    { preparedGatePlan :: Text
-    -- ^ the plan digest whose journal recorded the unknown phase
-    , preparedGateOperation :: Text
-    -- ^ the operation key it was recorded under
-    , preparedGateSession :: Text
-    -- ^ the operation session that recorded it
-    , preparedGateFence :: Word64
-    -- ^ the authoritative fence epoch observed at prepare time
-    , preparedGateAttempt :: Word64
-    -- ^ this operation's attempt number, one past the recorded one
-    , preparedGateJournalVersion :: Word64
-    -- ^ the version the unknown-phase write returned
-    }
-    deriving (Eq, Show)
 
 {- | Publish one operation's unknown phase and mint the gate from the version
 that write returned.
@@ -139,11 +123,11 @@ recordDurableUnknown session key expectation phase plan operation sessionId fenc
         Left failure -> Left failure
         Right journalVersion ->
             Right
-                PreparedGate
-                    { preparedGatePlan = plan
-                    , preparedGateOperation = operation
-                    , preparedGateSession = sessionId
-                    , preparedGateFence = fence
-                    , preparedGateAttempt = attempt
-                    , preparedGateJournalVersion = recordVersionWord journalVersion
-                    }
+                ( mintPreparedGate
+                    plan
+                    operation
+                    sessionId
+                    fence
+                    attempt
+                    (recordVersionWord journalVersion)
+                )

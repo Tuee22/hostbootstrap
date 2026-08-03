@@ -103,11 +103,11 @@ complete judgmental-equality ownership of every current `Core.dhall` type export
 
 Owns canonical quantity/resource types, opaque resource-instance readiness, total probes,
 ownership- and phase-indexed lifecycle state, `ReconcileResult`, structured
-conflict/safety/failure, and managed receipts for both changed and unchanged reconciliation. Reopened
-2026-07-27: it also owns the restated ownership clauses its own text asserted, and the managed
-`.wslconfig` body whose idle timeouts govern whether the WSL2 wall can be released. Sprint 9.11 landed
-both — the clauses are restated and the timeouts are finite and derived from one constant — leaving only
-the live release observation it shares with Sprint 5.7.
+conflict/safety/failure, and managed receipts for both changed and unchanged reconciliation. It also owns
+the restated ownership clauses its own text asserted and the managed `.wslconfig` body whose idle
+timeouts govern whether the WSL2 wall can be released. Sprint 9.11 couples finite timeouts derived from
+one constant with the provider-owned restore-then-shutdown effect; dated static and live Windows
+validation evidence remains in the owning phase file.
 
 ### Phase 10 — Standardized test harness and execution shapes
 
@@ -124,12 +124,13 @@ only by the lifecycle plan.
 
 Owns one `SubstrateProvider`/`Lift` dispatch path for Incus, Lima, WSL2, and direct-host operations,
 including durable aliases and exclusive global WSL state. The definition-only `HostTarget` and WSL
-import surfaces have been removed. Typed provider-guest alias operations and a pure WSL wall protocol
-now exist as static foundations, but no backend yet holds the four § EE ownership clauses, so
-production still uses the unowned alias and backup-existence paths. One portable backend closes all
-three provider guests together; the superseded native Windows shim is tracked for deletion. That
-backend, production receipt integration, the WSL2 wall release, and the native provider gates remain
-open.
+import surfaces are removed. The portable host-wall driver has POSIX and production Windows
+realizations; the Windows adapter uses public `Win32` APIs plus a narrow direct `kernel32` FFI for exact
+status preservation, with no C shim, Cabal `c-sources`, or private-module import. The `.bak` production
+route is gone and teardown restores the wall before `wsl --shutdown`. A clause-holding guest-alias
+backend also exists, but the demo call site cannot consume it until Sprint 16.6 item 3 supplies
+plan-owned operation descriptors and the `Managed` share handle. The current WSL2 lifecycle and
+Apple/Lima lanes remain open; the native Incus and focused Win32 adapter gates are closed.
 
 ### Phase 12 — Opportunistic warm store
 
@@ -141,30 +142,30 @@ own consumer freeze imports, offline completeness, or version-lock replayability
 
 Owns the demo's scope-polymorphic plan shape instantiated separately for Production and each Harness run,
 the harness-only test component, pulled rolling-base consumption, current registry/MinIO
-metadata, reachability-safe rendering and persistence proof, the threaded static test component, plus the remaining native
-accelerator demo lanes.
+metadata, reachability-safe rendering and persistence proof, the threaded static test component, plus the
+remaining Apple Silicon accelerator demo lane and Sprint 13.18's worked integration closure.
 
 ### Phase 14 — Composition methodology
 
 Owns the reusable operation algebra, scope-indexed network endpoints and proof-gated blob delivery, and
-the rule that one representation drives deployment. The current
-chain is the single forward ordering; Phase 16 owns replacing its independent context/teardown callbacks
-with one scoped opaque plan. Sprint 14.6 owns integrating the definition-only role phase skeleton into
-the fixed service runtime.
+the rule that one representation drives deployment. Sprint 14.6's opaque role phase engine and Sprint
+14.7's network-delivery algebra are implemented. Phase 16 owns the still-open recursive production
+interpreter that carries the one scoped opaque plan across every frame; Sprint 14.6 remains open for
+adopting its engine at the fixed `service run` call site once that producer path is available.
 
 ### Phase 15 — Binary context config and command gating
 
 Owns descriptive context versus opaque role-specific root/command authority, capability narrowing, safe
 init requests, durable-placement enforcement, and the transport envelope for one-time child authority
 handoff. Phase 10 consumes that independent root authority in the sole Production/Harness mode/profile
-opener. Phase 15 also owns remaining native accelerator context validation.
+opener. Phase 15 also owns the remaining Apple Silicon accelerator context validation.
 
 ### Phase 16 — Project lifecycle command
 
 Owns a single `ProjectPlan scope specDigest planId configId cfg`, recursive interpretation, authenticated authority
 rehydration, and
 scope/receipt-preserving reverse teardown after failure, interruption, down, or destroy. It also owns
-remaining native accelerator lifecycle validation.
+the remaining Apple Silicon accelerator lifecycle validation.
 
 ### Phase 17 — Chain-driven test and context introspection
 
@@ -175,8 +176,8 @@ Owns the exact grammar and side-effect gates for `test init`, `test run <case-id
 
 Owns config-selected long-running service/daemon roles. Sprint 18.6 now owns typed service selection,
 one immutable config-derived handler payload, least-authority role parameters, and service-specific
-missing-config recovery. The remaining live-evidence scope is Apple Silicon and native Linux CPU/GPU
-accelerator lanes; the Windows GPU host-daemon lane is dated accepted evidence, not open work.
+missing-config recovery. The remaining live-evidence scope is the Apple Silicon accelerator lane; the
+Windows GPU and native Linux CPU/GPU lanes are dated accepted evidence, not open work.
 
 ### Phase 19 — Generic project model
 
@@ -199,16 +200,18 @@ that the README phase table is the only cross-phase status roll-up.
 ## Execution Dependencies
 
 Sprint `Blocked by` metadata is the execution authority. Phase ownership above explains where contracts
-live; it does not make every cross-phase reference a start dependency. The strict landing order is:
+live; it does not make every cross-phase reference a start dependency. Phase numbers remain the stable
+reporting and closure focus, not an execution schedule; a higher-numbered producer may therefore land
+before the lower-numbered phase that consumes it. The strict landing order is:
 
 1. Sprints 2.5, 2.6, 5.5, 5.6, 5.6.1, 5.7, 5.8, 6.7, 8.7, 9.4, 9.10, 10.10, 12.4, 13.19, 14.7, and
-   19.6–19.8 are closed, so **Phase 5 is closed** and Phase 2 returned to closed. Sprint 13.20 is now
-   dependency-ready. **Corrected 2026-07-30:** Sprint 11.10's remaining demo alias migration is *not* a
+   19.6–19.8 are closed, so **Phase 5 is closed** and Phase 2 returned to closed. Sprint 13.20 also
+   closed 2026-07-30. **Corrected 2026-07-30:** Sprint 11.10's remaining demo alias migration is *not* a
    dependency root. Adopting the landed alias backend at the demo call site requires a `Managed`
    durable-share handle, which requires the plan-owned dependency-snapshot traversal (§ CC) and a
    `copy-source` plan node that Sprint 16.6 owns; the derivation is recorded in
-   [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). Sprint 14.6 is the next executable
-   root.
+   [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). Sprint 16.6 is the current
+   co-active producer root for that call site and the remaining 10.9/15.9 integration tranche.
    The 2026-07-29 native Linux CPU `10/10` run additionally closed the Linux CPU lane in Sprints 13.17,
    15.8, 16.5, and 18.5, leaving those four Active only for the hostless Apple lane.
 2. Closed Sprints 8.7 and 19.6 enabled Sprint 19.7; closed Sprint 19.7 enabled Sprint 19.8. Closed
@@ -217,14 +220,15 @@ live; it does not make every cross-phase reference a start dependency. The stric
 3. Closed Sprint 5.6.1 enabled Sprint 5.6's direct-host durability gate. Closed Sprint 9.10 enabled
    closed Sprint 5.8 and enables Sprint 11.10. Sprint 11.10's alias/ownership primitive enabled
    Sprint 5.7's all-provider storage/ownership gate, which closed 2026-07-29 on a native Incus run; the
-   `ensureCluster` replacement it supplies is consumed by the tranche in item 3, not by Sprint 5.7.
+   `ensureCluster` replacement it supplies is consumed by the tranche in item 4, not by Sprint 5.7.
 4. Sprint 15.9 supplies the independent root/command authority; its protected store and root/command
    authority landed 2026-07-29. Sprint 10.9 consumes it with the mode/lease state to implement fresh
    and bound-recovery profile openers; its fresh openers, project-wide exclusion, and abandoned-run
-   sweep landed with it. Sprint 16.6 then consumes both in the recursive interpreter. They remain one
-   coordinated integration tranche, but the explicit 15.9 → 10.9 → 16.6 order prevents a circular
-   prerequisite. **Sprint 16.6 started 2026-07-30** with the verb-indexed reverse projection and
-   teardown forest, which closed 10.9's `verifyDestroySettled` item by giving the settled-destroy branch
+   sweep landed with it. Sprint 16.6 consumes both in the recursive interpreter. Those producer
+   foundations landed in the explicit 15.9 → 10.9 → 16.6 order; the three sprints now remain co-active
+   until the live call sites and their owned validation close, so that historical landing order is not
+   a circular current blocker. **Sprint 16.6 started 2026-07-30** with the verb-indexed reverse
+   projection and teardown forest, which closed 10.9's `verifyDestroySettled` item by giving the settled-destroy branch
    of `ProjectClosureEvidence` its first producer. Its plan-owned dependency-snapshot traversal landed the
    same day, making an operation's edge set the exact ordered resource-bearing prefix and giving the
    sealed precondition set a single producer. Its plan-owned frame descent and plan-owned reverse effect
@@ -232,9 +236,10 @@ live; it does not make every cross-phase reference a start dependency. The stric
    validated plan: a step declares its own boundary, so topology cannot disagree with the forward
    traversal and the announcing `context-init` row carries the child config; and an acquiring step
    declares the effect that releases it, so both teardown verbs are projections of that same plan rather
-   than a hook beside it. 16.6 is now the single root the
-   remaining tranche hangs off: Sprints 11.10 (demo alias), 14.6 (`service run` adoption), 10.9's
-   reconciler-produced report rows, and 17.4 all wait on one of its still-open items.
+   than a hook beside it. 16.6 is now the current co-active producer root on which the remaining
+   tranche depends: Sprints 11.10 (demo alias), 14.6 (`service run` adoption), and 10.9's
+   reconciler-produced report rows wait directly on its still-open items; 17.4 waits transitively through
+   its formal 10.9/15.9 blockers.
    **Corrected 2026-07-30:** Sprint 11.10's demo alias migration waits on the *remaining* part of open
    item 3 — the recursive child-first unwind — not on the traversal, the descent, or the reverse effect.
    A chain step's action still receives no plan, so no `Managed` share handle can be minted inside one
@@ -242,17 +247,20 @@ live; it does not make every cross-phase reference a start dependency. The stric
 5. Sprints 14.6 and 17.4 are separate downstream branches once their own blockers close. **Sprint 14.6's
    engine landed 2026-07-30**: the opaque role plan/cursor phase machine, the verified-draft and one-use
    admission gate chain, and the derived lease requirement all exist and are gated. Its one remaining
-   item — making `service run` enter through the activation package — is `Blocked by` Sprint 16.6,
-   because `Authority.withVerifiedRootInvocation` still has no production consumer and therefore nothing
-   can sign an `ActivationManifest`. Sprint 17.4 consumes typed cases, command authority, and structured
-   harness outcomes. Sprint 18.6 joins Sprints 14.6, 15.9, 17.4, and 19.8 for validated service dispatch;
-   it consumes 14.6's landed `RolePlan`/`VerifiedServicePlacement` foundation. Sprint 20.5 then consumes
-   Sprints 10.9, 18.6, and 19.7–19.8 for scoped config and harness-indexed execution.
+   item — making `service run` enter through the activation package — is `Blocked by` Sprint 16.6.
+   Its root-frame authority gate is now a production consumer, but its internal receiver/root relay does
+   not yet carry that authority to the nested deploy call site that must sign an `ActivationManifest`.
+   Sprint 17.4 consumes typed cases, command authority, and structured harness outcomes. Sprint 18.6
+   follows Sprints 14.6, 15.9, and 17.4 for validated service dispatch; closed Sprint 19.8 already
+   supplies its finalized registry/config foundation. Sprint 18.6 consumes 14.6's landed
+   `RolePlan`/`VerifiedServicePlacement` foundation. Sprint 20.5 then follows Sprints 10.9 and 18.6;
+   closed Sprints 19.7–19.8 already supply its scoped-config and harness-indexed foundations.
 6. Closed Sprints 9.10 and 19.8 enabled Sprint 14.7's generic reachability/delivery algebra; closed
    Sprint 14.7 enabled **Sprint 13.20, which closed 2026-07-30** with its concrete demo renderer and live
    blob-route proof.
-7. Sprint 13.18 lands only after Sprints 5.7, 10.9, 13.20, 14.6, 15.9, 16.6, 17.4, and 20.5.
-   It is the worked-demo integration gate, not a foundation for those APIs.
+7. Sprint 13.18's remaining open prerequisites are Sprints 10.9, 14.6, 15.9, 16.6, 17.4, and 20.5;
+   Sprints 5.7 and 13.20 are closed. It is the worked-demo integration gate, not a foundation for those
+   APIs.
 8. Sprint 21.4 performs the governed final sweep after every named implementation owner closes.
 
 The real-run lanes owned by Phases 5, 13, 15, 16, and 18 are independent unless a sprint's exact

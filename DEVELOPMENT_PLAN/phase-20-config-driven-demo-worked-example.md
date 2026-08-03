@@ -13,7 +13,8 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 18.6, and 19.7–19.8
+**Blocked by**: Sprints 10.9 and 18.6
+**Satisfied prerequisites**: Sprints 19.7–19.8
 
 **Reopened 2026-07-24.** The demo variants are hard-coded, and the
 historical message handler still reloads the full sibling config through raw `IO ()`. Sprint 20.5 owns
@@ -42,9 +43,10 @@ symmetric alternative).
 
 ## Remaining Work
 
-Sprint 20.5 is Blocked by Sprints 10.9, 18.6, and 19.7–19.8. Once the scoped assembler,
-typed selected-service package, finalized project-spec APIs, and harness-indexed execution boundary
-land, generate the demo variants entirely from decoded `<project>.test.dhall`, migrate Web message
+Sprint 20.5 is Blocked by Sprints 10.9 and 18.6; Sprints 19.7–19.8 have already supplied the scoped
+assembler and finalized project-spec foundation. Once the typed selected-service package and
+harness-indexed execution boundary land, generate the demo variants entirely from decoded
+`<project>.test.dhall`, migrate Web message
 delivery to config-ID-bound filtered role parameters, remove the hard-coded message list, and prove a
 config-only third variant runs without a Haskell edit.
 
@@ -207,7 +209,8 @@ validated 2026-06-23 (`test run all` 6/6).
 ### Sprint 20.5: Config-driven demo case and variant generation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 18.6, and 19.7–19.8
+**Blocked by**: Sprints 10.9 and 18.6
+**Satisfied prerequisites**: Sprints 19.7–19.8
 **Implementation**: `demo/src/HostBootstrapDemo/Config.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Web/Server.hs`, `demo/app/Main.hs`,

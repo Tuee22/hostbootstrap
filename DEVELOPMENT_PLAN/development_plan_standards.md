@@ -431,17 +431,18 @@ complete workload projection remain owned by their dependent sprints:
   and conditional cleanup remain downstream. Direct Linux GPU outer build/container effects are
   uncapped; only the later nvkind nodes receive CPU/memory caps. Bare Linux has no storage quota or
   image-GC wall;
-- WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro, and
-  the production route still infers ownership from backup existence, so concurrent project declarations
-  can race or overwrite one another and an absent original has no durable origin record. A
-  focused-tested pure state model and exact UTF-8/UTF-16 byte transformer exist; the four § EE clauses
-  are not yet held at this call site. An existing running distro/VHDX need not adopt a changed
-  declaration;
-- the WSL2 wall is also not released on `project down`: teardown terminates the distro and restores the
-  file, but the managed body pins the idle timeouts to `-1`, so the shared utility VM retains the full
-  memory balloon indefinitely. Lima and Incus release their walls on stop. Until WSL2 does the same, the
-  "a project holds its wall from `up` until `destroy`" contract is stated uniformly but honored on two
-  of three provider substrates.
+- WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro. The
+  production route now holds the four § EE clauses behind one host-wide lock: it writes a durable origin
+  record before mutation that distinguishes exact present bytes from absence, binds the managed target
+  to its object identity and wall ownership, and re-observes under the same lock before conditional
+  restore so a foreign replacement is preserved as a conflict. An existing running distro/VHDX still
+  need not adopt a changed declaration;
+- the normal WSL2 `project down` route now releases the wall: teardown restores `.wslconfig` first and
+  then runs `wsl --shutdown`, while the managed body derives finite six-hour VM and distribution idle
+  timeouts from one constant rather than pinning them to `-1`. The formal native-Windows Phase 9 gate on
+  2026-08-01 observed the durable record removed, the exact absent origin restored, the distro stopped,
+  and the WSL utility VM/memory balloon gone after `project down`. Lima and Incus continue to release
+  their walls on stop.
 
 The target defense has three closed rings: promotion mints the sole provider-exact `ValidatedBudget`;
 plan preparation runs `verifyBudget` plus `fitsBudget` over the exact non-empty workload/effect set and
@@ -455,10 +456,12 @@ rather than overwrite `%UserProfile%\.wslconfig`. The WSL wall mutation permit c
 same `wallSpecId`/`wallEpoch`/`fence` as the `ProviderWallAuthority` and `WslGlobalWallLease`; a
 same-shaped value from another plan or owner cannot apply or restore it.
 Sprint 9.10 owns the exact admission/partition algebra, closed Sprint 9.4 records the typed
-bare-Linux-unsupported storage decision, closed Sprint 5.8 owns direct Colima acquisition, Sprints 5.7
-and 11.10 own the remaining provider/cleanup walls, Sprint 13.18 the complete demo workload projection, and
-Sprint 19.8 the single finalized plan/config authority. A Dhall-native `Budget/fitsWithin` assertion is
-not attached to generated config because that config contains text quantities and no resolved pod set.
+bare-Linux-unsupported storage decision, closed Sprint 5.8 owns direct Colima acquisition, closed Sprint
+5.7 owns the all-provider storage/ownership gate, and Sprint 11.10's WSL host-wall and cleanup obligations
+are delivered; neither is remaining global-wall work. Sprint 13.18 owns the complete demo workload
+projection, and Sprint 19.8 owns the single finalized plan/config authority. A Dhall-native
+`Budget/fitsWithin` assertion is not attached to generated config because that config contains text
+quantities and no resolved pod set.
 
 Project budget interpretation remains Haskell-owned; Python does not size project VMs or clusters. On
 Linux, the maintainer-only `hostbootstrap base build` separately measures host CPU/RAM and caps the

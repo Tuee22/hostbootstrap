@@ -10,7 +10,7 @@
 
 ## Phase Status
 
-**Status**: Active
+**Status**: Done
 
 **Reopened 2026-07-27 — the ownership invariant was restated, and this phase owns two of its consequences.**
 § EE no longer requires an OS-protected namespace plus an identity-bound conditional kernel mutation. It
@@ -21,15 +21,15 @@ they buy: exclusion of crash/retry and cooperating races, detection of foreign m
 exclude a hostile same-privilege process. The canonical statement is
 [ownership_invariant](../documents/architecture/ownership_invariant.md).
 
-Two Phase 9 surfaces move as a result. First, this phase's own normative text stated the superseded rule
-and must be restated. Second, `wsl2SizingArgs` in `HostBootstrap.Cluster.Cordon` emits the managed
-`.wslconfig` body, whose two literal `-1` idle timeouts are why the WSL2 wall is never released — Lima and
-Incus return their walls on stop and WSL2 does not. Sprint 9.11 owns both. **Both landed 2026-07-27**:
+Two Phase 9 surfaces moved as a result. First, this phase's own normative text stated the superseded rule
+and had to be restated. Second, `wsl2SizingArgs` in `HostBootstrap.Cluster.Cordon` emits the managed
+`.wslconfig` body, whose two literal `-1` idle timeouts were why the WSL2 wall was never released — Lima
+and Incus return their walls on stop and WSL2 did not. Sprint 9.11 owns both. **Both landed 2026-07-27**:
 the bullet is restated against the four clauses with the original marked superseded, and both idle
-timeouts now carry a finite duration derived from one `managedWslIdleTimeoutHours` constant. The phase
-stays `Active` only for the joint live Windows observation that the wall is actually released, which
-cannot fire until Sprint 5.7 lands the `spStop` restore-then-shutdown effect. The prior closure below
-stands as delivered work.
+timeouts now carry a finite duration derived from one `managedWslIdleTimeoutHours` constant. **The phase
+closed 2026-08-01** after a fresh durable Windows `project up` → `project down` run observed the managed
+wall while the distro was running, restored the absent origin exactly, stopped the registered distro,
+removed the wall record, and left no `vmmemWSL` process. The prior closures below remain delivered work.
 
 **Historical closure 2026-07-25.** Sprint 9.10 delivers this phase's type-and-pure-validation foundation. Readiness
 constructors are private; probes are total and tied to closed planned-resource families; lifecycle plans,
@@ -39,9 +39,10 @@ Exact provider admission, workload-fit evidence, constructive partitions, and th
 wall algebra reject inexact/invalid values and mint no authority on uncertain acquisition; WSL live wall
 authority carries its lease inseparably.
 
-This closure did not itself claim live provider integration. Sprint 5.8 now consumes the algebra for
-direct Colima acquisition; Sprints 5.7 and 11.10 own the remaining provider wall/CAS and conditional
-cleanup integration, Sprint 13.18 owns the complete workload projection, and
+This closure did not itself claim live provider integration. Sprint 5.8 subsequently consumed the
+algebra for direct Colima acquisition, and closed Sprint 5.7 plus Sprint 11.10's delivered global-wall
+half consumed the provider wall/CAS and conditional-cleanup foundation. Sprint 11.10 retains its
+separately scoped guest-alias and provider-matrix work, Sprint 13.18 owns the complete workload projection, and
 Sprints 10.9, 15.9, and 16.6 own the prepared-operation interpreter/recovery consumers. The 2026-07-23
 run remains historical behavior evidence, not proof of those downstream contracts.
 
@@ -123,12 +124,13 @@ utility-VM session drop — the applied wall is validated on a live WSL2 distro 
 
 ## Remaining Work
 
-**Current:** Sprint 9.11's two implementation deliverables — the restated ownership clauses in this
+**Current:** None. Sprint 9.11's two implementation deliverables — the restated ownership clauses in this
 phase's normative text and the `wsl2SizingArgs` idle-timeout change that lets the WSL2 wall be released —
-landed 2026-07-27 and are statically gated. Its one open item is the joint live Windows
-release observation it shares with Sprint 5.7. Sprint 9.4 closed with an
+landed 2026-07-27 and were statically gated; its final live Windows release observation passed
+2026-08-01. Sprint 9.4 closed with an
 explicit typed bare-Linux unsupported
-storage result; the real quota/image-GC enforcement decision remains Phase 5.7 work. Sprint 9.10 consumes
+storage result; closed Sprint 5.7 accepts that honest unsupported outcome rather than claiming a hidden
+quota/image-GC wall. Sprint 9.10 consumes
 the completed 19.7–19.8 codec/plan authority and closes opaque readiness, phase/reconcile state, exact
 budget admission/partition, and pure provider-wall preparation. The live provider, complete workload,
 and interpreter integrations remain in the dependent phases named in the Phase Status and are not Phase
@@ -844,9 +846,9 @@ dated behavior evidence and is not reused as proof of those downstream integrati
 (442 core tests and 106 demo tests; the demo workspace also reran the embedded 442-test core suite).
 `DocValidatorSpec` and `git diff --check` passed.
 
-### Sprint 9.11: Restated ownership clauses and a releasable WSL2 wall [Active]
+### Sprint 9.11: Restated ownership clauses and a releasable WSL2 wall [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
 `documents/engineering/wsl2.md`, `documents/engineering/applied_cordon.md`,
@@ -870,9 +872,9 @@ substrate can meet is not enforcement, and a wall that is never released is not 
 - Keep the managed body exact: the emitted duration is derived, not a magic literal at the call site,
   and remains representable by the byte transformer's controlled-key handling.
 
-The matching `spStop` change — restore `.wslconfig`, then `wsl --shutdown` — is Sprint 5.7's, because
-the teardown effect list belongs to the provider lane. This sprint supplies the body that makes the
-release meaningful; without the finite timeout the utility VM would still be pinned between runs.
+The matching `spStop` change — restore `.wslconfig`, then `wsl --shutdown` — landed in Sprint 5.7 because
+the teardown effect list belongs to the provider lane. This sprint supplied the finite managed body as
+the interrupted-run backstop; normal teardown now performs the prompt restore-then-shutdown release.
 
 #### Validation
 
@@ -881,12 +883,13 @@ release meaningful; without the finite timeout the utility VM would still be pin
 - `ConfigBytes` idempotence tests still pass on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new
   values — the controlled-key set is unchanged, so a second merge must be a byte-for-byte no-op.
 - Live: after `project up` and `project down` on Windows, the shared utility VM is not left resident
-  holding the balloon. This is the observable that fails today; see
-  [wsl2](../documents/engineering/wsl2.md) § Wall release.
+  holding the balloon. The fresh durable 2026-08-01 run passed this observable; see the dated evidence
+  below and [wsl2](../documents/engineering/wsl2.md) § Wall release.
 
 #### Remaining Work
 
-**Implementation and static validation completed 2026-07-27. Remaining: the joint live observation.**
+None. Implementation and static validation completed 2026-07-27; the live Windows gate completed
+2026-08-01.
 
 - The restated filesystem-ownership bullet is in place: Sprint 9.10's deliverable states the four clauses
   and marks the superseded platform-primitive rule as superseded rather than deleting it.
@@ -904,19 +907,20 @@ the exact emitted body including both finite timeouts, that an exact-GiB budget 
 regression guard that neither emitted timeout is negative. `WslGlobalWallConfigBytesSpec` idempotence
 still passes on UTF-8, UTF-16LE, and UTF-16BE fixtures with the new values.
 
-**Remaining (real-run-gated, § C):** the live Windows observation that `project up` followed by
-`project down` does not leave the shared utility VM resident holding the balloon. Both halves of the
-mechanism now exist — this sprint's finite idle-timeout body, and the `spStop` restore-then-shutdown
-effect Sprint 5.7 supplied and closed on 2026-07-29 — so the observation is this sprint's alone. It has
-**no available host**: the observable is Windows-only (the shared WSL2 utility VM), and reconfirmed
-2026-07-31 from the Linux development host: neither a local Windows/WSL2 toolchain nor a configured
-Docker or Incus Windows remote is in reach. The four-clause global-wall protocol itself is not
-Windows-gated — Sprint 11.10's portable host-wall backend runs it un-gated on Linux — so what is
-outstanding is only the platform-specific memory-release observable, not any untested logic.
+**Dated live validation evidence (2026-08-01):** a fresh durable Windows `project up` → `project down`
+run closed the final acceptance gate. After `project up` exited `0`, `wallObserved` was `True`, the
+`hostbootstrap-demo-vm` distro was running, `vmmemWSL` held `10586611712` working-set bytes, and the wall
+record existed. The managed body contained `instanceIdleTimeout=21600000`, `processors=6`,
+`memory=10GB`, `swap=10GB`, and `vmIdleTimeout=21600000`. After `project down` exited `0`,
+`releaseObserved` and `originRestored` were both `True`; the registered distro was `Stopped`,
+`vmmemWSL` was absent, the wall record was absent, and `.wslconfig` was absent, exactly restoring the
+absent origin. `freePhysicalBytes` was `11460067328`. The durable-run sentinel was `0` and emitted
+`EVIDENCE PHASE9_WSL_WALL_RELEASE=PASS`. This evidence closes the Phase 9 wall-release observable only;
+the separately owned downstream provider and interpreter gates retain their own validation requirements.
 
 #### Gate-enabling defects fixed alongside this sprint
 
-Validating this sprint required the canonical gates to be trustworthy, and three pre-existing defects
+Validating this sprint required the canonical gates to be trustworthy, and several pre-existing defects
 were blocking them. They are recorded here because this sprint's validation surfaced them; none is part
 of Sprint 9.11's contract, and none changes a phase's ownership.
 
@@ -940,6 +944,43 @@ of Sprint 9.11's contract, and none changes a phase's ownership.
   close the connection, and that close is what ends the read, so waiting for delivery deadlocked the
   shutdown path. The signal is now sent asynchronously; the exception still lands once the read returns.
   That is a real daemon-shutdown defect, not only a test artifact.
+- **The production Windows ownership backends did not compile against the pinned
+  `Win32-2.14.2.1`.** `Harness.DataRoot.Native` and `Wsl2.GlobalWall.Windows` referenced
+  `FILE_FLAG_OPEN_REPARSE_POINT`, which that public package version does not expose, and the wall
+  backend imported hidden `.Internal` modules for raw status-preserving operations. The native gate
+  exposed both defects. The SDK flag is now represented locally by its documented value, and the
+  status-sensitive operations use a narrow direct `kernel32` FFI that preserves the exact
+  `GetLastError`; no private `Win32` module, C shim, or Cabal `c-sources` is used. The adapter's
+  exclusive-entry bracket is also masked so an asynchronous exception cannot leak an acquired handle
+  or range lock.
+
+Dated native adapter evidence (2026-08-01): `cabal build all --enable-tests --ghc-options=-Werror`
+passed from `core/`, and
+`cabal test hostbootstrap-core-test --test-options="-p WslGlobalWallWindowsSpec"`
+passed all **4/4** Windows production-entrypoint cases against a temporary `USERPROFILE`: backend
+selection, absent-origin restoration, byte-exact present-origin restoration, and foreign-replacement
+refusal/preservation. This evidence validates the adapter independently of the live wall-release gate
+recorded above.
+
+- **The complete Windows core gate still encoded two POSIX guests as Windows host filesystems.** CUDA
+  candidate rendering used host-native `System.FilePath`, producing backslashes in Linux toolkit paths.
+  It now uses `System.FilePath.Posix`. The guest-alias and cluster ownership integration fixtures passed
+  native Windows temporary paths to protocols that intentionally accept absolute POSIX guest paths and
+  require real `flock`; Windows now retains their portable validation/probe cases while the real
+  filesystem clause suites remain POSIX-gated. Production guest validation was not weakened, and the
+  Windows wall/data-root backends remain natively exercised.
+
+Dated complete static evidence (2026-08-01): `cabal test all --ghc-options=-Werror` passed **782/782**
+from `core/`. The demo workspace passed **110/110** demo tests plus its embedded **782/782** core suite
+under the same gate. The lower Windows count reflects the deliberate POSIX-only filesystem integration
+cases; the portable model/config suites and native Windows ownership adapter cases remain enabled.
+
+- **One Python installer test asserted POSIX executable bits on an NTFS temporary file.** The production
+  Linux installer already calls `chmod 0o755`, but Windows does not report those mode bits through
+  `Path.stat()`. The test now records and asserts the requested chmod mode directly, preserving the
+  implementation contract on every host. Dated validation (2026-08-01): the focused download group
+  passed **5/5**, `poetry run python -m hostbootstrap.check_code` passed, and
+  `poetry run python -m hostbootstrap.test_all` passed **231/231**.
 
 ## Documentation Requirements
 

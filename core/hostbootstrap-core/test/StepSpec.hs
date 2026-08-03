@@ -12,6 +12,7 @@ tests =
         [ testGroup "stepKindName" kindNameCases
         , testGroup "renderStep / renderChainPlan" renderCases
         , testGroup "frame segmentation" frameCases
+        , testGroup "stable implementation identities" implementationIdentityCases
         , testGroup "plan validation" validationCases
         ]
 
@@ -27,6 +28,27 @@ ctrFrame = StepFrame{frameId = "vm-project-container-2", frameLabel = "container
 
 noop :: a -> IO ()
 noop _ = pure ()
+
+implementationIdentityCases :: [TestTree]
+implementationIdentityCases =
+    [ testCase "every constructor starts at explicit revision one" $ do
+        let step = deployKindStep "cluster" metal noop
+        stepImplementationRevisionNumber (stepImplementationRevision step) @?= 1
+        stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step) @?= 1
+    , testCase "forward and reverse revisions are independently replaceable" $ do
+        let implementation = either error id (mkStepImplementationRevision 2)
+            reverseAdapter = either error id (mkStepReverseAdapterRevision 3)
+            step = reverseAdapterAt reverseAdapter (implementedAt implementation (deployKindStep "cluster" metal noop))
+        stepImplementationRevisionNumber (stepImplementationRevision step) @?= 2
+        stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step) @?= 3
+    , testCase "revision zero is outside the closed vocabulary" $ do
+        case mkStepImplementationRevision 0 of
+            Left _ -> pure ()
+            Right _ -> assertFailure "accepted forward implementation revision zero"
+        case mkStepReverseAdapterRevision 0 of
+            Left _ -> pure ()
+            Right _ -> assertFailure "accepted reverse-adapter revision zero"
+    ]
 
 -- A small demo-shaped chain: metal provisions and builds, then the container
 -- frame deploys the cluster, a project step (harbor), and exposes the port.

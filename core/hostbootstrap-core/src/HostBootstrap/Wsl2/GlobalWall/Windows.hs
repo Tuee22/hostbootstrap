@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -10,9 +11,10 @@ complete recovery driver, the durable record codec, and the ownership
 arithmetic live in the portable module and are exercised on every host by the
 POSIX backend.
 
-The four ownership clauses are held with the @Win32@ package's existing
-bindings; no C shim, no @c-sources@ block, and no threaded-RTS carve-out are
-needed:
+The four ownership clauses are held with public @Win32@ types and wrappers plus
+a narrow direct @kernel32@ boundary for operations whose exact status drives
+recovery classification. No C shim, @c-sources@ block, private @Win32@ module,
+or threaded-RTS carve-out is needed:
 
 * clause 1 — @LockFileEx@ with @LOCKFILE_EXCLUSIVE_LOCK@ on a byte range of a
   per-user lock file.  A Windows byte-range lock conflicts between handles even
@@ -39,6 +41,8 @@ where
 import HostBootstrap.Wsl2.GlobalWall.Host
 
 #if defined(mingw32_HOST_OS)
+import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, catch, mask, onException)
 import Control.Monad (void)
 import Data.Bits ((.&.), (.|.))
 import Data.ByteString (ByteString)
@@ -46,24 +50,27 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Word (Word32, Word64)
-import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (castPtr, nullPtr, plusPtr)
-import Foreign.Storable (peek)
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import GHC.Clock (getMonotonicTime)
-import Control.Concurrent (threadDelay)
-import Control.Exception (onException)
 import HostBootstrap.Wsl2.GlobalWall
   ( FileIdentity,
-    WallConflict (TargetReplaced, UnexpectedTargetAbsent, UnexpectedTargetPresent),
+    WallConflict (TargetReplaced, UnexpectedTargetAbsent),
     mkFileIdentity,
   )
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO.Error
+  ( isAlreadyExistsError,
+    isAlreadyInUseError,
+    isDoesNotExistError,
+    isIllegalOperation,
+    isPermissionError,
+  )
 import System.Win32.File
   ( BY_HANDLE_FILE_INFORMATION (bhfiFileAttributes, bhfiFileIndex, bhfiSize, bhfiVolumeSerialNumber),
-    OVERLAPPED (OVERLAPPED),
+    closeHandle,
     cREATE_NEW,
     dELETE,
     fILE_ATTRIBUTE_DIRECTORY,
@@ -71,33 +78,30 @@ import System.Win32.File
     fILE_ATTRIBUTE_REPARSE_POINT,
     fILE_BEGIN,
     fILE_FLAG_DELETE_ON_CLOSE,
-    fILE_FLAG_OPEN_REPARSE_POINT,
     fILE_SHARE_DELETE,
     fILE_SHARE_READ,
     fILE_SHARE_WRITE,
+    flushFileBuffers,
     gENERIC_READ,
     gENERIC_WRITE,
+    getFileInformationByHandle,
     lOCKFILE_EXCLUSIVE_LOCK,
     lOCKFILE_FAIL_IMMEDIATELY,
+    lockFile,
     oPEN_ALWAYS,
     oPEN_EXISTING,
+    setFilePointerEx,
+    unlockFile,
+    win32_ReadFile,
+    win32_WriteFile,
   )
-import System.Win32.File.Internal
-  ( c_CloseHandle,
-    c_CreateFile,
-    c_DeleteFile,
-    c_FlushFileBuffers,
-    c_GetFileInformationByHandle,
-    c_LockFileEx,
-    c_MoveFileEx,
-    c_ReadFile,
-    c_SetFilePointerEx,
-    c_UnlockFileEx,
-    c_WriteFile,
+import System.Win32.Types
+  ( HANDLE,
+    LPCTSTR,
+    getLastError,
+    iNVALID_HANDLE_VALUE,
+    withFilePath,
   )
-import System.Win32.HardLink.Internal (c_CreateHardLink)
-import System.Win32.String (withTString)
-import System.Win32.Types (HANDLE, getLastError, iNVALID_HANDLE_VALUE)
 #endif
 
 #if !defined(mingw32_HOST_OS)
@@ -248,38 +252,41 @@ windowsExclusiveEntry ::
   FilePath ->
   IO (Either HostWallError result) ->
   IO (Either HostWallError result)
-windowsExclusiveEntry path action = do
-  opened <-
-    openHandle
-      path
-      (gENERIC_READ .|. gENERIC_WRITE)
-      (fILE_SHARE_READ .|. fILE_SHARE_WRITE)
-      oPEN_ALWAYS
-      fILE_ATTRIBUTE_NORMAL
-  case opened of
-    Left err -> pure (Left err)
-    Right Nothing ->
-      pure
-        ( Left
-            ( HostWallNativeFailure
-                ("open the global wall lock " ++ path)
-                errorFileNotFound
-            )
-        )
-    Right (Just handle) -> do
-      acquired <- acquireExclusiveRange handle
-      case acquired of
-        Left err -> do
-          void (c_CloseHandle handle)
-          pure (Left err)
-        Right () -> do
-          result <- action `onException` releaseRange handle
-          released <- releaseRange handle
-          pure $
-            case (result, released) of
-              (Left err, _) -> Left err
-              (Right _, Left err) -> Left err
-              (Right value, Right ()) -> Right value
+windowsExclusiveEntry path action =
+  mask $ \restore -> do
+    opened <-
+      openHandle
+        path
+        (gENERIC_READ .|. gENERIC_WRITE)
+        (fILE_SHARE_READ .|. fILE_SHARE_WRITE)
+        oPEN_ALWAYS
+        fILE_ATTRIBUTE_NORMAL
+    case opened of
+      Left err -> pure (Left err)
+      Right Nothing ->
+        pure
+          ( Left
+              ( HostWallNativeFailure
+                  ("open the global wall lock " ++ path)
+                  errorFileNotFound
+              )
+          )
+      Right (Just handle) -> do
+        acquired <-
+          restore (acquireExclusiveRange handle)
+            `onException` closeHandleIgnoringFailure handle
+        case acquired of
+          Left err -> do
+            closeHandleIgnoringFailure handle
+            pure (Left err)
+          Right () -> do
+            result <- restore action `onException` releaseRange handle
+            released <- releaseRange handle
+            pure $
+              case (result, released) of
+                (Left err, _) -> Left err
+                (Right _, Left err) -> Left err
+                (Right value, Right ()) -> Right value
 
 acquireExclusiveRange :: HANDLE -> IO (Either HostWallError ())
 acquireExclusiveRange handle = do
@@ -287,15 +294,13 @@ acquireExclusiveRange handle = do
   go started
   where
     go started =
-      with (OVERLAPPED 0 0 0 0 nullPtr) $ \overlapped -> do
+      do
         locked <-
-          c_LockFileEx
+          lockFile
             handle
             (lOCKFILE_EXCLUSIVE_LOCK .|. lOCKFILE_FAIL_IMMEDIATELY)
-            0
             1
             0
-            overlapped
         if locked
           then pure (Right ())
           else do
@@ -323,27 +328,24 @@ acquireExclusiveRange handle = do
 
 releaseRange :: HANDLE -> IO (Either HostWallError ())
 releaseRange handle = do
-  unlocked <-
-    with (OVERLAPPED 0 0 0 0 nullPtr) $ \overlapped ->
-      c_UnlockFileEx handle 0 1 0 overlapped
-  closed <- c_CloseHandle handle
-  pure $
-    if not unlocked
-      then
-        Left
-          ( HostWallNativeFailure
-              "release the per-user global wall lock"
-              errorInvalidData
-          )
-      else
-        if closed
-          then Right ()
-          else
-            Left
-              ( HostWallNativeFailure
-                  "close the per-user global wall lock"
-                  errorInvalidData
-              )
+  unlocked <- unlockFile handle 1 0
+  unlockStatus <-
+    if unlocked
+      then pure Nothing
+      else Just <$> getLastError
+  closed <-
+    tryWindows
+      "close the per-user global wall lock"
+      (closeHandle handle)
+  pure $ case (unlockStatus, closed) of
+    (Just status, _) ->
+      Left
+        ( HostWallNativeFailure
+            "release the per-user global wall lock"
+            status
+        )
+    (Nothing, Left err) -> Left err
+    (Nothing, Right ()) -> Right ()
 
 -- Clause 3: exact observation ------------------------------------------------
 
@@ -353,6 +355,12 @@ to act on a name this process still holds open.
 -}
 observationShareMode :: Word32
 observationShareMode = fILE_SHARE_READ .|. fILE_SHARE_DELETE
+
+-- The public @Win32@ API does not expose this SDK flag even though the native
+-- @CreateFileW@ entry point accepts the complete @dwFlagsAndAttributes@ bit
+-- field.
+fileFlagOpenReparsePoint :: Word32
+fileFlagOpenReparsePoint = 0x00200000
 
 windowsOpenExclusive ::
   FilePath ->
@@ -364,7 +372,7 @@ windowsOpenExclusive path = do
       (gENERIC_READ .|. dELETE)
       observationShareMode
       oPEN_EXISTING
-      (fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_OPEN_REPARSE_POINT)
+      (fILE_ATTRIBUTE_NORMAL .|. fileFlagOpenReparsePoint)
   case opened of
     Left err -> pure (Left err)
     Right Nothing -> pure (Right Nothing)
@@ -372,11 +380,11 @@ windowsOpenExclusive path = do
       described <- handleInformation path handle
       case described of
         Left err -> do
-          void (c_CloseHandle handle)
+          closeHandleIgnoringFailure handle
           pure (Left err)
         Right information
           | isNonRegular information -> do
-              void (c_CloseHandle handle)
+              closeHandleIgnoringFailure handle
               pure
                 ( Left
                     ( HostWallUnsupported
@@ -386,7 +394,7 @@ windowsOpenExclusive path = do
                     )
                 )
           | bhfiSize information > fromIntegral maximumWallBytes -> do
-              void (c_CloseHandle handle)
+              closeHandleIgnoringFailure handle
               pure
                 ( Left
                     ( HostWallUnsupported
@@ -398,12 +406,12 @@ windowsOpenExclusive path = do
                 readWholeHandle path handle (fromIntegral (bhfiSize information))
               case contents of
                 Left err -> do
-                  void (c_CloseHandle handle)
+                  closeHandleIgnoringFailure handle
                   pure (Left err)
                 Right bytes ->
                   case identityOf information of
                     Left err -> do
-                      void (c_CloseHandle handle)
+                      closeHandleIgnoringFailure handle
                       pure (Left err)
                     Right identity ->
                       pure
@@ -431,13 +439,13 @@ windowsProbeIdentity path = do
       gENERIC_READ
       (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
       oPEN_EXISTING
-      (fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_OPEN_REPARSE_POINT)
+      (fILE_ATTRIBUTE_NORMAL .|. fileFlagOpenReparsePoint)
   case opened of
     Left err -> pure (Left err)
     Right Nothing -> pure (Right Nothing)
     Right (Just handle) -> do
       described <- handleInformation path handle
-      void (c_CloseHandle handle)
+      closeHandleIgnoringFailure handle
       pure $
         case described of
           Left err -> Left err
@@ -477,18 +485,18 @@ windowsCreateArmedStage path bytes = do
       written <- writeWholeHandle path handle bytes
       case written of
         Left err -> do
-          void (c_CloseHandle handle)
+          closeHandleIgnoringFailure handle
           pure (Left err)
         Right () -> do
           described <- handleInformation path handle
           case described of
             Left err -> do
-              void (c_CloseHandle handle)
+              closeHandleIgnoringFailure handle
               pure (Left err)
             Right information ->
               case identityOf information of
                 Left err -> do
-                  void (c_CloseHandle handle)
+                  closeHandleIgnoringFailure handle
                   pure (Left err)
                 Right identity ->
                   pure
@@ -515,22 +523,12 @@ windowsLinkArmedStage object armed bound = do
   confirmed <- confirmPathIdentity object armed
   case confirmed of
     Left err -> pure (Left err)
-    Right () -> do
-      linked <-
-        withTString bound $ \wideBound ->
-          withTString armed $ \wideArmed ->
-            c_CreateHardLink wideBound wideArmed nullPtr
-      if linked
-        then pure (Right ())
-        else do
-          status <- getLastError
-          pure
-            ( Left
-                ( HostWallNativeFailure
-                    ("hard link " ++ armed ++ " to " ++ bound)
-                    status
-                )
-            )
+    Right () ->
+      withFilePath bound $ \wideBound ->
+        withFilePath armed $ \wideArmed ->
+          windowsBoolean
+            ("hard link " ++ armed ++ " to " ++ bound)
+            (rawCreateHardLinkW wideBound wideArmed nullPtr)
 
 windowsRenameNoReplace ::
   WallObject WindowsWallHandle ->
@@ -541,24 +539,14 @@ windowsRenameNoReplace object destination = do
   confirmed <- confirmPathIdentity object source
   case confirmed of
     Left err -> pure (Left err)
-    Right () -> do
+    Right () ->
       -- No @MOVEFILE_REPLACE_EXISTING@: a present destination must fail rather
       -- than be overwritten.
-      moved <-
-        withTString source $ \wideSource ->
-          withTString destination $ \wideDestination ->
-            c_MoveFileEx wideSource wideDestination 0
-      if moved
-        then pure (Right ())
-        else do
-          status <- getLastError
-          pure
-            ( Left
-                ( HostWallNativeFailure
-                    ("no-replace rename to " ++ destination)
-                    status
-                )
-            )
+      withFilePath source $ \wideSource ->
+        withFilePath destination $ \wideDestination ->
+          windowsBoolean
+            ("no-replace rename to " ++ destination)
+            (rawMoveFileExW wideSource wideDestination 0)
 
 windowsDeleteObject ::
   WallObject WindowsWallHandle ->
@@ -569,35 +557,20 @@ windowsDeleteObject object = do
   case confirmed of
     Left err -> pure (Left err)
     Right () -> do
-      deleted <- withTString path c_DeleteFile
-      if deleted
-        then pure (Right ())
-        else do
-          status <- getLastError
-          pure $
-            if status == errorFileNotFound
-              then Right ()
-              else
-                Left
-                  ( HostWallNativeFailure
-                      ("delete " ++ path)
-                      status
-                  )
+      deleted <- deletePath ("delete " ++ path) path
+      pure $ case deleted of
+        Left (HostWallNativeFailure _ status)
+          | status == errorFileNotFound -> Right ()
+        Left err -> Left err
+        Right () -> Right ()
 
 windowsCloseObject ::
   WallObject WindowsWallHandle ->
   IO (Either HostWallError ())
 windowsCloseObject object = do
-  closed <- c_CloseHandle (windowsHandle (wallObjectHandle object))
-  pure $
-    if closed
-      then Right ()
-      else
-        Left
-          ( HostWallNativeFailure
-              "close an exact file handle"
-              errorInvalidData
-          )
+  tryWindows
+    "close an exact file handle"
+    (closeHandle (windowsHandle (wallObjectHandle object)))
 
 {- | Clause 4 in one place: a namespace operation acts only while the name
 still denotes the exact object that was observed under this lock.
@@ -652,20 +625,12 @@ windowsJournalDeleteIfEqual path expected = do
     Right (Just bytes)
       | bytes /= expected -> pure (Right False)
       | otherwise -> do
-          deleted <- withTString path c_DeleteFile
-          if deleted
-            then pure (Right True)
-            else do
-              status <- getLastError
-              pure $
-                if status == errorFileNotFound
-                  then Right True
-                  else
-                    Left
-                      ( HostWallNativeFailure
-                          ("clear the wall journal " ++ path)
-                          status
-                      )
+          deleted <- deletePath ("clear the wall journal " ++ path) path
+          pure $ case deleted of
+            Left (HostWallNativeFailure _ status)
+              | status == errorFileNotFound -> Right True
+            Left err -> Left err
+            Right () -> Right True
 
 windowsAllocateFence :: FilePath -> IO (Either HostWallError Word64)
 windowsAllocateFence path = do
@@ -714,11 +679,11 @@ readFileBytes path = do
       described <- handleInformation path handle
       case described of
         Left err -> do
-          void (c_CloseHandle handle)
+          closeHandleIgnoringFailure handle
           pure (Left err)
         Right information
           | bhfiSize information > fromIntegral maximumWallBytes -> do
-              void (c_CloseHandle handle)
+              closeHandleIgnoringFailure handle
               pure
                 ( Left
                     ( HostWallUnsupported
@@ -728,13 +693,13 @@ readFileBytes path = do
           | otherwise -> do
               contents <-
                 readWholeHandle path handle (fromIntegral (bhfiSize information))
-              void (c_CloseHandle handle)
+              closeHandleIgnoringFailure handle
               pure (Just <$> contents)
 
 replaceFileBytes :: FilePath -> ByteString -> IO (Either HostWallError ())
 replaceFileBytes path bytes = do
   let staging = path ++ ".writing"
-  void (withTString staging c_DeleteFile)
+  void (deletePath ("remove stale staging file " ++ staging) staging)
   opened <-
     openHandle
       staging
@@ -754,41 +719,92 @@ replaceFileBytes path bytes = do
         )
     Right (Just handle) -> do
       written <- writeWholeHandle staging handle bytes
-      closed <- c_CloseHandle handle
-      case written of
-        Left err -> pure (Left err)
-        Right ()
-          | not closed ->
-              pure
-                ( Left
-                    ( HostWallNativeFailure
-                        ("close " ++ staging)
-                        errorInvalidData
-                    )
+      closed <- tryWindows ("close " ++ staging) (closeHandle handle)
+      case (written, closed) of
+        (Left err, _) -> pure (Left err)
+        (Right (), Left err) -> pure (Left err)
+        (Right (), Right ()) ->
+          -- The journal name is ours, so a replacing move is correct here;
+          -- only the .wslconfig namespace requires no-replace semantics.
+          withFilePath staging $ \wideStaging ->
+            withFilePath path $ \widePath ->
+              windowsBoolean
+                ("publish " ++ path)
+                ( rawMoveFileExW
+                    wideStaging
+                    widePath
+                    (mOVEFILE_REPLACE_EXISTING .|. mOVEFILE_WRITE_THROUGH)
                 )
-          | otherwise -> do
-              -- The journal name is ours, so a replacing move is correct here;
-              -- only the .wslconfig namespace requires no-replace semantics.
-              moved <-
-                withTString staging $ \wideStaging ->
-                  withTString path $ \widePath ->
-                    c_MoveFileEx
-                      wideStaging
-                      widePath
-                      (mOVEFILE_REPLACE_EXISTING .|. mOVEFILE_WRITE_THROUGH)
-              if moved
-                then pure (Right ())
-                else do
-                  status <- getLastError
-                  pure
-                    ( Left
-                        ( HostWallNativeFailure
-                            ("publish " ++ path)
-                            status
-                        )
-                    )
 
 -- Raw handle helpers ----------------------------------------------------------
+
+-- The recovery protocol distinguishes sharing, namespace-race, and unsupported
+-- statuses.  The public @Win32@ wrappers translate those DWORDs into lossy
+-- 'IOException' categories, so classification-sensitive operations use this
+-- narrow direct kernel32 boundary and capture 'getLastError' immediately.
+foreign import capi unsafe "windows.h CreateFileW"
+  rawCreateFileW ::
+    LPCTSTR ->
+    Word32 ->
+    Word32 ->
+    Ptr () ->
+    Word32 ->
+    Word32 ->
+    HANDLE ->
+    IO HANDLE
+
+foreign import capi unsafe "windows.h MoveFileExW"
+  rawMoveFileExW :: LPCTSTR -> LPCTSTR -> Word32 -> IO Bool
+
+foreign import capi unsafe "windows.h CreateHardLinkW"
+  rawCreateHardLinkW :: LPCTSTR -> LPCTSTR -> Ptr () -> IO Bool
+
+foreign import capi unsafe "windows.h DeleteFileW"
+  rawDeleteFileW :: LPCTSTR -> IO Bool
+
+windowsBoolean :: String -> IO Bool -> IO (Either HostWallError ())
+windowsBoolean operation action = do
+  succeeded <- action
+  if succeeded
+    then pure (Right ())
+    else do
+      status <- getLastError
+      pure (Left (HostWallNativeFailure operation status))
+
+deletePath :: String -> FilePath -> IO (Either HostWallError ())
+deletePath operation path =
+  withFilePath path $ \widePath ->
+    windowsBoolean operation (rawDeleteFileW widePath)
+
+-- Public wrappers remain appropriate when their failure status cannot change
+-- a protocol decision. Translate those failures conservatively.
+tryWindows :: String -> IO result -> IO (Either HostWallError result)
+tryWindows operation action =
+  (Right <$> action)
+    `catch` \failure ->
+      pure
+        ( Left
+            ( HostWallNativeFailure
+                operation
+                (windowsErrorStatus failure)
+            )
+        )
+
+windowsErrorStatus :: IOException -> Word32
+windowsErrorStatus failure
+  | isDoesNotExistError failure = errorFileNotFound
+  | isAlreadyExistsError failure = errorAlreadyExists
+  | isAlreadyInUseError failure = errorBusy
+  -- @Win32@ maps both access-denied and sharing violations to one public
+  -- 'PermissionDenied' exception.  Do not claim the retryable sharing class
+  -- when the public boundary cannot prove it.
+  | isPermissionError failure = errorAccessDenied
+  | isIllegalOperation failure = errorNotSupported
+  | otherwise = errorInvalidData
+
+closeHandleIgnoringFailure :: HANDLE -> IO ()
+closeHandleIgnoringFailure handle =
+  void (tryWindows "close a Windows file handle" (closeHandle handle))
 
 openHandle ::
   FilePath ->
@@ -798,9 +814,9 @@ openHandle ::
   Word32 ->
   IO (Either HostWallError (Maybe HANDLE))
 openHandle path access share creation flags = do
-  handle <-
-    withTString path $ \widePath ->
-      c_CreateFile
+  withFilePath path $ \widePath -> do
+    handle <-
+      rawCreateFileW
         widePath
         access
         share
@@ -808,27 +824,21 @@ openHandle path access share creation flags = do
         creation
         flags
         nullPtr
-  if handle /= iNVALID_HANDLE_VALUE
-    then pure (Right (Just handle))
-    else do
-      status <- getLastError
-      pure $
-        if status == errorFileNotFound || status == errorPathNotFound
-          then Right Nothing
-          else Left (HostWallNativeFailure ("open " ++ path) status)
+    if handle /= iNVALID_HANDLE_VALUE
+      then pure (Right (Just handle))
+      else do
+        status <- getLastError
+        pure $
+          if status == errorFileNotFound || status == errorPathNotFound
+            then Right Nothing
+            else Left (HostWallNativeFailure ("open " ++ path) status)
 
 handleInformation ::
   FilePath ->
   HANDLE ->
   IO (Either HostWallError BY_HANDLE_FILE_INFORMATION)
 handleInformation path handle =
-  alloca $ \buffer -> do
-    described <- c_GetFileInformationByHandle handle buffer
-    if described
-      then Right <$> peek buffer
-      else do
-        status <- getLastError
-        pure (Left (HostWallNativeFailure ("stat " ++ path) status))
+  tryWindows ("stat " ++ path) (getFileInformationByHandle handle)
 
 isNonRegular :: BY_HANDLE_FILE_INFORMATION -> Bool
 isNonRegular information =
@@ -844,38 +854,30 @@ readWholeHandle ::
 readWholeHandle _ _ size
   | size <= 0 = pure (Right ByteString.empty)
 readWholeHandle path handle size = do
-  positioned <-
-    alloca $ \position ->
-      c_SetFilePointerEx handle 0 position fILE_BEGIN
-  if not positioned
-    then do
-      status <- getLastError
-      pure (Left (HostWallNativeFailure ("seek " ++ path) status))
-    else allocaBytes size $ \buffer ->
+  positioned <- tryWindows ("seek " ++ path) (setFilePointerEx handle 0 fILE_BEGIN)
+  case positioned of
+    Left err -> pure (Left err)
+    Right _ -> allocaBytes size $ \buffer ->
       let go offset
             | offset >= size =
                 Right <$> ByteString.packCStringLen (castPtr buffer, size)
-            | otherwise =
-                alloca $ \counted -> do
-                  ok <-
-                    c_ReadFile
-                      handle
-                      (buffer `plusPtr` offset)
-                      (fromIntegral (size - offset))
-                      counted
-                      nullPtr
-                  if not ok
-                    then do
-                      status <- getLastError
-                      pure
-                        (Left (HostWallNativeFailure ("read " ++ path) status))
-                    else do
-                      read' <- peek counted
-                      if read' == 0
-                        then
-                          Right
-                            <$> ByteString.packCStringLen (castPtr buffer, offset)
-                        else go (offset + fromIntegral read')
+            | otherwise = do
+                readResult <-
+                  tryWindows
+                    ("read " ++ path)
+                    ( win32_ReadFile
+                        handle
+                        (buffer `plusPtr` offset)
+                        (fromIntegral (size - offset))
+                        Nothing
+                    )
+                case readResult of
+                  Left err -> pure (Left err)
+                  Right read'
+                    | read' == 0 ->
+                        Right
+                          <$> ByteString.packCStringLen (castPtr buffer, offset)
+                    | otherwise -> go (offset + fromIntegral read')
        in go 0
 
 writeWholeHandle ::
@@ -887,38 +889,29 @@ writeWholeHandle path handle bytes =
   ByteString.useAsCStringLen bytes $ \(pointer, size) ->
     let go offset
           | offset >= size = do
-              flushed <- c_FlushFileBuffers handle
-              if flushed
-                then pure (Right ())
-                else do
-                  status <- getLastError
-                  pure (Left (HostWallNativeFailure ("flush " ++ path) status))
-          | otherwise =
-              alloca $ \counted -> do
-                ok <-
-                  c_WriteFile
-                    handle
-                    (castPtr pointer `plusPtr` offset)
-                    (fromIntegral (size - offset))
-                    counted
-                    nullPtr
-                if not ok
-                  then do
-                    status <- getLastError
-                    pure
-                      (Left (HostWallNativeFailure ("write " ++ path) status))
-                  else do
-                    written <- peek counted
-                    if written == 0
-                      then
-                        pure
-                          ( Left
-                              ( HostWallNativeFailure
-                                  ("write " ++ path)
-                                  errorWriteFault
-                              )
-                          )
-                      else go (offset + fromIntegral written)
+              tryWindows ("flush " ++ path) (flushFileBuffers handle)
+          | otherwise = do
+              writeResult <-
+                tryWindows
+                  ("write " ++ path)
+                  ( win32_WriteFile
+                      handle
+                      (castPtr pointer `plusPtr` offset)
+                      (fromIntegral (size - offset))
+                      Nothing
+                  )
+              case writeResult of
+                Left err -> pure (Left err)
+                Right written
+                  | written == 0 ->
+                      pure
+                        ( Left
+                            ( HostWallNativeFailure
+                                ("write " ++ path)
+                                errorWriteFault
+                            )
+                        )
+                  | otherwise -> go (offset + fromIntegral written)
      in go 0
 
 -- Identity and status classification -----------------------------------------
@@ -972,7 +965,8 @@ errorInvalidFunction = 1
 errorFileNotFound = 2
 errorPathNotFound = 3
 
-errorInvalidData, errorBusy, errorSharingViolation :: Word32
+errorAccessDenied, errorInvalidData, errorBusy, errorSharingViolation :: Word32
+errorAccessDenied = 5
 errorInvalidData = 13
 errorBusy = 170
 errorSharingViolation = 32

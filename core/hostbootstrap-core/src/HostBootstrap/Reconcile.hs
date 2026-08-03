@@ -9,9 +9,19 @@ generative local authority. Constructors for handles, receipts, prepared calls,
 verified records, and phase evidence are private.
 -}
 module HostBootstrap.Reconcile
-  ( LifecyclePlan,
+  ( CanonicalPlanSnapshot,
+    canonicalPlanSnapshotFormatVersion,
+    canonicalPlanSnapshotSpecDigest,
+    canonicalPlanSnapshotConfigDigest,
+    canonicalPlanSnapshotBytes,
+    canonicalPlanSnapshotDigest,
+    LifecyclePlan,
     withLifecyclePlan,
+    withLifecyclePlanForConfig,
     lifecyclePlanDigest,
+    lifecyclePlanSnapshot,
+    lifecyclePlanSnapshotBytes,
+    lifecyclePlanConfigDigest,
     lifecyclePlanFrames,
     lifecyclePlanSteps,
     Unclassified,
@@ -108,11 +118,21 @@ module HostBootstrap.Reconcile
   )
 where
 
+import Data.ByteString (ByteString)
 import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Config.Class (ProjectCodec, projectCodecSpecDigest)
+import HostBootstrap.Lifecycle.Plan (
+  CanonicalPlanSnapshot,
+  canonicalPlanSnapshot,
+  canonicalPlanSnapshotBytes,
+  canonicalPlanSnapshotConfigDigest,
+  canonicalPlanSnapshotDigest,
+  canonicalPlanSnapshotFormatVersion,
+  canonicalPlanSnapshotSpecDigest,
+ )
 import HostBootstrap.Lifecycle.Prepared (
   PreparedGate,
   preparedGateAttempt,
@@ -129,21 +149,52 @@ import HostBootstrap.Step
     stepIdentity,
     stepOperationKey,
     stepPlanSteps,
-    stepReversePolicy,
   )
 
-data LifecyclePlan scope planId = LifecyclePlan Text StepPlan
+data LifecyclePlan scope planId = LifecyclePlan CanonicalPlanSnapshot StepPlan
 
+{- | Open a lifecycle plan for a config-free caller. Production command paths
+must use 'withLifecyclePlanForConfig' with the digest of their exact admitted
+wire. This compatibility bracket remains for pure provider and reconciliation
+tests whose plan has no configuration identity.
+-}
 withLifecyclePlan ::
   ProjectCodec scope specDigest cfg ->
   StepPlan ->
   (forall planId. LifecyclePlan scope planId -> result) ->
   result
 withLifecyclePlan codec plan consume =
-  consume (LifecyclePlan (planDigest codec plan) plan)
+  withLifecyclePlanForConfig codec configFreeDigest plan consume
+
+-- | Open the plan under the digest of the exact admitted configuration. Raw
+-- config bytes never enter the stable snapshot.
+withLifecyclePlanForConfig ::
+  ProjectCodec scope specDigest cfg ->
+  Text ->
+  StepPlan ->
+  (forall planId. LifecyclePlan scope planId -> result) ->
+  result
+withLifecyclePlanForConfig codec configDigest plan consume =
+  consume
+    ( LifecyclePlan
+        (canonicalPlanSnapshot (projectCodecSpecDigest codec) configDigest plan)
+        plan
+    )
 
 lifecyclePlanDigest :: LifecyclePlan scope planId -> Text
-lifecyclePlanDigest (LifecyclePlan digest _) = digest
+lifecyclePlanDigest (LifecyclePlan snapshot _) =
+  canonicalPlanSnapshotDigest snapshot
+
+-- | The exact non-secret canonical snapshot from which this plan's digest was
+-- computed.
+lifecyclePlanSnapshot :: LifecyclePlan scope planId -> CanonicalPlanSnapshot
+lifecyclePlanSnapshot (LifecyclePlan snapshot _) = snapshot
+
+lifecyclePlanSnapshotBytes :: LifecyclePlan scope planId -> ByteString
+lifecyclePlanSnapshotBytes = canonicalPlanSnapshotBytes . lifecyclePlanSnapshot
+
+lifecyclePlanConfigDigest :: LifecyclePlan scope planId -> Text
+lifecyclePlanConfigDigest = canonicalPlanSnapshotConfigDigest . lifecyclePlanSnapshot
 
 -- | The validated step plan this lifecycle plan was built from. The reverse
 -- projection reads it here rather than accepting one from a caller, so the
@@ -162,19 +213,12 @@ lifecyclePlanFrames (LifecyclePlan _ plan) =
       | value `elem` seen = seen
       | otherwise = value : seen
 
-planDigest :: ProjectCodec scope specDigest cfg -> StepPlan -> Text
-planDigest codec plan =
-  Text.intercalate
-    "|"
-    ( projectCodecSpecDigest codec
-        : [ Text.pack (frameId (stepFrame step))
-              <> ":"
-              <> Text.pack (operationKeyText (stepOperationKey step))
-              <> ":"
-              <> Text.pack (show (stepReversePolicy step))
-          | step <- stepPlanSteps plan
-          ]
-    )
+-- SHA-256 of the empty byte string. It marks genuinely config-free plans while
+-- preserving the invariant that the canonical field is a digest, never an
+-- arbitrary sentinel or raw configuration.
+configFreeDigest :: Text
+configFreeDigest =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 data Unclassified
 data Managed
@@ -251,7 +295,7 @@ withPlannedResource ::
     result
   ) ->
   Either ReconcileError result
-withPlannedResource (LifecyclePlan planDigestOfPlan plan) requestedKey consume =
+withPlannedResource (LifecyclePlan snapshot plan) requestedKey consume =
   case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
     Nothing ->
       Left
@@ -266,7 +310,7 @@ withPlannedResource (LifecyclePlan planDigestOfPlan plan) requestedKey consume =
       Right
         ( consume
             ( PlannedResource
-                planDigestOfPlan
+                (canonicalPlanSnapshotDigest snapshot)
                 requestedKey
                 (Text.pack (frameId (stepFrame step)))
             )
@@ -281,7 +325,7 @@ withPlannedResourceOfKind ::
     result
   ) ->
   Either ReconcileError result
-withPlannedResourceOfKind (LifecyclePlan planDigestOfPlan plan) resourceKind requestedKey consume
+withPlannedResourceOfKind (LifecyclePlan snapshot plan) resourceKind requestedKey consume
   | plannedKindAccepts resourceKind requestedKey =
       case find ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey) (stepPlanSteps plan) of
         Nothing ->
@@ -296,7 +340,7 @@ withPlannedResourceOfKind (LifecyclePlan planDigestOfPlan plan) resourceKind req
         Just step ->
           Right
             ( consume
-                (PlannedResource planDigestOfPlan requestedKey (Text.pack (frameId (stepFrame step))))
+                (PlannedResource (canonicalPlanSnapshotDigest snapshot) requestedKey (Text.pack (frameId (stepFrame step))))
             )
   | otherwise =
       Left
@@ -375,7 +419,7 @@ withPlannedEdge ::
     result
   ) ->
   Either ReconcileError result
-withPlannedEdge (LifecyclePlan planDigestOfPlan plan) targetKey dependencyKey consume = do
+withPlannedEdge (LifecyclePlan snapshot plan) targetKey dependencyKey consume = do
   targetStep <-
     maybe
       (missing targetKey)
@@ -390,8 +434,8 @@ withPlannedEdge (LifecyclePlan planDigestOfPlan plan) targetKey dependencyKey co
     then
       Right
         ( consume
-            (PlannedResource planDigestOfPlan targetKey (Text.pack (frameId (stepFrame targetStep))))
-            (PlannedResource planDigestOfPlan dependencyKey (Text.pack (frameId (stepFrame dependencyStep))))
+            (PlannedResource (canonicalPlanSnapshotDigest snapshot) targetKey (Text.pack (frameId (stepFrame targetStep))))
+            (PlannedResource (canonicalPlanSnapshotDigest snapshot) dependencyKey (Text.pack (frameId (stepFrame dependencyStep))))
             (PlannedEdge targetKey dependencyKey)
         )
     else

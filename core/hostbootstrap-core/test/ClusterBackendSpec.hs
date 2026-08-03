@@ -1,13 +1,19 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
 {- | The cluster ownership backend and its loopback-bound exposure.
 
-The backend cases run the real @flock@/@sh@ protocol on the host filesystem
-against a driver and container runtime the test writes itself, so the four
-ownership clauses — exclusive entry, an origin record written before the first
-mutation, identity binding to the control-plane container ID, and
-identity-conditional deletion — are executed rather than modelled.
+On POSIX hosts, the backend cases run the real @flock@/@sh@ protocol on the
+host filesystem against a driver and container runtime the test writes itself,
+so the four ownership clauses — exclusive entry, an origin record written
+before the first mutation, identity binding to the control-plane container ID,
+and identity-conditional deletion — are executed rather than modelled.
+
+The production protocol runs inside a Linux provider guest and deliberately
+accepts POSIX guest paths. A native Windows test process has neither those path
+semantics nor @flock@, so it runs the portable validation and exposure cases
+without substituting a weaker locking protocol.
 -}
 module ClusterBackendSpec (tests) where
 
@@ -42,7 +48,35 @@ tests =
 -- The clause-holding backend --------------------------------------------------
 
 backendCases :: [TestTree]
-backendCases =
+backendCases = includePosixCases posixBackendCases ++ portableBackendCases
+
+includePosixCases :: [TestTree] -> [TestTree]
+#ifdef mingw32_HOST_OS
+includePosixCases _ = []
+#else
+includePosixCases = id
+#endif
+
+portableBackendCases :: [TestTree]
+portableBackendCases =
+    [ testCase "a relative tool path is refused before any probe" $
+        withFakeHost $ \host -> do
+            discovered <-
+                discoverStrongClusterBackend (localExec host) "kind" (runtimePath host)
+            case discovered of
+                Left (Failure _) -> pure ()
+                Left other ->
+                    assertFailure ("expected a validation failure, got " ++ show other)
+                Right _ ->
+                    assertFailure "a relative tool path must mint no capability"
+    , testCase "a spec refuses a relative state directory" $
+        case mkClusterSpec clusterName "relative/state" "/tmp/kind.yaml" of
+            Left (Failure _) -> pure ()
+            other -> assertFailure ("expected a validation failure, got " ++ showEither other)
+    ]
+
+posixBackendCases :: [TestTree]
+posixBackendCases =
     [ testCase "discovery mints no capability without the driver" $
         withFakeHost $ \host -> do
             discovered <-
@@ -55,16 +89,6 @@ backendCases =
                 Left other -> assertFailure ("expected Unsupported, got " ++ show other)
                 Right _ ->
                     assertFailure "a host without the driver must mint no capability"
-    , testCase "a relative tool path is refused before any probe" $
-        withFakeHost $ \host -> do
-            discovered <-
-                discoverStrongClusterBackend (localExec host) "kind" (runtimePath host)
-            case discovered of
-                Left (Failure _) -> pure ()
-                Left other ->
-                    assertFailure ("expected a validation failure, got " ++ show other)
-                Right _ ->
-                    assertFailure "a relative tool path must mint no capability"
     , testCase "an absent cluster is created, journalled, and identity-bound" $
         withFakeHost $ \host -> do
             backend <- requireBackend host
@@ -154,10 +178,6 @@ backendCases =
             assertBool
                 ("expected a cluster lock file, saw " ++ show entries)
                 ((clusterName ++ ".cluster.lock") `elem` entries)
-    , testCase "a spec refuses a relative state directory" $
-        case mkClusterSpec clusterName "relative/state" "/tmp/kind.yaml" of
-            Left (Failure _) -> pure ()
-            other -> assertFailure ("expected a validation failure, got " ++ showEither other)
     ]
 
 -- Loopback exposure ------------------------------------------------------------

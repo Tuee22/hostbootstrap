@@ -19,6 +19,11 @@ import Dhall.Marshal.Decode (Decoder)
 import Dhall.Marshal.Encode (Encoder (declared))
 import Dhall.Parser (Src)
 import qualified Dhall.TypeCheck
+import Fixture (
+    SecretFixtureProject,
+    SecretProjectConfig,
+    withFixtureHarnessAuthority,
+ )
 import HostBootstrap.Config.Schema (writeProjectConfigFile)
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Dhall.Gen (
@@ -261,13 +266,17 @@ secretRefCases =
                 IO (Either SomeException V.ProductionSecretRefWire)
         assertBool "production decode rejects plaintext" (either (const True) (const False) result)
     , testCase "scoped plaintext requires matching rank-2 harness authority" $ do
-        V.withHarnessAuthority "run-1" $ \runAuthority ->
-            V.secretRefView
-                ( V.testPlaintextSecret
-                    (V.harnessConfigAuthority runAuthority)
-                    (V.TestSecret "hunter2")
-                )
-                @?= V.SecretTestPlaintext (V.TestSecret "hunter2")
+        withFixtureHarnessAuthority
+            @SecretFixtureProject
+            @SecretProjectConfig
+            "secret-fixture"
+            $ \runAuthority ->
+                V.secretRefView
+                    ( V.testPlaintextSecret
+                        (V.harnessConfigAuthority runAuthority)
+                        (V.TestSecret "hunter2")
+                    )
+                    @?= V.SecretTestPlaintext (V.TestSecret "hunter2")
     , testCase "production wire decodes against Core.dhall's production type" $ withRoot $ \root -> do
         let admitted = codec @V.ProductionSecretRefWire
             value = V.ProductionVault (V.VaultRef "secret" "app/db" "password")
@@ -280,11 +289,17 @@ secretRefCases =
     , testCase "wire conversion preserves scope and pointer values" $ do
         let production = V.productionSecretRef (V.ProductionPrompt "password")
         V.productionSecretRefWire production @?= V.ProductionPrompt "password"
-        V.withHarnessAuthority "run-2" $ \runAuthority -> do
-            let authority = V.harnessConfigAuthority runAuthority
-                harness = V.harnessSecretRef authority (V.HarnessTestPlaintext "fixture")
-            V.harnessRunName runAuthority @?= "run-2"
-            V.harnessSecretRefWire harness @?= V.HarnessTestPlaintext "fixture"
+        withFixtureHarnessAuthority
+            @SecretFixtureProject
+            @SecretProjectConfig
+            "secret-fixture"
+            $ \runAuthority -> do
+                let authority = V.harnessConfigAuthority runAuthority
+                    harness = V.harnessSecretRef authority (V.HarnessTestPlaintext "fixture")
+                assertBool
+                    "the authority carries a generative run name"
+                    ("run-" `T.isPrefixOf` V.harnessRunName runAuthority)
+                V.harnessSecretRefWire harness @?= V.HarnessTestPlaintext "fixture"
     ]
   where
     roundTrip admitted value = do

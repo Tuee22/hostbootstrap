@@ -60,18 +60,18 @@ import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
     ConfigInput,
-    configInputPath,
     InitArgs (..),
     ProjectCfg (..),
     ProjectCodec,
     TestCfg (..),
+    configInputPath,
     failConfigAssembly,
     pureConfigAssembly,
     runConfigAssembly,
     withProjectCodec,
  )
-import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
+import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
@@ -115,9 +115,9 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
     , psAssemblyInputs :: [ConfigInput]
     , psServices :: ServiceRegistry (cfg (Production projectId))
     , psStepPlan ::
-        forall rootScope rootId.
+        forall configScope rootScope rootId.
         CanonicalProjectRoot rootScope rootId ->
-        cfg (Production projectId) ->
+        cfg configScope ->
         Either StepPlanError StepPlan
     {- ^ The one validated plan. It is built under the admitted
     'CanonicalProjectRoot' (§ X), so every step — its forward action and the
@@ -140,9 +140,9 @@ data ProjectSpec projectId cfg tcfg = ProjectSpec
 
 newtype StepFragment projectId cfg = StepFragment
     { runStepFragment ::
-        forall rootScope rootId.
+        forall configScope rootScope rootId.
         CanonicalProjectRoot rootScope rootId ->
-        cfg (Production projectId) ->
+        cfg configScope ->
         [Step]
     }
 
@@ -229,9 +229,9 @@ its project-relative paths — and the descent it declares with
 'HostBootstrap.Step.descendsVia' — from that one authority (§ X).
 -}
 addSteps ::
-    ( forall rootScope rootId.
+    ( forall configScope rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
-      cfg (Production projectId) ->
+      cfg configScope ->
       [Step]
     ) ->
     ProjectSpecBuilder projectId cfg tcfg ->
@@ -298,13 +298,16 @@ projectServiceVariantNames = serviceVariantNames . psServices
 projectArtifactNames :: ProjectSpec projectId cfg tcfg -> [T.Text]
 projectArtifactNames = map artifactName . psArtifacts
 
--- | Project one decoded Production config through the finalized plan builder.
--- Observation cannot bypass validation: the result is still an opaque
--- 'StepPlan'.
+{- | Project one scope-indexed config through the finalized plan builder.
+
+Production and each generative Harness run instantiate the same builder at
+different config scopes. Observation cannot bypass validation: the result is
+still an opaque 'StepPlan'.
+-}
 projectStepPlan ::
     ProjectSpec projectId cfg tcfg ->
     CanonicalProjectRoot rootScope rootId ->
-    cfg (Production projectId) ->
+    cfg configScope ->
     Either StepPlanError StepPlan
 projectStepPlan = psStepPlan
 
@@ -473,9 +476,9 @@ runCLI ::
         (Production projectId)
         specDigest
         (cfg (Production projectId)) ->
-    ( forall rootScope rootId.
+    ( forall configScope rootScope rootId.
       CanonicalProjectRoot rootScope rootId ->
-      cfg (Production projectId) ->
+      cfg configScope ->
       Either StepPlanError StepPlan
     ) ->
     [ConfigInput] ->

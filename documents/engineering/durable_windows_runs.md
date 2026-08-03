@@ -101,20 +101,23 @@ native Win32 tmux port on this host is fragile — see the host notes on the tmu
 desktop logon/unlock — so it is not recommended for unattended durability without a sturdier
 multiplexer.
 
-## The run outlives the session — and so does the wall
+## The run outlives the session — and holds the wall until teardown
 
 Surviving the reaper is the point of this mechanism, and it has a consequence worth stating plainly:
 **a finished-looking agent session is no evidence that the gate has stopped.** The run is detached, so
 it disappears from the session UI while continuing to hold everything it reserved — on Windows that is
 the project's full CPU and memory budget, walled into the shared WSL2 utility VM.
 
-This bites harder than on the other substrates because WSL2 does not release its wall promptly on
-`project down` (see [wsl2](wsl2.md) § Wall release): teardown does not shut the utility VM down, so it
-stays resident with the whole balloon committed even after the distro is terminated. Sprint 9.11
-replaced the former `-1` idle-timeout pins with a finite six hours, so the host does eventually recover
-the memory by itself, but that is a backstop rather than a release. On a host sized close to the budget,
-run `wsl --shutdown` rather than waiting it out; any other memory-hungry application on the machine will
-otherwise fail in its own vocabulary rather than telling you the budget is still walled off.
+A run that reaches normal `project down` restores the journalled `.wslconfig` origin and then invokes
+global `wsl --shutdown`; the order ensures the next cold boot reads the restored configuration. Shutdown
+stops every distro and releases the shared utility VM's memory balloon. The current Windows gate proves
+that Phase 9 wall-release observable.
+
+An interrupted detached run is different: if its orchestrator dies before teardown, neither restoration
+nor shutdown is guaranteed to execute. The managed six-hour idle timeouts are the eventual-recovery
+backstop for that case, not the normal release mechanism. On a host sized close to the budget, inspect
+the sentinel and process state and, if the run was interrupted, use `wsl --shutdown` after accounting for
+its effect on every distro.
 
 Before treating the host as free, check the run rather than the UI:
 
@@ -125,7 +128,8 @@ Get-Process vmmem* -ErrorAction SilentlyContinue                       # expect 
 ```
 
 `wsl --shutdown` reclaims the balloon immediately and is non-destructive — the utility VM restarts on
-next use and re-reads the ceiling. It is already a disclosed part of the provider's own lifecycle.
+next use and re-reads the restored configuration. It is already a disclosed global part of the
+provider's own lifecycle.
 
 ## Verification
 
