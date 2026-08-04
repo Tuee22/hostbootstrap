@@ -917,6 +917,63 @@ operation or
 return `Unsupported`; Sprint 16.6 owns consuming that result from the recursive reverse plan. This is a
 narrow dependency assignment, not a claim that name-only deletion is safe.
 
+### Sprint 5.9: Probed exclusion front end for the cluster ownership backend [Done]
+
+**Status**: Done
+**Blocked by**: None
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/test/ClusterBackendSpec.hs`
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+Make the § EE clause-1 exclusive entry a property the backend **discovers in the frame it will run in**,
+rather than a single hard-coded tool name, so the clause-holding cluster backend is constructible on every
+supported userland instead of only on the one that ships `flock(1)`.
+
+#### Deliverables
+
+- `discoverStrongClusterBackend` probes the exec'd frame for an exclusive-lock front end and reports which
+  one it found. `flock(1)` (util-linux) and `lockf(1)` (BSD userland, which is what macOS ships) are both
+  accepted; both wrap the same `flock(2)` on the same inode, so they mutually exclude rather than forming
+  two parallel schemes, and clause 1 is unweakened — the lock still spans the whole observe/create/settle
+  bracket and is still released by the kernel when the holder dies.
+- The discovered tool is retained on the opaque `StrongClusterBackend`, so a bracket cannot be built from a
+  tool the frame was never shown to have. The selection is never a build-host `os()` decision: a binary
+  built on one platform routinely drives a guest of another (§ U).
+- The probe is fail-closed. It exits non-zero when `grep`, the cluster driver, or the container runtime is
+  missing, and `Unsupported` is returned unless the probe both exits zero **and** names a recognized tool
+  on stdout.
+
+#### Validation
+
+- `ClusterBackendSpec`'s clause suite is **not** platform-gated and now executes on macOS as well as
+  Linux: all four clauses run against a real filesystem, a real kernel lock, and a fake driver/runtime.
+- The pre-existing negative cases still hold: discovery with an absent driver mints no capability, and a
+  relative tool path is refused before any probe. Those are the cases a fail-open probe would have broken.
+- A new **platform-independent** case pins the decoder's fail-closed reading directly, rather than leaving
+  it to whichever userland the suite happens to run on: an exit-zero probe that reports nothing, an
+  unrecognized tool, or the wrong token mints no capability.
+
+#### Remaining Work
+
+None in Sprint 5.9. Completed 2026-08-02.
+
+Dated validation evidence (2026-08-02, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): before this
+change the seven `ClusterBackendSpec` clause cases reported
+`Unsupported … "the host lacks a cluster ownership tool"` on this host, because macOS ships no `flock(1)`;
+after it all **10** cases of `ClusterBackendSpec`'s clause-holding group pass, and with the new
+fail-closed decoder case the spec passes **18/18** overall (its other cases cover loopback exposure).
+The complete core suite passes **888/888** under `cabal test all --ghc-options=-Werror`.
+
+This is the first execution of these four clauses on a BSD userland. It closes a **gate** gap, not a
+production one: no production route constructs a `ClusterExec` at all yet — the live path is still
+`Cluster.Lifecycle`'s imperative one, and wiring the backend in remains Sprints 5.7/16.6 — and on every
+lane the kind cluster is reconciled inside the Linux project-container frame (`deploy-kind` belongs to the
+container frame in [phase-13](phase-13-hostbootstrap-demo.md)'s chain), never on macOS metal. The
+pre-change behavior was therefore a correct `Unsupported`, never a wrong observation.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

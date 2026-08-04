@@ -823,7 +823,18 @@ projectCommandGroup codec progName projectPlan initBuilder =
         -- alone can reach the VM to delete it and restore `.wslconfig`), and an
         -- uncatchable external kill is handled instead by the idempotent stale-state
         -- reconcile on the next `project up` (phases 5/11).
-        outcome <- try (runChainFromFrame cfg self current plan)
+        -- The interpreter is handed the *lifecycle plan*, not the bare step
+        -- ordering: each step's action receives the descriptor that plan mints
+        -- for its own node (§ U), so a step can name its operation instead of
+        -- reconstructing it.
+        --
+        -- This opens its own bracket; the root authority gate's has already
+        -- closed by now. The digest a step is told is nonetheless the digest the
+        -- gate authorized, because both are 'withLifecyclePlan' over the same
+        -- codec and the same admitted 'StepPlan', and that derivation is pure.
+        outcome <-
+            withLifecyclePlan codec plan $ \lifecyclePlan ->
+                try (runChainFromFrame cfg self current lifecyclePlan)
         case outcome of
             Right (Right ()) -> pure ()
             Right (Left err)

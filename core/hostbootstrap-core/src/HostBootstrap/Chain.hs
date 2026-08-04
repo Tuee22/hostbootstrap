@@ -35,6 +35,11 @@ import HostBootstrap.Lift (
     liftStdin,
     liftSubcommandWithStdin,
  )
+import HostBootstrap.Reconcile (
+    LifecyclePlan,
+    lifecyclePlanSteps,
+    stepExecutionFor,
+ )
 import HostBootstrap.Step (
     StepPlan,
     StepFrame (..),
@@ -43,6 +48,7 @@ import HostBootstrap.Step (
     postHandoffStepsForFrame,
     preHandoffStepsForFrame,
     renderChainPlan,
+    renderStep,
     runStep,
  )
 import System.Exit (ExitCode (ExitSuccess))
@@ -90,9 +96,9 @@ runChainFromFrame ::
     HostConfig ->
     SelfRef ->
     String ->
-    StepPlan ->
+    LifecyclePlan scope planId ->
     IO (Either String ())
-runChainFromFrame cfg self current plan
+runChainFromFrame cfg self current lifecyclePlan
     -- Fail closed if @current@ is not a frame the chain enters: otherwise
     -- 'stepsForFrame' is empty and 'nextFrameAfter' is 'Nothing', so the descent
     -- would be a silent successful no-op (a config/chain drift, e.g. a topology
@@ -108,11 +114,38 @@ runChainFromFrame cfg self current plan
                 )
             )
     | otherwise = do
-        mapM_ (\step -> runStep step cfg) (preHandoffStepsForFrame current plan)
-        case nextFrameAfter current plan of
-            Nothing -> runPostHandoff >> pure (Right ())
-            Just next -> descendInto next
+        preRan <- runPlanSteps (preHandoffStepsForFrame current plan)
+        case preRan of
+            Left err -> pure (Left err)
+            Right () -> case nextFrameAfter current plan of
+                Nothing -> runPostHandoff
+                Just next -> descendInto next
   where
+    plan = lifecyclePlanSteps lifecyclePlan
+
+    {- Every action receives the descriptor this plan mints for its own node
+    (§ U), never a bare 'HostConfig': the step is told the plan digest, its own
+    operation key and frame, and its exact ordered dependency prefix, so a step
+    that must prepare an effect names its node instead of reconstructing it.
+
+    'stepExecutionFor' refuses a step the plan does not contain. Every step here
+    came out of that same plan, so the refusal is unreachable — it is written as
+    a fail-closed error rather than a default descriptor because running a step
+    under a descriptor the plan never validated is exactly what the seam exists
+    to prevent. -}
+    runPlanSteps [] = pure (Right ())
+    runPlanSteps (step : rest) =
+        case stepExecutionFor lifecyclePlan cfg step of
+            Nothing ->
+                pure
+                    ( Left
+                        ( "project up: step "
+                            ++ renderStep step
+                            ++ " is not a node of the plan being interpreted"
+                        )
+                    )
+            Just execution -> runStep step execution >> runPlanSteps rest
+
     -- Stream the next frame's child config in-place: for a container frame
     -- with config delivery, 'liftStdin' carries the narrowed projection on
     -- the handoff @stdin@ (the entrypoint wrapper writes the sibling before
@@ -137,11 +170,10 @@ runChainFromFrame cfg self current plan
             Just nextCtx -> do
                 result <- liftSubcommandWithStdin cfg self nextCtx handoffArgv (liftStdin nextCtx)
                 case result of
-                    Right (ExitSuccess, out, _) -> putStr out >> runPostHandoff >> pure (Right ())
+                    Right (ExitSuccess, out, _) -> putStr out >> runPostHandoff
                     -- Surface the nested frame's captured stdout even on failure (it holds
                     -- the frame's step-by-step progress); the stderr becomes the error.
                     Right (_, out, err) -> putStr out >> pure (Left err)
                     Left err -> pure (Left err)
 
-    runPostHandoff =
-        mapM_ (\step -> runStep step cfg) (postHandoffStepsForFrame current plan)
+    runPostHandoff = runPlanSteps (postHandoffStepsForFrame current plan)

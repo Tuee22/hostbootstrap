@@ -260,6 +260,40 @@ preservation, and a bounded 30-minute pristine-install/build/connect readiness g
 Exact static-gate defects, test totals, live substrate evidence, and closure owners belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
+### The host-resident launch, and why it has a boundary
+
+The host-resident placement did not start. Its launch closed the child's standard input, output, and
+error rather than pointing them somewhere, which the `process` documentation permits only for a child
+that never uses those descriptors. This child does — it configures buffering and prints its selected
+service before the handler runs — and a threaded-RTS child then claims the freed descriptors for its own
+IO-manager control channel. The daemon wedged or exited before it reached substrate detection, the
+build-stack ensure, the worker build, or the connect loop, and none of the ten failure paths on the way
+there could report why: every one of them wrote to a descriptor that was gone. The launcher observed only
+that the process was no longer running.
+
+The launch is now a sealed boundary — `HostBootstrap.Detached`, under
+[unrepresentable_state](../architecture/unrepresentable_state.md). The demo does not choose a stdio
+disposition any more, because there is no field to choose one in: it supplies the daemon executable, the
+one `hostAcceleratorDaemonArgs` argv both the launch and the process-identity matcher read, the complete
+child environment, an absolute working directory, and an absolute output sink. The boundary supplies the
+rest. The daemon's standard input is the host's null device, so it is open and already at EOF; both of its
+output streams are appended to
+`.build/accelerator-daemon/hostbootstrap-demo.accelerator.output`, which is a lifecycle witness like the
+pid, ready, and shutdown files and is removed with them. When readiness does not arrive, the launcher
+reads that sink and quotes it under the failure (§ CC), so the daemon names its own cause instead of
+collapsing to "the process is gone".
+
+Two things this does not change. The in-cluster placements were never affected — they inherit the
+kubelet's streams — and the Windows host placement still takes its separate hidden `Start-Process` path,
+whose short-lived PowerShell parent owns the child's streams and therefore has no sink to quote.
+
+**The Apple Silicon host-daemon row is now a result.** On 2026-08-03 the lane reported `10/10 passed`:
+the daemon reached readiness on every bring-up, and the browser `e2e-tabs` case asserted the
+daemon-returned sum, backend, and artifact hash on both config variants — so Apple Metal ensure, the
+Swift/Metal worker build, the WebSocket connect, and the CBOR round trip all ran. The launch shape was
+the only thing wrong with this placement. Dated evidence lives with
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md), not here.
+
 ## See Also
 
 - [composition_patterns](composition_patterns.md) - host-native daemon and headless host-build shapes.

@@ -59,6 +59,11 @@ for the full rule set every derived project follows, including the single-projec
 linking/optimisation policy in
 [engineering/linking_and_optimization.md](../engineering/linking_and_optimization.md).
 
+The type discipline those projects inherit is stated once in
+[architecture/unrepresentable_state.md](../architecture/unrepresentable_state.md): where a value has one
+lawful shape, the unlawful shapes have no constructor, and a boundary claiming that ships a compile-fail
+fixture rather than a comment.
+
 ## Native Windows Build
 
 Building `hostbootstrap-core` **host-native on Windows** — the native `hostbootstrap.exe`, the peer of

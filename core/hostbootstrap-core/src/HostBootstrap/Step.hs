@@ -50,6 +50,7 @@ module HostBootstrap.Step (
 
     -- * Opaque steps
     Step,
+    StepAction,
     StepKind,
     stepLabel,
     stepFrame,
@@ -108,7 +109,30 @@ where
 import Data.List (group, sort)
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lift (LiftContext)
+
+{- | What a step's forward action receives (§ U).
+
+Not a bare 'HostConfig'. The action is handed the plan-minted
+'StepExecution' — the host-tool configuration together with the exact plan,
+operation, and frame identities the step is running under — so a step that must
+prepare an effect can name its own node instead of reconstructing it. The
+descriptor has no public constructor, so an action can only run inside a real
+interpretation of a real validated plan.
+
+The @scope@ and @planId@ indices are universally quantified here, so an action
+sees them as skolems it cannot choose. They are not yet load-bearing: every
+accessor the descriptor exposes today returns a plain 'Data.Text.Text' or
+'HostBootstrap.HostConfig.HostConfig', so nothing an action derives from one
+descriptor currently carries an index that another plan's value could fail to
+match. The quantification is here so that when a step reaches a prepare gate —
+whose values /are/ index-carrying — the pairing is checked by the type checker
+rather than by convention. Until then the real guarantee is the /value/ one:
+every identity on the descriptor is the plan's own, and a caller cannot mint one
+(§ U).
+-}
+type StepAction = forall scope planId. StepExecution scope planId -> IO ()
 
 {- | One execution frame. The id is semantic; the label is presentation only.
 Validation rejects two labels for the same id.
@@ -252,7 +276,7 @@ data Step = Step
     , internalStepReversePolicy :: ReversePolicy
     , internalStepImplementationRevision :: StepImplementationRevision
     , internalStepReverseAdapterRevision :: StepReverseAdapterRevision
-    , internalStepRun :: HostConfig -> IO ()
+    , internalStepRun :: StepAction
     , internalStepDescent :: [LiftContext]
     -- ^ The descent this step declares out of its own frame. A list rather than
     -- a 'Maybe' so a second declaration is /retained/ as a construction
@@ -302,7 +326,11 @@ stepOperationKey step =
             CoreStepIdentity identity -> "core:" ++ stepKindName (CoreKind identity)
             ProjectStepIdentity identity -> "project:" ++ stepKindName (ProjectKind identity)
 
-runStep :: Step -> HostConfig -> IO ()
+{- | Run one step's forward action against the descriptor the interpreter minted
+for it. A caller cannot supply a 'StepExecution' of its own: the type has no
+public constructor (§ U).
+-}
+runStep :: Step -> StepExecution scope planId -> IO ()
 runStep = internalStepRun
 
 {- | Declare how this step's frame descends into the next frame of the chain
@@ -620,7 +648,7 @@ coreStep ::
     ReversePolicy ->
     String ->
     StepFrame ->
-    (HostConfig -> IO ()) ->
+    StepAction ->
     Step
 coreStep identity reversePolicy label frame action =
     Step
@@ -634,34 +662,34 @@ coreStep identity reversePolicy label frame action =
         []
         []
 
-deployVMStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+deployVMStep :: String -> StepFrame -> StepAction -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
 
-ensureStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
+ensureStep :: String -> String -> StepFrame -> StepAction -> Step
 ensureStep tool = coreStep (EnsureToolId tool) PreserveOnReverse
 
-copySourceStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+copySourceStep :: String -> StepFrame -> StepAction -> Step
 copySourceStep = coreStep CopySourceId ProjectManagedReverse
 
-buildPbStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+buildPbStep :: String -> StepFrame -> StepAction -> Step
 buildPbStep = coreStep BuildPbId ProjectManagedReverse
 
-buildImageStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+buildImageStep :: String -> StepFrame -> StepAction -> Step
 buildImageStep = coreStep BuildImageId ProjectManagedReverse
 
-contextInitStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+contextInitStep :: String -> StepFrame -> StepAction -> Step
 contextInitStep = coreStep ContextInitId ProjectManagedReverse
 
-deployKindStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+deployKindStep :: String -> StepFrame -> StepAction -> Step
 deployKindStep = coreStep DeployKindId CoreManagedReverse
 
-deployChartStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+deployChartStep :: String -> StepFrame -> StepAction -> Step
 deployChartStep = coreStep DeployChartId CoreManagedReverse
 
-exposePortStep :: String -> StepFrame -> (HostConfig -> IO ()) -> Step
+exposePortStep :: String -> StepFrame -> StepAction -> Step
 exposePortStep = coreStep ExposePortId CoreManagedReverse
 
-postHandoffStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
+postHandoffStep :: String -> String -> StepFrame -> StepAction -> Step
 postHandoffStep name = coreStep (PostHandoffId name) ProjectManagedReverse
 
 projectStep ::
@@ -669,7 +697,7 @@ projectStep ::
     ReversePolicy ->
     String ->
     StepFrame ->
-    (HostConfig -> IO ()) ->
+    StepAction ->
     Step
 projectStep identity reversePolicy label frame action =
     Step

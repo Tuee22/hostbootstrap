@@ -11,10 +11,13 @@ filesystem under test.
 
 The backend holds the four Locked-Origin Identity Ownership clauses of
 @development_plan_standards.md § EE@ with the guest realization from
-@documents/architecture/ownership_invariant.md@: exclusive entry is a @flock -x@
-held across each observe/mutate/settle bracket; the alias object's identity is
-its symlink's own @(device, inode)@ pair, read with @stat@ (which lstats a
-symlink by default); and conditional release re-observes that identity and
+@documents/architecture/ownership_invariant.md@: exclusive entry is an exclusive
+@flock(2)@ held across each observe/mutate/settle bracket, taken through
+whichever front end the guest actually has (@flock -x@ or @lockf -k@, discovered
+by the probe rather than assumed); the alias object's identity is
+its symlink's own @(device, inode)@ pair, read with @stat@ in whichever dialect
+the guest speaks (@-c@ or @-f@; neither follows a symlink); and conditional
+release re-observes that identity and
 @unlink@s only on an exact match, in one guest invocation so the compare and the
 unlink cannot straddle a foreign replacement.  This excludes crash/retry and
 cooperating races and /detects/ foreign mutation; it does not exclude a hostile
@@ -282,16 +285,51 @@ data GuestCommandResult = GuestCommandResult
     }
     deriving (Eq, Show)
 
+{- | The guest's shell front end for an exclusive @flock(2)@.  util-linux ships
+@flock(1)@; the BSD userland ships @lockf(1)@.  Both take the same kernel lock
+on the same inode, so they mutually exclude rather than forming parallel
+schemes.  Which one a guest has is /discovered/, never chosen from the build
+host's @os()@: a binary built on one platform routinely drives a guest of
+another (§ U).
+-}
+data ExclusionTool = Flock | Lockf
+    deriving (Eq, Show)
+
+{- | How the guest's @stat@ reports an object's @device:inode@ identity.  GNU
+coreutils uses @-c FORMAT@, the BSD userland uses @-f FORMAT@; neither follows
+a symlink by default, which is what clause 3 requires — the identity bound is
+the link's own, not its target's.
+-}
+data StatFlavor = GnuStat | BsdStat
+    deriving (Eq, Show)
+
+-- | The exact ownership front ends 'discoverStrongAliasBackend' observed.
+data GuestOwnershipTools = GuestOwnershipTools ExclusionTool StatFlavor
+    deriving (Eq, Show)
+
 {- | Capability for a backend that holds the four Locked-Origin Identity
 Ownership clauses for a provider-guest durable alias.  Its constructor is
 private: it is minted only by 'discoverStrongAliasBackend' after that verifies
-the guest exposes the POSIX ownership tools.
+the guest exposes the POSIX ownership tools.  It retains the exact front ends
+that probe observed, so no bracket can be built from a tool the guest was never
+shown to have.
 -}
-data StrongAliasBackend = StrongAliasBackend SubstrateProvider GuestExec
+data StrongAliasBackend
+    = StrongAliasBackend SubstrateProvider GuestExec GuestOwnershipTools
 
-{- | Probe the guest for @flock@, @stat@, @ln@, @readlink@, and @unlink@ and,
-only when they are all present, mint the backend.  A guest missing a tool is
-'Unsupported' and mints no capability.
+{- | Probe the guest for an exclusive-lock front end, an identity-reporting
+@stat@, @ln@, @readlink@, @unlink@, and @sed@, and only when they are all
+present mint the backend.  A guest missing a tool is 'Unsupported' and mints no
+capability.
+
+The probe reports /which/ lock and @stat@ front ends it found, so discovery and
+the bracket cannot disagree about the guest's userland.  Clause 1 and clause 3
+hold either way: the lock is the same @flock(2)@ on the same inode, held across
+the whole bracket and released by the kernel when its holder dies, and the
+identity is the same @device:inode@ of the link itself.  Under @lockf@ the
+holder is the wrapper rather than the script — @lockf@ keeps the locked
+descriptor instead of passing it on — which is equivalent here because the
+wrapper blocks until the script exits and the script backgrounds nothing.
 -}
 discoverStrongAliasBackend ::
     SubstrateProvider ->
@@ -299,32 +337,60 @@ discoverStrongAliasBackend ::
     IO (Either ReconcileError StrongAliasBackend)
 discoverStrongAliasBackend provider exec = do
     result <- runGuestCommand exec ["sh", "-c", ownershipToolProbe]
-    pure $
-        if guestCommandOk result
-            then Right (StrongAliasBackend provider exec)
-            else
-                Left
-                    ( Unsupported
-                        ( UnsupportedDetail
-                            "reconcile provider guest durable alias"
-                            ( "the guest for "
-                                <> Text.pack (show (spProviderKind provider))
-                                <> " lacks a POSIX ownership tool"
-                                <> " (flock, stat, ln, readlink, unlink)"
-                            )
+    pure $ case guestToolsReported result of
+        Just tools -> Right (StrongAliasBackend provider exec tools)
+        Nothing ->
+            Left
+                ( Unsupported
+                    ( UnsupportedDetail
+                        "reconcile provider guest durable alias"
+                        ( "the guest for "
+                            <> Text.pack (show (spProviderKind provider))
+                            <> " lacks a POSIX ownership tool"
+                            <> " (flock or lockf, stat, ln, readlink, unlink)"
                         )
                     )
+                )
+
+guestToolsReported :: GuestCommandResult -> Maybe GuestOwnershipTools
+guestToolsReported result
+    | not (guestCommandOk result) = Nothing
+    | otherwise = case words (firstLine (guestCommandStdout result)) of
+        [lockWord, statWord] ->
+            GuestOwnershipTools <$> readLock lockWord <*> readStat statWord
+        _ -> Nothing
+  where
+    readLock "flock" = Just Flock
+    readLock "lockf" = Just Lockf
+    readLock _ = Nothing
+    readStat "gnu" = Just GnuStat
+    readStat "bsd" = Just BsdStat
+    readStat _ = Nothing
 
 {- | A single compound observation with no nested command substitution, so it
 survives the Windows PowerShell → @wsl@ → @bash@ path (§ readiness discipline).
+It prints @\<lock-tool\> \<stat-flavor\>@ on success.
 -}
 ownershipToolProbe :: String
 ownershipToolProbe =
     intercalate
-        " && "
-        [ "command -v " <> tool <> " >/dev/null 2>&1"
-        | tool <- ["flock", "stat", "ln", "readlink", "unlink", "sed"]
-        ]
+        "; "
+        ( [ "command -v " <> tool <> " >/dev/null 2>&1 || exit 1"
+          | tool <- ["stat", "ln", "readlink", "unlink", "sed"]
+          ]
+            <> [ "lock=''"
+               , "if command -v flock >/dev/null 2>&1; then lock=flock; \
+                 \elif command -v lockf >/dev/null 2>&1; then lock=lockf; \
+                 \else exit 1; fi"
+               , -- Ask stat itself which dialect it speaks rather than
+                 -- inferring it from the guest's name: `-c` is GNU coreutils
+                 -- and `-f` is the BSD userland, and a guest may ship either.
+                 "if stat -c '%d:%i' . >/dev/null 2>&1; then flavor=gnu; \
+                 \elif stat -f '%d:%i' . >/dev/null 2>&1; then flavor=bsd; \
+                 \else exit 1; fi"
+               , "printf '%s %s\\n' \"$lock\" \"$flavor\""
+               ]
+        )
 
 {- | Observe the alias under an exclusive @flock@ and, if it is absent, create
 the symlink.  The reported change echoes the plan-assigned generation the
@@ -346,32 +412,49 @@ runPreparedGuestAliasCall ::
         journalVersion ->
     IO AliasCallObservation
 runPreparedGuestAliasCall
-    (StrongAliasBackend _ exec)
+    (StrongAliasBackend _ exec tools)
     (PreparedGuestAliasCall spec handle _ _) = do
         result <-
             runGuestCommand
                 exec
-                (flockWrapped spec aliasReconcileScript)
+                (exclusiveWrapped tools spec aliasReconcileScript)
         pure (parseReconcileReport spec (resourceHandleGeneration handle) result)
 
-{- | Wrap a guest script in @flock -x \<lock\> sh -c \<script\> _ alias target
-record@ so the exclusive lock is held across the whole observe/mutate/settle
-bracket (clause 1).  The lock file sits beside the alias and is auto-created
-by @flock@.
+{- | Wrap a guest script in
+@\<lock-tool\> \<lock\> sh -c \<script\> _ alias target record statflag
+statformat@ so the exclusive lock is held across the whole observe/mutate/settle
+bracket (clause 1).  The lock file sits beside the alias and is created by the
+lock tool.
+
+@flock -x@ and @lockf -k@ are the two front ends for the same exclusive
+@flock(2)@: each blocks until it holds the lock, passes the remaining words to
+@sh -c@ unchanged, returns the command's own exit status, and leaves the lock
+file in place.  @lockf@ needs @-k@ for that last property.
+
+The @stat@ dialect travels as positional arguments rather than being baked into
+the script text, so both userlands run the byte-identical protocol.
 -}
-flockWrapped :: GuestAliasSpec -> String -> [String]
-flockWrapped spec script =
-    [ "flock"
-    , "-x"
-    , aliasLockPath spec
-    , "sh"
-    , "-c"
-    , script
-    , "hb-alias"
-    , guestAliasPath spec
-    , guestAliasTarget spec
-    , aliasRecordPath spec
-    ]
+exclusiveWrapped :: GuestOwnershipTools -> GuestAliasSpec -> String -> [String]
+exclusiveWrapped (GuestOwnershipTools lockTool statFlavor) spec script =
+    exclusionArgv lockTool (aliasLockPath spec)
+        <> [ "sh"
+           , "-c"
+           , script
+           , "hb-alias"
+           , guestAliasPath spec
+           , guestAliasTarget spec
+           , aliasRecordPath spec
+           ]
+        <> statArgv statFlavor
+
+exclusionArgv :: ExclusionTool -> FilePath -> [String]
+exclusionArgv Flock lock = ["flock", "-x", lock]
+exclusionArgv Lockf lock = ["lockf", "-k", lock]
+
+-- | @stat@'s identity-format flag and format, as @$4@ and @$5@ of each script.
+statArgv :: StatFlavor -> [String]
+statArgv GnuStat = ["-c", "%d:%i"]
+statArgv BsdStat = ["-f", "%d:%i"]
 
 aliasLockPath :: GuestAliasSpec -> FilePath
 aliasLockPath spec = guestAliasPath spec ++ ".hb-alias.lock"
@@ -384,15 +467,19 @@ restores the recorded truth rather than inferring it.
 aliasRecordPath :: GuestAliasSpec -> FilePath
 aliasRecordPath spec = guestAliasPath spec ++ ".hb-alias.origin"
 
--- | Positional args: @$1@ alias, @$2@ target, @$3@ record.
+{- | Positional args: @$1@ alias, @$2@ target, @$3@ record, @$4@ @stat@ format
+flag, @$5@ @stat@ format.  The identity helper is defined once from @$4@/@$5@ so
+the GNU and BSD userlands run the same protocol rather than two scripts.
+-}
 aliasReconcileScript :: String
 aliasReconcileScript =
     unlines
-        [ "alias=\"$1\"; target=\"$2\"; rec=\"$3\""
+        [ "alias=\"$1\"; target=\"$2\"; rec=\"$3\"; sflag=\"$4\"; sfmt=\"$5\""
+        , "idof() { stat \"$sflag\" \"$sfmt\" \"$1\"; }"
         , -- clause 2: record the exact origin before the first mutation.
           "if [ ! -e \"$rec\" ]; then"
         , "  if [ -L \"$alias\" ]; then"
-        , "    printf 'origin present %s\\n' \"$(stat -c '%d:%i' \"$alias\")\" > \"$rec\""
+        , "    printf 'origin present %s\\n' \"$(idof \"$alias\")\" > \"$rec\""
         , "  elif [ -e \"$alias\" ]; then"
         , "    printf 'origin occupied\\n' > \"$rec\""
         , "  else"
@@ -401,16 +488,16 @@ aliasReconcileScript =
         , "fi"
         , -- observe + act (clause 3: bind to device:inode, never the name).
           "if [ -L \"$alias\" ]; then"
-        , "  id=$(stat -c '%d:%i' \"$alias\")"
+        , "  id=$(idof \"$alias\")"
         , "  if [ \"$(readlink \"$alias\")\" = \"$target\" ]; then"
         , "    printf 'EXACT %s\\n' \"$id\""
         , "  else"
         , "    printf 'FOREIGN %s repoint\\n' \"$id\""
         , "  fi"
         , "elif [ -e \"$alias\" ]; then"
-        , "  printf 'FOREIGN %s occupied\\n' \"$(stat -c '%d:%i' \"$alias\")\""
+        , "  printf 'FOREIGN %s occupied\\n' \"$(idof \"$alias\")\""
         , "elif ln -s \"$target\" \"$alias\"; then"
-        , "  id=$(stat -c '%d:%i' \"$alias\")"
+        , "  id=$(idof \"$alias\")"
         , "  printf 'managed %s\\n' \"$id\" >> \"$rec\""
         , "  printf 'CREATED %s\\n' \"$id\""
         , "else"
@@ -526,19 +613,21 @@ runPreparedGuestAliasRelease ::
     PreparedGuestAliasRelease scope planId aliasId phase releaseId ->
     IO (Either ReconcileError ())
 runPreparedGuestAliasRelease
-    (StrongAliasBackend _ exec)
+    (StrongAliasBackend _ exec tools)
     (PreparedGuestAliasRelease spec _ _ _) = do
-        result <- runGuestCommand exec (flockWrapped spec aliasReleaseScript)
+        result <- runGuestCommand exec (exclusiveWrapped tools spec aliasReleaseScript)
         pure (parseReleaseReport spec result)
 
--- | Positional args: @$1@ alias, @$2@ target, @$3@ record.
+{- | Positional args: @$1@ alias, @$2@ target, @$3@ record, @$4@ @stat@ format
+flag, @$5@ @stat@ format.
+-}
 aliasReleaseScript :: String
 aliasReleaseScript =
     unlines
-        [ "alias=\"$1\"; target=\"$2\"; rec=\"$3\""
+        [ "alias=\"$1\"; target=\"$2\"; rec=\"$3\"; sflag=\"$4\"; sfmt=\"$5\""
         , "managed=''"
         , "if [ -f \"$rec\" ]; then managed=$(sed -n 's/^managed //p' \"$rec\"); fi"
-        , "cur=$(stat -c '%d:%i' \"$alias\" 2>/dev/null || printf absent)"
+        , "cur=$(stat \"$sflag\" \"$sfmt\" \"$alias\" 2>/dev/null || printf absent)"
         , "if [ -L \"$alias\" ] && [ \"$(readlink \"$alias\")\" = \"$target\" ] \\"
         , "  && [ -n \"$managed\" ] && [ \"$cur\" = \"$managed\" ]; then"
         , "  if unlink \"$alias\"; then rm -f \"$rec\"; printf 'RELEASED\\n'; \\"

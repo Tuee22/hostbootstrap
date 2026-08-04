@@ -12,8 +12,8 @@
 ## Phase Status
 
 **Status**: Active
-**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 and Apple/Lima live lanes
-are independently executable when those hosts are available
+**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 live lane is
+independently executable when that host is available (the Apple/Lima lane closed 2026-08-03)
 
 **Updated 2026-07-27 — the ownership invariant was restated and this sprint's target changed shape.**
 Sprint 11.10 removed the parallel `HostTarget`/Provider boundary, unused provider
@@ -139,8 +139,12 @@ plan-owned prepared `Managed` share handle. That call-site migration remains blo
 item 3. The production WSL host wall uses the portable driver and POSIX/Windows backends; the `.bak`
 route and C shim are gone. Windows uses public `Win32` APIs plus a narrow direct `kernel32` FFI where
 exact status preservation is required. `spStop` restores the wall and then performs the disclosed
-global `wsl --shutdown` effect. The current WSL2 lifecycle observation and Apple/Lima lifecycle lane,
-plus the guest-alias production migration, are the genuinely open obligations.
+global `wsl --shutdown` effect. The **Apple/Lima lifecycle lane closed 2026-08-03**: the demo lane
+reported `10/10 passed` on Apple Silicon, exercising `ensure lima`, `vm up` at the declared budget, the
+durable share mount and guest alias, and VM deletion on every teardown, with `demo/.data` preserved
+throughout (canonical evidence with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md)). The current WSL2 lifecycle observation and the
+guest-alias production migration remain the genuinely open obligations.
 
 **Historical closure (2026-07-23) — the durable-share primitive.** Sprint 11.8 landed the **host-side** share
 (`spShare`/`ShareReconcile`); Sprint 11.9 recast the **guest-side** durable alias as pure, readiness-gated
@@ -727,8 +731,8 @@ readiness.
 ### Sprint 11.10: One provider/lift path and guest durable projections [Active]
 
 **Status**: Active
-**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 and Apple/Lima live lanes
-are independently executable when those hosts are available
+**Blocked by (remaining alias item only)**: Sprint 16.6, open item 3; the WSL2 live lane is
+independently executable when that host is available (the Apple/Lima lane closed 2026-08-03)
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
@@ -940,13 +944,62 @@ calling it before the wait is a **compile error**, which is the guarantee the ol
 
 Gates: demo **106** and core **738** under `-Werror`; demo `fourmolu --mode check app src` clean.
 
+**Delivered 2026-08-02 (the guest-alias backend's userland assumptions became probed rather than
+assumed).**
+
+`discoverStrongAliasBackend` hard-coded two GNU/util-linux spellings — `flock(1)` for the clause-1 bracket
+and `stat -c '%d:%i'` for the clause-3 identity — so the backend was `Unsupported` on any userland that
+ships the BSD equivalents, which is what macOS has. Both are now discovered by the same single compound
+probe and travel with the capability:
+
+- the probe reports which exclusive-lock front end the guest has, accepting `flock(1)` or `lockf(1)`. Both
+  wrap the same `flock(2)` on the same inode, so they mutually exclude rather than forming two schemes,
+  and clause 1 keeps its exact meaning — the lock spans the whole observe/mutate/settle bracket and the
+  kernel releases it if the holder dies;
+- the probe also asks `stat` itself which dialect it speaks (`-c` for GNU coreutils, `-f` for the BSD
+  userland) rather than inferring it from the guest's name. Neither follows a symlink by default, which is
+  exactly what clause 3 requires: the identity bound is the link's own `device:inode`, not its target's.
+  The dialect travels as positional arguments, so both userlands run the byte-identical script;
+- the opaque `StrongAliasBackend` retains the exact pair the probe observed, so no bracket can be built
+  from a tool the guest was never shown to have, and the probe is fail-closed — a missing tool, an
+  unrecognized report, or a non-zero exit all yield `Unsupported` and mint nothing.
+
+Selecting either front end from the **build host's** `os()` would have been wrong here in the ordinary
+case rather than the exotic one: this backend runs in the *guest*, and a macOS host driving a Lima guest
+must use the guest's Linux userland (§ U).
+
+Tightening the probe's contract exposed a second, platform-invisible defect and it is fixed here too: the
+spec's Windows stand-in guest answered with a bare exit-zero and no report, which the new decoder
+correctly refuses — so the capability-mint case would have failed on Windows while reading green
+everywhere it could actually be run. The stand-in now reports what a real Linux guest reports, and a new
+**platform-independent** case pins the fail-closed reading directly: an exit-zero probe that names
+nothing, only half the pair, an unrecognized token, or a third word mints no capability.
+
+Dated validation evidence (2026-08-02, Apple Silicon M1 Max, macOS 25.5.0 arm64): before this change the
+four `ProviderAliasSpec` backend cases reported
+`Unsupported … "the guest … lacks a POSIX ownership tool"` on this host; after it `ProviderAliasSpec`
+passes **14/14** and the complete core suite passes **888/888** under
+`cabal test all --ghc-options=-Werror`. This is the first execution of the four § EE alias clauses on a
+BSD userland. It does not close the still-open production migration below, which is a call-site
+obligation, not a backend one.
+
 **Still open:**
 
 - wire the guest-alias backend into production: migrate the demo's `mintDurableAlias` `ln -s` to the
   plan-owned prepared operation over the backend (building the production `GuestExec` from the provider
   lift), and remove the alias-fact bypass — coordinated with the plan-driven wiring shared with Sprints
-  5.7 and 16.6;
-- run the current WSL2 provider lifecycle observation and disposable Lima lane. The Windows `8/8`
+  5.7 and 16.6. **Narrowed 2026-08-02:** Sprint 16.6 landed the plan-minted step descriptor, so a step
+  action now receives its own operation key, frame, plan digest, and ordered edge set. The remaining
+  obstruction is the *prepare* path — a step still cannot reach a `PreparedGate`, so it cannot mint the
+  `Managed` durable-share handle `withPreparedGuestAliasCall` requires. The `Blocked by` edge therefore
+  still names Sprint 16.6 open item 3, for that reason rather than for the step signature;
+- run the current WSL2 provider lifecycle observation. **The Apple/Lima lane closed 2026-08-03.** It was
+  first exercised 2026-08-02/03 inside a demo gate that reported `0/10` for an unrelated host-daemon
+  defect, which was provider-lifecycle evidence rather than lane closure; the 2026-08-03 re-run reported
+  **`10/10 passed`**, with `ensure lima`, `vm up` at the declared budget, the guest and network waits, the
+  durable share mount, the guest alias link, and instance deletion on every teardown — four bring-ups and
+  four teardowns across two variants — all with `demo/.data` preserved. The canonical evidence block is
+  with [phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md). The Windows `8/8`
   snapshot validates the historical WSL lane only, while the 2026-08-01 4/4 result validates the native
   Win32 adapter rather than the whole provider lifecycle. The native Incus/direct-Linux gate closed
   2026-07-29 as recorded above.
@@ -993,8 +1046,8 @@ a non-symlink occupant reported foreign — all through the real `flock`/`stat`/
 host filesystem. The five alias compile-fail fixtures still reject the forged
 backend/prepared-call/observed-only/foreign-handle/cross-receipt constructions. `fourmolu`/`hlint` validate
 only in the container `check-code` on this host (the host `fourmolu` is a non-canonical version). This does
-**not** close the sprint: the demo guest-alias call-site adoption and the current WSL2 and Apple/Lima
-provider lifecycle lanes remain open. The later native Windows evidence below closes the Win32 adapter,
+**not** close the sprint: the demo guest-alias call-site adoption and the current WSL2 provider
+lifecycle lane remain open (the Apple/Lima lane closed 2026-08-03). The later native Windows evidence below closes the Win32 adapter,
 not those obligations.
 
 **Validation evidence (2026-08-01, native Windows adapter):**

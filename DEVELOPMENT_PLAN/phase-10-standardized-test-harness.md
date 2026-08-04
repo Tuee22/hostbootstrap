@@ -79,6 +79,12 @@ effect/terminal-close and abandoned-run recovery paths, and the corresponding co
 Sprint 16.6 supplies the production call-site producers this phase consumes. The dated closure records
 below do not cover those remaining integration or race contracts.
 
+**A live 2026-08-03 reproduction on Apple Silicon added a new item to that tranche and gave the known
+bound-recovery item a real failure to point at.** An interrupted run's own generated sibling config makes
+the next run refuse *before* the abandoned-run sweep can run, so the recovery machinery this sprint
+already landed is unreachable in exactly the case it was built for. Both halves are recorded with the
+sprint's own [Remaining Work](#sprint-109-exclusive-test-ownership-and-failure-isolation-active).
+
 **Completed 2026-07-25:** Sprint 10.10 removed the detached selector/type, Dhall union/codec, and all
 audited definition/test-only helpers with no plan consumer. The structural regression test, exact Dhall
 vocabulary inventory, pinned formatter/linter on every changed Haskell file, full **379-test** core
@@ -763,6 +769,46 @@ cleanup cannot delete foreign or concurrently replaced state.
 
 #### Remaining Work
 
+**Reproduced 2026-08-03 on Apple Silicon — the interrupted-run recovery defect is only half fixed, and
+the two halves mask each other.** A harness run was killed mid-variant (a `SIGKILL` to the run's process
+tree, which is what a crashed run, a lost session, or a power failure looks like). Both halves below were
+then observed in sequence on a real host; neither is a static-test finding.
+
+1. **The generated config is still owned by a bare lock directory, and its existence check pre-empts the
+   sweep that would resolve it.** This is the deliverable above that begins *"For generated config and
+   `.test_data`, bare exclusive create/rename or compare-then-unlink binds a pathname and satisfies none
+   of the clauses"* — `.test_data` was carried across on 2026-07-29 and the generated config was not.
+   `Config.Schema` still claims it with a `<config>.hostbootstrap-test-owner` **directory** beside the
+   file, holding the payload for byte-comparison at release: a pathname claim with no protected durable
+   origin record, no stable kernel-identity binding, and no OS-released lock — none of the four § EE
+   clauses, and structurally the same design the `.test_data.hostbootstrap-run-owner` directory was
+   removed for.
+
+   The ordering makes it unrecoverable rather than merely weak. `Command.runTestRun` refuses on a bare
+   `doesFileExist cfgPath` — *"a production config already exists at …; refusing to overwrite it"* —
+   **before** `withCanonicalProjectRoot`/`withHarnessRoot` reaches `recoverAbandonedHarnessRuns`, and
+   without consulting the sidecar that marks the file as harness-made. So after the common failure mode
+   the sweep never runs at all. The refusal exists in three places — `Command.hs`, `Harness.hs`
+   (`testSafetyPreconditions`), and `Lifecycle/Mode.hs` — and only the third derives its subject from
+   installed project identity, so the fix reconciles them rather than patching the first.
+
+   The shape of the repair is already built: `Harness.DataRoot` holds all four clauses for a directory
+   over an injected identity backend, and the generated config is the same protocol over a file.
+2. **A bound abandoned run has no operator recovery path at all.** With the config removed by hand, the
+   sweep did run, correctly classified the leftover run as bound, and refused the whole matrix
+   (`10/10 REFUSED`, *"the abandoned run run-… must be recovered before a new run starts"*). That refusal
+   is right — it is fail-closed and it names the run — but nothing can act on it: bound-lease recovery
+   *reports* rather than resolves, which this sprint already states, and `withAbandonedHarnessRun` has no
+   caller. The only way forward was to delete four protected records
+   (`lease.…`, `dataroot.…`, `snapshot.…`, and the project-wide `mode.…`) plus the run's empty
+   `.test_data/<runId>` by hand — exactly the hand-cleanup the sprint's reproduction section says it
+   exists to eliminate, moved from the lock directory to the protected store.
+
+The second is a restatement of this sprint's own open bound-recovery item with a live reproduction
+attached. The first is new, and it is the more damaging of the two: while it stands, the abandoned-run
+sweep cannot run at all after the common failure mode, so the recovery machinery that *is* built is
+unreachable in exactly the case it was built for.
+
 **Delivered 2026-07-29 — project-wide mode, run leases, the fresh profile openers, and the recoverable
 run reservation that replaces the lock directory.**
 
@@ -1122,6 +1168,40 @@ Before this, `verifyNoProjectResourcesAcquired` was the **only** producer of `Pr
 the `SettledDestroyClose` branch was uninhabited: a Production project could release its mode after a
 true pre-effect refusal but never after an actual `destroy`. The surrounding Closing/Closed machinery
 delivered above was already complete and waiting for exactly this proof.
+
+**Delivered 2026-08-02 — the two gates that had stopped observing what they claim to observe.**
+
+Running the complete suite on an Apple Silicon macOS host — a substrate no prior gate in this sprint had
+covered — surfaced two assertions that could no longer fail for the right reason:
+
+- **The bound-snapshot assertion had a second, stale copy of the wire format.** `CLISpec`'s
+  `observeBoundHarnessPlan` split the persisted snapshot record on tabs and expected
+  `["1", spec, plan]`. The 2026-08-01 immutable-snapshot work replaced that layout with a versioned,
+  length-framed binary record, so the assertion could not match **any** record the encoder writes and
+  reported the whole payload as a disagreement. It now reads the record back through the shipped decoder
+  (`Lifecycle.Mode.verifyPlanSnapshot`) instead of re-parsing bytes, so the test observes what production
+  observes and cannot drift from the format again. Exporting the codec "for tests" was deliberately not
+  done (§ EE).
+- **The compile-fail matcher was comparing GHC's layout, not its content.** `SignHandoffWithoutRootStore`
+  is rejected for exactly the intended reason — `signHandoffGrant` exists nowhere, because grant issuance
+  must go through the root broker — but GHC wraps a diagnostic onto continuation lines once the inferred
+  type is wide, so the expected `"Variable not in scope: signHandoffGrant"` never appeared as a literal
+  substring. The matcher now collapses whitespace runs on both sides. That keeps each expectation exact in
+  its tokens and their order while making it independent of a column budget; splitting the expectation
+  into separate tokens was rejected, because an unrelated in-scope error on the same source line satisfies
+  the split form and would have been a false green on the precise regression this fixture guards.
+
+Neither is a weakening: the first replaces a private parser with the production one, and the second
+removes a dependency on formatting that carries no semantic content.
+
+Dated validation evidence (2026-08-02, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): with these
+two repairs the complete core suite passes **882/882** twice in a row under
+`cabal test all --ghc-options=-Werror` from `core/`, and the demo workspace passes **110/110** demo tests
+plus that embedded core suite; `poetry run python -m hostbootstrap.check_code` is clean and
+`poetry run python -m hostbootstrap.test_all` passes **231**. (The same working tree carries Sprints 5.9,
+11.10, and 16.6 landings that take the core suite to **888**; each records its own contribution.) This is
+the **first complete core-suite pass recorded on Apple Silicon**, and it is a static gate only — it
+exercises no live provider lane and closes none of the open items below.
 
 **Still open (this sprint):** the authenticated authority-rehydration handoff and the versioned
 session/fence prepare protocol shared with Sprints 15.9 and 16.6;

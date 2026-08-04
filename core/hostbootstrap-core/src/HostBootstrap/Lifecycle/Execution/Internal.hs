@@ -7,7 +7,6 @@ module HostBootstrap.Lifecycle.Execution.Internal (
     stepExecutionOperationKey,
     stepExecutionFrame,
     stepExecutionNode,
-    stepExecutionDependencyNodes,
 ) where
 
 import Data.Text (Text)
@@ -41,24 +40,23 @@ data StepExecution scope planId = StepExecution
     HostConfig
     Text
     ExecutionNode
-    [ExecutionNode]
 
-{- | Package-internal minting seam.  The current node and dependency nodes are
-neutral views derived from the same exact validated lifecycle plan.
+{- | Package-internal minting seam.  The node is a neutral view derived from the
+exact validated lifecycle plan, and it already carries that node's ordered edge
+set, so the descriptor holds exactly one copy of it.
 -}
 mintStepExecution ::
     HostConfig ->
     Text ->
     ExecutionNode ->
-    [ExecutionNode] ->
     StepExecution scope planId
 mintStepExecution = StepExecution
 
 stepExecutionHostConfig :: StepExecution scope planId -> HostConfig
-stepExecutionHostConfig (StepExecution cfg _ _ _) = cfg
+stepExecutionHostConfig (StepExecution cfg _ _) = cfg
 
 stepExecutionPlanDigest :: StepExecution scope planId -> Text
-stepExecutionPlanDigest (StepExecution _ digest _ _) = digest
+stepExecutionPlanDigest (StepExecution _ digest _) = digest
 
 stepExecutionOperationKey :: StepExecution scope planId -> Text
 stepExecutionOperationKey = executionNodeOperationKey . stepExecutionNode
@@ -68,8 +66,4 @@ stepExecutionFrame = executionNodeFrame . stepExecutionNode
 
 -- | Package-internal view of the descriptor's exact current node.
 stepExecutionNode :: StepExecution scope planId -> ExecutionNode
-stepExecutionNode (StepExecution _ _ node _) = node
-
--- | Package-internal view of the current node's exact dependency nodes.
-stepExecutionDependencyNodes :: StepExecution scope planId -> [ExecutionNode]
-stepExecutionDependencyNodes (StepExecution _ _ _ dependencies) = dependencies
+stepExecutionNode (StepExecution _ _ node) = node

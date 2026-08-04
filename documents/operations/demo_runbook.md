@@ -37,6 +37,9 @@ Open operator-significant defects are:
 - bare Linux has no runtime storage quota or image-GC wall.
 - the registry may redirect a repeated host-client blob request to cluster-only
   `minio.default.svc`; `/v2/` and Deployment readiness do not prove the blob route.
+- the registry/MinIO and ownership items above are the open ones; the Apple Silicon lane is not. It
+  passed `test run all` at `10/10` on 2026-08-03 once the host-daemon launch boundary was sealed, so
+  every supported substrate now has a passing worked-demo run.
 
 ## Build and Config
 
@@ -126,9 +129,10 @@ Linux instead binds the canonical absolute host `.data` path (Sprint 5.6.1); the
 provider-local projection for VM-backed lanes only.
 
 Cluster teardown omits the configured data path from its removal set, and the `durable-readback` harness
-case proves the end-to-end path on the native Linux GPU lane: a marker written through the running
-service survives `project destroy` and is read back after `project up`. That is one lane, not every
-provider; see [durable state](../architecture/durable_state.md).
+case proves the end-to-end path: a marker written through the running service survives `project destroy`
+and is read back after `project up`. It has now passed on the native Linux GPU lane and, on 2026-08-03,
+on the Apple Silicon/Lima lane on both config variants. See
+[durable state](../architecture/durable_state.md).
 
 ## Down and Destroy
 

@@ -67,7 +67,7 @@ import HostBootstrap.Protected (
     ProtectedStore,
     openProtectedStore,
  )
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (doesPathExist, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -249,7 +249,9 @@ protocolTests =
                         left <- takeMVar leftResult
                         right <- takeMVar rightResult
                         assertBool
-                            "one creator installs and its concurrent peer converges"
+                            ( "one creator installs and its concurrent peer converges, observed "
+                                <> show [left, right]
+                            )
                             ( [left, right]
                                 `elem` [ [Right SiblingConfigInstalled, Right SiblingConfigAlreadyPresent]
                                        , [Right SiblingConfigAlreadyPresent, Right SiblingConfigInstalled]
@@ -629,10 +631,17 @@ withFixtureProject use =
         Left failure -> assertFailure (show failure)
         Right project -> use project
 
+{- | Clear a fixture path whatever it currently names.
+
+'doesFileExist' follows symbolic links, so it reports 'False' for a /dangling/
+one and the path would survive cleanup — which is exactly how a single failed
+run used to poison the destination for every later run in the same build tree.
+'doesPathExist' asks about the name itself.
+-}
 removeIfPresent :: FilePath -> IO ()
 removeIfPresent path = do
-    present <- doesFileExist path
-    when present (removeFile path)
+    present <- doesPathExist path
+    when present (removePathForcibly path)
 
 dropFirstFrame :: ByteString.ByteString -> ByteString.ByteString
 dropFirstFrame = ByteString.drop (ByteString.length (frameWire childPayload))

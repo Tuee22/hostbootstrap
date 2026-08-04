@@ -94,6 +94,7 @@ on; the canonical inventory is tracked in
 | Module | Responsibility |
 |--------|----------------|
 | `HostBootstrap.HostTool` | Closed enumeration and absolute-path resolver for managed external tools (including `Nvkind`/`NvidiaSmi` and Windows `Winget`, `Nvcc`, and `Wsl`). Most production paths consume resolved tools, but the repository-wide removal of residual bare-command calls is still open. |
+| `HostBootstrap.Detached` | The sealed host-invocation *shape* boundary (§ HH) for a child that outlives its launcher. `DetachedLaunch` hides its constructor and every field accessor; the stdio disposition, descriptor inheritance, session, and console detachment are fixed inside the module. `withDetachedChild` is a rank-2 bracket over the launch, total on acquire, that retains the child's own output for the launcher to quote (§ CC). |
 | `HostBootstrap.HostConfig` | Typed host configuration containing detected substrate and resolved tool paths. `HostCapacity` is discovered separately by `HostBootstrap.Cluster.Cordon` for budgeting. |
 | `HostBootstrap.HostPrereqs` | Fail-fast host-minimum checks (the pre-binary subset the thin bootstrapper reclaims). |
 | `HostBootstrap.Substrate` | Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) and host-applicability predicates. |
@@ -122,12 +123,22 @@ on; the canonical inventory is tracked in
 
 External tools are resolved through the closed `HostTool` enumeration (`HostBootstrap.HostTool`) to
 absolute paths. The `AbsExe` newtype makes a bare command name unrepresentable as a resolved tool — its
-smart constructor rejects any non-absolute path. Most managed paths use this representation, but
+smart constructor rejects any non-absolute path, the canonical instance of the method described in
+[unrepresentable_state](unrepresentable_state.md). Most managed paths use this representation, but
 repository-wide migration is not complete: residual bare-command call sites remain open in Phase 2.5.
 The target is that no library or project code invokes a `$PATH`-resolved bare host command (see
 [development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
 `HostBootstrap.HostConfig` is the typed configuration that pairs the detected substrate with the
 resolved tool paths the reconcilers read.
+
+Resolution is only one of the two axes. § K fixes *which* executable an invocation names; the *shape* of
+the invocation — stdio disposition, descriptor inheritance, session, environment, and working directory
+— is a separate boundary under
+[§ HH](../../DEVELOPMENT_PLAN/development_plan_standards.md), owned by `HostBootstrap.Detached`. A child
+that outlives its launcher is where the two axes come apart, and it is the case the boundary is built
+for: no module outside it assembles a `CreateProcess` for such a child, the disposition is not a
+parameter, and `withDetachedChild` owns the launch rather than the child's lifetime. See
+[unrepresentable_state](unrepresentable_state.md) for the method and the boundary's own gate.
 
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) is owned by `HostBootstrap.Substrate`;
 its classification core is pure (`classify`, `parseDockerArch`) with a thin IO wrapper for the platform

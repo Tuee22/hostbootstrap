@@ -13,6 +13,29 @@
 
 **Status**: Done
 
+**Reopened 2026-08-03 for the host-invocation *shape* boundary (Sprint 2.7).** This phase's closure rested
+on Sprint 2.5's criterion — *"a source scan plus unit tests prove no production host call resolves a bare
+command through `PATH`"* — which is a scan over **which executable** an invocation names. Nothing in this
+phase ever covered **in what shape** a process is invoked, and the Apple Silicon lane found the hole: the
+host-resident accelerator daemon was launched from a `System.Process.CreateProcess` record assembled at
+its call site, with `std_in`/`std_out`/`std_err` set to `NoStream`. On POSIX that *closes* the child's
+descriptors, which the `process` documentation permits only for a child that never uses them. This child
+uses standard output in its first statement, and a threaded-RTS child then claims the freed descriptors
+for its own IO-manager control channel; it wedged or exited before reaching substrate detection, and none
+of its ten failure paths could report why. A green test
+(`demo/test/CommandsSpec.hs`) asserted that disposition, so every gate agreed with the defect.
+
+The generalized contract is [§ HH](development_plan_standards.md), whose canonical architecture is
+[unrepresentable_state](../documents/architecture/unrepresentable_state.md): § K fixes which path is
+invoked, § HH fixes the shape every such value may take. **Sprint 2.7 closed that boundary on
+2026-08-03**, static gate and Apple Silicon real-run gate together, and the phase closed with it.
+
+**This reopening adds work; it reverses none.** Sprints 2.1–2.6 hold independently — the closed `HostTool`
+enumeration, `AbsExe` opacity and its smart constructor, the substrate classification core, the pre-binary
+Python floor, and the C build-library bootstrap are all unaffected, and the bare-command source scan
+remains correct about the axis it covers. Obsolete surfaces are recorded in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 **Reopened and closed 2026-07-29 for the pre-binary C build libraries (Sprint 2.6).** The first native Linux **CPU**
 lane run on a genuinely pristine Ubuntu 24.04 host proved the metal frame's toolchain bootstrap
 incomplete: it installs GHCup/GHC/Cabal but not the C libraries GHC and the project's dependency closure
@@ -47,7 +70,16 @@ reconcilers after the binary is running.
 
 ## Remaining Work
 
-None.
+**None. Sprint 2.7 closed 2026-08-03 and with it the phase.** Resolution and shape are two axes, and this
+phase had only ever closed the first. `HostBootstrap.Detached` now seals the launch of a child that
+outlives its launcher: the caller-assembled `CreateProcess` and its `NoStream` disposition are deleted,
+the static gate passed at **901/901** in `core/` and **112/112** in the demo workspace under `-Werror`,
+the demo's `fourmolu`/`hlint` halves passed in the published base image, and the § C real-run gate — the
+Apple Silicon `hostbootstrap-demo test run all` lane, the only lane that exercises this boundary —
+reported **`10/10 passed`**. The host daemon reached readiness on all four bring-ups and `e2e-tabs`
+passed on both variants, so the path behind readiness is proved live rather than merely started.
+
+The remaining work below is closed and retained as historical scope.
 
 The accelerator host tools are implemented as closed `HostTool` constructors and covered by
 `HostToolSpec`: Apple Silicon has `Swiftc`, `Xcrun`, and `SystemProfiler`; Windows GPU has `Clang`,
@@ -382,6 +414,135 @@ step that failed.
 Closed 2026-07-29 by the native Linux CPU lane run that consumes it: `hostbootstrap-demo test run all`
 reported `10/10`, so the fix carries the whole three-build pristine bootstrap (metal pb, in-VM pb
 host-native, project image) and not merely the first build. None remaining.
+
+### Sprint 2.7: Close the host-invocation shape boundary [Done]
+
+**Status**: Done
+**Blocked by**: None
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Detached.hs`,
+`core/hostbootstrap-core/test/DetachedSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeDetachedLaunch.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/test/CommandsSpec.hs`
+**Docs to update**: `documents/architecture/unrepresentable_state.md`,
+`documents/architecture/hostbootstrap_core_library.md`, `documents/architecture/readiness.md`,
+`documents/engineering/accelerator_daemon.md`, `documents/operations/demo_runbook.md`,
+`system-components.md`, `legacy-tracking-for-deletion.md`
+
+#### Objective
+
+Make the invocation *shape* of a child that outlives its launcher a property of a closed boundary rather
+than fields a call site fills in (§ HH), so the disposition that wedged the Apple Silicon host daemon is
+not expressible.
+
+#### Deliverables
+
+- One sealed launch boundary in core. Its record constructor and field accessors are private, so no
+  module outside it assembles a `System.Process.CreateProcess` for a detached child. The executable is an
+  `AbsExe` (§ K) and the working directory is absolute by construction.
+- Every field with exactly one lawful value for such a child is fixed inside that boundary and is not a
+  parameter: the stdio disposition, descriptor inheritance, session, complete environment, and working
+  directory. Each of `StdStream`'s other constructors is wrong for its own reason — `Inherit` retains the
+  launcher's capture pipe so nothing reading the launcher observes EOF, `CreatePipe` blocks the parent on
+  an EOF that never arrives or delivers `SIGPIPE` after it closes the read end, and `NoStream` closes the
+  descriptor.
+- A rank-2 bracket owning the *launch*, never the child's lifetime: on exit the child is still running and
+  only the launcher's own handles are released. Acquire-and-spawn is total — it either succeeds or returns
+  a typed failure having created no child — while the body's exceptions propagate unchanged, so the
+  existing ownership-preserving abort paths keep their behaviour.
+- The child's own output is retained for the launcher to quote, so a startup failure names its cause
+  (§ CC) instead of collapsing to "the process is gone".
+- `hostAcceleratorDaemonProcess` and its `NoStream` disposition are deleted, and the demo's daemon launch
+  consumes the boundary. The daemon's argv is written once and read by both the launch and the process
+  identity matcher, which currently re-spells it four ways.
+
+#### Validation
+
+- Two compile-fail fixtures prove the seals, registered in `CompileFailSpec` with expected diagnostics so
+  each must fail for its named reason rather than incidentally (§ HH). `ForgeDetachedLaunch.hs` proves the
+  launch record, its running-child value, the working directory, and the output sink are not
+  caller-constructible and that the assembled process specification is unreachable;
+  `RelabelDetachedLaunch.hs` proves the launch cannot be re-pointed by record update. They are separate
+  because a not-in-scope record field aborts GHC's renamer and would suppress the other four diagnostics.
+- The `CompileFailSpec` matcher normalises GHC's typographic-vs-ASCII identifier quoting alongside its
+  line wrapping. Neither axis says whether a fixture was rejected for the intended reason, and
+  normalising both is what lets an expectation stay **one contiguous phrase including the identifier it
+  names** — the shape [unrepresentable_state](../documents/architecture/unrepresentable_state.md)
+  requires, because a phrase split into separately-matched tokens can be satisfied by an unrelated
+  in-scope error on the same line. `ForgeStepExecution.hs`'s three-token expectation, the one instance of
+  that pattern, is rewritten to two contiguous phrases.
+- A **behavioural** spec (`DetachedSpec`) launches a real child through the boundary — the core test
+  executable re-invoked through a probe argv, the same separate-process idiom the protected-entry and
+  harness-reservation probes use — and observes that it read its standard input to EOF, that both output
+  streams reached the retained sink, and that it kept writing after the bracket returned. This replaces
+  the assertion that pinned the defect: no unlawful disposition passes it, so it fails when the boundary
+  is missing instead of certifying its absence. `NoStream` closes the descriptor so the read raises,
+  `Inherit` sends the output to the test runner rather than the sink, and `CreatePipe` does not typecheck
+  because the disposition is not a parameter. The same spec proves acquire-and-spawn is total on a
+  missing executable and an unusable sink, and that a body exception propagates unchanged.
+- A source-drift check proves no production module outside the sealed boundary names the
+  descriptor-closing stdio disposition, scanning `core/hostbootstrap-core/src`,
+  `core/hostbootstrap-core/app`, `demo/src`, and `demo/app`.
+- `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` pass
+  from `core/`; the demo workspace passes under the same gate with `fourmolu --mode check app src` and
+  `hlint app src` clean; the canonical Python gates pass.
+- **Real-run gated (§ C).** The Apple Silicon `hostbootstrap-demo test run all` lane exercises this
+  boundary and is the only lane that does — Windows GPU uses a separate hidden-launch path and in-cluster
+  daemons inherit the kubelet's streams. Sprint 2.7 does not close on the static gate alone. Passing the
+  static gate is expected to expose the *next* Apple-lane defect rather than turn the lane green; that
+  residue belongs to the lane's owners in Sprints 13.17 / 15.8 / 16.5 / 18.5.
+
+#### Remaining Work
+
+**The implementation and its static gate landed 2026-08-03.** `HostBootstrap.Detached` is the sealed
+boundary: `DetachedLaunch` exports neither its record constructor nor any field accessor, the assembled
+`CreateProcess` is private, and the stdio disposition, `close_fds`, POSIX session, and Windows console
+detachment are fixed inside it. The lawful disposition is `UseHandle` throughout — standard input is the
+host's null device, so the child sees an open descriptor already at EOF, and both output streams share
+one retained sink. `withDetachedChild` is a rank-2 bracket over the *launch*: acquire-and-spawn returns a
+typed `DetachedLaunchError` having created no child, the body's exceptions propagate unchanged, and on
+exit the child is still running with only the launcher's handles released.
+
+`hostAcceleratorDaemonProcess` and its `NoStream` disposition are deleted. The demo now supplies operands
+only — the daemon `AbsExe`, the single `hostAcceleratorDaemonArgs` argv that both the launch and the
+process-identity matcher's four host-reported spellings are derived from, the complete child environment,
+an absolute working directory, and the absolute sink at
+`.build/accelerator-daemon/hostbootstrap-demo.accelerator.output`. That sink is a lifecycle witness like
+the pid, ready, and shutdown files and is removed with them, and a daemon that fails to reach readiness
+now has its own output quoted under the failure (§ CC) instead of collapsing to "the process is gone".
+
+Static evidence, 2026-08-03 on Apple Silicon: `cabal test all --ghc-options=-Werror` from `core/` passed
+**901/901**, and the demo workspace built and tested clean under `-Werror` at **112/112**. The demo's
+formatter and linter halves were run in the published base image
+(`docker run … basecontainer-cpu-arm64 fourmolu --mode check app src` and `… hlint app src`), both clean,
+and were then re-run four times inside the lane below by the in-Dockerfile `check-code` stage.
+
+**Real-run gate MET (§ C) 2026-08-03 — the Apple Silicon lane reports `10/10 passed`.** This is the
+closing gate this sprint reserved, and it is also the first green Apple Silicon lane recorded anywhere in
+this plan. Host: Apple M1 Max, 64 GiB, macOS 25.5.0 arm64, Lima/VZ, GHC 9.12.4.
+`hostbootstrap-demo test run all` passed all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`,
+`registry-persistence`, `durable-readback`) on both config variants (`hello-world`, `hello-universe`).
+
+The boundary is what changed. The step that reported `accelerator-daemon: pid 41211 exited before
+readiness` on 2026-08-02/03 instead reported `accelerator-daemon: host daemon ready at
+ws://127.0.0.1:30081/api/accelerator/daemon` on **all four** bring-ups — two variants, each brought up
+once for its cases and again by `durable-readback`'s destroy → up cycle. `e2e-tabs` then passed on both
+variants, which is the stronger result: that case only passes when a connected daemon actually serves
+`/api/accelerator/add`, so the whole host-resident path behind readiness — Apple Metal ensure, the
+Swift/Metal worker build, the WebSocket connect, and the CBOR round trip — is proved live, not merely
+started. The in-Dockerfile `check-code` gate (`fourmolu`, `hlint`, `cabal --ghc-options=-Werror`) passed
+on each of the four image builds.
+
+Teardown was clean on every cycle: no Lima instance, generated config, or `.test_data/<runId>` remained,
+and `demo/.data/web/marker` survived `durable-readback`'s destroy → up on both variants, so the
+never-delete-`.data` invariant held across the lane.
+
+The prediction in the § C bullet above — that passing the static gate would expose the *next* Apple-lane
+defect rather than turn the lane green — was wrong, and is left standing above as the expectation of
+record. The launch shape was the only defect on this lane. The evidence for the original defect is
+recorded once with [phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md).
+
+None remaining.
 
 ## Documentation Requirements
 

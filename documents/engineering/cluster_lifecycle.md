@@ -65,12 +65,16 @@ cluster is a structured `Conflict` that is **never** auto-deleted; a probe fault
 never a false absence. Conditional cleanup requires a `Managed` handle plus a matching receipt.
 
 `HostBootstrap.Cluster.Backend` supplies the IO that feeds it while holding the four
-[ownership invariant](../architecture/ownership_invariant.md) clauses: a `flock -x` across the whole
-observe/create/settle bracket, an origin record naming the exact prior state before the first mutation,
-identity bound to the control-plane node **container ID** rather than the cluster name, and deletion
-conditioned on re-observing that identity. A host missing `flock`, the driver, or the container runtime
-is `Unsupported` and mints no capability. Its command runner is injected, so the protocol is executed
-against a real filesystem under test rather than modelled.
+[ownership invariant](../architecture/ownership_invariant.md) clauses: an exclusive `flock(2)` across the
+whole observe/create/settle bracket, an origin record naming the exact prior state before the first
+mutation, identity bound to the control-plane node **container ID** rather than the cluster name, and
+deletion conditioned on re-observing that identity. Discovery **probes the frame it will run in** for the
+shell front end that takes that lock — `flock(1)` on a util-linux userland, `lockf(1)` on a BSD one — and
+retains the answer on the capability, so the bracket cannot be built from a tool the frame was never shown
+to have. A frame missing a lock front end, `grep`, the driver, or the container runtime is `Unsupported`
+and mints no capability, as is one whose probe reports a tool the backend does not recognize. Its command
+runner is injected, so the protocol is executed against a real filesystem under test rather than modelled
+— including on macOS, where the clause suite first ran on 2026-08-02.
 
 Alongside it, `HostBootstrap.Cluster.Backend` makes a wildcard exposure unrepresentable: a
 `LoopbackExposure` accepts ports only, always renders `127.0.0.1`, and settles a live binding that is

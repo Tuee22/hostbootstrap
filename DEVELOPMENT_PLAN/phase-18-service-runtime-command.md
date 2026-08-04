@@ -92,7 +92,7 @@ VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registr
 with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
 `durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
 that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
-**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+**only** the Linux CPU lane. (The Apple Silicon lane had no available host when this was written; it ran and closed on 2026-08-03.)
 
 The lane requirement above is stated as `8/8` (four cases across two variants); the matrix has since grown
 to five cases, so `10/10` is that same requirement at the current matrix size, not a different gate.
@@ -262,9 +262,9 @@ None. The `web` verb is removed; `runVmBootstrap` generates the PureScript bridg
 `["service", "run"]`. The current path is statically validated. The 2026-06-19 HTTP 200 run is retained as
 explicitly historical evidence, not as current matrix closure.
 
-### Sprint 18.5: Accelerator daemon runtime over CBOR WebSocket [Active]
+### Sprint 18.5: Accelerator daemon runtime over CBOR WebSocket [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
 `demo/src/HostBootstrapDemo/Config.hs`, `demo/src/HostBootstrapDemo/Web/Server.hs`,
@@ -335,9 +335,23 @@ That run is the first live native Linux GPU daemon result: the daemon rolled out
 CUDA worker, and served the browser Add workflow over the private listener on both variants. The later
 2026-07-29 native Linux **CPU** run closed that lane; only Apple Silicon remains open.
 
-Sprint 18.5 remains Active only for native Apple Silicon host-daemon real socket/browser closure. The
-Windows GPU host-daemon and native Linux GPU/CPU in-cluster lanes are closed by their dated accepted
-runs; none stands in for the Apple lane.
+**Apple Silicon lane attempted 2026-08-02/03 and did not pass**: the daemon's launch closes its standard
+streams, so it never started, no real socket was established, and the browser Add workflow was never
+reached. Nothing about this sprint's socket, codec, or listener contracts was exercised or refuted on
+this lane. Sealing the launch is **Phase 2 Sprint 2.7** (§ HH); the canonical evidence block is with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md).
+
+**Apple Silicon lane closed 2026-08-03 — the last one.** After Phase 2 Sprint 2.7 sealed the launch
+boundary, `hostbootstrap-demo test run all` reported **`10/10 passed`** on the same host, and this
+sprint's contracts were exercised rather than merely unrefuted. The daemon started and served
+`host daemon ready at ws://127.0.0.1:30081/api/accelerator/daemon` on all four bring-ups, and `e2e-tabs`
+passed on both variants — that case asserts the daemon-returned sum, backend, and artifact hash through
+the browser, so the real WebSocket socket, the CBOR round trip, and the private-listener contract are all
+proved live on Apple Silicon. The canonical evidence block is with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md).
+
+All four host-daemon/in-cluster lanes are therefore closed: Windows GPU and native Linux GPU/CPU by their
+dated accepted runs, and Apple Silicon by this one. None remaining.
 
 ### Sprint 18.6: Typed selected-service package and immutable handler input [Blocked]
 

@@ -145,6 +145,27 @@ tests =
             case discovered of
                 Right _ -> pure ()
                 Left err -> assertFailure ("expected a strong backend, got " ++ show err)
+        , {- A probe that exits zero is not by itself proof: it must NAME the front
+          ends it found, because the bracket is built from that answer. This
+          pins the decoder's fail-closed reading on every platform, rather than
+          leaving it to be exercised incidentally by whichever userland the
+          suite happens to run on. -}
+          testCase "an exit-zero probe that names nothing recognizable mints nothing" $ do
+            let reports payload =
+                    GuestExec (\_ -> pure (GuestCommandResult True payload ""))
+                refuses label payload = do
+                    discovered <- discoverStrongAliasBackend testProvider (reports payload)
+                    case discovered of
+                        Left (Unsupported _) -> pure ()
+                        other ->
+                            assertFailure
+                                (label ++ ": expected Unsupported, got " ++ show (() <$ other))
+            refuses "silent success" ""
+            refuses "only a lock tool" "flock\n"
+            refuses "only a stat flavor" "gnu\n"
+            refuses "an unknown lock tool" "mkdirlock gnu\n"
+            refuses "an unknown stat flavor" "flock plan9\n"
+            refuses "a third word" "flock gnu extra\n"
         ]
             ++ posixFilesystemCases
         )
@@ -211,8 +232,11 @@ the probe inside the actual guest.
 -}
 capabilityGuestExec :: GuestExec
 #ifdef mingw32_HOST_OS
+-- Discovery does not accept a bare exit-zero: it requires the probe to /name/
+-- the front ends it found, so this stand-in must report a real guest's answer
+-- (a util-linux + GNU coreutils Linux guest) rather than an empty stream.
 capabilityGuestExec =
-    GuestExec (\_ -> pure (GuestCommandResult True "" ""))
+    GuestExec (\_ -> pure (GuestCommandResult True "flock gnu\n" ""))
 #else
 capabilityGuestExec = localGuestExec
 #endif

@@ -96,18 +96,38 @@ untouched. The invariant never removes state because its pathname matched.
 The clauses are uniform; the mechanism that supplies each is per-platform. All three provider guests run
 the same Ubuntu image, so the guest column is one implementation, not three.
 
-| Clause | Windows host | POSIX host | Linux guest (WSL2, Lima, Incus) |
+| Clause | Windows host | POSIX host | Shell-invoked frame (provider guest, project container) |
 |---|---|---|---|
-| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | `flock(1)` |
+| 1 — exclusive entry | `LockFileEx` byte-range lock | `flock` via `unix` | an exclusive `flock(2)` through whichever front end the frame has: `flock(1)` (util-linux) or `lockf(1)` (BSD userland) |
 | 2 — durable origin record | journal under the project state directory: write-temp, fsync, rename | same | same, recorded host-side |
-| 3 — identity binding | `getFileInformationByHandle` → `bhfiVolumeSerialNumber` + `bhfiFileIndex` | `deviceID` / `fileID` from `getFileStatus` | `stat -c '%d %i'` |
+| 3 — identity binding | `getFileInformationByHandle` → `bhfiVolumeSerialNumber` + `bhfiFileIndex` | `deviceID` / `fileID` from `getFileStatus` | `stat -c '%d:%i'` (GNU coreutils) or `stat -f '%d:%i'` (BSD); neither follows a symlink |
 | 4 — conditional release | re-observe through the retained handle, compare, act | same | `stat`, compare, `unlink` |
 
 Every mechanism above uses a dependency or platform API already present. `Win32` ships with the pinned
 GHC; the Windows host backend supplements its public surface with a narrow direct `kernel32` FFI where
-exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`;
-`unix` remains the existing conditional POSIX dependency, and the guest column remains coreutils plus
-util-linux.
+exact status preservation is required. This adds no Haskell package, C shim, or Cabal `c-sources`, and
+`unix` remains the existing conditional POSIX dependency.
+
+The shell-invoked column is **discovered, never assumed**. A backend's discovery probe asks the frame it
+will actually run in which front ends it has and retains the answer on the opaque capability, so the
+bracket cannot be built from a tool the frame was never shown to have, and an unrecognized report is
+`Unsupported` rather than a guess. Selecting from the build host's `os()` would be wrong in the ordinary
+case, not the exotic one: a macOS host drives a Linux guest, so the host's userland says nothing about the
+guest's. `flock(1)` and `lockf(1)` take the same kernel lock on the same inode, so a holder of either
+excludes a holder of the other — two front ends, not two schemes. They differ in one respect that these
+brackets do not rely on: `flock(1)` passes the locked descriptor to the command it runs, while `lockf(1)`
+keeps it, so under `lockf` the wrapper is the holder. It blocks until the script exits, so the lock still
+spans the whole bracket; it would not outlive the wrapper in a process the script backgrounded, and these
+scripts background nothing.
+
+Publishing a file under a name that must not already exist uses the platform's atomic **no-replace
+link**: `link(2)` on POSIX and `CreateHardLinkW` on Windows. A hard link publishes the written bytes under
+the final name in one kernel operation and fails when the name is taken. A *symbolic* link is not a
+substitute: it publishes a reference rather than the bytes, and a destination that reads as a link is
+refused by the same inspector that enforces "reparse points and symlinks at the target are rejected rather
+than followed". `rename(2)` is not a substitute either, because it replaces the destination. The WSL2
+global wall was the first user of this primitive (`link` then identity-conditional `unlink` of the
+source); the authenticated sibling config is the second.
 
 Host **directories** — the harness data root is one — use the same host columns with two refinements.
 Clause 1 is the protected store's own OS-released entry (`hLock`, `flock`/`fcntl` on POSIX and
@@ -118,7 +138,9 @@ directory at all) plus `FILE_FLAG_OPEN_REPARSE_POINT`.
 
 Guest-side probes obey the probe discipline in [readiness](readiness.md): one observation per probe, no
 compound `set -eu`, no nested `"$(…)"`, so they survive the Windows PowerShell → `wsl` → `bash` path.
-`stat -c '%d %i'` and `flock` meet that bar; branching and retry stay in Haskell.
+`stat` and the lock front end meet that bar; branching and retry stay in Haskell. A discovery probe is
+still one round trip: it reports the front ends it found on stdout and exits non-zero if any required tool
+is missing, so it is fail-closed rather than partially satisfied.
 
 ## What the invariant excludes
 

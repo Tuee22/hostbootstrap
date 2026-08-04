@@ -73,6 +73,28 @@ portableBackendCases =
         case mkClusterSpec clusterName "relative/state" "/tmp/kind.yaml" of
             Left (Failure _) -> pure ()
             other -> assertFailure ("expected a validation failure, got " ++ showEither other)
+    , {- A probe that exits zero is not by itself proof: it must NAME the lock
+      front end it found, because the clause-1 bracket is built from that
+      answer. This pins the decoder's fail-closed reading on every platform
+      rather than leaving it to whichever userland the suite runs on. -}
+      testCase "an exit-zero probe that names no recognizable lock tool mints nothing" $
+        withFakeHost $ \host -> do
+            let reports payload =
+                    ClusterExec (\_ -> pure (ClusterCommandResult True payload ""))
+                refuses label payload = do
+                    discovered <-
+                        discoverStrongClusterBackend
+                            (reports payload)
+                            (driverPath host)
+                            (runtimePath host)
+                    case discovered of
+                        Left (Unsupported _) -> pure ()
+                        other ->
+                            assertFailure
+                                (label ++ ": expected Unsupported, got " ++ showEither (() <$ other))
+            refuses "silent success" ""
+            refuses "an unknown lock tool" "mkdirlock\n"
+            refuses "a stat flavor instead of a lock tool" "gnu\n"
     ]
 
 posixBackendCases :: [TestTree]

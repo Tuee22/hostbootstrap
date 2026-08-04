@@ -50,12 +50,23 @@ freshly observed generation and observation version against the managed handle o
 The repository does not yet enforce that boundary end to end:
 
 - several provider, staging, cluster, chart, NVIDIA, and teardown effects still use compatibility waits
-  or return `IO ()` rather than consuming a prepared operation. A chain step's action is
-  `HostConfig -> IO ()`, so it holds no lifecycle plan and cannot enter the traversal above; replacing
-  that result-free signature is Sprint 16.6's single-`ProjectPlan` item;
+  or return `IO ()` rather than consuming a prepared operation. A chain step's action now receives the
+  plan-minted `StepExecution scope planId` descriptor, so it can name its own operation key, frame, plan
+  digest, and ordered edge set (§ U, landed 2026-08-02); what it still cannot reach is a `PreparedGate`,
+  so it cannot enter the traversal above. Both the prepare path and the *result* half of that signature
+  — an action returns `IO ()`, so nothing it observes can become a `ReconcileResult` — remain Sprint
+  16.6's single-`ProjectPlan` item;
 - provider adapters still need identity-bound conditional effects and recovery paths — a backend holding
-  the four [ownership_invariant](ownership_invariant.md) clauses; and
-- structured `LifecycleFailure` is not yet the universal subprocess boundary.
+  the four [ownership_invariant](ownership_invariant.md) clauses;
+- structured `LifecycleFailure` is not yet the universal subprocess boundary; and
+- a failure that cannot reach a stream is not legible, whatever its type. This *was* the host-resident
+  accelerator daemon's defect: it was launched with its standard output and error closed, so its own
+  cause — including every `die` on the build path — was written to a descriptor the runtime had
+  reclaimed, and the launcher could report only that the process was gone. The launch is now a sealed
+  boundary (`HostBootstrap.Detached`, see [unrepresentable_state](unrepresentable_state.md)) that points
+  both output streams at one retained sink and hands the launcher a reader for it, so a daemon that dies
+  before readiness quotes its own cause. Closed 2026-08-03: the Apple Silicon lane then passed, and the
+  daemon reached readiness and served real work rather than needing to explain a failure at all.
 
 Those are assigned integration obligations in the dependent provider/interpreter phases, not missing
 constructor sealing in Phase 9. Historical live-run counts and phase status are intentionally not

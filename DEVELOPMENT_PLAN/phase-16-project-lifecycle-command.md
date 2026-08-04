@@ -143,7 +143,7 @@ VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registr
 with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
 `durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
 that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
-**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+**only** the Linux CPU lane. (The Apple Silicon lane had no available host when this was written; it ran and closed on 2026-08-03.)
 
 
 **Previously closed 2026-07-05 — lifecycle-interpreter reliability:**
@@ -520,9 +520,9 @@ None remaining. Optional future follow-ups (not gating): build #3 in the `vm-orc
 purest fractal, role-as-pod folded into the chart, and `test run all` against the live persistent stack
 (§ Z, [phase-17](phase-17-chain-driven-test-and-context-introspection.md)).
 
-### Sprint 16.5: Accelerator daemon lifecycle hooks [Active]
+### Sprint 16.5: Accelerator daemon lifecycle hooks [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
@@ -548,7 +548,15 @@ accelerator ingress exists and stopped during teardown.
 - Pure chain-order tests prove host daemon startup cannot run before the accelerator ingress exists.
 - Demo chain-selection tests prove Linux GPU uses the direct host -> project-container `nvkind` chain while
   Linux CPU keeps the VM-backed chain.
-- Process lifecycle tests prove daemon start/stop is idempotent and teardown-safe.
+- Process lifecycle tests prove daemon start/stop is idempotent and teardown-safe. **Corrected
+  2026-08-03:** as written this criterion was satisfied while the host daemon could not start at all. It
+  asserted the ownership protocol around a launch — pid file, owner marker, idempotent stop — and nothing
+  about whether the launched process could run, so it stayed green against a disposition that closed the
+  child's descriptors. It now additionally requires that the daemon is launched through the closed
+  boundary Sprint 2.7 owns (§ HH), and that a startup failure names its own cause rather than an exit
+  code or a bare "the process is gone" (§ CC). A test that asserts the current value of an unsealed
+  launch field pins whatever that field holds; the replacement asserts that the launched child behaves
+  lawfully, which no unlawful disposition can satisfy.
 - Integration tests prove host daemons connect through local-only NodePort and in-cluster daemons connect
   through `ClusterIP`.
 - Browser e2e add test proves the UI receives a daemon-backed result.
@@ -565,7 +573,15 @@ workload dialing the distinct accelerator `ClusterIP`, and requests one GPU on t
 roll subPath-mounted pods. The Windows worker path resolves the generated `.exe`, and build-#3 failures
 stream their captured output. Dated static evidence is recorded above; no mutable current count is claimed.
 
-Open only for real-run closure (§ C).
+**Closed 2026-08-03 (real-run, § C).** The attempt narrative below is retained as the dated record of
+the blocker.
+
+**Apple Silicon lane attempted 2026-08-02/03 and did not pass.** This sprint's own contribution held: the
+host-daemon hook ran in the right place — after `expose-port` reported the web NodePort reachable — and
+both teardowns deleted the Lima VM while preserving `demo/.data`. What is unproven is the daemon's own
+lifecycle, because its launch closes its standard streams and it cannot start (**Phase 2 Sprint 2.7**,
+§ HH). Ordering and teardown are this sprint's; the launch shape is not. The canonical evidence block is
+with [phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md).
 
 **Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
 across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
@@ -574,8 +590,17 @@ recorded once with
 
 That run executed the native Linux **GPU** in-cluster deployment and the implemented browser Add
 assertion across the full five-case/two-variant harness. The accepted Windows GPU/WSL2 `8/8` closes its
-host-daemon lane. The later native Linux **CPU** `10/10` run closes the CPU deployment; only the Apple
-host-daemon lifecycle through the local-only NodePort remains. Those runs do not close Sprint 16.6's
+host-daemon lane. The later native Linux **CPU** `10/10` run closes the CPU deployment.
+
+**Apple Silicon host-daemon lane closed 2026-08-03 — the last one.** After Phase 2 Sprint 2.7 sealed the
+launch boundary, `hostbootstrap-demo test run all` reported **`10/10 passed`** on the same host. This
+sprint's contribution is now proved end to end rather than only up to the hook: the host-daemon step ran
+after `expose-port`, the daemon started and reported
+`host daemon ready at ws://127.0.0.1:30081/api/accelerator/daemon`, `e2e-tabs` passed on both variants
+(so the local-only NodePort path is live), and the singleton lifecycle — pid/owner witnesses, shutdown
+sentinel, argv identity — completed a clean stop on all four bring-ups with nothing left behind. The
+canonical evidence block is with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md). None remaining. Those runs do not close Sprint 16.6's
 typed plan/journal teardown contract, which they predate.
 
 ### Sprint 16.6: Ownership-preserving recursive teardown [Active]
@@ -1201,6 +1226,57 @@ plus the permitted core-managed override.
 the acquiring step declared and observes `StopFrame`, then `project destroy` on the same spec observes
 `DeleteFrame`.
 
+**Delivered 2026-08-02 — the plan-minted step descriptor; the result-free `HostConfig -> IO ()` action is
+gone (§ U).**
+
+This is the first half of open item 3's § U obligation, and it is the exact obstruction Sprint 11.10's
+demo alias migration names: a step action received a bare `HostConfig`, so it had no way to name the plan
+node it was running as, and therefore no way to mint the `Managed` handle a prepared operation requires.
+
+- **A step's action now receives `StepExecution scope planId`.** `Step.StepAction` is
+  `forall scope planId. StepExecution scope planId -> IO ()`, and `runStep` takes that descriptor. The
+  quantification is what makes the indices mean something: an action sees them as skolems it cannot
+  choose, so every typed value it derives from one descriptor carries that plan's indices and cannot be
+  paired with another plan's.
+- **The plan is the sole producer.** `Reconcile.stepExecutionFor` derives every field from the
+  `LifecyclePlan` itself — the plan's own digest, the step's operation key and frame, and the operation
+  keys of its exact ordered plan prefix. `StepExecution` has no public constructor (`ForgeStepExecution.hs`
+  already pins that), so an action can only run inside a real interpretation of a real validated plan.
+  Before this change the `HostBootstrap.Lifecycle.Execution` descriptor existed with **no producer and no
+  consumer at all** — precisely the definition-only surface § T forbids; it now has one of each.
+- **The interpreter takes the plan, not the ordering.** `Chain.runChainFromFrame` accepts a
+  `LifecyclePlan scope planId` and reads the `StepPlan` out of it. `Command.applyChain` opens its own
+  bracket — the root gate's has already closed by the time the chain runs — but over the same codec and
+  the same admitted `StepPlan`, and that derivation is pure, so the digest a step is told is the digest
+  the gate authorized. Carrying one bracket across both is part of the still-open recursive-interpreter
+  work, not something this change did.
+- **The producer refuses a foreign step.** `stepExecutionFor` returns `Nothing` for a step the plan does
+  not contain, and the interpreter fails closed on it. Without that branch the public seam would hand a
+  caller a descriptor stamped with this plan's real digest, an operation key the plan never validated, and
+  an empty edge set indistinguishable from a genuine first step.
+- **`stepExecutionDependencyKeys` is public**, so a step can read its exact ordered edge set, held in one
+  place on its own plan node. Narrowing that to the resource-bearing members when sealing an
+  `OperationPreconditionSet` stays the reconciler's job (§ CC), not the step's.
+- **The `scope`/`planId` indices are not yet load-bearing**, and the code says so: every accessor returns
+  plain `Text` or `HostConfig`, so nothing derived from one descriptor can currently fail to match another
+  plan's. The quantification is there for the prepare gate, whose values *are* index-carrying. Today's
+  real guarantee is the value one — every identity is the plan's own, and a caller cannot mint one.
+- **The demo migrated rather than adapting.** Its ten step actions now take the descriptor themselves;
+  no `HostConfig -> IO ()` shim was added in core or in the demo, so the next step that needs plan
+  authority already has it in hand.
+
+Validation (2026-08-02): `cabal build all --enable-tests --ghc-options=-Werror` and `cabal test all
+--ghc-options=-Werror` pass from `core/` at **888**; the demo workspace passes **110** demo tests plus
+that embedded core suite under the same gate. Four of the new cases are this deliverable's: `ChainSpec`
+drives the real interpreter and reads back what each action was handed — its own operation key and frame,
+the one digest of the plan being interpreted, its exact ordered dependency prefix, and, across two plans,
+that the same step kind reports its own plan's digest rather than the other's. (The other two new cases
+belong to Sprints 5.9 and 11.10, which landed in the same working tree.)
+
+**This is static-gated only.** It changes how every forward action is invoked on every lane, so § C owes a
+live re-run on each. No live run recorded anywhere in this plan covers it: every dated lane result
+predates it.
+
 **Still open (this sprint), grouped by contract; dependencies are stated on each item:**
 
 **Integrated 2026-08-01 with the active Sprint 10.9 tranche:** the live harness loop now acquires a
@@ -1209,13 +1285,13 @@ fresh run per config variant, threads that acquired run identity into the config
 23/23 with `-Werror`. This establishes the run→config edge that items 1–3 consume; it does not yet bind
 the lifecycle profile/snapshot/plan or replace the independently callable authority opener.
 
-1. **The `copy-source` plan node at the demo call site.** The core half above is landed, but the demo's
-   adoption is **ordering-blocked behind item 3, not behind item 1** — a discovery of this work. A step
-   action is `HostConfig -> IO ()` (`Step.runStep`), so it receives no `LifecyclePlan`; minting the
-   `Managed` durable-share handle that `withPreparedGuestAliasCall` requires is therefore impossible
-   inside a step until item 3 replaces that result-free signature with the plan-minted descriptor § U
-   already specifies. Sprint 11.10's `Blocked by` edge for its demo alias migration stands, and now names
-   item 3 rather than item 1.
+1. **The `copy-source` plan node at the demo call site.** The core half above is landed, and the
+   signature obstruction is now gone: as of 2026-08-02 a step action receives the plan-minted
+   `StepExecution scope planId`, so it can name its own operation key, frame, plan digest, and edge set.
+   What the demo's adoption still waits on is the **rest** of item 3 — a step cannot yet reach a
+   `PreparedGate`, so it cannot mint the `Managed` durable-share handle `withPreparedGuestAliasCall`
+   requires. Sprint 11.10's `Blocked by` edge for its demo alias migration therefore still names item 3,
+   but now for the prepare path rather than for the step signature.
 2. **The internal handoff receiver and duplex root relay** replacing `Lift.ConfigDelivery`'s shell
    writer — which is also what lets the root gate above extend past the root frame — and the build-image
    coordinator channel that makes `check-code` require `BuildInvocationAuthority`.
@@ -1228,11 +1304,13 @@ the lifecycle profile/snapshot/plan or replace the independently callable author
    `TeardownForest` has no production call site — its child-first ordering and destroy-only pre-descent
    step would otherwise let a one-frame run mint `DestroySettled` for nodes it never touched. The same
    work carries the `Conflict`/`Unsupported` report-card rows and the receipt-carrying
-   `ManagedResult Unchanged` / `ForeignResult` half that Sprint 10.9 is waiting on, and it still owes
-   § U's replacement of the result-free `HostConfig -> IO ()` step signature with the plan-minted
-   descriptor — which is the exact thing Sprint 11.10's demo alias migration is blocked on. It changes
-   live teardown ordering on every provider lane, so it is real-run-gated (§ C), not closable by the
-   static gate alone.
+   `ManagedResult Unchanged` / `ForeignResult` half that Sprint 10.9 is waiting on. § U's replacement of
+   the result-free `HostConfig -> IO ()` step signature with the plan-minted descriptor **landed
+   2026-08-02** and is recorded above; what this item still owes on that axis is the *result* half — a
+   step's action returns `IO ()`, so nothing it observes can become a `ReconcileResult` row — plus the
+   prepare path that lets a step reach a `PreparedGate`, which is what Sprint 11.10's demo alias migration
+   now waits on. It changes live teardown ordering on every provider lane, so it is real-run-gated (§ C),
+   not closable by the static gate alone.
 4. **The migration/recovery gates** (`withProjectUpMigrationProfile` through `activateMigratedPlan`) and
    the native interruption runs.
 

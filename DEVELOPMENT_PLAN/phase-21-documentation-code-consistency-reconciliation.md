@@ -11,7 +11,7 @@
 ## Phase Status
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
+**Blocked by**: Sprints 2.7, 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
 18.5–18.6, and 20.5
 **Satisfied prerequisites**: Sprints 5.5–5.8, 9.10, 13.20, and 19.7–19.8
 
@@ -191,7 +191,7 @@ now-implemented host-share/carry mechanism without claiming the still-open readb
 ### Sprint 21.4: Current code/documentation reconciliation [Blocked]
 
 **Status**: Blocked
-**Blocked by**: Sprints 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
+**Blocked by**: Sprints 2.7, 10.9, 11.10, 13.17–13.18, 14.6, 15.8–15.9, 16.5–16.6, 17.4,
 18.5–18.6, and 20.5
 **Satisfied prerequisites**: Sprints 5.5–5.8, 9.10, 13.20, and 19.7–19.8
 **Implementation**: governed documentation, source comments/help text, mechanical documentation checks
@@ -223,6 +223,11 @@ documentation ahead of the code or preserving duplicate status/count authorities
   dated sprint validation evidence.
 - Add mechanical drift checks for forbidden obsolete surfaces and for the required rolling
   publish → pull → real-consumer compatibility-smoke sequence.
+- Add the § HH drift guards: a sealed boundary stays sealed only if something checks it. Prove that no
+  production module outside the sealed launch boundary names a closed stdio disposition (Sprint 2.7's
+  surface), and that every boundary claiming a shape is unrepresentable has a registered compile-fail
+  fixture. § HH's own limits say the type system does not maintain this — it is a drift obligation, and
+  it is this sprint's.
 
 #### Validation
 

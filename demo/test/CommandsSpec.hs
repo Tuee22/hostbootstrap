@@ -5,6 +5,7 @@
 module CommandsSpec (tests) where
 
 import Control.Exception (SomeException, bracket, try)
+import Data.Either (isLeft)
 import Data.Function ((&))
 import Data.List (isInfixOf, isSuffixOf)
 import qualified Data.Text as T
@@ -30,8 +31,10 @@ import HostBootstrap.Config.Fields (
  )
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
+import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (artifactName)
+import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import HostBootstrap.RegistryPlan (
@@ -62,8 +65,9 @@ import HostBootstrapDemo.Commands (
     demoTestFrameContext,
     directClusterPresence,
     directClusterTeardownArgs,
+    hostAcceleratorDaemonArgs,
+    hostAcceleratorDaemonLaunch,
     hostAcceleratorDaemonPowerShellScript,
-    hostAcceleratorDaemonProcess,
     hostAcceleratorSubstrate,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
@@ -73,6 +77,7 @@ import HostBootstrapDemo.Commands (
     registryConfigYaml,
     registryEndpoint,
     uploadSessionUrl,
+    renderRetainedDaemonOutput,
     renderServiceConfigForContext,
     repoRootOfProjectRoot,
     serviceConfigMapManifest,
@@ -97,7 +102,6 @@ import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, (</>))
 import System.IO (hClose, hPutStr, openTempFile)
 import System.Info (os)
-import System.Process (CmdSpec (RawCommand), CreateProcess (close_fds, cmdspec, env, std_err, std_in, std_out), StdStream (NoStream))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -392,20 +396,51 @@ tests =
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate WindowsCpu Amd64) root hostCfg)))
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
             hostAcceleratorSubstrate (Substrate WindowsCpu Amd64) @?= False
-        , testCase "host accelerator daemon cannot inherit the project-up capture pipe" $ do
+        , -- The POSIX daemon's invocation *shape* is not asserted here. It is
+          -- not this module's to assert: the shape is sealed in
+          -- @HostBootstrap.Detached@ and proved behaviourally by the core
+          -- suite's @DetachedSpec@ plus its compile-fail fixtures (§ HH). The
+          -- assertion this replaced read the current value of an unsealed
+          -- @CreateProcess@ field, so it certified the disposition that closed
+          -- the daemon's descriptors. What remains here is what the *call site*
+          -- owns: the operands it supplies to the boundary.
+          testCase "the host daemon launch supplies only absolute operands" $ do
             let daemonEnv = [("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", "ws://127.0.0.1:30081")]
-                process = hostAcceleratorDaemonProcess "hostbootstrap-demo" daemonEnv
+                buildLaunch exe workDir sink =
+                    hostAcceleratorDaemonLaunch exe hostAcceleratorDaemonArgs daemonEnv workDir sink
+                absExe = "/repo/.build/accelerator-daemon/hostbootstrap-demo"
+                absDir = "/repo/.build/accelerator-daemon"
+                absSink = absDir </> "hostbootstrap-demo.accelerator.output"
+            hostAcceleratorDaemonArgs @?= ["service", "run"]
+            case buildLaunch absExe absDir absSink of
+                Left err -> assertFailure ("an absolute launch was refused: " ++ err)
+                Right launch -> do
+                    absExePath (detachedLaunchExecutable launch) @?= absExe
+                    detachedLaunchArguments launch @?= hostAcceleratorDaemonArgs
+            assertBool
+                "a bare daemon command name was accepted"
+                (isLeft (buildLaunch "hostbootstrap-demo" absDir absSink))
+            assertBool
+                "a relative working directory was accepted"
+                (isLeft (buildLaunch absExe "accelerator-daemon" absSink))
+            assertBool
+                "a relative output sink was accepted"
+                (isLeft (buildLaunch absExe absDir "accelerator.output"))
+        , testCase "a failed host daemon startup quotes the child's own output" $ do
+            assertBool
+                "an empty retention produced a banner"
+                (null (renderRetainedDaemonOutput (T.pack "   \n")))
+            let quoted = renderRetainedDaemonOutput (T.pack "metal: no usable device\n")
+            assertBool
+                ("the daemon's cause was dropped: " ++ quoted)
+                ("metal: no usable device" `isInfixOf` quoted)
+        , testCase "the Windows host daemon launches hidden and tracks its pid" $ do
+            let daemonEnv = [("HOSTBOOTSTRAP_ACCELERATOR_WS_URL", "ws://127.0.0.1:30081")]
                 windowsScript =
                     hostAcceleratorDaemonPowerShellScript
                         "C:\\demo's\\hostbootstrap-demo"
                         "C:\\demo's\\hostbootstrap-demo.accelerator.pid"
                         daemonEnv
-            cmdspec process @?= RawCommand "hostbootstrap-demo" ["service", "run"]
-            env process @?= Just daemonEnv
-            std_in process @?= NoStream
-            std_out process @?= NoStream
-            std_err process @?= NoStream
-            close_fds process @?= True
             assertBool "Windows launches into an independent hidden process" ("Start-Process" `isInfixOf` windowsScript && "-WindowStyle Hidden" `isInfixOf` windowsScript)
             assertBool "Windows persists the PID before reporting launch success" ("WriteAllText" `isInfixOf` windowsScript && "[Console]::WriteLine($p.Id)" `isInfixOf` windowsScript)
             assertBool "Windows launch failure force-stops an otherwise untracked child" ("Stop-Process -Id $p.Id -Force" `isInfixOf` windowsScript)

@@ -97,6 +97,7 @@ import HostBootstrap.Handoff (
     authenticatedConfigDigest,
     childConfigDigest,
  )
+import HostBootstrap.Config.Install.Native (linkNoReplace)
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     ProjectRootError (..),
@@ -105,7 +106,6 @@ import HostBootstrap.ProjectRoot (
 import Numeric (showHex)
 import System.Directory (
     createDirectory,
-    createFileLink,
     doesDirectoryExist,
     doesFileExist,
     doesPathExist,
@@ -605,7 +605,13 @@ createSiblingConfig path payload =
         restore (BS.hPut handle payload >> hFlush handle)
             `onException` closeAndRemove
         hClose handle `onException` removeTemporary
-        linked <- trySynchronous (restore (createFileLink temporary path))
+        -- A HARD link, not a symbolic one: it publishes the written bytes under
+        -- the final name in one create-if-absent kernel operation, and a taken
+        -- name fails rather than being replaced. A symlink would publish a
+        -- *reference* to the temporary — which 'inspectSiblingConfig' refuses
+        -- as a linked destination, and which 'removeTemporary' would then leave
+        -- dangling — so the success branch below could never be reached.
+        linked <- trySynchronous (restore (linkNoReplace temporary path))
         result <- case linked of
             Right () -> do
                 installed <- inspectSiblingConfig path payload

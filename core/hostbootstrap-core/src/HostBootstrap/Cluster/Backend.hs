@@ -14,9 +14,19 @@ filesystem and a real driver binary under test.
 Clause realization (see
 @documents/architecture/ownership_invariant.md@):
 
-* clause 1 — @flock -x@ on a lock file beside the cluster's state directory,
-  held across the whole observe/create/settle bracket and released by the kernel
-  if the holder dies;
+* clause 1 — an exclusive @flock(2)@ on a lock file beside the cluster's state
+  directory, held across the whole observe/create/settle bracket and released by
+  the kernel if the holder dies. The shell front end for that one kernel
+  primitive differs by userland — util-linux ships @flock(1)@, the BSD userland
+  macOS uses ships @lockf(1)@ — so 'discoverStrongClusterBackend' /probes/ the
+  frame it will actually run in for whichever is present rather than assuming
+  one. Both take the same lock on the same inode, so a holder of either excludes
+  a holder of the other; they are two front ends, not two schemes. They differ in
+  one respect that does not matter here: @flock(1)@ passes the locked descriptor
+  to the command it runs, while @lockf(1)@ keeps it, so under @lockf@ the
+  __wrapper__ is the holder. It blocks until the script exits, so the lock still
+  spans the whole bracket; what it does not do is outlive the wrapper in a
+  process the script backgrounded, and these scripts background nothing;
 * clause 2 — a durable origin record written before the first mutation, naming
   the exact prior state (absent, or a present cluster's identity);
 * clause 3 — identity is the control-plane node container's immutable ID, not
@@ -148,15 +158,31 @@ data ClusterCommandResult = ClusterCommandResult
     }
     deriving (Eq, Show)
 
+{- | Which shell front end the discovered frame has for an exclusive
+@flock(2)@. The constructor set is closed and private: it is discovered by
+probing the frame, never selected by the build host's @os()@, because a binary
+built on one platform routinely drives a guest of another (§ U).
+-}
+data ExclusionTool = Flock | Lockf
+    deriving (Eq, Show)
+
 {- | Capability for a backend that holds the four clauses for a cluster. Its
 constructor is private: only 'discoverStrongClusterBackend' mints it, and only
-after verifying the host exposes the ownership tools plus the driver.
+after verifying the frame exposes the ownership tools plus the driver. It
+retains the exact exclusion front end the probe observed, so the bracket cannot
+be built from a tool the frame was never shown to have.
 -}
-data StrongClusterBackend = StrongClusterBackend ClusterExec FilePath FilePath
+data StrongClusterBackend = StrongClusterBackend ClusterExec FilePath FilePath ExclusionTool
 
-{- | Probe for @flock@, @sh@, @grep@, the cluster driver, and the container
-runtime that reports node identity. A host missing one is 'Unsupported' and
-mints no capability, so the caller cannot mistake "cannot own" for "owned".
+{- | Probe for an exclusive-lock front end, @sh@, @grep@, the cluster driver, and
+the container runtime that reports node identity. A frame missing one is
+'Unsupported' and mints no capability, so the caller cannot mistake "cannot own"
+for "owned".
+
+The lock probe accepts @flock(1)@ or @lockf(1)@ and reports which it found;
+both wrap the same @flock(2)@ call on the same inode, so clause 1 is unweakened
+either way — the lock is still held across the whole bracket and still released
+by the kernel when the holder dies.
 -}
 discoverStrongClusterBackend ::
     ClusterExec ->
@@ -179,29 +205,42 @@ discoverStrongClusterBackend exec driver runtime
             )
     | otherwise = do
         result <- runClusterCommand exec ["sh", "-c", ownershipToolProbe driver runtime]
-        pure $
-            if clusterCommandOk result
-                then Right (StrongClusterBackend exec driver runtime)
-                else
-                    Left
-                        ( Unsupported
-                            ( UnsupportedDetail
-                                "reconcile cluster"
-                                "the host lacks a cluster ownership tool (flock, grep, the cluster driver, or the container runtime)"
-                            )
+        pure $ case exclusionToolReported result of
+            Just tool -> Right (StrongClusterBackend exec driver runtime tool)
+            Nothing ->
+                Left
+                    ( Unsupported
+                        ( UnsupportedDetail
+                            "reconcile cluster"
+                            "the host lacks a cluster ownership tool (flock or lockf, grep, the cluster driver, or the container runtime)"
                         )
+                    )
+
+exclusionToolReported :: ClusterCommandResult -> Maybe ExclusionTool
+exclusionToolReported result
+    | not (clusterCommandOk result) = Nothing
+    | otherwise = case words (firstLine (clusterCommandStdout result)) of
+        ("flock" : _) -> Just Flock
+        ("lockf" : _) -> Just Lockf
+        _ -> Nothing
 
 {- | A single compound probe with no nested command substitution, so it survives
-the same quoting paths the guest-alias probe does.
+the same quoting paths the guest-alias probe does. It prints the exclusion front
+end it found, so discovery and the bracket cannot disagree about which tool the
+frame has.
 -}
 ownershipToolProbe :: FilePath -> FilePath -> String
 ownershipToolProbe driver runtime =
     intercalate
-        " && "
-        ( [ "command -v " <> tool <> " >/dev/null 2>&1"
-          | tool <- ["flock", "grep"]
+        "; "
+        ( [ "command -v grep >/dev/null 2>&1 || exit 1"
+          , "test -x " <> quoteShell driver <> " || exit 1"
+          , "test -x " <> quoteShell runtime <> " || exit 1"
           ]
-            <> ["test -x " <> quoteShell driver, "test -x " <> quoteShell runtime]
+            <> [ "if command -v " <> tool <> " >/dev/null 2>&1; then printf '" <> tool <> "\\n'; exit 0; fi"
+               | tool <- ["flock", "lockf"]
+               ]
+            <> ["exit 1"]
         )
 
 -- The clause-holding reconcile/cleanup calls ---------------------------------
@@ -218,13 +257,13 @@ runClusterReconcileCall ::
     PreparedClusterReconcile scope planId clusterId operationKey callDigest attempt journalVersion ->
     IO ClusterObservation
 runClusterReconcileCall
-    (StrongClusterBackend exec driver runtime)
+    (StrongClusterBackend exec driver runtime tool)
     spec
     prepared = do
         result <-
             runClusterCommand
                 exec
-                (flockWrapped spec driver runtime clusterReconcileScript)
+                (exclusiveWrapped tool spec driver runtime clusterReconcileScript)
         pure
             ( parseReconcileReport
                 (resourceHandleGeneration (preparedClusterReconcileHandle prepared))
@@ -241,38 +280,50 @@ runClusterCleanupCall ::
     PreparedClusterCleanup scope planId clusterId phase ->
     IO (Either ReconcileError ClusterCleanupObservation)
 runClusterCleanupCall
-    (StrongClusterBackend exec driver runtime)
+    (StrongClusterBackend exec driver runtime tool)
     spec
     prepared = do
         result <-
             runClusterCommand
                 exec
-                (flockWrapped spec driver runtime clusterCleanupScript)
+                (exclusiveWrapped tool spec driver runtime clusterCleanupScript)
         pure
             ( parseCleanupReport
                 (resourceHandleKey (preparedClusterCleanupHandle prepared))
                 result
             )
 
-{- | Wrap a script in @flock -x \<lock\> sh -c \<script\> _ name record driver
-runtime config@ so the exclusive lock spans the whole bracket (clause 1). The
-lock file sits in the cluster's state directory and is auto-created by @flock@.
+{- | Wrap a script in @\<lock-tool\> \<lock\> sh -c \<script\> _ name record
+driver runtime config@ so the exclusive lock spans the whole bracket (clause 1).
+The lock file sits in the cluster's state directory and is created by the lock
+tool.
+
+@flock -x@ and @lockf -k@ are the two front ends for the same exclusive
+@flock(2)@: each blocks until it holds the lock, passes the remaining words to
+@sh -c@ unchanged (so @$0@ is @hb-cluster@ and @$1@… are the script's positional
+arguments), returns the command's own exit status, and leaves the lock file in
+place for the next acquirer. @lockf@ needs @-k@ for that last property; without
+it the file is unlinked on release and clause 1's lock would not live beside the
+cluster state.
 -}
-flockWrapped :: ClusterSpec -> FilePath -> FilePath -> String -> [String]
-flockWrapped spec driver runtime script =
-    [ "flock"
-    , "-x"
-    , clusterLockPath spec
-    , "sh"
-    , "-c"
-    , script
-    , "hb-cluster"
-    , clusterSpecName spec
-    , clusterRecordPath spec
-    , driver
-    , runtime
-    , clusterSpecConfigPath spec
-    ]
+exclusiveWrapped ::
+    ExclusionTool -> ClusterSpec -> FilePath -> FilePath -> String -> [String]
+exclusiveWrapped tool spec driver runtime script =
+    exclusionArgv tool (clusterLockPath spec)
+        <> [ "sh"
+           , "-c"
+           , script
+           , "hb-cluster"
+           , clusterSpecName spec
+           , clusterRecordPath spec
+           , driver
+           , runtime
+           , clusterSpecConfigPath spec
+           ]
+
+exclusionArgv :: ExclusionTool -> FilePath -> [String]
+exclusionArgv Flock lock = ["flock", "-x", lock]
+exclusionArgv Lockf lock = ["lockf", "-k", lock]
 
 clusterLockPath :: ClusterSpec -> FilePath
 clusterLockPath spec =

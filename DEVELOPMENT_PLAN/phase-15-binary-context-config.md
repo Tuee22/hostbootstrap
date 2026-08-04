@@ -562,9 +562,9 @@ bind-mount on the container `docker run` (verified: no `-v …hostbootstrap-demo
 superseded build-then-copy/mount surfaces moved from `Pending` to `Removed Surfaces` in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-### Sprint 15.8: Accelerator daemon and direct-container context [Active]
+### Sprint 15.8: Accelerator daemon and direct-container context [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Docs to update**: `documents/architecture/binary_context_config.md`,
@@ -606,8 +606,19 @@ pod template so a subPath-mounted config change causes rollout. Dated validation
 `cabal build all --ghc-options=-Werror` and `cabal test all` passed from `core/` (364) and `demo/` (87, plus the
 embedded 364-core suite).
 
-Open only for real-run integration proving the remaining daemon placements **read** their delivered
-config and **connect**.
+**Closed 2026-08-03.** Every daemon placement is now proved on a real run to **read** its delivered
+config and **connect**; the attempt narrative below is retained as the dated record of the blocker.
+
+**Apple Silicon lane attempted 2026-08-02/03 and did not pass.** The host-resident projection was written
+beside the host-native daemon binary and its snapshot logged, but the daemon's launch closes its standard
+streams, so it never reaches the point of reading that projection. Whether the delivered projection is
+*read* and *connects* is therefore still unproven on this lane — and cannot be tested until **Phase 2
+Sprint 2.7** seals the launch boundary (§ HH). The canonical evidence block is with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md).
+
+This sprint's closure criterion is unchanged in substance but now has a named prerequisite: the Apple
+host-daemon lane closes only when the delivered projection is proved read and connected on a run where
+the daemon could actually start.
 
 **Native Linux GPU real-run closure (2026-07-28).** The direct-`nvkind` lane reported **`10/10 passed`**
 across both variants; the full evidence, including the `nvcc` discovery defect it exposed and fixed, is
@@ -622,10 +633,21 @@ host that detects `linux-cpu` on its own evidence, with
 `deploy-accelerator-daemon: in-cluster accelerator daemon deployed (dials the web ClusterIP ingress)` —
 so the **CPU** in-cluster placement also read its generated ConfigMap, passed the in-pod runtime-witness
 gate, and connected. The full evidence is recorded once with
-[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). Only the unavailable **Apple**
-host-daemon lane remains. The dated Windows GPU/WSL2 `8/8`
-accepted by Phase 18 already covers the Windows host-daemon delivery/connect path; it does not stand in
-for the remaining Apple lane. No config implementation or static-test work remains.
+[Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). The dated Windows GPU/WSL2 `8/8`
+accepted by Phase 18 already covers the Windows host-daemon delivery/connect path. No config
+implementation or static-test work remains.
+
+**Apple Silicon host-daemon lane closed 2026-08-03 — the last one.** After Phase 2 Sprint 2.7 sealed the
+launch boundary, `hostbootstrap-demo test run all` reported **`10/10 passed`** on the same host. The
+host-resident projection was written beside the host-native daemon binary and its snapshot logged
+(`contextKind=Daemon roleName=daemon configPath=./.build/accelerator-daemon/hostbootstrap-demo.dhall
+configHash=fnv64:76471f16b4e127ce`), and this time the daemon started, **read** it, and **connected** —
+`accelerator-daemon: host daemon ready at ws://127.0.0.1:30081/api/accelerator/daemon` on all four
+bring-ups, with `e2e-tabs` passing on both variants. That last part is what discharges this sprint's
+criterion rather than the readiness line: `e2e-tabs` only passes when a connected daemon serves
+`/api/accelerator/add`, which requires the delivered projection to have been read and acted on. The
+canonical evidence block is with
+[phase-13 Sprint 13.17](phase-13-hostbootstrap-demo.md). None remaining.
 
 ### Sprint 15.9: Opaque capability and context authority [Active]
 
@@ -945,6 +967,43 @@ admission, grant, and broker. Core gate **710/710**, demo **106**, Python **227*
 package, and no controller renders the signed manifest into a pod template. Sprint 14.6 owns the
 consuming role plan/cursor/phase machine and Sprint 18.6 the `selectAndRunService` gate; both are named
 downstream of this one.
+
+**Delivered 2026-08-02 — the authenticated sibling install actually publishes bytes.**
+
+`createSiblingConfig` published its fully written temporary with `System.Directory.createFileLink`, which
+creates a **symbolic** link. `inspectSiblingConfig` — correctly, and by this module's own error
+vocabulary (`SiblingConfigUnsafeDestination` is "refusing non-regular or linked sibling config
+destination") — refuses a linked destination, so the immediately following re-inspection classified the
+value the writer had just created as unsafe. The consequences were exact:
+
+- `SiblingConfigInstalled` was **unreachable on every platform**. Not a macOS behaviour: `symlink(2)` and
+  `CreateSymbolicLink` behave the same way, and the module rejects the result either way;
+- the failure was **not idempotent**. `removeTemporary` then unlinked the target, leaving a dangling link
+  at the destination that no later attempt could clear, so the first install poisoned that path for good.
+
+The fix is the primitive the operation actually needs: a **hard** link, in the new package-internal
+`HostBootstrap.Config.Install.Native` (`link(2)` on POSIX, `CreateHardLinkW` on Windows). It publishes the
+written bytes under the final name in one create-if-absent kernel operation and fails when the name is
+taken, which is exactly § Y's `RefuseExisting`/`KeepExisting` "atomic no-replace installation". A
+`rename(2)` is not a substitute — it replaces the destination, the outcome this primitive exists to
+prevent.
+
+All three outcomes the contract names are now reachable and proved: the creator returns
+`SiblingConfigInstalled` with the payload readable at the destination, its serialized peer converges on
+`SiblingConfigAlreadyPresent`, and a foreign replacement is `SiblingConfigConflict` with the foreign bytes
+left intact.
+
+This was latent rather than live: today's `project up` delivers a child config through
+`Lift.ConfigDelivery`'s shell writer, and host-side creation goes through
+`writeScopedProjectConfigFileExclusive`. `installAuthenticated{Production,Harness}SiblingConfig` has no
+production consumer **until this sprint's own receiver/relay item lands** — which is precisely why it had
+to be correct before that item wires it.
+
+Dated validation evidence (2026-08-02, Apple Silicon M1 Max, macOS 25.5.0 arm64): `HandoffSpec`'s
+"authenticated sibling install is atomic, idempotent, and conflict-preserving" case passes, and the
+complete core suite passes **882/882** under `cabal test all --ghc-options=-Werror`. The fixture's own
+cleanup was also corrected — it used `doesFileExist`, which follows symlinks and therefore could not clear
+a dangling one, so a single failure used to persist across runs in the same build tree.
 
 **Still open (the rest of this sprint):** the
 broker-relayed cross-frame handoff with `VerifiedConfigWire`/`VerifiedHandoff` and

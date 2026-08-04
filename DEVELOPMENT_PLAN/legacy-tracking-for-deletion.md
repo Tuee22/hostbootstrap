@@ -339,6 +339,24 @@
   protected bound-recovery profile opener over the exact new root/broker authority, active Production
   mode, bound lease, verified/bound snapshot/binding, and `BoundInvocationRecovery`; it cannot misuse the
   unbound-only fresh-profile opener. Owning phases: Phase 10 Sprint 10.9 and Phase 16 Sprint 16.6.
+- **The generated config's bare owner-directory claim, and the existence check that pre-empts recovery**
+  (`configOwnerPath` and the owned-removal path in
+  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`; the `doesFileExist` refusals in
+  `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+  `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, and
+  `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`) — a run's generated sibling
+  `<project>.dhall` is claimed by a `<config>.hostbootstrap-test-owner` **directory** beside the file
+  that retains the payload for byte-comparison at release. That is a pathname claim: no protected
+  durable origin record, no stable kernel-identity binding, no OS-released lock — none of the four
+  § EE clauses, and structurally the same design the `.test_data.hostbootstrap-run-owner` directory was
+  removed for on 2026-07-29. Compounding it, `test run` refuses on the bare existence of the sibling
+  config *before* the abandoned-run sweep runs and without consulting that sidecar, so after an
+  interrupted run the recovery machinery is unreachable and an operator must delete the file and the
+  directory by hand. Reproduced live on Apple Silicon 2026-08-03. Replacement: the same protocol
+  `HostBootstrap.Harness.DataRoot` already runs for the data root — observe → durable origin record →
+  create → bind kernel identity → conditional re-observed release — over a file rather than a
+  directory, with the existence refusal moved behind the sweep and reconciled across its three copies.
+  Owning phase: Phase 10 Sprint 10.9.
 - **Unversioned terminal harness cleanup without Open→Closing crash recovery**
   (`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Command.hs`) — generated config/data-root cleanup and lease
@@ -477,12 +495,6 @@
   non-exporting secret capability, and an authenticated scope/plan/operation-bound child handoff over a
   protected descriptor or platform credential facility with recoverable cleanup. Owning phases: Phase 15
   Sprint 15.9 and Phase 19 Sprint 19.7.
-- **Bare host process invocations outside the closed `HostTool` boundary**
-  (`demo/src/HostBootstrapDemo/Commands.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Command.hs`) — host call sites that resolve a
-  literal command through `PATH` contradict the absolute `AbsExe` doctrine. Nested guest payload commands
-  are explicitly separate. Replacement: enumerate/resolve every production host tool and mechanically
-  reject bare host calls. Owning phase: Phase 2 Sprint 2.5.
 - **Stale appended verbs and Harbor-era demo metadata**
   (`demo/hostbootstrap-demo.cabal`, `core/hostbootstrap-core/test/StepSpec.hs`, `demo/test/CommandsSpec.hs`,
   `demo/src/HostBootstrapDemo/Commands.hs`) — generic fixtures, step examples, help/docs, and
@@ -627,6 +639,14 @@ The earlier generic-project-model correction (development_plan_standards § BB) 
 
 These surfaces are intentionally present and are not cleanup obligations.
 
+- **The synchronous self-invocation's stream disposition** (`runSelfOrDie` in
+  `demo/src/HostBootstrapDemo/Commands.hs`, `std_out = Inherit` / `std_err = CreatePipe`) — this looks
+  like the detached-launch cleanup item in `Pending` and is the opposite case. `runSelfOrDie` waits for
+  its child, so inheriting stdout is what streams a nested frame's progress live, and capturing stderr is
+  what lets the § CC structured-failure marker be read back and re-raised. Those two constructors are
+  wrong for a child that outlives its launcher and correct for one the caller waits on; the distinction
+  is the boundary, not the constructor. Sprint 2.7 seals the detached case and leaves this one alone.
+
 - **`hostbootstrap/prereqs.py`** — the Python host-prerequisite checks retained for the pre-binary
   bootstrapper. The fail-fast host minimums are the irreducible pre-binary subset (Linux: Ubuntu 24.04 +
   passwordless sudo — one floor for `build`/`doctor`/`run`, with `/dev/kvm` and the `linux-gpu` NVIDIA
@@ -660,6 +680,55 @@ These surfaces are intentionally present and are not cleanup obligations.
   expectations. This file remains an example value, not a hand-maintained type.
 
 ## Removed Surfaces
+
+### Bare host process invocations outside the closed `HostTool` boundary (removed 2026-07-25, Sprint 2.5)
+
+Host call sites that resolved a literal command through `PATH` contradicted the absolute `AbsExe`
+doctrine (§ K). They are gone: no `proc "<literal>"` or `readProcessWithExitCode "<literal>"` remains in
+`core/hostbootstrap-core/src` or `demo/src`, every production host tool is a closed `HostTool` constructor
+resolved to an `AbsExe`, and `HostToolSpec` asserts that no resolved path is ever a bare command name.
+Nested guest payload commands were always explicitly separate and remain so — the VM is a different
+machine, and § K governs host invocation.
+
+**Ledger correction, 2026-08-03.** This entry sat in `Pending` under a sprint that closed 2026-07-25, so
+the ledger claimed an obligation that no longer existed — the stale completion claim § A forbids. It is
+moved here on the evidence above. The move does not close the *other* axis it never covered: § K fixes
+which executable an invocation names, and the shape it takes is the separate entry below.
+
+### The caller-assembled detached-child process record (removed 2026-08-03, Sprint 2.7)
+
+`hostAcceleratorDaemonProcess` in `demo/src/HostBootstrapDemo/Commands.hs` spawned a child that outlives
+its launcher from a `System.Process.CreateProcess` built at the call site, so its stdio disposition,
+descriptor inheritance, session, environment, and working directory were each independently selectable
+and each had exactly one lawful value. The value selected set all three streams to `NoStream`, which on
+POSIX closes the child's descriptors; the daemon wedged before it could report anything, and every
+failure path it owned wrote to a descriptor the runtime had reclaimed.
+
+It is gone. `HostBootstrap.Detached` is the closed boundary under [§ HH](development_plan_standards.md),
+explained in [unrepresentable_state](../documents/architecture/unrepresentable_state.md): its assembled
+process record is private, `DetachedLaunch` exports neither its constructor nor any field accessor, and
+the demo now supplies only operands — executable, argv, complete environment, absolute working directory,
+absolute output sink. `ForgeDetachedLaunch.hs` and `RelabelDetachedLaunch.hs` pin both seals, and
+`DetachedSpec`'s drift check proves no production module under `core/hostbootstrap-core/src`,
+`core/hostbootstrap-core/app`, `demo/src`, or `demo/app` outside the boundary so much as names
+`NoStream`.
+
+### The test that pinned that disposition as the contract (removed 2026-08-03, Sprint 2.7)
+
+`demo/test/CommandsSpec.hs` asserted that the daemon launch's `std_in`/`std_out`/`std_err` equalled
+`NoStream`. Asserting the current value of an unsealed field cannot distinguish the right value from the
+value that happens to be there, so this test was green for exactly as long as the defect existed and
+reported the boundary as held. It is why the defect survived every gate, and it was tracked separately
+from the surface above because removing the surface without replacing the assertion would have left the
+same failure mode available to the next launch.
+
+Its replacement is behavioural and lives with the boundary: `DetachedSpec` launches a real child — the
+core test executable re-invoked through a probe argv — and observes that the child read its standard
+input to EOF, that both of its output streams reached the retained sink, and that it kept writing after
+the launch bracket returned. No unlawful disposition satisfies that. What remains in `CommandsSpec` is
+what the *call site* owns: that the operands it supplies are absolute, that the one
+`hostAcceleratorDaemonArgs` argv is what the launch carries, and that a failed startup quotes the child's
+own output.
 
 ### The public role-lifecycle callback bag (removed 2026-07-30, Sprint 14.6)
 

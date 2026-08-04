@@ -32,6 +32,7 @@ library
       HostBootstrap.Authority
       HostBootstrap.Activation
       HostBootstrap.Build
+      HostBootstrap.Detached
       HostBootstrap.Handoff
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
@@ -93,6 +94,7 @@ library
   other-modules:
       HostBootstrap.Config.Authority.Internal
       HostBootstrap.Config.Fields.Internal
+      HostBootstrap.Config.Install.Native
       HostBootstrap.Handoff.Protocol
       HostBootstrap.Lifecycle.Execution.Internal
       HostBootstrap.Lifecycle.Plan
@@ -148,6 +150,7 @@ test-suite hostbootstrap-core-test
       ReconcileSpec
       CLISpec
       CompileFailSpec
+      DetachedSpec
       SubstrateSpec
       HostToolSpec
       EnsureSpec

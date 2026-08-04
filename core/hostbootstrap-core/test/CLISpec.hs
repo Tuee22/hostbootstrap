@@ -36,6 +36,7 @@ import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Authority (authorityErrorMessage, installedProjectFor)
 import HostBootstrap.Harness (
     Case (Case),
     CaseId,
@@ -44,13 +45,20 @@ import HostBootstrap.Harness (
     TestSuite (TestSuite),
     mkCaseId,
  )
+import HostBootstrap.Lifecycle.Mode (
+    mkRunId,
+    modeErrorMessage,
+    planSnapshotPlanDigest,
+    planSnapshotRevision,
+    planSnapshotSpecDigest,
+    verifyPlanSnapshot,
+ )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Protected (
     ProtectedRecord (protectedRecordBytes),
     ProtectedSession,
     RecordKey,
     listProtectedRecords,
-    mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
@@ -693,6 +701,13 @@ observeBoundHarnessPlan storeRoot projectName = do
                             )
                         )
                 _ -> Right Nothing
+    {- Read the persisted snapshot back through the **production** decoder
+    ('Mode.verifyPlanSnapshot') rather than re-parsing the record bytes here.
+    The record is a versioned, length-framed wire, and a second hand-written
+    parser in the test is exactly what drifts when that framing changes: this
+    assertion previously split the payload on tabs and could no longer match any
+    record the encoder writes. Going through the shipped decoder means the test
+    observes what production observes, by construction. -}
     inspectSnapshot ::
         ProtectedSession session ->
         T.Text ->
@@ -700,23 +715,34 @@ observeBoundHarnessPlan storeRoot projectName = do
         T.Text ->
         IO (Either String (T.Text, T.Text, T.Text))
     inspectSnapshot session runName specDigest planDigest =
-        case mkRecordKey ("snapshot." <> projectName <> "." <> runName) of
-            Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
-            Right key -> do
-                observed <- readProtectedRecord session key
-                pure $ case observed of
-                    Left failure -> Left (T.unpack (protectedErrorMessage failure))
-                    Right Nothing -> Left "the bound run has no persisted snapshot"
-                    Right (Just record) -> case recordFields record of
-                        ["1", recordedSpec, recordedPlan]
-                            | recordedSpec == specDigest
-                            , recordedPlan == planDigest ->
-                                Right (runName, specDigest, planDigest)
-                        fields ->
-                            Left
-                                ( "the bound lease and revision-1 snapshot disagree: "
-                                    ++ show fields
+        case
+            ( installedProjectFor @Fixture.FixtureProject @Fixture.ProjectConfig projectName
+            , mkRunId runName
+            )
+            of
+            (Left failure, _) -> pure (Left (T.unpack (authorityErrorMessage failure)))
+            (_, Left failure) -> pure (Left (T.unpack (modeErrorMessage failure)))
+            (Right project, Right run) -> do
+                verified <-
+                    verifyPlanSnapshot session project run $ \snapshot ->
+                        pure
+                            ( Right
+                                ( planSnapshotRevision snapshot
+                                , planSnapshotSpecDigest snapshot
+                                , planSnapshotPlanDigest snapshot
                                 )
+                            )
+                pure $ case verified of
+                    Left failure -> Left (T.unpack (modeErrorMessage failure))
+                    Right (1, recordedSpec, recordedPlan)
+                        | recordedSpec == specDigest
+                        , recordedPlan == planDigest ->
+                            Right (runName, specDigest, planDigest)
+                    Right observedSnapshot ->
+                        Left
+                            ( "the bound lease and revision-1 snapshot disagree: "
+                                ++ show observedSnapshot
+                            )
     recordFields :: ProtectedRecord -> [T.Text]
     recordFields =
         map (T.pack . ByteStringChar8.unpack)

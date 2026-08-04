@@ -84,6 +84,11 @@ defers to it rather than re-deriving it. The command surface is summarized in
   for scope-indexed endpoints and clients, proof-gated registry blob delivery, opaque finalized
   registry plans, and route-specific readiness that makes an external client redirect to a
   cluster-only object store unrepresentable.
+- [architecture/unrepresentable_state.md](architecture/unrepresentable_state.md) — the **canonical home
+  of the method** every boundary above applies: private constructors with validating producers, rank-2
+  scope containment, closed sums with total eliminators, and phantom indices — plus the compile-fail
+  proof obligation that separates a boundary from a comment, why a test asserting an unsealed field can
+  pin a defect as the contract, and exactly what the technique does not buy.
 
 ## Engineering
 

@@ -2,7 +2,7 @@
 
 **Status**: Governed orientation document
 **Supersedes**: prior root README without metadata
-**Canonical homes**: [documents/README.md](documents/README.md), [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md), [documents/architecture/hostbootstrap_core_library.md](documents/architecture/hostbootstrap_core_library.md)
+**Canonical homes**: [documents/README.md](documents/README.md), [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md), [documents/architecture/hostbootstrap_core_library.md](documents/architecture/hostbootstrap_core_library.md), [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md)
 
 > **Purpose**: Orient consumers to the Haskell core, thin Python bootstrapper, fixed project-binary
 > surface, and the canonical documentation and implementation-status homes.
@@ -266,7 +266,13 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
 - authenticated normal/recovery handoffs and controller/build config gates;
 - a project-wide Production/Harness mode lease, exact bound-Production recovery profiles, exhaustive
   bound-run recovery, and restartable Open→Closing terminal harness cleanup; and
-- opaque project/step/config constructors that cannot represent contradictory states.
+- opaque project/step/config constructors that cannot represent contradictory states; and
+- a closed boundary for spawning a child that outlives its launcher, so its stdio disposition,
+  descriptor inheritance, session, environment, and working directory are properties of a type rather
+  than fields a call site fills in. This one is open because a boundary nobody sealed had none: the
+  host-resident accelerator daemon is currently launched with its standard streams closed and cannot
+  report why it stops. The method every boundary above applies is stated once in
+  [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md).
 
 Phase status, blockers, and deletion work are authoritative only in
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and

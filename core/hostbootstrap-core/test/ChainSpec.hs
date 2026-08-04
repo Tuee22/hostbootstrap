@@ -1,11 +1,31 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeApplications #-}
 
 module ChainSpec (tests) where
 
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
+import qualified Fixture
 import HostBootstrap.Chain
+import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import qualified HostBootstrap.Config.Vocab as V
+import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Incus))
 import HostBootstrap.Incus (IncusVM (..))
+import HostBootstrap.Lifecycle.Execution (
+    stepExecutionDependencyKeys,
+    stepExecutionFrame,
+    stepExecutionOperationKey,
+    stepExecutionPlanDigest,
+ )
+import HostBootstrap.Reconcile (lifecyclePlanDigest, withLifecyclePlan)
+import HostBootstrap.Substrate (
+    Arch (Arm64),
+    Substrate (..),
+    SubstrateName (LinuxCpu),
+ )
 import HostBootstrap.Lift (
     ContainerLift (..),
     LiftDispatch (DispatchTool),
@@ -26,6 +46,7 @@ tests =
         [ testGroup "nextFrameAfter (descent order)" nextFrameCases
         , testGroup "handoffDispatch (recursive `project up` handoff)" handoffCases
         , testGroup "renderChain is the single representation" renderCases
+        , testGroup "the plan mints each step's execution descriptor (§ U)" descriptorCases
         ]
 
 -- Fixtures.
@@ -170,6 +191,102 @@ renderCases =
         map stepLabel (postHandoffStepsForFrame (frameId metal) acceleratorPlan)
             @?= ["start the host accelerator daemon"]
     ]
+
+{- | A step no longer receives a bare 'HostConfig'; it receives the descriptor
+the plan minted for its own node (§ U). These cases drive the real interpreter
+over a one-frame plan and read back exactly what each action was handed, so the
+contract is observed rather than asserted about.
+-}
+descriptorCases :: [TestTree]
+descriptorCases =
+    [ testCase "each action is handed its own operation key and frame" $ do
+        (_, observed) <- runInnermost descriptorSteps
+        map (\(key, frame, _, _) -> (key, frame)) observed
+            @?= [ ("core:deploy-kind", "vm-project-container-2")
+                , ("project:deploy-harbor", "vm-project-container-2")
+                , ("core:expose-port", "vm-project-container-2")
+                ]
+    , testCase "every action sees the one digest of the plan being interpreted" $ do
+        (planDigest, observed) <- runInnermost descriptorSteps
+        [digest | (_, _, digest, _) <- observed] @?= replicate 3 planDigest
+        -- and it is a real derived digest, not an empty placeholder
+        T.null planDigest @?= False
+    , testCase "the descriptor's edge set is the step's exact ordered plan prefix" $ do
+        (_, observed) <- runInnermost descriptorSteps
+        [dependencies | (_, _, _, dependencies) <- observed]
+            @?= [ []
+                , ["core:deploy-kind"]
+                , ["core:deploy-kind", "project:deploy-harbor"]
+                ]
+    , testCase "a different plan mints a different digest for the same step kind" $ do
+        (oneDigest, oneObserved) <- runInnermost descriptorSteps
+        (otherDigest, otherObserved) <- runInnermost otherDescriptorSteps
+        map (\(key, _, _, _) -> key) otherObserved @?= ["core:deploy-kind"]
+        [dependencies | (_, _, _, dependencies) <- otherObserved] @?= [[]]
+        (oneDigest == otherDigest) @?= False
+        -- the shared first step still reports its own plan's digest, not the other's
+        [digest | (_, _, digest, _) <- take 1 oneObserved] @?= [oneDigest]
+    ]
+
+-- | What one action observed about itself: key, frame, plan digest, edge set.
+type ObservedExecution = (T.Text, T.Text, T.Text, [T.Text])
+
+observing :: IORef [ObservedExecution] -> StepAction
+observing sink execution =
+    modifyIORef'
+        sink
+        ( ++
+            [
+                ( stepExecutionOperationKey execution
+                , stepExecutionFrame execution
+                , stepExecutionPlanDigest execution
+                , stepExecutionDependencyKeys execution
+                )
+            ]
+        )
+
+{- | Interpret the innermost frame, which runs its steps and then ends the
+descent, so the recorded descriptors are exactly this frame's. Returns the
+plan's own digest alongside them, read from the same opened plan the interpreter
+ran, so the assertion compares the descriptor against the plan rather than
+against a second computation of it.
+-}
+runInnermost :: [IORef [ObservedExecution] -> Step] -> IO (T.Text, [ObservedExecution])
+runInnermost build = do
+    sink <- newIORef []
+    let plan = expectPlan (map ($ sink) build)
+        cfg = HostConfig{hcSubstrate = descriptorSubstrate, hcToolPaths = Map.empty}
+    (planDigest, run) <-
+        withProductionProjectCodec @Fixture.FixtureProject @Fixture.ProjectConfig $ \codec ->
+            withLifecyclePlan codec plan $ \lifecycle ->
+                pure
+                    ( lifecyclePlanDigest lifecycle
+                    , runChainFromFrame cfg self (frameId ctrFrame) lifecycle
+                    )
+    outcome <- run
+    outcome @?= Right ()
+    observed <- readIORef sink
+    pure (planDigest, observed)
+
+descriptorSubstrate :: Substrate
+descriptorSubstrate = Substrate{substrateName = LinuxCpu, substrateArch = Arm64}
+
+descriptorSteps :: [IORef [ObservedExecution] -> Step]
+descriptorSteps =
+    [ \sink -> deployKindStep "bring up kind" ctrFrame (observing sink)
+    , \sink ->
+        projectStep
+            (fixtureProjectStepId "deploy-harbor")
+            ProjectManagedReverse
+            "install harbor"
+            ctrFrame
+            (observing sink)
+    , \sink -> exposePortStep "expose the NodePort" ctrFrame (observing sink)
+    ]
+
+otherDescriptorSteps :: [IORef [ObservedExecution] -> Step]
+otherDescriptorSteps =
+    [\sink -> deployKindStep "bring up a different cluster" ctrFrame (observing sink)]
 
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId

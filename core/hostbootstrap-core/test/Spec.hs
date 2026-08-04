@@ -15,6 +15,7 @@ import qualified ColimaSpec
 import qualified CompileFailSpec
 import qualified ContextSpec
 import qualified CordonSpec
+import qualified DetachedSpec
 import qualified DhallGenSpec
 import qualified DocValidatorSpec
 import qualified EnsureSpec
@@ -65,6 +66,11 @@ main = do
         -- concurrency matrix races real competitors rather than threads.
         ["--hostbootstrap-harness-acquire-probe", stateRoot, reasonPath] ->
             HarnessSpec.runHarnessAcquireProbe stateRoot reasonPath
+        -- A real child launched through the sealed detached-launch boundary, so
+        -- the invocation shape is observed by a process rather than asserted of
+        -- a record field (§ HH).
+        ("--hostbootstrap-detached-child-probe" : mode) ->
+            DetachedSpec.runDetachedChildProbe mode
         _ -> do
             docTests <- DocValidatorSpec.tests
             -- The suite runs single-threaded because several groups drive
@@ -94,6 +100,7 @@ main = do
                         , CLISpec.tests
                         , BudgetSpec.tests
                         , CompileFailSpec.tests
+                        , DetachedSpec.tests
                         , SubstrateSpec.tests
                         , HostToolSpec.tests
                         , EnsureSpec.tests

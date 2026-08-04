@@ -24,6 +24,7 @@ module HostBootstrap.Reconcile
     lifecyclePlanConfigDigest,
     lifecyclePlanFrames,
     lifecyclePlanSteps,
+    stepExecutionFor,
     Unclassified,
     Managed,
     Unmanaged,
@@ -133,6 +134,12 @@ import HostBootstrap.Lifecycle.Plan (
   canonicalPlanSnapshotFormatVersion,
   canonicalPlanSnapshotSpecDigest,
  )
+import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Execution.Internal (
+  ExecutionNode (..),
+  StepExecution,
+  mintStepExecution,
+ )
 import HostBootstrap.Lifecycle.Prepared (
   PreparedGate,
   preparedGateAttempt,
@@ -141,7 +148,8 @@ import HostBootstrap.Lifecycle.Prepared (
   preparedGatePlan,
  )
 import HostBootstrap.Step
-  ( StepPlan,
+  ( Step,
+    StepPlan,
     frameId,
     operationKeyText,
     stepDependencies,
@@ -201,6 +209,56 @@ lifecyclePlanConfigDigest = canonicalPlanSnapshotConfigDigest . lifecyclePlanSna
 -- forward traversal and the teardown forest are provably the same plan (§ W).
 lifecyclePlanSteps :: LifecyclePlan scope planId -> StepPlan
 lifecyclePlanSteps (LifecyclePlan _ plan) = plan
+
+{- | Mint the plan-minted execution descriptor for one step of __this__ plan
+(§ U).
+
+This is the sole producer, and it derives every identity on the descriptor from
+the plan rather than from the caller: the plan's own digest, the step's operation
+key and frame, and the operation keys of its exact ordered plan prefix.
+
+It is 'Nothing' for a step this plan does not contain. That branch matters
+because the function is public: without it a caller could hand in a foreign step
+and receive a descriptor stamped with this plan's real digest, an operation key
+the plan never validated, and an empty edge set indistinguishable from a genuine
+first step. An interpreter iterating the plan's own steps never sees 'Nothing'.
+-}
+stepExecutionFor ::
+  LifecyclePlan scope planId ->
+  HostConfig ->
+  Step ->
+  Maybe (StepExecution scope planId)
+stepExecutionFor plan cfg step
+  | not planMember = Nothing
+  | otherwise =
+      Just
+        ( mintStepExecution
+            cfg
+            (lifecyclePlanDigest plan)
+            (executionNodeFor steps step)
+        )
+  where
+    steps = lifecyclePlanSteps plan
+    planMember =
+      stepIdentity step `elem` map stepIdentity (stepPlanSteps steps)
+
+{- | The neutral view of one node: its operation key, its frame, and the
+operation keys of its exact ordered plan prefix. The prefix is walked in plan
+order, and plan identities are unique, so each edge resolves to exactly one
+step.
+-}
+executionNodeFor :: StepPlan -> Step -> ExecutionNode
+executionNodeFor plan step =
+  ExecutionNode
+    { executionNodeOperationKey = Text.pack (operationKeyText (stepOperationKey step)),
+      executionNodeFrame = Text.pack (frameId (stepFrame step)),
+      executionNodeDependencyKeys =
+        [ Text.pack (operationKeyText (stepOperationKey candidate))
+        | identity <- stepDependencies plan step,
+          candidate <- stepPlanSteps plan,
+          stepIdentity candidate == identity
+        ]
+    }
 
 -- | Every frame identifier the validated plan declares, in chain order. The
 -- command gate compares a requested frame against this list, so an authority

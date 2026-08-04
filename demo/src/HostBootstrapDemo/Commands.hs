@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 {- | The hostbootstrap-demo project extension streams.
@@ -45,7 +46,9 @@ module HostBootstrapDemo.Commands (
     demoCheckCode,
     demoCases,
     absoluteHostAcceleratorDaemonExePath,
-    hostAcceleratorDaemonProcess,
+    hostAcceleratorDaemonArgs,
+    hostAcceleratorDaemonLaunch,
+    renderRetainedDaemonOutput,
     hostAcceleratorDaemonPowerShellScript,
     hostAcceleratorSubstrate,
     hostDaemonLifecycleStateConsistent,
@@ -115,6 +118,18 @@ import HostBootstrap.Config.Fields (LocalContextView, localSourceRoot)
 import HostBootstrap.Config.Schema (projectConfigSnapshotHash, projectConfigSnapshotHashBytes, renderProjectConfigSnapshotLog, siblingProjectConfigPath, writeProjectConfigFile)
 import HostBootstrap.Config.Vocab (Mount (..), PodResources (..), Production)
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Detached (
+    DetachedLaunch,
+    awaitDetachedChild,
+    detachedChildOutput,
+    detachedChildPid,
+    detachedLaunch,
+    mkDetachedOutputSink,
+    mkDetachedWorkingDirectory,
+    renderDetachedLaunchError,
+    terminateDetachedChild,
+    withDetachedChild,
+ )
 import HostBootstrap.Dhall.Gen (CodecWitness, ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
 import HostBootstrap.Ensure (runEnsure, runTool, runToolWithStdin, toolPresent)
 import qualified HostBootstrap.Ensure.Cuda as EnsureCuda
@@ -138,8 +153,12 @@ import HostBootstrap.Harness (
     variantIdText,
  )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Tar), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Docker, Kill, Kind, Kubectl, Mc, PowerShell, Ps, Tar), mkAbsExe, toolCommandName)
 import HostBootstrap.Incus (IncusVM (..))
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    stepExecutionHostConfig,
+ )
 import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), LiftContext (..), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
@@ -190,6 +209,7 @@ import HostBootstrap.Step (
     ProjectStepId,
     ReversePolicy (..),
     Step,
+    StepAction,
     StepFrame (..),
     TeardownAction (DeleteFrame),
     TeardownOutcome,
@@ -274,8 +294,7 @@ import System.FilePath (normalise, takeDirectory, (</>))
 import System.IO (hFlush, hGetContents, hPutStr, stderr, stdout)
 import System.IO.Error (tryIOError)
 import System.Info (os)
-import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), StdStream (CreatePipe, Inherit, NoStream), createProcess, getPid, proc, readProcessWithExitCode, terminateProcess, waitForProcess)
-import System.Timeout (timeout)
+import System.Process (CreateProcess (std_err, std_out), StdStream (CreatePipe, Inherit), createProcess, proc, readProcessWithExitCode, waitForProcess)
 
 {- | One SPA tab as typed data: its label and the API endpoint it reads (empty
 for a static tab).
@@ -505,7 +524,7 @@ demoLinuxGpuChain root cfg =
 demoEnsureVMProviderStep :: ProjectStepId
 demoEnsureVMProviderStep = demoStepId "ensure-vm-provider"
 
-demoProjectStep :: String -> String -> StepFrame -> (HostConfig -> IO ()) -> Step
+demoProjectStep :: String -> String -> StepFrame -> StepAction -> Step
 demoProjectStep rawIdentity =
     projectStep (demoStepId rawIdentity) ProjectManagedReverse
 
@@ -580,12 +599,12 @@ no-op announce because the payload is carried by the step's own descent rather
 than recomputed here; the two cannot disagree, which is exactly what Sprint
 16.6 required of the @context-init@ label (§ W).
 -}
-contextInitAnnounce :: HostConfig -> IO ()
+contextInitAnnounce :: StepExecution scope planId -> IO ()
 contextInitAnnounce _ =
     putStrLn
         "context-init: the project-container config is streamed into the container in-place on handoff (stdin, no config bind-mount)"
 
-contextInitDirectAnnounce :: HostConfig -> IO ()
+contextInitDirectAnnounce :: StepExecution scope planId -> IO ()
 contextInitDirectAnnounce _ =
     putStrLn
         "context-init: the Linux GPU direct project-container config is streamed into the host-launched container with the direct topology witness"
@@ -648,7 +667,7 @@ cluster lifecycle and the demo's registry logic. The persistent stack: a cordone
 kind cluster (Production profile) → the in-cluster registry → the image (kind-loaded
 + pushed) → the web chart pod → the verified NodePort.
 -}
-deployKindAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployKindAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployKindAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     -- Cordon the cluster to a slice within the budget-sized VM wall (§ O), not the
@@ -986,7 +1005,7 @@ pollRolloutOrDie cfg pol retryNote failMsg probe = do
 create the registry bucket idempotently. The @s3@ driver requires the bucket to
 pre-exist, so this completes fully before the registry pod schedules.
 -}
-deployMinioAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployMinioAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployMinioAction stepCfg _ = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
     runOrDieStdin cfg Kubectl ["apply", "-f", "-"] minioManifest
@@ -1047,7 +1066,7 @@ multi-arch image (its @ctr import --all-platforms@ fails "content digest not
 found"). @registry:2@ is natively multi-arch, so one manifest serves every
 substrate with no component overrides.
 -}
-deployRegistryAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployRegistryAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployRegistryAction stepCfg _ = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
     cfg <- resolveHostConfig
     -- Apply the registry Deployment + NodePort and wait for the rollout. The pod
@@ -1078,7 +1097,7 @@ waitRegistryRollout cfg =
         "deploy-registry: registry deployment did not become Ready"
         (stdoutProbe Kubectl ["rollout", "status", "deployment/registry", "--timeout=60s"])
 
-pushImageAction :: ProjectConfig configScope -> HostConfig -> IO ()
+pushImageAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 pushImageAction stepCfg _ = demoContext stepCfg Context.ProjectCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
     -- Load the image into the kind nodes (so the web chart pod's IfNotPresent pull
@@ -1385,7 +1404,7 @@ parent context, then install the chart. The service frame and a stable config
 fingerprint are Helm values so the pod witness is exact and a changed config
 rolls the StatefulSet even though the ConfigMap is applied outside Helm.
 -}
-deployChartAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployChartAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployChartAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     either die pure (validateAcceleratorReplicaCount (haReplicasNat (haReplicas (deploy projectCfg))))
@@ -1412,8 +1431,9 @@ validateAcceleratorReplicaCount actual =
             ++ show actual
         )
 
-exposeAction :: ProjectConfig configScope -> HostConfig -> IO ()
-exposeAction stepCfg cfg = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
+exposeAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+exposeAction stepCfg execution = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \_ -> do
+    let cfg = stepExecutionHostConfig execution
     ready <- waitWebReachable cfg localContext "http://localhost:30080/api/budget" 60
     unless ready (die "expose-port: the web NodePort 30080 did not become reachable on the host")
     putStrLn "expose-port: web service reachable at http://localhost:30080/"
@@ -1430,7 +1450,7 @@ container config (§ X / § AA), and @HOSTBOOTSTRAP_ACCELERATOR_WS_URL@ points a
 web ClusterIP accelerator port. Runs in the container frame (where @kubectl@
 resolves), the peer of @deploy-chart@.
 -}
-deployAcceleratorDaemonAction :: ProjectConfig configScope -> HostConfig -> IO ()
+deployAcceleratorDaemonAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployAcceleratorDaemonAction stepCfg _ = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg ctx -> do
     cfg <- resolveHostConfig
     WebServiceConfig _ acceleratorServicePort <- either die pure (validatedWebServiceConfigForContext projectCfg ctx)
@@ -1548,8 +1568,8 @@ configMapMountedText value
 indentBlock :: Int -> T.Text -> String
 indentBlock n = unlines . map (replicate n ' ' ++) . lines . T.unpack
 
-startHostAcceleratorDaemonAction :: ProjectConfig configScope -> HostConfig -> IO ()
-startHostAcceleratorDaemonAction stepCfg cfg
+startHostAcceleratorDaemonAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+startHostAcceleratorDaemonAction stepCfg execution
     | hostAcceleratorSubstrate (hcSubstrate cfg) =
         demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
             withHostAcceleratorDaemonOperation ctx $ do
@@ -1557,6 +1577,7 @@ startHostAcceleratorDaemonAction stepCfg cfg
                 daemonExe <- installHostAcceleratorDaemonBinary ctx
                 shutdownPath <- makeAbsolute (hostAcceleratorDaemonShutdownPath ctx)
                 readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
+                outputPath <- makeAbsolute (hostAcceleratorDaemonOutputPath ctx)
                 let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
                     daemonCfg =
                         projectConfigFromContext
@@ -1608,12 +1629,21 @@ startHostAcceleratorDaemonAction stepCfg cfg
                                                 ++ show err
                                             )
                                         )
-                        finishTracked pid = do
+                        -- @quoteChildOutput@ is the § CC half of the launch: a
+                        -- daemon that dies before readiness names its own cause
+                        -- from its retained output instead of collapsing to
+                        -- "the process is gone". It runs before 'abortTracked',
+                        -- which removes the sink along with the other lifecycle
+                        -- witnesses.
+                        finishTracked quoteChildOutput pid = do
                             readiness <-
                                 restore (waitForHostAcceleratorDaemonReady cfg pid daemonExe readyPath hostDaemonReadyAttempts)
                                     `onException` abortTracked
                             case readiness of
-                                Left err -> abortTracked >> die err
+                                Left err -> do
+                                    retained <- quoteChildOutput
+                                    abortTracked
+                                    die (err ++ renderRetainedDaemonOutput retained)
                                 Right () ->
                                     restore (putStrLn ("accelerator-daemon: host daemon ready at " ++ endpoint ++ " (pid " ++ pid ++ ")"))
                                         `onException` abortTracked
@@ -1629,41 +1659,58 @@ startHostAcceleratorDaemonAction stepCfg cfg
                             pid <-
                                 restore (startWindowsHostAcceleratorDaemon cfg daemonExe pidPath daemonOverrides)
                                     `onException` abortWindowsLaunch
-                            finishTracked pid
+                            -- The hidden PowerShell parent owns the Windows
+                            -- child's streams, so there is no sink to quote.
+                            finishTracked (pure T.empty) pid
                         else do
-                            (_, _, _, ph) <-
-                                restore (createProcess (hostAcceleratorDaemonProcess daemonExe daemonEnv))
-                                    `onException` releaseHostAcceleratorDaemon ctx
-                            let abortUntracked = do
-                                    removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
-                                    removedReady <- try (removeIfExists readyPath) :: IO (Either SomeException ())
-                                    _ <- try (terminateProcess ph) :: IO (Either SomeException ())
-                                    waited <- timeout 5000000 (try (waitForProcess ph) :: IO (Either SomeException ExitCode))
-                                    case (removed, removedReady, waited) of
-                                        (Right (), Right (), Just (Right _)) -> releaseHostAcceleratorDaemon ctx
-                                        _ ->
-                                            ioError
-                                                ( userError
-                                                    ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
-                                                        ++ show removed
-                                                        ++ ", readiness cleanup="
-                                                        ++ show removedReady
-                                                        ++ ", process exit="
-                                                        ++ show waited
-                                                        ++ ")"
+                            launch <-
+                                either
+                                    (\err -> releaseHostAcceleratorDaemon ctx >> die ("accelerator-daemon: " ++ err))
+                                    pure
+                                    (hostAcceleratorDaemonLaunch daemonExe hostAcceleratorDaemonArgs daemonEnv (takeDirectory daemonExe) outputPath)
+                            -- Acquire-and-spawn is total (§ HH), so a failed
+                            -- launch is a value rather than an exception and
+                            -- needs no unmasked window to be reported: it
+                            -- either created no child, or the body below owns
+                            -- the one it created.
+                            launched <- withDetachedChild launch $ \child -> do
+                                let abortUntracked = do
+                                        removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
+                                        removedReady <- try (removeIfExists readyPath) :: IO (Either SomeException ())
+                                        _ <- try (terminateDetachedChild child) :: IO (Either SomeException ())
+                                        waited <- try (awaitDetachedChild 5000000 child) :: IO (Either SomeException (Maybe ExitCode))
+                                        case (removed, removedReady, waited) of
+                                            (Right (), Right (), Right (Just _)) -> releaseHostAcceleratorDaemon ctx
+                                            _ ->
+                                                ioError
+                                                    ( userError
+                                                        ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
+                                                            ++ show removed
+                                                            ++ ", readiness cleanup="
+                                                            ++ show removedReady
+                                                            ++ ", process exit="
+                                                            ++ show waited
+                                                            ++ ")"
+                                                        )
                                                     )
-                                                )
-                            mpid <- getPid ph `onException` abortUntracked
-                            case mpid of
-                                Nothing -> do
-                                    abortUntracked
-                                    die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
-                                Just pid -> do
-                                    restore (writeFile pidPath (show pid ++ "\n"))
-                                        `onException` abortUntracked
-                                    finishTracked (show pid)
+                                mpid <- detachedChildPid child `onException` abortUntracked
+                                case mpid of
+                                    Nothing -> do
+                                        abortUntracked
+                                        die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
+                                    Just pid -> do
+                                        restore (writeFile pidPath (show pid ++ "\n"))
+                                            `onException` abortUntracked
+                                        finishTracked (detachedChildOutput child) (show pid)
+                            case launched of
+                                Right () -> pure ()
+                                Left err -> do
+                                    releaseHostAcceleratorDaemon ctx
+                                    die ("accelerator-daemon: " ++ renderDetachedLaunchError err)
     | otherwise =
         putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
+  where
+    cfg = stepExecutionHostConfig execution
 
 hostAcceleratorDaemonDir :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonDir ctx =
@@ -1692,6 +1739,14 @@ hostAcceleratorDaemonShutdownPath ctx =
 hostAcceleratorDaemonReadyPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonReadyPath ctx =
     hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.ready"
+
+{- | Where the sealed launch retains the host daemon's own output, so a startup
+failure can quote it (§ CC). It is a lifecycle witness like the pid, ready, and
+shutdown files, and is removed with them.
+-}
+hostAcceleratorDaemonOutputPath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonOutputPath ctx =
+    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.output"
 
 hostAcceleratorDaemonOwnerPath :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonOwnerPath ctx =
@@ -1729,22 +1784,54 @@ hostAcceleratorSubstrate :: Substrate -> Bool
 hostAcceleratorSubstrate sub =
     isAppleSilicon sub || substrateName sub == WindowsGpu
 
-{- | Build the POSIX host-daemon process specification. A host daemon must not
-inherit the @project up@ process's capture pipe: an inherited writer prevents
-the harness from ever observing EOF. 'NoStream' plus 'close_fds' closes that
-surface on POSIX. Windows uses 'hostAcceleratorDaemonPowerShellScript' instead,
-because @process@ only honors @close_fds@ there when all three streams are
-@Inherit@; hidden @Start-Process@ supplies the independent Windows lifetime.
+{- | The host daemon's argv, written once.
+
+Both the launch and the process-identity matcher read it: the matcher compares
+against the spellings a host reports a command line in, and those spellings must
+be derived from the argv actually launched rather than restated beside it.
 -}
-hostAcceleratorDaemonProcess :: FilePath -> [(String, String)] -> CreateProcess
-hostAcceleratorDaemonProcess daemonExe daemonEnv =
-    (proc daemonExe ["service", "run"])
-        { env = Just daemonEnv
-        , std_in = NoStream
-        , std_out = NoStream
-        , std_err = NoStream
-        , close_fds = True
-        }
+hostAcceleratorDaemonArgs :: [String]
+hostAcceleratorDaemonArgs = ["service", "run"]
+
+{- | Build the POSIX host-daemon launch through the sealed shape boundary
+(@HostBootstrap.Detached@, § HH).
+
+The launch's stdio disposition is not selectable here, which is the point: a
+host daemon must neither inherit the @project up@ process's capture pipe (an
+inherited writer prevents the harness from ever observing EOF) nor have its
+descriptors closed (a threaded-RTS child then claims the freed descriptors for
+its own IO-manager control channel and wedges before it can report anything).
+The boundary supplies the one lawful shape and retains the child's output so a
+startup failure names its cause.
+
+Windows uses 'hostAcceleratorDaemonPowerShellScript' instead, because @process@
+only honors @close_fds@ there when all three streams are inherited; hidden
+@Start-Process@ supplies the independent Windows lifetime.
+-}
+hostAcceleratorDaemonLaunch ::
+    FilePath ->
+    [String] ->
+    [(String, String)] ->
+    FilePath ->
+    FilePath ->
+    Either String DetachedLaunch
+hostAcceleratorDaemonLaunch daemonExe daemonArgs daemonEnv workingDirectory outputPath = do
+    exe <- mkAbsExe daemonExe
+    workDir <- mkDetachedWorkingDirectory workingDirectory
+    sink <- mkDetachedOutputSink outputPath
+    pure (detachedLaunch exe daemonArgs daemonEnv workDir sink)
+
+{- | Quote whatever the host daemon managed to write before it failed, so the
+readiness failure carries the child's own cause (§ CC). An empty retention adds
+nothing rather than an empty banner.
+-}
+renderRetainedDaemonOutput :: T.Text -> String
+renderRetainedDaemonOutput retained
+    | T.null (T.strip retained) = ""
+    | otherwise =
+        "\n--- host daemon output ---\n"
+            ++ T.unpack (T.stripEnd retained)
+            ++ "\n--- end host daemon output ---"
 
 {- | Render the Windows-only hidden launch script. The short-lived PowerShell
 parent receives the four daemon-specific environment overrides, removes the
@@ -1859,6 +1946,7 @@ stopHostAcceleratorDaemonUnlocked cfg ctx = do
                             Left err -> die err
     removeIfExists shutdownPath
     removeIfExists readyPath
+    removeIfExists (hostAcceleratorDaemonOutputPath ctx)
     releaseHostAcceleratorDaemon ctx
   where
     waitForExit :: String -> FilePath -> Int -> IO (Either String Bool)
@@ -1950,14 +2038,22 @@ hostDaemonIdentityMatches windows daemonExe result = case result of
     _ -> False
   where
     trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+    -- A host reports a command line in one of four spellings depending on
+    -- whether it quotes the executable, the arguments, or both. All four are
+    -- derived from the one 'hostAcceleratorDaemonArgs' the launch uses, so the
+    -- matcher cannot drift from the argv it is matching.
     commandMatches caseInsensitive observed =
         let normalize = if caseInsensitive then map toLower else id
-            actual = normalize (trim observed)
-            bare = normalize (daemonExe ++ " service run")
-            quotedExe = normalize ("\"" ++ daemonExe ++ "\" service run")
-            quotedArgs = normalize (daemonExe ++ " \"service\" \"run\"")
-            quotedExeAndArgs = normalize ("\"" ++ daemonExe ++ "\" \"service\" \"run\"")
-         in actual `elem` [bare, quotedExe, quotedArgs, quotedExeAndArgs]
+            quote value = "\"" ++ value ++ "\""
+            spelling quoteExe quoteArgs =
+                normalize
+                    ( unwords
+                        ( (if quoteExe then quote daemonExe else daemonExe)
+                            : map (if quoteArgs then quote else id) hostAcceleratorDaemonArgs
+                        )
+                    )
+         in normalize (trim observed)
+                `elem` [spelling exeQuoted argsQuoted | exeQuoted <- [False, True], argsQuoted <- [False, True]]
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists path = do

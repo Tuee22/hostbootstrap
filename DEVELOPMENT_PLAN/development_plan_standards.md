@@ -210,7 +210,7 @@ implemented unless the plan marks the owning phase `Done`.
 
 ## hostbootstrap-Specific Contracts
 
-Sections K–FF are the normative target contracts. They define what phase closure must make true; they
+Sections K–HH are the normative target contracts. They define what phase closure must make true; they
 are not blanket claims that every invariant is already enforced. The
 [README phase table](README.md#current-phase-status), phase-local `Current Status`/`Remaining Work`, and
 the governed architecture documents distinguish implemented behavior from open repair. When a target
@@ -225,6 +225,11 @@ through `$PATH`; every invocation reads an absolute path from typed host configu
 host-provider tools such as `colima` and `incus` (§ U); the in-VM tools they dispatch to are the VM's own
 `$PATH` binaries reached through a single resolved host provider command (the VM is a separate machine —
 the doctrine governs host invocation).
+
+This section governs *which* executable an invocation names. The *shape* of the invocation — stdio
+disposition, descriptor inheritance, session, environment, and working directory — is a separate closed
+boundary under § HH, and resolving a path absolutely says nothing about it. A child that outlives its
+launcher is the case where the two axes come apart most sharply.
 
 ### L. Substrate and Ensure-Reconciler Contract
 
@@ -1988,3 +1993,44 @@ operation precondition. Phase 14 owns the generic reachability and delivery alge
 identity-bound readiness/precondition machinery, and Phase 13 owns the demo renderer and live
 host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
 [network_reachability](../documents/architecture/network_reachability.md).
+
+### HH. Unrepresentable Illegal State
+
+A boundary is a type, not a convention. Where a value has exactly one lawful shape, the unlawful shapes
+have no constructor: a private constructor with a validating smart producer, a rank-2 continuation that
+prevents a value escaping the scope that authorized it, a closed sum with a total eliminator, and
+phantom indices that refuse cross-plan, cross-scope, or cross-resource mixing. Sections § CC, § EE, and
+§ X are instances of this rule rather than competitors to it — readiness witnesses, capabilities, and
+command authorities are three boundaries that already apply it. § K governs *which* path a host
+invocation names; this section governs the *shape* every such value is allowed to take.
+
+A claim of unrepresentability carries a proof obligation. A boundary asserting that a shape cannot be
+constructed ships a compile-fail fixture under `core/hostbootstrap-core/test/compile-fail/`, registered
+in `CompileFailSpec`, that fails for the named reason rather than incidentally. Without that fixture the
+claim is a comment, and a comment is not a boundary. A fixture whose expectation can be satisfied by an
+unrelated compiler error is worse than none, because it reports the boundary as held.
+
+A test that asserts the current value of an unsealed field pins whatever that field happens to hold. When
+the held value is wrong, the test makes the defect the contract and every gate agrees with it. Prefer a
+behavioral assertion that the lawful shape *does the lawful thing*: such a test cannot be satisfied by an
+unlawful shape, so it fails when the boundary is missing rather than certifying its absence.
+
+Spawning a child process is such a boundary. A child that outlives its launcher has exactly one lawful
+stdio disposition, file-descriptor inheritance setting, session, environment, and working directory, and
+each of `System.Process`'s other `StdStream` constructors is wrong for its own reason: `Inherit` retains
+the launcher's capture pipe so nothing reading the launcher observes EOF, `CreatePipe` leaves the parent
+blocked on an EOF that never arrives or delivering `SIGPIPE` after it closes the read end, and `NoStream`
+closes the descriptor — which the `process` documentation restricts to children that never use it, and
+which a threaded-RTS child answers by claiming the freed descriptors for its own IO-manager control
+channel. The assembled `CreateProcess` for such a child is therefore not caller-constructible: no module
+outside the sealed boundary builds one, and the disposition is not a parameter.
+
+What this does not buy. Hidden constructors exclude construction by cooperating code inside this
+repository. They do not exclude an external actor, do not bind a caller who reaches past the boundary to
+the underlying package directly, and do not make a runtime disposition safe — § EE's limit that no plan
+may claim compile-time exactly-once effects from phantom types alone applies here unchanged. A sealed
+shape is a guarantee about what this repository can express, not about what the operating system can be
+made to do. Phase 2 owns the host-invocation boundary and its closure, Phases 9, 15, and 16 own the
+readiness, authority, and lifecycle instances, and Phase 21 owns the mechanical drift guards that keep a
+sealed surface sealed. The canonical architecture is
+[unrepresentable_state](../documents/architecture/unrepresentable_state.md).

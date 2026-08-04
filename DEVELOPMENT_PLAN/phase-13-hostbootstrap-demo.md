@@ -214,7 +214,7 @@ VM-backed stack through `cluster up: nodes Ready`, MinIO, the in-cluster registr
 with all five cases (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
 `durable-readback`) passing on both config variants. The complete evidence block lives with the sprint
 that owns the lane, [phase-5 Sprint 5.5](phase-5-cluster-lifecycle-and-resource-cordoning.md). This closes
-**only** the Linux CPU lane; the Apple Silicon lane has no available host.
+**only** the Linux CPU lane. (The Apple Silicon lane had no available host when this was written; it ran and closed on 2026-08-03.)
 
 
 **Durable root end-to-end proof — OPEN.** The demo now creates host project-root `.data` and carries it
@@ -1087,9 +1087,9 @@ message variants, then tore down cleanly. The four Harbor entries **and** the re
 `kind load registry:2` pre-load are moved from `## Pending` to `## Removed Surfaces` in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with this validation stamp.
 
-### Sprint 13.17: Substrate accelerator daemon worked example [Active]
+### Sprint 13.17: Substrate accelerator daemon worked example [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Accelerator.hs`,
 `demo/src/HostBootstrapDemo/Web/*`, `demo/web/`, `demo/playwright/`,
 `demo/test/AcceleratorSpec.hs`
@@ -1153,6 +1153,113 @@ Implementation and static validation are complete:
   setup before the later refusal and holds none of the § EE ownership clauses. Sprint 10.9 owns that fail-closed
   reservation/receipt replacement and verified teardown.
 
+**Apple Silicon lane CLOSED 2026-08-03 at `10/10 passed` — see the closure record at the end of this
+block. This is the canonical evidence block for the Apple lane; Sprints 11.10, 15.8, 16.5, and 18.5
+reference it. The attempt narrative below is retained as the dated record of the defect and its root
+cause.**
+
+**Apple Silicon lane attempted 2026-08-02/03 — the lane is no longer hostless, and it does not pass.**
+
+Host: Apple M1 Max, 64 GiB, macOS 25.5.0 arm64, Lima/VZ, GHC 9.12.4. Clean slate — no `demo/.data`, no
+sibling config, no Lima instance, no running containers. `hostbootstrap doctor` reported
+`substrate: apple-silicon (arm64)` with the Xcode Command Line Tools, passwordless sudo, and Homebrew
+floor satisfied. Run: `hostbootstrap-demo test run all`. **Report card: `0/10 passed`.**
+
+What the first variant (`hello-world`) *did* prove, in order, before it failed — this is the first live
+exercise of the Apple/Lima chain recorded anywhere in this plan:
+
+- `ensure lima` no-op, then `vm up` launched `hostbootstrap-demo-vm` at the declared 6 CPU / 10 GiB /
+  80 GiB budget (cordon #1), waited for the guest to answer and for its network, waited for the durable
+  share to mount, and linked `/var/tmp/hostbootstrap-demo-data -> <root>/demo/.data`;
+- `pristine-bootstrap` installed the toolchain in the guest, built the host-native binary in the VM
+  (build #2), and built the project image `FROM` the pulled rolling base (build #3) — **including the
+  in-Dockerfile `check-code` gate**, which passed;
+- the container frame reached `cluster up: nodes Ready`, `deploy-minio` (MinIO ready, registry bucket
+  present), `deploy-registry` (rollout complete), `push-image` (kind-loaded and pushed to the in-cluster
+  registry), the chart, and `expose-port: web service reachable at http://localhost:30080/`.
+
+It then failed at the one step this lane exists to prove, the **host-resident** accelerator daemon:
+
+```text
+accelerator-daemon: pid 41211 exited before readiness
+```
+
+**Root cause, established 2026-08-03: the launch closes the child's standard streams.**
+`hostAcceleratorDaemonProcess` sets `std_in`/`std_out`/`std_err` to `NoStream`, which on POSIX closes fds
+0/1/2 rather than pointing them anywhere. The pinned `process-1.6.26.1` documentation restricts that
+constructor to a child that never uses the descriptors and prescribes a handle on the null device
+instead; this child configures buffering and prints its selected service before the handler runs, and a
+threaded-RTS child then claims the freed descriptors for its own IO-manager control channel. Measured on
+this host against the real binary, `--help` alone: descriptors closed → it **hangs indefinitely**;
+descriptors pointed at `/dev/null` or at a file → `exit 0`.
+
+Two consequences follow, and both matched the run. The daemon never reaches substrate detection, the
+build-stack ensure, the worker build, or the connect loop — so nothing it would publish is evidence about
+this lane. And none of its ten failure paths can report anything, because every one writes to a
+descriptor that is gone; the launcher can only observe that the process is no longer running. That is the
+§ CC gap this lane surfaced, and it is a consequence of the same defect rather than a second one.
+
+The lane is otherwise sound on this host. A manual reproduction with inherited streams reached
+`ensure apple-metal: present (no-op)` and
+`accelerator daemon: connecting to ws://127.0.0.1:30081/... as apple-metal artifact <hash>`, then retried
+the connect rather than exiting — so Metal ensure and worker-artifact resolution both work. The
+`apple-metal` probe was reproduced by hand and passes: a visible Metal device, a macOS SDK path from the
+Command Line Tools, and a Swift + Metal smoke build that runs and prints `Apple M1 Max`.
+
+The defect is a representable illegal state, not a wrong constant: the disposition was a field on a
+caller-assembled `CreateProcess`, and `demo/test/CommandsSpec.hs` asserted the value it held, so every
+gate agreed with it. Sealing that boundary is **Phase 2 Sprint 2.7** under the new
+[§ HH](development_plan_standards.md) /
+[unrepresentable_state](../documents/architecture/unrepresentable_state.md). This sprint's Apple lane
+cannot progress past the host-daemon step until that lands; closing it is expected to expose the next
+defect on the lane rather than turn it green.
+
+Teardown behaved: the failed `project up` ran its best-effort destroy, the harness then ran `project
+destroy` again, the Lima VM was deleted both times, and **`demo/.data` survived both destroy cycles**
+along with the empty `.test_data` scaffolding parent — the never-delete-`.data` invariant held on this
+lane. No Lima instance, container, or stray daemon process was left behind.
+
+**The second variant's failure is not product evidence and must not be read as any.** Its image build
+failed the in-Dockerfile `fourmolu --mode check app src` because a demo source file was edited while the
+run was in flight; the formatting was corrected afterwards and the gate is clean. It does incidentally
+confirm the in-Dockerfile `check-code` gate is live and catches a real break.
+
+**Consequence for this sprint (as written 2026-08-03, before the closing run):** the Apple Silicon lane
+stays open, but its blocker is now a named, reproducible, root-caused defect owned by another phase
+rather than "no available host". Closing it needs Sprint 2.7's sealed launch boundary first, then
+whatever the daemon reports once it can run and speak. Neither is a static-gate item for this sprint.
+
+**Apple Silicon lane CLOSED 2026-08-03 — `test report: 10/10 passed`.** Sprint 2.7's sealed launch
+boundary (`HostBootstrap.Detached`, § HH) landed the same day and the lane was re-run against it on the
+same host: Apple M1 Max, 64 GiB, macOS 25.5.0 arm64, Lima/VZ, GHC 9.12.4. All five cases
+(`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, `durable-readback`) passed on
+both config variants (`hello-world`, `hello-universe`).
+
+- The step that reported `pid 41211 exited before readiness` reported
+  `accelerator-daemon: host daemon ready at ws://127.0.0.1:30081/api/accelerator/daemon` on **all four**
+  bring-ups — each variant is brought up once for its cases and again by `durable-readback`'s
+  destroy → up cycle.
+- **`e2e-tabs` passed on both variants**, which is the load-bearing result rather than the readiness line.
+  That case only passes when a connected daemon actually serves `/api/accelerator/add`, so Apple Metal
+  ensure, the Swift/Metal worker build, the WebSocket connect, and the CBOR round trip are all proved
+  live on this substrate. The 2026-08-02/03 finding that Metal ensure and worker-artifact resolution
+  "both work" was a hand reproduction; this is the integrated proof.
+- `durable-readback` passed on both variants, so the write → `project destroy` → `project up` →
+  read-back cycle holds on Apple/Lima; `demo/.data/web/marker` survived every cycle.
+- The in-Dockerfile `check-code` gate (`fourmolu`, `hlint`, `cabal --ghc-options=-Werror`) passed on each
+  of the four image builds.
+- Teardown left nothing behind on any cycle: no Lima instance, no generated sibling config, no
+  `.test_data/<runId>`.
+
+**One expectation this run falsified.** Sprint 2.7 predicted that sealing the launch would expose the
+*next* Apple-lane defect rather than turn the lane green. It did not: the launch shape was the only
+defect on this lane, and the four sprints that were waiting on this evidence — 13.17, 15.8, 16.5, and
+18.5 — all close their Apple lane on this one run.
+
+This run also discharges the live re-run § C owed on this lane for every static-only change that
+preceded it, including Sprint 16.6's plan-minted step descriptor (2026-08-02) and its independent root
+gate, both of which change how every forward action is invoked.
+
 The accelerator implementation has dated static evidence, but current work is not limited to live closure:
 Sprint 13.18 also owns the typed Production plan/TestComponent, freshly pulled rolling base, and
 registry/MinIO metadata/provenance repair.
@@ -1164,7 +1271,17 @@ recorded once with
 
 The daemon Deployment rolled out, dialed the accelerator `ClusterIP`, and the Playwright `e2e-tabs` case
 asserted the daemon-returned sum on both variants. The later 2026-07-29 Linux CPU run closed the CPU
-in-cluster lane; only the native **Apple** host-daemon lane remains open.
+in-cluster lane, and the 2026-08-03 Apple run above closed the last one.
+
+**All four substrate lanes are now closed** — Windows GPU (dated, accepted), native Linux GPU
+(2026-07-28), native Linux CPU (2026-07-29), and Apple Silicon (2026-08-03). This sprint's own
+deliverables and every lane it owns are therefore complete.
+
+**Not this sprint's to close:** the cooperative bring-up precondition noted above still maps an
+unavailable provider/Docker probe tool to "not running" and holds none of the four § EE ownership
+clauses. That replacement is named as **Sprint 10.9's** — the fail-closed reservation/receipt and
+verified teardown — and is called out here as an external dependency rather than retained as open work in
+this sprint (§ C).
 
 ### Sprint 13.18: Production-plan demo wiring and artifact provenance [Blocked]
 

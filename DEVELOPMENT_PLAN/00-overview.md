@@ -59,8 +59,12 @@ Establishes the Cabal library/executable/test layout and the generic CLI entrypo
 ### Phase 2 — Host floor, tools, and config
 
 Owns the pre-binary host floor, native Haskell toolchain preparation, substrate detection, and the closed
-`HostTool`/`AbsExe` boundary. Sprint 2.5 owns the remaining bare-host-call inventory and Linux/Windows
-bootstrap prerequisite reconciliation.
+`HostTool`/`AbsExe` boundary. Closed Sprint 2.5 settled the bare-host-call inventory and the
+Linux/Windows bootstrap prerequisite reconciliation; closed Sprint 2.6 added the pre-binary C build
+libraries. Phase 2 also owns the second axis of host invocation: § K fixes *which* executable an
+invocation names, and closed Sprint 2.7 owns the *shape* it takes — the stdio disposition, descriptor
+inheritance, session, environment, and working directory of a child that outlives its launcher (§ HH),
+sealed in `HostBootstrap.Detached`.
 
 ### Phase 3 — Ensure reconcilers
 
@@ -143,7 +147,7 @@ own consumer freeze imports, offline completeness, or version-lock replayability
 Owns the demo's scope-polymorphic plan shape instantiated separately for Production and each Harness run,
 the harness-only test component, pulled rolling-base consumption, current registry/MinIO
 metadata, reachability-safe rendering and persistence proof, the threaded static test component, plus the
-remaining Apple Silicon accelerator demo lane and Sprint 13.18's worked integration closure.
+Sprint 13.18's worked integration closure; its four substrate lanes, Apple Silicon last, are closed.
 
 ### Phase 14 — Composition methodology
 
@@ -158,14 +162,14 @@ adopting its engine at the fixed `service run` call site once that producer path
 Owns descriptive context versus opaque role-specific root/command authority, capability narrowing, safe
 init requests, durable-placement enforcement, and the transport envelope for one-time child authority
 handoff. Phase 10 consumes that independent root authority in the sole Production/Harness mode/profile
-opener. Phase 15 also owns the remaining Apple Silicon accelerator context validation.
+opener. Phase 15's Apple Silicon accelerator context validation closed 2026-08-03 with Sprint 15.8.
 
 ### Phase 16 — Project lifecycle command
 
 Owns a single `ProjectPlan scope specDigest planId configId cfg`, recursive interpretation, authenticated authority
 rehydration, and
 scope/receipt-preserving reverse teardown after failure, interruption, down, or destroy. It also owns
-the remaining Apple Silicon accelerator lifecycle validation.
+Apple Silicon accelerator lifecycle validation, which closed 2026-08-03 with Sprint 16.5.
 
 ### Phase 17 — Chain-driven test and context introspection
 
@@ -205,7 +209,7 @@ reporting and closure focus, not an execution schedule; a higher-numbered produc
 before the lower-numbered phase that consumes it. The strict landing order is:
 
 1. Sprints 2.5, 2.6, 5.5, 5.6, 5.6.1, 5.7, 5.8, 6.7, 8.7, 9.4, 9.10, 10.10, 12.4, 13.19, 14.7, and
-   19.6–19.8 are closed, so **Phase 5 is closed** and Phase 2 returned to closed. Sprint 13.20 also
+   19.6–19.8 are closed, so **Phase 5 is closed**. Sprint 13.20 also
    closed 2026-07-30. **Corrected 2026-07-30:** Sprint 11.10's remaining demo alias migration is *not* a
    dependency root. Adopting the landed alias backend at the demo call site requires a `Managed`
    durable-share handle, which requires the plan-owned dependency-snapshot traversal (§ CC) and a
@@ -213,7 +217,14 @@ before the lower-numbered phase that consumes it. The strict landing order is:
    [phase-11-incus-host-provider.md](phase-11-incus-host-provider.md). Sprint 16.6 is the current
    co-active producer root for that call site and the remaining 10.9/15.9 integration tranche.
    The 2026-07-29 native Linux CPU `10/10` run additionally closed the Linux CPU lane in Sprints 13.17,
-   15.8, 16.5, and 18.5, leaving those four Active only for the hostless Apple lane.
+   15.8, 16.5, and 18.5.
+   **Corrected 2026-08-03:** Phase 2 did *not* stay closed. The Apple lane is no longer hostless — it ran,
+   reported `0/10`, and exposed an unsealed host-invocation shape boundary that Sprint 2.5's
+   which-executable scan could not see. **Sprint 2.7 was an independent root**: `Blocked by` nothing,
+   producing for no other sprint, and gating the Apple lane residue in Sprints 13.17, 15.8, 16.5, and
+   18.5. **It closed the same day**, and the Apple lane re-run against it reported `10/10 passed`,
+   closing all four of those lanes at once and re-closing Phase 2. No live-lane work remains anywhere in
+   the plan; the remaining open sprints are the 16.6/10.9/15.9 tranche and its dependents.
 2. Closed Sprints 8.7 and 19.6 enabled Sprint 19.7; closed Sprint 19.7 enabled Sprint 19.8. Closed
    Sprints 19.7–19.8 enabled Sprint 9.10, whose opaque capabilities are now minted only from the scoped
    codec and finalized plan.
