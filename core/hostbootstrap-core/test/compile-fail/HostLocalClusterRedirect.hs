@@ -5,7 +5,7 @@
 --
 -- There is no @Reachability 'HostLocal 'ClusterOnly@ constructor, so
 -- 'redirectToStore' cannot be applied for that pair at all. This is the
--- unrepresentable case Sprint 14.7 exists to create.
+-- unrepresentable case the composition-and-network-algebra phase exists to create.
 module HostLocalClusterRedirect where
 
 import HostBootstrap.Network

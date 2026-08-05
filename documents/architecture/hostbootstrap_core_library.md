@@ -82,7 +82,7 @@ Harness variants; `psTestInit` separately builds `tcfg`. An opaque typed service
 finalized with the full codec under one digest, and demo role projection consumes only explicit
 assembled Web/Accelerator fields with no fallback values. See the
 [generic_project_model.md](generic_project_model.md) design,
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
 ## Module Surface

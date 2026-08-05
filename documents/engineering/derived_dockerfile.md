@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [derived project standards](derived_project_standards.md), [code check doctrine](code_check_doctrine.md), [binary context](../architecture/binary_context_config.md), [development plan](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md), [phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md)
+**Referenced by**: [derived project standards](derived_project_standards.md), [code check doctrine](code_check_doctrine.md), [binary context](../architecture/binary_context_config.md), [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 
 > **Purpose**: Define the idiomatic derived-project Dockerfile shape — the in-Dockerfile `check-code` gate, the `purescript-bridge` → `spago` → `esbuild` web build, and the build-stage ordering — using the worked `hostbootstrap-demo` container as the reference.
 

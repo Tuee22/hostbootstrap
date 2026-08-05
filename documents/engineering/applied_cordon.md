@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md)
+**Referenced by**: [resource budgeting](resource_budgeting.md), [cluster lifecycle](cluster_lifecycle.md), [wsl2](wsl2.md), [canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
 
 > **Purpose**: Describe the applied resource controls, including the current bare-Linux storage gap,
 > and the target in which every declared dimension is an enforced ceiling.
@@ -261,5 +261,5 @@ Native-lane status and exact dated test evidence belong in
 - [resource budgeting](resource_budgeting.md) — the budget field and capacity preflight.
 - [cluster lifecycle](cluster_lifecycle.md) — where the runtime ring is applied.
 - [schema](schema.md) — the project-local `resources` record.
-- [phase 9](../../DEVELOPMENT_PLAN/phase-9-applied-cordon-and-one-parser.md) — the development plan for
+- [canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md) — the development plan for
   this surface.

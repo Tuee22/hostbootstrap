@@ -58,8 +58,41 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
   writeFile (root </> "README.md") (unlines ["# hostbootstrap", "see documents/ only"])
   writeFile (root </> "AGENTS.md") (unlines ["# Agents", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
   writeFile (root </> "CLAUDE.md") (unlines ["# Claude", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
-  -- A phase doc missing its Documentation Requirements section.
-  writeFile (root </> "DEVELOPMENT_PLAN" </> "phase-9-x.md") (unlines ["# Phase 9", "body"])
+  -- A phase doc missing its Documentation Requirements section and every § G
+  -- header field. Its number is 9, so with no phase-0..8 present the numbering
+  -- check also fires on the gap.
+  writeFile (root </> "DEVELOPMENT_PLAN" </> "phase-9-x.md") (unlines ["# the canonical-quantities-and-reconcile-results phase", "body"])
+  -- A phase doc that violates every plan-doctrine rule at once (§ A, § C, § G,
+  -- § II): it depends on a HIGHER-numbered phase, declares two non-baseline
+  -- substrates, carries a reversal in a sprint title, gives that sprint a
+  -- `Blocked by` field, tags it with a status outside the closed vocabulary, and
+  -- leaves an Active sprint's Remaining Work empty.
+  writeFile
+    (root </> "DEVELOPMENT_PLAN" </> "phase-10-doctrine.md")
+    ( unlines
+        [ "# Phase 10 — doctrine violations",
+          "",
+          "**Status**: Blocked",
+          "**Depends on**: [Phase 9](phase-9-x.md), [Phase 12](phase-12-later.md)",
+          "**Substrates**: linux-cpu, apple-silicon, nvidia",
+          "**Gate**: none",
+          "",
+          "## Sprints",
+          "",
+          "### Sprint 10.1: Retire the old surface [Superseded]",
+          "",
+          "**Status**: Active",
+          "**Blocked by**: Sprint 12.1",
+          "",
+          "#### Remaining Work",
+          "",
+          "## Documentation Requirements",
+          ""
+        ]
+    )
+  writeFile
+    (root </> "DEVELOPMENT_PLAN" </> "phase-12-later.md")
+    (unlines ["# Phase 12 — later", "", "**Status**: Planned", "**Depends on**: none", "**Substrates**: linux-cpu", "**Gate**: none", "", "## Documentation Requirements", ""])
   -- A mis-named governed doc (not snake_case) under a valid category; it carries
   -- a complete metadata block so only the naming check fires on it.
   writeFile
@@ -104,6 +137,16 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
       "phase document missing '## Documentation Requirements' section",
       "broad doctrine doc missing",
       "file name is not lowercase snake_case: BadName.md",
-      "category not in the canonical taxonomy"
+      "category not in the canonical taxonomy",
+      -- Plan doctrine (development_plan_standards.md § A, § C, § G, § II).
+      "phase numbering is not contiguous from 0",
+      "phase document missing '**Depends on**:' header field",
+      "phase status is not one of Done|Active|Planned: Blocked",
+      "depends on phase 12, which is not strictly lower",
+      "phase declares more than one non-baseline substrate",
+      "phase narrative reverses earlier work",
+      "sprint carries a '**Blocked by**' field",
+      "sprint title has no [Done|Active|Planned] tag",
+      "an Active sprint has an empty '#### Remaining Work' section"
     ]
     expect

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](binary_context_config.md)
+**Referenced by**: [documents index](../README.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), [binary context](binary_context_config.md)
 
 > **Purpose**: Define the generated Dhall configuration model — `.dhall` as **parameters + context +
 > witness** (never the plan shape), the current split ownership of child projection/delivery and its

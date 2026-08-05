@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
-{- | The verb-indexed reverse projection and its teardown forest (Sprint 16.6).
+{- | The verb-indexed reverse projection and its teardown forest (the recursive-lifecycle-command phase).
 
 The plan under test is the demo's own shape: a metal frame that ensures the
 provider (preserve-on-reverse) and launches the VM, a VM frame that builds, and

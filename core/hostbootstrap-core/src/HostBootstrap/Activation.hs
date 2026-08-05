@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | The broker-signed runtime role activation (§ X, Sprint 15.9).
+{- | The broker-signed runtime role activation (§ X, the operator-root-and-command-authority phase).
 
 A restartable service or daemon leaf cannot re-enter through the recursive
 lifecycle handoff: the parent that would relay a grant is long gone by the time
@@ -25,7 +25,7 @@ instance is bound into the result — a value retained from one instance cannot
 run as another. The manifest carries only *digests*: no cleartext secret is
 representable in it.
 
-Sprint 14.6 consumes 'VerifiedRuntimeRoleActivation' together with the one-use
+the composition-and-network-algebra phase consumes 'VerifiedRuntimeRoleActivation' together with the one-use
 'LifecycleAdmission' this module reserves, and owns the role plan, cursor, and
 phase machine built on top.
 -}
@@ -267,7 +267,7 @@ data RuntimeMeasurement = RuntimeMeasurement
 -- ---------------------------------------------------------------------------
 -- The verified package
 
-{- | The inseparable activation package Sprint 14.6 consumes.
+{- | The inseparable activation package the composition-and-network-algebra phase consumes.
 
 Opaque and produced only by 'verifyRuntimeRoleActivation'. It carries the signed
 manifest, the measured instance it was paired with, and the protected
@@ -301,7 +301,7 @@ activationService ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
 activationService (VerifiedRuntimeRoleActivation manifest _) = manifestService manifest
 
--- | The effect row this activation permits. Sprint 18.6 revalidates it before
+-- | The effect row this activation permits. the service-runtime phase revalidates it before
 -- minting the service command authority; it is not itself effect authority.
 activationPermittedEffects ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> [Text]
@@ -314,7 +314,7 @@ activationSecretChannel ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
 activationSecretChannel (VerifiedRuntimeRoleActivation manifest _) = manifestSecretChannel manifest
 
-{- | The signed parent lifecycle-plan digest. Sprint 14.6 keys the role's durable
+{- | The signed parent lifecycle-plan digest. the composition-and-network-algebra phase keys the role's durable
 lifecycle admission on it and binds the narrowed role plan back to it; the child
 never recomputes it from its least-authority wire.
 -}
@@ -407,7 +407,7 @@ verifyRuntimeRoleActivation key expectedRevision manifest (ActivationGrant signa
 
 {- | Proof that this exact instance reserved its single lifecycle admission.
 
-Sprint 14.6 requires one before Prereq/acquisition, so a duplicated activation
+the composition-and-network-algebra phase requires one before Prereq/acquisition, so a duplicated activation
 or request cannot open two lifecycle admissions or acquire the same resources
 twice.
 -}

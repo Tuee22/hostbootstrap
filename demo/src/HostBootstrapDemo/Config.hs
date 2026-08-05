@@ -435,7 +435,7 @@ envelopeOfResources Resources{cpu = resourceCpu, memory = resourceMemory, storag
         }
 
 {- | Build a project-local config for a selected local role. The @message@ is
-the config-driven worked example the webservice serves (Sprint 20.1).
+the config-driven worked example the webservice serves (the worked-demo phase).
 -}
 projectConfigForRole ::
     Text ->
@@ -465,7 +465,7 @@ projectConfigForRole projectName binaryName root cfgDockerfile cfgResources cfgD
 
 {- | Wrap an already-derived context in the project-local config shape. The
 @message@ is forwarded from the parent so child frames carry the same served
-message (Sprint 20.1).
+message (the worked-demo phase).
 -}
 projectConfigFromContext :: ProjectConfig parentScope -> Context.BinaryContext -> ProjectConfig scope
 projectConfigFromContext
@@ -573,8 +573,7 @@ demoDefaultDeployConfig = DeployConfig{haReplicas = builtIn "default HA replicas
 demoDefaultDockerfile :: Text
 demoDefaultDockerfile = "docker/Dockerfile"
 
-{- | The demo's default served @message@ (the config-driven worked example, Sprint
-20.1): @project init@ seeds it, the webservice reads it from its mounted config and
+{- | The demo's default served @message@ (the config-driven worked example, the worked-demo phase): @project init@ seeds it, the webservice reads it from its mounted config and
 serves it, and the SPA renders it in the @#message@ element. Core ships none.
 -}
 demoDefaultMessage :: Text
@@ -621,7 +620,7 @@ demoInit = demoInitWithMessage demoDefaultMessage
 
 {- | The message-parameterized 'demoInit': interpret the parsed 'InitArgs' with an
 explicit served @message@ (the default-bearing 'demoInit' supplies
-'demoDefaultMessage'; the harness's second variant supplies its own, Sprint 20.3).
+'demoDefaultMessage'; the harness's second variant supplies its own, the worked-demo phase).
 -}
 demoInitWithMessage :: Text -> Config.InitArgs -> Either String (ProjectConfig scope)
 demoInitWithMessage cfgMessage args = do
@@ -670,7 +669,7 @@ the test resources, with the demo's defaults), so the harness drives the **same*
 chain interpreter production uses against configs it generated, once per variant.
 Reuses 'demoInitWithMessage' so production and test share one builder.
 
-Returns TWO variants (Sprint 20.3) whose labels are their served @message@ — the
+Returns TWO variants (the worked-demo phase) whose labels are their served @message@ — the
 harness threads each label into the per-variant assertion env as the expected
 message, and the polymorphic Playwright asserts the SPA renders it. The first
 variant uses the demo default; the second a distinct message — so a passing run

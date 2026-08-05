@@ -109,7 +109,7 @@ variant generation, while `psTestInit` constructs the distinct test config. The 
 and full codec are jointly finalized under one digest; demo Web/Accelerator role projection is total
 from explicit assembled fields and has no fallback literals (see
 [authoring_project_binaries](authoring_project_binaries.md) and
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)).
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)).
 
 Before parser dispatch, the entrypoint normalizes the actual invoked executable name (including a
 Windows `.exe`) and requires it to equal `progName`. The Python build boundary has already required the

@@ -763,8 +763,8 @@ Harness request of the single restricted `psAssemble` and matching mapped codec,
 against that generated config, and unlinks it on teardown only while the file's bound kernel identity
 and its recorded payload both still match; anything else is a reported conflict and is left intact. The
 pre-existing-config flow is removed and recorded in
-[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
+[design rationale](../../DEVELOPMENT_PLAN/rationale.md). See
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) and
 [generic_project_model.md](generic_project_model.md).
 
 ## Foundational Principles

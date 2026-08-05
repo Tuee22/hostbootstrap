@@ -596,8 +596,7 @@ demoTestFrameContext sub
 descent is three-deep and the recursive interpreter hands off into the container
 rather than folding a local @docker run@ on the metal host). The body stays a
 no-op announce because the payload is carried by the step's own descent rather
-than recomputed here; the two cannot disagree, which is exactly what Sprint
-16.6 required of the @context-init@ label (§ W).
+than recomputed here; the two cannot disagree, which is exactly what the recursive-lifecycle-command phase required of the @context-init@ label (§ W).
 -}
 contextInitAnnounce :: StepExecution scope planId -> IO ()
 contextInitAnnounce _ =
@@ -707,7 +706,7 @@ config. The chart's Service and the plan's exposure both derive from it.
 registryNodePort :: Int
 registryNodePort = 30500
 
-{- | The demo's ONE finalized registry plan (§ GG, Sprint 14.7).
+{- | The demo's ONE finalized registry plan (§ GG, the composition-and-network-algebra phase).
 
 Every registry and store address below is a projection of this value, so the
 rendered registry configuration, the endpoint @push-image@ dials, and the
@@ -1341,7 +1340,7 @@ pushImageBlob _route cfg ref = do
     backoffNote _ = putStrLn "push-image: transient registry error; retrying after backoff"
     emitProgress out = unless (null out) (putStr out)
 
-{- | TEMP DIAGNOSTIC (Sprint 13.18): on a push failure, dump the in-cluster
+{- | TEMP DIAGNOSTIC (the worked-demo phase): on a push failure, dump the in-cluster
 registry/MinIO pod state and logs so the generic "unknown error" the registry
 returns is backed by its real cause.
 -}
@@ -2167,7 +2166,7 @@ withWsl2SwapStorage r = do
 context (so every assertion reaches the live persistent stack @project up@ brought
 up by folding its probe into the frame where the NodePort is published — the VM —
 correct on both Lima and Incus via the self-reference lift, § U), and the active
-variant's expected @message@ (Sprint 20.3), which the polymorphic Playwright
+variant's expected @message@ (the worked-demo phase), which the polymorphic Playwright
 asserts the SPA renders.
 -}
 data CaseEnv = CaseEnv HostConfig LiftContext T.Text
@@ -2194,7 +2193,7 @@ production cluster. Checked before any bring-up; if it holds, no tests run.
 
 The peer precondition — never overwrite a production config — is derived from
 installed project identity inside the ownership transaction and runs after the
-abandoned-run sweep, so it is deliberately not repeated here (Sprint 10.9).
+abandoned-run sweep, so it is deliberately not repeated here (the test-harness-and-run-ownership phase).
 -}
 demoTestSafety :: IO (Either String ())
 demoTestSafety = do
@@ -2255,8 +2254,7 @@ directClusterPresence expected result = case result of
 interpreter production uses, § W) through the binary's self-reference (§ U), then
 resolve the assertion env (the live Production stack the cases assert against).
 One @project up@ per variant; the variant @label@ (its expected served message) is
-threaded into the 'CaseEnv' so the assertions can check the SPA renders it (Sprint
-20.3).
+threaded into the 'CaseEnv' so the assertions can check the SPA renders it (the worked-demo phase).
 -}
 demoTestUp :: VariantId -> IO CaseEnv
 demoTestUp ident = do
@@ -2357,7 +2355,7 @@ assertReachable cfg frame url what = do
 {- | The Playwright e2e, lifted into @frame@ (the VM) via a raw @bash -lc@ leaf:
 run the base-provided Playwright from a container on the VM host network against
 the NodePort the VM publishes on its own @localhost@. The variant's
-@expectedMessage@ is passed as @-e EXPECTED_MESSAGE@ (Sprint 20.4), so the
+@expectedMessage@ is passed as @-e EXPECTED_MESSAGE@ (the worked-demo phase), so the
 polymorphic spec asserts the SPA's @#message@ element renders the config-driven
 message for this variant. Captures the result rather than dying, so a failure is a
 case 'Fail' (not a crashed matrix).

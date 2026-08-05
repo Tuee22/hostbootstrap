@@ -87,7 +87,7 @@ addRequestId :: AcceleratorAddRequest -> Text
 addRequestId AcceleratorAddRequest{requestId = rid} = rid
 
 {- | The webservice's one view: the config-driven served @message@ (the worked
-example, Sprint 20.1), the demo budget, the concurrent web-pod footprint, and the
+example, the worked-demo phase), the demo budget, the concurrent web-pod footprint, and the
 fits-within verdict.
 -}
 data BudgetView = BudgetView
@@ -121,7 +121,7 @@ demoPods :: [V.PodResources]
 demoPods = [demoWebPod]
 
 {- | The canonical budget view, parameterized by the config-driven served
-@message@ (Sprint 20.1): the fits verdict is the real 'fitsBudget' result, so
+@message@ (the worked-demo phase): the fits verdict is the real 'fitsBudget' result, so
 @GET /api/budget@ agrees with the bring-up cordon.
 -}
 budgetView :: Text -> BudgetView

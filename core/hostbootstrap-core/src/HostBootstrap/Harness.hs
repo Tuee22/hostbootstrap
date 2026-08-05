@@ -578,7 +578,7 @@ recovery machinery was unreachable in exactly the case it was built for. The
 authoritative check is 'HostBootstrap.Lifecycle.Mode.harnessPreconditions',
 which derives its subject from installed project identity — a caller cannot
 claim a config is absent — and runs inside the protected transaction that takes
-the mode, after the sweep (Sprint 10.9).
+the mode, after the sweep (the test-harness-and-run-ownership phase).
 
 Pure obstacle reporting: returns @Right ()@ only when the obstacle is absent.
 -}

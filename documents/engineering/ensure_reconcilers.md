@@ -251,7 +251,7 @@ context-free reconciler in a scripted seam. That remains a library call, not a s
 The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-covered. The
 Windows VM-provider reconciler `ensure-wsl2` is implemented; current hardware/lifecycle closure belongs
 in the development plan. The former `ensure-tart` reconciler is dropped from this contract and
-tracked as removed in [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+tracked as removed in [design rationale](../../DEVELOPMENT_PLAN/rationale.md).
 
 The accelerator build-stack reconcilers are implemented. Current static and hardware closure, including
 native Linux `nvkind` and accelerator lifecycle validation, is owned by

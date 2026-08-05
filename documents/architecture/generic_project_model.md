@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [hostbootstrap_core_library.md](hostbootstrap_core_library.md), [harness_workflow.md](harness_workflow.md), [../engineering/schema.md](../engineering/schema.md), [../engineering/secrets.md](../engineering/secrets.md), [../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md)
+**Referenced by**: [hostbootstrap_core_library.md](hostbootstrap_core_library.md), [harness_workflow.md](harness_workflow.md), [../engineering/schema.md](../engineering/schema.md), [../engineering/secrets.md](../engineering/secrets.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 
 > **Purpose**: Define `hostbootstrap-core` as a fully generic library with no hardcoded defaults,
 > parameterized over a project's own scope-indexed config family; define the single restricted
@@ -64,7 +64,7 @@ role codec, and handler without a separately supplied selector. Validated opaque
 `VariantDraft`s, and the total non-empty matrix relation replace the former string-labeled, possibly
 empty result. The
 superseded concrete-config and pre-existing-config flows are listed in
-[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). The canonical
+[design rationale](../../DEVELOPMENT_PLAN/rationale.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
 ## What is universal versus project-defined

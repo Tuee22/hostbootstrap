@@ -5,7 +5,7 @@
 These are the typed host minimums dispatched by substrate, ported from the
 Python @hostbootstrap/prereqs.py@. Each check is fail-fast: it returns a
 one-line 'PrereqError' the moment a minimum is unmet. The pure-Python
-@prereqs.py@ remains the live implementation until Phase 6 reclaims the
+@prereqs.py@ remains the live implementation until the canonical-quantities-and-reconcile-results phase reclaims the
 residual subset into the thin bootstrapper.
 
 All external tools are invoked through their resolved absolute 'AbsExe' paths

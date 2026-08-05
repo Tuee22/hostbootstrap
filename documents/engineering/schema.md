@@ -30,8 +30,8 @@ The Python bootstrapper does not read or write Dhall. The Haskell schema has a p
 current pure projection helpers derive context-adjusted full child records, and normal command gating
 reads the descriptive context embedded in the sibling `<project>.dhall`.
 See
-[phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and
-[phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md).
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 The schema is topology-aware. Runtime context includes an execution topology, `currentFrame`, and runtime
 witnesses that catch many mismatches such as "VM project container command running on the host Docker
@@ -65,7 +65,7 @@ cannot bootstrap the demo (its `deploy-VM` gate requires `6/10/80`,
 `demoFullLifecycleResources`), so the demo's `psAssemble` returns its real budget rather than inheriting
 any core default. Service-role parameters are mandatory project fields rather than a second default
 source. See
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 ## File Location
 

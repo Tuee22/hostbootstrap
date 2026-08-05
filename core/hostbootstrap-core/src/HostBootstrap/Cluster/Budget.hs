@@ -638,7 +638,7 @@ data StorageWallMechanism
 {- | Why a provider cannot enforce the declared ceiling. These are the honest
 gaps: @docker update@ has no storage flag, so a kind node container cannot be
 capped after creation, and bare Linux has neither a quota'd project path nor an
-image-GC wall (§ O, Sprint 9.4).
+image-GC wall (§ O, the canonical-quantities-and-reconcile-results phase).
 -}
 data StorageWallUnsupported
   = DockerNodeHasNoStorageFlag

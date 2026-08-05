@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-{- | The phase-indexed role lifecycle (Sprint 14.6).
+{- | The phase-indexed role lifecycle (the composition-and-network-algebra phase).
 
 Every case drives the real engine: real Ed25519 activation grants from a real
 root invocation, a real protected store on a real filesystem, and a real kernel

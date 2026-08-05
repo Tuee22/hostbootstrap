@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: the detached harness selector and configurable Dhall execution union removed by Sprint 10.10
-**Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)
+**Referenced by**: [documents index](../README.md), [composition methodology](composition_methodology.md), [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
 
 > **Purpose**: Define four useful names for behavior already expressed by lifecycle steps while
 > preserving the project chain as the sole executable representation.

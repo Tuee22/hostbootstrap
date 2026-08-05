@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Locked-Origin Identity Ownership for the harness data root
-(@development_plan_standards.md § EE@, Sprint 10.9).
+(@development_plan_standards.md § EE@, the test-harness-and-run-ownership phase).
 
 These cases are deliberately __not__ platform-gated: they drive the production
 driver and the production native identity backend against a real filesystem and

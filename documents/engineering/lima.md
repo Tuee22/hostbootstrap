@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [demo runbook](../operations/demo_runbook.md), [wsl2](wsl2.md), [development plan](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)
+**Referenced by**: [documents-index](../README.md), [demo runbook](../operations/demo_runbook.md), [wsl2](wsl2.md), [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 
 > **Purpose**: Describe the Lima VM provider used on Apple Silicon to represent a pristine Linux
 > environment, and how its lifecycle is expressed through the core `deploy-VM` step kind of the
@@ -133,7 +133,7 @@ Linux VM (see [wsl2](wsl2.md)).
 - `project destroy` deletes the guard-prefixed instance through the `limactl delete` builder.
 
 The VM-provider axis is tracked in the development plan
-([phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md)).
+([host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)).
 
 A disposable Apple validation on 2026-07-26 exercised the exact production command shapes with a unique
 instance: 2 CPUs, 4 GiB memory, 20 GiB disk, VZ, containerd disabled, one writable host share, guest DNS
@@ -149,5 +149,5 @@ Lima lifecycle slice only; it does not prove the still-open alias ownership clau
 - [wsl2](wsl2.md) — the Windows VM provider that interprets the same `deploy-VM` step kind.
 - [ensure reconcilers](ensure_reconcilers.md) — the reconciler contract `ensure lima` follows.
 - [demo runbook](../operations/demo_runbook.md) — the demo lifecycle that exercises the Lima VM steps.
-- [phase 11](../../DEVELOPMENT_PLAN/phase-11-incus-host-provider.md) — the development plan for the
+- [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) — the development plan for the
   VM-provider axis.

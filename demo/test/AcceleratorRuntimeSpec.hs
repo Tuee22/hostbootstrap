@@ -384,7 +384,7 @@ detected substrate has an accelerator lane AND whose build toolchain resolves,
 generate the worker source, build it with the REAL compiler (@nvcc@ / @clang++@ /
 @swiftc@), run the subprocess, and assert it computes @1.5 + 2.25 = 3.75@ with a
 real artifact hash. When the toolchain is absent (a host with no compiler for the
-lane) the case is a no-op skip — the install/ensure side is Phase 3's gate, this
+lane) the case is a no-op skip — the install/ensure side is the ensure-reconcilers phase's gate, this
 is the build-and-run side. It builds WITHOUT ensure ('buildWorkerArtifact'), so it
 never triggers an install. On this host's detected substrate it exercises the real
 lane: e.g. on Windows GPU it builds the CUDA worker with @nvcc -ccbin \<msvc\>@ and

@@ -3,7 +3,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | The phase-indexed role lifecycle engine (Sprint 14.6).
+{- | The phase-indexed role lifecycle engine (the composition-and-network-algebra phase).
 
 This module replaced a public callback bag — @RoleSpec@ with @roleAcquire@ /
 @roleServe@ / @roleDrain@, driven by a @runRole@ that was one @finally@ — with
@@ -42,7 +42,7 @@ every unknown resource.  The lease requirement is derived from the signed
 ceiling **before** Acquire, so a caller cannot select the cheaper no-lease
 branch for a role whose permitted effects include an exclusive one.
 
-Sprint 18.6 consumes 'RolePlan' / 'VerifiedServicePlacement' with the finalized
+the service-runtime phase consumes 'RolePlan' / 'VerifiedServicePlacement' with the finalized
 registry to mint the effect-indexed one-use service command authority; this
 module deliberately does not decide which handler runs.
 -}
@@ -158,7 +158,7 @@ import HostBootstrap.Protected (
 -- ---------------------------------------------------------------------------
 -- Descriptive labels
 
-{- | The historical Sprint 14.2 phase labels, retained for rendering and
+{- | The historical the composition-and-network-algebra phase phase labels, retained for rendering and
 reporting only.  @Load@ survives as a label: activation, config, secret, and
 role-plan verification all happen *before* a cursor exists, and the sole initial
 cursor is @Prereq@ (there is no @RoleCursor … LoadPhase@).
@@ -480,7 +480,7 @@ rolePlanDigestBindingRolePlanDigest ::
     RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId -> Text
 rolePlanDigestBindingRolePlanDigest (RolePlanDigestBinding _ value) = value
 
-{- | The placement Sprint 18.6 revalidates before it mints a service command
+{- | The placement the service-runtime phase revalidates before it mints a service command
 authority.  It carries the signed effect ceiling and the lease requirement
 derived from it.
 -}

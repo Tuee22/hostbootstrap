@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [composition methodology](../architecture/composition_methodology.md), [run models](../architecture/run_models.md), [phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md)
+**Referenced by**: [documents-index](../README.md), [composition methodology](../architecture/composition_methodology.md), [run models](../architecture/run_models.md), [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
 
 > **Purpose**: Define the demo generalization where the same project binary also runs as a
 > substrate-specific accelerator daemon, JIT-builds a tiny native worker, connects to the web service over

@@ -16,23 +16,37 @@ canonical for `hostbootstrap`'s own plan; each consuming project keeps its own p
 
 ## Core Principles
 
-### A. Stable Numbered Narrative and Explicit Execution Order
+### A. One Continuous Constructive Narrative
 
-The plan reads as one dependency-aware description of the current Haskell-core library plus thin
-Python bootstrapper consumed by project binaries. Phase numbers are stable thematic and historical
-identifiers; after completed work is reopened, they are not themselves an execution schedule.
+The plan is a **build recipe, not a repair log**. It reads as one continuous narrative that
+constructs the Haskell `hostbootstrap-core` library plus thin Python bootstrapper from nothing, and
+**phase numbers are the execution order**. Following phases 0..N in order, with only the artifacts of
+phases ≤ *n* available at phase *n*, must produce the current architecture.
 
-- New phases are appended rather than renumbering existing history.
-- The executable order is the strict landing order in [00-overview.md](00-overview.md), together
-  with each open sprint's `Blocked by` edge. That graph may intentionally schedule a higher-numbered
-  reopening sprint before a lower-numbered dependent sprint.
-- When a later phase depends on an earlier phase's closure obligation, the later phase names that
-  dependency explicitly instead of duplicating the earlier phase's ownership.
-- Phase 0 is always documentation and governance. Its **foundational** deliverables — the metadata
-  standard, this plan tree, and the documentation validator — gate every code-writing phase. Follow-on
-  documentation obligations are tracked explicitly without changing the status of unrelated code phases.
-- Newly discovered gaps are handled by adding explicit follow-on work, not by leaving stale
-  completion claims in older documents.
+- **Numerical order is executable order.** A phase declares `Depends on` naming only **strictly
+  lower-numbered** phases. There is no separate landing-order graph, and a later phase never gates an
+  earlier one.
+- **The narrative is strictly additive.** No phase removes, retires, replaces, reverses, or supersedes
+  a surface an earlier phase introduced. *Extending* an earlier phase's contract is expected;
+  *contradicting* it is not. If work would delete or replace something an earlier phase built, that
+  earlier phase is wrong.
+- **A discovered design error rewrites the phase that introduced it**, in place, so the wrong surface
+  is never introduced at all. Validation then resumes from that phase forward. A design error is never
+  recorded as a later corrective sprint, a reopening, or a follow-on cleanup.
+- **Renumbering is required whenever dependency order changes.** Durable identity comes from a phase's
+  **name**, not its number. Documents outside `DEVELOPMENT_PLAN/` therefore cite phases by name and
+  link — never by number — which is what keeps renumbering cheap enough to be routine.
+- **No historical strata.** There are no `Historical`, `Superseded`, `Retired`, `Corrected`, or
+  reproduced-defect sprints, and no phase narrates what the repository used to do. Git holds the
+  history; the plan holds the design. Design *justification* that a reader needs in order not to
+  reintroduce a known-bad shape belongs in [rationale.md](rationale.md), stated in the present tense.
+- **Every phase is independently validatable** by a gate that runs with only phases ≤ *n* built, and
+  declares at most one substrate beyond the `linux-cpu` baseline (§ II).
+- **Phase 0 is always documentation and governance.** Its deliverables — the metadata standard, this
+  plan tree, and the documentation validator — precede every code-writing phase.
+- **This doctrine governs future refactors.** An architectural change rewrites the narrative so that
+  the new architecture is what the plan builds. It is not appended as a correction to a narrative that
+  builds the old one.
 
 ### B. Detailed, Implementation-Oriented Content
 
@@ -51,35 +65,46 @@ Status describes the current repository state, not the intended future state.
 
 | Status | Meaning |
 |--------|---------|
-| `Done` | Implemented and validated; no remaining work |
-| `Active` | Partially closed; remaining work is listed explicitly |
-| `Blocked` | Waiting on a named prerequisite |
-| `Planned` | Ready to start; dependencies are already satisfied |
+| `Done` | Implemented, and its own declared gate passes |
+| `Active` | Partially built; remaining work is listed explicitly |
+| `Planned` | Not started; every phase it depends on is `Done` |
+
+There is deliberately no `Blocked` and no `Superseded`. Under § A a phase depends only on lower-numbered
+phases, so an unstarted phase whose predecessors are complete is `Planned` and one whose predecessors are
+not is simply not reached yet — nothing waits on a *later* phase, so nothing is blocked. And because the
+narrative is strictly additive, no phase is ever superseded by another; a wrong phase is rewritten.
 
 Rules:
 
-- `Done` requires passing validation, aligned docs, and no remaining work in that phase's scope.
+- `Done` requires the phase's own declared gate to pass, aligned governed documentation, and no
+  remaining work in its scope.
 - `Active` requires a `Remaining Work` section.
-- `Blocked` requires a `Blocked by` line naming the prerequisite phase or sprint.
-- If Phase 0 is still open, later code-writing phases use `Blocked`, not `Planned`.
-- A later phase may stay `Done` while an earlier phase is `Active`/`Blocked` only when the open
-  item is a clearly named external dependency the later phase calls out.
-- `Active` remaining work may be **real-run/real-build-gated** — validated by a real host run or a
-  base-image build rather than the canonical code-check. Such work is **in scope and open**, never "out
-  of scope"; the phase stays `Active` until the real run or build closes it (see the
-  [README Validation Policy](README.md)).
+- **A phase closes on its own gate.** A phase never carries a closure obligation that needs hardware it
+  does not declare. Confirmation on a non-baseline substrate is owned by the substrate phase that runs
+  it (§ II), which lists what it confirms.
+- Statuses are **derived by checking the repository**, never inherited from an earlier version of the
+  plan. When phase boundaries are re-cut, every status is re-verified against the code.
+- A phase's status must match its row in the [README](README.md) table, which is the sole cross-phase
+  roll-up (§ J).
+- Exact test counts and real-run results are dated validation evidence recorded against the gate that
+  produced them. They are never promoted to a repository-wide "current count".
 
 ### D. Declarative Current-State Language
 
-Current objectives, deliverables, and acceptance criteria describe the supported architecture in
-present-tense declarative language. Cleanup obligations and the authoritative inventory of obsolete
-surfaces belong in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+Every objective, deliverable, and acceptance criterion describes what the phase **builds**, in
+present-tense declarative language. A phase says "the harness holds the four ownership clauses over its
+data root", never "the lock directory is replaced by".
 
-An obsolete name may also appear in an explicitly labeled historical delivery/scope record or dated
-validation-evidence record when removing it would falsify repository history. Such a record must mark
-the surface as historical rather than current and link to the deletion ledger when cleanup remains
-open. Unlabeled obsolete names and obsolete names presented as current architecture are forbidden in
-phase narrative.
+Obsolete names do not appear anywhere in the plan. There is no exemption for a labelled historical
+record, because under § A there is no historical stratum to label: a surface the architecture does not
+have is a surface no phase introduces. The one permitted mention of a shape the project does *not* use
+is in [rationale.md](rationale.md), where naming a rejected alternative is the whole point — and even
+there it is written as present-tense design justification ("a bare exclusive-create binds a pathname and
+satisfies none of the four clauses"), not as a chronicle.
+
+Dated validation evidence is not narrative and is exempt from this rule only in the narrow sense that it
+records a date and a host: it states which gate passed, when, and on what substrate, and it makes no
+claim about what the repository previously did.
 
 ### E. One Canonical Folder Model
 
@@ -91,33 +116,48 @@ DEVELOPMENT_PLAN/
 ├── README.md
 ├── 00-overview.md
 ├── system-components.md
-├── phase-0-documentation-and-governance.md
-├── phase-1-hostbootstrap-core-scaffolding.md
-├── phase-2-host-tools-and-config.md
-├── phase-3-ensure-reconcilers.md
-├── phase-4-skeletal-dhall-and-command-tree.md
-├── phase-5-cluster-lifecycle-and-resource-cordoning.md
-├── phase-6-base-image-and-thin-python-bootstrapper.md
-├── phase-7-consumer-migration.md
-├── phase-8-dhall-generation-and-extension.md
-├── phase-9-applied-cordon-and-one-parser.md
-├── phase-10-standardized-test-harness.md
-├── phase-11-incus-host-provider.md
-├── phase-12-layered-warm-store.md
-├── phase-13-hostbootstrap-demo.md
-├── phase-14-composition-methodology.md
-├── phase-15-binary-context-config.md
-├── phase-16-project-lifecycle-command.md
-├── phase-17-chain-driven-test-and-context-introspection.md
-├── phase-18-service-runtime-command.md
-├── phase-19-generic-project-model.md
-├── phase-20-config-driven-demo-worked-example.md
-├── phase-21-documentation-code-consistency-reconciliation.md
-└── legacy-tracking-for-deletion.md
+├── rationale.md
+├── phase-0-governance-and-documentation-standards.md
+├── phase-1-python-pre-binary-floor.md
+├── phase-2-haskell-core-scaffolding.md
+├── phase-3-host-tools-and-substrate-detection.md
+├── phase-4-protected-store.md
+├── phase-5-operator-root-and-command-authority.md
+├── phase-6-canonical-quantities-and-reconcile-results.md
+├── phase-7-dhall-configuration-and-project-model.md
+├── phase-8-ensure-reconcilers.md
+├── phase-9-lifecycle-modes-and-run-leases.md
+├── phase-10-sessions-journal-and-fences.md
+├── phase-11-prepared-operations.md
+├── phase-12-step-algebra-and-project-plan.md
+├── phase-13-authenticated-handoff-and-child-admission.md
+├── phase-14-ownership-clauses-and-reservations.md
+├── phase-15-host-providers-and-the-lift.md
+├── phase-16-cluster-lifecycle-and-cordoning.md
+├── phase-17-recursive-lifecycle-command.md
+├── phase-18-recovery-and-migration.md
+├── phase-19-test-harness-and-run-ownership.md
+├── phase-20-test-and-context-commands.md
+├── phase-21-composition-and-network-algebra.md
+├── phase-22-service-runtime.md
+├── phase-23-base-image-and-warm-store.md
+├── phase-24-worked-demo.md
+├── phase-25-apple-silicon-substrate.md
+├── phase-26-nvidia-gpu-substrate.md
+├── phase-27-windows-and-wsl2-substrate.md
+└── phase-28-documentation-reconciliation.md
 ```
 
-Phase numbering may grow as later work is scoped. Adding or renaming a phase requires updating this
-file, `README.md`, `00-overview.md`, and `system-components.md` in the same change.
+The `phase-NN-*.md` set is **contiguous from 0 with no gaps and no duplicates**, and `NN` is the
+execution position (§ A). Inserting a phase therefore renumbers every phase after it, and that is
+expected rather than avoided; the same change updates this file, `README.md`, `00-overview.md`, and
+`system-components.md`. Documents outside this directory are unaffected, because they cite phases by
+name and link (§ J).
+
+There is no deletion ledger. A cleanup obligation would be a reversal, which § A forbids: the surface is
+removed by rewriting the phase that introduced it, so no phase introduces it. The one durable value the
+former ledger carried — "this surface must stay absent" — is a mechanical drift guard and lives with the
+validator and tests, not in the plan narrative.
 
 ### F. System Component Inventory
 
@@ -134,20 +174,36 @@ file, `README.md`, `00-overview.md`, and `system-components.md` in the same chan
 
 When the host-management architecture changes, update the component inventory in the same change.
 
-### G. Phase Document Requirements
+### G. Phase and Sprint Document Requirements
 
-Each phase document groups its sprint-level sections under one `## Sprints` parent, with each
-sprint nested one level deeper, in this format:
+A phase document opens with this header, then groups its sprints under one `## Sprints` parent:
 
 ```markdown
+# Phase N — Name
+
+**Status**: Done | Active | Planned
+**Depends on**: Phase A, Phase B (by name; every one strictly lower-numbered)
+**Substrates**: linux-cpu
+**Gate**: the exact command that closes this phase
+
+> **Purpose**: one sentence naming what this phase adds to the build.
+
+## Phase Objective
+
 ## Sprints
 
-### Sprint X.Y: Name [STATUS]
+## Documentation Requirements
+```
 
-**Status**: Done | Active | Planned | Blocked
+Each sprint is nested one level deeper:
+
+```markdown
+### Sprint N.M: Name [STATUS]
+
+**Status**: Done | Active | Planned
 **Implementation**: `path/to/file` (required for Done, recommended for Active)
-**Blocked by**: sprint id(s) (required for Blocked)
-**Docs to update**: `documents/...`, `README.md`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/...`
 
 #### Objective
 
@@ -158,9 +214,24 @@ sprint nested one level deeper, in this format:
 #### Remaining Work
 ```
 
-Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`) are encouraged
-when they clarify closure criteria. The decimal-insert form (`X.Y.Z`) is permitted when later
-scoping splits a sprint and renumbering would churn more cross-references than it is worth.
+Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`) are encouraged when
+they clarify closure criteria.
+
+**Sprint size budget.** A sprint is one working session. It lands **at most one new named
+contract/type, or one call-site adoption**, and stays within:
+
+- ≤ 8 deliverable bullets;
+- ≤ ~400 lines of production Haskell across ≤ 3 source modules, plus their specs;
+- closable by the host static gate alone — `cabal test all --ghc-options=-Werror` from `core/`,
+  `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all`.
+
+A live-substrate confirmation is never in the same sprint as the change it confirms; it belongs to a
+substrate phase (§ II). A sprint whose `#### Remaining Work` has grown into a chronicle has exceeded the
+budget and must be split into further sprints, and its dated evidence recorded against the gate rather
+than narrated.
+
+Because a phase depends only on lower-numbered phases (§ A), a sprint has no `Blocked by` field: there is
+nothing later for it to wait on.
 
 ### H. Documentation Requirements Section
 
@@ -182,13 +253,20 @@ Every phase document ends with a `## Documentation Requirements` section:
 Before Phase 0 closes, paths under `documents/` may not exist yet; they still appear in
 `Docs to update` and `Documentation Requirements` so obligations are explicit.
 
-### I. Explicit Cleanup and Removal Ledger
+### I. Absence Guards Instead of a Cleanup Ledger
 
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is the authoritative cleanup
-ledger for obsolete Python modules, the shelled `dhall-to-json` path, the three-execution-model
-schema, and any stale compatibility surface. `Pending` lists existing cleanup obligations, `Retained
-Current Surfaces` distinguishes intentional current code from cleanup work, and `Removed Surfaces`
-names obsolete surfaces that must stay absent.
+The plan carries no cleanup ledger, because a cleanup obligation is a reversal (§ A): a surface the
+architecture does not want is removed by rewriting the phase that introduced it, after which no phase
+introduces it and there is nothing to track.
+
+What remains useful is the **absence guard** — a mechanical assertion that a shape known to be wrong has
+not crept back. An absence guard is a test or validator check, never a plan document, and it names the
+[rationale.md](rationale.md) entry that explains why the shape is wrong. Examples: no module exposes a
+config-owner lock path; no adapter is reachable without a prepared operation; no phase document uses
+reversal vocabulary.
+
+A guard is not a substitute for the narrative. If a guard would be needed to stop a phase from
+introducing a bad surface, the phase is wrong and is rewritten.
 
 ### J. README and Documents Harmony
 
@@ -197,25 +275,51 @@ The root `README.md` is the finished-shape orientation document. It must not cla
 implemented unless the plan marks the owning phase `Done`.
 
 - `DEVELOPMENT_PLAN/README.md` is the **single cross-phase status source of truth**. Its phase table is
-  the only place that summarizes every phase's live status. A phase document still carries the required
-  local `Phase Status` and sprint statuses, but they must match that table; `00-overview.md` and
-  `system-components.md` link to the table instead of maintaining another status roll-up.
+  the only place that summarizes every phase's status, and each cell is short — status plus the current
+  sprint. A phase document carries the matching local `**Status**`; `00-overview.md` and
+  `system-components.md` link to the table instead of maintaining another roll-up.
 - Exact test counts and real-run results are dated validation evidence, never a second “current suite”
   status. They live with the sprint whose gate produced them; orientation and inventory documents do not
   copy a mutable current count.
-- `00-overview.md`, all phase files, and `system-components.md` use the same phase names and defer
-  cross-phase current-state claims to the README table.
+- **Documents outside `DEVELOPMENT_PLAN/` cite a phase by name and link, never by number.** The link text is
+  the phase's name — "the prepared-operations phase" — and the link target carries the number. A bare
+  `Phase 11` in prose is forbidden, because numbers are execution positions and change when a phase is
+  inserted (§ A, § E) while names do not. The same rule applies to Haskell and Python comments that reference
+  the plan.
+- Within `DEVELOPMENT_PLAN/`, a phase may cite another by number *and* name, since the co-edit obligation
+  in § E keeps them consistent.
 - `README.md`, `AGENTS.md`, and `CLAUDE.md` are governed root documents; root docs that are not
   canonical for a topic summarize and link to the canonical `documents/` home.
 
+### II. Substrate Baseline and Acceptance Phases
+
+`linux-cpu` is the **baseline substrate**. Every phase that builds a contract targets it, and its gate
+runs there or is pure-static.
+
+- A phase declares `**Substrates**:` and may name **at most one** substrate beyond `linux-cpu`.
+- Non-baseline substrates — `apple-silicon`, `nvidia`, `windows` — are each owned by exactly one
+  **acceptance phase**, placed at the end of the narrative. An acceptance phase adds that substrate's
+  own realizations and confirms the build on it.
+- **Acceptance phases are terminal**: nothing depends on them, so a machine without that hardware stops
+  at the last baseline phase rather than being blocked.
+- An acceptance phase lists what it confirms, so a baseline phase closing on its static gate does not
+  silently drop live coverage.
+
+Two limits are recorded here because they are easy to assume away. `fourmolu` and `hlint` run only inside
+the container `check-code`, so the host static gate is not the complete quality gate — the phase that owns
+the container gate owns those two. And the long demo gate brings up real provider and cluster state under
+the project's own identity, so it runs on a disposable host, never a working one.
+
 ## hostbootstrap-Specific Contracts
 
-Sections K–HH are the normative target contracts. They define what phase closure must make true; they
-are not blanket claims that every invariant is already enforced. The
-[README phase table](README.md#current-phase-status), phase-local `Current Status`/`Remaining Work`, and
-the governed architecture documents distinguish implemented behavior from open repair. When a target
-statement below conflicts with current code, the owning phase stays Active rather than weakening the
-contract or describing the illegal state as supported.
+Sections K–HH are the normative contracts. They define what a phase's closure makes true; they are not
+blanket claims that every invariant is already enforced. The [README phase table](README.md) and each
+phase's own `**Status**` distinguish what is built from what is still ahead in the narrative. When a
+contract below conflicts with current code, the owning phase is `Active` — the contract is never weakened
+and the illegal state is never described as supported.
+
+Each contract names its owning phase **by name**. A contract is stated once, in its final form: there is
+no earlier weaker version of it anywhere in the plan (§ A).
 
 ### K. Host-Tool Resolution Doctrine
 
@@ -266,8 +370,8 @@ profile plus the admitted wall/partition/reservation, installs the tool if absen
 runtime/CPU/memory/disk state, and never treats `default` as project authority.
 The worked demo's default Apple Silicon VM path uses Lima, not an Incus VM. The
 kube tools (`kubectl`/`helm`/`kind`) are baked into the L0 base image and the cluster lifecycle that
-drives them is L0 (Phase 5), so they need no separate host reconciler in the in-container path. The worked
-accelerator demo's CUDA base also carries `nvkind`; Phase 5 owns that cluster driver as an L0 lifecycle
+drives them is L0 (the cluster-lifecycle phase), so they need no separate host reconciler in the in-container path. The worked
+accelerator demo's CUDA base also carries `nvkind`; the cluster-lifecycle phase owns that driver as an L0 lifecycle
 primitive, and the project selects it only for the explicit Linux GPU direct-container topology. Future
 project-specific GPU tools can still be contributed by a consumer or mid-layer (`daemon-substrate`)
 through the extension-stream merge (§ T). The accelerator-daemon demo keeps
@@ -277,7 +381,8 @@ published hostbootstrap base image to contain `clang++` or `nvcc`. The `ensure` 
 invoked as **chain steps** within `project up` (§ Y), not as hand-run verbs. The target provider
 reconciler reaches a **usable** provider, not merely an installed binary, and observes any egress the next
 step requires before minting readiness. Current Linux `ensure incus` checks only client presence and no
-provider reconciler verifies egress; Phase 11 owns that gap with Phase 9's observation types.
+provider reconciler verifies egress; the host-providers phase owns that gap with the canonical-quantities
+phase's observation types.
 
 ### M. Python-Thin / Haskell-Core Boundary
 
@@ -317,7 +422,7 @@ project-image, cluster, service, test-run, or teardown ownership out of Haskell.
 
 The pre-binary bootstrap is an early phase dependency, not a later convenience: on a fresh host it is the
 way the repository obtains the Haskell toolchain needed to validate `hostbootstrap-core`. Therefore the
-toolchain bootstrap is tracked with the host-floor/tooling phase (Phase 2), while later phases consume the
+toolchain bootstrap is tracked with the host-tools-and-substrate-detection phase, while later phases consume the
 result. Later phases must not introduce a prerequisite that an earlier Haskell validation gate needs.
 
 The Python layer also owns its own explicit pipx self-update path, because that command replaces the
@@ -408,7 +513,7 @@ zero, oversized, or floor-rounded “strictly smaller” cluster slice is unrepr
 never added to itself. Separately, the metal preflight requires
 `host RAM ≥ budget + 4 GiB host reserve`.
 
-Current implementation now provides the Phase 9 pure admission foundation, while provider adapters and
+The canonical-quantities phase provides the pure admission foundation, while provider adapters and
 complete workload projection remain owned by their dependent sprints:
 
 - demo `ProjectConfig.resources` is the sole editable budget. `BinaryContext` contains placement and
@@ -426,7 +531,7 @@ complete workload projection remain owned by their dependent sprints:
   `ProviderWallAuthority` are opaque. Successful WSL settlement returns its `WslGlobalWallLease`
   inseparably with the live authority;
 - the demo-local `clusterSliceOfBudget` remains a legacy calculation used by the current interpreter,
-  not a `BudgetPartition` proof. The complete plan-derived workload/slice projection is Sprint 13.18
+  not a `BudgetPartition` proof. The complete plan-derived workload/slice projection is the worked-demo phase's
   work;
 - `verifyBudget` is wired as the cluster-capacity preflight. `fitsBudget` is only a helper/test/static
   API calculation; lifecycle does not derive or check the exact non-empty concurrent workload set;
@@ -444,7 +549,7 @@ complete workload projection remain owned by their dependent sprints:
   need not adopt a changed declaration;
 - the normal WSL2 `project down` route now releases the wall: teardown restores `.wslconfig` first and
   then runs `wsl --shutdown`, while the managed body derives finite six-hour VM and distribution idle
-  timeouts from one constant rather than pinning them to `-1`. The formal native-Windows Phase 9 gate on
+  timeouts from one constant rather than pinning them to `-1`. The formal native-Windows the canonical-quantities-and-reconcile-results phase gate on
   2026-08-01 observed the durable record removed, the exact absent origin restored, the distro stopped,
   and the WSL utility VM/memory balloon gone after `project down`. Lima and Incus continue to release
   their walls on stop.
@@ -460,11 +565,10 @@ lease/CAS; each distro may own its VHDX slice, but incompatible concurrent wall 
 rather than overwrite `%UserProfile%\.wslconfig`. The WSL wall mutation permit consumes/revalidates the
 same `wallSpecId`/`wallEpoch`/`fence` as the `ProviderWallAuthority` and `WslGlobalWallLease`; a
 same-shaped value from another plan or owner cannot apply or restore it.
-Sprint 9.10 owns the exact admission/partition algebra, closed Sprint 9.4 records the typed
-bare-Linux-unsupported storage decision, closed Sprint 5.8 owns direct Colima acquisition, closed Sprint
-5.7 owns the all-provider storage/ownership gate, and Sprint 11.10's WSL host-wall and cleanup obligations
-are delivered; neither is remaining global-wall work. Sprint 13.18 owns the complete demo workload
-projection, and Sprint 19.8 owns the single finalized plan/config authority. A Dhall-native
+the canonical-quantities-and-reconcile-results phase owns the exact admission/partition algebra, closed the canonical-quantities-and-reconcile-results phase records the typed
+bare-Linux-unsupported storage decision, closed the operator-root-and-command-authority phase owns direct Colima acquisition, closed the operator-root-and-command-authority phase owns the all-provider storage/ownership gate, and the host-providers phase's WSL host-wall and cleanup obligations
+are delivered; neither is remaining global-wall work. the worked-demo phase owns the complete demo workload
+projection, and the Dhall-configuration-and-project-model phase owns the single finalized plan/config authority. A Dhall-native
 `Budget/fitsWithin` assertion is not attached to generated config because that config contains text
 quantities and no resolved pod set.
 
@@ -508,8 +612,7 @@ single assignments are rejected; the test suite and step contribution must be no
 plan has unique typed identities, exact contiguous frame order, and explicit reverse policy;
 the declared project name must equal the invoked executable identity, and `check-code` is supplied by
 construction rather than silently defaulted. `ProjectSpec` carries **no**
-`ProjectCommand` deltas — the surface is closed (see
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)). The bare `hostbootstrap` binary
+`ProjectCommand` deltas — the surface is closed. The bare `hostbootstrap` binary
 (`hostbootstrap-core`'s own executable) uses the separate `runBareHostBootstrapCLI` entrypoint; it is
 built like any project binary, not baked into the base image.
 
@@ -526,9 +629,9 @@ Configuration is typed Dhall in distinct roles:
   authority;
 - the **rich project/deploy** Dhall and one project-defined typed `<project>.test.dhall`. The latter maps validated
   `CaseId`/`VariantId` selections and overrides to generated run `cfg` variants through the
-  project-owned projection (Phase 19.6); it is not one file per case. Selected top-level scalar/resource
+  project-owned projection (the Dhall-configuration-and-project-model phase); it is not one file per case. Selected top-level scalar/resource
   fields are checked at decode; complete applied-budget validation and the pod-set bring-up check are
-  Phase 9.10 targets, not current claims. No generated `fitsWithin` assertion is claimed. Both are
+  the canonical-quantities-and-reconcile-results phase targets, not current claims. No generated `fitsWithin` assertion is claimed. Both are
   generated by the project binary from a reusable Dhall vocabulary. The ungated
   `context render` surface renders static registry examples; runtime deploy and child projections are
   emitted by commands that have already validated the active local config.
@@ -622,7 +725,7 @@ with the project's own step kinds appended, interleaved, validated into one `Ste
 § Y); the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen**
 `ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test-harness** `Seams`
 (threaded through a non-empty `TestSuite`); and the **service runtime seam** (an additive, possibly empty
-typed registry jointly finalized with the config/role codecs; Sprint 18.6 adds the
+typed registry jointly finalized with the config/role codecs; the service-runtime phase adds the
 config/frame-indexed `SelectedService` execution package, § AA). A project integrates through a Cabal dependency
 (`source-repository-package` with a full immutable commit `tag` for a remote consumer, or a local
 package in this repository) plus the `runHostBootstrapCLI` extension. A moving branch or omitted remote
@@ -633,7 +736,7 @@ deletion rather than described as current. Four names classify execution **shape
 reached via `service run` as a leaf-frame service or daemon entrypoint, either controller-managed in a pod
 or lifecycle-managed on the host, § AA), and `Cluster` (kind+Helm). These are consequences of the typed
 steps in the one project lifecycle plan (and, for a service leaf, its local service-role config), not a
-second selector representation and not a `Core.dhall` field. Sprint 10.10 removed the former
+second selector representation and not a `Core.dhall` field. the test-harness-and-run-ownership phase removed the former
 unconsumed parallel definitions.
 
 ### U. Host-Provider Axis And The Self-Reference Lift
@@ -696,7 +799,7 @@ plans from sharing journals, handles, or receipts. `project up` interprets the f
 `--dry-run` renders that same projection (§ Y). Frame topology, resource identity/acquisition, and the
 verb-indexed reverse projections retain that `scope`/`planId` and are derived from the plan;
 independently supplied plan, frame-context, and teardown interpretations violate this doctrine and are
-removed by Phase 16.6. The current opaque validated `StepPlan` supplies one exact forward ordering, but
+removed by the recursive-lifecycle-command phase. The current opaque validated `StepPlan` supplies one exact forward ordering, but
 separate checked frame-context/teardown contributions are not by themselves the finished lifecycle
 representation.
 There is no second hand-written orchestration path
@@ -744,7 +847,7 @@ config file:
 
 Python currently discovers the Cabal-file stem and sole executable stanza separately, builds the
 host-native executable, and invokes it using the platform-specific handoff in § M; it does not initialize
-or trigger config creation (the binary owns its Dhall, § M). Phase 6 replaces the parallel names with one
+or trigger config creation (the binary owns its Dhall, § M). the canonical-quantities-and-reconcile-results phase replaces the parallel names with one
 validated `ProjectIdentity`. The built
 binary owns `project init` / schema / help surfaces for creating the first host-level sibling config.
 After that, each nested project binary receives or creates its own local config before it runs:
@@ -777,7 +880,7 @@ frames, current frame, runtime witnesses, resource envelope, and child-context c
 capabilities without producing opaque command authority. The resulting gates are inconsistent:
 `service run` additionally requires a primary `ClusterService`/`Daemon` leaf, so adding a service role to
 a host orchestrator does **not** authorize it; `project up|down|destroy` check widened lifecycle classes
-without an exact root-placement relation, so a daemon/image-build leaf can incorrectly gain orchestration authority. Phase 15.9 replaces this with
+without an exact root-placement relation, so a daemon/image-build leaf can incorrectly gain orchestration authority. the operator-root-and-command-authority phase replaces this with
 role-specific opaque command authorities and smart constructors that cannot form incompatible
 role/class combinations.
 
@@ -814,7 +917,7 @@ plan/invocation and cursor. It constructs only
 `RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId` and
 `VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`
 from that projection, the verified request, and a project-owned role draft. It never rebuilds a lifecycle
-`ProjectPlan` or root authority. After Sprint 14.6 yields the exact Serve cursor, identity-indexed ready
+`ProjectPlan` or root authority. After the composition-and-network-algebra phase yields the exact Serve cursor, identity-indexed ready
 managed handles, and the inseparable retained receipt/lease package,
 `selectAndRunService` consumes that foundation with the plan/binding/placement, validated request,
 activation package, frame/context, and finalized runtime spec. It rechecks the exact workload-instance
@@ -853,7 +956,7 @@ The exact current config-precondition matrix is:
 Existing-frame commands fail
 fast with exit code 1 when the context file is missing, fails to decode, names a different
 project/binary, does not declare the required capabilities, or does not permit the requested command. A
-Phase 15 context also fails when required local witnesses cannot be verified. A
+the operator-root-and-command-authority phase context also fails when required local witnesses cannot be verified. A
 daemon/service command must refuse to start unless the context declares a daemon/service role;
 host-orchestrator commands must refuse to run inside a cluster-service pod; and a VM-scoped kind/test
 workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
@@ -880,13 +983,12 @@ travel on the lift's `stdin` only — never `argv` or an environment variable �
 writes its own executable-sibling `<project>.dhall`; there is no host-side intermediate config file or
 config bind-mount. The target `ProjectPlan` gives projection, authentication, durable preparation, and
 delivery to one plan node, so an announcing row cannot disagree with the bytes the child receives.
-In-place delivery landed in Phase 15 Sprint 15.7 / Phase 13 Sprint 13.15 (closed 2026-07-02, validated by
-a live Windows/WSL2 `test run all` `6/6`); the superseded
-build-then-copy/mount surfaces it replaced are in the **Removed Surfaces** of
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The read-only `context` command (§ Z) treats **every** `<project>.dhall`
+A child config is written in place at the frame that announces it; there is no build-then-copy or mount
+surface, because a copy and a mount are two representations of one delivery and can disagree.
+The read-only `context` command (§ Z) treats **every** `<project>.dhall`
 uniformly — it introspects the explicit context and renders the global compositional lift sequence
 (`topologyFrames` / `parentChain`) with the current frame highlighted, regardless of which roles the config
-declares; it performs no mutation. Phase 15 established the shared-substrate contract (the built binary
+declares; it performs no mutation. the operator-root-and-command-authority phase established the shared-substrate contract (the built binary
 creates the host-level default, parent surfaces produce nested configs, normal dispatch gates on the
 sibling config); the reopened work (§ Y, § Z, § AA) makes the surface the fixed `project` / `test` /
 `service` tree, supports multi-role configs and forwarded parameters, keeps `context` read-only, and
@@ -932,7 +1034,7 @@ construction is a pure function of validated root parameters.
   default root host-orchestrator config. The current shared parser also accepts `--role`, repeated
   `--also-role`, `--output`, `--force`, `--if-missing`, and resource/deploy overrides. That flexibility
   can currently express incompatible role/class combinations; the target uses opaque role-specific init
-  requests, validated combinations, and one explicit overwrite policy (Phases 15.9/17.4). Python builds
+  requests, validated combinations, and one explicit overwrite policy (the operator-root-and-command-authority phase.9/17.4). Python builds
   and invokes the host-native binary using the platform-specific handoff in § M; it does not initialize
   or trigger config creation. A normal
   existing-frame command fails fast (exit 1) when no sibling `<project>.dhall` exists (§ M).
@@ -948,7 +1050,7 @@ construction is a pure function of validated root parameters.
   (the fractal bootstrap, § U). Recursive up exists today; its active type-level refinement is
   receipt-preserving reconciliation (managed `Changed Created|Repaired|Adopted` or managed
   `Unchanged`, with foreign observations returning a non-authorizing `Unmanaged` handle; § EE) in
-  Phases 9.10/16.6.
+  the canonical-quantities-and-reconcile-results phase.10/16.6.
   `--dry-run` renders the pure chain without acting.
 - `project down` — the **target** is child-first recursive stop across every acquired frame. VM frames use the
   provider **stop** operation (incus/Lima **stop**, WSL2 `--terminate`; never destroy or unregister), so
@@ -958,17 +1060,17 @@ construction is a pure function of validated root parameters.
   the kind node container** and does not survive that delete. Best-effort and idempotent means every
   independent cleanup is attempted and any failures are aggregated and reported; it never means silently
   swallowing cleanup failure. Current code dispatches current/root teardown hooks rather than a typed
-  recursive acquisition unwind; Phase 16.6 owns that gap.
+  recursive acquisition unwind; the recursive-lifecycle-command phase owns that gap.
 - `project destroy` — the **target** is recursive `down`, then deletion of everything this run acquired,
   **including the provisioned frame
   and its disk** (`incus delete --force`, `limactl delete --force`, `wsl --unregister`, which removes the
   vhdx). The host-root `.data` is **inside** the single plan with an explicit `Preserve` policy and a
   verified receipt, but neither reverse projection places it in a destructive removal set. The demo now
   creates that host project-root, carries it through the provider share/alias and nested mounts, and
-  retains it across frame teardown. The mechanism has historical provider evidence, but Phase 5.6 remains
+  retains it across frame teardown. The mechanism has dated provider evidence, but the owning phase remains
   Active until a dedicated write → destroy → up → read-back run proves durability end to end. The canonical
   home is [durable_state](../documents/architecture/durable_state.md). Current child-first recursive
-  destroy/partial-failure unwind remains Phase 16.6 work.
+  destroy/partial-failure unwind remains the recursive-lifecycle-command phase work.
 
 The `Preserve` rule applies to both ordinary project verbs in every scope. Harness terminal cleanup is a
 separate, plan-derived projection. A narrow `HarnessCloseRoot`, derived from either the live harness root
@@ -1042,7 +1144,7 @@ project-wide exclusive execution, durable recovery, and receipt-driven cleanup.
   `RefuseExisting`.
 - `test run <case-id>|all` — runs one registered typed case or every registered case. The **target**
   semantics are root-only, fail fast without `<project>.test.dhall`, and reject a non-root context before side
-  effects; Phase 17.4 owns that still-open parser/gating contract. For each **distinct test configuration**
+  effects; the test-and-context-commands phase owns that still-open parser/gating contract. For each **distinct test configuration**
   (cases sharing a config share one stack; a case needing different resources/secrets declares a different
   config) the harness: (a) writes a test-specific `<project>.dhall` (the test-config overrides projected
   into a normal project config), (b) runs `project up` over the project's own chain, (c) runs that config's
@@ -1137,10 +1239,11 @@ after a prepared backend call leaves an explicit unknown state for total reprobe
 `JournalEntry`, and receipts are never serialized. The token is never in Dhall, `argv`, an environment
 variable, or durable config; teardown gets a fresh token, and a harness broker cannot sign Production
 authority. Before allocating a new run, the root must recover/teardown any protected incomplete old
-harness lease under that exact old run scope. The current config-only lift does not yet provide these
-guarantees.
-Direct implementation owners for this target are Sprints 5.7, 9.10, 10.9, 15.9, 16.6, 17.4,
-19.6–19.8, and 20.5; their exact execution prerequisites remain the phase-local `Blocked by` metadata.
+harness lease under that exact old run scope.
+
+This contract is built by the authenticated-handoff-and-child-admission phase over the sessions/journal/
+fences and prepared-operations phases beneath it, and consumed by the recursive-lifecycle-command,
+recovery, and test-harness phases above it.
 
 `context` is a **read-only** command that treats **every** `<project>.dhall` uniformly: it introspects the
 explicit context and renders the global compositional sequence of lifts (`topologyFrames` / `parentChain`)
@@ -1201,7 +1304,7 @@ consumer/filter algebra but not the project field names or value types.
 neither boundary. `RoleParams specDigest configId secretDigest fields service` is the narrower second filter: it can be
 constructed only from fields tagged `Service service` under that exact config identity, so
 framework-only metadata remains available to validation without entering the handler, and parameters
-from another validation cannot type-check. Sprint 14.6's role engine first atomically reserves one durable
+from another validation cannot type-check. the composition-and-network-algebra phase's role engine first atomically reserves one durable
 lifecycle admission for the exact instance, then constructs the matching role plan/binding/placement.
 The signed placement's `permittedEffects` ceiling conservatively derives the acquisition plan and closed
 lease disposition before Acquire: a ceiling that permits any exclusive/mutating effect requires the live
@@ -1345,18 +1448,17 @@ the pod template so a config change rolls the workload; a hand-maintained chart 
 config authority. The child verifies that wire and creates the request locally.
 `project up` *deploys* the service; `service run` *is*
 the service. A project's long-running workload is therefore a service variant reached through this fixed
-command, not a per-project verb (the former demo `web serve` / `web bridge` verbs are dissolved — `web
-serve` → `service run` (`Web` variant); `web bridge` → the build-image chain step; see
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)).
+command, and a project defines no long-running verb of its own: a web server is `service run` on its `Web`
+variant, and an image-bridging step is a node of the build chain.
 
 ### BB. Generic Project Model and No Core Defaults
 
 `hostbootstrap-core` is a **library of pure shapes plus the lift algebra and the harness**; it owns **no
 default config values and no fixed config type**. The reusable substrate is the compositional lift
 (`BinaryContext`, `childContext`, the `Step`/frame graph, `ProviderKind`) and the test engine — **not** the
-config record. This contract reopens the surfaces in Phase 19
-([phase-19-generic-project-model.md](phase-19-generic-project-model.md)); the superseded surfaces are
-listed in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+config record. This contract is owned by the
+[Dhall configuration and project model](phase-7-dhall-configuration-and-project-model.md) phase, which
+introduces the generic `ProjectSpec` directly; core defines no concrete config type at any point.
 
 The generic, scope-indexed `cfg`/`tcfg` substrate and typed test-matrix foundation are implemented:
 `TestCfg` projects opaque validated `CaseId`/`VariantId` registries and pure drafts, while the single
@@ -1364,7 +1466,7 @@ restricted `psAssemble` constructs either `cfg (Production projectId)` or
 `cfg (Harness projectId runId)` from a closed scope-specific request. Production and Harness install
 separate mapped `ProjectCodec`s; Production has no plaintext-secret wire branch, and Harness plaintext
 requires the exact generative run authority. Generated-config cleanup is still byte-conditional, and
-the demo still resolves its live cluster with Production/`.data`. Phases 10, 13, 19, and 20 own those
+the demo still resolves its live cluster with Production/`.data`. the test-harness-and-run-ownership phase, 13, 19, and 20 own those
 remaining lifecycle repairs; the later target bullets below must not be read as current downstream
 handoff or isolation evidence.
 
@@ -1465,7 +1567,7 @@ API boundaries: installed project identity must be generative before plan or run
   does not need the root's non-serializable authority before verification. A pointer-only harness config
   is still Harness-indexed.
   Production decoders and commands have no plaintext constructor, harness-wire promotion, or unscoped
-  record update. Phase 19.7 implements the root-local construction/codec boundary; the child handoff and
+  record update. the Dhall-configuration-and-project-model phase implements the root-local construction/codec boundary; the child handoff and
   plan transitions remain owned by their downstream lifecycle phases.
 - **A project field that flows to the workload is a field of the project's OWN `cfg`.** A value the
   workload reads and renders (the demo's `message` the web service reads/renders) is a field of the demo's
@@ -1510,7 +1612,7 @@ registry, or generation cannot authorize another resource with the same phantom 
 `Ready DockerDaemon` already gates the in-VM project-image build and `Ready RegistryServing` already gates
 the image push, so must the durable-share mount gate the alias step (§ DD).
 
-The Phase 9 foundation now removes `HostBootstrap.Readiness.Internal`, keeps every readiness constructor
+The the canonical-quantities-and-reconcile-results phase foundation now removes `HostBootstrap.Readiness.Internal`, keeps every readiness constructor
 private, validates `Micros` and `PollPolicy`, and fixes each `BackendProbeKey` to a closed planned-resource
 family. A plan-indexed probe can be constructed only with the matching `PlannedResource` and positive
 generation, phase, and observation versions; tests drive the real polling transition rather than minting
@@ -1730,20 +1832,20 @@ Execution profile is also indexed typed authority. Fresh construction uses
 abandoned Production `ProjectUp` uses the distinct
 `RecoveredProductionLifecycleProfile projectId specDigest planDigest planId brokerGeneration`;
 constructors are
-opaque to consumers. Phase 15.9's non-config gate verifies installed project identity, OS/operator
+opaque to consumers. the operator-root-and-command-authority phase's non-config gate verifies installed project identity, OS/operator
 authorization, protected authority-store identity, and the exact verb before minting
 `RootInvocationAuthority (Production projectId) brokerGeneration verb`; it does not mint a profile.
-Phase 10.9's rank-2 production and harness mode transaction creates
+the test-harness-and-run-ownership phase's rank-2 production and harness mode transaction creates
 the fresh broker generation and exclusive `UnboundRunLease`; the harness opener generates the run
 identity and yields only the matching existential
 `HarnessRootAuthority projectId runId brokerGeneration`. The public root brackets are composite: they
-invoke the Phase 15 verifier inside the protected Phase 10 mode/lease transaction, without exposing an
-intermediate state. Only Phase 10's fresh profile openers can combine the exact root scope/authority,
+invoke the the operator-root-and-command-authority phase verifier inside the protected the test-harness-and-run-ownership phase mode/lease transaction, without exposing an
+intermediate state. Only the test-harness-and-run-ownership phase's fresh profile openers can combine the exact root scope/authority,
 active mode, and still-unbound lease into the matching `LifecycleProfile`; the resulting plan snapshot
 then binds that same lease. Its separate protected bound-recovery opener requires the exact Production
 `ProjectUp` root, active mode, bound lease, verified/bound snapshot and binding, and
 `BoundInvocationRecovery`, and yields only the correspondingly indexed recovered profile. It cannot
-inhabit Harness or teardown scope. Phase 17.4 only requires the authority at its parser route. Both profiles contend on one project-wide
+inhabit Harness or teardown scope. the test-and-context-commands phase only requires the authority at its parser route. Both profiles contend on one project-wide
 `ProjectModeLease projectId mode brokerGeneration` record. Production retains its mode across `down`;
 Harness acquisition rechecks its derived
 preconditions in the same compare-and-swap, and Harness mode is released only after terminal close.
@@ -1756,8 +1858,8 @@ former can only resume the stable invocation-close key. Its Harness eliminator d
 persisted Closing from Open before the Open branch further selects normal/incomplete/completed revision
 recovery. No generic journal exists before those eliminators. Callers
 cannot choose the run or broker phantom first, and every effect-authorizing gate requires the root
-authority and lease to carry the same broker generation. Each Phase 10 profile opener consumes the
-matching Phase 15 root authority inside the composite bracket, breaking any
+authority and lease to carry the same broker generation. Each the test-harness-and-run-ownership phase profile opener consumes the
+matching the operator-root-and-command-authority phase root authority inside the composite bracket, breaking any
 command-authority/lifecycle-validation cycle. `withProjectPlan` consumes the profile/config/draft, and
 `containerPlan` is only a projection of that exact
 `ProjectPlan scope specDigest planId configId cfg`; there are no
@@ -1967,9 +2069,9 @@ checks compatibility only; it is not reproducibility or complete-cache evidence.
 Host-native and container builds use the same consumer `cabal.project`. A derived Dockerfile never swaps
 in a container-only project and never imports base-owned freeze files. The inherited Cabal store is an
 opportunistic cache: matching artifacts may be reused, while cache misses may resolve, download, and
-compile normally. Offline builds and guaranteed cache hits are not acceptance criteria. Phase 6 owns
+compile normally. Offline builds and guaranteed cache hits are not acceptance criteria. the canonical-quantities-and-reconcile-results phase owns
 rolling publication, native-architecture enforcement, source gates, pull, and the compatibility-smoke
-workflow; Phase 12 owns the single-project and opportunistic-store policy.
+workflow; the base-image-and-warm-store phase owns the single-project and opportunistic-store policy.
 
 ### GG. Scope-Indexed Network Reachability and Blob Delivery
 
@@ -1989,8 +2091,8 @@ input to the DSL.
 Static coherence does not replace runtime identity. The plan-owned route probe verifies the exact
 client→exposure and registry→store paths, rejects an out-of-scope redirect, and yields a
 revision-/plan-/registry-/store-indexed `ReadyBlobRoute`. A bare `/v2/` response cannot satisfy an image
-operation precondition. Phase 14 owns the generic reachability and delivery algebra, Phase 9 owns the
-identity-bound readiness/precondition machinery, and Phase 13 owns the demo renderer and live
+operation precondition. the composition-and-network-algebra phase owns the generic reachability and delivery algebra, the canonical-quantities-and-reconcile-results phase owns the
+identity-bound readiness/precondition machinery, and the worked-demo phase owns the demo renderer and live
 host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
 [network_reachability](../documents/architecture/network_reachability.md).
 
@@ -2030,7 +2132,7 @@ repository. They do not exclude an external actor, do not bind a caller who reac
 the underlying package directly, and do not make a runtime disposition safe — § EE's limit that no plan
 may claim compile-time exactly-once effects from phantom types alone applies here unchanged. A sealed
 shape is a guarantee about what this repository can express, not about what the operating system can be
-made to do. Phase 2 owns the host-invocation boundary and its closure, Phases 9, 15, and 16 own the
-readiness, authority, and lifecycle instances, and Phase 21 owns the mechanical drift guards that keep a
+made to do. the host-tools-and-substrate-detection phase owns the host-invocation boundary and its closure, the canonical-quantities-and-reconcile-results phase, 15, and 16 own the
+readiness, authority, and lifecycle instances, and the documentation-reconciliation phase owns the mechanical drift guards that keep a
 sealed surface sealed. The canonical architecture is
 [unrepresentable_state](../documents/architecture/unrepresentable_state.md).

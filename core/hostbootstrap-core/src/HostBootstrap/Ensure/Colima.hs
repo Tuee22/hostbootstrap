@@ -9,7 +9,7 @@ The former generic reconciler probed and started Colima's mutable @default@
 profile without a project identity or budget.  This module has no such
 fallback.  A profile is derived from the validated binary context under an
 exact lifecycle plan, and the only start argv accepted by the live adapter is
-the opaque prepared Colima wall call produced from Phase 9's admitted budget,
+the opaque prepared Colima wall call produced from the canonical-quantities-and-reconcile-results phase's admitted budget,
 partition, and journal-before-call reservation.
 
 The adapter observes @colima list --json@ before mutation.  An exact running

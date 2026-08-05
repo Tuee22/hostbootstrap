@@ -78,7 +78,7 @@ durableMarkerPath :: FilePath -> FilePath
 durableMarkerPath root = root </> "marker"
 
 {- | The @wai@ application, parameterized by the config-driven served @message@
-(Sprint 20.1): the budget JSON endpoint (which carries the message), the SPA
+(the worked-demo phase): the budget JSON endpoint (which carries the message), the SPA
 shell, the bundled Halogen app, and a 404.
 -}
 newtype AcceleratorHub = AcceleratorHub
@@ -341,7 +341,7 @@ dedicated accelerator Service targets the private port; public NodePort @30080@ 
 register a daemon. Binding all interfaces lets the in-cluster Playwright run reach
 the public listener. Reads its own mounted
 @<project>.dhall@ via the core generic loader (the cluster-service config the
-ConfigMap delivers) and serves the config-driven @message@ from it (Sprint 20.1),
+ConfigMap delivers) and serves the config-driven @message@ from it (the worked-demo phase),
 so the served value is whatever the active config carries.
 -}
 serveWebWithConfig :: Text -> WebServiceConfig -> IO ()

@@ -186,7 +186,7 @@ Harness request selects the variant message (including `"Hello, Universe!"` on t
 Service projection consumes explicit assembled Web ports and accelerator timeout, preserves both through
 child projection, and invents no fallback values. See the
 [generic_project_model.md](../architecture/generic_project_model.md) design,
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
 ## See also

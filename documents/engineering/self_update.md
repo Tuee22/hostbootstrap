@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: prior bootstrapper install/update guidance
-**Referenced by**: [../README.md](../README.md), [../architecture/python_haskell_boundary.md](../architecture/python_haskell_boundary.md), [../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md)
+**Referenced by**: [../README.md](../README.md), [../architecture/python_haskell_boundary.md](../architecture/python_haskell_boundary.md), [base image and warm store phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md)
 
 > **Purpose**: Define the self-update doctrine for the pipx-installed Python bootstrapper while
 > preserving the thin-bootstrapper boundary and the no-hidden-network-gate rule.
@@ -21,7 +21,7 @@
 ## Current Status
 
 `hostbootstrap update` updates the pipx app explicitly. It is specified in
-[Phase 6, Sprint 6.5](../../DEVELOPMENT_PLAN/phase-6-base-image-and-thin-python-bootstrapper.md):
+[base image and warm store phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md):
 
 ```bash
 hostbootstrap update

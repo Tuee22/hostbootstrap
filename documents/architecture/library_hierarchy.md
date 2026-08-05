@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md)
+**Referenced by**: [documents index](../README.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 
 > **Purpose**: Describe the three Cabal library levels and the implemented checked
 > additive/single-assignment extension-stream contract.
@@ -153,7 +153,7 @@ and the matching mapped codec. It never shells the CLI,
 runs `project up`, asserts in-frame, then `project destroy`; it owns no second cluster-bring-up path. A
 suite may carry **more than one config variant** (the demo's two-message run); the harness stands each up,
 asserts, and tears it down in turn. The standardized-test-harness phase
-([development plan](../../DEVELOPMENT_PLAN/phase-10-standardized-test-harness.md)) owns the harness.
+([test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)) owns the harness.
 
 ### Stream 5 — Service Handlers
 

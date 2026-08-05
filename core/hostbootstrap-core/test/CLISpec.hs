@@ -303,7 +303,7 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                     -- No sidecar of any shape survives: ownership is the
                     -- protected record the run settles, not a lock directory
-                    -- beside the config (Sprint 10.9).
+                    -- beside the config (the test-harness-and-run-ownership phase).
                     doesPathExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
                 )
                 `finally` removeFile testPath
@@ -506,7 +506,7 @@ tests =
                 result @?= Right ()
                 -- The gate is observable: it opens the project's own protected
                 -- authority store under the canonical root and reserves a one-use
-                -- invocation record there. Before Sprint 16.6 wired it, nothing in
+                -- invocation record there. Before the recursive-lifecycle-command phase wired it, nothing in
                 -- production reached `Authority.withVerifiedRootInvocation` at all.
                 configPath <- Schema.siblingProjectConfigPath "cli-project-rootgate"
                 let storeRoot =

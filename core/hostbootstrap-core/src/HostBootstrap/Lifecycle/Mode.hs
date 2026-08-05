@@ -5,7 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Project-wide lifecycle mode, run leases, and the lifecycle-profile openers
-(§ EE, Phase 10 Sprint 10.9).
+(§ EE, the test-harness-and-run-ownership phase the test-harness-and-run-ownership phase).
 
 A project is in exactly one mode at a time — Production or one Harness run — and
 that exclusion is a single protected record both openers contend on.  Production
@@ -1309,7 +1309,7 @@ withRecoveredProductionLifecycleProfile root modeLease bound snapshot open use
 
 -- Composite root brackets --------------------------------------------------------------
 
-{- | Everything the Production bracket established: the Phase 15 root authority,
+{- | Everything the Production bracket established: the the operator-root-and-command-authority phase root authority,
 the held project-wide mode, and the recorded unbound lease.
 -}
 data ProductionRoot projectId brokerGeneration verb = ProductionRoot
@@ -1319,7 +1319,7 @@ data ProductionRoot projectId brokerGeneration verb = ProductionRoot
     , productionRootUnboundLease :: UnboundRunLease (Production projectId) brokerGeneration
     }
 
-{- | The composite Production root bracket: it runs the Phase 15 verifier
+{- | The composite Production root bracket: it runs the the operator-root-and-command-authority phase verifier
 *inside* the protected mode transaction, so no intermediate state is exposed and
 a Harness opener cannot interleave.
 
@@ -1533,7 +1533,7 @@ verifyNoProjectResourcesAcquired session project run = do
         Right [] -> Right (ProjectClosureEvidence PreEffectRefusalClose)
         Right (record : _) -> Left (ModeEffectsRecorded (recordKeyText record))
 
-{- | The settled-destroy half of 'ProjectClosureEvidence' (Sprint 16.6).
+{- | The settled-destroy half of 'ProjectClosureEvidence' (the recursive-lifecycle-command phase).
 
 'verifyNoProjectResourcesAcquired' has always been the only producer, which
 meant the @SettledDestroyClose@ branch had none: a Production project could be

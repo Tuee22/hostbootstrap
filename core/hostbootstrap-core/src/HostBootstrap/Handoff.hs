@@ -3,7 +3,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | The authenticated cross-frame handoff transport (§ X, § EE, Sprint 15.9).
+{- | The authenticated cross-frame handoff transport (§ X, § EE, the operator-root-and-command-authority phase).
 
 A parent frame that descends into a VM, container, or pod must give the child
 its narrowed config. The mechanism this replaces was a shell writer: the parent

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents index](../README.md), [development plan](../../DEVELOPMENT_PLAN/phase-8-dhall-generation-and-extension.md), [binary context](../architecture/binary_context_config.md)
+**Referenced by**: [documents index](../README.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), [binary context](../architecture/binary_context_config.md)
 
 > **Purpose**: Describe the validated-codec `ConfigArtifact` registry and sampled render/decode evidence,
 > the fresh-root `<project>.dhall` produced by the default `project init` mode, the writer's explicit

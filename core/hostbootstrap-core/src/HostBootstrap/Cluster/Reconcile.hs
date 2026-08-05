@@ -4,13 +4,13 @@
 {- | Ownership-aware reconciliation for the kind cluster resource.
 
 This is the § EE total ownership classification for a same-named cluster,
-expressed over Phase 9's opaque resource/receipt algebra exactly as the
+expressed over the canonical-quantities-and-reconcile-results phase's opaque resource/receipt algebra exactly as the
 provider-guest alias backend is (see "HostBootstrap.Substrate.Provider.Alias").
 Observation is total (§ CC): absence, a healthy cluster this plan owns, a
 healthy cluster it does not, and a listed-but-unhealthy cluster are distinct
 outcomes, and only a receipt authorizes cleanup.
 
-The load-bearing rule this module encodes and Sprint 5.7 requires: a healthy
+The load-bearing rule this module encodes and the operator-root-and-command-authority phase requires: a healthy
 same-named cluster without committed ownership is a 'ForeignResult', and an
 unhealthy or unverifiable same-named cluster is a 'Conflict' that is /never/
 automatically deleted — replacing the previous "delete and recreate an

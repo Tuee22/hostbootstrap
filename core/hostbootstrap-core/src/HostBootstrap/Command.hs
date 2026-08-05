@@ -340,7 +340,7 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
         -- lease had to be cleared by hand. The authoritative refusal is
         -- `harnessPreconditions`, which derives its subject from installed
         -- project identity and runs inside the protected transaction, after the
-        -- sweep (Sprint 10.9).
+        -- sweep (the test-harness-and-run-ownership phase).
         matrix <-
             either
                 (die . ("test run: invalid test matrix: " ++) . show)
@@ -435,7 +435,7 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
                                                                                         Right (Left failure) -> die (T.unpack (modeErrorMessage failure))
                                                                                         Right (Right ()) -> pure ()
                                                                 -- The generated config is acquired under all
-                                                                -- four § EE clauses (Sprint 10.9): a durable
+                                                                -- four § EE clauses (the test-harness-and-run-ownership phase): a durable
                                                                 -- origin record naming the intended payload
                                                                 -- precedes the create-if-absent install, and
                                                                 -- the created file's own kernel identity is
@@ -977,7 +977,7 @@ projectCommandGroup codec progName projectPlan initBuilder =
             Just (Step.TeardownFailed detail) ->
                 putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
 
-    {- Run a lifecycle verb behind the independent root gate (Sprint 16.6).
+    {- Run a lifecycle verb behind the independent root gate (the recursive-lifecycle-command phase).
 
     Before this, @project up|down|destroy@ was authorized by nothing more than
     the decoded context's command-class membership — self-asserted authority of
@@ -987,7 +987,7 @@ projectCommandGroup codec progName projectPlan initBuilder =
 
     The gate runs only at the **root** frame. A nested frame is reached through
     the recursive handoff and must receive its authority from the parent's
-    relay, which Sprint 16.6 still owes; gating it here would authorize it from
+    relay, which the recursive-lifecycle-command phase still owes; gating it here would authorize it from
     its own config, which is the thing being removed. So a nested frame passes
     through unchanged and its gating stays explicitly open.
 

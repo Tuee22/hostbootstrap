@@ -114,7 +114,7 @@ tests =
             vm.dockerfile @?= hostCfg.dockerfile
             serviceCfg.deploy @?= hostCfg.deploy
             vm.resources @?= hostCfg.resources
-            -- The served message is forwarded down every child frame (Sprint 20.1).
+            -- The served message is forwarded down every child frame (the worked-demo phase).
             vm.message @?= hostCfg.message
             serviceCfg.message @?= hostCfg.message
             serviceCfg.webServiceConfig @?= validWebServiceConfig 8080 8081

@@ -222,7 +222,7 @@ the verb's reverse projection of the one plan, reaching only the frames this bin
 not recursively traverse the chain and must
 not be described as fractal teardown. The
 demo's status is tracked in
-[Phase 13](../../DEVELOPMENT_PLAN/phase-13-hostbootstrap-demo.md) and the composition phases of the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and the composition phases of the
 development plan.
 
 ## See also

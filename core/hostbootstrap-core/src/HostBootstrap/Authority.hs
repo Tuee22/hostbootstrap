@@ -17,7 +17,7 @@ owns the values that do:
 * 'RootInvocationAuthority' is minted only by a non-config gate that verifies
   installed project identity, OS/operator authorization, the protected
   authority-store identity, and the exact verb.  It is *not* a lifecycle
-  profile: Phase 10's mode transaction combines it with the active mode and the
+  profile: the test-harness-and-run-ownership phase's mode transaction combines it with the active mode and the
   still-unbound run lease.  That split is what breaks the
   authority/profile/transition bootstrap cycle.
 * 'CommandAuthority' carries a hidden one-use invocation identity.  Minting is
@@ -349,7 +349,7 @@ encodeCounter = ByteStringChar8.pack . show
 
 {- | The independently established right to run one exact verb as the project's
 root, under one broker generation. It authorizes nothing by itself: it is an
-input to Phase 10's profile transaction and to 'authorizeProjectCommand'.
+input to the test-harness-and-run-ownership phase's profile transaction and to 'authorizeProjectCommand'.
 -}
 data RootInvocationAuthority scope brokerGeneration verb
     = RootInvocationAuthority Text (BrokerEpoch brokerGeneration) (ProjectVerb verb)
@@ -451,7 +451,7 @@ data ProductionCloseKind
       PreEffectRefusalClose
     deriving (Eq, Show)
 
-{- | The root/verb half of @ProductionClosureAuthorization@. Phase 10 combines
+{- | The root/verb half of @ProductionClosureAuthorization@. the test-harness-and-run-ownership phase combines
 it with the settled-destroy or no-resources-acquired proof; neither half closes
 a project on its own.
 -}
@@ -472,7 +472,7 @@ destroyCloseRoot ::
 destroyCloseRoot (RootInvocationAuthority project epoch _) =
     ProductionCloseRoot SettledDestroyClose project epoch
 
-{- | Any exact Production verb may take the pre-effect branch; Phase 10 still
+{- | Any exact Production verb may take the pre-effect branch; the test-harness-and-run-ownership phase still
 requires the separate proof that no project resource was acquired.
 -}
 preEffectCloseRoot ::

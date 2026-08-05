@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Locked-Origin Identity Ownership for the harness's generated sibling
-@\<project\>.dhall@ (@development_plan_standards.md § EE@, Sprint 10.9).
+@\<project\>.dhall@ (@development_plan_standards.md § EE@, the test-harness-and-run-ownership phase).
 
 These cases are the peer of "DataRootSpec" and are deliberately __not__
 platform-gated: they drive the production driver and the production native

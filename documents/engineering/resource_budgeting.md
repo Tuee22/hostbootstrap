@@ -28,7 +28,7 @@
   lease. Current Lima/Incus sizing is creation-only, WSL rewrites global settings without resizing an
   existing VHDX, and provider integrations have not uniformly adopted the authority. The budget is never
   added to itself — see
-  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
+  [design rationale](../../DEVELOPMENT_PLAN/rationale.md),
   [wsl2](wsl2.md), and [applied_cordon](applied_cordon.md).
 - A test config may override the budget. The demo projects that resource override into its generated
   config, but currently resolves a **Production** cluster plan; test-profile isolation is an open defect.
@@ -64,14 +64,14 @@ A secrets-strict, RKE2/EKS-sized consumer that deploys to an existing cluster ca
 at all. For a project that declares one, § O's sole admitted `EffectiveBudget` is the provider-effective
 wall: per-VM on Lima/Incus, or an exclusively owned shared utility-VM wall plus a per-distro VHDX slice
 on WSL2. See the [generic_project_model.md](../architecture/generic_project_model.md) design,
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md), and
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), and
 [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
 Concretely, the former core default budget `4/8/20` (now only a test fixture) could not bootstrap the
 demo — the demo's `deploy-VM` gate requires `6/10/80` (`demoFullLifecycleResources`) — so under phase-19
 the default lives in the project-owned `psAssemble` and the demo's Production/Harness assembly returns
 its real budget. See
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 The Linux GPU path extends the runtime controls without changing this model. A normal kind plan
 declares one `control-plane` node; the explicit `nvkind` plan declares `control-plane` and `worker`.
@@ -121,7 +121,7 @@ The `4/8/20` above is an **illustrative shape**, not a default: core ships no de
 own `psAssemble` default is `6/10/80` (its `deploy-VM` gate,
 `demoFullLifecycleResources`, requires it), and each project's assembler supplies its own budget. See
 the [Current Status](#current-status) note and
-[phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md).
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
 
 - `cpu` — whole cores reserved for the project's substrate.
 - `memory` — memory ceiling for the project's substrate.

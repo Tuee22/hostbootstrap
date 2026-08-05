@@ -491,7 +491,7 @@ case the reservation exists for.
 
 Every other branch stays fail-closed and names why: a persisted @Closing@ epoch
 and either migration revision need the close-journal and migration resumption
-Sprint 16.6 owns, and a run that /did/ record effects needs the recursive
+the recursive-lifecycle-command phase owns, and a run that /did/ record effects needs the recursive
 teardown forest, not a lease close.
 -}
 resolveBoundRun ::

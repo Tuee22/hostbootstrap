@@ -276,7 +276,7 @@ The implemented code is usable, but the stronger target is deliberately open. Pl
 
 Phase status, blockers, and deletion work are authoritative only in
 [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and
-[legacy tracking](DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+[design rationale](DEVELOPMENT_PLAN/rationale.md).
 
 ## Repository Map
 

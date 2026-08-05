@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [documents-index](../README.md), [python_haskell_boundary](python_haskell_boundary.md), [composition_methodology](composition_methodology.md), [dhall_topology](../engineering/dhall_topology.md), [development plan](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md)
+**Referenced by**: [documents-index](../README.md), [python_haskell_boundary](python_haskell_boundary.md), [composition_methodology](composition_methodology.md), [dhall_topology](../engineering/dhall_topology.md), [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
 
 > **Purpose**: Define the "know your place" authority contract every project binary uses to reason
 > explicitly about where it is running in a composed host/VM/container/cluster topology, and the
@@ -117,7 +117,7 @@ Two checks remain layered on top. `service run` still performs its own primary-k
 only `ClusterService` or `Daemon`, which catches a hand-edited config that carries `ServiceCommand`
 without having gone through `addRole`. `project up|down|destroy` still lack the exact
 root-kind/empty-parent check, so
-[Phase 15's opaque-authority repair](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) remains
+[Phase 15's opaque-authority repair](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) remains
 open for the role-specific command authorities minted by validated transitions.
 
 One target API shape makes the compatibility relation and exact invocation state explicit:
@@ -1395,7 +1395,7 @@ What is **not yet wired** is the live descent: `Lift.ConfigDelivery` still deliv
 with the `sh -c "cat > <sibling> && exec <binary>"` writer described above. Replacing it needs the
 binary's internal receiver at the child entrypoint and the duplex relay back to the root broker, which
 land with the recursive interpreter in
-[Sprint 16.6](../../DEVELOPMENT_PLAN/phase-16-project-lifecycle-command.md).
+[recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 The root broker remains live through one recursive invocation. Its one-use command authority opens one
 versioned operation session only with `CurrentBrokerSessionAdmission`. Clean activation can mint that
@@ -1543,7 +1543,7 @@ validated operation:
    overrides): `--force` overwrites, `--if-missing` leaves an existing file untouched, and when both are
    present the current implementation gives `--force` precedence. This shared, permissive `InitArgs`
    shape is descriptive current behavior, not the target authority boundary. Active
-   [Phase 17's exact-command-semantics repair](../../DEVELOPMENT_PLAN/phase-17-chain-driven-test-and-context-introspection.md)
+   [Phase 17's exact-command-semantics repair](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md)
    owns opaque writer-specific init requests and an explicit overwrite-policy type; Sprint 15.9 owns
    validation that requested role combinations can mint only compatible command authorities. Because
    Python never creates config, an existing-frame command run before an initializer or harness-generated
@@ -1660,7 +1660,7 @@ config and config-read authority; raw handler `IO` remains. Finalized plan actio
 closed effect/descriptors owned by Sprints 9.10/16.6 rather than arbitrary config-reading callbacks. No
 production action reopens the sibling file: the loader that let one do so
 (`requireSiblingProjectConfig`) is deleted and the raw root seam is no longer public
-([legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)). On-disk
+([design rationale](../../DEVELOPMENT_PLAN/rationale.md)). On-disk
 changes affect only a later invocation with a new `configId`; daemons require a new measured
 `instanceId` or an explicit
 safely designed reconcile, and authority fields are never live-reloaded.
@@ -1696,7 +1696,7 @@ environment value), never represented in Dhall or retained in durable project/im
 
 ## Current Status
 
-[Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) governs the binary-context gate.
+[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) governs the binary-context gate.
 Python does not create runtime config. The built binary owns the three config-free writers, static
 schema/help output, decode-only inspection, child-config projection, the harness-managed
 `test run` config lifecycle under the four § EE ownership clauses of
@@ -1731,7 +1731,7 @@ VM/container frames (the Kubernetes service pod keeps its ConfigMap override). T
 retains the full demo record and parent envelope, and the child persists it at its own inspectable sibling
 path. The target replaces it with a role-specific type. The superseded
 build-then-copy/mount surfaces are tracked in
-[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+[design rationale](../../DEVELOPMENT_PLAN/rationale.md).
 
 The implemented context model includes:
 

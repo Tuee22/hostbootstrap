@@ -3,7 +3,7 @@
 {-# LANGUAGE RankNTypes #-}
 
 {- | The verb-indexed reverse projection and its teardown forest
-(Sprint 16.6, @development_plan_standards.md@ § Y).
+(the recursive-lifecycle-command phase, @development_plan_standards.md@ § Y).
 
 `project down` and `project destroy` are not two hand-written cleanup routines.
 They are two **projections of the same validated plan**, and this module is
@@ -211,7 +211,7 @@ This drives the pure projection, not the 'TeardownForest'. The forest adds
 child-first ordering and the destroy-only pre-descent reachability step, both of
 which only become truthful once the verb recurses into each descendant frame;
 until then a forest run here could report a @destroy@ as settled whose deeper
-nodes were never visited. That recursion is the remaining half of Sprint 16.6's
+nodes were never visited. That recursion is the remaining half of the recursive-lifecycle-command phase's
 open item 3.
 -}
 runTeardownProjection ::

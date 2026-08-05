@@ -3,9 +3,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The protected operation session, fence rotation, and the prepare
-compare-and-swap (§ EE, Sprint 15.9).
+compare-and-swap (§ EE, the operator-root-and-command-authority phase).
 
-Sprint 9.10 landed the *pure* journal algebra in "HostBootstrap.Reconcile":
+the canonical-quantities-and-reconcile-results phase landed the *pure* journal algebra in "HostBootstrap.Reconcile":
 'Reconcile.withPreparedOperation' validates a dependency set and mints the
 'Reconcile.PreparedOperation' \/ 'Reconcile.PreparedPreconditions' pair an
 adapter needs. It originally took the journal version as an ordinary 'Word64'

@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Build-invocation authority for the in-Dockerfile quality gate (§ X,
-Sprint 15.9).
+the operator-root-and-command-authority phase).
 
 Today the derived image runs @project init --role image-build-container@ and
 then @check-code@, and the gate authorizes from that **baked** config alone. The

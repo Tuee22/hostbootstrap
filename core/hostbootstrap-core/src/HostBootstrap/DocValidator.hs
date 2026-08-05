@@ -36,6 +36,14 @@ module HostBootstrap.DocValidator
     checkReadmeRefs,
     checkNaming,
     checkTaxonomy,
+
+    -- * Plan-doctrine checks (development_plan_standards.md § A, § C, § G, § II)
+    checkPhaseNumbering,
+    checkPhaseHeader,
+    checkPhaseOrdering,
+    checkNoReversal,
+    checkSprintStructure,
+    checkSubstrateBudget,
   )
 where
 
@@ -86,10 +94,32 @@ validateRepo root = do
   readmeV <- checkReadmeRefs root
   let namingV = concatMap (checkNaming root) docFiles
   taxonomyV <- checkTaxonomy root
+  -- Plan doctrine (§ A, § C, § G, § II). The phase set is validated as a whole
+  -- for contiguity, then each document individually.
+  let numberingV = checkPhaseNumbering root phaseDocs
+  headerV <- concatMapM (checkPhaseHeader root) phaseDocs
+  orderingV <- concatMapM (checkPhaseOrdering root) phaseDocs
+  reversalV <- concatMapM (checkNoReversal root) phaseDocs
+  sprintV <- concatMapM (checkSprintStructure root) phaseDocs
+  substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
   pure
     ( sortOn
         (\v -> (vFile v, vMessage v))
-        (metaV ++ rootV ++ broadV ++ reqV ++ linkV ++ readmeV ++ namingV ++ taxonomyV)
+        ( metaV
+            ++ rootV
+            ++ broadV
+            ++ reqV
+            ++ linkV
+            ++ readmeV
+            ++ namingV
+            ++ taxonomyV
+            ++ numberingV
+            ++ headerV
+            ++ orderingV
+            ++ reversalV
+            ++ sprintV
+            ++ substrateV
+        )
     )
 
 -- | Locate the repository root by walking up from @start@ until a directory
@@ -164,6 +194,180 @@ checkDocRequirements root file = do
   ls <- readLines file
   let rel = rrel root file
   pure [Violation rel "phase document missing '## Documentation Requirements' section" | not (anyLineStarts "## Documentation Requirements" ls)]
+
+-- ---------------------------------------------------------------------------
+-- Plan doctrine
+--
+-- @development_plan_standards.md@ § A makes phase numbers the execution order,
+-- so these checks are what stop the plan from drifting back into a repair log
+-- whose numbering means nothing. They are mechanical on purpose: the doctrine is
+-- only real if a violation fails the build.
+-- ---------------------------------------------------------------------------
+
+{- | § E: the @phase-NN-*.md@ set is contiguous from 0 with no gaps and no
+duplicates. A gap means a phase was deleted without renumbering; a duplicate
+means two documents claim one execution position.
+-}
+checkPhaseNumbering :: FilePath -> [FilePath] -> [Violation]
+checkPhaseNumbering root phaseDocs =
+  duplicates ++ gaps
+  where
+    numbered = [(n, f) | f <- phaseDocs, Just n <- [phaseNumberOf f]]
+    ns = sort (map fst numbered)
+    rel = rrel root
+    duplicates =
+      [ Violation (rel f) ("duplicate phase number " ++ show n)
+      | (n, f) <- numbered,
+        length (filter (== n) ns) > 1
+      ]
+    gaps = case ns of
+      [] -> []
+      _ ->
+        [ Violation "DEVELOPMENT_PLAN" ("phase numbering is not contiguous from 0: missing " ++ show missing)
+        | let missing = [0 .. maximum ns] `without` ns,
+          not (null missing)
+        ]
+    without xs ys = [x | x <- xs, x `notElem` ys]
+
+{- | § G: a phase document carries the required header fields. @Depends on@ and
+@Substrates@ are what the ordering and substrate-budget checks read, so a missing
+field is a hole in both.
+-}
+checkPhaseHeader :: FilePath -> FilePath -> IO [Violation]
+checkPhaseHeader root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      missing field =
+        [ Violation rel ("phase document missing '**" ++ field ++ "**:' header field")
+        | not (any (\l -> ("**" ++ field ++ "**:") `isPrefixOf` trim l) ls)
+        ]
+      badStatus =
+        [ Violation rel ("phase status is not one of Done|Active|Planned: " ++ observed)
+        | Just observed <- [fieldValue "Status" ls],
+          observed `notElem` ["Done", "Active", "Planned"]
+        ]
+  pure (concatMap missing ["Status", "Depends on", "Substrates", "Gate"] ++ badStatus)
+
+{- | § A: a phase depends only on strictly lower-numbered phases.
+
+This is the check the whole doctrine rests on. The @Depends on@ field names
+phases, and every @phase-NN-@ link in it must resolve to a number below this
+document's own.
+-}
+checkPhaseOrdering :: FilePath -> FilePath -> IO [Violation]
+checkPhaseOrdering root file = do
+  ls <- readLines file
+  let rel = rrel root file
+  pure $ case (phaseNumberOf file, fieldValue "Depends on" ls) of
+    (Just self, Just raw) ->
+      [ Violation
+          rel
+          ( "phase "
+              ++ show self
+              ++ " depends on phase "
+              ++ show dep
+              ++ ", which is not strictly lower"
+          )
+      | dep <- referencedPhaseNumbers raw,
+        dep >= self
+      ]
+    _ -> []
+
+{- | § A: the narrative is strictly additive, so no phase document announces a
+removal, a retirement, or a correction. A hit here means a reversal crept back
+in, and the fix is to rewrite the phase that introduced the surface.
+-}
+checkNoReversal :: FilePath -> FilePath -> IO [Violation]
+checkNoReversal root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      -- Only sprint titles and phase titles are scanned. Prose legitimately says
+      -- "release removes the directory"; a *title* that announces a removal is
+      -- the signal that a phase is undoing an earlier one.
+      titles = [l | l <- ls, "### Sprint " `isPrefixOf` trim l || "# Phase " `isPrefixOf` trim l]
+  pure
+    [ Violation rel ("phase narrative reverses earlier work: " ++ word ++ " in " ++ trim l)
+    | l <- titles,
+      word <- reversalVocabulary,
+      word `isInfixOf` l
+    ]
+
+{- | The vocabulary that marks a phase as undoing another (§ A).
+
+Deliberately narrow. @Reopen@ is /not/ here: reopening an abandoned run is the
+recovery phase's own domain vocabulary, and banning the word would force a worse
+title rather than catch a reversal. The phase-reopening case this check exists
+for is already covered by @Superseded@ and @Historical@, and by the ordering
+check — a genuine reopening shows up as a dependency that is not strictly lower.
+-}
+reversalVocabulary :: [String]
+reversalVocabulary =
+  [ "Historical",
+    "Superseded",
+    "Retire",
+    "Retired",
+    "Deprecat",
+    "Remove the",
+    "Removal of",
+    "Corrected",
+    "Reproduced"
+  ]
+
+{- | § C and § G: every sprint declares a status from the closed vocabulary, an
+@Active@ sprint has a non-empty @#### Remaining Work@, and no sprint carries a
+@Blocked by@ field (there is nothing later to wait on).
+-}
+checkSprintStructure :: FilePath -> FilePath -> IO [Violation]
+checkSprintStructure root file = do
+  ls <- readLines file
+  let rel = rrel root file
+      blocked =
+        [ Violation rel "sprint carries a '**Blocked by**' field, but a phase depends only on lower phases"
+        | any (\l -> "**Blocked by**:" `isPrefixOf` trim l) ls
+        ]
+      titles =
+        [ (title, trim (drop 1 (dropWhile (/= '[') title)))
+        | l <- ls,
+          "### Sprint " `isPrefixOf` trim l,
+          let title = trim l
+        ]
+      badTag =
+        [ Violation rel ("sprint title has no [Done|Active|Planned] tag: " ++ title)
+        | (title, tag) <- titles,
+          takeWhile (/= ']') tag `notElem` ["Done", "Active", "Planned"]
+        ]
+      activeWithoutWork =
+        [ Violation rel "an Active sprint has an empty '#### Remaining Work' section"
+        | any emptyActiveRemaining (sprintBlocks ls)
+        ]
+  pure (blocked ++ badTag ++ activeWithoutWork)
+  where
+    emptyActiveRemaining block =
+      any (\l -> "**Status**: Active" `isPrefixOf` trim l) block
+        && null (filter (not . null . trim) (remainingWorkBody block))
+    -- The section body stops at the next heading of any level. Without that
+    -- bound, a phase's trailing '## Documentation Requirements' counts as content
+    -- and this check is vacuous for the last sprint of every phase.
+    remainingWorkBody block =
+      takeWhile (not . isHeading) (drop 1 (dropWhile (not . isPrefixOf "#### Remaining Work" . trim) block))
+    isHeading l = "#" `isPrefixOf` trim l
+
+{- | § II: a phase declares at most one substrate beyond the @linux-cpu@
+baseline, so no phase is unclosable on a single machine.
+-}
+checkSubstrateBudget :: FilePath -> FilePath -> IO [Violation]
+checkSubstrateBudget root file = do
+  ls <- readLines file
+  let rel = rrel root file
+  pure $ case fieldValue "Substrates" ls of
+    Nothing -> []
+    Just raw ->
+      let special = [s | s <- ["apple-silicon", "nvidia", "windows"], s `isInfixOf` raw]
+       in [ Violation
+              rel
+              ("phase declares more than one non-baseline substrate: " ++ unwords special)
+          | length special > 1
+          ]
 
 checkReadmeRefs :: FilePath -> IO [Violation]
 checkReadmeRefs root = do
@@ -289,6 +493,51 @@ stripFencedCode = go False
 
 isPhaseDoc :: FilePath -> Bool
 isPhaseDoc f = "phase-" `isPrefixOf` takeFileName f && ".md" `isSuffixOf` f
+
+-- | The execution position a phase document's filename declares.
+phaseNumberOf :: FilePath -> Maybe Int
+phaseNumberOf f = case span isDigit (drop (length ("phase-" :: String)) (takeFileName f)) of
+  (digits@(_ : _), '-' : _) -> Just (read digits)
+  _ -> Nothing
+
+{- | The value of a @**Field**: value@ header line, trimmed. Only the first
+occurrence is read, so a sprint-level field cannot shadow the phase header.
+-}
+fieldValue :: String -> [String] -> Maybe String
+fieldValue field ls = case [trim (drop (length prefix) (trim l)) | l <- ls, prefix `isPrefixOf` trim l] of
+  (v : _) -> Just v
+  [] -> Nothing
+  where
+    prefix = "**" ++ field ++ "**:"
+
+{- | Every phase number a @Depends on@ value mentions, read out of its
+@phase-NN-@ links. Prose without a link contributes nothing, which is why § G
+requires the field to link.
+-}
+referencedPhaseNumbers :: String -> [Int]
+referencedPhaseNumbers = go
+  where
+    go [] = []
+    go s@(_ : rest) = case stripPrefix' "phase-" s of
+      Just after -> case span isDigit after of
+        (digits@(_ : _), '-' : _) -> read digits : go rest
+        _ -> go rest
+      Nothing -> go rest
+    stripPrefix' p xs
+      | p `isPrefixOf` xs = Just (drop (length p) xs)
+      | otherwise = Nothing
+
+{- | Split a phase document into its sprint blocks, each running from its
+@### Sprint@ heading to the next one.
+-}
+sprintBlocks :: [String] -> [[String]]
+sprintBlocks ls = case dropWhile (not . isSprintHeading) ls of
+  [] -> []
+  (h : rest) ->
+    let (body, remaining) = break isSprintHeading rest
+     in (h : body) : sprintBlocks remaining
+  where
+    isSprintHeading l = "### Sprint " `isPrefixOf` trim l
 
 firstIsTitle :: [String] -> Bool
 firstIsTitle ls = case dropWhile (null . trim) ls of
