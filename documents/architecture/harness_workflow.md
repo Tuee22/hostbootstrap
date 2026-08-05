@@ -26,12 +26,13 @@ The fixed surface is:
 
 `test init` writes the executable-sibling `<project>.test.dhall` without requiring a production
 `<project>.dhall`. `test run` reads that file, validates the compiled cases and the project-owned typed
-variant projection into one opaque `TestMatrix`, and writes each selected variant's executable-sibling
-`<project>.dhall` behind a **cooperative** sidecar
-guard, drives the project's real bring-up/assert/teardown seams, and removes the generated config only
-when its bytes still match. The sidecar acquisition and destination write are separate operations, and
-the guard binds a pathname rather than an object identity, so it holds none of the four
-[ownership_invariant](ownership_invariant.md) clauses and mints no receipt.
+variant projection into one opaque `TestMatrix`, and installs each selected variant's
+executable-sibling `<project>.dhall` through `HostBootstrap.Harness.GeneratedConfig` — which holds all
+four [ownership_invariant](ownership_invariant.md) clauses over that file — then drives the project's
+real bring-up/assert/teardown seams and unlinks the config only when its bound kernel identity **and**
+its recorded payload still match. A found config is refused before any mutation, an edited or replaced
+one is a structured conflict that is left intact, and an abandoned run's config is reclaimed by the
+next run's sweep from the same durable record.
 
 The command description calls this a root-only surface, but the parser does not apply a binary-context
 root gate to either subcommand. `test run` deliberately does not load a pre-existing project config,
@@ -116,13 +117,20 @@ ownership at all.
 The same record drives recovery. Because the origin is published before the first mutation, an abandoned
 run whose record says *absent* has its generated content removed rather than adopted — including the
 crash window between publishing the origin and binding the identity, where no managed identity was ever
-recorded. The sweep reclaims each abandoned unbound run's data root before closing its lease.
+recorded. The sweep reclaims each abandoned run's data root **and its generated config** before closing
+that run's lease.
 
-Generated project config is not yet on the invariant: it uses a cooperative sidecar collision guard plus
-compare-before-delete behavior, which takes no OS-released exclusive lock, records no durable origin, and
-compares a pathname rather than the destination object's identity. Most lifecycle resources still return
-`IO ()`, and the runner does not receive opaque ownership receipts for the config, VM, cluster, alias, or
-daemon. The transitions that consume a satisfying receipt are in
+Generated project config is on the invariant too, through the same identity seam. Its origin record adds
+the intended payload digest, published before the file is created, so the crash window between the
+record and the identity binding resolves without adopting bytes the record does not name. That ordering
+is also why the "a production config already exists" refusal now lives *after* the abandoned-run sweep:
+derived from installed project identity inside the protected transaction that takes the mode, it is the
+sole copy. The two earlier pre-sweep copies made an interrupted run's own config refuse the next run
+before recovery could resolve it, so the recovery machinery was unreachable in exactly the case it was
+built for.
+
+Most other lifecycle resources still return `IO ()`, and the runner does not receive opaque ownership
+receipts for the VM, cluster, alias, or daemon. The transitions that consume a satisfying receipt are in
 [lifecycle_state_model](lifecycle_state_model.md).
 
 Some current safety checks are late. VM bring-up can run provider ensure, create the durable path, and

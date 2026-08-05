@@ -21,8 +21,8 @@ that directory, with the realization documented in
   identity of an object that was already there, or explicit absence — and is
   published /before/ the first mutation;
 * __clause 3__ — ownership is bound to the created directory's stable kernel
-  identity ('DataRootIdentity': @device:inode@ on POSIX, volume serial plus
-  file index on Windows), never to its name;
+  identity ('HostBootstrap.Harness.Identity.ObjectIdentity': @device:inode@ on
+  POSIX, volume serial plus file index on Windows), never to its name;
 * __clause 4__ — release re-observes that identity under the same entry and
   removes the directory only on an exact match.  Any other observation is a
   structured conflict, the directory is left intact, and the receipt is not
@@ -30,18 +30,14 @@ that directory, with the realization documented in
 
 A backend that cannot report a stable identity is 'DataRootUnsupported' and
 mints no ownership at all, per § EE.  The identity read itself is the injected
-'DataRootIdentityBackend' seam, so the whole protocol runs against a real
-kernel on every substrate the suite runs on rather than only on one platform
-gate.
+'ObjectIdentityBackend' seam, so the whole protocol runs against a real kernel
+on every substrate the suite runs on rather than only on one platform gate.
+
+"HostBootstrap.Harness.GeneratedConfig" is the same four-clause protocol over
+the run's generated sibling config /file/, and shares this module's identity
+layer so the two cannot drift.
 -}
 module HostBootstrap.Harness.DataRoot (
-    -- * Stable kernel identity (clause 3)
-    DataRootIdentity,
-    mkDataRootIdentity,
-    dataRootIdentityBytes,
-    dataRootIdentityText,
-    DataRootIdentityBackend (..),
-
     -- * The durable origin record (clause 2)
     DataRootOrigin (..),
     encodeDataRootRecord,
@@ -65,13 +61,18 @@ module HostBootstrap.Harness.DataRoot (
 
 import Control.Exception.Safe (try)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
-import Data.Char (isHexDigit)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word8)
 import HostBootstrap.Harness (selfCreatedTestDataRemoval)
+import HostBootstrap.Harness.Identity (
+    IdentityFault (IdentityMalformed, IdentityProbeFailed, IdentityUnsupported),
+    ObjectIdentity,
+    ObjectIdentityBackend,
+    objectIdentityText,
+    observeObjectIdentity,
+    parseObjectIdentityHex,
+ )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -93,66 +94,25 @@ import System.FilePath (takeDirectory)
 
 -- Identity ---------------------------------------------------------------------
 
-{- | A filesystem object's stable kernel identity.  The constructor is private:
-a value exists only after a backend read a non-empty identity from the kernel,
-so an empty or fabricated identity cannot be compared as though it were one.
+{- | Map an identity-layer fault into this protocol's own vocabulary, so callers
+of the data-root driver never have to know the shared layer exists.
 -}
-newtype DataRootIdentity = DataRootIdentity ByteString
-    deriving (Eq, Ord)
+identityFault :: IdentityFault -> DataRootError
+identityFault fault = case fault of
+    IdentityUnsupported reason -> DataRootUnsupported reason
+    IdentityProbeFailed operation reason -> DataRootFailure operation reason
+    IdentityMalformed reason -> DataRootMalformedRecord reason
 
-instance Show DataRootIdentity where
-    show identity = "DataRootIdentity " <> show (dataRootIdentityText identity)
+observeIdentity ::
+    ObjectIdentityBackend ->
+    FilePath ->
+    IO (Either DataRootError (Maybe ObjectIdentity))
+observeIdentity backend path = do
+    observed <- observeObjectIdentity backend path
+    pure (either (Left . identityFault) Right observed)
 
-mkDataRootIdentity :: ByteString -> Either DataRootError DataRootIdentity
-mkDataRootIdentity raw
-    | ByteString.null raw =
-        Left (DataRootUnsupported "the host reported an empty data-root identity")
-    | ByteString.length raw > 64 =
-        Left (DataRootUnsupported "the host reported an over-long data-root identity")
-    | otherwise = Right (DataRootIdentity raw)
-
-dataRootIdentityBytes :: DataRootIdentity -> ByteString
-dataRootIdentityBytes (DataRootIdentity raw) = raw
-
--- | The identity as lowercase hex, which is how it is journalled and reported.
-dataRootIdentityText :: DataRootIdentity -> Text
-dataRootIdentityText (DataRootIdentity raw) =
-    Text.pack (concatMap hexByte (ByteString.unpack raw))
-
-hexByte :: Word8 -> String
-hexByte value = [hexDigit (value `div` 16), hexDigit (value `mod` 16)]
-
-hexDigit :: Word8 -> Char
-hexDigit value
-    | value < 10 = toEnum (fromEnum '0' + fromIntegral value)
-    | otherwise = toEnum (fromEnum 'a' + fromIntegral value - 10)
-
-parseHexIdentity :: Text -> Either DataRootError DataRootIdentity
-parseHexIdentity raw
-    | Text.null raw || odd (Text.length raw) || not (Text.all isHexDigit raw) =
-        Left (DataRootMalformedRecord ("identity is not lowercase hex: " <> raw))
-    | otherwise = mkDataRootIdentity (ByteString.pack (bytes (Text.unpack raw)))
-  where
-    bytes (high : low : rest) = (nibble high * 16 + nibble low) : bytes rest
-    bytes _ = []
-    nibble character
-        | character >= '0' && character <= '9' =
-            fromIntegral (fromEnum character - fromEnum '0')
-        | otherwise =
-            fromIntegral (fromEnum character - fromEnum 'a' + 10)
-
-{- | How the driver reads a path's stable kernel identity (clause 3).
-
-'Right Nothing' is an authoritative absence; 'Left' is a probe fault, never a
-false absence.  Production supplies the native backend; a test injects one that
-reports 'DataRootUnsupported' to prove that a host without a stable identity
-mints no ownership.
--}
-newtype DataRootIdentityBackend = DataRootIdentityBackend
-    { observeDataRootIdentity ::
-        FilePath ->
-        IO (Either DataRootError (Maybe DataRootIdentity))
-    }
+parseHexIdentity :: Text -> Either DataRootError ObjectIdentity
+parseHexIdentity = either (Left . identityFault) Right . parseObjectIdentityHex
 
 -- The durable origin record ------------------------------------------------------
 
@@ -165,7 +125,7 @@ than advisory.
 -}
 data DataRootOrigin
     = DataRootOriginAbsent
-    | DataRootOriginPresent DataRootIdentity
+    | DataRootOriginPresent ObjectIdentity
     deriving (Eq, Show)
 
 recordMagic :: ByteString
@@ -175,7 +135,7 @@ recordMagic = "hbdr1"
 written in two compare-and-swaps — origin before the creation, managed identity
 after it — so the crash window is explicit rather than hidden.
 -}
-encodeDataRootRecord :: DataRootOrigin -> Maybe DataRootIdentity -> ByteString
+encodeDataRootRecord :: DataRootOrigin -> Maybe ObjectIdentity -> ByteString
 encodeDataRootRecord origin managed =
     ByteStringChar8.unlines (recordMagic : originLine : managedLines)
   where
@@ -188,12 +148,12 @@ encodeDataRootRecord origin managed =
         | Just identity <- [managed]
         ]
 
-encodeIdentity :: DataRootIdentity -> ByteString
-encodeIdentity = ByteStringChar8.pack . Text.unpack . dataRootIdentityText
+encodeIdentity :: ObjectIdentity -> ByteString
+encodeIdentity = ByteStringChar8.pack . Text.unpack . objectIdentityText
 
 decodeDataRootRecord ::
     ByteString ->
-    Either DataRootError (DataRootOrigin, Maybe DataRootIdentity)
+    Either DataRootError (DataRootOrigin, Maybe ObjectIdentity)
 decodeDataRootRecord raw = case ByteStringChar8.lines raw of
     (magic : originLine : rest)
         | magic /= recordMagic ->
@@ -230,7 +190,7 @@ data DataRootOwnership = DataRootOwnership
     { ownershipPath :: FilePath
     , ownershipKey :: Text
     , ownershipOrigin :: DataRootOrigin
-    , ownershipManaged :: Maybe DataRootIdentity
+    , ownershipManaged :: Maybe ObjectIdentity
     }
     deriving (Eq, Show)
 
@@ -240,7 +200,7 @@ dataRootOwnershipOrigin = ownershipOrigin
 {- | The identity this run created, when it created one.  'Nothing' means the
 directory pre-existed, so this run owns nothing to remove.
 -}
-dataRootOwnershipManaged :: DataRootOwnership -> Maybe DataRootIdentity
+dataRootOwnershipManaged :: DataRootOwnership -> Maybe ObjectIdentity
 dataRootOwnershipManaged = ownershipManaged
 
 dataRootOwnershipPath :: DataRootOwnership -> FilePath
@@ -290,7 +250,7 @@ that is a conflict for 'recoverDataRoot' to resolve rather than something to
 overwrite.
 -}
 acquireDataRoot ::
-    DataRootIdentityBackend ->
+    ObjectIdentityBackend ->
     ProtectedSession session ->
     RecordKey ->
     FilePath ->
@@ -313,7 +273,7 @@ acquireDataRoot backend session key path = do
             case prepared of
                 Left failure -> pure (Left failure)
                 Right () -> do
-                    observed <- observeDataRootIdentity backend path
+                    observed <- observeIdentity backend path
                     case observed of
                         Left failure -> pure (Left failure)
                         Right (Just found) ->
@@ -350,7 +310,7 @@ acquireDataRoot backend session key path = do
                 case created of
                     Left failure -> pure (Left failure)
                     Right () -> do
-                        bound <- observeDataRootIdentity backend path
+                        bound <- observeIdentity backend path
                         case bound of
                             Left failure -> pure (Left failure)
                             Right Nothing ->
@@ -398,7 +358,7 @@ that is now absent — is a structured conflict: nothing is removed and the
 record is retained so the next run's recovery sees the same evidence.
 -}
 releaseDataRoot ::
-    DataRootIdentityBackend ->
+    ObjectIdentityBackend ->
     ProtectedSession session ->
     RecordKey ->
     DataRootOwnership ->
@@ -421,7 +381,7 @@ releaseDataRoot backend session key owned
         ([], _) -> dropRecord DataRootPreserved
         (_, Nothing) -> dropRecord DataRootPreserved
         (target : _, Just managed) -> do
-            observed <- observeDataRootIdentity backend target
+            observed <- observeIdentity backend target
             case observed of
                 Left failure -> pure (Left failure)
                 Right current
@@ -446,12 +406,12 @@ releaseDataRoot backend session key owned
     replacement managed current =
         DataRootConflict
             (Text.pack path)
-            ("identity " <> dataRootIdentityText managed)
+            ("identity " <> objectIdentityText managed)
             (renderObserved current)
 
-renderObserved :: Maybe DataRootIdentity -> Text
+renderObserved :: Maybe ObjectIdentity -> Text
 renderObserved Nothing = "absent"
-renderObserved (Just identity) = "identity " <> dataRootIdentityText identity
+renderObserved (Just identity) = "identity " <> objectIdentityText identity
 
 {- | What recovery restored for an abandoned run's data root.  Recovery never
 adopts: it either restores the recorded absence or leaves the recorded
@@ -481,7 +441,7 @@ When the record says the path was __present__, the object was an operator's and
 is never removed, whatever it looks like now.
 -}
 recoverDataRoot ::
-    DataRootIdentityBackend ->
+    ObjectIdentityBackend ->
     ProtectedSession session ->
     RecordKey ->
     FilePath ->
@@ -496,7 +456,7 @@ recoverDataRoot backend session key path = do
             Right (DataRootOriginPresent _, _) ->
                 settle DataRootFoundStatePreserved
             Right (DataRootOriginAbsent, managed) -> do
-                observed <- observeDataRootIdentity backend path
+                observed <- observeIdentity backend path
                 case observed of
                     Left failure -> pure (Left failure)
                     Right Nothing -> settle DataRootAlreadyAbsent
@@ -507,8 +467,8 @@ recoverDataRoot backend session key path = do
                                 ( Left
                                     ( DataRootConflict
                                         (Text.pack path)
-                                        ("identity " <> dataRootIdentityText recorded)
-                                        ("identity " <> dataRootIdentityText current)
+                                        ("identity " <> objectIdentityText recorded)
+                                        ("identity " <> objectIdentityText current)
                                     )
                                 )
                         | otherwise -> do

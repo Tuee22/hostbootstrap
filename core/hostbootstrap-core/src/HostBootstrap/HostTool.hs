@@ -26,10 +26,14 @@ where
 import Control.Exception (IOException, catch)
 import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import Data.List (isPrefixOf, sort)
-import System.FilePath (isAbsolute, (</>))
+import System.FilePath (isAbsolute)
 import qualified System.FilePath.Posix as Posix
 #ifdef mingw32_HOST_OS
 import System.Exit (ExitCode (ExitSuccess))
+-- Every native-separator join below is a Windows fallback path, so importing
+-- '(</>)' unconditionally is an unused import on every other host and fails the
+-- gate's own @-Werror@ on a tree that compiles this module from scratch.
+import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
 #endif
 

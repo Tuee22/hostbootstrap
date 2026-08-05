@@ -36,10 +36,12 @@
   any step interpreter is returned.
 - `<project>.test.dhall` is a **thin override**; `TestCfg` validates the executable cases and pure
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
-  through the scope-aware restricted assembler, runs the real `project up`, then deletes only matching
-  generated config bytes; changed bytes remain in place and are reported rather than being deleted. The
-  current sidecar guard is cooperative, not the four § EE ownership clauses or verified ownership
-  receipt.
+  through the scope-aware restricted assembler, runs the real `project up`, then unlinks the generated
+  config only while its bound kernel identity **and** its recorded payload both still match; anything
+  else remains in place and is reported. That guard is
+  `HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE ownership clauses over the file —
+  not the cooperative sidecar it replaced. A verified ownership *receipt* for the rest of the
+  lifecycle's resources is still open.
 - `SecretRef scope` replaces raw secret `Text` with references and core never resolves secrets.
   `TestPlaintext` requires exact `HarnessConfigAuthority projectId runId`; the Production schema has no
   plaintext constructor. Root assembly is scope-safe now. One-time child handoff and child plan

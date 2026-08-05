@@ -89,7 +89,6 @@ codecCases =
         withSystemTempDirectory "hostbootstrap-codec-mismatch" $ \dir -> do
             sideEffectRan <- newIORef False
             let path = dir </> "must-not-exist.dhall"
-                lockPath = path ++ ".hostbootstrap-test-owner"
                 textEncoder = Dhall.inject :: Encoder Text
                 mismatchedEncoder = textEncoder{declared = Dhall.Core.Natural}
                 admission =
@@ -110,7 +109,6 @@ codecCases =
                     IO (Either SomeException ())
             assertBool "requiring the rejected witness fails" (either (const True) (const False) result)
             doesPathExist path >>= (@?= False)
-            doesPathExist lockPath >>= (@?= False)
             readIORef sideEffectRan >>= (@?= False)
     , testCase "a matching pair yields the schema used by rendering and decoding" $ do
         let budgetCodec = codec @V.Budget

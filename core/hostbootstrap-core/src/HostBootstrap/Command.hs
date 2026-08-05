@@ -56,7 +56,7 @@ import HostBootstrap.Config.Schema (
     configRoleNames,
     parseConfigRole,
     projectConfigFileName,
-    removeProjectConfigFileIfOwned,
+    renderScopedProjectConfigBytes,
     siblingProjectConfigPath,
     validatedConfigValue,
     verifiedConfigDigest,
@@ -66,7 +66,6 @@ import HostBootstrap.Config.Schema (
     withSiblingValidatedProjectConfigRoot,
     writeProjectConfigFile,
     writeScopedProjectConfigFile,
-    writeScopedProjectConfigFileExclusive,
  )
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
@@ -111,7 +110,10 @@ import HostBootstrap.Harness (
     variantIdText,
  )
 import HostBootstrap.Harness.Ownership (
+    acquireOwnedRunConfig,
+    ownedHarnessConfigPath,
     protectedProjectRunOwnership,
+    releaseOwnedRunConfig,
     withOwnedHarnessRoot,
  )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
@@ -330,9 +332,15 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
         unless exists (die ("test run: missing " ++ tpath ++ "; run `" ++ progName ++ " test init` first"))
         tc <- decodeFile testCodec tpath
         cfgPath <- siblingProjectConfigPath (T.pack progName)
-        cfgExists <- doesFileExist cfgPath
-        when cfgExists $
-            die ("test run: a production config already exists at " ++ cfgPath ++ "; refusing to overwrite it")
+        -- There is deliberately no `doesFileExist cfgPath` refusal here. That
+        -- check used to fire *before* `withHarnessRoot` reached
+        -- `recoverAbandonedHarnessRuns`, so after the common failure mode — an
+        -- interrupted run leaving its own generated config behind — the sweep
+        -- that would resolve it never ran, and both the config and the bound
+        -- lease had to be cleared by hand. The authoritative refusal is
+        -- `harnessPreconditions`, which derives its subject from installed
+        -- project identity and runs inside the protected transaction, after the
+        -- sweep (Sprint 10.9).
         matrix <-
             either
                 (die . ("test run: invalid test matrix: " ++) . show)
@@ -426,16 +434,25 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
                                                                                         Left failure -> die (T.unpack (protectedErrorMessage failure))
                                                                                         Right (Left failure) -> die (T.unpack (modeErrorMessage failure))
                                                                                         Right (Right ()) -> pure ()
+                                                                -- The generated config is acquired under all
+                                                                -- four § EE clauses (Sprint 10.9): a durable
+                                                                -- origin record naming the intended payload
+                                                                -- precedes the create-if-absent install, and
+                                                                -- the created file's own kernel identity is
+                                                                -- bound to the receipt.
                                                                 ownedPayload <-
-                                                                    writeScopedProjectConfigFileExclusive
-                                                                        harnessCodec
-                                                                        cfgPath
-                                                                        (validatedConfigValue validated)
+                                                                    either die pure
+                                                                        =<< acquireOwnedRunConfig
+                                                                            ownedRoot
+                                                                            ( renderScopedProjectConfigBytes
+                                                                                harnessCodec
+                                                                                (validatedConfigValue validated)
+                                                                            )
                                                                 restore
-                                                                    ( putStrLn ("test run: generated the run config at " ++ cfgPath ++ " (variant " ++ T.unpack (variantIdText (variantDraftId draft)) ++ ", run " ++ T.unpack runName ++ ")")
+                                                                    ( putStrLn ("test run: generated the run config at " ++ ownedHarnessConfigPath ownedRoot ++ " (variant " ++ T.unpack (variantIdText (variantDraftId draft)) ++ ", run " ++ T.unpack runName ++ ")")
                                                                         >> body
                                                                     )
-                                                                    `finally` removeGeneratedConfig cfgPath ownedPayload
+                                                                    `finally` removeGeneratedConfig ownedRoot ownedPayload
                                                             )
                                                         )
                                                 either die pure assembled
@@ -460,8 +477,8 @@ testCommand _productionCodec testCodec progName suite projectPlan assemblyInputs
             Right report -> do
                 putStr (reportCard report)
                 unless (allPassed report) (die "test: one or more cases failed")
-    removeGeneratedConfig cfgPath ownedPayload = do
-        removed <- removeProjectConfigFileIfOwned cfgPath ownedPayload
+    removeGeneratedConfig ownedRoot ownedPayload = do
+        removed <- releaseOwnedRunConfig ownedRoot ownedPayload
         either die pure removed
     selectionError matrix err =
         case err of

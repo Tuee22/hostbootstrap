@@ -2189,26 +2189,22 @@ demoTestSuite =
         demoAssert
         demoTestDown
 
-{- | The two hard fail-fast safety preconditions (§ Z): never overwrite a
-production config, never touch a running production cluster. Checked before any
-bring-up; if either holds, no tests run.
+{- | The suite-level fail-fast safety precondition (§ Z): never touch a running
+production cluster. Checked before any bring-up; if it holds, no tests run.
+
+The peer precondition — never overwrite a production config — is derived from
+installed project identity inside the ownership transaction and runs after the
+abandoned-run sweep, so it is deliberately not repeated here (Sprint 10.9).
 -}
 demoTestSafety :: IO (Either String ())
 demoTestSafety = do
     cfg <- resolveHostConfig
     root <- getCurrentDirectory
-    -- The production-config existence precondition checks the **executable
-    -- sibling** <project>.dhall (the path the harness generates the run config
-    -- at), not the cwd — so `test run` refuses to overwrite a real config but
-    -- correctly generates its own. The running-cluster precondition still keys
-    -- off the cwd-rooted production plan.
-    cfgPath <- siblingProjectConfigPath (T.pack demoProject)
+    -- The running-cluster precondition keys off the cwd-rooted production plan.
     let prodPlan
             | substrateName (hcSubstrate cfg) == LinuxGpu = resolvePlanWithDriver demoProject root Production NvkindDriver
             | otherwise = resolvePlan demoProject root Production
-    testSafetyPreconditions
-        cfgPath
-        (productionClusterRunning cfg prodPlan)
+    testSafetyPreconditions (productionClusterRunning cfg prodPlan)
 
 {- | The "production cluster running" safety probe (§ Z), folded into the VM frame
 so it actually fires. The demo's cluster lives **inside** the provider VM, so a

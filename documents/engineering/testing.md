@@ -28,13 +28,16 @@ teardown, even though preparatory effects may already have occurred. A hard kill
 handler; durable incomplete-run recovery and receipt-driven cleanup are target work. The demo generates
 two project-config variants with different messages and runs the selected compiled cases against each.
 
-Useful generated-file safeguards are implemented: a cooperative sidecar guard detects participating
-writers, and cleanup removes the project config only when its bytes still match. Sidecar acquisition and
-destination writing are separate operations, so a non-cooperating writer can still win the
-check-to-write race; this is not atomic exclusive creation. A precondition also refuses a known running
-production cluster. These checks do not provide complete transaction ownership. Provider VMs, aliases,
-clusters, data roots, ports, and daemons do not uniformly return opaque ownership receipts, teardown is
-not recursive, and the demo itself resolves the live cluster with the Production profile.
+The run's generated project config is owned rather than merely guarded: it is published create-if-absent
+inside the protected store's exclusive entry, after a durable record naming the intended payload, and
+bound to the created file's own kernel identity — the four
+[ownership_invariant](../architecture/ownership_invariant.md) clauses, the same ones the run's
+`.test_data` generation holds. Cleanup unlinks it only when both that identity and the payload still
+match, so a non-cooperating writer is detected rather than clobbered, and an abandoned run's config is
+reclaimed by the next run's sweep instead of blocking it. A precondition also refuses a known running
+production cluster. These checks still do not provide complete transaction ownership: provider VMs,
+aliases, clusters, ports, and daemons do not uniformly return opaque ownership receipts, teardown is not
+recursive, and the demo itself resolves the live cluster with the Production profile.
 
 Delivery status, exact test totals, dated hardware evidence, and phase closure belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).

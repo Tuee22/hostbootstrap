@@ -160,7 +160,7 @@ the binary, and Python does not initialize or trigger config creation. Existing-
 `context path|schema|render` are static and config-free; `context inspect` reads the sibling;
 `context show [FILE]` reads its selected/default file; and `test run` reads `<project>.test.dhall`,
 refuses an existing sibling project config, and writes/removes its run config under the current
-cooperative sidecar and matching-byte cleanup guard (Phase 10.9 owns the four § EE ownership clauses
+four § EE ownership clauses of `HostBootstrap.Harness.GeneratedConfig` (Phase 10.9 still owns verified receipts for the rest of the lifecycle's resources
 and verified receipts). There is no
 auto-init backstop.
 

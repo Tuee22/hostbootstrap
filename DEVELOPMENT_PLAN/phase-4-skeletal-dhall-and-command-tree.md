@@ -43,7 +43,7 @@ The implemented tree does **not** apply one sibling-config rule to every verb:
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads the executable-sibling `<project>.dhall` without a command-authority gate |
 | `context show [FILE]` | Reads the selected/default file without a command-authority gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling project config, writes each run config behind the current cooperative sidecar lock, and removes it only on a matching-byte guard |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall` and installs each run variant through the four § EE ownership clauses of `HostBootstrap.Harness.GeneratedConfig` — a found config is refused before any mutation, and cleanup unlinks only on an exact re-observed kernel identity and payload |
 | `project up\|down\|destroy`, `service run`, `check-code` | Read and gate on the sibling `<project>.dhall` |
 
 `project init` currently supports `--role`, repeatable `--also-role`, `--output`, `--force`, and

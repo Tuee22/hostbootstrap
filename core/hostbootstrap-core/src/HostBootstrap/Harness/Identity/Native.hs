@@ -1,8 +1,10 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | The host's stable-kernel-identity backend for the harness data root
-(clause 3 of @development_plan_standards.md § EE@).
+{- | The host's stable-kernel-identity backend for every harness-owned
+filesystem object (clause 3 of @development_plan_standards.md § EE@) — the run's
+@.test_data\/\<runId\>@ directory and its generated sibling @\<project\>.dhall@
+alike.
 
 Both realizations read the identity of the object the path currently names
 without following a symbolic link, so a path swapped for a link elsewhere reads
@@ -21,8 +23,8 @@ other ownership backends already use.  An authoritative absence is
 (§ CC) — so a host whose error mapping does not report absence distinctly
 produces a refusal rather than a spurious "nothing there".
 -}
-module HostBootstrap.Harness.DataRoot.Native (
-    nativeDataRootIdentityBackend,
+module HostBootstrap.Harness.Identity.Native (
+    nativeObjectIdentityBackend,
 ) where
 
 import Control.Exception.Safe (try)
@@ -32,11 +34,11 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import HostBootstrap.Harness.DataRoot (
-    DataRootError (DataRootFailure),
-    DataRootIdentity,
-    DataRootIdentityBackend (DataRootIdentityBackend),
-    mkDataRootIdentity,
+import HostBootstrap.Harness.Identity (
+    IdentityFault (IdentityProbeFailed),
+    ObjectIdentity,
+    ObjectIdentityBackend (ObjectIdentityBackend),
+    mkObjectIdentity,
  )
 import System.IO.Error (isDoesNotExistError)
 
@@ -68,10 +70,10 @@ fileFlagOpenReparsePoint = 0x00200000
 #endif
 
 -- | The identity backend for the host this binary was built for.
-nativeDataRootIdentityBackend :: DataRootIdentityBackend
-nativeDataRootIdentityBackend = DataRootIdentityBackend observe
+nativeObjectIdentityBackend :: ObjectIdentityBackend
+nativeObjectIdentityBackend = ObjectIdentityBackend observe
 
-observe :: FilePath -> IO (Either DataRootError (Maybe DataRootIdentity))
+observe :: FilePath -> IO (Either IdentityFault (Maybe ObjectIdentity))
 observe path = do
     outcome <- try (readObjectIdentity path)
     case outcome of
@@ -79,11 +81,11 @@ observe path = do
             | isDoesNotExistError failure -> pure (Right Nothing)
             | otherwise -> pure (Left (probeFailure path failure))
         Right (volume, index) ->
-            pure (fmap Just (mkDataRootIdentity (encodeIdentity volume index)))
+            pure (fmap Just (mkObjectIdentity (encodeIdentity volume index)))
 
-probeFailure :: FilePath -> IOError -> DataRootError
+probeFailure :: FilePath -> IOError -> IdentityFault
 probeFailure path failure =
-    DataRootFailure
+    IdentityProbeFailed
         ("observe the identity of " <> asText path)
         (asText (show failure))
 

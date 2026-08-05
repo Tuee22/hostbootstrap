@@ -1273,9 +1273,18 @@ the one digest of the plan being interpreted, its exact ordered dependency prefi
 that the same step kind reports its own plan's digest rather than the other's. (The other two new cases
 belong to Sprints 5.9 and 11.10, which landed in the same working tree.)
 
-**This is static-gated only.** It changes how every forward action is invoked on every lane, so § C owes a
-live re-run on each. No live run recorded anywhere in this plan covers it: every dated lane result
-predates it.
+**This was static-gated only.** It changes how every forward action is invoked on every lane, so § C owes
+a live re-run on each, and no live run recorded in this plan at the time covered it — every dated lane
+result predated it.
+
+**The Apple Silicon half of that debt is discharged (2026-08-04).** A live
+`hostbootstrap run -- test run all` on Apple Silicon M1 Max / macOS 25.5.0 arm64, against a tree
+containing this descriptor, reported **`10/10 passed`** across both variants and all five compiled cases
+over four bring-ups and three intermediate destroys, with a clean end state. Every forward action on that
+lane therefore ran through `Reconcile.stepExecutionFor` and its plan-minted descriptor on real hardware.
+The canonical evidence, including the post-run ownership-record audit, is held by
+[Sprint 10.9](phase-10-standardized-test-harness.md), whose own delivery it was primarily validating.
+**The native Linux CPU, native Linux GPU, and Windows GPU lanes still owe theirs.**
 
 **Still open (this sprint), grouped by contract; dependencies are stated on each item:**
 

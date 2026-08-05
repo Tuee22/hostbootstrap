@@ -5,8 +5,6 @@
 module SchemaSpec (tests) where
 
 import Control.Exception (SomeException, try)
-import Control.Monad (void)
-import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -41,7 +39,6 @@ import HostBootstrap.Config.Class (
 import HostBootstrap.Config.Schema (
     parseConfigRole,
     projectConfigSnapshotHash,
-    removeProjectConfigFileIfOwned,
     renderProjectConfigSnapshotLog,
     validateProjectConfigForProject,
     validatedConfigValue,
@@ -49,7 +46,6 @@ import HostBootstrap.Config.Schema (
     withAssembledHarnessConfig,
     withValidatedConfig,
     writeProjectConfigFile,
-    writeProjectConfigFileExclusive,
  )
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (
@@ -63,7 +59,7 @@ import HostBootstrap.Context (
     commandAllowed,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
-import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeDirectory, removeFile)
+import System.Directory (doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 import System.IO.Temp (withSystemTempDirectory)
@@ -214,43 +210,21 @@ tests =
             assertBool "config content is not logged" (not ("secret" `T.isInfixOf` line))
             assertBool "snapshot hash distinguishes physical line endings" $
                 projectConfigSnapshotHash "line\n" /= projectConfigSnapshotHash "line\r\n"
-        , testCase "generated config ownership is exclusive and preserves replacements" $ do
+        , -- The generated config's ownership is no longer a property of the
+          -- writer. It moved to "HostBootstrap.Harness.GeneratedConfig", which
+          -- holds the four § EE clauses over the file itself; GeneratedConfigSpec
+          -- proves them. What remains here is the writer's own contract: the
+          -- bytes it produces are exactly the bytes that protocol installs.
+          testCase "the scoped writer produces exactly the bytes the ownership protocol installs" $ do
             tmp <- getTemporaryDirectory
             (path, handle) <- openTempFile tmp "hostbootstrap-owned-config.dhall"
             hClose handle
+            writeProjectConfigFile projectConfigCodec path expected
+            written <- TIO.readFile path
+            decoded <- decodeProjectConfigFile path
             removeFile path
-            ownership <- writeProjectConfigFileExclusive projectConfigCodec path expected
-            ordinary <- try (writeProjectConfigFile projectConfigCodec path expected) :: IO (Either SomeException ())
-            assertBool "ordinary config writers must honor the ownership token" (isLeft ordinary)
-            second <- try (void (writeProjectConfigFileExclusive projectConfigCodec path expected)) :: IO (Either SomeException ())
-            assertBool "exclusive creation must not overwrite an existing path" (isLeft second)
-            TIO.writeFile path "replacement\n"
-            removal <- removeProjectConfigFileIfOwned path ownership
-            assertBool "a replacement must be preserved" (isLeft removal)
-            let lockPath = path ++ ".hostbootstrap-test-owner"
-                quarantined = lockPath </> "payload"
-            doesFileExist path >>= (@?= False)
-            doesDirectoryExist lockPath >>= (@?= True)
-            TIO.readFile quarantined >>= (@?= "replacement\n")
-            removeFile quarantined
-            removeDirectory lockPath
-        , testCase "generated config ownership compares exact bytes, including line endings" $ do
-            tmp <- getTemporaryDirectory
-            (path, handle) <- openTempFile tmp "hostbootstrap-owned-config-bytes.dhall"
-            hClose handle
-            removeFile path
-            ownership <- writeProjectConfigFileExclusive projectConfigCodec path expected
-            original <- BS.readFile path
-            let crlf = BS.concatMap (\byte -> if byte == 10 then "\r\n" else BS.singleton byte) original
-            assertBool "test replacement changes only physical line endings" (crlf /= original)
-            BS.writeFile path crlf
-            removal <- removeProjectConfigFileIfOwned path ownership
-            assertBool "a byte-different replacement must be quarantined" (isLeft removal)
-            let lockPath = path ++ ".hostbootstrap-test-owner"
-                quarantined = lockPath </> "payload"
-            BS.readFile quarantined >>= (@?= crlf)
-            removeFile quarantined
-            removeDirectory lockPath
+            written @?= renderProjectConfig expected <> "\n"
+            decoded @?= expected
         , testCase "secrets-strict production codec omits and rejects TestPlaintext" $ do
             let cfg =
                     SecretProjectConfig

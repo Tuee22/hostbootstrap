@@ -1468,7 +1468,7 @@ The implemented config-input matrix is:
 | `service schema`, `context path`, `context schema`, `context render` | Static and config-free |
 | `context inspect` | Reads and decodes the executable-sibling `<project>.dhall`; no command-authority gate |
 | `context show [FILE]` | Reads and decodes the selected file, or its parser default when `FILE` is omitted; no command-authority gate |
-| `test run <case-id>\|all` | Reads `<project>.test.dhall`, refuses an existing sibling `<project>.dhall`, then writes each run variant behind the current cooperative sidecar lock and removes it only when the bytes still match; Phase 10.9 owns the [ownership_invariant](ownership_invariant.md) clauses and verified receipts for this path, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
+| `test run <case-id>\|all` | Reads `<project>.test.dhall`, then installs each run variant through `HostBootstrap.Harness.GeneratedConfig`, which holds all four [ownership_invariant](ownership_invariant.md) clauses over that file and removes it only on an exact re-observed identity and payload. The "an existing sibling config refuses" check is that protocol's own found-object refusal plus the post-sweep `harnessPreconditions`, so an interrupted run's config is reclaimed rather than blocking recovery. Phase 10.9 still owns verified receipts for the rest of this path, Sprint 15.9 owns opaque root/command authority, and Sprint 17.4 makes this parser route require it |
 | `project up\|down\|destroy` | Admit the sibling `<project>.dhall` **once** into a `ValidatedConfig` snapshot, apply the existing-frame command gate, and run plan construction and every chain step against that one snapshot |
 | `service run`, `check-code` | Read the sibling `<project>.dhall` and apply the existing-frame command gate |
 
@@ -1699,7 +1699,8 @@ environment value), never represented in Dhall or retained in durable project/im
 [Phase 15](../../DEVELOPMENT_PLAN/phase-15-binary-context-config.md) governs the binary-context gate.
 Python does not create runtime config. The built binary owns the three config-free writers, static
 schema/help output, decode-only inspection, child-config projection, the harness-managed
-`test run` config lifecycle under its current cooperative sidecar/matching-byte guard, and the
+`test run` config lifecycle under the four § EE ownership clauses of
+`HostBootstrap.Harness.GeneratedConfig`, and the
 existing-frame gate described in the matrix above. That gate checks project/binary identity, requested
 command class/capabilities, selected ancestry, and the required runtime-witness set; observed checked
 mismatches fail before command side effects.

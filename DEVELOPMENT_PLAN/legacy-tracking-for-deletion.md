@@ -339,24 +339,6 @@
   protected bound-recovery profile opener over the exact new root/broker authority, active Production
   mode, bound lease, verified/bound snapshot/binding, and `BoundInvocationRecovery`; it cannot misuse the
   unbound-only fresh-profile opener. Owning phases: Phase 10 Sprint 10.9 and Phase 16 Sprint 16.6.
-- **The generated config's bare owner-directory claim, and the existence check that pre-empts recovery**
-  (`configOwnerPath` and the owned-removal path in
-  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`; the `doesFileExist` refusals in
-  `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-  `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`, and
-  `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`) — a run's generated sibling
-  `<project>.dhall` is claimed by a `<config>.hostbootstrap-test-owner` **directory** beside the file
-  that retains the payload for byte-comparison at release. That is a pathname claim: no protected
-  durable origin record, no stable kernel-identity binding, no OS-released lock — none of the four
-  § EE clauses, and structurally the same design the `.test_data.hostbootstrap-run-owner` directory was
-  removed for on 2026-07-29. Compounding it, `test run` refuses on the bare existence of the sibling
-  config *before* the abandoned-run sweep runs and without consulting that sidecar, so after an
-  interrupted run the recovery machinery is unreachable and an operator must delete the file and the
-  directory by hand. Reproduced live on Apple Silicon 2026-08-03. Replacement: the same protocol
-  `HostBootstrap.Harness.DataRoot` already runs for the data root — observe → durable origin record →
-  create → bind kernel identity → conditional re-observed release — over a file rather than a
-  directory, with the existence refusal moved behind the sweep and reconciled across its three copies.
-  Owning phase: Phase 10 Sprint 10.9.
 - **Unversioned terminal harness cleanup without Open→Closing crash recovery**
   (`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
   `core/hostbootstrap-core/src/HostBootstrap/Command.hs`) — generated config/data-root cleanup and lease
@@ -680,6 +662,31 @@ These surfaces are intentionally present and are not cleanup obligations.
   expectations. This file remains an example value, not a hand-maintained type.
 
 ## Removed Surfaces
+
+### The generated config's owner-directory claim and its recovery-pre-empting existence check (removed 2026-08-04, Sprint 10.9)
+
+`configOwnerPath`, `writeProjectConfigFileExclusive`, `writeScopedProjectConfigFileExclusive`,
+`claimConfigWriteLock`, and `removeProjectConfigFileIfOwned` in
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs` are gone, together with the
+`<config>.hostbootstrap-test-owner` directory they created. That directory was a pathname claim holding
+none of the four § EE clauses — no protected durable origin record, no stable kernel-identity binding,
+no OS-released lock — and structurally the same design the `.test_data.hostbootstrap-run-owner`
+directory was removed for on 2026-07-29.
+
+`HostBootstrap.Harness.GeneratedConfig` replaces it with the protocol
+`HostBootstrap.Harness.DataRoot` already ran for the data root, over a file: observe → publish the
+durable origin record naming the intended payload digest → create-if-absent → bind the created file's
+own kernel identity → release only on an exact re-observed identity *and* payload. Both protocols now
+share `HostBootstrap.Harness.Identity`, so they cannot drift. `GeneratedConfigSpec` proves each clause
+on every substrate the suite runs on.
+
+The two pre-sweep existence refusals are gone with it: `Command.runTestRun`'s bare
+`doesFileExist cfgPath` and the config half of `Harness.testSafetyPreconditions` (whose signature
+therefore lost its `FilePath`). `Lifecycle.Mode.harnessPreconditions` — the one that derives its
+subject from installed project identity and runs inside the protected transaction, after
+`recoverAbandonedHarnessRuns` — is the sole remaining refusal. `HarnessSpec` covers both directions:
+a hard-killed run's generated config is reclaimed by the next run's sweep, and an operator's own
+config still refuses the run and survives it untouched.
 
 ### Bare host process invocations outside the closed `HostTool` boundary (removed 2026-07-25, Sprint 2.5)
 

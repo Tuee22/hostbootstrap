@@ -79,11 +79,14 @@ effect/terminal-close and abandoned-run recovery paths, and the corresponding co
 Sprint 16.6 supplies the production call-site producers this phase consumes. The dated closure records
 below do not cover those remaining integration or race contracts.
 
-**A live 2026-08-03 reproduction on Apple Silicon added a new item to that tranche and gave the known
-bound-recovery item a real failure to point at.** An interrupted run's own generated sibling config makes
-the next run refuse *before* the abandoned-run sweep can run, so the recovery machinery this sprint
-already landed is unreachable in exactly the case it was built for. Both halves are recorded with the
-sprint's own [Remaining Work](#sprint-109-exclusive-test-ownership-and-failure-isolation-active).
+**The live 2026-08-03 Apple Silicon reproduction is closed (2026-08-04).** An interrupted run's own
+generated sibling config no longer makes the next run refuse before the abandoned-run sweep: the config
+is owned under the four § EE clauses by `HostBootstrap.Harness.GeneratedConfig`, the existence refusal
+is reconciled to the single post-sweep copy that derives its subject from installed project identity,
+and a bound abandoned run that provably acquired nothing is now closed by the sweep rather than only
+named. Both halves and their static evidence are recorded with the sprint's own
+[Remaining Work](#sprint-109-exclusive-test-ownership-and-failure-isolation-active), which also states
+what the narrower safe branch does **not** cover.
 
 **Completed 2026-07-25:** Sprint 10.10 removed the detached selector/type, Dhall union/codec, and all
 audited definition/test-only helpers with no plan consumer. The structural regression test, exact Dhall
@@ -490,11 +493,14 @@ named their cause legibly. **None remaining.**
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot/Native.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Identity.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Harness/Identity/Native.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/DataRootSpec.hs`,
+`core/hostbootstrap-core/test/GeneratedConfigSpec.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Docs to update**: `documents/architecture/harness_workflow.md`,
 `documents/architecture/lifecycle_state_model.md`,
@@ -769,45 +775,137 @@ cleanup cannot delete foreign or concurrently replaced state.
 
 #### Remaining Work
 
-**Reproduced 2026-08-03 on Apple Silicon — the interrupted-run recovery defect is only half fixed, and
-the two halves mask each other.** A harness run was killed mid-variant (a `SIGKILL` to the run's process
-tree, which is what a crashed run, a lost session, or a power failure looks like). Both halves below were
-then observed in sequence on a real host; neither is a static-test finding.
+**Delivered 2026-08-04 — the generated config's four § EE clauses, the refusal ordering, and a bound
+abandoned run that resolves instead of only reporting.** This closes both halves of the 2026-08-03 Apple
+Silicon reproduction recorded below.
 
-1. **The generated config is still owned by a bare lock directory, and its existence check pre-empts the
-   sweep that would resolve it.** This is the deliverable above that begins *"For generated config and
-   `.test_data`, bare exclusive create/rename or compare-then-unlink binds a pathname and satisfies none
-   of the clauses"* — `.test_data` was carried across on 2026-07-29 and the generated config was not.
-   `Config.Schema` still claims it with a `<config>.hostbootstrap-test-owner` **directory** beside the
+- **The generated config now holds all four clauses.** New `HostBootstrap.Harness.GeneratedConfig` is
+  the protocol `Harness.DataRoot` already ran for the data root, applied to a file: exclusive entry is
+  the caller's `ProtectedSession`; a durable origin record naming the recorded absence **and the digest
+  of the payload this run intends to install** is published before the file exists; the file is
+  published create-if-absent through the package's `linkNoReplace` primitive; the created file's own
+  kernel identity is bound to the receipt; and release unlinks only on an exact re-observed identity
+  **and** payload. Recording the payload digest *first* is what makes the crash window between the
+  origin record and the identity binding resolvable — the record names the bytes, so recovery never
+  adopts content it cannot attribute. A **found** object is refused before any mutation and never
+  adopted: unlike a shared data root, a generated config cannot coexist with a config already there.
+  `Config.Schema`'s `configOwnerPath`, `writeProjectConfigFileExclusive`,
+  `writeScopedProjectConfigFileExclusive`, `claimConfigWriteLock`, and `removeProjectConfigFileIfOwned`
+  are deleted with the `<config>.hostbootstrap-test-owner` directory, and are recorded in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **Both protocols share one identity layer.** `HostBootstrap.Harness.Identity` (and
+  `Harness.Identity.Native`, the former `Harness.DataRoot.Native`) own the private-constructor
+  `ObjectIdentity`, its hex journal codec, the injected `ObjectIdentityBackend` seam, and the closed
+  `IdentityFault` each protocol maps into its own vocabulary. The directory and file realizations of
+  clause 3 therefore cannot drift apart, and a substrate that cannot supply a stable identity refuses
+  both at one place.
+- **The refusal ordering is reconciled to one copy.** The pre-sweep `doesFileExist cfgPath` in
+  `Command.runTestRun` is gone, and `Harness.testSafetyPreconditions` lost its config half (and with it
+  its `FilePath` argument; the demo's `demoTestSafety` follows). The sole remaining refusal is
+  `Lifecycle.Mode.harnessPreconditions`, which derives its subject from installed project identity and
+  runs inside the protected transaction that takes the mode — after
+  `recoverAbandonedHarnessRuns`. An interrupted run's own config is therefore reclaimed by the sweep
+  before anything can refuse on it, while an operator's config still refuses the run and survives it
+  untouched.
+- **A bound abandoned run is classified and resolved.** `Lifecycle.Mode.classifyAbandonedBoundRun` is
+  the second producer of `BoundInvocationRecovery` — reachable only from a `VerifiedIncompleteRunLease`
+  the sweep itself minted, and only for its `IncompleteBound` kind, with the digests read off the lease
+  record rather than supplied. `Harness.Ownership.resolveBoundRun` consumes it and resolves the one
+  branch it can prove safe: an ordinary Open revision whose records show the run acquired **nothing**,
+  proved by this sprint's own `verifyNoProjectResourcesAcquired` (a single effect-shaped record
+  refuses, so partial `up` work can never be relabelled). That branch reclaims both owned objects and
+  closes the lease and mode. A persisted `Closing` epoch, either migration revision, and a run that did
+  record effects all stay fail-closed and now name why.
+
+**Scope note.** The safe branch keys on the *journaled* effect set, so an abandoned run that acquired a
+provider VM without journaling it is not detected here. Journaling those acquisitions is Sprint 16.6's
+prepared-operation wiring; until it lands, the demo's `productionClusterRunning` precondition is what
+refuses a run against a leftover VM. This is narrower than the deliverable's full
+`withAbandonedHarnessRun` opener, which additionally owns the recovery/close authority under a fresh
+broker generation and child-first teardown at a boundary — that remains open below.
+
+Validation (2026-08-04, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): `GeneratedConfigSpec`
+adds 18 cases proving each clause against the production driver and the real kernel, un-gated by
+platform, as `DataRootSpec` does for the directory. `HarnessSpec` adds three cases that reproduce the
+live failure and its converse: a **hard-killed** child process (a new out-of-process abandon probe —
+an in-process exception still runs every finalizer and would prove nothing) leaves its generated config
+behind, and the next run's sweep reclaims it and starts; an operator's own config still refuses the run
+and survives byte-for-byte; and a run killed after binding its plan snapshot is classified bound and
+closed by the next run's sweep. The complete core suite passes **923/923** under
+`cabal test all --ghc-options=-Werror`, and the demo workspace passes **923/923** core plus **112/112**
+demo under the same flag from a clean `dist-newstyle`;
+`poetry run python -m hostbootstrap.check_code` is clean and
+`poetry run python -m hostbootstrap.test_all` passes **231**.
+
+**Live validation (2026-08-04, Apple Silicon M1 Max, macOS 25.5.0 arm64, Lima provider):**
+`hostbootstrap run -- test run all` from `demo/` reported **`10/10 passed`** — both variants
+(`hello-world`, `hello-universe`) across all five compiled cases — in ~65 minutes over four bring-ups
+and three intermediate destroys. The new ownership backend ran on a real host for every one of them:
+each variant acquired its generated `demo/.build/hostbootstrap-demo.dhall` through
+`acquireOwnedRunConfig` and released it through the identity-and-payload-conditional release, and the
+second variant could only acquire the path *because* the first released it. The post-run end state is
+the one this sprint exists to produce, and every part of it was checked:
+
+- both run leases are recorded **`closed`**, so no incomplete lease blocks a successor;
+- **no `mode.*` record** survives — the project-wide Harness mode was released after the leases, in that
+  order;
+- **no `config.*` and no `dataroot.*` record** survives — both § EE ownerships settled rather than
+  leaking a receipt;
+- `demo/.test_data` is **empty** and still present: both per-run generations were removed and the shared
+  parent, which the run never owns, was preserved (§ Z);
+- `demo/.data` survived all four bring-ups and three destroys with its content intact;
+- the Lima VM is gone and the generated sibling config is gone.
+
+The records that remain are inert history — the two closed leases, their plan snapshots, the consumed
+one-use invocation records, and the broker generation.
+
+This run is also the **§ C live re-run owed on the Apple Silicon lane** by Sprint 16.6's 2026-08-02
+plan-minted step descriptor, which changed how every forward action is invoked and which every dated
+lane result then predated. It closes only this lane; the Linux CPU/GPU and Windows lanes still owe
+theirs.
+
+That clean-tree demo build also surfaced a **pre-existing gate defect**: `HostBootstrap.HostTool`
+imported `System.FilePath.(</>)` unconditionally although every native-separator join in it is inside a
+`mingw32_HOST_OS` branch, so `-Werror`'s `unused-imports` failed on any non-Windows tree that compiled
+that module from scratch. Warm build trees hid it, which is why prior Apple gates recorded a pass. The
+import moved into the Windows block.
+
+**Reproduced 2026-08-03 on Apple Silicon — the interrupted-run recovery defect was only half fixed, and
+the two halves masked each other.** *(Historical: both halves are closed by the 2026-08-04 delivery
+above. Retained because it is the dated evidence that produced the repair.)* A harness run was killed
+mid-variant (a `SIGKILL` to the run's process tree, which is what a crashed run, a lost session, or a
+power failure looks like). Both halves below were then observed in sequence on a real host; neither was
+a static-test finding.
+
+1. **The generated config was still owned by a bare lock directory, and its existence check pre-empted
+   the sweep that would resolve it.** This is the deliverable above that begins *"For generated config
+   and `.test_data`, bare exclusive create/rename or compare-then-unlink binds a pathname and satisfies
+   none of the clauses"* — `.test_data` was carried across on 2026-07-29 and the generated config was
+   not. `Config.Schema` claimed it with a `<config>.hostbootstrap-test-owner` **directory** beside the
    file, holding the payload for byte-comparison at release: a pathname claim with no protected durable
    origin record, no stable kernel-identity binding, and no OS-released lock — none of the four § EE
    clauses, and structurally the same design the `.test_data.hostbootstrap-run-owner` directory was
    removed for.
 
-   The ordering makes it unrecoverable rather than merely weak. `Command.runTestRun` refuses on a bare
+   The ordering made it unrecoverable rather than merely weak. `Command.runTestRun` refused on a bare
    `doesFileExist cfgPath` — *"a production config already exists at …; refusing to overwrite it"* —
-   **before** `withCanonicalProjectRoot`/`withHarnessRoot` reaches `recoverAbandonedHarnessRuns`, and
+   **before** `withCanonicalProjectRoot`/`withHarnessRoot` reached `recoverAbandonedHarnessRuns`, and
    without consulting the sidecar that marks the file as harness-made. So after the common failure mode
-   the sweep never runs at all. The refusal exists in three places — `Command.hs`, `Harness.hs`
-   (`testSafetyPreconditions`), and `Lifecycle/Mode.hs` — and only the third derives its subject from
-   installed project identity, so the fix reconciles them rather than patching the first.
+   the sweep never ran at all. The refusal existed in three places — `Command.hs`, `Harness.hs`
+   (`testSafetyPreconditions`), and `Lifecycle/Mode.hs` — and only the third derived its subject from
+   installed project identity, so the fix reconciled them rather than patching the first.
 
-   The shape of the repair is already built: `Harness.DataRoot` holds all four clauses for a directory
+   The shape of the repair was already built: `Harness.DataRoot` holds all four clauses for a directory
    over an injected identity backend, and the generated config is the same protocol over a file.
-2. **A bound abandoned run has no operator recovery path at all.** With the config removed by hand, the
+2. **A bound abandoned run had no operator recovery path at all.** With the config removed by hand, the
    sweep did run, correctly classified the leftover run as bound, and refused the whole matrix
    (`10/10 REFUSED`, *"the abandoned run run-… must be recovered before a new run starts"*). That refusal
-   is right — it is fail-closed and it names the run — but nothing can act on it: bound-lease recovery
-   *reports* rather than resolves, which this sprint already states, and `withAbandonedHarnessRun` has no
-   caller. The only way forward was to delete four protected records
+   was right — fail-closed, and it named the run — but nothing could act on it: bound-lease recovery
+   *reported* rather than resolved, and `withAbandonedHarnessRun` had no caller. The only way forward was
+   to delete four protected records
    (`lease.…`, `dataroot.…`, `snapshot.…`, and the project-wide `mode.…`) plus the run's empty
    `.test_data/<runId>` by hand — exactly the hand-cleanup the sprint's reproduction section says it
    exists to eliminate, moved from the lock directory to the protected store.
-
-The second is a restatement of this sprint's own open bound-recovery item with a live reproduction
-attached. The first is new, and it is the more damaging of the two: while it stands, the abandoned-run
-sweep cannot run at all after the common failure mode, so the recovery machinery that *is* built is
-unreachable in exactly the case it was built for.
 
 **Delivered 2026-07-29 — project-wide mode, run leases, the fresh profile openers, and the recoverable
 run reservation that replaces the lock directory.**
@@ -1203,13 +1301,27 @@ plus that embedded core suite; `poetry run python -m hostbootstrap.check_code` i
 the **first complete core-suite pass recorded on Apple Silicon**, and it is a static gate only — it
 exercises no live provider lane and closes none of the open items below.
 
+**Discovered while landing the 2026-08-04 work, recorded rather than left implicit (§ A).** If
+`acquireGeneratedConfig` publishes its origin record and then the install itself fails, the run dies and
+the ownership bracket closes its lease — so that run's `config.…` record is never reached by a later
+sweep, which enumerates incomplete *leases*. The record is inert (the file was never published, and the
+key names a dead `runId`), and the live 2026-08-04 audit found none, but a run's release should settle
+its own config record the way it settles its data root. That is a one-call addition to
+`Harness.Ownership.releaseRun`; it is deliberately **not** bundled into this delivery, because it sits on
+the exact live path the `10/10` run validated and would leave that evidence stale until the lane is
+re-run.
+
 **Still open (this sprint):** the authenticated authority-rehydration handoff and the versioned
 session/fence prepare protocol shared with Sprints 15.9 and 16.6;
 the `Conflict` and `Unsupported` report-card rows, which have no producer until the reconcilers are
 wired at their call sites by Sprint 16.6; the receipt-carrying `ManagedResult Unchanged` / `ForeignResult`
-half of the same bullet, which needs the same plan wiring; and the remainder of the concurrency/failure
+half of the same bullet, which needs the same plan wiring; the full `withAbandonedHarnessRun` opener —
+its fresh-broker-generation recovery/close authority, its `HarnessPersistedClosing` and migration
+branches, and child-first teardown at a boundary — of which 2026-08-04 delivered only the
+provably-nothing-acquired branch; and the remainder of the concurrency/failure
 matrix, whose kill-point and prepare/handoff clauses are stated against machinery Sprints 15.9 and 16.6
-wire (the reservation-race clause above is now closed). Historical `6/6`, `8/8`, and `10/10` runs did not exercise these ownership or handoff races and do
+wire (the reservation-race clause above is closed, and 2026-08-04 added the hard-kill abandonment
+clause for the generated config and the bound lease). Historical `6/6`, `8/8`, and `10/10` runs did not exercise these ownership or handoff races and do
 not close the sprint.
 
 ### Sprint 10.10: Remove the parallel run-model representation [Done]

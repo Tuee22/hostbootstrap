@@ -77,6 +77,7 @@ module HostBootstrap.Lifecycle.Mode (
     eliminateProductionBoundRecovery,
     HarnessBoundRecovery (..),
     eliminateHarnessBoundRecovery,
+    classifyAbandonedBoundRun,
     InvocationCloseKey,
     mkInvocationCloseKey,
     invocationCloseKeyText,
@@ -963,6 +964,39 @@ eliminateHarnessBoundRecovery session project (BoundInvocationRecovery run spec 
         InvocationOpen -> do
             kind <- readOpenRevisionKind session project run
             pure (fmap (HarnessOpenRevisionRecovery . OpenRevisionRecovery run spec plan) kind)
+
+{- | Classify an abandoned __bound__ Harness lease so the sweep can act on it.
+
+'bindRunLease' was the only producer of 'BoundInvocationRecovery', and it needs
+an 'UnboundRunLease' that an abandoned run no longer has. Without this, a bound
+lease could only be /reported/: the sweep named the run and refused every
+variant, and the sole way forward was to delete the run's protected records by
+hand — exactly the hand cleanup the recoverable reservation exists to eliminate,
+moved from a lock directory into the store.
+
+The only route in is a 'VerifiedIncompleteRunLease' the sweep itself minted, and
+only its 'IncompleteBound' kind, so a caller cannot claim recovery authority for
+a run that never bound a plan. The digests come from the lease record rather
+than the caller, so a substituted snapshot cannot be presented as this run's.
+-}
+classifyAbandonedBoundRun ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    VerifiedIncompleteRunLease projectId ->
+    IO (Either ModeError (HarnessBoundRecovery projectId))
+classifyAbandonedBoundRun session project (VerifiedIncompleteRunLease run kind) =
+    case kind of
+        IncompleteUnbound ->
+            pure (Left (ModeLeaseNotBindable (runIdText run) "unbound"))
+        IncompleteBound spec plan -> do
+            disposition <- readInvocationDisposition session project run
+            case disposition of
+                Left failure -> pure (Left failure)
+                Right recorded ->
+                    eliminateHarnessBoundRecovery
+                        session
+                        project
+                        (BoundInvocationRecovery run spec plan recorded)
 
 {- | Record an ordinary Production invocation's terminal acknowledgment under a
 stable, idempotent close key, /before/ the lease close it authorizes. A crash

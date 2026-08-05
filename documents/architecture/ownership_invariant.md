@@ -29,8 +29,8 @@ document is its canonical explanation and per-substrate realization.
 
 ## Current Status
 
-The invariant is defined, the algebra that consumes it exists, and four backends now hold all four
-clauses. **One of them is wired into a live call site**; the rest await the plan-driven wiring their
+The invariant is defined, the algebra that consumes it exists, and five backends now hold all four
+clauses. **Two of them are wired into live call sites**; the rest await the plan-driven wiring their
 sprints own.
 
 - `HostBootstrap.Reconcile` and `HostBootstrap.Readiness` supply the receipt, prepared-operation, and
@@ -39,8 +39,17 @@ sprints own.
   **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes inside — acquires
   and releases `.test_data` through it. The origin record naming the exact prior identity-or-absence is
   published before the directory is created, the created directory's own `device:inode` is bound to the
-  receipt, and teardown removes it only after re-observing that identity. This is the first production
+  receipt, and teardown removes it only after re-observing that identity. This was the first production
   route on the invariant.
+- `HostBootstrap.Harness.GeneratedConfig` holds all four clauses for the run's generated sibling
+  `<project>.dhall`, and is **live** on the same bracket. It is the same protocol over a file: the
+  origin record naming the recorded absence *and the intended payload digest* is published before the
+  file is created, the file is published create-if-absent, its own identity is bound to the receipt, and
+  release unlinks only on an exact re-observed identity **and** payload. Both share
+  `HostBootstrap.Harness.Identity`, so the directory and file realizations cannot drift. Recording the
+  payload digest before the write is what makes the crash window between the record and the identity
+  binding resolvable without ever adopting bytes the record does not name. It replaced a
+  `<config>.hostbootstrap-test-owner` directory that held none of the four clauses.
 - `HostBootstrap.Substrate.Provider.Alias` supplies the typed prepared call/release for the
   provider-guest durable alias, and `discoverStrongAliasBackend` mints a backend that holds all four
   clauses against a real POSIX guest filesystem. The demo still creates the alias with an unowned
@@ -134,7 +143,11 @@ Clause 1 is the protected store's own OS-released entry (`hLock`, `flock`/`fcntl
 `LockFileEx` on Windows), so the store's compare-and-swap and the directory's mutation share one
 bracket by construction. Clause 3 reads the directory's identity without following a link:
 `lstat` on POSIX, and on Windows a handle opened with `FILE_FLAG_BACKUP_SEMANTICS` (required to open a
-directory at all) plus `FILE_FLAG_OPEN_REPARSE_POINT`.
+directory at all) plus `FILE_FLAG_OPEN_REPARSE_POINT`. The harness's generated sibling config — a
+**file** — uses the identical columns through the same `HostBootstrap.Harness.Identity` seam, and adds
+the payload digest to its origin record, because a file's bytes are part of what "the object this run
+owns" means. A found object there is refused rather than adopted: a generated config cannot share a
+path with a config that is already present.
 
 Guest-side probes obey the probe discipline in [readiness](readiness.md): one observation per probe, no
 compound `set -eu`, no nested `"$(…)"`, so they survive the Windows PowerShell → `wsl` → `bash` path.

@@ -275,8 +275,10 @@ Code complete and validated (2026-06-23): `psInit` / `psTestInit` / `psTestConfi
 needs no pre-existing `<project>.dhall`; `test run` generates the run's config via `psTestConfig`, drives
 the real `project up`, asserts, `project destroy`, then deletes config bytes only while they still match
 the generated payload under the cooperative sidecar guard (keeping `<project>.test.dhall`; changed bytes remain in
-the reported locked quarantine). This is neither a clause-holding reservation nor verified
-identity-bearing ownership;
+the reported locked quarantine). *Historical: that sidecar guard was neither a clause-holding reservation
+nor verified identity-bearing ownership, and Sprint 10.9 replaced it on 2026-08-04 with
+`HostBootstrap.Harness.GeneratedConfig`, which holds all four § EE clauses over the file; the surface is
+recorded in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).*
 `demoTestSafety` checks the executable-sibling `siblingProjectConfigPath`, not the project root. Verified
 at phase close by `cabal test all` (232) + the demo suite (13), and real-run-validated 2026-06-23 (`3/3`
 from a generated config).

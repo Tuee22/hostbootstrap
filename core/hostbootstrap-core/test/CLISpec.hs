@@ -76,7 +76,7 @@ import HostBootstrap.Service (
     withFinalizedServiceRegistry,
  )
 import HostBootstrap.Step (ProjectStepId, ReversePolicy (ProjectManagedReverse), Step, StepFrame (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
-import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
+import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs, withProgName)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
 import System.FilePath (takeDirectory, (</>))
@@ -301,7 +301,10 @@ tests =
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
                     doesFileExist cfgPath >>= (@?= False)
-                    doesDirectoryExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
+                    -- No sidecar of any shape survives: ownership is the
+                    -- protected record the run settles, not a lock directory
+                    -- beside the config (Sprint 10.9).
+                    doesPathExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "test run binds the exact Harness plan snapshot before entering the live body" $ do

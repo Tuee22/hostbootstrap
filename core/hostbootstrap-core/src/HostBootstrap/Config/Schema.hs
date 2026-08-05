@@ -29,10 +29,8 @@ module HostBootstrap.Config.Schema (
 
     -- * Generic config IO
     writeProjectConfigFile,
-    writeProjectConfigFileExclusive,
     writeScopedProjectConfigFile,
-    writeScopedProjectConfigFileExclusive,
-    removeProjectConfigFileIfOwned,
+    renderScopedProjectConfigBytes,
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
     withSiblingValidatedProjectConfigRoot,
@@ -105,14 +103,10 @@ import HostBootstrap.ProjectRoot (
  )
 import Numeric (showHex)
 import System.Directory (
-    createDirectory,
-    doesDirectoryExist,
     doesFileExist,
     doesPathExist,
     pathIsSymbolicLink,
-    removeDirectory,
     removeFile,
-    renameFile,
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), die, exitWith)
@@ -202,40 +196,7 @@ stays compact and standalone.
 -}
 writeProjectConfigFile :: CodecWitness cfg -> FilePath -> cfg -> IO ()
 writeProjectConfigFile codec path cfg =
-    codec `seq`
-        mask
-            ( \restore -> do
-                lockPath <- claimConfigWriteLock path
-                restore (BS.writeFile path (renderProjectConfigBytes codec cfg))
-                    `finally` removeDirectory lockPath
-            )
-
-data ProjectConfigOwnership = ProjectConfigOwnership
-    { ownedPath :: FilePath
-    , ownedPayload :: BS.ByteString
-    , ownedLockPath :: FilePath
-    }
-
-{- | Atomically claim a previously absent generated-config path. A sibling lock
-directory is the ownership token: directory creation is exclusive on every
-supported platform, so concurrent harnesses cannot both pass the absence
-check. The token remains for the bracket lifetime and is consumed by cleanup.
--}
-writeProjectConfigFileExclusive :: CodecWitness cfg -> FilePath -> cfg -> IO ProjectConfigOwnership
-writeProjectConfigFileExclusive codec path cfg =
-    codec `seq`
-        mask
-            ( \restore -> do
-                let payload = renderProjectConfigBytes codec cfg
-                lockPath <- claimConfigWriteLock path
-                present <- restore (doesPathExist path) `onException` removeDirectory lockPath
-                if present
-                    then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
-                    else do
-                        restore (BS.writeFile path payload)
-                            `onException` removeExclusivePartial path lockPath
-                        pure (ProjectConfigOwnership path payload lockPath)
-            )
+    codec `seq` BS.writeFile path (renderProjectConfigBytes codec cfg)
 
 -- | Write a scope-indexed project config through its installed mapped codec.
 writeScopedProjectConfigFile ::
@@ -244,101 +205,7 @@ writeScopedProjectConfigFile ::
     cfg scope ->
     IO ()
 writeScopedProjectConfigFile codec path cfg =
-    mask
-        ( \restore -> do
-            lockPath <- claimConfigWriteLock path
-            restore (BS.writeFile path (renderScopedProjectConfigBytes codec cfg))
-                `finally` removeDirectory lockPath
-        )
-
--- | Exclusively install a generated scoped project config.
-writeScopedProjectConfigFileExclusive ::
-    ProjectCodec scope specDigest cfg ->
-    FilePath ->
-    cfg scope ->
-    IO ProjectConfigOwnership
-writeScopedProjectConfigFileExclusive codec path cfg =
-    mask
-        ( \restore -> do
-            let payload = renderScopedProjectConfigBytes codec cfg
-            lockPath <- claimConfigWriteLock path
-            present <- restore (doesPathExist path) `onException` removeDirectory lockPath
-            if present
-                then removeDirectory lockPath >> ioError (userError ("generated config path appeared before ownership claim: " ++ path))
-                else do
-                    restore (BS.writeFile path payload)
-                        `onException` removeExclusivePartial path lockPath
-                    pure (ProjectConfigOwnership path payload lockPath)
-        )
-
-claimConfigWriteLock :: FilePath -> IO FilePath
-claimConfigWriteLock path = do
-    let lockPath = configOwnerPath path
-    claimed <- trySynchronous (createDirectory lockPath)
-    case claimed of
-        Right () -> pure lockPath
-        Left _ -> ioError (userError ("generated config ownership is active; refusing overwrite: " ++ path))
-
-removeExclusivePartial :: FilePath -> FilePath -> IO ()
-removeExclusivePartial path lockPath = do
-    present <- doesPathExist path
-    when present (removeFile path)
-    removeDirectory lockPath
-
-{- | Remove a generated config only while its bytes still equal the payload this
-run installed. Cleanup first atomically quarantines the current path inside the
-ownership directory. Matching bytes are deleted; differing bytes remain in that
-quarantine with the lock held and are reported for explicit recovery, so a
-concurrent replacement can never be mistaken for run-owned state or clobbered.
--}
-removeProjectConfigFileIfOwned :: FilePath -> ProjectConfigOwnership -> IO (Either String ())
-removeProjectConfigFileIfOwned path ownership = do
-    if path /= ownedPath ownership
-        then pure (Left ("generated config ownership witness belongs to a different path: " ++ ownedPath ownership))
-        else removeOwned
-  where
-    removeOwned = do
-        lockPresent <- doesDirectoryExist (ownedLockPath ownership)
-        present <- doesPathExist path
-        if not lockPresent
-            then pure (Left ("generated config ownership token disappeared; preserving path if present: " ++ path))
-            else
-                if not present
-                    then removeDirectory (ownedLockPath ownership) >> pure (Right ())
-                    else do
-                        let quarantined = ownedLockPath ownership </> "payload"
-                        renameFile path quarantined
-                        actual <- BS.readFile quarantined
-                        if actual == ownedPayload ownership
-                            then do
-                                removeFile quarantined
-                                replacementPresent <- doesPathExist path
-                                removeDirectory (ownedLockPath ownership)
-                                if replacementPresent
-                                    then pure (Left ("generated config was replaced during cleanup; preserving replacement at " ++ path))
-                                    else pure (Right ())
-                            else do
-                                replacementPresent <- doesPathExist path
-                                if replacementPresent
-                                    then
-                                        pure
-                                            ( Left
-                                                ( "generated config changed ownership and another replacement appeared during cleanup; preserving both "
-                                                    ++ path
-                                                    ++ " and "
-                                                    ++ quarantined
-                                                )
-                                            )
-                                    else do
-                                        pure
-                                            ( Left
-                                                ( "generated config changed ownership during the test run; preserving replacement in quarantine at "
-                                                    ++ quarantined
-                                                )
-                                            )
-
-configOwnerPath :: FilePath -> FilePath
-configOwnerPath path = path ++ ".hostbootstrap-test-owner"
+    BS.writeFile path (renderScopedProjectConfigBytes codec cfg)
 
 renderProjectConfigFile :: CodecWitness cfg -> cfg -> Text
 renderProjectConfigFile codec cfg =
@@ -347,6 +214,11 @@ renderProjectConfigFile codec cfg =
 renderProjectConfigBytes :: CodecWitness cfg -> cfg -> BS.ByteString
 renderProjectConfigBytes codec = TE.encodeUtf8 . renderProjectConfigFile codec
 
+{- | The exact canonical bytes a scoped config renders to. The harness installs
+these through "HostBootstrap.Harness.GeneratedConfig" rather than writing them
+here, so the ownership protocol — not the writer — decides whether the path may
+be created at all.
+-}
 renderScopedProjectConfigBytes ::
     ProjectCodec scope specDigest cfg ->
     cfg scope ->

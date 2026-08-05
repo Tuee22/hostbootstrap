@@ -76,9 +76,12 @@ steps that first validate the active local config. Everything richer is binary-g
 Config acquisition is command-specific. `project init`, `service init`, and `test init` are config-free
 writers; `service schema` and `context path|schema|render` are static and config-free; `context inspect`
 reads the executable-sibling config and `context show [FILE]` reads its selected/default file without a
-mutation-authority gate. `test run` reads `<project>.test.dhall`, refuses a pre-existing sibling
-`<project>.dhall`, and writes/removes each run variant under the current cooperative sidecar and
-matching-byte cleanup guard; Phase 10.9 owns the four § EE ownership clauses and verified receipts.
+mutation-authority gate. `test run` reads `<project>.test.dhall` and installs/removes each run variant under
+`HostBootstrap.Harness.GeneratedConfig`, which holds the four § EE ownership clauses over that file:
+a found config is refused before any mutation, and cleanup unlinks only on an exact re-observed identity
+and payload. The refusal is the post-sweep one derived from installed project identity, so an
+interrupted run's own config is reclaimed rather than blocking the next run. Verified receipts for the
+remaining lifecycle resources are still Phase 10.9/16.6 work.
 Only the existing-frame commands
 `project up|down|destroy`, `service run`, and `check-code` use the sibling project-config command gate.
 The exact current-versus-target matrix lives in

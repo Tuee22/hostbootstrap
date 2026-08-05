@@ -28,6 +28,7 @@ import qualified LimaSpec
 import qualified ProjectRootSpec
 import qualified ClusterBackendSpec
 import qualified DataRootSpec
+import qualified GeneratedConfigSpec
 import qualified ClusterReconcileSpec
 import qualified ProviderSpec
 import qualified ProviderAliasSpec
@@ -66,6 +67,12 @@ main = do
         -- concurrency matrix races real competitors rather than threads.
         ["--hostbootstrap-harness-acquire-probe", stateRoot, reasonPath] ->
             HarnessSpec.runHarnessAcquireProbe stateRoot reasonPath
+        -- A separate process that takes a whole run AND installs its generated
+        -- config, then blocks so the parent can hard-kill it. Only a real kill
+        -- leaves the state the abandoned-run sweep exists to resolve: an
+        -- in-process exception still runs every finalizer.
+        ["--hostbootstrap-harness-abandon-probe", stateRoot, readyPath] ->
+            HarnessSpec.runHarnessAbandonProbe stateRoot readyPath
         -- A real child launched through the sealed detached-launch boundary, so
         -- the invocation shape is observed by a process rather than asserted of
         -- a record field (§ HH).
@@ -76,17 +83,15 @@ main = do
             -- The suite runs single-threaded because several groups drive
             -- process-global state that has no per-test scope: CLISpec,
             -- ContextSpec, HarnessSpec, and ProjectRootSpec bracket a
-            -- 'withCurrentDirectory', and the harness/config ownership guards
-            -- claim lock directories at paths relative to that working
-            -- directory (@.test_data.hostbootstrap-run-owner@,
-            -- @<project>.dhall.hostbootstrap-test-owner@). Run concurrently,
-            -- one group's chdir is visible to every other group, so the guards
-            -- collide, a bracket's cleanup deletes a path it no longer resolves
-            -- to, and the leftover lock directories poison the *next* run as
-            -- well. Those guards are the behaviour under test, so the fix is to
-            -- stop scheduling them against each other rather than to weaken
-            -- them. The whole suite is ~10s serially, so the ordering costs
-            -- nothing worth reclaiming.
+            -- 'withCurrentDirectory', and the harness/config ownership
+            -- protocols resolve their protected store, data root, and generated
+            -- config at paths relative to that working directory. Run
+            -- concurrently, one group's chdir is visible to every other group,
+            -- so the ownership transactions collide and a bracket's cleanup
+            -- resolves a path it no longer owns. Those guards are the behaviour
+            -- under test, so the fix is to stop scheduling them against each
+            -- other rather than to weaken them. The whole suite is ~30s
+            -- serially, so the ordering costs nothing worth reclaiming.
             defaultMain $
                 localOption (NumThreads 1) $
                     testGroup
@@ -113,6 +118,7 @@ main = do
                         , ClusterReconcileSpec.tests
                         , ClusterBackendSpec.tests
                         , DataRootSpec.tests
+                        , GeneratedConfigSpec.tests
                         , ProjectRootSpec.tests
                         , ContextSpec.tests
                         , LifecycleSpec.tests

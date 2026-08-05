@@ -87,7 +87,9 @@ library
       HostBootstrap.Cluster.Backend
       HostBootstrap.Harness
       HostBootstrap.Harness.DataRoot
-      HostBootstrap.Harness.DataRoot.Native
+      HostBootstrap.Harness.GeneratedConfig
+      HostBootstrap.Harness.Identity
+      HostBootstrap.Harness.Identity.Native
       HostBootstrap.Harness.Ownership
       HostBootstrap.Service
       HostBootstrap.DocValidator
@@ -162,6 +164,7 @@ test-suite hostbootstrap-core-test
       ClusterReconcileSpec
       ClusterBackendSpec
       DataRootSpec
+      GeneratedConfigSpec
       ProjectRootSpec
       ContextSpec
       LifecycleSpec

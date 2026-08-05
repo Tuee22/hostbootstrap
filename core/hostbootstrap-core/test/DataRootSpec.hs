@@ -23,7 +23,13 @@ module DataRootSpec (tests) where
 
 import Data.ByteString (ByteString)
 import HostBootstrap.Harness.DataRoot
-import HostBootstrap.Harness.DataRoot.Native (nativeDataRootIdentityBackend)
+import HostBootstrap.Harness.Identity (
+    IdentityFault (IdentityUnsupported),
+    ObjectIdentity,
+    ObjectIdentityBackend (ObjectIdentityBackend),
+    observeObjectIdentity,
+ )
+import HostBootstrap.Harness.Identity.Native (nativeObjectIdentityBackend)
 import HostBootstrap.Protected
 import System.Directory (
     createDirectory,
@@ -209,16 +215,16 @@ tests =
 
 -- Harness -----------------------------------------------------------------------
 
-backend :: DataRootIdentityBackend
-backend = nativeDataRootIdentityBackend
+backend :: ObjectIdentityBackend
+backend = nativeObjectIdentityBackend
 
 {- | A host that cannot report a stable identity. § EE requires such a backend
 to mint no ownership at all rather than fall back to a pathname.
 -}
-unsupportedBackend :: DataRootIdentityBackend
+unsupportedBackend :: ObjectIdentityBackend
 unsupportedBackend =
-    DataRootIdentityBackend
-        (\_ -> pure (Left (DataRootUnsupported "no stable object identity on this host")))
+    ObjectIdentityBackend
+        (\_ -> pure (Left (IdentityUnsupported "no stable object identity on this host")))
 
 {- | Run one case inside a fresh store's exclusive entry, with a data-root path
 under the same temporary directory. Taking the entry here is what makes clause 1
@@ -243,9 +249,9 @@ withOwnership action =
                 Right <$> action store session key (root </> ".test_data")
         either (assertFailure . show) pure outcome
 
-observeIdentity :: FilePath -> IO DataRootIdentity
+observeIdentity :: FilePath -> IO ObjectIdentity
 observeIdentity path = do
-    observed <- observeDataRootIdentity backend path
+    observed <- observeObjectIdentity backend path
     case observed of
         Right (Just identity) -> pure identity
         other -> assertFailure ("expected an identity, got " <> show other)

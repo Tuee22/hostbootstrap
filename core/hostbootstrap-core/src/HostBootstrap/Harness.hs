@@ -81,7 +81,6 @@ import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import Numeric.Natural (Natural)
-import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 
 {- | A validated, stable test-case identity. Construction rejects empty,
@@ -563,28 +562,31 @@ instance Exception LifecycleFailure where
 lifecycleFailureMarker :: String
 lifecycleFailureMarker = "HOSTBOOTSTRAP_LIFECYCLE_FAILURE:"
 
-{- | The two hard fail-fast safety preconditions checked before any test runs
-(development_plan_standards § Z), so a test never interferes with production:
+{- | The suite-level half of the hard fail-fast safety preconditions
+(development_plan_standards § Z): refuse if a production cluster is already
+running. The caller supplies the detector, since "running" is
+substrate/tool-specific, and core cannot know how to perform it.
 
-  1. refuse if a production @<project>.dhall@ already exists at @configPath@
-     (never overwrite a production config);
-  2. refuse if a production cluster is already running (the caller supplies the
-     detector, since "running" is substrate/tool-specific).
+The other half — refuse if a production @<project>.dhall@ already exists — is
+deliberately __not__ here. It used to be checked in three places, and this one
+(like the command layer's) ran before the ownership bracket, so an interrupted
+run's own generated config made the next run refuse /before/
+'HostBootstrap.Lifecycle.Mode.recoverAbandonedHarnessRuns' could resolve it: the
+recovery machinery was unreachable in exactly the case it was built for. The
+authoritative check is 'HostBootstrap.Lifecycle.Mode.harnessPreconditions',
+which derives its subject from installed project identity — a caller cannot
+claim a config is absent — and runs inside the protected transaction that takes
+the mode, after the sweep (Sprint 10.9).
 
-If either holds, no tests run. Pure obstacle reporting: returns @Right ()@ only
-when neither obstacle is present.
+Pure obstacle reporting: returns @Right ()@ only when the obstacle is absent.
 -}
-testSafetyPreconditions :: FilePath -> IO Bool -> IO (Either String ())
-testSafetyPreconditions configPath productionClusterRunning = do
-    cfgExists <- doesFileExist configPath
-    if cfgExists
-        then pure (Left ("a production config already exists at " ++ configPath ++ "; refusing to overwrite it"))
-        else do
-            running <- productionClusterRunning
-            pure $
-                if running
-                    then Left "a production cluster is already running; refusing to touch production state"
-                    else Right ()
+testSafetyPreconditions :: IO Bool -> IO (Either String ())
+testSafetyPreconditions productionClusterRunning = do
+    running <- productionClusterRunning
+    pure $
+        if running
+            then Left "a production cluster is already running; refusing to touch production state"
+            else Right ()
 
 {- | Enforce the safety preconditions, then loop over the typed matrix selection
 the command layer supplies — for each variant: generate the run config, bring

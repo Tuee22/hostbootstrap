@@ -760,8 +760,8 @@ the UI add operation reaches the daemon-built worker.
 The harness's config handling is reconciled with the § W single-representation rule above. `test run all`
 reads the thin `<project>.test.dhall`, generates each run's scope-indexed `<project>.dhall` through the
 Harness request of the single restricted `psAssemble` and matching mapped codec, drives `project up`
-against that generated config, and deletes it on teardown only while the exact bytes
-still match; changed bytes remain in the reported locked quarantine. The
+against that generated config, and unlinks it on teardown only while the file's bound kernel identity
+and its recorded payload both still match; anything else is a reported conflict and is left intact. The
 pre-existing-config flow is removed and recorded in
 [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). See
 [phase 19](../../DEVELOPMENT_PLAN/phase-19-generic-project-model.md) and
