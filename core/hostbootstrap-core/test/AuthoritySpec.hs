@@ -18,6 +18,7 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Authority
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
@@ -890,23 +891,148 @@ recoveryCases =
                 _ <- abandonBoundHarnessRun store project
                 swept <-
                     recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
-                        withProtectedEntry' store $ \session -> do
-                            evidence <-
-                                verifyNoProjectResourcesAcquired
-                                    session
-                                    project
-                                    (incompleteRunLeaseRun lease)
-                            case evidence of
-                                Left failure -> pure (Left failure)
-                                Right proof ->
-                                    closeHarnessRun
-                                        session
-                                        project
-                                        (incompleteRunLeaseRun lease)
-                                        proof
+                        withAbandonedHarnessRun store project lease (resolveNothingAcquired store project)
                 case swept of
                     Left failure -> assertFailure (show failure)
                     Right proof -> closedAbandonedHarnessRunsCount proof @?= 1
+    , -- The reopening the sweep's bound callback needs. Before it existed the
+      -- bound branch classified the run and closed it through a bare 'RunId', so
+      -- nothing said who was allowed to resolve it and no authority was minted
+      -- for the branches that cannot be resolved yet.
+      testCase "reopening an abandoned bound run yields destroy-only authority on a fresh generation" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                (run, abandonedEpoch) <- abandonBoundHarnessRun store project
+                swept <-
+                    recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
+                        withAbandonedHarnessRun store project lease $ \reopened -> do
+                            abandonedHarnessRunId reopened @?= run
+                            -- The exact old snapshot, read back durably rather
+                            -- than reconstructed from the current config.
+                            let snapshot = abandonedHarnessSnapshot reopened
+                            planSnapshotRun snapshot @?= run
+                            planSnapshotSpecDigest snapshot @?= "spec-1"
+                            planSnapshotPlanDigest snapshot @?= "plan-1"
+                            -- The already-bound lease, not a rebinding: same run,
+                            -- same digests.
+                            let bound = abandonedHarnessBoundLease reopened
+                            boundRunLeaseRun bound @?= run
+                            boundRunLeaseSpecDigest bound @?= "spec-1"
+                            boundRunLeasePlanDigest bound @?= "plan-1"
+                            -- Recovery may release and never acquire.
+                            projectVerbName
+                                (rootAuthorityVerb (abandonedHarnessDestroyRoot reopened))
+                                @?= "destroy"
+                            -- Its close authority says it is recovery's, not the
+                            -- live run's.
+                            let closeRoot = abandonedHarnessCloseRoot reopened
+                            harnessCloseRootOrigin closeRoot @?= RecoveredHarnessClose
+                            harnessCloseRootRun closeRoot @?= run
+                            -- The mode is still the abandoned run's own, and every
+                            -- yielded value sits on a strictly fresher broker
+                            -- generation, so the dead run's permits are fenced out
+                            -- rather than resumed.
+                            let modeLease = abandonedHarnessModeLease reopened
+                                reopenedEpoch = brokerEpochWord (projectModeLeaseEpoch modeLease)
+                            projectModeLeaseMode modeLease @?= HarnessMode run
+                            assertBool
+                                ( "generation "
+                                    <> show reopenedEpoch
+                                    <> " must be fresher than the abandoned "
+                                    <> show abandonedEpoch
+                                )
+                                (reopenedEpoch > abandonedEpoch)
+                            pure (Right ())
+                -- Reopening resolves nothing on its own, so the sweep still
+                -- refuses: the recheck is what makes a no-op callback fail.
+                case swept of
+                    Left (ModeRecoveryRequired named) ->
+                        assertBool
+                            ("the refusal names the run: " <> Text.unpack named)
+                            (runIdText run `Text.isInfixOf` named)
+                    other -> assertFailure ("expected required recovery, got " <> show other)
+    , testCase "an unbound lease cannot be reopened; only the sweep may close it" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                _ <- abandonHarnessRun store project
+                swept <-
+                    recoverAbandonedHarnessRuns
+                        store
+                        project
+                        ( \lease -> do
+                            refused <-
+                                withAbandonedHarnessRun store project lease (\_ -> pure (Right ()))
+                            case refused of
+                                -- No snapshot exists, so there is nothing to
+                                -- reopen: 'verifyUnboundLeaseHasNoEffects' is the
+                                -- only route for this kind.
+                                Left (ModeLeaseNotBindable _ state) -> do
+                                    state @?= "unbound"
+                                    pure (Right ())
+                                other ->
+                                    assertFailure
+                                        ("expected an unbound refusal, got " <> show other)
+                        )
+                        neverResolves
+                proof <- either (assertFailure . show) pure swept
+                closedAbandonedHarnessRunsCount proof @?= 1
+    , -- The exhaustive first branch: a run that persisted its Closing epoch is a
+      -- close to resume, never normal revision recovery, and reopening must say
+      -- so with the exact epoch rather than leave the caller to guess.
+      testCase "a persisted closing epoch is reopened as the closing branch" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                (run, _) <- abandonBoundHarnessRun store project
+                _ <-
+                    expectRight
+                        =<< withProtectedEntry'
+                            store
+                            (\session -> recordHarnessClosingEpoch session project run 9)
+                swept <-
+                    recoverAbandonedHarnessRuns store project neverResolves $ \lease ->
+                        withAbandonedHarnessRun store project lease $ \reopened ->
+                            case abandonedHarnessRecovery reopened of
+                                HarnessPersistedClosing epoch -> do
+                                    epoch @?= 9
+                                    pure (Right ())
+                                other ->
+                                    assertFailure
+                                        ("expected the closing branch, got " <> show other)
+                -- And it stays fail-closed: a close this sprint cannot resume
+                -- must block the next run rather than be swept away.
+                case swept of
+                    Left (ModeRecoveryRequired named) ->
+                        assertBool
+                            ("the refusal names the run: " <> Text.unpack named)
+                            (runIdText run `Text.isInfixOf` named)
+                    other -> assertFailure ("expected required recovery, got " <> show other)
+    , -- The sweep observed the lease at an earlier store version, so reopening
+      -- rechecks it. A lease another resolver already closed is not a run this
+      -- opener may reopen.
+      testCase "a lease resolved since the sweep observed it cannot be reopened again" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                _ <- abandonBoundHarnessRun store project
+                swept <-
+                    recoverAbandonedHarnessRuns store project neverResolves $ \lease -> do
+                        first <-
+                            withAbandonedHarnessRun
+                                store
+                                project
+                                lease
+                                (resolveNothingAcquired store project)
+                        _ <- expectRight first
+                        again <-
+                            withAbandonedHarnessRun store project lease (\_ -> pure (Right ()))
+                        case again of
+                            Left (ModeLeaseNotBindable _ state) -> do
+                                state @?= "closed"
+                                pure (Right ())
+                            other ->
+                                assertFailure
+                                    ("expected a closed-lease refusal, got " <> show other)
+                proof <- either (assertFailure . show) pure swept
+                closedAbandonedHarnessRunsCount proof @?= 1
     , testCase "an unbound lease with a recorded effect refuses the no-effect proof" $
         withStore $ \store ->
             withProject "hostbootstrap-demo" $ \project -> do
@@ -921,6 +1047,45 @@ recoveryCases =
                     Left (ModeEffectsRecorded _) -> pure ()
                     other ->
                         assertFailure ("expected a recorded-effect refusal, got " <> show other)
+    , -- The cross-profile half of the four-process reservation race. Production
+      -- has no generative run id and no liveness lock, so its unbound lease is
+      -- shaped exactly like an abandoned harness run's. The sweep must not read
+      -- it as one: closing a live invocation's lease is the same defect the
+      -- harness race exposed, across profiles instead of within one, and here it
+      -- would also discard the evidence Production's own bound recovery needs.
+      testCase "a live production invocation is never swept, and refuses the harness by mode" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                outcome <-
+                    withProductionRoot store project ProjectUp $ \_root -> do
+                        swept <-
+                            recoverAbandonedHarnessRuns store project neverResolves neverResolves
+                        proof <- either (assertFailure . show) pure swept
+                        -- Nothing was abandoned: the only incomplete lease is the
+                        -- live Production invocation's, which is not this sweep's
+                        -- to resolve.
+                        closedAbandonedHarnessRunsCount proof @?= 0
+                        refused <-
+                            withHarnessRoot
+                                store
+                                project
+                                ProjectUp
+                                (satisfiedPreconditions project)
+                                proof
+                                (\_ -> pure (Right ()))
+                        case refused of
+                            -- § Z: a harness run against live Production is a
+                            -- stated exclusion, not an overlap and not a sweep.
+                            Left (ModeHeldByAnother held wanted) -> do
+                                held @?= "production"
+                                assertBool
+                                    ("the harness names itself: " <> Text.unpack wanted)
+                                    ("harness:" `Text.isPrefixOf` wanted)
+                            other ->
+                                assertFailure
+                                    ("expected the production mode to refuse, got " <> show other)
+                        pure (Right ())
+                outcome @?= Right ()
     ]
 
 -- Invocation and terminal close -------------------------------------------------------------
@@ -1072,12 +1237,17 @@ closeCases =
                                                     =<< authorizeHarnessClose
                                                         session
                                                         project
+                                                        (currentHarnessCloseRoot root)
                                                         (harnessRootModeLease root)
                                                         bound
                                                         sessions
                                                         11
                                             harnessCloseEpoch authorized @?= 11
                                             harnessCloseRun authorized @?= run
+                                            -- The origin travels onto the
+                                            -- authorization, so the terminal
+                                            -- record says which way it was reached.
+                                            harnessCloseOrigin authorized @?= LiveHarnessClose
                                             done <-
                                                 expectRight
                                                     =<< finalizeHarnessClose session project authorized
@@ -1099,6 +1269,41 @@ closeCases =
                         next
                         (\_ -> pure (Right ("second run" :: String)))
                 again @?= Right "second run"
+    , -- The @projectId@ index is the config family's, so two projects carrying
+      -- the same family share it and the type alone cannot separate them. That is
+      -- exactly the substitution the close root's recorded project name catches:
+      -- without it, a close root minted for one project closed another's run.
+      testCase "a close root cannot close a run in a different project" $
+        withStore $ \store ->
+            withProject "hostbootstrap-demo" $ \project -> do
+                proof <- sweep store project
+                outcome <-
+                    withHarnessRoot store project ProjectUp (satisfiedPreconditions project) proof $
+                        \root ->
+                            withProject "hostbootstrap-other" $ \other ->
+                                withProtectedEntry' store $ \session -> do
+                                    evidence <-
+                                        expectRight
+                                            =<< verifyNoProjectResourcesAcquired
+                                                session
+                                                project
+                                                (harnessRootRunId root)
+                                    refused <-
+                                        closeHarnessRun
+                                            session
+                                            other
+                                            (currentHarnessCloseRoot root)
+                                            (harnessRootModeLease root)
+                                            evidence
+                                    case refused of
+                                        Left (ModeClosureMismatch expected observed) -> do
+                                            expected @?= "hostbootstrap-other"
+                                            observed @?= "hostbootstrap-demo"
+                                            pure (Right ())
+                                        other' ->
+                                            assertFailure
+                                                ("expected a project mismatch, got " <> show other')
+                outcome @?= Right ()
     ]
 
 -- | The plan digest the close cases journal under.
@@ -1231,6 +1436,30 @@ report a vacuous success.
 neverResolves :: VerifiedIncompleteRunLease projectId -> IO (Either ModeError ())
 neverResolves _ = pure (Right ())
 
+{- | Resolve a reopened run the one way this sprint can prove is safe: its own
+records show it acquired nothing, so its lease and mode close under the
+reopening's own 'RecoveredHarnessClose' authority.
+-}
+resolveNothingAcquired ::
+    ProtectedStore ->
+    InstalledProject projectId ->
+    AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+    IO (Either ModeError ())
+resolveNothingAcquired store project reopened = do
+    proved <-
+        withProtectedEntry' store $ \session ->
+            verifyNoProjectResourcesAcquired session project (abandonedHarnessRunId reopened)
+    case proved of
+        Left failure -> pure (Left failure)
+        Right evidence ->
+            withProtectedEntry' store $ \session ->
+                closeHarnessRun
+                    session
+                    project
+                    (abandonedHarnessCloseRoot reopened)
+                    (abandonedHarnessModeLease reopened)
+                    evidence
+
 {- | Open a harness run and abandon it: the mode and unbound lease are recorded
 and never closed, exactly as a hard kill leaves them.
 -}
@@ -1256,8 +1485,14 @@ sweep store project = do
     swept <- recoverAbandonedHarnessRuns store project neverResolves neverResolves
     either (assertFailure . show) pure swept
 
--- | The same, but bound to a plan snapshot before the kill.
-abandonBoundHarnessRun :: ProtectedStore -> InstalledProject projectId -> IO RunId
+{- | The same, but bound to a plan snapshot before the kill. It also hands back
+the broker generation the abandoned run held, so a reopening can be shown to run
+on a strictly fresher one.
+-}
+abandonBoundHarnessRun ::
+    ProtectedStore ->
+    InstalledProject projectId ->
+    IO (RunId, Word64)
 abandonBoundHarnessRun store project = do
     proof <- sweep store project
     outcome <-
@@ -1280,7 +1515,15 @@ abandonBoundHarnessRun store project = do
                                     project
                                     (harnessRootUnboundLease root)
                                     snapshot
-                                    (\_ -> pure (Right run))
+                                    ( \_ ->
+                                        pure
+                                            ( Right
+                                                ( run
+                                                , brokerEpochWord
+                                                    (projectModeLeaseEpoch (harnessRootModeLease root))
+                                                )
+                                            )
+                                    )
             )
     either (assertFailure . show) pure outcome
 

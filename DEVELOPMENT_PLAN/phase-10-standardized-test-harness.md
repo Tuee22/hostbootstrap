@@ -1301,27 +1301,236 @@ plus that embedded core suite; `poetry run python -m hostbootstrap.check_code` i
 the **first complete core-suite pass recorded on Apple Silicon**, and it is a static gate only — it
 exercises no live provider lane and closes none of the open items below.
 
-**Discovered while landing the 2026-08-04 work, recorded rather than left implicit (§ A).** If
-`acquireGeneratedConfig` publishes its origin record and then the install itself fails, the run dies and
-the ownership bracket closes its lease — so that run's `config.…` record is never reached by a later
-sweep, which enumerates incomplete *leases*. The record is inert (the file was never published, and the
-key names a dead `runId`), and the live 2026-08-04 audit found none, but a run's release should settle
-its own config record the way it settles its data root. That is a one-call addition to
-`Harness.Ownership.releaseRun`; it is deliberately **not** bundled into this delivery, because it sits on
-the exact live path the `10/10` run validated and would leave that evidence stale until the lane is
-re-run.
+**Delivered 2026-08-04 (follow-on) — a run settles its own config record, and the leak was wider than
+the one recorded.** The item below was discovered while landing the delivery above and deliberately
+deferred; it is now closed, and closing it exposed a second, worse state the same call resolves.
+
+- **The recorded case.** If `acquireGeneratedConfig` publishes its origin record and then the install
+  itself fails, the run dies and the ownership bracket closes its lease — so that run's `config.…`
+  record is never reached by a later sweep, which enumerates incomplete *leases*. That record is inert
+  (the file was never published, and the key names a dead `runId`), and the live 2026-08-04 audit found
+  none.
+- **The wider case the same call closes, found by writing the test.** A body that *acquires* the config
+  and then dies in-process leaves the record **and the file it names**. The lease still closes on the
+  way out, so no sweep can ever reach either — and the surviving file is precisely what
+  `harnessPreconditions` refuses the next run on. That is the 2026-08-03 reproduction's failure mode
+  returning by a different route: an operator config refusal an operator did not cause, with no
+  recovery path. The command path's `finally`-released config hides it, but the ownership seam's own
+  contract did not.
+- **The fix.** `Harness.Ownership.releaseRun` now settles its own config record between releasing the
+  data root and closing the lease, through the same `recoverGeneratedConfig` the sweep uses — so the
+  ordering is "settle both owned objects, *then* close the lease", matching the data root exactly. It is
+  idempotent by construction: on the ordinary path the release already unlinked the file and deleted the
+  record, so recovery reads no record and does nothing. A conflict — an operator edit or a replacement —
+  still removes nothing, retains the record, and is now reported as the new
+  `HarnessGeneratedConfigCleanupFailed` report-card row rather than being folded into the data-root or
+  mode-close vocabulary.
+
+Validation (2026-08-04, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): `HarnessSpec` adds one
+case that acquires the generated config and dies holding it, then asserts the file is gone, that no
+`config.*` record remains in the protected store, and that the successor run is admitted. It was
+confirmed to **fail** against the pre-fix `releaseRun` (the config file survived) before the fix was
+restored, so it observes the defect rather than the fix. The finalizer-rendering case gained the third
+cleanup-failure row. The complete core suite passes **924/924** under
+`cabal test all --ghc-options=-Werror` from `core/`.
+
+This is a static gate. It changes the live `test run` release path, so under § C the four substrate
+lanes owe a re-run before Phase 10 closes; the 2026-08-04 `10/10` Apple Silicon evidence above predates
+it.
+
+**Delivered 2026-08-04 (follow-on) — the cross-profile half of the reservation race, and the defect it
+found.** § Z's "deterministic cross-profile races prove … Production and Harness never overlap" clause was
+covered only by sequential in-profile cases. Writing the cross-profile one reproduced a real defect of
+exactly the family the four-process race exposed, moved across profiles:
+
+- **The harness sweep read a live Production invocation's lease as an abandoned harness run.**
+  `withProductionRoot` records an unbound lease under the reserved run id `production`, which is
+  structurally indistinguishable from a harness run's lease to `incompleteLeases` — it filters on the
+  lease-key prefix only. `recoverAbandonedHarnessRuns` therefore enumerated it, `reclaimUnbound` ran
+  against it, `verifyUnboundLeaseHasNoEffects` proved it had recorded no effect **yet**, and
+  `closeLease` closed a live invocation's lease. `releaseModeIfRun` correctly left the *mode* alone — the
+  author had guarded that half — so the harness was still refused a moment later, which is why the
+  corruption was invisible: the operator-visible outcome was a refusal either way, while the evidence
+  Production's own bound recovery reads (`eliminateProductionBoundRecovery`,
+  `withRecoveredProductionLifecycleProfile`, the stable `InvocationCloseKey`) had been discarded.
+- **The fix is a scope correction, not a lock.** The sweep is the *harness* sweep — its result type says
+  so — and now enumerates through `abandonedHarnessLeases`, which excludes the reserved Production
+  lease; `sweptSetStillEmpty` uses the same predicate, so the post-callback recheck cannot refuse on a
+  lease the fold was never allowed to touch. `isProductionRun` makes the distinction structural rather
+  than a convention two call sites could disagree about: `freshRunId` only ever mints `run-<hex>`, so the
+  reserved name cannot collide with a generated run identity.
+- **Skipping it opens no hole.** Production closes its lease *before* releasing its mode, in both
+  `releaseProductionMode` and `closeCompletedProductionInvocation`. An open Production lease therefore
+  implies the Production mode is still held, so `acquireMode` refuses the harness with the stated
+  `ModeHeldByAnother` § Z asks for — a stated exclusion rather than a sweep that quietly resolves the
+  other profile's state.
+
+Validation (2026-08-04, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): `AuthoritySpec` adds one
+case that runs the sweep *inside* a live `withProductionRoot` continuation and asserts the swept count is
+zero and that the harness is then refused by `ModeHeldByAnother` naming `production`. It was confirmed to
+**fail** against the pre-fix sweep (swept count `1`). The complete core suite passes **925/925** under
+`cabal test all --ghc-options=-Werror` from `core/`.
+
+**Recorded rather than left implicit (§ A).** An abandoned *Production* invocation still blocks every
+harness run until an operator runs a Production verb: only the harness sweeps, and `releaseModeIfRun` by
+design never releases a Production mode. That is fail-closed and unchanged by this repair — the pre-fix
+sweep did not unblock it either, it only corrupted the lease on the way to the same refusal — and the
+recovery route (`withProductionRoot` re-takes the retained Production mode) exists. It is named here
+because the harness's refusal message points at the mode rather than at that route.
+
+**Still open on this clause:** the cross-profile race is proved deterministically in-process, not across
+processes. The mode transaction it turns on is a single compare-and-swap inside one protected entry, and
+the discriminating observable — whether the sweep resolved the other profile's lease — is not visible to
+a competitor process without exporting a read-only lease observer, which § EE's "not for tests" rule
+rules out. The out-of-process cross-profile probe therefore remains part of the concurrency matrix below.
+
+**Live validation (2026-08-05, Apple Silicon M1 Max, macOS 25.5.0 arm64, Lima provider) — the § C
+re-run the two 2026-08-04 follow-ons owed on this lane.** Both of them change the live `test run`
+release path, so the `10/10` evidence above no longer covered it. Re-run from a **pristine** host — no
+`demo/.data`, no `demo/.build`, no Lima instance, and no protected store, so every owned object was
+created for the first time rather than reconciled — `hostbootstrap run -- test run all` reported
+**`10/10 passed`** in ~73 minutes over four bring-ups and four destroys, both variants across all five
+compiled cases:
+
+```text
+test report: 10/10 passed
+  PASS  [hello-world]    pristine-bootstrap web-build e2e-tabs registry-persistence durable-readback
+  PASS  [hello-universe] pristine-bootstrap web-build e2e-tabs registry-persistence durable-readback
+```
+
+The audited end state is the one this sprint exists to produce, and the two changes are exactly what the
+last three rows observe:
+
+- both run leases (`run-b7cb531dbbb90`, `run-b7eb11734e598`) are recorded **`closed`**;
+- **no `mode.*` record** survives;
+- **no `config.*` record** survives — the new `releaseRun` settlement ran on the live path for both
+  runs, and the generated `demo/.build/hostbootstrap-demo.dhall` is gone;
+- **no `dataroot.*` record** survives, `demo/.test_data` is empty and still present, and `demo/.data`
+  survived all four bring-ups with its `web/` content intact;
+- the Lima instance is gone (`limactl list` reports none);
+- the second variant re-acquired the same generated-config path under its own run id, which it could
+  only do because the first had released it.
+
+The records that remain are inert history: the two closed leases, their plan snapshots, the six consumed
+one-use invocation records, the broker generation, and the store's authority binding. The
+`abandonedHarnessLeases` narrowing is exercised implicitly here — every sweep in the run enumerated a
+store with no Production lease and behaved identically — so the cross-profile branch itself remains
+statically gated, as recorded above.
+
+The in-container quality gate ran four times as part of the four bring-ups
+(`RUN hostbootstrap-demo check-code` → `fourmolu`, `hlint`, `cabal -Werror`) and passed each time, which
+is the only place those two run (§ languages/haskell: container-only).
+
+On a pristine host the gate needs `test init` before `test run all`, as
+[demo_runbook](../documents/operations/demo_runbook.md) documents; the first launch here refused with
+`missing …/hostbootstrap-demo.test.dhall` because no `demo/.build` existed at all. That is the documented
+sequence, not a finding.
+
+This closes only the Apple Silicon lane. The Linux CPU, Linux GPU, and Windows lanes still owe their
+§ C re-runs for both follow-ons.
+
+**Delivered 2026-08-05 — `withAbandonedHarnessRun` and the close root it shares with the live run, plus
+the two defects writing them exposed.** The reopening opener was the largest structurally-missing piece
+of this sprint's own recovery bullet. Until now the sweep's bound branch did the pieces by hand:
+`classifyAbandonedBoundRun` read the durable invocation record, and the one resolvable branch closed the
+run through `closeHarnessRun` taking a bare `RunId`. Nothing said who was allowed to resolve a run, and
+the branches that cannot yet be resolved existed only as refusal strings assembled in
+`Harness.Ownership`.
+
+- **`Lifecycle.Mode.withAbandonedHarnessRun` is the rank-2 opener.** It jointly yields the abandoned
+  run's exact durable plan snapshot, the /already-bound/ lease, the run's own project-wide Harness mode,
+  a `RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy`, the
+  `HarnessBoundRecovery` classification, and a `RecoveredHarnessClose` close root — all on a **fresh**
+  broker generation, and all pinned to one reopening by four shared generative indices. Read the field
+  list as the boundary: there is no `HarnessAuthority`, no fresh `LifecycleProfile`, no `UnboundRunLease`
+  to rebind to another snapshot, and the root is `VerbDestroy` and never `VerbUp`, so a reopened run can
+  settle what its predecessor left and nothing else. The ordering is fixed so a crash leaves the store no
+  worse than it found it: recheck the lease is still bound to the digests the **sweep** observed (its
+  observation was at an earlier store version), read back the snapshot and require its digests to equal
+  the lease's, classify the invocation record — all *before* any authority is minted — then allocate the
+  fresh generation, verify the `destroy` root under it, and retain the mode and lease onto it. Recovery
+  never resumes the old generation: the dead run's permits and admissions have to be fenced out, and
+  reusing its epoch would make a delayed one indistinguishable from a live one.
+- **`HarnessCloseRoot` gives harness close the root/verb half Production already had.** § EE requires the
+  close root to be "derived from the live root or abandoned-run recovery authority", and there was no
+  value representing that at all — `authorizeHarnessClose` took only the mode lease, the bound lease and
+  the session proof, every one of which is reachable from the live run. The constructor is private with
+  exactly two producers, named to match [lifecycle_state_model](../documents/architecture/lifecycle_state_model.md):
+  `currentHarnessCloseRoot` off a live `HarnessRoot`, and the opener's `abandonedHarnessCloseRoot` field.
+  The `HarnessCloseOrigin` it carries travels onto `HarnessCloseAuthorization`, so the terminal record
+  says which of the two ways a close was reached. `authorizeHarnessClose` and `closeHarnessRun` both
+  consume it through one shared `checkHarnessCloseRoot`, and the live `test run` release path in
+  `Harness.Ownership` is its first production consumer.
+- **Defect 1 — `closeHarnessRun` reported success while closing nothing.** It took the
+  `InstalledProject` and a bare `RunId` as independent arguments. The `projectId` index is the *config
+  family's* (`installedProjectFor` fixes it), so two projects carrying the same family share it and the
+  type cannot separate them. Handed a different project of the same family, `closeLease` and
+  `releaseMode` both read absent records and both returned `Right ()` — a vacuous success: the caller
+  believes the run closed while the real run's lease and mode stay held, which is precisely the state the
+  sweep then has to refuse a new run on. The run identity is now read *off* the close root, and the
+  root's recorded project name is checked against the session's project.
+- **Defect 2 — `closeHarnessRun` ignored its closure evidence.** The parameter was literally `_evidence`,
+  so a `SettledDestroyClose` proof would have taken the short close and skipped the Closing epoch that
+  makes a mid-close crash resumable (§ Y's ordering). The branch is now stated and fail-closed: only
+  `PreEffectRefusalClose` may take the short close, and a settled destroy must go through
+  `authorizeHarnessClose` → `finalizeHarnessClose`.
+- **The lease recheck is load-bearing, not defensive.** Without it a second reopening of an
+  already-resolved lease proceeded past classification — re-verifying a dead run's snapshot — and then
+  refused with `ModeHeldByAnother "none"`, naming a missing mode rather than the closed lease that is the
+  actual state. Confirmed by disabling the recheck.
+
+**Recorded rather than left implicit (§ A).** Two things this delivery does *not* claim:
+
+- **Reopening is idempotent in meaning but not inert.** A reopening that then refuses — a persisted
+  `Closing` epoch, either migration branch — leaves the mode and lease recorded under the new broker
+  generation. Nothing reads a retained record's generation to resume (`bindRunLease` compares generations
+  only for an *unbound* lease, `releaseMode` compares the mode alone, and a close journal is keyed by its
+  Closing epoch), so a second reopening reads the same state and reaches the same branch. The records
+  that must not change across a reopening are the snapshot and the invocation disposition, and the opener
+  writes neither.
+- **Defect 2's refusing branch has no producer at Harness scope yet**, so it is a stated exclusion rather
+  than a covered path. `DestroySettled (Harness projectId runId) planId` needs a Harness-scoped
+  `LifecyclePlan`, which needs `withHarnessProjectCodec`, which needs a `HarnessConfigAuthority` — and the
+  opener deliberately mints none. It becomes reachable when Sprint 16.6 wires a harness teardown forest,
+  and the guard is in place ahead of it rather than after.
+
+Validation (2026-08-05, Apple Silicon M1 Max, macOS 25.5.0 arm64, GHC 9.12.4): `AuthoritySpec` adds five
+cases — the reopening's yielded shape (old snapshot digests, already-bound lease, `destroy` verb,
+`RecoveredHarnessClose` origin, the abandoned run's own `HarnessMode`, and a strictly fresher broker
+generation than the abandoned run held); an unbound lease refused with `"unbound"`; a persisted `Closing`
+epoch reached as the typed `HarnessPersistedClosing 9` branch **and** still fail-closed, so the sweep
+refuses naming the run; an already-resolved lease refused with `"closed"`; and the cross-project close
+refusal. The two existing bound-recovery cases now resolve *through* the opener rather than around it.
+Both defects were confirmed to reproduce against the pre-fix code: the cross-project case reported
+`expected a project mismatch, got Right ()`, and the recheck case reported
+`expected a closed-lease refusal, got Left (ModeHeldByAnother "none" "harness:run-…")`. The complete core
+suite passes **930/930** under `cabal test all --ghc-options=-Werror` from `core/`, and
+`poetry run python -m hostbootstrap.check_code` and `hostbootstrap.test_all` are clean (`231 passed`).
+The real consumer was cross-checked host-native rather than assumed compatible: `cabal build all` and
+`cabal test all`, both with `-Werror`, pass from `demo/` at **112/112** demo plus the embedded **930/930**
+core — so the changed `closeHarnessRun`/`authorizeHarnessClose` signatures type-check against
+`hostbootstrap-demo`'s own step plan and test suite, not only against core's fixtures.
+
+This is a static gate. It changes the live `test run` release path — that path now closes through
+`currentHarnessCloseRoot` — so under § C all four substrate lanes owe a re-run; the 2026-08-05
+Apple Silicon `10/10` evidence above predates it.
 
 **Still open (this sprint):** the authenticated authority-rehydration handoff and the versioned
 session/fence prepare protocol shared with Sprints 15.9 and 16.6;
 the `Conflict` and `Unsupported` report-card rows, which have no producer until the reconcilers are
 wired at their call sites by Sprint 16.6; the receipt-carrying `ManagedResult Unchanged` / `ForeignResult`
-half of the same bullet, which needs the same plan wiring; the full `withAbandonedHarnessRun` opener —
-its fresh-broker-generation recovery/close authority, its `HarnessPersistedClosing` and migration
-branches, and child-first teardown at a boundary — of which 2026-08-04 delivered only the
-provably-nothing-acquired branch; and the remainder of the concurrency/failure
+half of the same bullet, which needs the same plan wiring; the rest of the `withAbandonedHarnessRun`
+opener — 2026-08-05 landed the opener itself with its fresh-broker-generation `destroy` root and close
+authority, and made the `HarnessPersistedClosing` and both migration branches typed branches reached
+*through* it, but all three are still fail-closed with no resumption, and the opener does not yet yield
+the `AuthorityBroker`, `OldPermitFenceSet`, or `VerifiedSessionOperationManifest`
+[lifecycle_state_model](../documents/architecture/lifecycle_state_model.md) specifies, nor run the
+protected recorded-session interpreter; child-first teardown at a boundary is untouched; and the
+remainder of the concurrency/failure
 matrix, whose kill-point and prepare/handoff clauses are stated against machinery Sprints 15.9 and 16.6
-wire (the reservation-race clause above is closed, and 2026-08-04 added the hard-kill abandonment
-clause for the generated config and the bound lease). Historical `6/6`, `8/8`, and `10/10` runs did not exercise these ownership or handoff races and do
+wire (the reservation-race clause above is closed; 2026-08-04 added the hard-kill abandonment
+clause for the generated config and the bound lease, and the cross-profile sweep/mode clause in-process —
+its out-of-process half remains). Historical `6/6`, `8/8`, and `10/10` runs did not exercise these ownership or handoff races and do
 not close the sprint.
 
 ### Sprint 10.10: Remove the parallel run-model representation [Done]

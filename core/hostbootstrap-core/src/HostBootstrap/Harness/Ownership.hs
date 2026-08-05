@@ -23,8 +23,12 @@ In order, a run now:
    process dies, so a genuinely dead predecessor never blocks the next run;
 1. sweeps every abandoned run recorded in the protected store. A lease that
    never bound a plan is closed after the protected proof that it recorded no
-   effect; a lease that *did* bind one names the exact run that needs operator
-   recovery, and no new run starts;
+   effect; a lease that *did* bind one is reopened through
+   'HostBootstrap.Lifecycle.Mode.withAbandonedHarnessRun', which yields the old
+   snapshot, the retained lease and mode, a @destroy@-only root, and a recovered
+   close authority on a fresh broker generation. Only the branch whose records
+   prove it acquired nothing is resolved; every other branch names the exact run
+   that needs operator recovery, and no new run starts;
 2. takes the project-wide Harness mode and this run's lease in one protected
    compare-and-swap, so a Production opener cannot interleave between the
    safety recheck and ownership;
@@ -41,18 +45,21 @@ In order, a run now:
    "HostBootstrap.Harness.GeneratedConfig" — the same four clauses over a file,
    replacing the @\<config\>.hostbootstrap-test-owner@ lock directory that held
    none of them;
-5. on exit closes the lease and releases the mode, and removes the directory and
-   the config only after re-observing their exact kernel identities. A
-   @.test_data@ (or @.data@) the run merely found is preserved, and an object
-   that was /replaced/ under the run is reported as a conflict and left intact
-   (§ Z).
+5. on exit settles both owned objects and only then closes the lease and
+   releases the mode. The directory and the config are removed only after
+   re-observing their exact kernel identities; a @.test_data@ (or @.data@) the
+   run merely found is preserved, and an object that was /replaced/ under the
+   run is reported as a conflict and left intact (§ Z). Settling the config
+   record here is what keeps it from outliving the lease that indexes it: the
+   sweep enumerates incomplete __leases__, so a record still standing when this
+   run's lease closes is unreachable forever after.
 
 Both owned objects are also what the __sweep__ resolves. An abandoned unbound
 run's data root and generated config are reclaimed from their durable origin
-records before its lease closes; an abandoned __bound__ run is now classified
-and, when its records prove it acquired nothing, closed — where it previously
-could only be named in a refusal an operator had to resolve by deleting
-protected records by hand.
+records before its lease closes; an abandoned __bound__ run is reopened,
+classified, and — when its records prove it acquired nothing — closed under the
+reopening's own close authority, where it previously could only be named in a
+refusal an operator had to resolve by deleting protected records by hand.
 -}
 module HostBootstrap.Harness.Ownership (
     OwnedHarnessRoot,
@@ -101,6 +108,7 @@ import HostBootstrap.Harness.GeneratedConfig (
 import HostBootstrap.Harness.Identity (ObjectIdentityBackend)
 import HostBootstrap.Harness.Identity.Native (nativeObjectIdentityBackend)
 import HostBootstrap.Lifecycle.Mode (
+    AbandonedHarnessRun,
     HarnessBoundRecovery (HarnessOpenRevisionRecovery, HarnessPersistedClosing),
     HarnessRoot,
     IncompleteLeaseKind (IncompleteBound, IncompleteUnbound),
@@ -108,9 +116,14 @@ import HostBootstrap.Lifecycle.Mode (
     OpenRevisionKind (CompletedMigration, IncompleteMigration, NormalRevision),
     RunId,
     VerifiedIncompleteRunLease,
-    classifyAbandonedBoundRun,
+    abandonedHarnessCloseRoot,
+    abandonedHarnessModeLease,
+    abandonedHarnessRecovery,
+    abandonedHarnessRunId,
     closeHarnessRun,
+    currentHarnessCloseRoot,
     harnessPreconditions,
+    harnessRootModeLease,
     harnessRootRunId,
     incompleteRunLeaseKind,
     incompleteRunLeaseRun,
@@ -119,6 +132,7 @@ import HostBootstrap.Lifecycle.Mode (
     recoverAbandonedHarnessRuns,
     runIdText,
     verifyNoProjectResourcesAcquired,
+    withAbandonedHarnessRun,
     withHarnessRoot,
  )
 import HostBootstrap.ProjectRoot (
@@ -330,15 +344,14 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
         HarnessRoot projectId runId brokerGeneration VerbUp ->
         IO (Either ModeError (result, Maybe HarnessRunCleanupFailure))
     runOwned store root = do
-        let run = harnessRootRunId root
-            -- § Z: the run owns @.test_data/<runId>@, not the shared parent.
-            generation = testDataGeneration dataParent (runIdText run)
+        -- § Z: the run owns @.test_data/<runId>@, not the shared parent.
+        let generation = testDataGeneration dataParent (runIdText run)
         (outcome, cleanupFailure) <-
             generalBracket
                 (takeDataRoot store project run generation)
                 ( \started _ -> case started of
                     Left _ -> pure Nothing
-                    Right receipt -> releaseRun store run receipt
+                    Right receipt -> releaseRun receipt
                 )
                 ( \started -> case started of
                     Left failure ->
@@ -353,32 +366,64 @@ ownProjectRun project storeRoot siblingDirectory dataParent body = do
                         Right <$> body (OwnedHarnessRoot store project configPath root)
                 )
         pure (fmap (\result -> (result, cleanupFailure)) outcome)
-    releaseRun store run receipt = do
-        released <- giveUpDataRoot store project run receipt
-        case released of
-            Left failure ->
-                pure
-                    ( Just
-                        (HarnessDataRootCleanupFailed (Text.unpack (dataRootErrorMessage failure)))
-                    )
-            Right () -> do
-                closed <- closeRun store run
-                pure $ case closed of
-                    Left reason -> Just (HarnessModeCloseFailed reason)
-                    Right () -> Nothing
-    closeRun store run = do
-        closed <-
-            withProtectedEntry store $ \session -> do
-                evidence <- verifyNoProjectResourcesAcquired session project run
-                case evidence of
-                    Left failure -> pure (Right (Left failure))
-                    Right proof -> do
-                        outcome <- closeHarnessRun session project run proof
-                        pure (Right outcome)
-        pure $ case closed of
-            Left failure -> Left (Text.unpack (protectedErrorMessage failure))
-            Right (Left failure) -> Left (Text.unpack (modeErrorMessage failure))
-            Right (Right ()) -> Right ()
+      where
+        -- These two close over the exact live root, so the terminal close is
+        -- authorized by *this* run's own authority rather than by its run
+        -- identity: 'currentHarnessCloseRoot' is one of the two producers of
+        -- 'HarnessCloseRoot', and recovery's opener is the other.
+        run = harnessRootRunId root
+        releaseRun receipt = do
+            released <- giveUpDataRoot store project run receipt
+            case released of
+                Left failure ->
+                    pure
+                        ( Just
+                            (HarnessDataRootCleanupFailed (Text.unpack (dataRootErrorMessage failure)))
+                        )
+                Right () -> do
+                    -- A run settles its own generated-config record here, exactly
+                    -- as it settles its data root above, and for the same reason:
+                    -- once the lease closes on the next line the sweep can no
+                    -- longer reach this run, because the sweep enumerates
+                    -- incomplete *leases*. Two states reach this point with a
+                    -- record still standing — an acquire that published the origin
+                    -- record and then failed to install, and a body that acquired
+                    -- the config and never released it — and both are the dead
+                    -- run's own state. On the ordinary path the release already
+                    -- removed the file and deleted the record, so this is a no-op.
+                    settled <- reclaimAbandonedConfig store project run configPath
+                    case settled of
+                        Left failure ->
+                            pure
+                                ( Just
+                                    ( HarnessGeneratedConfigCleanupFailed
+                                        (Text.unpack (generatedConfigErrorMessage failure))
+                                    )
+                                )
+                        Right () -> do
+                            closed <- closeRun
+                            pure $ case closed of
+                                Left reason -> Just (HarnessModeCloseFailed reason)
+                                Right () -> Nothing
+        closeRun = do
+            closed <-
+                withProtectedEntry store $ \session -> do
+                    evidence <- verifyNoProjectResourcesAcquired session project run
+                    case evidence of
+                        Left failure -> pure (Right (Left failure))
+                        Right proof -> do
+                            outcome <-
+                                closeHarnessRun
+                                    session
+                                    project
+                                    (currentHarnessCloseRoot root)
+                                    (harnessRootModeLease root)
+                                    proof
+                            pure (Right outcome)
+            pure $ case closed of
+                Left failure -> Left (Text.unpack (protectedErrorMessage failure))
+                Right (Left failure) -> Left (Text.unpack (modeErrorMessage failure))
+                Right (Right ()) -> Right ()
 
 {- | Reclaim an abandoned run's two owned filesystem objects from their durable
 origin records. For an unbound lease the sweep runs this /before/ closing the
@@ -426,14 +471,23 @@ until this landed it was simply reported: the sweep's recheck refused the new ru
 and named the run, with nothing able to act on that name. An operator's only
 route forward was deleting the run's protected records by hand.
 
-It now classifies the lease's durable invocation record and resolves the one
-branch it can prove is safe: an ordinary Open revision whose records show that
-the run acquired __nothing__. 'verifyNoProjectResourcesAcquired' is that proof
-and it is the sprint's own producer for the true-pre-effect branch — a single
-effect-shaped record refuses, so partial @up@ work can never be relabelled as a
-refusal that preceded acquisition. That branch reclaims the run's two owned
-objects and closes its lease and mode, which is exactly the interrupted-run case
-the reservation exists for.
+The whole callback now runs inside 'withAbandonedHarnessRun', so the abandoned
+run is /reopened/ before any branch is taken: the lease is rechecked as still
+bound to the digests the sweep observed, the old snapshot is read back, the
+durable invocation record is classified, and the run's mode and lease are retained
+onto a fresh broker generation together with a @destroy@-only root and a
+'RecoveredHarnessClose' close root. Previously each of those was either skipped or
+done piecemeal by this function, and the close it did perform was authorized by a
+bare 'RunId'.
+
+It then resolves the one branch it can prove is safe: an ordinary Open revision
+whose records show that the run acquired __nothing__.
+'verifyNoProjectResourcesAcquired' is that proof and it is the sprint's own
+producer for the true-pre-effect branch — a single effect-shaped record refuses, so
+partial @up@ work can never be relabelled as a refusal that preceded acquisition.
+That branch reclaims the run's two owned objects and closes its lease and mode
+under the reopening's own close authority, which is exactly the interrupted-run
+case the reservation exists for.
 
 Every other branch stays fail-closed and names why: a persisted @Closing@ epoch
 and either migration revision need the close-journal and migration resumption
@@ -441,6 +495,7 @@ Sprint 16.6 owns, and a run that /did/ record effects needs the recursive
 teardown forest, not a lease close.
 -}
 resolveBoundRun ::
+    forall projectId.
     ProtectedStore ->
     InstalledProject projectId ->
     FilePath ->
@@ -450,30 +505,33 @@ resolveBoundRun ::
 resolveBoundRun store project dataParent configPath lease =
     case incompleteRunLeaseKind lease of
         IncompleteUnbound -> pure (Right ())
-        IncompleteBound _ _ -> do
-            classified <-
-                runInEntry store (\session -> classifyAbandonedBoundRun session project lease)
-            case classified of
-                Left failure -> pure (Left failure)
-                Right (HarnessPersistedClosing epoch) ->
-                    pure (Left (needsOperator ("a persisted closing epoch " <> showEpoch epoch)))
-                Right (HarnessOpenRevisionRecovery revision) ->
-                    case openRevisionKind revision of
-                        IncompleteMigration key ->
-                            pure (Left (needsOperator ("an incomplete migration " <> key)))
-                        CompletedMigration key ->
-                            pure (Left (needsOperator ("a completed migration " <> key)))
-                        NormalRevision -> closeIfNothingAcquired
+        IncompleteBound _ _ ->
+            withAbandonedHarnessRun store project lease $ \reopened ->
+                case abandonedHarnessRecovery reopened of
+                    HarnessPersistedClosing epoch ->
+                        pure (Left (needsOperator ("a persisted closing epoch " <> showEpoch epoch)))
+                    HarnessOpenRevisionRecovery revision ->
+                        case openRevisionKind revision of
+                            IncompleteMigration key ->
+                                pure (Left (needsOperator ("an incomplete migration " <> key)))
+                            CompletedMigration key ->
+                                pure (Left (needsOperator ("a completed migration " <> key)))
+                            NormalRevision -> closeIfNothingAcquired reopened
   where
     run = incompleteRunLeaseRun lease
     needsOperator detail =
         ModeRecoveryRequired (runIdText run <> " carries " <> detail)
     showEpoch = Text.pack . show
-    closeIfNothingAcquired = do
+    closeIfNothingAcquired ::
+        forall oldRunId specDigest planDigest brokerGeneration.
+        AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+        IO (Either ModeError ())
+    closeIfNothingAcquired reopened = do
         -- The proof is taken first: nothing is reclaimed and no lease is closed
         -- until the run's own records show it acquired nothing.
         proved <-
-            runInEntry store (\session -> verifyNoProjectResourcesAcquired session project run)
+            runInEntry store $ \session ->
+                verifyNoProjectResourcesAcquired session project (abandonedHarnessRunId reopened)
         case proved of
             Left failure -> pure (Left failure)
             Right evidence -> do
@@ -482,7 +540,12 @@ resolveBoundRun store project dataParent configPath lease =
                     Left failure -> pure (Left failure)
                     Right () ->
                         runInEntry store $ \session ->
-                            closeHarnessRun session project run evidence
+                            closeHarnessRun
+                                session
+                                project
+                                (abandonedHarnessCloseRoot reopened)
+                                (abandonedHarnessModeLease reopened)
+                                evidence
 
 -- | Run one recovery decision inside the store's exclusive entry.
 runInEntry ::

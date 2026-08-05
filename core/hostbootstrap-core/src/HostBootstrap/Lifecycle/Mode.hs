@@ -22,8 +22,10 @@ classifiable lease rather than an opaque lock directory:
 
 * an unbound incomplete lease can be closed by the sweep once
   'verifyUnboundLeaseHasNoEffects' proves it recorded no effect;
-* a bound incomplete lease is reported to the caller as requiring recovery, and
-  a new run is not allocated until every old lease closes.
+* a bound incomplete lease is reopened through 'withAbandonedHarnessRun', which
+  rechecks it, reads back its snapshot, classifies its durable invocation record,
+  and yields @destroy@-only recovery and close authority on a fresh broker
+  generation. A new run is not allocated until every old lease closes.
 
 That is the direct replacement for the bare @createDirectory@ ownership claim
 whose crash left @.test_data@ and @.test_data.hostbootstrap-run-owner@ behind
@@ -128,9 +130,15 @@ module HostBootstrap.Lifecycle.Mode (
     closeCompletedProductionInvocation,
 
     -- * Harness terminal close
+    HarnessCloseOrigin (..),
+    HarnessCloseRoot,
+    currentHarnessCloseRoot,
+    harnessCloseRootRun,
+    harnessCloseRootOrigin,
     HarnessCloseAuthorization,
     harnessCloseEpoch,
     harnessCloseRun,
+    harnessCloseOrigin,
     authorizeHarnessClose,
     ClosedHarnessProject,
     closedHarnessProjectRun,
@@ -154,6 +162,15 @@ module HostBootstrap.Lifecycle.Mode (
     ClosedAbandonedHarnessRuns,
     closedAbandonedHarnessRunsCount,
     recoverAbandonedHarnessRuns,
+    AbandonedHarnessRun,
+    abandonedHarnessRunId,
+    abandonedHarnessSnapshot,
+    abandonedHarnessBoundLease,
+    abandonedHarnessModeLease,
+    abandonedHarnessDestroyRoot,
+    abandonedHarnessRecovery,
+    abandonedHarnessCloseRoot,
+    withAbandonedHarnessRun,
 
     -- * Failures
     ModeError (..),
@@ -180,14 +197,16 @@ import HostBootstrap.Authority (
     OperatorAuthorization,
     ProductionCloseKind (PreEffectRefusalClose, SettledDestroyClose),
     ProductionCloseRoot,
-    ProjectVerb,
+    ProjectVerb (ProjectDestroy),
     RootInvocationAuthority,
+    VerbDestroy,
     VerbUp,
     authorityErrorMessage,
     brokerEpochWord,
     installedProjectName,
     productionCloseRootVerb,
     rootAuthorityEpoch,
+    rootAuthorityProjectName,
     verifyOperatorAuthorization,
     withFreshBrokerEpoch,
     withVerifiedRootInvocation,
@@ -1358,6 +1377,15 @@ broker generation rather than a generated run identity.
 productionRunId :: RunId
 productionRunId = RunId "production"
 
+{- | Is this the reserved Production invocation lease rather than a harness run?
+
+'freshRunId' only ever mints @run-\<hex\>@, so the reserved name cannot collide
+with a generated run identity, and the distinction is structural rather than a
+naming convention two call sites could disagree about.
+-}
+isProductionRun :: RunId -> Bool
+isProductionRun = (== productionRunId)
+
 -- | Everything the Harness bracket established for one fresh run.
 data HarnessRoot projectId runId brokerGeneration verb = HarnessRoot
     { harnessRootAuthority ::
@@ -1720,6 +1748,74 @@ closeCompletedProductionInvocation session project modeLease completed key
 
 -- Harness terminal close -----------------------------------------------------------
 
+{- | Which of the two ways a harness close root was reached.
+
+Both authorize the same close, but they are not the same evidence, so the origin
+is retained rather than erased: it travels onto the close authorization, so a
+report or an operator message can say whether a close belongs to the run that is
+still executing or to a recovery that reopened an abandoned one.
+-}
+data HarnessCloseOrigin
+    = -- | The live run\'s own root authority is closing it.
+      LiveHarnessClose
+    | {- | The sweep reopened an abandoned run through 'withAbandonedHarnessRun'
+      and recovery is closing it under a fresh broker generation.
+      -}
+      RecoveredHarnessClose
+    deriving (Eq, Show)
+
+{- | The root\/verb half of harness terminal close — the Harness counterpart of
+"HostBootstrap.Authority"\'s 'Authority.ProductionCloseRoot'.
+
+Closing a harness run used to need only the mode lease, the bound lease and the
+session proof. All three are reachable from the live run, so there was no value
+that distinguished "the live root is closing itself" from "recovery is closing an
+abandoned run", and § EE\'s requirement that the close root be /derived from the
+live root or abandoned-run recovery authority/ had no representation at all: any
+holder of a run identity could close it.
+
+The constructor is private and there are exactly two producers, so a third
+cannot be written: 'currentHarnessCloseRoot' consumes a live 'HarnessRoot', and
+'withAbandonedHarnessRun' mints the recovered one. The @runId@ index is
+generative, so a close root minted for one run cannot be presented for another
+even when the run names coincide.
+-}
+data HarnessCloseRoot projectId runId brokerGeneration
+    = HarnessCloseRoot HarnessCloseOrigin RunId Text (BrokerEpoch brokerGeneration)
+
+instance Show (HarnessCloseRoot projectId runId brokerGeneration) where
+    show (HarnessCloseRoot origin run project epoch) =
+        "HarnessCloseRoot "
+            <> show origin
+            <> " "
+            <> show run
+            <> " "
+            <> show project
+            <> " "
+            <> show epoch
+
+harnessCloseRootRun :: HarnessCloseRoot projectId runId brokerGeneration -> RunId
+harnessCloseRootRun (HarnessCloseRoot _ run _ _) = run
+
+harnessCloseRootOrigin :: HarnessCloseRoot projectId runId brokerGeneration -> HarnessCloseOrigin
+harnessCloseRootOrigin (HarnessCloseRoot origin _ _ _) = origin
+
+{- | The live producer: the run that is still executing closes itself. Every
+field is read off the root\'s own verified authority, so the project name, run,
+and broker generation cannot be supplied independently of it.
+-}
+currentHarnessCloseRoot ::
+    HarnessRoot projectId runId brokerGeneration verb ->
+    HarnessCloseRoot projectId runId brokerGeneration
+currentHarnessCloseRoot root =
+    HarnessCloseRoot
+        LiveHarnessClose
+        (harnessRootRunId root)
+        (rootAuthorityProjectName authority)
+        (rootAuthorityEpoch authority)
+  where
+    authority = harnessRootAuthority root
+
 {- | Authorization to run one harness run\'s terminal close projection, carrying
 the fresh Closing epoch the project journal was moved to.
 
@@ -1727,64 +1823,109 @@ Its constructor is private and it is minted only after every session was proved
 Closed, so a close cannot be authorized while operations are outstanding.
 -}
 data HarnessCloseAuthorization projectId runId
-    = HarnessCloseAuthorization RunId Word64
+    = HarnessCloseAuthorization HarnessCloseOrigin RunId Word64
 
 instance Show (HarnessCloseAuthorization projectId runId) where
-    show (HarnessCloseAuthorization run epoch) =
-        "HarnessCloseAuthorization " <> show run <> " " <> show epoch
+    show (HarnessCloseAuthorization origin run epoch) =
+        "HarnessCloseAuthorization " <> show origin <> " " <> show run <> " " <> show epoch
 
 harnessCloseRun :: HarnessCloseAuthorization projectId runId -> RunId
-harnessCloseRun (HarnessCloseAuthorization run _) = run
+harnessCloseRun (HarnessCloseAuthorization _ run _) = run
 
 harnessCloseEpoch :: HarnessCloseAuthorization projectId runId -> Word64
-harnessCloseEpoch (HarnessCloseAuthorization _ epoch) = epoch
+harnessCloseEpoch (HarnessCloseAuthorization _ _ epoch) = epoch
+
+-- | Which way the close that this authorization ends was reached.
+harnessCloseOrigin :: HarnessCloseAuthorization projectId runId -> HarnessCloseOrigin
+harnessCloseOrigin (HarnessCloseAuthorization origin _ _) = origin
 
 {- | Authorize terminal close for one harness run.
 
-It requires the exact Harness mode lease for this run, the bound lease, and the
+It requires the close root — the live run\'s or recovery\'s, and nothing a caller
+can build — the exact Harness mode lease for this run, the bound lease, and the
 complete-session proof; it then persists the Closing epoch so a crash here
 resumes this close rather than reopening the run (bound recovery reaches
 'HarnessPersistedClosing'). Moving the project journal itself to @ClosingProject@
 is "HostBootstrap.Lifecycle.Session"\'s 'Session.beginClosingProject', which
 contends on the same version session-opening advances.
+
+The close root is checked against the bound lease and the mode lease rather than
+trusted: the shared @runId@ and @brokerGeneration@ indices already rule out most
+substitutions, but a root and a lease can still be minted for two /different/
+projects under the same indices, and the epochs can disagree when a caller
+retains a root across a generation boundary.
 -}
 authorizeHarnessClose ::
     ProtectedSession session ->
     InstalledProject projectId ->
+    HarnessCloseRoot projectId runId brokerGeneration ->
     ProjectModeLease projectId brokerGeneration ->
     BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration ->
     VerifiedAllSessionsClosed (Harness projectId runId) planId ->
     -- | the fresh closing epoch; must be positive
     Word64 ->
     IO (Either ModeError (HarnessCloseAuthorization projectId runId))
-authorizeHarnessClose session project modeLease bound closed epoch
+authorizeHarnessClose session project closeRoot modeLease bound closed epoch
     | epoch == 0 =
         pure (Left (ModeInvalidIdentity "a closing epoch must be positive"))
-    | allSessionsClosedPlanDigest closed /= boundRunLeasePlanDigest bound =
-        pure
-            ( Left
-                ( ModeSnapshotMismatch
-                    (boundRunLeasePlanDigest bound)
-                    (allSessionsClosedPlanDigest closed)
-                )
-            )
-    | otherwise = case projectModeLeaseMode modeLease of
-        ProductionMode ->
-            pure (Left (ModeWrongMode ("harness:" <> runIdText run) "production"))
-        HarnessMode active
-            | active /= run ->
+    | otherwise = case checkHarnessCloseRoot project closeRoot modeLease run of
+        Left failure -> pure (Left failure)
+        Right ()
+            | allSessionsClosedPlanDigest closed /= boundRunLeasePlanDigest bound ->
                 pure
                     ( Left
-                        ( ModeWrongMode
-                            ("harness:" <> runIdText run)
-                            ("harness:" <> runIdText active)
+                        ( ModeSnapshotMismatch
+                            (boundRunLeasePlanDigest bound)
+                            (allSessionsClosedPlanDigest closed)
                         )
                     )
             | otherwise -> do
                 recorded <- recordHarnessClosingEpoch session project run epoch
-                pure (fmap (const (HarnessCloseAuthorization run epoch)) recorded)
+                pure
+                    ( fmap
+                        (const (HarnessCloseAuthorization origin run epoch))
+                        recorded
+                    )
   where
     run = boundRunLeaseRun bound
+    origin = harnessCloseRootOrigin closeRoot
+
+{- | The checks shared by every consumer of a 'HarnessCloseRoot': the root must
+name this project, this exact run, and the same broker generation the held mode
+lease does, and the mode must actually be this run\'s Harness mode.
+-}
+checkHarnessCloseRoot ::
+    InstalledProject projectId ->
+    HarnessCloseRoot projectId runId brokerGeneration ->
+    ProjectModeLease projectId brokerGeneration ->
+    RunId ->
+    Either ModeError ()
+checkHarnessCloseRoot project (HarnessCloseRoot _ rootRun rootProject rootEpoch) modeLease run
+    | rootProject /= installedProjectName project =
+        Left (ModeClosureMismatch (installedProjectName project) rootProject)
+    | rootRun /= run =
+        Left
+            ( ModeClosureMismatch
+                ("harness:" <> runIdText run)
+                ("harness:" <> runIdText rootRun)
+            )
+    | brokerEpochWord rootEpoch /= brokerEpochWord (projectModeLeaseEpoch modeLease) =
+        Left
+            ( ModeEpochMismatch
+                (brokerEpochWord (projectModeLeaseEpoch modeLease))
+                (brokerEpochWord rootEpoch)
+            )
+    | otherwise = case projectModeLeaseMode modeLease of
+        ProductionMode ->
+            Left (ModeWrongMode ("harness:" <> runIdText run) "production")
+        HarnessMode active
+            | active /= run ->
+                Left
+                    ( ModeWrongMode
+                        ("harness:" <> runIdText run)
+                        ("harness:" <> runIdText active)
+                    )
+            | otherwise -> Right ()
 
 {- | Proof that a harness run reached terminal @ClosedProject@ and gave its mode
 back.
@@ -1819,22 +1960,44 @@ finalizeHarnessClose session project authorization = do
   where
     run = harnessCloseRun authorization
 
-{- | Terminal harness close: record the run\'s lease Closed, then release the
-exact Harness mode epoch last. Mode is never released before the lease, so a
-crash between the two leaves the mode held and the run recoverable rather than
-the mode cleared with work outstanding.
+{- | Terminal harness close for a run that provably acquired nothing: record the
+run\'s lease Closed, then release the exact Harness mode epoch last. Mode is never
+released before the lease, so a crash between the two leaves the mode held and
+the run recoverable rather than the mode cleared with work outstanding.
+
+This is the __short__ close, and it is deliberately restricted to the
+'PreEffectRefusalClose' branch of 'ProjectClosureEvidence'. A settled destroy
+released real resources, so its close has to persist a Closing epoch before the
+terminal projection runs and resume it after a crash — that is
+'authorizeHarnessClose' followed by 'finalizeHarnessClose', and routing settled
+evidence through here would skip the epoch entirely and leave a half-finished
+close indistinguishable from a live run. The evidence argument was previously
+ignored, so nothing enforced that.
+
+Both halves of the close root pair are required rather than a bare 'RunId': the
+run identity is read off the close root, so a caller cannot close a run it holds
+no close authority for.
 -}
 closeHarnessRun ::
     ProtectedSession session ->
     InstalledProject projectId ->
-    RunId ->
+    HarnessCloseRoot projectId runId brokerGeneration ->
+    ProjectModeLease projectId brokerGeneration ->
     ProjectClosureEvidence (Harness projectId runId) ->
     IO (Either ModeError ())
-closeHarnessRun session project run _evidence = do
-    closed <- closeLease session project run
-    case closed of
+closeHarnessRun session project closeRoot modeLease evidence =
+    case checkHarnessCloseRoot project closeRoot modeLease run of
         Left failure -> pure (Left failure)
-        Right () -> releaseMode session project (HarnessMode run)
+        Right () -> case projectClosureEvidenceKind evidence of
+            SettledDestroyClose ->
+                pure (Left (ModeClosureMismatch "pre-effect refusal" "settled destroy"))
+            PreEffectRefusalClose -> do
+                closed <- closeLease session project run
+                case closed of
+                    Left failure -> pure (Left failure)
+                    Right () -> releaseMode session project (HarnessMode run)
+  where
+    run = harnessCloseRootRun closeRoot
 
 -- Abandoned-run recovery -------------------------------------------------------------------
 
@@ -1901,7 +2064,7 @@ recoverAbandonedHarnessRuns ::
     ) ->
     IO (Either ModeError (ClosedAbandonedHarnessRuns projectId))
 recoverAbandonedHarnessRuns store project reclaimUnbound resolveBound = do
-    observed <- runProtected store (\session -> incompleteLeases session project)
+    observed <- runProtected store (\session -> abandonedHarnessLeases session project)
     case observed of
         Left failure -> pure (Left failure)
         Right leases -> do
@@ -1911,7 +2074,7 @@ recoverAbandonedHarnessRuns store project reclaimUnbound resolveBound = do
                 Right () -> do
                     -- Recheck after the callbacks: a fold that resolved nothing
                     -- cannot report a vacuous success.
-                    remaining <- runProtected store (\session -> incompleteLeases session project)
+                    remaining <- runProtected store (\session -> abandonedHarnessLeases session project)
                     case remaining of
                         Left failure -> pure (Left failure)
                         Right [] -> pure (Right (ClosedAbandonedHarnessRuns (length leases)))
@@ -1940,6 +2103,305 @@ recoverAbandonedHarnessRuns store project reclaimUnbound resolveBound = do
                                 Left failure -> pure (Left failure)
                                 Right () -> releaseModeIfRun session project (incompleteRunLeaseRun lease)
         IncompleteBound _ _ -> resolveBound lease
+
+-- Reopening an abandoned bound run ----------------------------------------------------------
+
+{- | Everything reopening one abandoned __bound__ harness run establishes.
+
+Read the field list as the boundary, because it is the whole of what recovery
+gets. There is no 'HarnessAuthority', no fresh 'LifecycleProfile', no
+'UnboundRunLease' to bind to a different snapshot, and the root authority is
+@VerbDestroy@ — never @VerbUp@. So a reopened run can settle what its
+predecessor left behind and nothing else: it cannot mint a normal config, start
+new lifecycle work, or hand harness planning authority to a project.
+
+The four indices are all generative and shared across the fields, so the
+snapshot, the lease, the destroy root and the close root are pinned to /this/
+reopening: none of them can be mixed with a value from the live run or from a
+second reopening.
+-}
+data AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration
+    = AbandonedHarnessRun
+    { abandonedHarnessRunId :: RunId
+    -- ^ the abandoned run this reopening belongs to
+    , abandonedHarnessSnapshot :: VerifiedPlanSnapshot projectId specDigest planDigest
+    -- ^ the exact plan snapshot the old lease was bound to, read back durably
+    , abandonedHarnessBoundLease ::
+        BoundRunLease (Harness projectId oldRunId) specDigest planDigest brokerGeneration
+    -- ^ the /already-bound/ lease, retained on the fresh broker generation
+    , abandonedHarnessModeLease :: ProjectModeLease projectId brokerGeneration
+    -- ^ the old run's own project-wide Harness mode, likewise retained
+    , abandonedHarnessDestroyRoot ::
+        RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy
+    -- ^ recovery's only root authority: @destroy@, so it can release and not acquire
+    , abandonedHarnessRecovery :: HarnessBoundRecovery projectId
+    -- ^ the exhaustive first branch: a persisted Closing epoch, or Open revision recovery
+    , abandonedHarnessCloseRoot :: HarnessCloseRoot projectId oldRunId brokerGeneration
+    -- ^ the narrow close authority, marked 'RecoveredHarnessClose'
+    }
+
+{- | A reopening whose generative indices are hidden, so the protected
+transaction that mints it can complete before the continuation runs.
+-}
+data SomeAbandonedHarnessRun projectId
+    = forall oldRunId specDigest planDigest brokerGeneration.
+        SomeAbandonedHarnessRun
+            (AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration)
+
+{- | Reopen one abandoned __bound__ harness run under a fresh broker generation.
+
+This is the opener the sweep's bound-lease callback needs. Before it existed, a
+bound abandoned run could be classified ('classifyAbandonedBoundRun') and the one
+provably-nothing-acquired branch could be closed, but the close went through a
+bare 'RunId' — so every other branch could only be /named/ in a refusal string,
+and even the branch that did resolve carried no authority saying who was allowed
+to resolve it.
+
+Every step is ordered so a crash leaves the store no worse than it found it:
+
+1. the lease must still be recorded @bound@ to the same two digests the sweep
+   observed. The sweep read it at an earlier store version, so this is a
+   recheck, not a repetition — a lease that closed or was rebound in between is
+   refused rather than reopened;
+2. the persisted plan snapshot is read back and its digests must equal the
+   lease's. That is what makes the yielded snapshot /the old run's/ rather than
+   whatever is currently persisted, so a substituted snapshot cannot be presented
+   as this run's;
+3. the durable invocation record is classified __before__ any authority is
+   minted, so the exhaustive Closing-versus-Open branch is decided from the dead
+   run's own state;
+4. a fresh broker generation is allocated and the @destroy@ root verified under
+   it. Recovery never resumes the old generation: the old generation's tokens,
+   permits and admissions must all be fenced out, and reusing its epoch would
+   make a delayed one from the dead run indistinguishable from a live one;
+5. the old run's Harness mode and bound lease are retained onto that fresh
+   generation. Neither identity changes — same mode, same run, same snapshot
+   digests — only the generation they are recorded under.
+
+Retaining is not inert, and it is worth being explicit about: a reopening that
+then refuses (a persisted Closing epoch, either migration branch) leaves the mode
+and lease recorded under the new generation. Nothing reads a retained record's
+generation to resume — 'bindRunLease' compares generations only for an /unbound/
+lease, 'releaseMode' compares the mode alone, and a close journal is keyed by its
+Closing epoch — so a second reopening reads exactly the same state and reaches
+exactly the same branch. The records that must not change across a reopening are
+the snapshot and the invocation disposition, and this opener writes neither.
+
+The continuation runs /outside/ the protected entry, exactly as
+'withHarnessRoot''s does, because resolving a run needs many further protected
+transactions.
+-}
+withAbandonedHarnessRun ::
+    forall projectId result.
+    ProtectedStore ->
+    InstalledProject projectId ->
+    -- | the bound lease the sweep minted; an unbound one is refused
+    VerifiedIncompleteRunLease projectId ->
+    ( forall oldRunId specDigest planDigest brokerGeneration.
+      AbandonedHarnessRun projectId oldRunId specDigest planDigest brokerGeneration ->
+      IO (Either ModeError result)
+    ) ->
+    IO (Either ModeError result)
+withAbandonedHarnessRun store project lease use = case incompleteRunLeaseKind lease of
+    IncompleteUnbound ->
+        -- An unbound lease has no snapshot, so there is nothing to reopen: the
+        -- sweep closes it behind 'verifyUnboundLeaseHasNoEffects' instead.
+        pure (Left (ModeLeaseNotBindable (runIdText run) "unbound"))
+    IncompleteBound recordedSpec recordedPlan -> do
+        prepared <- runProtected store (reopen recordedSpec recordedPlan)
+        case prepared of
+            Left failure -> pure (Left failure)
+            Right (SomeAbandonedHarnessRun reopened) -> use reopened
+  where
+    run = incompleteRunLeaseRun lease
+
+    reopen ::
+        Text ->
+        Text ->
+        ProtectedSession session ->
+        IO (Either ModeError (SomeAbandonedHarnessRun projectId))
+    reopen recordedSpec recordedPlan session = do
+        stillBound <- leaseStillBoundTo session project run recordedSpec recordedPlan
+        case stillBound of
+            Left failure -> pure (Left failure)
+            Right () -> do
+                classified <- classifyAbandonedBoundRun session project lease
+                case classified of
+                    Left failure -> pure (Left failure)
+                    Right recovery ->
+                        verifyPlanSnapshot session project run $ \snapshot ->
+                            case checkSnapshotDigests snapshot recordedSpec recordedPlan of
+                                Left failure -> pure (Left failure)
+                                Right () -> do
+                                    operator <- verifyOperatorAuthorization session
+                                    case operator of
+                                        Left failure -> pure (Left (ModeAuthorityFailure failure))
+                                        Right authorized ->
+                                            withFreshEpoch session project $ \epoch ->
+                                                withVerifiedRoot
+                                                    session
+                                                    project
+                                                    authorized
+                                                    epoch
+                                                    ProjectDestroy
+                                                    (retain session snapshot recovery epoch)
+
+    retain ::
+        ProtectedSession session ->
+        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        HarnessBoundRecovery projectId ->
+        BrokerEpoch brokerGeneration ->
+        RootInvocationAuthority (Harness projectId oldRunId) brokerGeneration VerbDestroy ->
+        IO (Either ModeError (SomeAbandonedHarnessRun projectId))
+    retain session snapshot recovery epoch root = do
+        retained <- retainAbandonedHarnessMode session project run epoch
+        case retained of
+            Left failure -> pure (Left failure)
+            Right modeLease -> do
+                rebound <- retainBoundLeaseGeneration session project snapshot epoch
+                pure $ case rebound of
+                    Left failure -> Left failure
+                    Right bound ->
+                        Right
+                            ( SomeAbandonedHarnessRun
+                                AbandonedHarnessRun
+                                    { abandonedHarnessRunId = run
+                                    , abandonedHarnessSnapshot = snapshot
+                                    , abandonedHarnessBoundLease = bound
+                                    , abandonedHarnessModeLease = modeLease
+                                    , abandonedHarnessDestroyRoot = root
+                                    , abandonedHarnessRecovery = recovery
+                                    , abandonedHarnessCloseRoot =
+                                        HarnessCloseRoot
+                                            RecoveredHarnessClose
+                                            run
+                                            (installedProjectName project)
+                                            epoch
+                                    }
+                            )
+
+    checkSnapshotDigests ::
+        VerifiedPlanSnapshot projectId specDigest planDigest ->
+        Text ->
+        Text ->
+        Either ModeError ()
+    checkSnapshotDigests snapshot recordedSpec recordedPlan
+        | planSnapshotSpecDigest snapshot /= recordedSpec =
+            Left (ModeSnapshotMismatch recordedSpec (planSnapshotSpecDigest snapshot))
+        | planSnapshotPlanDigest snapshot /= recordedPlan =
+            Left (ModeSnapshotMismatch recordedPlan (planSnapshotPlanDigest snapshot))
+        | otherwise = Right ()
+
+{- | Recheck that the lease is still recorded @bound@ to the digests the sweep
+observed. The sweep's observation was taken at an earlier store version, so
+between it and this entry the lease may have been closed by a competing resolver
+or bound to a different snapshot; neither is a run this opener may reopen.
+-}
+leaseStillBoundTo ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    Text ->
+    Text ->
+    IO (Either ModeError ())
+leaseStillBoundTo session project run expectedSpec expectedPlan =
+    withRecordKey (leaseKey project run) $ \key -> do
+        observed <- readProtectedRecord session key
+        pure $ case observed of
+            Left failure -> Left (ModeStoreFailure failure)
+            Right Nothing -> Left (ModeLeaseMissing (runIdText run))
+            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                Nothing -> Left (ModeMalformedRecord (recordKeyText key))
+                Just (LeaseBound _ spec plan)
+                    | spec /= expectedSpec -> Left (ModeSnapshotMismatch expectedSpec spec)
+                    | plan /= expectedPlan -> Left (ModeSnapshotMismatch expectedPlan plan)
+                    | otherwise -> Right ()
+                Just other ->
+                    Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other))
+
+{- | Retain an abandoned run's own Harness mode onto a fresh broker generation.
+
+This is deliberately /not/ a branch of 'acquireMode'. 'acquireMode' refuses every
+harness re-take, and that refusal is what the four-process reservation race
+exists to guarantee: if a starting run could re-take a harness mode, it could
+steal a live run's project. Recovery is admitted here only because its single
+route in is a 'VerifiedIncompleteRunLease' the sweep minted, and the sweep runs
+under the run-liveness lock that proves the holder is dead.
+
+The mode must be exactly this run's. A Production mode, another run's mode, or an
+absent record all refuse: an absent mode under a still-bound lease is a torn
+store, not an invitation to claim one.
+-}
+retainAbandonedHarnessMode ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    RunId ->
+    BrokerEpoch brokerGeneration ->
+    IO (Either ModeError (ProjectModeLease projectId brokerGeneration))
+retainAbandonedHarnessMode session project run epoch =
+    withRecordKey (modeKey project) $ \key -> do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right Nothing -> pure (Left (ModeHeldByAnother "none" wanted))
+            Right (Just record) -> case decodeMode (protectedRecordBytes record) of
+                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+                Just (held, _)
+                    | held /= HarnessMode run ->
+                        pure (Left (ModeHeldByAnother (projectModeName held) wanted))
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                (ExpectVersion (protectedRecordVersion record))
+                                (encodeMode held (brokerEpochWord epoch))
+                        pure $ case written of
+                            Left failure -> Left (ModeStoreFailure failure)
+                            Right _ -> Right (ProjectModeLease held epoch)
+  where
+    wanted = projectModeName (HarnessMode run)
+
+{- | Retain an already-bound lease onto a fresh broker generation without
+touching the snapshot it names.
+
+The digests are the /verified snapshot's/, not a caller's, so this cannot rebind
+a lease to a different plan: it writes back the same two digests it read out of
+the durable snapshot record and refuses if the lease disagrees with them.
+-}
+retainBoundLeaseGeneration ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    VerifiedPlanSnapshot projectId specDigest planDigest ->
+    BrokerEpoch brokerGeneration ->
+    IO (Either ModeError (BoundRunLease scope specDigest planDigest brokerGeneration))
+retainBoundLeaseGeneration session project snapshot epoch =
+    withRecordKey (leaseKey project run) $ \key -> do
+        observed <- readProtectedRecord session key
+        case observed of
+            Left failure -> pure (Left (ModeStoreFailure failure))
+            Right Nothing -> pure (Left (ModeLeaseMissing (runIdText run)))
+            Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+                Just (LeaseBound _ recordedSpec recordedPlan)
+                    | recordedSpec /= spec -> pure (Left (ModeSnapshotMismatch spec recordedSpec))
+                    | recordedPlan /= plan -> pure (Left (ModeSnapshotMismatch plan recordedPlan))
+                    | otherwise -> do
+                        written <-
+                            compareAndSwapProtectedRecord
+                                session
+                                key
+                                (ExpectVersion (protectedRecordVersion record))
+                                (encodeLease (LeaseBound (brokerEpochWord epoch) spec plan))
+                        pure $ case written of
+                            Left failure -> Left (ModeStoreFailure failure)
+                            Right _ -> Right (BoundRunLease run spec plan epoch)
+                Just other ->
+                    pure (Left (ModeLeaseNotBindable (runIdText run) (leaseStateName other)))
+  where
+    run = planSnapshotRun snapshot
+    spec = planSnapshotSpecDigest snapshot
+    plan = planSnapshotPlanDigest snapshot
 
 {- | Release the project-wide mode when it is held by this exact abandoned run.
 A Production mode, or another run's mode, is left untouched.
@@ -2178,6 +2640,34 @@ leaseEpoch (LeaseUnbound epoch) = epoch
 leaseEpoch (LeaseBound epoch _ _) = epoch
 leaseEpoch (LeaseClosed epoch) = epoch
 
+{- | The incomplete leases the harness sweep may resolve: every one except the
+reserved Production invocation lease.
+
+Production's lease is shaped exactly like an abandoned harness run's — unbound,
+open, and carrying no generative identity — but it belongs to the /other/
+profile's recovery ('eliminateProductionBoundRecovery',
+'withRecoveredProductionLifecycleProfile', and the stable 'InvocationCloseKey').
+Reading it as abandoned closed a __live__ invocation's lease: the same shape as
+the four-process reservation defect, across profiles instead of within one, and
+it also discarded the evidence Production's own recovery reads.
+
+Skipping it opens no hole, because Production always closes its lease /before/
+releasing its mode ('releaseProductionMode',
+'closeCompletedProductionInvocation'). An open Production lease therefore
+implies the Production mode is still held, so 'acquireMode' refuses the harness
+with the stated 'ModeHeldByAnother' exclusion § Z requires — rather than a sweep
+quietly resolving another profile's state and then refusing for a different
+reason.
+-}
+abandonedHarnessLeases ::
+    ProtectedSession session ->
+    InstalledProject projectId ->
+    IO (Either ModeError [VerifiedIncompleteRunLease projectId])
+abandonedHarnessLeases session project =
+    fmap
+        (fmap (filter (not . isProductionRun . incompleteRunLeaseRun)))
+        (incompleteLeases session project)
+
 incompleteLeases ::
     ProtectedSession session ->
     InstalledProject projectId ->
@@ -2212,7 +2702,7 @@ sweptSetStillEmpty ::
     ClosedAbandonedHarnessRuns projectId ->
     IO (Either ModeError ())
 sweptSetStillEmpty session project _ = do
-    remaining <- incompleteLeases session project
+    remaining <- abandonedHarnessLeases session project
     pure $ case remaining of
         Left failure -> Left failure
         Right [] -> Right ()

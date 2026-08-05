@@ -7,7 +7,7 @@ import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, finally, throwIO, throwTo, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -327,6 +327,10 @@ suiteCases =
             (HarnessDataRootCleanupFailed "the generated directory was replaced")
             "[v0] data-root cleanup"
             "the generated directory was replaced"
+        checkFailure
+            (HarnessGeneratedConfigCleanupFailed "the generated config was edited")
+            "[v0] generated-config cleanup"
+            "the generated config was edited"
         checkFailure
             (HarnessModeCloseFailed "the lease close lost its compare-and-swap")
             "[v0] mode close"
@@ -825,6 +829,45 @@ ownershipCases =
             second <- runWithOwnedRun ownership (\_ -> pure ("second run" :: String))
             second @?= Right ("second run", Nothing)
             listDirectory parent >>= (@?= [])
+    , -- Discovered while landing the 2026-08-04 config-ownership work: a run
+      -- that reaches its release still holding the generated config leaves a
+      -- `config.…` record no later sweep can reach, because the sweep
+      -- enumerates incomplete *leases* and this run's lease closes on the way
+      -- out. The file the record names survives too — and then refuses the next
+      -- run, with nothing able to resolve it. A run therefore settles its own
+      -- config record exactly as it settles its data root.
+      testCase "a run that never releases its generated config settles both the file and the record" $
+        withTypedOwnership $ \root ownership -> do
+            let configPath = root </> "hostbootstrap-demo.dhall"
+                records =
+                    root
+                        </> ".hostbootstrap"
+                        </> "authority"
+                        </> "hostbootstrap-demo"
+                        </> "records"
+            _ <-
+                try
+                    ( runWithOwnedRun ownership $ \owned -> do
+                        installed <-
+                            acquireOwnedRunConfig owned "-- generated, never released\n"
+                        either assertFailure (const (pure ())) installed
+                        doesFileExist (ownedHarnessConfigPath owned) >>= (@?= True)
+                        throwIO (userError "killed while holding the config")
+                    ) ::
+                    IO
+                        ( Either
+                            SomeException
+                            (Either String ((), Maybe HarnessRunCleanupFailure))
+                        )
+            -- Both halves settled: the file the run installed is gone, and its
+            -- ownership record did not outlive the lease that indexes it.
+            doesFileExist configPath >>= (@?= False)
+            leftover <- filter ("config." `isPrefixOf`) <$> listDirectory records
+            leftover @?= []
+            -- The successor is therefore admitted, rather than refused by a
+            -- config no recovery path can still reach.
+            second <- runWithOwnedRun ownership (\_ -> pure ("second run" :: String))
+            second @?= Right ("second run", Nothing)
     , testCase "racing harnesses converge on exactly one authoritative acquisition" $
         withSystemTempDirectory "hostbootstrap-race" $ \root -> do
             self <- getExecutablePath

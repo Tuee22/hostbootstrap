@@ -415,6 +415,8 @@ is a 'Left' rather than an exception.
 data HarnessRunCleanupFailure
     = -- | The run's exact generated data-root identity could not be released.
       HarnessDataRootCleanupFailed String
+    | -- | The run's own generated-config ownership record could not be settled.
+      HarnessGeneratedConfigCleanupFailed String
     | -- | The run lease and project-wide Harness mode could not be closed.
       HarnessModeCloseFailed String
     deriving (Eq, Show)
@@ -727,10 +729,14 @@ runSuiteSelection ownership (TestSuite safety bringUp cases assertCase tearDown)
     cleanupFailureRow failure = case failure of
         HarnessDataRootCleanupFailed reason ->
             ("data-root cleanup", TeardownFailed reason)
+        HarnessGeneratedConfigCleanupFailed reason ->
+            ("generated-config cleanup", TeardownFailed reason)
         HarnessModeCloseFailed reason ->
             ("mode close", TeardownFailed reason)
     cleanupFailureReason failure = case failure of
         HarnessDataRootCleanupFailed reason -> "data-root cleanup failed: " ++ reason
+        HarnessGeneratedConfigCleanupFailed reason ->
+            "generated-config cleanup failed: " ++ reason
         HarnessModeCloseFailed reason -> "mode close failed: " ++ reason
     addRows (Report rs) extra = Report (rs ++ extra)
     -- Every chosen case carries one engine-classified outcome (the bring-up or
